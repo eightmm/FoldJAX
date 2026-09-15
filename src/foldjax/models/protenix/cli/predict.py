@@ -386,6 +386,23 @@ def _run(
         "(context parallelism, the JAX form of OpenDDE's Fold-CP); needs "
         "that many visible devices",
     )
+    atom_windows_group = parser.add_mutually_exclusive_group()
+    atom_windows_group.add_argument(
+        "--cp-atom-windows",
+        dest="cp_atom_windows",
+        action="store_true",
+        help="distribute the diffusion atom graph (atom-pair cache, both atom "
+        "transformer stacks, atom<->token routing) over the context-parallel "
+        "rows; the default, and ignored without --cp-devices > 1",
+    )
+    atom_windows_group.add_argument(
+        "--no-cp-atom-windows",
+        dest="cp_atom_windows",
+        action="store_false",
+        help="keep the diffusion atom graph replicated on every "
+        "context-parallel device",
+    )
+    parser.set_defaults(cp_atom_windows=True)
     parser.add_argument(
         "--cp-layout",
         choices=("auto", "1d", "2d"),
@@ -1220,6 +1237,7 @@ def _run(
                 deterministic=deterministic,
                 cp_shards=args.cp_devices,
                 cp_layout=args.cp_layout,
+                cp_atom_windows=args.cp_atom_windows,
                 padded_generated_schema=padding_plan is not None,
                 init_noise=init_noise,
                 step_noises=step_noises,

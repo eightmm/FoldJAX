@@ -115,6 +115,48 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **Protenix distributes its diffusion atom graph under context parallelism**,
+  the way Boltz-2 already did. `cp_atom_windows` is on by default and does
+  nothing without a mesh. Under one, the atom-pair cache, the atom single
+  cache, both atom transformer stacks, the atom<->token routing and the atom
+  windows' view of the token-pair tensor are split over the CP rows instead of
+  being held whole on every device.
+
+  The operation this removes is the one that made `--cp-devices` least useful
+  at scale: the atom windows read `z_token[..., idx_q, idx_k, :]`, a gather
+  whose operand the SPMD partitioner could only satisfy by collecting the
+  whole projected token-pair tensor onto each device -- so the pair trunk was
+  distributed and the atom stage undid it. It is now a rotation of pair-row
+  tiles reduced over pair columns, and the compiled SPMD module contains no
+  full-width atom activation, atom-pair window cache, or projected token-pair
+  tensor per device, and no `all-gather` in the atom path.
+
+  Two shapes must divide the mesh: the atom axis a multiple of
+  `n_queries * cp_rows`, the token axis a multiple of the rows (and the
+  columns under `2d`). A shape that cannot be split **warns, names the
+  multiple to pad to, and runs replicated** rather than failing or silently
+  reading as distributed; pin `PaddingConfig(atoms=..., tokens=...)` to supply
+  the alignment.
+
+  The sampler loop and the RNG tape are untouched -- the noise is still drawn
+  and carried replicated, and the denoiser reshards the coordinates it is
+  handed. A serial run is byte-identical: the lowered HLO of one denoiser step
+  is compared against `git archive main` in the same interpreter and pinned by
+  hash, and carries no collective and no sharding op
+  (`tests/models/protenix/test_atom_context_parallel.py`). OpenDDE, whose
+  diffusion module calls the same Protenix denoiser, keeps its program because
+  the internal keyword defaults to off there; its option surface is unchanged.
+
+  Gated on 1-, 4- and 9-device CPU meshes in both layouts and on both denoiser
+  attention arms -- `xla` and the `xla_jit` an omitted backend now resolves to
+  under a mesh, which inside a sharded body runs as `xla` because the window
+  plan holds that body's tracers: per-stage parity of the encoder, the
+  atom-pair cache, the decoder, one denoiser step and a three-step sampler
+  against serial at FP32 reduction-order tolerance, with a live-mesh and
+  live-plan tripwire, per-variant lowering fingerprints, and the collectives
+  the mechanism needs. No GPU measurement yet, so the per-device claim is
+  structural rather than a measured peak.
+
 - **An opt-in bfloat16 denoising network for OpenDDE**, off by default.
   `--option diffusion_dtype=bf16` runs the diffusion module's matmuls in
   bfloat16 with the float32 boundary drawn where AlphaFold 3 and upstream

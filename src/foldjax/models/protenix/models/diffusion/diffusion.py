@@ -8,6 +8,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import cp_mesh, shard_pair_rows, shard_single
 from foldjax.models._random import masked_prefix_draw, supports_masked_prefix_draw
 from foldjax.models.protenix.models.diffusion.atom import (
     AtomAttentionDecoderParams,
@@ -353,6 +354,11 @@ def sample_diffusion_with_module(
     guidance_config=None,
     guidance_features=None,
     preserve_prefix_rng: bool = False,
+    #: Distribute the denoiser's atom graph over CP rows. The sampler loop and
+    #: its RNG tape are untouched: the noise is drawn and carried replicated,
+    #: exactly as before, and the denoiser reshards the coordinates it is
+    #: handed. Off by default; Protenix' entry point resolves the request.
+    cp_atom_windows: bool = False,
 ) -> jnp.ndarray:
     """Sample coordinates using ``DiffusionModuleParams`` and static features."""
 
@@ -424,6 +430,7 @@ def sample_diffusion_with_module(
             glu_backend=glu_backend,
             token_mask=token_padding_mask,
             atom_mask=atom_padding_mask,
+            cp_atom_windows=cp_atom_windows,
         )
         # Guarded rather than unconditional: with no policy in flight the
         # network already returns FP32, and an added convert would be a change
@@ -553,6 +560,10 @@ def diffusion_module_f_forward(
     glu_backend: str = "xla",
     token_mask: jnp.ndarray | None = None,
     atom_mask: jnp.ndarray | None = None,
+    #: Distribute the atom graph over CP rows. Off by default so OpenDDE's
+    #: diffusion module, which calls straight through here, keeps its
+    #: replicated program; Protenix' own entry point resolves and passes it.
+    cp_atom_windows: bool = False,
 ) -> jnp.ndarray:
     """Run the raw Protenix denoising network ``F`` for one noise level."""
 
@@ -573,12 +584,20 @@ def diffusion_module_f_forward(
         if pair_z is None:
             raise ValueError("preconditioned single features require a pair cache")
         single_s = conditioned_single_s
+    distributed_atoms = bool(cp_atom_windows) and cp_mesh() is not None
     s_trunk_sample = jnp.expand_dims(s_trunk, axis=-3)
     z_pair_sample = jnp.expand_dims(pair_z, axis=-4)
+    if distributed_atoms:
+        z_pair_sample = shard_pair_rows(z_pair_sample, row_axis=-3, col_axis=-2)
     if transformer_z is None:
         transformer_z = z_pair_sample.astype(jnp.float32)
         if use_efficient_fusion:
             transformer_z = layer_norm(transformer_z, LayerNormParams())
+    if distributed_atoms:
+        # The token transformer's per-block pair bias is a projection of this
+        # tensor, so constraining it here is what keeps `linear_z` reading a
+        # pair-sharded operand rather than a collected one.
+        transformer_z = shard_pair_rows(transformer_z, row_axis=-3, col_axis=-2)
     a_token, q_skip, c_skip, p_skip = atom_attention_encoder(
         atom_to_token_idx,
         ref_pos,
@@ -603,12 +622,18 @@ def diffusion_module_f_forward(
         attention_backend=attention_backend,
         glu_backend=glu_backend,
         atom_mask=atom_mask,
+        cp_atom_windows=cp_atom_windows,
     )
     a_token = a_token.astype(jnp.float32)
     a_token = a_token + linear(
         layer_norm(single_s, params.layernorm_s),
         params.linear_s,
     )
+    if distributed_atoms:
+        # The scatter-mean already delivered this on CP rows; saying so keeps
+        # the token attention's queries on the same axis its pair bias rows
+        # are split along.
+        a_token = shard_single(a_token, token_axis=-2)
     a_token = diffusion_transformer_stack(
         a_token.astype(jnp.float32),
         single_s.astype(jnp.float32),
@@ -624,6 +649,8 @@ def diffusion_module_f_forward(
         sequence_mask=token_mask,
     )
     a_token = layer_norm(a_token, params.layernorm_a)
+    if distributed_atoms:
+        a_token = shard_single(a_token, token_axis=-2)
     return atom_attention_decoder(
         atom_to_token_idx,
         a_token,
@@ -638,6 +665,7 @@ def diffusion_module_f_forward(
         attention_backend=attention_backend,
         glu_backend=glu_backend,
         atom_mask=atom_mask,
+        cp_atom_windows=cp_atom_windows,
     )
 
 
@@ -679,6 +707,7 @@ def diffusion_module_forward(
     glu_backend: str = "xla",
     token_mask: jnp.ndarray | None = None,
     atom_mask: jnp.ndarray | None = None,
+    cp_atom_windows: bool = False,
 ) -> jnp.ndarray:
     """Run one Protenix EDM denoising step."""
 
@@ -721,6 +750,7 @@ def diffusion_module_forward(
         glu_backend=glu_backend,
         token_mask=token_mask,
         atom_mask=atom_mask,
+        cp_atom_windows=cp_atom_windows,
     )
     s_ratio = (t_hat_noise_level / sigma_data)[..., None, None].astype(r_update.dtype)
     output = (
@@ -823,9 +853,7 @@ def _sample_diffusion_chunk(
     else:
 
         def draw_normal(draw_key):
-            return jax.random.normal(
-                draw_key, (num_samples, n_atom, 3), dtype=dtype
-            )
+            return jax.random.normal(draw_key, (num_samples, n_atom, 3), dtype=dtype)
 
     # Derive this from the incoming chunk key, before optional initial-noise
     # splitting: replaying initial/churn noise must not change rigid draws.

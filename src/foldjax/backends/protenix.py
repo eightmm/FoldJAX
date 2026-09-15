@@ -27,6 +27,10 @@ from foldjax.schema import (
 from foldjax.scores import sample_summary_scores
 
 _CLI_OPTIONS = {
+    # Distribute the diffusion atom graph over CP rows. Released default on:
+    # under a mesh the atom-pair cache, both atom transformer stacks and the
+    # atom<->token routing are split, and a serial run ignores it.
+    "cp_atom_windows",
     "cp_devices",
     "cp_layout",
     "num_samples",
@@ -76,6 +80,11 @@ _CLI_OPTIONS = {
     "diffusion_chunk_size",
     "deterministic_ops",
 }
+#: Switches whose released value is on, so the *negative* flag is the one that
+#: has to be rendered. `_render_switch`'s vocabulary cannot express these: it
+#: drops a falsey value, and dropping a falsey value here would select the
+#: parser's default, which is the opposite of what was asked for.
+_NEGATED_FLAG_OPTIONS = frozenset({"cp_atom_windows"})
 _RESERVED_CLI_FLAGS = frozenset(
     {
         "--features",
@@ -96,6 +105,7 @@ _RESERVED_CLI_FLAGS = frozenset(
         "--padding-overflow",
     }
     | {f"--{name.replace('_', '-')}" for name in _CLI_OPTIONS}
+    | {f"--no-{name.replace('_', '-')}" for name in _NEGATED_FLAG_OPTIONS}
 )
 _PROFILE_MODEL_NAMES = {
     "released": "protenix_base_default_v1.0.0",
@@ -144,6 +154,19 @@ def _render_switch(key: str, value: Any) -> list[str]:
             return []
         raise ValueError(f"{key} is a switch; pass true or false, not {value!r}")
     return [flag] if value else []
+
+
+def _render_negated_switch(key: str, value: Any) -> list[str]:
+    """A default-on switch: nothing when on, the negative flag when off."""
+    flag = f"--no-{key.replace('_', '-')}"
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in _TRUE:
+            return []
+        if lowered in _FALSE:
+            return [flag]
+        raise ValueError(f"{key} is a switch; pass true or false, not {value!r}")
+    return [] if value else [flag]
 
 
 #: The profiles whose checkpoint is staged beside a matching ESM/ISM encoder.
@@ -196,6 +219,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "diffusion_attention_backend": "tokamax",
     "trunk_single_attention_backend": "xla_jit",
     "chunk_policy": "auto",
+    "cp_atom_windows": True,
     "cp_devices": 1,
     "cp_layout": "auto",
     "deterministic_ops": "off",
@@ -325,6 +349,7 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         **DETERMINISTIC_ARGV_OPTION,
     }
     compile_options = (
+        "cp_atom_windows",
         "cp_devices",
         "cp_layout",
         "num_samples",
@@ -440,6 +465,15 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             raise ValueError(
                 f"glu_backend must be one of {_GLU_BACKENDS}; got {glu_backend!r}"
             )
+        atom_windows = options.get("cp_atom_windows", True)
+        if isinstance(atom_windows, str):
+            if atom_windows.strip().lower() not in (_TRUE | _FALSE):
+                raise ValueError(
+                    "cp_atom_windows is a switch; pass true or false, not "
+                    f"{atom_windows!r}"
+                )
+        elif not isinstance(atom_windows, bool):
+            raise ValueError("cp_atom_windows must be a boolean")
         cp_devices = options.get("cp_devices", 1)
         if glu_backend != "xla" and _strict_cp_devices(cp_devices) > 1:
             raise ValueError(
@@ -576,6 +610,9 @@ class ProtenixBackend(ManagedCcdSession, Backend):
                 continue
             value = options.pop(key)
             flag = f"--{key.replace('_', '-')}"
+            if key in _NEGATED_FLAG_OPTIONS:
+                argv.extend(_render_negated_switch(key, value))
+                continue
             if key not in _FLAG_OPTIONS:
                 argv.extend((flag, str(value)))
                 continue

@@ -149,6 +149,11 @@ def protenix_predict_static(
     deterministic: bool = False,
     cp_shards: int = 1,
     cp_layout: str = "auto",
+    #: Distribute the diffusion atom graph over CP rows instead of holding one
+    #: copy of it per device. Serial runs ignore it; a mesh whose shapes cannot
+    #: be split warns and falls back (see
+    #: `models/diffusion/_cp.py:resolve_atom_windows`).
+    cp_atom_windows: bool = True,
     padded_generated_schema: bool = False,
 ) -> dict[str, jnp.ndarray]:
     """Run the static-feature Protenix inference graph.
@@ -231,6 +236,7 @@ def protenix_predict_static(
                 "deterministic": deterministic,
                 "cp_shards": cp_shards,
                 "cp_layout": cp_layout,
+                "cp_atom_windows": cp_atom_windows,
             }
             if infer is protenix_infer_compiled
             else {}

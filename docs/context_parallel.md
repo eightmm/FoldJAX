@@ -25,8 +25,8 @@ expected explicit collectives for the atom-window adapters.
 | Model | 1D pair CP | 2D pair CP | Atom-window CP | Notes |
 |---|---:|---:|---:|---|
 | Boltz-2 | yes | yes | yes | Cannon/ring pair core, CP-row atom windows, halo exchange, sparse token/pair routing |
-| Protenix | yes | yes | no | Pair trunk and confidence pair path use the common pair core; atom streams remain replicated |
-| OpenDDE | yes | yes | no | Structural-token refinement uses the Protenix pair primitives; diffusion atom streams remain replicated |
+| Protenix | yes | yes | yes | Pair trunk and confidence pair path use the common pair core; the diffusion atom graph is distributed over CP rows (`cp_atom_windows`, default on) |
+| OpenDDE | yes | yes | no | Structural-token refinement uses the Protenix pair primitives; its diffusion module calls the same Protenix denoiser, with the atom-window option off, so its atom streams remain replicated |
 | OpenFold3 | yes | yes | no | Pair stack, template stack, and confidence pair re-embedding |
 | ESMFold2 | yes | no | no | Pair-row constraint path; no two-dimensional triangle-attention ring |
 | AlphaFold3 | no | no | no | The vendored publisher runtime is not rewritten for FoldJAX CP |
@@ -72,6 +72,59 @@ Inputs are padded to a complete query-window partition and halo width, then all
 public coordinates, confidence outputs, and captured representations are
 cropped back to the biological prefix.
 
+## Protenix atom-window path
+
+Protenix distributes the same four operations over CP rows, through the shared
+primitives in `models/_cp_atom.py` plus Protenix-specific adapters in
+`models/protenix/models/diffusion/_cp.py`:
+
+- the atom-pair cache `p_lm` and the atom single cache `c_l` are built already
+  split, from window- and atom-sharded reference features, rather than built
+  whole and sliced;
+- the projected token-pair tensor the atom windows read stays split on both
+  pair axes; its `[n_windows, n_queries, n_keys, c]` slice is assembled by
+  rotating pair-row tiles and reducing over pair columns, so no device ever
+  holds the whole projection. This is the operation that previously forced a
+  full-pair gather per device;
+- the atom-pair conditioning and both atom transformer stacks run inside
+  `shard_map` bodies with a fixed-width half-window halo. The trunk builder is
+  installed task-locally rather than threaded through four signatures --
+  `models/protenix/models/primitives/atom_windows_cp.py` -- so the serial
+  attention site keeps exactly one code path;
+- the atom->token mean is a `psum_scatter` over CP rows in Protenix' own
+  arithmetic (`sum / max(count, 1)` in the activation dtype), and the
+  token->atom gather rotates the linear token shards;
+- the token transformer's queries follow the scatter onto CP rows, and its
+  per-block pair bias is a projection of the pair-sharded conditioning cache,
+  so under the square grid the bias and the token logits are split on both
+  pair axes. The global token attention still collects K/V, which is linear in
+  the token count.
+
+Two shapes have to divide the mesh, and there is no fallback that hides it: the
+atom axis must be a multiple of `n_queries * cp_rows` and the token axis must
+divide the rows (and the columns under `2d`). A request that cannot be split
+resolves to the replicated path **with a warning naming the multiple to pad
+to** -- a silent fallback would leave a run that reads as distributed and costs
+what the replicated one costs. Pin `PaddingConfig(atoms=..., tokens=...)` to
+supply the alignment.
+
+The sampler loop and its RNG tape are unchanged: the noise is drawn and carried
+replicated exactly as before, the denoiser reshards the `[samples, atoms, 3]`
+coordinates it is handed, and the coordinate update is replicated again on the
+way out. Nothing about the diffusion tape moved.
+
+Inside a sharded body `xla_jit` runs as `xla`: the window plan holds that
+body's tracers and cannot cross an inner `jit`, and there is no eager dispatch
+overhead left inside one traced program for the wrapper to remove. That is the
+arm the released CP path takes, because the adapter resolves an omitted
+`diffusion_attention_backend` to `xla_jit` when `cp_devices > 1`.
+
+`cp_atom_windows` is a compile option on Protenix, defaulting to on. It is
+ignored without a mesh, and the internal keyword it threads through
+`atom_attention_encoder`, `atom_attention_decoder` and
+`diffusion_module_f_forward` defaults to *off*, which is what keeps OpenDDE --
+which calls straight through those -- on the program it already had.
+
 ## Trunk-only representation capture
 
 `stop_after="trunk"` is a distinct compiled graph. It returns before the
@@ -115,6 +168,7 @@ uv run pytest -q \
   tests/models/boltz2/test_atom_cp_padding.py \
   tests/models/boltz2/test_api.py \
   tests/models/protenix/test_context_parallel.py \
+  tests/models/protenix/test_atom_context_parallel.py \
   tests/models/opendde/test_context_parallel.py \
   tests/models/openfold3/test_context_parallel.py \
   tests/models/esmfold2/test_context_parallel.py
@@ -147,7 +201,19 @@ configuration as production-ready, measure on that deployment topology:
    diffusion;
 5. 2, 4, and 8 GPUs, plus multi-node runs when those are intended.
 
-For Boltz-2, the pair trunk scales over both two-dimensional mesh axes, while
-atom windows scale over CP rows and are replicated over CP columns. Protenix,
-OpenDDE, and OpenFold3 deliberately retain pair-only CP until their atom graphs
+For Boltz-2 and Protenix, the pair trunk scales over both two-dimensional mesh
+axes, while atom windows scale over CP rows and are replicated over CP columns.
+OpenDDE and OpenFold3 deliberately retain pair-only CP until their atom graphs
 receive model-specific distributed contracts and checkpoint-level validation.
+
+Protenix' atom-window path has CPU parity, HLO-structure and serial-invariance
+gates (`tests/models/protenix/test_atom_context_parallel.py`, 18 tests on 1-,
+4- and 9-device CPU meshes, in both layouts, on both the `xla` and the
+`xla_jit` denoiser attention the adapter resolves an omitted backend to under
+a mesh, and -- because `cp_shards > 1` requires `graph_jit`, which sets
+`use_diffusion_scan=True` -- with the block stack inside `lax.scan` inside the
+`shard_map` body, with and without a token query chunk) and no GPU measurement
+yet. The per-device claim it makes is
+structural -- the compiled SPMD module contains no full-width atom activation,
+atom-pair window cache, or projected token-pair tensor -- not a measured
+peak.

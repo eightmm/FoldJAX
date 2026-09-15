@@ -9,6 +9,9 @@ import jax
 import jax.numpy as jnp
 
 from foldjax.models._cp import cp_mesh
+from foldjax.models.protenix.models.primitives.atom_windows_cp import (
+    atom_window_plan,
+)
 from foldjax.models.protenix.models.primitives.primitives import (
     AdaptiveLayerNormParams,
     LayerNormParams,
@@ -231,10 +234,23 @@ def local_attention(
     inf: float = 1.0e10,
     attention_backend: str = "xla",
 ) -> jnp.ndarray:
-    """Run local blocked attention used by AtomTransformer."""
+    """Run local blocked attention used by AtomTransformer.
+
+    An atom-window plan installed by an enclosing ``shard_map`` body replaces
+    the trunk builder with its halo-exchanging equivalent; see
+    :mod:`foldjax.models.protenix.models.primitives.atom_windows_cp`. Nothing
+    else about the computation changes, and with no plan installed -- every
+    serial run, and every context-parallel run whose atom streams stay
+    replicated -- this is the historical single path.
+    """
 
     _reject_tokamax_under_cp(attention_backend)
-    if attention_backend == "xla_jit":
+    plan = atom_window_plan()
+    # The plan holds tracers belonging to the enclosing sharded body, so it
+    # cannot cross an inner `jit` boundary as a closure constant. `xla_jit`
+    # exists to cut dispatch overhead off an eagerly dispatched call; inside
+    # one traced sharded program there is no such overhead to cut.
+    if attention_backend == "xla_jit" and plan is None:
         return _compiled_local_attention(
             q_x,
             kv_x,
@@ -247,14 +263,17 @@ def local_attention(
             inf=inf,
             attention_backend="xla",
         )
+    if attention_backend == "xla_jit":
+        attention_backend = "xla"
+    trunks = _local_qk_trunks if plan is None else plan.qk_trunks
     q, k, v = prepare_qkv(q_x, kv_x, params, num_heads, apply_scale=True)
-    q_trunked, k_trunked, mask, q_pad = _local_qk_trunks(
+    q_trunked, k_trunked, mask, q_pad = trunks(
         q,
         k,
         n_queries=n_queries,
         n_keys=n_keys,
     )
-    _, v_trunked, _, _ = _local_qk_trunks(
+    _, v_trunked, _, _ = trunks(
         q,
         v,
         n_queries=n_queries,
@@ -264,7 +283,7 @@ def local_attention(
         sequence_mask = jnp.asarray(sequence_mask).astype(bool)
         if sequence_mask.ndim != 1 or sequence_mask.shape[0] != q_x.shape[-2]:
             raise ValueError("local attention sequence_mask must have shape [N_atom]")
-        q_valid, k_valid, _, _ = _local_qk_trunks(
+        q_valid, k_valid, _, _ = trunks(
             sequence_mask[:, None],
             sequence_mask[:, None],
             n_queries=n_queries,

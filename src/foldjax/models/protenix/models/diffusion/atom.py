@@ -8,6 +8,17 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import cp_mesh, shard_pair_rows
+from foldjax.models._cp_atom import replicate_atoms, shard_atoms, shard_windows
+from foldjax.models.protenix.models.diffusion._cp import (
+    aggregate_atom_to_token_cp,
+    atom_pair_conditioning_cp,
+    atom_transformer_stack_cp,
+    broadcast_token_to_atom_cp,
+    broadcast_token_to_local_atom_pair_cp,
+    global_window_mask,
+    require_atom_windows,
+)
 from foldjax.models.protenix.models.diffusion.transformer import (
     DiffusionTransformerStackParams,
     diffusion_transformer_stack,
@@ -210,9 +221,31 @@ def atom_attention_encoder_prepare_cache(
     v_lm: jnp.ndarray,
     pad_info: dict[str, jnp.ndarray],
     params: AtomAttentionEncoderCacheParams,
+    *,
+    cp_atom_windows: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Prepare AtomAttentionEncoder pair and single cache without trunk inputs."""
+    """Prepare AtomAttentionEncoder pair and single cache without trunk inputs.
 
+    ``cp_atom_windows`` constrains the inputs, not only the results. The cache
+    is one elementwise chain over them, and constraining only what comes out
+    lets every device compute the whole chain at full width and slice -- which
+    is a program that reads as distributed and costs what the replicated one
+    costs. Off by default: the input embedder's atom encoder and OpenDDE reach
+    this function too.
+    """
+
+    if cp_atom_windows and cp_mesh() is not None:
+        ref_pos = shard_atoms(ref_pos, atom_axis=0)
+        ref_charge = shard_atoms(ref_charge, atom_axis=0)
+        ref_mask = shard_atoms(ref_mask, atom_axis=0)
+        ref_element = shard_atoms(ref_element, atom_axis=0)
+        ref_atom_name_chars = shard_atoms(ref_atom_name_chars, atom_axis=0)
+        d_lm = shard_windows(d_lm, window_axis=-4)
+        v_lm = shard_windows(v_lm, window_axis=-4)
+        pad_info = {
+            **pad_info,
+            "mask_trunked": shard_windows(pad_info["mask_trunked"], window_axis=-3),
+        }
     batch_shape = ref_pos.shape[:-2]
     n_atom = ref_pos.shape[-2]
     charge = jnp.arcsinh(ref_charge).reshape(batch_shape + (n_atom, 1))
@@ -254,8 +287,18 @@ def atom_attention_encoder_prepare_diffusion_cache(
     *,
     n_queries: int,
     n_keys: int,
+    cp_atom_windows: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Prepare the reusable coordinate-conditioned atom encoder cache."""
+    """Prepare the reusable coordinate-conditioned atom encoder cache.
+
+    ``cp_atom_windows`` distributes the cache over CP rows instead of building
+    one copy per device. It defaults to off so every other caller of this
+    function -- the input embedder and OpenDDE's diffusion module -- keeps the
+    program it has. The three window-shaped inputs are constrained on the way
+    in rather than only on the way out: the cache is one elementwise chain
+    over them, and constraining only the result lets every device compute the
+    whole chain and slice, which saves nothing.
+    """
 
     _require_has_coords_params(params)
     p_lm, c_l = atom_attention_encoder_prepare_cache(
@@ -268,9 +311,34 @@ def atom_attention_encoder_prepare_diffusion_cache(
         v_lm,
         pad_info,
         params.cache,
+        cp_atom_windows=cp_atom_windows,
     )
+    z_projected = linear(layer_norm(z, params.layernorm_z), params.linear_z)
+    if cp_atom_windows and cp_mesh() is not None:
+        require_atom_windows(
+            n_atom=int(atom_to_token_idx.shape[-1]),
+            n_token=int(z.shape[-2]),
+            n_queries=n_queries,
+            n_keys=n_keys,
+        )
+        idx_q, idx_k, _ = rearrange_qk_to_dense_trunk(
+            atom_to_token_idx,
+            atom_to_token_idx,
+            n_queries=n_queries,
+            n_keys=n_keys,
+            compute_mask=False,
+        )
+        z_local = broadcast_token_to_local_atom_pair_cp(
+            shard_pair_rows(z_projected, row_axis=-3, col_axis=-2),
+            idx_q,
+            idx_k,
+        )
+        return (
+            shard_windows(jnp.expand_dims(p_lm, axis=-5), window_axis=-4) + z_local,
+            shard_atoms(c_l, atom_axis=-2),
+        )
     z_local = broadcast_token_to_local_atom_pair(
-        linear(layer_norm(z, params.layernorm_z), params.linear_z),
+        z_projected,
         atom_to_token_idx,
         n_queries=n_queries,
         n_keys=n_keys,
@@ -335,13 +403,25 @@ def atom_attention_encoder(
     attention_backend: str = "xla",
     glu_backend: str = "xla",
     atom_mask: jnp.ndarray | None = None,
+    cp_atom_windows: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Run Protenix AtomAttentionEncoder in input or diffusion mode."""
+    """Run Protenix AtomAttentionEncoder in input or diffusion mode.
+
+    ``cp_atom_windows`` distributes the atom graph over CP rows; it is
+    meaningful only in diffusion mode (``r_l`` given) and only under an active
+    mesh, and defaults to off so every other caller keeps its program.
+    """
 
     if r_l is not None:
         _require_has_coords_params(params)
         if s is None or z is None:
             raise ValueError("r_l requires trunk single s and pair z")
+    distributed = bool(cp_atom_windows) and cp_mesh() is not None
+    if distributed and r_l is None:
+        raise ValueError(
+            "distributed atom windows are only implemented for the diffusion "
+            "atom encoder; the input embedder's encoder stays replicated"
+        )
 
     if p_lm is None or c_l is None:
         p_lm, c_l = atom_attention_encoder_prepare_cache(
@@ -354,18 +434,54 @@ def atom_attention_encoder(
             v_lm,
             pad_info,
             params.cache,
+            cp_atom_windows=distributed,
         )
         if r_l is not None:
-            z_local = broadcast_token_to_local_atom_pair(
-                linear(layer_norm(z, params.layernorm_z), params.linear_z),
-                atom_to_token_idx,
-                n_queries=n_queries,
-                n_keys=n_keys,
-                compute_mask=False,
-            )[0]
+            z_projected = linear(layer_norm(z, params.layernorm_z), params.linear_z)
+            if distributed:
+                idx_q, idx_k, _ = rearrange_qk_to_dense_trunk(
+                    atom_to_token_idx,
+                    atom_to_token_idx,
+                    n_queries=n_queries,
+                    n_keys=n_keys,
+                    compute_mask=False,
+                )
+                z_local = broadcast_token_to_local_atom_pair_cp(
+                    shard_pair_rows(z_projected, row_axis=-3, col_axis=-2),
+                    idx_q,
+                    idx_k,
+                )
+            else:
+                z_local = broadcast_token_to_local_atom_pair(
+                    z_projected,
+                    atom_to_token_idx,
+                    n_queries=n_queries,
+                    n_keys=n_keys,
+                    compute_mask=False,
+                )[0]
             p_lm = jnp.expand_dims(p_lm, axis=-5) + z_local
 
-    if r_l is not None:
+    if r_l is not None and distributed:
+        require_atom_windows(
+            n_atom=int(atom_to_token_idx.shape[-1]),
+            n_token=n_token,
+            n_queries=n_queries,
+            n_keys=n_keys,
+        )
+        c_l = shard_atoms(
+            jnp.expand_dims(c_l, axis=-3), atom_axis=-2
+        ) + broadcast_token_to_atom_cp(
+            linear(layer_norm(s, params.layernorm_s), params.linear_s),
+            atom_to_token_idx,
+        )
+        q_l = c_l + linear(shard_atoms(r_l, atom_axis=-2), params.linear_r)
+    elif r_l is not None:
+        # Spelled as one expression rather than hoisted, and the branch is
+        # duplicated rather than shared, because the order these subexpressions
+        # are traced in is part of the serial program: hoisting the single
+        # projection moved three `broadcast_in_dim` labels in the serial
+        # lowering, which `test_atom_context_parallel.py` compares byte for
+        # byte against `main`.
         c_l = jnp.expand_dims(c_l, axis=-3) + broadcast_token_to_atom(
             linear(layer_norm(s, params.layernorm_s), params.linear_s),
             atom_to_token_idx,
@@ -373,6 +489,48 @@ def atom_attention_encoder(
         q_l = c_l + linear(r_l, params.linear_r)
     else:
         q_l = c_l
+
+    if distributed:
+        window_mask = global_window_mask(
+            int(atom_to_token_idx.shape[-1]),
+            n_queries=n_queries,
+            n_keys=n_keys,
+        )
+        p_lm = atom_pair_conditioning_cp(
+            shard_windows(p_lm, window_axis=-4),
+            c_l,
+            params.linear_cl,
+            params.linear_cm,
+            small_mlp=params.small_mlp,
+            n_queries=n_queries,
+            n_keys=n_keys,
+            window_mask=window_mask,
+        )
+        q_l = atom_transformer_stack_cp(
+            q_l,
+            c_l,
+            p_lm,
+            params.atom_transformer,
+            num_heads=n_heads,
+            n_queries=n_queries,
+            n_keys=n_keys,
+            use_scan=use_scan,
+            attention_backend=attention_backend,
+            glu_backend=glu_backend,
+            atom_mask=(
+                None
+                if atom_mask is None
+                else shard_atoms(jnp.asarray(atom_mask), atom_axis=0)
+            ),
+            window_mask=window_mask,
+        )
+        a = aggregate_atom_to_token_cp(
+            jax.nn.relu(linear(q_l, params.linear_q)),
+            atom_to_token_idx,
+            n_token=n_token,
+            atom_mask=atom_mask,
+        )
+        return a, q_l, c_l, p_lm
 
     p_lm = atom_pair_conditioning(p_lm, c_l, params.linear_cl, params.linear_cm)
     p_lm = p_lm + atom_pair_small_mlp(p_lm, params.small_mlp)
@@ -414,28 +572,64 @@ def atom_attention_decoder(
     attention_backend: str = "xla",
     glu_backend: str = "xla",
     atom_mask: jnp.ndarray | None = None,
+    cp_atom_windows: bool = False,
 ) -> jnp.ndarray:
-    """Run Protenix ``AtomAttentionDecoder`` in inference mode."""
+    """Run Protenix ``AtomAttentionDecoder`` in inference mode.
 
-    q = broadcast_token_to_atom(linear(a, params.linear_a), atom_to_token_idx)
-    q = q + q_skip
-    q = diffusion_transformer_stack(
-        q,
-        c_skip,
-        p_skip,
-        params.atom_transformer,
-        num_heads=n_heads,
-        n_queries=n_queries,
-        n_keys=n_keys,
-        use_scan=use_scan,
-        attention_backend=attention_backend,
-        glu_backend=glu_backend,
-        sequence_mask=atom_mask,
-    )
+    ``cp_atom_windows`` keeps the atom stream on CP rows; the coordinate
+    update is replicated again on the way out, because the sampler's own state
+    and its noise tape are replicated and the array is ``[samples, atoms, 3]``
+    -- linear, and three channels wide.
+    """
+
+    distributed = bool(cp_atom_windows) and cp_mesh() is not None
+    projected = linear(a, params.linear_a)
+    if distributed:
+        q = broadcast_token_to_atom_cp(projected, atom_to_token_idx)
+        q = q + shard_atoms(q_skip, atom_axis=-2)
+        window_mask = global_window_mask(
+            int(atom_to_token_idx.shape[-1]),
+            n_queries=n_queries,
+            n_keys=n_keys,
+        )
+        q = atom_transformer_stack_cp(
+            q,
+            c_skip,
+            p_skip,
+            params.atom_transformer,
+            num_heads=n_heads,
+            n_queries=n_queries,
+            n_keys=n_keys,
+            use_scan=use_scan,
+            attention_backend=attention_backend,
+            glu_backend=glu_backend,
+            atom_mask=(
+                None
+                if atom_mask is None
+                else shard_atoms(jnp.asarray(atom_mask), atom_axis=0)
+            ),
+            window_mask=window_mask,
+        )
+    else:
+        q = broadcast_token_to_atom(projected, atom_to_token_idx)
+        q = q + q_skip
+        q = diffusion_transformer_stack(
+            q,
+            c_skip,
+            p_skip,
+            params.atom_transformer,
+            num_heads=n_heads,
+            n_queries=n_queries,
+            n_keys=n_keys,
+            use_scan=use_scan,
+            attention_backend=attention_backend,
+            glu_backend=glu_backend,
+            sequence_mask=atom_mask,
+        )
     output = linear(layer_norm(q, params.layernorm_q), params.linear_out)
     if atom_mask is not None:
         output = output * jnp.asarray(atom_mask, dtype=output.dtype)[..., None]
-    return output
+    return replicate_atoms(output) if distributed else output
 
 
 def _require_has_coords_params(params: AtomAttentionEncoderParams) -> None:
@@ -477,9 +671,7 @@ def _rearrange_qk_to_dense_trunk_atom_axis(
     pad_k = ((0, 0),) * (k.ndim - 2) + ((pad_left, pad_right), (0, 0))
     q_padded = jnp.pad(q, pad_q)
     k_padded = jnp.pad(k, pad_k)
-    q_trunked = q_padded.reshape(
-        q.shape[:-2] + (n_trunks, n_queries, q.shape[-1])
-    )
+    q_trunked = q_padded.reshape(q.shape[:-2] + (n_trunks, n_queries, q.shape[-1]))
     k_trunked = gather_overlapping_windows(
         k_padded,
         axis=-2,

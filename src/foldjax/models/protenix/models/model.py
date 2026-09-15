@@ -38,6 +38,7 @@ from foldjax.models.protenix.data.template_features import (
     ZERO_TEMPLATE_GEOMETRY_MARKER,
     validate_zero_template_geometry,
 )
+from foldjax.models.protenix.models.diffusion._cp import resolve_atom_windows
 from foldjax.models.protenix.models.diffusion.atom import (
     atom_attention_encoder_prepare_diffusion_cache,
 )
@@ -448,6 +449,13 @@ def protenix_infer_static(
     #: Mesh layout, same contract as OpenDDE's: ``"2d"`` is Fold-CP's square
     #: grid (rows and columns split), ``"1d"`` splits rows only.
     cp_layout: str = "1d",
+    #: Distribute the diffusion atom graph -- atom-pair cache, both atom
+    #: transformer stacks, and the atom<->token routing -- over CP rows
+    #: instead of holding one copy of it on every device. Ignored without a
+    #: mesh, and resolved down to False with a warning when the atom or token
+    #: axis cannot be split (see
+    #: `foldjax.models.protenix.models.diffusion._cp.resolve_atom_windows`).
+    cp_atom_windows: bool = True,
 ) -> dict[str, jnp.ndarray]:
     """Run the currently ported static-feature Protenix inference path.
 
@@ -583,6 +591,13 @@ def protenix_infer_static(
             params.diffusion.conditioning,
         )
     )
+    distribute_atom_windows = resolve_atom_windows(
+        requested=bool(cp_atom_windows),
+        n_atom=int(input_feature_dict["atom_to_token_idx"].shape[-1]),
+        n_token=n_token,
+        n_queries=n_queries,
+        n_keys=n_keys,
+    )
     p_lm, c_l = atom_attention_encoder_prepare_diffusion_cache(
         input_feature_dict["atom_to_token_idx"],
         input_feature_dict["ref_pos"],
@@ -597,6 +612,7 @@ def protenix_infer_static(
         params.diffusion.atom_encoder,
         n_queries=n_queries,
         n_keys=n_keys,
+        cp_atom_windows=distribute_atom_windows,
     )
     diffusion_features = {**input_feature_dict, "relp": relp}
 
@@ -642,6 +658,7 @@ def protenix_infer_static(
             guidance_features=(
                 input_feature_dict if guidance_features is None else guidance_features
             ),
+            cp_atom_windows=distribute_atom_windows,
         )
 
     coordinates = sample(key, init_noise, step_noises, rotations, translations)
@@ -765,6 +782,7 @@ GRAPH_STATIC_ARGNAMES = (
     "confidence_triangle_attention_backend",
     "compact_confidence_distance_bins",
     "confidence_autocast",
+    "cp_atom_windows",
     "cp_layout",
     "cp_shards",
     "diffusion_attention_backend",

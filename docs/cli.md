@@ -1046,6 +1046,27 @@ omitted default resolves to `xla_jit` there). OpenDDE reaches the same two
 sites through Protenix's
 primitives but does not offer the value: it has not been measured there.
 
+### Distributed diffusion atom graph (`--no-cp-atom-windows`, Protenix)
+
+On by default and inert without a mesh. With `--cp-devices N` greater than one
+it splits the diffusion atom graph over the context-parallel rows: the
+atom-pair cache, the atom single cache, both atom transformer stacks, the
+atom<->token routing, and the atom windows' view of the token-pair tensor --
+which was the operation that forced the whole projected pair tensor onto every
+device and undid the pair trunk's sharding. `--no-cp-atom-windows`, or
+`--option cp_atom_windows=false`, keeps the old replicated atom graph; both
+spellings are their own compilation namespace.
+
+It needs two axes to divide the mesh: the atom axis a multiple of
+`n_queries * cp_rows` (32 times the row count with the released windows) and
+the token axis a multiple of the rows, and of the columns under
+`--cp-layout 2d`. A shape that cannot be split **warns, names the multiple to
+pad to, and runs replicated** -- which means an unpadded job measures the
+replicated graph, so pin `--pad-atoms` and `--pad-tokens` (or
+`PaddingConfig(atoms=..., tokens=...)`) to reach the distributed one. The
+sampler loop and its noise tape are unchanged. See
+[`docs/context_parallel.md`](context_parallel.md).
+
 ### Fused gated linear unit (`--option glu_backend=tokamax`, OpenFold3)
 
 Every transition in OpenFold3 is a SwiGLU: two projections widened to four
