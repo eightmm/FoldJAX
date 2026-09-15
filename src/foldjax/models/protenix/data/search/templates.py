@@ -19,6 +19,7 @@ from typing import Any
 
 from foldjax._fsutil import sha256_file as _sha256_file
 
+from ..template_features import PROTEIN_3TO1
 from .msa import SearchError
 
 _HIT_ID = re.compile(
@@ -45,29 +46,6 @@ _KALIGN_BINARY_ENV = "PROTENIX_KALIGN_BINARY"
 #: variable when a run has to be reproduced against one.
 _KALIGN_MINIMUM = (3, 3, 5)
 _KALIGN_VERSION = ".".join(str(part) for part in _KALIGN_MINIMUM)
-
-_PROTEIN_3TO1 = {
-    "ALA": "A",
-    "CYS": "C",
-    "ASP": "D",
-    "GLU": "E",
-    "PHE": "F",
-    "GLY": "G",
-    "HIS": "H",
-    "ILE": "I",
-    "LYS": "K",
-    "LEU": "L",
-    "MET": "M",
-    "ASN": "N",
-    "PRO": "P",
-    "GLN": "Q",
-    "ARG": "R",
-    "SER": "S",
-    "THR": "T",
-    "VAL": "V",
-    "TRP": "W",
-    "TYR": "Y",
-}
 
 
 @dataclass(frozen=True)
@@ -528,7 +506,7 @@ def _mmcif_chain_sequences(mmcif_string: str) -> dict[str, _MmcifChainSequence]:
         monomers = entity_monomers.get(label_to_entity.get(label_chain, ""))
         if not monomers:
             continue
-        sequence = "".join(_PROTEIN_3TO1.get(name, "X") for _, name in monomers)
+        sequence = "".join(PROTEIN_3TO1.get(name, "X") for _, name in monomers)
         chains.setdefault(
             author_chain,
             _MmcifChainSequence(
@@ -665,9 +643,7 @@ def _align_query_to_template(
             # PyPI's ``kalign-python`` console wrapper exposes the same engine
             # but uses argparse's conventional ``--format`` spelling.
             format_flag = (
-                "--format"
-                if Path(kalign_binary).name == "kalign-py"
-                else "-format"
+                "--format" if Path(kalign_binary).name == "kalign-py" else "-format"
             )
             completed = subprocess.run(
                 [

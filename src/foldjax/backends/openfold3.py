@@ -458,12 +458,12 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
                 raise ValueError(
                     f"{name} must be one of {', '.join(allowed)}; got {options[name]!r}"
                 )
-        for name in ("num_samples", "num_steps", "num_recycles"):
-            if name in options:
-                try:
-                    int(options[name])
-                except (TypeError, ValueError) as error:
-                    raise ValueError(f"{name} must be an integer") from error
+        # `num_samples`, `num_steps` and `num_recycles` are not checked here:
+        # they are this port's `sampling_options`, and the only caller
+        # (`base.py:172`) has already run `_strict_integer` over every native
+        # sampling name a few lines above, with the public request's exact
+        # integer contract and this same message. `diffusion_chunk_size` and
+        # `pair_chunk_size` below are native-only, so they have no such pass.
         if "diffusion_chunk_size" in options:
             try:
                 if int(options["diffusion_chunk_size"]) < 1:

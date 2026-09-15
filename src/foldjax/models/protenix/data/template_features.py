@@ -62,7 +62,10 @@ ATOM37_ORDER = {
     "OXT": 36,
 }
 # BioPython ``PDBData.protein_letters_3to1`` (20 standard residues only).
-_PROTEIN_3TO1 = {
+# Shared with ``data/search/templates.py``, which reads the same table off a
+# parsed mmCIF -- one table, because the two paths must spell the same template
+# sequence for the same structure.
+PROTEIN_3TO1 = {
     "ALA": "A",
     "CYS": "C",
     "ASP": "D",
@@ -410,7 +413,7 @@ def _parse_template_mmcif(
                 )
         residues = list(chain)
         num_res = len(residues)
-        template_seq = "".join(_PROTEIN_3TO1.get(r.name, "X") for r in residues)
+        template_seq = "".join(PROTEIN_3TO1.get(r.name, "X") for r in residues)
         residue_indices = ((residue, index) for index, residue in enumerate(residues))
 
     all_pos = np.zeros((num_res, ATOM37_NUM, 3), dtype=np.float32)
