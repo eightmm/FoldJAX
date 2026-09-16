@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack
 from importlib import import_module
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from foldjax.backends._ccd_session import ManagedCcdSession
 from foldjax.backends._representations import _representations_result
@@ -241,6 +241,218 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
 #: namespace has to name the program that ran.
 _CP_DIFFUSION_ATTENTION_BACKEND = "xla_jit"
 
+#: Every `PredictionConfig` field's own parser default, so a resolved request
+#: becomes the configuration the run takes without parsing the argv this
+#: adapter renders back into one.
+#:
+#: The parser remains the authority. `tests/test_native_config_equivalence.py`
+#: builds the configuration both ways for a matrix of requests -- through the
+#: captured parser on the rendered argv, and through `_native_invocation`
+#: below -- and compares them field by field, so a bare request pins this
+#: whole table against the parser's own namespace: a default that drifts here
+#: fails rather than runs.
+#:
+#: `max_msa_depth` is the one entry that is deliberately not the parser's
+#: `None`: `cli/predict.py` resolves it through `_resolve_msa_depth` before it
+#: builds the configuration, because `None` there means "this port's own
+#: depth" rather than "unset". `input_json`, `weights` and `out` are always
+#: overridden below -- they are the request -- and are spelled anyway, because
+#: this table is the parser's whole namespace and `PredictionConfig` accepts
+#: nothing less than every field.
+_PARSER_DEFAULTS: dict[str, Any] = {
+    "features": None,
+    "input_json": None,
+    "weights": None,
+    "out": None,
+    "seed": None,
+    "seeds": None,
+    "msa_seed": None,
+    "output_format": "npz",
+    "num_samples": 5,
+    "num_steps": None,
+    "s_max": 160.0,
+    "s_min": 0.0004,
+    "rho": 7.0,
+    "sigma_data": 16.0,
+    "num_recycles": None,
+    "gamma0": None,
+    "eta": None,
+    "n_queries": 32,
+    "n_keys": 128,
+    "max_msa_depth": 16384,
+    "msa_search": "off",
+    "msa_cache_dir": Path("outputs/msa_cache"),
+    "msa_search_version": None,
+    "msa_local_command": None,
+    "msa_remote_url": None,
+    "rna_msa_local_command": None,
+    "rna_msa_search_version": None,
+    "rna_msa_cache_dir": Path("outputs/rna_msa_cache"),
+    "template_search_command": None,
+    "template_search_version": None,
+    "template_search_cache_dir": Path("outputs/template_cache"),
+    "template_mmcif_dir": None,
+    "strict_token_limit": False,
+    "memory_check": "refuse",
+    "memory_budget_gib": None,
+    "full_depth_msa": True,
+    "msa_row_alignment": 64,
+    "max_msa_padding_rows": 8,
+    "input_atom_heads": 4,
+    "atom_encoder_heads": 4,
+    "token_heads": 16,
+    "atom_decoder_heads": 4,
+    "triangle_mul_chunk_size": None,
+    "triangle_att_q_chunk_size": None,
+    "single_att_q_chunk_size": None,
+    "token_q_chunk_size": None,
+    "opm_chunk_size": None,
+    "diffusion_chunk_size": None,
+    "trunk_dtype": "bf16",
+    "amp_policy": "auto",
+    "chunk_policy": "auto",
+    "use_pairformer_scan": False,
+    "diffusion_scan": False,
+    "sampler_scan": True,
+    "denoiser_jit": False,
+    "deterministic_ops": "off",
+    "diffusion_attention_backend": "tokamax",
+    "trunk_single_attention_backend": "xla_jit",
+    "trunk_triangle_attention_backend": None,
+    "confidence_triangle_attention_backend": None,
+    "glu_backend": "xla",
+    "confidence_scan": False,
+    "no_confidence": False,
+    "no_confidence_scores": False,
+    "no_graph_jit": False,
+    "cp_devices": 1,
+    "cp_atom_windows": True,
+    "cp_layout": "auto",
+    "include_trunk": False,
+    "representations_dir": None,
+    "stop_after": "full",
+    "representations": None,
+    "cpu_only": False,
+    "compile_cache": Path("outputs/compile_cache"),
+    "no_compile_cache": False,
+    "prewarm_only": False,
+    "model_name": "auto",
+    "esm_checkpoint_dir": None,
+    "guidance_config": None,
+    "padding": False,
+    "pad_tokens": None,
+    "pad_atoms": None,
+    "pad_msa": None,
+    "pad_templates": None,
+    "pad_language_model_tokens": None,
+    "padding_overflow": "error",
+}
+
+
+def _integer_option(key: str, value: Any) -> int:
+    """The parser's `type=int`, on the string the renderer would have passed."""
+    try:
+        return int(str(value))
+    except ValueError as error:
+        raise ValueError(f"{key} must be an integer; got {value!r}") from error
+
+
+def _number_option(key: str, value: Any) -> float:
+    """The parser's `type=float`."""
+    try:
+        return float(str(value))
+    except ValueError as error:
+        raise ValueError(f"{key} must be a number; got {value!r}") from error
+
+
+def _path_option(_key: str, value: Any) -> Path:
+    """The parser's `type=Path`."""
+    return Path(str(value))
+
+
+def _text_option(_key: str, value: Any) -> str:
+    """A plain string option, as `str(value)` reached the parser through argv."""
+    return str(value)
+
+
+def _switch_option(key: str, value: Any) -> bool:
+    """A bare switch: whether the renderer would have emitted its flag.
+
+    Read off the renderer rather than re-deciding, so the two spellings share
+    one truth vocabulary and one error message.
+    """
+    return bool(_render_switch(key, value))
+
+
+def _negated_switch_option(key: str, value: Any) -> bool:
+    """A default-on switch: the negative flag is the one that turns it off."""
+    return not _render_negated_switch(key, value)
+
+
+#: How each native option becomes its configuration field: the parser's own
+#: ``type=``, and its ``choices=`` where it has them.
+#:
+#: Both halves, because the renderer stringified every value and the parser
+#: applied both to the string. The type alone would leave the vocabulary
+#: unchecked, and below the parser these values are read with ``==`` and no
+#: vocabulary at all -- `runner._load_prepared_params` branches on ``bf16`` and
+#: loads FP32 weights for everything else, `deterministic_ops` compares against
+#: ``on`` -- so a misspelling that argparse refused would have quietly run the
+#: other arm. Refused here, at prediction time, where argparse refused it:
+#: `validate_native_options` is also what `foldjax plan` runs, and planning
+#: never rendered these values.
+_OPTION_SPECS: dict[str, tuple[Callable[[str, Any], Any], tuple[str, ...] | None]] = {
+    "amp_policy": (_text_option, ("auto", "upstream", "fp32", "bf16")),
+    "chunk_policy": (_text_option, ("auto", "manual", "off")),
+    "confidence_triangle_attention_backend": (
+        _text_option,
+        ("xla", "xla_jit", "tokamax", "cueq", "cueq_jit"),
+    ),
+    "cp_atom_windows": (_negated_switch_option, None),
+    "cp_devices": (_integer_option, None),
+    "cp_layout": (_text_option, ("auto", "1d", "2d")),
+    "deterministic_ops": (_text_option, ("off", "on")),
+    "diffusion_attention_backend": (
+        _text_option,
+        ("xla", "xla_jit", "xla_sdpa", "tokamax"),
+    ),
+    "diffusion_chunk_size": (_integer_option, None),
+    "esm_checkpoint_dir": (_path_option, None),
+    "glu_backend": (_text_option, _GLU_BACKENDS),
+    "max_msa_depth": (_integer_option, None),
+    "memory_budget_gib": (_number_option, None),
+    "memory_check": (_text_option, ("refuse", "warn")),
+    "model_name": (_text_option, None),
+    "msa_seed": (_integer_option, None),
+    "num_recycles": (_integer_option, None),
+    "num_samples": (_integer_option, None),
+    "num_steps": (_integer_option, None),
+    "opm_chunk_size": (_integer_option, None),
+    "single_att_q_chunk_size": (_integer_option, None),
+    "strict_token_limit": (_switch_option, None),
+    "token_q_chunk_size": (_integer_option, None),
+    "triangle_att_q_chunk_size": (_integer_option, None),
+    "triangle_mul_chunk_size": (_integer_option, None),
+    "trunk_dtype": (_text_option, ("bf16", "fp32")),
+    "trunk_single_attention_backend": (
+        _text_option,
+        ("xla", "xla_jit", "xla_sdpa", "tokamax"),
+    ),
+    "trunk_triangle_attention_backend": (
+        _text_option,
+        ("xla", "xla_jit", "tokamax", "cueq", "cueq_jit"),
+    ),
+}
+
+
+def _option_field(key: str, value: Any) -> Any:
+    """One native option as the parser would have produced it from argv."""
+    coerce, choices = _OPTION_SPECS[key]
+    field = coerce(key, value)
+    if choices is not None and field not in choices:
+        raise ValueError(f"{key} must be one of {choices}; got {field!r}")
+    return field
+
 
 def managed_asset_profile(options: dict[str, Any]) -> str:
     """Select managed weights for a released Protenix model variant."""
@@ -317,6 +529,27 @@ def _extra_cli_args(value: Any) -> tuple[str, ...]:
                 f"Protenix cli_args cannot set adapter-owned flag {owned!r}"
             )
     return arguments
+
+
+class _NativeInvocation(NamedTuple):
+    """One resolved request in both of the spellings the native run needs.
+
+    ``config_fields`` is what runs: the parser's own namespace, assembled from
+    the request instead of from text. ``argv`` is the canonical command this
+    adapter has always rendered, kept because it is the spelling the result
+    records. Both come out of one pass, so the equivalence test can treat the
+    parser on ``argv`` as the oracle for the fields the run was handed.
+
+    The fields stay a plain mapping rather than a ``PredictionConfig``: the
+    config class is read off the imported runner, and that import stays where
+    it was, after every option has been checked.
+    """
+
+    argv: list[str]
+    config_fields: dict[str, Any]
+    cli_args: tuple[str, ...]
+    representations: tuple[str, ...]
+    matmul_precision: Callable[[], AbstractContextManager[None]]
 
 
 class ProtenixBackend(ManagedCcdSession, Backend):
@@ -570,13 +803,29 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             padding_axes=self.padding_axes,
         )
 
-    def predict(self, request: PredictionRequest) -> PredictionResult:
+    def _native_invocation(self, request: PredictionRequest) -> _NativeInvocation:
+        """Resolve one request into the native run, in both spellings at once.
+
+        The same sequence as before, in the same order -- the sampling knobs,
+        the native-option check, the matmul scope, then the rendered command --
+        with the configuration assembled from those same values on the way
+        past, rather than recovered by parsing the command back.
+
+        One exception, and it is why the parser is still here: a non-empty
+        ``cli_args`` is arbitrary native argv, and only that parser can turn it
+        into option values. Those runs keep going through it (`predict` calls
+        ``main(argv)``), so an override is never silently dropped; the fields
+        below are then the configuration those overrides would have been
+        applied on top of.
+        """
+
         options = self.apply_sampling(request)
         self.validate_native_options(options)
         # Taken out before the leftover-option check below, which is what makes
         # a misspelling an error: this one is carried by the scope, not by argv.
         matmul_precision = self.matmul_precision(options)
         cli_args = _extra_cli_args(options.pop("cli_args", ()))
+        output_format = str(options.pop("output_format", "protenix"))
         argv = [
             "--input-json",
             str(request.input),
@@ -585,31 +834,57 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             "--out",
             str(request.output_dir),
             "--output-format",
-            str(options.pop("output_format", "protenix")),
+            output_format,
             "--seed",
             str(request.seed),
         ]
+        fields: dict[str, Any] = {
+            **_PARSER_DEFAULTS,
+            "input_json": Path(str(request.input)),
+            "weights": Path(str(request.weights)),
+            "out": Path(str(request.output_dir)),
+            "output_format": output_format,
+            "seed": int(request.seed),
+        }
         if request.cache_dir is not None:
             argv.extend(("--compile-cache", str(request.cache_dir)))
+            fields["compile_cache"] = Path(str(request.cache_dir))
         else:
             # Protenix's native CLI defaults --compile-cache to
             # `outputs/compile_cache`, so leaving the flag off does not turn
             # the cache off -- it relocates it, to a path relative to whatever
             # the working directory happens to be. `--no-cache` has to be said
             # out loud, or a run asked to write nothing still seeds a cache
-            # directory next to wherever it was launched.
+            # directory next to wherever it was launched. The configuration
+            # says the same thing the same way: the refusal is the field that
+            # moves, and `compile_cache` keeps the relative default nothing
+            # reads once it is set.
             argv.append("--no-compile-cache")
+            fields["no_compile_cache"] = True
         if request.padding is not None:
             argv.append("--padding")
+            fields["padding"] = True
             for axis in self.padding_axes:
                 target = getattr(request.padding, axis)
                 if target is not None:
-                    argv.extend((f"--pad-{axis}", str(target)))
+                    # Dashes, like every other rendered flag. Four of the five
+                    # axes are one word, so this went unnoticed:
+                    # `--pad-language_model_tokens` is not a flag this parser
+                    # declares and not a prefix of one either, so pinning that
+                    # axis explicitly ended in the usage dump rather than a
+                    # prediction. The configuration below names the parser's
+                    # destination, so the two agree now.
+                    flag = f"--pad-{axis.replace('_', '-')}"
+                    argv.extend((flag, str(target)))
+                    fields[f"pad_{axis}"] = int(target)
             argv.extend(("--padding-overflow", request.padding.overflow))
+            fields["padding_overflow"] = str(request.padding.overflow)
+        native: dict[str, Any] = {}
         for key in sorted(_CLI_OPTIONS):
             if key not in options:
                 continue
             value = options.pop(key)
+            native[key] = value
             flag = f"--{key.replace('_', '-')}"
             if key in _NEGATED_FLAG_OPTIONS:
                 argv.extend(_render_negated_switch(key, value))
@@ -637,10 +912,31 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             argv.extend(("--representations", ",".join(wanted)))
             # Pinned so every backend puts the archive in the same place.
             argv.extend(("--representations-dir", str(request.output_dir)))
+            fields["representations"] = ",".join(wanted)
+            fields["representations_dir"] = Path(str(request.output_dir))
         if request.stop_after in {"inputs", "trunk"}:
             argv.extend(("--stop-after", request.stop_after))
+            fields["stop_after"] = request.stop_after
+        # Last, which is where argparse stood: these are the parser's own
+        # rejections, so they must not overtake the leftover-option check above
+        # or an unknown representation name.
+        for key, value in native.items():
+            fields[key] = _option_field(key, value)
+        return _NativeInvocation(
+            argv=argv,
+            config_fields=fields,
+            cli_args=cli_args,
+            representations=wanted,
+            matmul_precision=matmul_precision,
+        )
+
+    def predict(self, request: PredictionRequest) -> PredictionResult:
+        invocation = self._native_invocation(request)
+        argv = invocation.argv
+        wanted = invocation.representations
         padding_plans: list[dict[str, Any]] = []
         module = import_module("foldjax.models.protenix.cli.predict")
+        runner = import_module("foldjax.models.protenix.runner")
         use_session_loader = self._weights.active and bool(
             getattr(module, "PREPARED_PARAMS_LOADER_API", False)
         )
@@ -662,32 +958,31 @@ class ProtenixBackend(ManagedCcdSession, Backend):
                 prepare_key=("trunk_dtype", trunk_dtype),
             )
 
-        with matmul_precision(), self._ccd_memory_scope():
-            if request.padding is None:
-                # Keep the default adapter/native callable contract byte-for-byte:
-                # third-party wrappers and older test doubles commonly accept only
-                # ``argv``. The private callback is supplied only while an active
-                # FoldJAX session has explicitly negotiated that capability.
-                written = (
-                    module.main(argv, _prepared_params_loader=session_params_loader)
-                    if use_session_loader
-                    else module.main(argv)
-                )
+        def on_padding_plan(plan: Any, static: Any = None) -> None:
+            padding_plans.append(
+                {
+                    **plan.summary(),
+                    **({"static": dict(static)} if static is not None else {}),
+                }
+            )
+
+        # Each keyword is supplied only when this run has something to say with
+        # it: the padding callback only for a padded request, and the private
+        # loader only while an active FoldJAX session has negotiated that
+        # capability. So an unpadded request outside a session still reaches
+        # the runner with nothing but its configuration.
+        keywords: dict[str, Any] = {}
+        if request.padding is not None:
+            keywords["on_padding_plan"] = on_padding_plan
+        if use_session_loader:
+            keywords["_prepared_params_loader"] = session_params_loader
+        with invocation.matmul_precision(), self._ccd_memory_scope():
+            if invocation.cli_args:
+                written = module.main(argv, **keywords)
             else:
-                callback = lambda plan, static=None: padding_plans.append(  # noqa: E731
-                    {
-                        **plan.summary(),
-                        **({"static": dict(static)} if static is not None else {}),
-                    }
-                )
-                written = (
-                    module.main(
-                        argv,
-                        on_padding_plan=callback,
-                        _prepared_params_loader=session_params_loader,
-                    )
-                    if use_session_loader
-                    else module.main(argv, on_padding_plan=callback)
+                written = runner.run_prediction(
+                    runner.PredictionConfig(**invocation.config_fields),
+                    **keywords,
                 )
         samples = tuple(
             PredictionSample(

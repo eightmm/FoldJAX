@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -42,6 +40,7 @@ from foldjax.models.protenix.relative_position import (
 from foldjax.models.protenix.runner import _padded_noise_tapes
 from foldjax.padding import PaddingPlan
 from foldjax.schema import PaddingConfig, PredictionRequest
+from tests._native_double import native_module
 
 
 def test_feature_padding_resolves_every_axis_and_crop_restores_public_shapes() -> None:
@@ -375,11 +374,11 @@ def test_backend_padding_flags_and_shape_profile_are_opt_in(
     weight_path = tmp_path / "weights.npz"
     input_path.write_text("[]", encoding="utf-8")
     weight_path.write_bytes(b"weights")
-    seen: list[tuple[str, ...]] = []
+    configs: list[object] = []
 
-    def fake_main(argv, *, on_padding_plan=None):
-        seen.append(tuple(argv))
-        if "--padding" in argv:
+    def fake_run(config, *, on_padding_plan=None):
+        configs.append(config)
+        if config.padding:
             on_padding_plan(
                 PaddingPlan(
                     actual={"tokens": 3, "atoms": 5, "msa": 2, "templates": 1},
@@ -392,7 +391,7 @@ def test_backend_padding_flags_and_shape_profile_are_opt_in(
 
     monkeypatch.setattr(
         "foldjax.backends.protenix.import_module",
-        lambda _name: SimpleNamespace(main=fake_main),
+        lambda _name: native_module("protenix", fake_run),
     )
     backend = ProtenixBackend()
     common = dict(
@@ -404,7 +403,8 @@ def test_backend_padding_flags_and_shape_profile_are_opt_in(
     )
 
     exact = backend.predict(PredictionRequest(**common))
-    assert "--padding" not in seen[-1]
+    assert "--padding" not in exact.raw["argv"]
+    assert configs[-1].padding is False
     assert exact.shape_profile is None
 
     padded = backend.predict(
@@ -413,6 +413,9 @@ def test_backend_padding_flags_and_shape_profile_are_opt_in(
             padding=PaddingConfig(tokens=8, atoms=8, msa=4, templates=4),
         )
     )
+    assert configs[-1].padding is True
+    assert configs[-1].pad_tokens == 8
+    seen = [tuple(padded.raw["argv"])]
     assert "--padding" in seen[-1]
     assert ("--pad-tokens", "8") == seen[-1][
         seen[-1].index("--pad-tokens") : seen[-1].index("--pad-tokens") + 2

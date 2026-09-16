@@ -31,6 +31,7 @@ from foldjax.backends.openfold3 import (
 )
 from foldjax.backends.protenix import _RESERVED_CLI_FLAGS, ProtenixBackend
 from foldjax.schema import PaddingConfig, PredictionRequest
+from tests._native_double import native_module
 
 
 def _request(tmp_path: Path, model: str, **options) -> PredictionRequest:
@@ -534,8 +535,8 @@ def test_protenix_adapter_invokes_cli_in_process(tmp_path: Path, monkeypatch) ->
 def test_protenix_adapter_tolerates_missing_confidence_json(
     tmp_path: Path, monkeypatch
 ) -> None:
-    def native_main(argv):
-        out = Path(argv[argv.index("--out") + 1])
+    def native_run(config, **_kwargs):
+        out = Path(config.out)
         out.mkdir(parents=True)
         path = out / "ranked_0.cif"
         path.touch()
@@ -543,7 +544,7 @@ def test_protenix_adapter_tolerates_missing_confidence_json(
 
     monkeypatch.setattr(
         "foldjax.backends.protenix.import_module",
-        lambda name: SimpleNamespace(main=native_main),
+        lambda name: native_module("protenix", native_run),
     )
     result = ProtenixBackend().predict(_request(tmp_path, "protenix"))
     assert result.samples[0].scores == {}
@@ -557,24 +558,28 @@ def test_no_cache_reaches_protenix_as_an_explicit_refusal(
     The native CLI defaults `--compile-cache` to `outputs/compile_cache`, a
     relative path, so a request that asked to write nothing still created a
     cache directory beside whatever the working directory happened to be.
+
+    Both spellings of the run: the refusal the adapter records in the command
+    it renders, and the field the run is actually given.
     """
     seen = []
 
-    def native_main(argv):
-        seen.extend(argv)
-        return _write_protenix_outputs(Path(argv[argv.index("--out") + 1]))
+    def native_run(config, **_kwargs):
+        seen.append(config)
+        return _write_protenix_outputs(Path(config.out))
 
     monkeypatch.setattr(
         "foldjax.backends.protenix.import_module",
-        lambda name: SimpleNamespace(main=native_main),
+        lambda name: native_module("protenix", native_run),
     )
     request = dataclasses.replace(
         _request(tmp_path, "protenix"), cache_dir=None, use_compile_cache=False
     )
-    ProtenixBackend().predict(request)
+    result = ProtenixBackend().predict(request)
 
-    assert "--no-compile-cache" in seen
-    assert "--compile-cache" not in seen
+    assert "--no-compile-cache" in result.raw["argv"]
+    assert "--compile-cache" not in result.raw["argv"]
+    assert seen[0].no_compile_cache is True
 
 
 def test_protenix_adapter_rejects_unknown_options(tmp_path: Path) -> None:
@@ -626,7 +631,6 @@ def test_protenix_cli_args_reject_argparse_abbreviations_of_owned_flags(
 def test_opendde_adapter_invokes_cli_in_process_and_normalizes_scores(
     tmp_path: Path, monkeypatch
 ) -> None:
-    seen = []
     components_path = tmp_path / "components.cif"
     rdkit_cache_path = tmp_path / "components.cif.rdkit_mol.pkl"
     template_mmcif_dir = tmp_path / "template_mmcif"
@@ -634,13 +638,15 @@ def test_opendde_adapter_invokes_cli_in_process_and_normalizes_scores(
     template_obsolete_map = tmp_path / "obsolete_to_successor.json"
     kalign_binary = tmp_path / "kalign"
 
-    def native_main(argv):
-        seen.extend(argv)
-        return _write_protenix_outputs(Path(argv[argv.index("--out") + 1]))
+    configs = []
+
+    def native_run(config, **_kwargs):
+        configs.append(config)
+        return _write_protenix_outputs(Path(config.out))
 
     monkeypatch.setattr(
         "foldjax.backends.opendde.import_module",
-        lambda name: SimpleNamespace(main=native_main),
+        lambda name: native_module("opendde", native_run),
     )
     result = OpenDDEBackend().predict(
         _request(
@@ -660,6 +666,10 @@ def test_opendde_adapter_invokes_cli_in_process_and_normalizes_scores(
         )
     )
 
+    # The rendered command, which is the spelling the result records. Kept as a
+    # compatibility assertion: nothing executes from it since the adapter hands
+    # the runner a configuration, and the fields it was given are checked below.
+    seen = list(result.raw["argv"])
     assert seen[:6] == [
         "--input-json",
         str(tmp_path / "job.json"),
@@ -683,6 +693,23 @@ def test_opendde_adapter_invokes_cli_in_process_and_normalizes_scores(
     assert seen[seen.index("--kalign-binary") + 1] == str(kalign_binary)
     assert seen[seen.index("--compile-cache") + 1] == str(tmp_path / "cache")
     assert "--include-raw" in seen
+    config = configs[0]
+    assert config.input_json == tmp_path / "job.json"
+    assert config.weights == tmp_path / "opendde.jax"
+    assert config.out == tmp_path / "out"
+    assert config.seed == 5
+    assert config.num_samples == 2
+    assert config.num_steps == 20
+    assert config.num_recycles == 3
+    assert config.n_queries == 8
+    assert config.components_cif == components_path
+    assert config.ccd_rdkit_cache == rdkit_cache_path
+    assert config.template_mmcif_dir == template_mmcif_dir
+    assert config.template_release_dates == template_release_dates
+    assert config.template_obsolete_map == template_obsolete_map
+    assert config.kalign_binary == kalign_binary
+    assert config.compile_cache == tmp_path / "cache"
+    assert config.include_raw is True
     assert result.model == "opendde"
     assert result.samples[0].structure_path.name == "job_sample_0.cif"
     assert result.samples[0].scores == {
@@ -723,18 +750,12 @@ def test_native_cli_backends_reuse_prepared_params_within_a_session(
         loads.append((path, dtype, value))
         return value
 
-    def native_main(argv, **kwargs):
+    def native_run(config, **kwargs):
         loader = kwargs.pop("_prepared_params_loader")
-        seen_params.append(
-            loader(Path(argv[argv.index("--weights") + 1]), default_dtype, True)
-        )
-        return _write_protenix_outputs(Path(argv[argv.index("--out") + 1]))
+        seen_params.append(loader(Path(config.weights), default_dtype, True))
+        return _write_protenix_outputs(Path(config.out))
 
-    native = SimpleNamespace(
-        PREPARED_PARAMS_LOADER_API=True,
-        _load_prepared_params=load_prepared,
-        main=native_main,
-    )
+    native = native_module(model, native_run, loader=load_prepared)
     monkeypatch.setattr(
         f"{backend_module}.import_module",
         lambda _name: native,
@@ -775,17 +796,20 @@ def test_protenix_and_opendde_share_one_ccd_lease_until_both_sessions_exit(
         releases.append("release")
         return original_release()
 
-    def native_main(argv):
+    def native_run(config, **_kwargs):
         featurize_json._EXTERNAL_CCD_MOLS = {"loaded": object()}
-        return _write_protenix_outputs(Path(argv[argv.index("--out") + 1]))
+        return _write_protenix_outputs(Path(config.out))
 
-    native = SimpleNamespace(main=native_main)
+    # One body, one double per port: each carries its own port's configuration
+    # class, which is what its adapter builds.
     monkeypatch.setattr(featurize_json, "_release_external_ccd_cache", release)
     monkeypatch.setattr(
-        "foldjax.backends.protenix.import_module", lambda _name: native
+        "foldjax.backends.protenix.import_module",
+        lambda _name: native_module("protenix", native_run),
     )
     monkeypatch.setattr(
-        "foldjax.backends.opendde.import_module", lambda _name: native
+        "foldjax.backends.opendde.import_module",
+        lambda _name: native_module("opendde", native_run),
     )
     monkeypatch.setattr(
         _managed_memory.gc, "collect", lambda: cleanup.append("collect") or 0
@@ -833,13 +857,13 @@ def test_scalar_native_failure_always_releases_external_ccd(
 
     request = _request(tmp_path, model)
 
-    def native_main(_argv):
+    def native_run(_config, **_kwargs):
         featurize_json._EXTERNAL_CCD_MOLS = {"loaded": object()}
         raise error
 
     monkeypatch.setattr(
         f"foldjax.backends.{model}.import_module",
-        lambda _name: SimpleNamespace(main=native_main),
+        lambda _name: native_module(model, native_run),
     )
     monkeypatch.setattr(_managed_memory.gc, "collect", lambda: 0)
     monkeypatch.setattr(_managed_memory, "_malloc_trim", lambda: None)
@@ -914,18 +938,12 @@ def test_protenix_session_does_not_retain_params_across_mini_esm_calls(
         loads.append((path, dtype, value))
         return value
 
-    def native_main(argv, **kwargs):
+    def native_run(config, **kwargs):
         loader = kwargs.pop("_prepared_params_loader")
-        seen_params.append(
-            loader(Path(argv[argv.index("--weights") + 1]), "bf16", False)
-        )
-        return _write_protenix_outputs(Path(argv[argv.index("--out") + 1]))
+        seen_params.append(loader(Path(config.weights), "bf16", False))
+        return _write_protenix_outputs(Path(config.out))
 
-    native = SimpleNamespace(
-        PREPARED_PARAMS_LOADER_API=True,
-        _load_prepared_params=load_prepared,
-        main=native_main,
-    )
+    native = native_module("protenix", native_run, loader=load_prepared)
     monkeypatch.setattr(
         "foldjax.backends.protenix.import_module",
         lambda _name: native,
@@ -958,22 +976,22 @@ def test_a_rerun_does_not_report_the_previous_runs_structures(
     """
     out = tmp_path / "out"
 
-    def five_samples(argv):
-        return _write_protenix_outputs(Path(argv[argv.index("--out") + 1]), samples=5)
+    def five_samples(config, **_kwargs):
+        return _write_protenix_outputs(Path(config.out), samples=5)
 
-    def one_sample(argv):
-        return _write_protenix_outputs(Path(argv[argv.index("--out") + 1]), samples=1)
+    def one_sample(config, **_kwargs):
+        return _write_protenix_outputs(Path(config.out), samples=1)
 
     monkeypatch.setattr(
         f"foldjax.backends.{model}.import_module",
-        lambda name: SimpleNamespace(main=five_samples),
+        lambda name: native_module(model, five_samples),
     )
     first = backend().predict(_request(tmp_path, model))
     assert len(first.samples) == 5
 
     monkeypatch.setattr(
         f"foldjax.backends.{model}.import_module",
-        lambda name: SimpleNamespace(main=one_sample),
+        lambda name: native_module(model, one_sample),
     )
     second = backend().predict(_request(tmp_path, model))
 
@@ -993,12 +1011,12 @@ def test_samples_come_back_in_rank_order_past_ten(tmp_path: Path, monkeypatch) -
     matters, so this silently mislabelled which structure was best.
     """
 
-    def twelve(argv):
-        return _write_protenix_outputs(Path(argv[argv.index("--out") + 1]), samples=12)
+    def twelve(config, **_kwargs):
+        return _write_protenix_outputs(Path(config.out), samples=12)
 
     monkeypatch.setattr(
         "foldjax.backends.protenix.import_module",
-        lambda name: SimpleNamespace(main=twelve),
+        lambda name: native_module("protenix", twelve),
     )
     result = ProtenixBackend().predict(_request(tmp_path, "protenix"))
 

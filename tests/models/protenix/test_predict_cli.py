@@ -501,27 +501,27 @@ def test_msa_seed_moves_only_the_row_draw(tmp_path, monkeypatch) -> None:
     _assert_diffusion_seed(captured, 7)
 
 
-def test_the_adapter_renders_msa_seed_into_the_native_command(tmp_path, monkeypatch):
-    """`--option msa_seed=N` has to reach argv, and must not fork the cache.
+def test_the_adapter_carries_msa_seed_into_the_native_run(tmp_path, monkeypatch):
+    """`--option msa_seed=N` has to reach the run, and must not fork the cache.
 
     The benchmark harness spells backend options as `--option k=v`, so the
-    adapter's flag loop is the whole leg between a request and the draw. The
+    adapter's option loop is the whole leg between a request and the draw. The
     second half of the assertion is the reason it is not a compile option:
     `seed` is not one either, and two MSA draws that differ in padded row
     count already fork the executable through XLA's own program hash inside
     one namespace.
     """
     from pathlib import Path
-    from types import SimpleNamespace
 
     from foldjax.backends.protenix import ProtenixBackend
     from foldjax.schema import PredictionRequest
+    from tests._native_double import native_module
 
-    seen: list[str] = []
+    configs: list[object] = []
 
-    def native_main(argv):
-        seen.extend(argv)
-        out = Path(argv[argv.index("--out") + 1])
+    def native_run(config, **_kwargs):
+        configs.append(config)
+        out = Path(config.out)
         out.mkdir(parents=True, exist_ok=True)
         cif = out / "job_sample_0.cif"
         cif.write_text("data_x\n")
@@ -529,7 +529,7 @@ def test_the_adapter_renders_msa_seed_into_the_native_command(tmp_path, monkeypa
 
     monkeypatch.setattr(
         "foldjax.backends.protenix.import_module",
-        lambda name: SimpleNamespace(main=native_main),
+        lambda name: native_module("protenix", native_run),
     )
     job = tmp_path / "job.json"
     job.write_text("{}")
@@ -545,8 +545,11 @@ def test_the_adapter_renders_msa_seed_into_the_native_command(tmp_path, monkeypa
         options={"msa_seed": 7},
     )
     backend = ProtenixBackend()
-    backend.predict(request)
+    result = backend.predict(request)
 
+    assert configs[0].msa_seed == 7
+    assert configs[0].seed == 101
+    seen = list(result.raw["argv"])
     assert seen[seen.index("--msa-seed") + 1] == "7"
     assert seen[seen.index("--seed") + 1] == "101"
     assert "msa_seed" not in backend.cache_profile(request)

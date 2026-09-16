@@ -670,43 +670,36 @@ def test_the_fused_denoiser_default_resolves_away_under_cp(
     resolves the omitted knob to the blocked XLA path; a spelled `tokamax` is
     still a request the run cannot honour and keeps that refusal.
 
-    Driven through `predict`, because the leg that matters is the rendered
-    argv: the resolution has to reach the native parser, not just the option
-    dict. The stand-in native CLI applies the parser's own default for an
-    absent flag and calls the real guard under a mesh that is active exactly
-    when `--cp-devices` says so, so the refusal here is the shipped one rather
-    than a paraphrase of it.
+    Driven through `predict`, because the leg that matters is what the run is
+    given: the resolution has to reach the configuration the run reads, not
+    just the option dict. The stand-in runner calls the real guard under a mesh
+    that is active exactly when the configuration says so, so the refusal here
+    is the shipped one rather than a paraphrase of it -- and an absent option
+    arrives as the parser's own default, which is the fused kernel, rather than
+    as a value this test has to supply.
     """
 
-    from types import SimpleNamespace
-
     import foldjax.models.protenix.models.primitives.attention as attention_module
+    from tests._native_double import native_module
 
-    seen: list[str] = []
+    configs: list[object] = []
     mesh: list[object | None] = [None]
     flag = "--diffusion-attention-backend"
 
-    def native_main(argv: list[str], **_ignored: object) -> list[Path]:
-        seen.clear()
-        seen.extend(argv)
-        requested = (
-            int(argv[argv.index("--cp-devices") + 1]) if "--cp-devices" in argv else 1
-        )
-        mesh[0] = object() if requested > 1 else None
-        attention_module._reject_tokamax_under_cp(
-            argv[argv.index(flag) + 1]
-            if flag in argv
-            # An absent flag is the parser default, which is the fused kernel.
-            else backend_impl._RELEASED_COMPILE_DEFAULTS["diffusion_attention_backend"]
-        )
-        out = Path(argv[argv.index("--out") + 1])
+    def native_run(config: object, **_ignored: object) -> list[Path]:
+        configs.append(config)
+        mesh[0] = object() if config.cp_devices > 1 else None
+        attention_module._reject_tokamax_under_cp(config.diffusion_attention_backend)
+        out = Path(config.out)
         out.mkdir(parents=True, exist_ok=True)
         structure = out / "tiny_sample_0.cif"
         structure.write_text("data_x\n", encoding="utf-8")
         return [structure]
 
     monkeypatch.setattr(
-        backend_impl, "import_module", lambda _name: SimpleNamespace(main=native_main)
+        backend_impl,
+        "import_module",
+        lambda _name: native_module("protenix", native_run),
     )
     # The guard reads the mesh out of its own module, which keeps this on one
     # CPU device -- and covers both call sites through the one refusal.
@@ -714,7 +707,10 @@ def test_the_fused_denoiser_default_resolves_away_under_cp(
     backend = ProtenixBackend()
 
     context_parallel = _request(tmp_path, output="cp", options={"cp_devices": 2})
-    backend.predict(context_parallel)
+    result = backend.predict(context_parallel)
+    assert configs[-1].diffusion_attention_backend == "xla_jit"
+    # The recorded command says the same thing.
+    seen = list(result.raw["argv"])
     assert seen[seen.index(flag) + 1] == "xla_jit"
     # The profile has to name the program that ran, or the resolved run would
     # load the executable the fused spelling built.
@@ -737,11 +733,13 @@ def test_the_fused_denoiser_default_resolves_away_under_cp(
     )
     with pytest.raises(ValueError, match="not supported under context parallelism"):
         backend.predict(named)
-    assert seen[seen.index(flag) + 1] == "tokamax"
+    assert configs[-1].diffusion_attention_backend == "tokamax"
 
     serial = _request(tmp_path, output="serial")
-    backend.predict(serial)
-    assert flag not in seen
+    serial_result = backend.predict(serial)
+    # Nothing is rendered, and the configuration carries the parser's default.
+    assert flag not in serial_result.raw["argv"]
+    assert configs[-1].diffusion_attention_backend == "tokamax"
     assert "diffusion_attention_backend" not in backend.cache_profile(serial)
 
 

@@ -390,24 +390,24 @@ def test_the_parser_carries_the_flag_down_to_the_wrapper(monkeypatch):
     assert tuple(defaults["glu_backend"].choices) == _glu.GLU_BACKENDS
 
 
-def test_the_adapter_renders_the_flag_into_the_native_command(tmp_path, monkeypatch):
-    """The adapter drives the parser by writing argv, so the leg is the string.
+def test_the_adapter_carries_the_flag_into_the_native_run(tmp_path, monkeypatch):
+    """The option has to reach the run, in both spellings.
 
     Without this the option could sit in the adapter's option set, pass every
-    namespace check, and never be written into the command the native CLI
-    actually parses.
+    namespace check, and never reach the configuration the run reads -- or the
+    command the result records.
     """
     import json
-    from types import SimpleNamespace
 
     from foldjax.backends.protenix import ProtenixBackend
     from foldjax.schema import PredictionRequest
+    from tests._native_double import native_module
 
-    seen: list[str] = []
+    seen: list[object] = []
 
-    def native_main(argv):
-        seen.extend(argv)
-        out = Path(argv[argv.index("--out") + 1])
+    def native_run(config, **_kwargs):
+        seen.append(config)
+        out = Path(config.out)
         out.mkdir(parents=True, exist_ok=True)
         cif = out / "job_sample_0.cif"
         cif.write_text("data_x\n")
@@ -417,13 +417,13 @@ def test_the_adapter_renders_the_flag_into_the_native_command(tmp_path, monkeypa
 
     monkeypatch.setattr(
         "foldjax.backends.protenix.import_module",
-        lambda name: SimpleNamespace(main=native_main),
+        lambda name: native_module("protenix", native_run),
     )
     job = tmp_path / "job.json"
     job.write_text("{}")
     weights = tmp_path / "weights"
     weights.mkdir()
-    ProtenixBackend().predict(
+    result = ProtenixBackend().predict(
         PredictionRequest(
             model="protenix",
             input=job,
@@ -434,7 +434,9 @@ def test_the_adapter_renders_the_flag_into_the_native_command(tmp_path, monkeypa
             options={"glu_backend": "tokamax"},
         )
     )
-    assert seen[seen.index("--glu-backend") + 1] == "tokamax"
+    assert seen[0].glu_backend == "tokamax"
+    argv = list(result.raw["argv"])
+    assert argv[argv.index("--glu-backend") + 1] == "tokamax"
 
 
 def test_the_call_sites_refuse_the_fused_kernel_under_a_mesh(monkeypatch):
