@@ -75,6 +75,9 @@ def pairformer_no_seq_layer_forward(
         chunk_size=transition_hidden_chunk,
         eps=eps,
         row_chunk_size=chunk_size,
+        # `z` is the pair tensor the active layout shards, so the row block
+        # above is taken inside the shard instead of being dropped.
+        cp_pair=True,
     )
     return z
 

@@ -85,5 +85,8 @@ def pairwise_conditioning_forward(
             eps=eps,
             compute_dtype=compute_dtype,
             native_amp_norm=True,
+            # `z` is the pair tensor the active layout shards, so the row
+            # block is taken inside the shard instead of being dropped.
+            cp_pair=True,
         )
     return shard_pair_rows(z)
