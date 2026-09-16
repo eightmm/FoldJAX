@@ -22,11 +22,11 @@ import sys
 import warnings
 
 from foldjax.models._cp import context_parallel, cp_grid
-from foldjax.models.opendde.models.model import _resolve_atom_windows
-from foldjax.models.protenix.models.diffusion._cp import (
+from foldjax.models._cp_atom import (
     atom_window_misalignment,
     require_atom_windows,
 )
+from foldjax.models.opendde.models.model import _resolve_atom_windows
 from tests.models.protenix.atom_cp_fixtures import (
     N_ATOM,
     N_KEYS,

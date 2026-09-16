@@ -24,6 +24,7 @@ from foldjax.models._cp import (
 from foldjax.models._cp import (
     cp_shards as _active_cp_shards,
 )
+from foldjax.models._cp_atom import resolve_atom_windows
 from foldjax.models._graph import (
     merge_static_flags,
     split_static_flags,
@@ -48,7 +49,6 @@ from foldjax.models.opendde.models.structural_tokens import (
     StructuralTokenExpanderParams,
     structural_token_expand,
 )
-from foldjax.models.protenix.models.diffusion._cp import resolve_atom_windows
 from foldjax.models.protenix.models.diffusion.atom import (
     atom_attention_encoder_prepare_diffusion_cache,
 )

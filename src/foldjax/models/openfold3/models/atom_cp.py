@@ -46,11 +46,9 @@ single path, and the serial lowering is pinned byte-identical
 from __future__ import annotations
 
 import contextlib
-import warnings
 from collections.abc import Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
-from math import gcd as _gcd
 from typing import Any
 
 import jax
@@ -65,6 +63,7 @@ from foldjax.models._cp_atom import (
     gather_atom_windows_local,
     gather_token_pairs_to_windows_local,
     replicate_atoms,
+    resolve_atom_graph,
     ring_gather_local,
     window_spec,
 )
@@ -106,9 +105,11 @@ def atom_block_misalignment(
     gather's ring), and under the square grid the token axis must also split
     over columns (the token-pair tile the atom blocks read).
 
-    ``n_key`` is deliberately absent, unlike Protenix' equivalent. A halo
-    needs every row to own at least its radius; the ring gather here has no
-    radius, so a row owning a single query block is legal.
+    ``n_key`` is deliberately absent, unlike the shared halo predicate
+    (:func:`foldjax.models._cp_atom.atom_window_misalignment`). A halo needs
+    every row to own at least its radius; the ring gather here has no radius,
+    so a row owning a single query block is legal -- which is the whole reason
+    this port states its own requirements instead of reusing that one.
     """
 
     if cp_mesh() is None:
@@ -134,32 +135,21 @@ def resolve_atom_windows(
     n_token: int,
     n_query: int,
 ) -> bool:
-    """Decide once whether this run distributes its atom graph, and say so.
+    """The shared decision (:func:`resolve_atom_graph`) under this port's blocks.
 
-    A silent fallback here would be the worst outcome available: the run would
-    succeed, the option would read as honoured, and the per-device memory
-    nobody could then account for would be the replicated atom graph. So the
-    single resolution point warns with the exact multiples to pad to.
+    ``inference.py`` resolves the option exactly once, here; the message and
+    its pad multiples are the ones every port emits.
     """
 
-    if not requested or cp_mesh() is None:
-        return False
-    reason = atom_block_misalignment(n_atom=n_atom, n_token=n_token, n_query=n_query)
-    if reason is None:
-        return True
-    rows, cols = cp_grid()
-    token_multiple = rows * cols // max(1, _gcd(rows, cols)) if cols > 1 else rows
-    warnings.warn(
-        "cp_atom_windows was requested but this shape cannot carry a "
-        f"distributed atom graph: {reason}. The atom graph stays replicated on "
-        "every device. Pad the atom axis to a multiple of "
-        f"{n_query * rows} and the token axis to a multiple of "
-        f"{token_multiple} -- PaddingConfig(atoms=..., tokens=...) -- to "
-        "distribute it.",
-        UserWarning,
-        stacklevel=3,
+    return resolve_atom_graph(
+        requested=requested,
+        n_query=n_query,
+        misalignment=lambda: atom_block_misalignment(
+            n_atom=n_atom,
+            n_token=n_token,
+            n_query=n_query,
+        ),
     )
-    return False
 
 
 def require_atom_windows(*, n_atom: int, n_token: int, n_query: int) -> None:

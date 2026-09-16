@@ -29,21 +29,28 @@ mesh: every entry point is guarded by ``cp_mesh() is not None`` at its caller.
 
 from __future__ import annotations
 
-import warnings
 from collections.abc import Sequence
-from math import gcd as _gcd
 from typing import Any
 
 import jax
 import jax.numpy as jnp
 from jax.sharding import PartitionSpec
 
-from foldjax.models._cp import cp_grid, cp_layout, cp_mesh, cp_row_shards
+from foldjax.models._cp import cp_mesh, cp_row_shards
+
+# The alignment decision is not Protenix-specific: OpenDDE diffuses over this
+# same atom graph and only names a different padding axis, so the predicate,
+# the resolver and the adapter guard live beside the halo primitive whose
+# requirement they state. They stay exported from here because that is where
+# this port's consumers -- and, until the move, OpenDDE -- import them from.
 from foldjax.models._cp_atom import (
     atom_axis_name,
     atom_spec,
+    atom_window_misalignment,
     gather_token_pairs_to_atom_windows_cp,
     gather_tokens_to_atoms_cp,
+    require_atom_windows,
+    resolve_atom_windows,
     window_spec,
 )
 from foldjax.models.protenix.models.diffusion.transformer import (
@@ -55,118 +62,6 @@ from foldjax.models.protenix.models.primitives.atom_windows_cp import (
     use_atom_window_plan,
 )
 from foldjax.models.protenix.models.primitives.primitives import LinearParams, linear
-
-
-def atom_window_misalignment(
-    *,
-    n_atom: int,
-    n_token: int,
-    n_queries: int,
-    n_keys: int,
-) -> str | None:
-    """Say why this shape cannot carry a distributed atom graph, or ``None``.
-
-    Three requirements, each from an operation below rather than from caution:
-    the atom axis must split into whole query windows on every CP row
-    (``single_to_keys_local``), the token axis must split over the same rows
-    (the scatter-mean's ``psum_scatter`` and the token gather's ring), and
-    under the square grid the token axis must also split over columns (the
-    token-pair tile the atom windows read).
-    """
-
-    if cp_mesh() is None:
-        return "no context-parallel mesh is active"
-    rows, cols = cp_grid()
-    alignment = n_queries * rows
-    if n_atom % alignment:
-        return (
-            f"{n_atom} atoms is not a multiple of n_queries * cp_rows "
-            f"({n_queries} * {rows} = {alignment})"
-        )
-    if n_atom // n_queries % rows:
-        return f"{n_atom // n_queries} atom windows do not divide {rows} CP rows"
-    if n_token % rows:
-        return f"{n_token} tokens do not divide {rows} CP rows"
-    if cp_layout() == "2d" and n_token % cols:
-        return f"{n_token} tokens do not divide {cols} CP columns"
-    # The halo reaches exactly `n_keys // (n_queries // 2) // 2 - 1` half
-    # windows into each neighbour, and `single_to_keys_local` refuses a shard
-    # that cannot supply one.
-    radius = n_keys // (n_queries // 2) // 2 - 1
-    if 2 * (n_atom // n_queries // rows) < radius:
-        return (
-            f"each CP row owns {n_atom // n_queries // rows} atom window(s), "
-            f"fewer than the {radius} half-windows of halo an "
-            f"n_queries={n_queries}/n_keys={n_keys} window needs"
-        )
-    return None
-
-
-def resolve_atom_windows(
-    *,
-    requested: bool,
-    n_atom: int,
-    n_token: int,
-    n_queries: int,
-    n_keys: int,
-    #: Which ``PaddingConfig`` axis the warning tells the caller to pin. The
-    #: denoiser's token axis is not the same axis on every consumer: Protenix'
-    #: is the residue token axis (``tokens``), while OpenDDE diffuses over its
-    #: expanded structural tokens, whose padding axis is ``structural_tokens``
-    #: and whose automatic target is twice the token bucket. Naming the wrong
-    #: one would send a caller to pin an axis that cannot fix the shape.
-    token_axis: str = "tokens",
-) -> bool:
-    """Decide once whether this run distributes its atom graph, and say so.
-
-    A silent fallback here would be the worst outcome available: the run would
-    succeed, the option would read as honoured, and the per-device memory
-    nobody could then account for would be the replicated atom graph. So the
-    single resolution point warns with the exact multiple to pad to.
-    """
-
-    if not requested or cp_mesh() is None:
-        return False
-    reason = atom_window_misalignment(
-        n_atom=n_atom,
-        n_token=n_token,
-        n_queries=n_queries,
-        n_keys=n_keys,
-    )
-    if reason is None:
-        return True
-    rows, cols = cp_grid()
-    token_multiple = rows * cols // max(1, _gcd(rows, cols)) if cols > 1 else rows
-    warnings.warn(
-        "cp_atom_windows was requested but this shape cannot carry a "
-        f"distributed atom graph: {reason}. The atom graph stays replicated on "
-        "every device. Pad the atom axis to a multiple of "
-        f"{n_queries * rows} and the token axis to a multiple of "
-        f"{token_multiple} -- PaddingConfig(atoms=..., {token_axis}=...) -- to "
-        "distribute it.",
-        UserWarning,
-        stacklevel=3,
-    )
-    return False
-
-
-def require_atom_windows(
-    *,
-    n_atom: int,
-    n_token: int,
-    n_queries: int,
-    n_keys: int,
-) -> None:
-    """Fail inside an adapter rather than emit a wrong program."""
-
-    reason = atom_window_misalignment(
-        n_atom=n_atom,
-        n_token=n_token,
-        n_queries=n_queries,
-        n_keys=n_keys,
-    )
-    if reason is not None:
-        raise ValueError(f"distributed atom windows are not available: {reason}")
 
 
 def global_window_mask(
