@@ -229,8 +229,10 @@ def _add_predict_arguments(
     shapes.add_argument(
         "--padding",
         action="store_true",
-        help="select a token bucket with derived atom capacity and fixed native "
-        "MSA/template limits. Disabled by default so existing scientific results and "
+        help="select a token bucket with derived atom capacity, and pad the MSA "
+        "axis to the bucket at or above the rows the unpadded run would process "
+        "(a profile depth is a floor, never a cap); template limits stay at the "
+        "native depth. Disabled by default so existing scientific results and "
         "exact-shape execution are unchanged",
     )
     shapes.add_argument(

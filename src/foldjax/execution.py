@@ -86,11 +86,13 @@ KNOBS: dict[str, tuple[str, ...]] = {
 #: The `deterministic` entry a backend puts in its `execution_options`, in the
 #: two shapes the ports need.
 #:
-#: One neutral name, two renderings, because the ports are reached two ways:
-#: Protenix and OpenDDE are driven by rendering argv for their own predict
-#: parsers, whose `--deterministic-ops` takes the strings `off`/`on`, while
-#: Boltz-2, OpenFold3, ESMFold2 and AlphaFold 3 are called through a Python
-#: signature whose `deterministic` parameter is a `bool`. A backend imports
+#: One neutral name, two shapes, because the ports spell this field two ways:
+#: Protenix and OpenDDE carry their own predict parser's `--deterministic-ops`
+#: as a config field, which takes the strings `off`/`on` (the adapters build
+#: that config directly now and no longer re-parse rendered argv, but the
+#: field is still the parser's, so the vocabulary is too), while Boltz-2,
+#: OpenFold3, ESMFold2 and AlphaFold 3 are called through a Python signature
+#: whose `deterministic` parameter is a `bool`. A backend imports
 #: the one that matches how it calls its port rather than writing a literal,
 #: so six copies cannot drift into six vocabularies -- the same reason
 #: `MATMUL_PRECISION_OPTION` is one object.

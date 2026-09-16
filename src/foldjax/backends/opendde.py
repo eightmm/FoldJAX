@@ -332,8 +332,11 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
         ),
         # Repeatable reduction orders, compiled into this run's executables
         # rather than asked for with a process-wide XLA environment variable.
-        # The shared entry, because this port is driven by rendering argv for
-        # its own predict parser and every argv port renders the same strings.
+        # The shared entry, because this port's own config field is a string
+        # -- `deterministic_ops`, taking `off`/`on`, the spelling its predict
+        # parser declares -- rather than the `bool` the ports called through a
+        # Python signature take. Both shapes exist in `foldjax.execution` so
+        # that six copies cannot drift into six vocabularies.
         **DETERMINISTIC_ARGV_OPTION,
     }
     # `_CLI_OPTIONS` plus the one generated name that is not a flag:
