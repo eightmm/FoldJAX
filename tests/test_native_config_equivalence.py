@@ -1,10 +1,11 @@
-"""The Protenix adapter builds the configuration its own parser would.
+"""The Protenix and OpenDDE adapters build the configuration the parser would.
 
-The adapter used to run a prediction by rendering the native command line and
-handing it back to that ``argparse`` parser. It now builds the parser's own
-destination namespace -- a ``PredictionConfig`` -- straight from the resolved
-request and calls ``run_prediction``. The rendered command is still produced,
-because it is the spelling the result records, but nothing executes from it.
+Both adapters used to run a prediction by rendering the native command line and
+handing it back to their own ``argparse`` parser. They now build the parser's
+own destination namespace -- a ``PredictionConfig`` -- straight from the
+resolved request and call ``run_prediction``. The rendered command is still
+produced, because it is the spelling the result records, but nothing executes
+from it.
 
 That makes the parser the oracle: for every supported option, the
 configuration built from the request must equal the configuration the parser
@@ -37,8 +38,12 @@ from typing import Any, NamedTuple
 
 import pytest
 
+from foldjax.backends import opendde as opendde_backend
 from foldjax.backends import protenix as protenix_backend
+from foldjax.backends.opendde import OpenDDEBackend
 from foldjax.backends.protenix import ProtenixBackend
+from foldjax.models.opendde import runner as opendde_runner
+from foldjax.models.opendde.cli import predict as opendde_predict
 from foldjax.models.protenix import runner as protenix_runner
 from foldjax.models.protenix.cli import predict as protenix_predict
 from foldjax.schema import PaddingConfig, PredictionRequest
@@ -62,9 +67,14 @@ PROTENIX = _Port(
     main=protenix_predict.main,
     runner=protenix_runner,
 )
-#: One entry for now. OpenDDE's adapter still hands its own parser the
-#: rendered command; it joins this table when it stops.
-PORTS = (PROTENIX,)
+OPENDDE = _Port(
+    name="opendde",
+    backend=OpenDDEBackend,
+    module=opendde_backend,
+    main=opendde_predict.main,
+    runner=opendde_runner,
+)
+PORTS = (PROTENIX, OPENDDE)
 
 
 def _request(tmp_path: Path, port: _Port, **kwargs: Any) -> PredictionRequest:
@@ -154,6 +164,39 @@ _PROTENIX_OPTION_VALUES: dict[str, Any] = {
     "trunk_triangle_attention_backend": "cueq_jit",
 }
 
+_OPENDDE_OPTION_VALUES: dict[str, Any] = {
+    "ccd_rdkit_cache": Path("/tmp/components.cif.rdkit_mol.pkl"),
+    "chunk_policy": "manual",
+    "components_cif": Path("/tmp/components.cif"),
+    "confidence_dtype": "fp32",
+    "cp_atom_windows": False,
+    "cp_devices": 4,
+    "cp_layout": "1d",
+    "deterministic_ops": "on",
+    "diffusion_attention_backend": "xla",
+    "diffusion_chunk_size": 2,
+    "diffusion_dtype": "bf16",
+    "kalign_binary": Path("/tmp/kalign"),
+    "max_msa_depth": 1024,
+    "n_keys": 64,
+    "n_queries": 16,
+    "num_recycles": 2,
+    "num_samples": 3,
+    "num_steps": 7,
+    "single_att_q_chunk_size": 32,
+    "structural_single_attention_backend": "xla_sdpa",
+    "template_mmcif_dir": Path("/tmp/mmcif"),
+    "template_obsolete_map": Path("/tmp/obsolete_to_successor.json"),
+    "template_release_dates": Path("/tmp/release_date_cache.json"),
+    "token_q_chunk_size": 256,
+    "triangle_att_q_chunk_size": 128,
+    "triangle_mul_chunk_size": 64,
+    "trunk_dtype": "fp32",
+    "trunk_single_attention_backend": "xla",
+    "use_rna_msa": True,
+    "use_template": True,
+}
+
 #: Requests that are not one option: the shapes the adapter renders specially.
 _PROTENIX_REQUESTS: dict[str, dict[str, Any]] = {
     "bare": {},
@@ -224,8 +267,60 @@ _PROTENIX_REQUESTS: dict[str, dict[str, Any]] = {
     },
 }
 
-#: Every boolean spelling this port accepts, and what it means. Its switches
-#: are rendered as bare flags, out of a deliberately wide vocabulary.
+_OPENDDE_REQUESTS: dict[str, dict[str, Any]] = {
+    "bare": {},
+    "every-option": {"options": dict(_OPENDDE_OPTION_VALUES)},
+    "switches-off": {
+        "options": {
+            "cp_atom_windows": True,
+            "use_template": False,
+            "use_rna_msa": False,
+        }
+    },
+    "numbers-as-text": {
+        "options": {
+            "num_samples": "3",
+            "cp_devices": "4",
+            "max_msa_depth": "2048",
+            "n_queries": "16",
+        }
+    },
+    "paths-as-text": {"options": {"components_cif": "/tmp/components-as-text.cif"}},
+    "include-raw": {"options": {"include_raw": True}},
+    "include-raw-off": {"options": {"include_raw": False}},
+    "sampling-knobs": {
+        "num_samples": 2,
+        "num_steps": 11,
+        "num_recycles": 3,
+        "max_msa_depth": 512,
+    },
+    "execution-knobs": {
+        "options": {
+            "dtype": "float32",
+            "attention_kernel": "xla",
+            "deterministic": "on",
+            "matmul_precision": "highest",
+        }
+    },
+    "no-compile-cache": {"cache_dir": None, "use_compile_cache": False},
+    "representations": {"representations": ("single", "structural_pair")},
+    "representations-all": {"representations": "all"},
+    "stop-after-trunk": {"representations": "all", "stop_after": "trunk"},
+    "stop-after-inputs": {"representations": "all", "stop_after": "inputs"},
+    # Padding never reached this parser: it arrives as a keyword on the native
+    # entry point, so the configuration carries no padding field at all. Kept
+    # in the matrix because it must stay that way.
+    "padding-profile": {"padding": True},
+    "padding-explicit": {
+        "padding": PaddingConfig(
+            tokens=256, atoms=6144, msa=1280, structural_tokens=512
+        )
+    },
+}
+
+#: Every boolean spelling each port accepts, and what it means. Protenix'
+#: switches are rendered as bare flags out of a wide vocabulary; OpenDDE spells
+#: its own as `--flag true|false` and takes only those two words.
 _PROTENIX_BOOLEANS = (
     (True, True),
     (False, False),
@@ -241,6 +336,15 @@ _PROTENIX_BOOLEANS = (
     ("TRUE", True),
     (" false ", False),
 )
+_OPENDDE_BOOLEANS = (
+    (True, True),
+    (False, False),
+    ("true", True),
+    ("false", False),
+    ("TRUE", True),
+    (" false ", False),
+)
+
 
 @pytest.mark.parametrize("label", sorted(_PROTENIX_REQUESTS))
 def test_protenix_builds_the_configuration_its_argv_would_parse_to(
@@ -248,6 +352,14 @@ def test_protenix_builds_the_configuration_its_argv_would_parse_to(
 ) -> None:
     request = _request(tmp_path, PROTENIX, **_PROTENIX_REQUESTS[label])
     _assert_equivalent(PROTENIX, request)
+
+
+@pytest.mark.parametrize("label", sorted(_OPENDDE_REQUESTS))
+def test_opendde_builds_the_configuration_its_argv_would_parse_to(
+    tmp_path: Path, label: str
+) -> None:
+    request = _request(tmp_path, OPENDDE, **_OPENDDE_REQUESTS[label])
+    _assert_equivalent(OPENDDE, request)
 
 
 @pytest.mark.parametrize("option", sorted(_PROTENIX_OPTION_VALUES))
@@ -259,6 +371,14 @@ def test_each_protenix_option_alone_reaches_the_same_configuration(
     _assert_equivalent(
         PROTENIX, _request(tmp_path, PROTENIX, options={option: value})
     )
+
+
+@pytest.mark.parametrize("option", sorted(_OPENDDE_OPTION_VALUES))
+def test_each_opendde_option_alone_reaches_the_same_configuration(
+    tmp_path: Path, option: str
+) -> None:
+    value = _OPENDDE_OPTION_VALUES[option]
+    _assert_equivalent(OPENDDE, _request(tmp_path, OPENDDE, options={option: value}))
 
 
 @pytest.mark.parametrize(("spelling", "meaning"), _PROTENIX_BOOLEANS)
@@ -277,6 +397,17 @@ def test_every_protenix_switch_spelling_means_the_same_in_both_paths(
     invocation = ProtenixBackend()._native_invocation(request)
     assert invocation.config_fields[option] is meaning
     _assert_equivalent(PROTENIX, request)
+
+
+@pytest.mark.parametrize(("spelling", "meaning"), _OPENDDE_BOOLEANS)
+@pytest.mark.parametrize("option", ("cp_atom_windows", "use_template", "use_rna_msa"))
+def test_every_opendde_switch_spelling_means_the_same_in_both_paths(
+    tmp_path: Path, option: str, spelling: Any, meaning: bool
+) -> None:
+    request = _request(tmp_path, OPENDDE, options={option: spelling})
+    invocation = OpenDDEBackend()._native_invocation(request)
+    assert invocation.config_fields[option] is meaning
+    _assert_equivalent(OPENDDE, request)
 
 
 @pytest.mark.parametrize("port", PORTS, ids=lambda port: port.name)

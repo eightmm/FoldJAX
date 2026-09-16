@@ -1,9 +1,13 @@
 """Pin the flag declarations the Protenix and OpenDDE predict CLIs share.
 
-Both ports expose their own ``foldjax-<port>-predict`` console script, and the
-FoldJAX backends drive those same parsers in-process by rendering argv. So a
+Both ports expose their own ``foldjax-<port>-predict`` console script, so a
 spelling, type, default or choice that drifts between the two is user-visible
-twice over: once in ``--help`` and once as a rejected command.
+twice over: once in ``--help`` and once as a command one port accepts and the
+other rejects. The FoldJAX backends no longer run through these parsers -- they
+build the configuration the parser produces and call the runner, with
+Protenix's ``cli_args`` escape hatch the one remaining caller -- but they do
+still render the same argv for the record, and
+``tests/test_native_config_equivalence.py`` holds each parser to it.
 
 These parsers are built inside ``main`` and parsed immediately, so there is no
 factory to call. The tests capture the constructed parser the way

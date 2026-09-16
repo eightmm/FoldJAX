@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from importlib import import_module
 from pathlib import Path
+from typing import NamedTuple
 
 from foldjax.backends._ccd_session import ManagedCcdSession
 from foldjax.backends._representations import _representations_result
@@ -107,6 +108,183 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "use_rna_msa": False,
     "deterministic_ops": "off",
 }
+
+#: Every `PredictionConfig` field's own parser default, so a resolved request
+#: becomes the configuration the run takes without parsing the argv this
+#: adapter renders back into one.
+#:
+#: The parser remains the authority. `tests/test_native_config_equivalence.py`
+#: builds the configuration both ways for a matrix of requests -- through the
+#: captured parser on the rendered argv, and through `_native_invocation`
+#: below -- and compares them field by field, so a bare request pins this
+#: whole table against the parser's own namespace: a default that drifts here
+#: fails rather than runs.
+#:
+#: `max_msa_depth` is the one entry that is deliberately not the parser's
+#: `None`: `cli/predict.py` resolves it through `_resolve_msa_depth` before it
+#: builds the configuration, because `None` there means "this port's own
+#: depth" rather than "unset". `input_json`, `weights` and `out` are always
+#: overridden below -- they are the request -- and are spelled anyway, because
+#: this table is the parser's whole namespace and `PredictionConfig` accepts
+#: nothing less than every field.
+_PARSER_DEFAULTS: dict[str, object] = {
+    "input_json": None,
+    "weights": None,
+    "out": None,
+    "seed": None,
+    "num_samples": 5,
+    "num_steps": 200,
+    "num_recycles": 10,
+    "n_queries": 32,
+    "n_keys": 128,
+    "use_template": False,
+    "use_rna_msa": False,
+    "max_msa_depth": 16384,
+    "deterministic_ops": "off",
+    "diffusion_attention_backend": "xla_jit",
+    "trunk_single_attention_backend": "xla_jit",
+    "structural_single_attention_backend": "xla_jit",
+    "no_graph_jit": False,
+    "cp_devices": 1,
+    "cp_atom_windows": True,
+    "cp_layout": "auto",
+    "diffusion_chunk_size": None,
+    "triangle_mul_chunk_size": None,
+    "triangle_att_q_chunk_size": None,
+    "single_att_q_chunk_size": None,
+    "token_q_chunk_size": None,
+    "chunk_policy": "auto",
+    "trunk_dtype": "bf16",
+    "confidence_dtype": "bf16",
+    "diffusion_dtype": "fp32",
+    "include_raw": False,
+    "representations_dir": None,
+    "stop_after": "full",
+    "representations": None,
+    "cpu_only": False,
+    "compile_cache": None,
+    "components_cif": None,
+    "ccd_rdkit_cache": None,
+    "template_mmcif_dir": None,
+    "template_release_dates": None,
+    "template_obsolete_map": None,
+    "kalign_binary": None,
+}
+
+
+def _integer_option(key: str, value: object) -> int:
+    """The parser's `type=int`, on the string the renderer would have passed."""
+    try:
+        return int(str(value))
+    except ValueError as error:
+        raise ValueError(f"{key} must be an integer; got {value!r}") from error
+
+
+def _path_option(_key: str, value: object) -> Path:
+    """The parser's `type=Path`."""
+    return Path(str(value))
+
+
+def _text_option(_key: str, value: object) -> str:
+    """A plain string option, as `str(value)` reached the parser through argv."""
+    return str(value)
+
+
+def _boolean_option(key: str, value: object) -> bool:
+    """The parser's own `type=_boolean`: this port spells switches as values.
+
+    Its vocabulary rather than `_strict_boolean`'s: `cli/predict.py:_boolean`
+    is what the rendered `--use-template True` went through, and it takes only
+    `true` and `false`, case and surrounding space aside.
+    """
+    normalized = str(value).strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise ValueError(f"{key} is a switch; pass true or false, not {value!r}")
+
+
+#: How each native option becomes its configuration field: the parser's own
+#: ``type=``, and its ``choices=`` where it has them.
+#:
+#: Both halves, because the renderer stringified every value and the parser
+#: applied both to the string. The type alone would leave the vocabulary
+#: unchecked, and below the parser these values are read with ``==`` and no
+#: vocabulary at all -- `runner._load_prepared_params` branches on ``bf16`` and
+#: loads FP32 weights for everything else, `deterministic_ops` compares against
+#: ``on`` -- so a misspelling that argparse refused would have quietly run the
+#: other arm.
+_OPTION_SPECS: dict[
+    str, tuple[Callable[[str, object], object], tuple[str, ...] | None]
+] = {
+    "ccd_rdkit_cache": (_path_option, None),
+    "chunk_policy": (_text_option, ("auto", "manual", "off")),
+    "components_cif": (_path_option, None),
+    "confidence_dtype": (_text_option, ("fp32", "bf16")),
+    "cp_atom_windows": (_boolean_option, None),
+    "cp_devices": (_integer_option, None),
+    "cp_layout": (_text_option, ("auto", "1d", "2d")),
+    "deterministic_ops": (_text_option, ("off", "on")),
+    "diffusion_attention_backend": (_text_option, ("xla", "xla_jit", "xla_sdpa")),
+    "diffusion_chunk_size": (_integer_option, None),
+    "diffusion_dtype": (_text_option, ("fp32", "bf16")),
+    "kalign_binary": (_path_option, None),
+    "max_msa_depth": (_integer_option, None),
+    "n_keys": (_integer_option, None),
+    "n_queries": (_integer_option, None),
+    "num_recycles": (_integer_option, None),
+    "num_samples": (_integer_option, None),
+    "num_steps": (_integer_option, None),
+    "single_att_q_chunk_size": (_integer_option, None),
+    "structural_single_attention_backend": (
+        _text_option,
+        ("xla", "xla_jit", "xla_sdpa"),
+    ),
+    "template_mmcif_dir": (_path_option, None),
+    "template_obsolete_map": (_path_option, None),
+    "template_release_dates": (_path_option, None),
+    "token_q_chunk_size": (_integer_option, None),
+    "triangle_att_q_chunk_size": (_integer_option, None),
+    "triangle_mul_chunk_size": (_integer_option, None),
+    "trunk_dtype": (_text_option, ("bf16", "fp32")),
+    "trunk_single_attention_backend": (_text_option, ("xla", "xla_jit", "xla_sdpa")),
+    "use_rna_msa": (_boolean_option, None),
+    "use_template": (_boolean_option, None),
+}
+
+
+def _option_field(key: str, value: object) -> object:
+    """One native option as the parser would have produced it from argv."""
+    coerce, choices = _OPTION_SPECS[key]
+    field = coerce(key, value)
+    if choices is not None and field not in choices:
+        raise ValueError(f"{key} must be one of {choices}; got {field!r}")
+    return field
+
+
+class _NativeInvocation(NamedTuple):
+    """One resolved request in both of the spellings the native run needs.
+
+    ``config_fields`` is what runs: the parser's own namespace, assembled from
+    the request instead of from text. ``argv`` is the canonical command this
+    adapter has always rendered, kept because it is the spelling the result
+    records. Both come out of one pass, so the equivalence test can treat the
+    parser on ``argv`` as the oracle for the fields the run was handed.
+
+    ``cp_devices`` and ``cp_layout`` are read while the options are still
+    whole, because the mesh this run will build is what its automatic padding
+    targets have to divide. The fields stay a plain mapping rather than a
+    ``PredictionConfig``: the config class is read off the imported runner, and
+    that import stays where it was, after every option has been checked.
+    """
+
+    argv: list[str]
+    config_fields: dict[str, object]
+    representations: tuple[str, ...]
+    cp_devices: int
+    cp_layout: str
+    matmul_precision: Callable[[], AbstractContextManager[None]]
 
 
 class OpenDDEBackend(ManagedCcdSession, Backend):
@@ -229,16 +407,16 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
             padding_axes=self.padding_axes,
         )
 
-    def predict(self, request: PredictionRequest) -> PredictionResult:
-        if not request.weights.is_file():
-            raise FileNotFoundError(
-                f"OpenDDE-JAX weights must be a native weight file: {request.weights}"
-            )
-        if request.weights.suffix.lower() in {".pt", ".pth", ".ckpt"}:
-            raise ValueError(
-                "OpenDDE-JAX prediction requires converted native weights; "
-                "run opendde-jax-export-weights first"
-            )
+    def _native_invocation(self, request: PredictionRequest) -> _NativeInvocation:
+        """Resolve one request into the native run, in both spellings at once.
+
+        The same sequence as before, in the same order -- the sampling knobs,
+        the matmul scope, the raw-output switch, then the rendered command --
+        with the configuration assembled from those same values on the way
+        past, rather than recovered by parsing the command back. This port has
+        no escape hatch for extra native argv, so every run reaches the runner
+        as a configuration.
+        """
 
         options = self.apply_sampling(request)
         # Out before the leftover-option check below: carried by the scope, not
@@ -258,8 +436,17 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
             "--seed",
             str(request.seed),
         ]
+        fields: dict[str, object] = {
+            **_PARSER_DEFAULTS,
+            "input_json": Path(str(request.input)),
+            "weights": Path(str(request.weights)),
+            "out": Path(str(request.output_dir)),
+            "seed": int(request.seed),
+            "include_raw": include_raw,
+        }
         if request.cache_dir is not None:
             argv.extend(("--compile-cache", str(request.cache_dir)))
+            fields["compile_cache"] = Path(str(request.cache_dir))
         # Read before the loop below pops them into argv: the mesh this run
         # will build decides what its automatic padding targets must divide.
         # Resolved, not as spelled: an omitted layout builds the square grid on
@@ -270,9 +457,12 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
         cp_layout = square_grid_cp_layout(options) or str(
             options.get("cp_layout", "auto")
         )
+        native_options: dict[str, object] = {}
         for key in sorted(_CLI_OPTIONS):
             if key in options:
-                argv.extend((f"--{key.replace('_', '-')}", str(options.pop(key))))
+                value = options.pop(key)
+                native_options[key] = value
+                argv.extend((f"--{key.replace('_', '-')}", str(value)))
         if include_raw:
             argv.append("--include-raw")
         wanted = _representations.resolve(
@@ -292,13 +482,46 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
             # Pinned so that every backend puts the archive in the same place;
             # each model's own output tree is shaped differently.
             argv.extend(("--representations-dir", str(request.output_dir)))
+            fields["representations"] = ",".join(wanted)
+            fields["representations_dir"] = Path(str(request.output_dir))
         if request.stop_after in {"inputs", "trunk"}:
             argv.extend(("--stop-after", request.stop_after))
+            fields["stop_after"] = request.stop_after
         if options:
             raise ValueError(f"unsupported OpenDDE options: {', '.join(options)}")
+        # Last, which is where argparse stood: these are the parser's own
+        # rejections, so they must not overtake the leftover-option check above
+        # or an unknown representation name.
+        for key, value in native_options.items():
+            fields[key] = _option_field(key, value)
+        return _NativeInvocation(
+            argv=argv,
+            config_fields=fields,
+            representations=wanted,
+            cp_devices=cp_devices,
+            cp_layout=cp_layout,
+            matmul_precision=matmul_precision,
+        )
+
+    def predict(self, request: PredictionRequest) -> PredictionResult:
+        if not request.weights.is_file():
+            raise FileNotFoundError(
+                f"OpenDDE-JAX weights must be a native weight file: {request.weights}"
+            )
+        if request.weights.suffix.lower() in {".pt", ".pth", ".ckpt"}:
+            raise ValueError(
+                "OpenDDE-JAX prediction requires converted native weights; "
+                "run opendde-jax-export-weights first"
+            )
+
+        invocation = self._native_invocation(request)
+        argv = invocation.argv
+        wanted = invocation.representations
+        matmul_precision = invocation.matmul_precision
 
         padding_profiles: list[dict[str, object]] = []
         native = import_module("foldjax.models.opendde.cli.predict")
+        runner = import_module("foldjax.models.opendde.runner")
         use_session_loader = self._weights.active and bool(
             getattr(native, "PREPARED_PARAMS_LOADER_API", False)
         )
@@ -318,18 +541,14 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
             )
 
         with matmul_precision(), _restored_environment(), self._ccd_memory_scope():
-            if request.padding is None:
-                # Keep the historical one-argument native entry point exact for
-                # embedding applications and default-off predictions.
-                written = (
-                    native.main(
-                        argv,
-                        _prepared_params_loader=session_params_loader,
-                    )
-                    if use_session_loader
-                    else native.main(argv)
-                )
-            else:
+            # Each keyword is supplied only when this run has something to say
+            # with it: the padding pair only for a padded request, and the
+            # private loader only while an active FoldJAX session has
+            # negotiated that capability. So an unpadded request outside a
+            # session still reaches the runner with nothing but its
+            # configuration.
+            keywords: dict[str, object] = {}
+            if request.padding is not None:
                 unsupported = sorted(
                     set(request.padding.explicit_axes) - set(self.padding_axes)
                 )
@@ -338,25 +557,18 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
                         "opendde does not support explicit padding axes: "
                         + ", ".join(unsupported)
                     )
-                padding = cp_aligned_padding(
+                keywords["padding"] = cp_aligned_padding(
                     request.padding,
-                    cp_devices=cp_devices,
-                    cp_layout=cp_layout,
+                    cp_devices=invocation.cp_devices,
+                    cp_layout=invocation.cp_layout,
                 )
-                written = (
-                    native.main(
-                        argv,
-                        padding=padding,
-                        padding_profiles=padding_profiles,
-                        _prepared_params_loader=session_params_loader,
-                    )
-                    if use_session_loader
-                    else native.main(
-                        argv,
-                        padding=padding,
-                        padding_profiles=padding_profiles,
-                    )
-                )
+                keywords["padding_profiles"] = padding_profiles
+            if use_session_loader:
+                keywords["_prepared_params_loader"] = session_params_loader
+            written = runner.run_prediction(
+                runner.PredictionConfig(**invocation.config_fields),
+                **keywords,
+            )
         samples = tuple(
             PredictionSample(
                 seed=request.seed,

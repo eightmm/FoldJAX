@@ -790,10 +790,9 @@ def test_the_boltz2_plan_aligner_agrees_with_the_shared_mesh_policy() -> None:
 def test_the_opendde_backend_hands_its_native_path_a_mesh_aware_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from types import SimpleNamespace
-
     from foldjax.backends.opendde import OpenDDEBackend
     from foldjax.padding import cp_rows
+    from tests._native_double import native_module
 
     input_path = tmp_path / "job.json"
     weights_path = tmp_path / "opendde.jax"
@@ -801,15 +800,15 @@ def test_the_opendde_backend_hands_its_native_path_a_mesh_aware_profile(
     weights_path.write_bytes(b"native")
     seen: dict[str, object] = {}
 
-    def native_main(argv, **kwargs):
-        seen["argv"] = argv
+    def native_run(config, **kwargs):
+        seen["config"] = config
         seen.update(kwargs)
         kwargs["padding_profiles"].append({"target": {"msa": 1280}})
         return []
 
     monkeypatch.setattr(
         "foldjax.backends.opendde.import_module",
-        lambda _name: SimpleNamespace(main=native_main),
+        lambda _name: native_module("opendde", native_run),
     )
     OpenDDEBackend().predict(
         PredictionRequest(
@@ -822,7 +821,7 @@ def test_the_opendde_backend_hands_its_native_path_a_mesh_aware_profile(
         )
     )
 
-    assert "--cp-devices" in seen["argv"]
+    assert seen["config"].cp_devices == 4
     # Four devices with an omitted layout are a 2x2 grid on this port, and the
     # grid aligns to its side: two rows, not one row per device. An explicit
     # `1d` still asks for the four-row mesh and gets its alignment.

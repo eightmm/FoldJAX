@@ -47,6 +47,7 @@ from foldjax.models.protenix.relative_position import (
     compact_relative_position_storage,
 )
 from foldjax.schema import PaddingConfig, PredictionRequest
+from tests._native_double import native_module
 from tests.models.opendde.toy_params import inference_params
 
 
@@ -251,15 +252,15 @@ def test_opendde_backend_forwards_padding_and_returns_concrete_profile(
         "changed": True,
     }
 
-    def native_main(argv, **kwargs):
-        seen["argv"] = argv
+    def native_run(config, **kwargs):
+        seen["config"] = config
         seen.update(kwargs)
         kwargs["padding_profiles"].append(expected)
         return []
 
     monkeypatch.setattr(
         "foldjax.backends.opendde.import_module",
-        lambda _name: SimpleNamespace(main=native_main),
+        lambda _name: native_module("opendde", native_run),
     )
     result = OpenDDEBackend().predict(
         PredictionRequest(

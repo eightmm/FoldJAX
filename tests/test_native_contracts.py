@@ -17,6 +17,7 @@ import yaml
 from foldjax.input import materialize_native_input
 from foldjax.registry import capabilities
 from foldjax.schema import PredictionRequest
+from tests._native_double import native_module
 from tests._parser_capture import capture_parser, declared_flags
 
 
@@ -218,14 +219,14 @@ def test_opendde_adapter_restores_every_environment_variable_the_cli_exports(
     monkeypatch.delenv("PROTENIX_CCD_COMPONENTS_FILE", raising=False)
     monkeypatch.setenv("PROTENIX_KALIGN_BINARY", "/pre-existing/kalign")
 
-    def fake_main(argv):
+    def fake_run(config, **_kwargs):
         os.environ["PROTENIX_CCD_COMPONENTS_FILE"] = "/leaked/components.cif"
         os.environ["PROTENIX_KALIGN_BINARY"] = "/leaked/kalign"
-        # The real CLI returns the paths it wrote; this run writes none.
+        # The real runner returns the paths it wrote; this run writes none.
         return []
 
     monkeypatch.setattr(
-        opendde, "import_module", lambda name: type("M", (), {"main": fake_main})
+        opendde, "import_module", lambda name: native_module("opendde", fake_run)
     )
     job = tmp_path / "job.json"
     job.write_text("{}")
