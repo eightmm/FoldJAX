@@ -11,9 +11,12 @@ import numpy as np
 import pytest
 
 from foldjax.models import _stacking
-from foldjax.models.protenix.bridge import weights_io
+from foldjax.models import _weights_io as weights_impl
+from foldjax.models._weights_io import _device_narrow_batch
+
+# Through the Protenix facade: these names are its published surface, and the
+# port's prepared-params runner reaches the two private ones through it.
 from foldjax.models.protenix.bridge.weights_io import (
-    _device_narrow_batch,
     _load_native_weights_with_field_dtype,
     _NativeWeightsUnpickler,
     load_native_weights,
@@ -232,7 +235,7 @@ def test_device_narrow_batch_releases_wide_buffers_only_after_completion(
         wide_values.append(wide)
         return wide
 
-    monkeypatch.setattr(weights_io.jnp, "asarray", fake_asarray)
+    monkeypatch.setattr(weights_impl.jnp, "asarray", fake_asarray)
 
     narrowed = _device_narrow_batch(
         [np.zeros(1, dtype=np.float32), np.ones(1, dtype=np.float32)],

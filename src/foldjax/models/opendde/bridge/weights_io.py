@@ -1,18 +1,25 @@
-"""Native OpenDDE-JAX weights and isolated trusted-checkpoint conversion."""
+"""Native OpenDDE-JAX weights and isolated trusted-checkpoint conversion.
+
+The native reader and writer are shared with Protenix -- an OpenDDE checkpoint
+pickles both ports' parameter classes -- and live in
+:mod:`foldjax.models._weights_io`. Only the OpenDDE-specific part is here: the
+four trunk fields its prepared loader narrows, and the one-time conversion of
+a trusted official ``.pt`` checkpoint.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
-from foldjax.models.opendde.bridge.checkpoint import unwrap_state_dict
-from foldjax.models.opendde.bridge.torch_mapping import map_opendde_inference_state_dict
-from foldjax.models.protenix.bridge.weights_io import (
+from foldjax.models._weights_io import (
     _PREPARED_CAST_INPUT_BATCH_BYTES,
     _load_native_weights_with_field_dtype,
     load_native_weights,
     save_native_weights,
 )
+from foldjax.models.opendde.bridge.checkpoint import unwrap_state_dict
+from foldjax.models.opendde.bridge.torch_mapping import map_opendde_inference_state_dict
 
 _TRUNK_FIELDS = frozenset(
     {

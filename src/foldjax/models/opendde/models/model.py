@@ -883,7 +883,7 @@ def opendde_infer_static(
     #: the resolution passes that count and names ``structural_tokens`` as the
     #: axis to pad. A shape that cannot be split warns and runs replicated
     #: (see
-    #: `foldjax.models.protenix.models.diffusion._cp.resolve_atom_windows`).
+    #: `foldjax.models._cp_atom.resolve_atom_windows`).
     cp_atom_windows: bool = True,
 ) -> dict[str, jnp.ndarray]:
     """Run OpenDDE from already-featurized, unbatched static inputs.
