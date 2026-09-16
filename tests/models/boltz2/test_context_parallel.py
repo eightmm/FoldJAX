@@ -214,10 +214,27 @@ _GRID_STACK_PROBE = _PREAMBLE + textwrap.dedent(
     # The trunk pins the single stream and pair state by axis name. The 2-D
     # grid calls its axes cp_row/cp_col, so a stale literal cp constraint would
     # fail before reaching any pair block.
-    from foldjax.models._cp import CP_ROW_AXIS
+    #
+    # The pair pin has to name BOTH token axes on the grid, the way the blocks
+    # themselves ask for the layout: with the columns left replicated between
+    # the stacks, GSPMD gathers them back and the per-device tile is N x N/side
+    # instead of N/side x N/side. The local shard shape is what says so; the
+    # spec alone would pass a pin that named the axes and then let the
+    # partitioner widen the value.
+    #
+    # That half of the check needs a token count the grid divides. Thirteen
+    # rows over a side of two or three are pinned to nothing at all -- the
+    # constraint is dropped and the value comes back replicated -- which is
+    # why the padded stack above is a separate arm from this one, and why
+    # production pads tokens to the mesh before the trunk ever runs.
+    from foldjax.models._cp import CP_ROW_AXIS, pair_spec
     from foldjax.models.boltz2.models.trunk_blocks.trunk import (
         _shard_pair, _shard_single,
     )
+
+    side = int(round(DEVICES ** 0.5))
+    aligned = 4 * side
+    tile = aligned // side
 
     with context_parallel(DEVICES, layout="2d") as mesh:
         def pin(s_in, z_in):
@@ -229,6 +246,19 @@ _GRID_STACK_PROBE = _PREAMBLE + textwrap.dedent(
         pinned_s, pinned_z = jax.jit(pin)(arr(1, N, C), z)
         assert pinned_s.shape == (1, N, C), pinned_s.shape
         assert pinned_z.shape == z.shape, pinned_z.shape
+
+        z_aligned = arr(1, aligned, aligned, C)
+        pinned_s, pinned_z = jax.jit(pin)(arr(1, aligned, C), z_aligned)
+        assert pinned_z.shape == z_aligned.shape, pinned_z.shape
+        # A spec compares unequal to the same spec with its trailing `None`
+        # dropped, and that is the form an output sharding comes back in.
+        spec = tuple(pinned_z.sharding.spec)
+        spec = spec + (None,) * (4 - len(spec))
+        assert spec == tuple(pair_spec(4)), spec
+        local = tuple(
+            int(size) for size in next(iter(pinned_z.addressable_shards)).data.shape
+        )
+        assert local == (1, tile, tile, C), (local, tile)
 
     print("GRID_PARITY_OK")
     """

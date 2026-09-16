@@ -8,7 +8,7 @@ from math import pi
 import jax
 import jax.numpy as jnp
 
-from foldjax.models._cp import CP_AXIS, CP_ROW_AXIS
+from foldjax.models._cp import CP_AXIS, CP_COL_AXIS, CP_ROW_AXIS, pair_spec
 from foldjax.models._cp import cp_layout as _cp_layout
 from foldjax.models._cp import cp_mesh as _cp_mesh
 from foldjax.models._cp_atom import shard_atoms
@@ -184,19 +184,37 @@ def _shard_pair(
     """Constrain pair tensor ``z`` [B, N, N, C] over ``mesh``.
 
     ``mesh is None`` -> no-op (default path stays bit-identical). When a mesh is
-    given and ``shard_tokens`` is True the first token (N) axis is partitioned
-    over ``token_axis``; when False a replicated constraint is emitted (the
-    buffer still lives on the mesh, distribution is layout-only, numerics stay
-    bit-exact). See ``boltz2_trunk_forward`` for the bit-exactness trade-off.
+    given and ``shard_tokens`` is True the token (N) axes are partitioned; when
+    False a replicated constraint is emitted (the buffer still lives on the
+    mesh, distribution is layout-only, numerics stay bit-exact). See
+    ``boltz2_trunk_forward`` for the bit-exactness trade-off.
+
+    Under the two-dimensional context-parallel layout both token axes go on the
+    grid, which is what the pair blocks themselves ask for through
+    ``_cp.shard_pair_rows``. Naming only the rows here left the columns
+    replicated between the stacks, and GSPMD answered the mismatch with a
+    column ``all-gather``: at 2,112 tokens on four devices the full-column
+    ``f32[1,1056,2112,128]`` appeared 44 times in the partitioned program and
+    twice once both axes are pinned, which took 2.9% off the per-device CPU
+    arena. The one-dimensional layout is unaffected -- there the spec names the
+    rows either way, and the arena is identical to the byte.
+
+    An explicit ``mesh=`` argument -- the original opt-in API, whose axis is
+    ``token_axis`` and which has no context-parallel runtime behind it -- keeps
+    the single-axis spelling, because ``_cp.pair_spec`` names the axes of the
+    active layout and those do not exist in such a mesh.
     """
 
     if mesh is None:
         return z
     from jax.sharding import NamedSharding, PartitionSpec
 
-    spec = (
-        PartitionSpec(None, token_axis, None, None) if shard_tokens else PartitionSpec()
-    )
+    if not shard_tokens:
+        spec: PartitionSpec = PartitionSpec()
+    elif _cp_layout() == "2d" and CP_COL_AXIS in getattr(mesh, "axis_names", ()):
+        spec = pair_spec(z.ndim)
+    else:
+        spec = PartitionSpec(None, token_axis, None, None)
     return jax.lax.with_sharding_constraint(z, NamedSharding(mesh, spec))
 
 
