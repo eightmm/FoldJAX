@@ -244,7 +244,7 @@ for name, default in _RELEASED_COMPILE_DEFAULTS.items():
 
 The `bool` is an `int` subclass comment is repeated verbatim in four of them.
 
-A second smaller repetition, the `cp_layout == "1d"` strip: `boltz2.py:432-433`, `protenix.py:377-379`, `opendde.py:202-204`.
+A second smaller repetition, the `cp_layout == "1d"` strip: `boltz2.py:432-433`, `protenix.py:377-379`, `opendde.py:202-204`. (Superseded 2026-09-16: Boltz-2 and OpenDDE resolve `auto` to the square grid on perfect-square device counts and record the resolved layout, so two of the three are now deliberately different from Protenix's; not a consolidation candidate.)
 
 The `_RELEASED_COMPILE_DEFAULTS` tables themselves are per-model value sets and are **not** duplication: `openfold3.py:83` has 4 keys, `boltz2.py:273` has 14, `protenix.py:123` has 8, `opendde.py:72` has 15, `esmfold2.py:72` has 3 under the name `_FIXED_COMPILE_DEFAULTS`, `alphafold3.py:351` has 8.
 
