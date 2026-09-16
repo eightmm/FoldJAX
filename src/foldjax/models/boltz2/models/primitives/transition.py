@@ -6,8 +6,9 @@ from collections.abc import Mapping
 
 import jax
 import jax.numpy as jnp
+from jax.sharding import PartitionSpec
 
-from foldjax.models._cp import cp_mesh
+from foldjax.models._cp import cp_grid, cp_mesh, pair_spec, shard_pair_rows
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives.glu_backend import gated_linear_unit
 from foldjax.models.boltz2.models.primitives.native_amp_norm import amp_layer_norm
@@ -46,6 +47,7 @@ def transition_forward(
     glu_backend: str = "xla",
     compute_dtype: jnp.dtype | None = None,
     native_amp_norm: bool = False,
+    cp_pair: bool = False,
 ) -> jnp.ndarray:
     """Run a Boltz Transition block using mapped PyTorch parameters.
 
@@ -59,6 +61,12 @@ def transition_forward(
     ``float32`` precision. Left as ``None`` it is chosen from the size of the
     widened form; pass ``0`` to force the single-op / hidden-chunk path.
 
+    ``cp_pair`` declares ``x`` a pair tensor ``[B, N, N, C]`` laid out by the
+    active context-parallel layout, which is what lets the row block survive
+    context parallelism -- see ``_cp_pair_transition``. Any other caller keeps
+    the whole local tile, because slicing the global row axis of a sharded
+    tensor is what the partitioner cannot serve without a gather.
+
     ``glu_backend="tokamax"`` runs the swish GLU through the fused Triton kernel
     (GPU, low precision); ``"xla"`` (default) keeps the bit-exact split-matmul.
     """
@@ -68,13 +76,151 @@ def transition_forward(
         jnp.float16,
     ):
         compute_dtype = params["fc1"]["kernel"].dtype
-    if cp_mesh() is not None:
+    mesh = cp_mesh()
+    if mesh is not None and cp_pair and x.ndim == 4:
+        return _cp_pair_transition(
+            params,
+            x,
+            mesh=mesh,
+            chunk_size=chunk_size,
+            eps=eps,
+            row_chunk_size=row_chunk_size,
+            glu_backend=glu_backend,
+            compute_dtype=compute_dtype,
+            native_amp_norm=native_amp_norm,
+        )
+    if mesh is not None:
         # Under context parallelism axis 1 is the sharded row axis; slicing
         # it block by block would fight the partitioner, and the memory the
         # row chunk exists to bound is already divided across devices.
         row_chunk_size = 0
     if row_chunk_size is None:
         row_chunk_size = _auto_row_chunk(x, params)
+    return _transition_rows(
+        params,
+        x,
+        chunk_size=chunk_size,
+        eps=eps,
+        row_chunk_size=row_chunk_size,
+        glu_backend=glu_backend,
+        compute_dtype=compute_dtype,
+        native_amp_norm=native_amp_norm,
+    )
+
+
+def _cp_pair_transition(
+    params: TransitionParams,
+    x: jnp.ndarray,
+    *,
+    mesh: object,
+    chunk_size: int | None,
+    eps: float,
+    row_chunk_size: int | None,
+    glu_backend: str,
+    compute_dtype: jnp.dtype | None,
+    native_amp_norm: bool,
+) -> jnp.ndarray:
+    """Row-block the transition on each device's own tile of a pair tensor.
+
+    Zeroing the block under context parallelism left the widened pre-gate form
+    as the largest buffer in the sharded program: at 2,112 tokens on four
+    devices it is ``[1, 1056, 1056, 1024]`` per device under the 2-D layout and
+    ``[1, 528, 2112, 1024]`` under the 1-D one, together about half the arena,
+    against ``[1, 64, 2112, 1024]`` in the serial program. Restoring the block
+    on the *global* row axis does not recover that: a 64-row slice of a
+    4-way-sharded axis is not shard-aligned, so the partitioner gathers and the
+    arena moves 0.2%.
+
+    The block therefore has to be taken inside the shard, the way
+    ``triangle/triangle.py`` runs Cannon and ``triangle_attention.py`` runs the
+    ring. Every op here is elementwise in the two token axes and contracts only
+    over channels, so the local tile is the whole computation for its own rows
+    and columns -- no collective, and the arithmetic per element is the
+    arithmetic the unblocked sharded program did: outputs are bitwise identical
+    to the unblocked context-parallel path in both layouts, in float32 and
+    under the shipped bfloat16 compile policy.
+
+    Measured at 2,112 tokens on four CPU devices: the full-tile widened form
+    disappears from the partitioned program -- 15 values of
+    ``f32[1,1056,1056,1024]`` (4,356 MiB each) under the 2-D layout and 15 of
+    ``f32[1,528,2112,1024]`` under the 1-D one go to none -- and the widest
+    that remains is ``f32[135168,1024]``, 528 MiB, where XLA merged two
+    adjacent block dots back into one; the rest are single blocks
+    (``f32[1,64,1056,1024]``, 264 MiB, 96 of them). The CPU temp arena barely
+    moves with that (1-D -1.1%, 2-D +0.3%): that backend merges blocks where it
+    likes and materialises the ones it keeps rather than fusing them, which is
+    the same artefact that puts the serial arm at 92 GiB on CPU against
+    18.5 GiB measured on GPU. The per-device shape is the part of a CPU
+    partitioning probe that transfers; the arena is not.
+    """
+
+    rows, columns = cp_grid()
+    n_rows, n_columns = x.shape[1], x.shape[2]
+    # `shard_map` needs both sharded axes to divide the grid. The padded region
+    # is its own set of rows and columns, and the transition never mixes them
+    # with a kept one, so the padded output is sliced away unread.
+    row_pad, column_pad = (-n_rows) % rows, (-n_columns) % columns
+    if row_pad or column_pad:
+        x = jnp.pad(x, ((0, 0), (0, row_pad), (0, column_pad), (0, 0)))
+    spec = pair_spec(x.ndim)
+
+    def local(x_local: jnp.ndarray, params_local: TransitionParams) -> jnp.ndarray:
+        block = row_chunk_size
+        if block is None:
+            # The serial rule, read off the local tile rather than the global
+            # one: the widened form it bounds is the per-device buffer.
+            block = _auto_row_chunk(x_local, params_local)
+        return _transition_rows(
+            params_local,
+            x_local,
+            chunk_size=chunk_size,
+            eps=eps,
+            row_chunk_size=block,
+            glu_backend=glu_backend,
+            compute_dtype=compute_dtype,
+            native_amp_norm=native_amp_norm,
+        )
+
+    # Parameters go in as a replicated operand rather than a closure, as in
+    # `triangle_attention._triangle_attention_cp`: under a layer scan they are
+    # traced values, and an operand keeps the whole tree on the mesh.
+    out = jax.shard_map(
+        local,
+        mesh=mesh,
+        in_specs=(spec, PartitionSpec()),
+        out_specs=spec,
+    )(x, params)
+    if row_pad or column_pad:
+        # Re-pinning the slice keeps the partitioner from answering the
+        # narrower shape with a replicated result.
+        out = shard_pair_rows(
+            jax.lax.slice(
+                out,
+                (0, 0, 0, 0),
+                (out.shape[0], n_rows, n_columns, out.shape[3]),
+            )
+        )
+    return out
+
+
+def _transition_rows(
+    params: TransitionParams,
+    x: jnp.ndarray,
+    *,
+    chunk_size: int | None,
+    eps: float,
+    row_chunk_size: int | None,
+    glu_backend: str,
+    compute_dtype: jnp.dtype | None,
+    native_amp_norm: bool,
+) -> jnp.ndarray:
+    """The transition itself, over whatever rows of axis 1 it is handed.
+
+    ``compute_dtype`` and ``row_chunk_size`` are already resolved, and nothing
+    here reads the sharding: the caller decides whether the row block runs on
+    the global axis or inside a shard.
+    """
+
     if (
         row_chunk_size is not None
         and row_chunk_size > 0
@@ -86,7 +232,7 @@ def transition_forward(
         for start in range(0, n, row_chunk_size):
             stop = min(start + row_chunk_size, n)
             blocks.append(
-                transition_forward(
+                _transition_rows(
                     params,
                     x[:, start:stop],
                     chunk_size=chunk_size,

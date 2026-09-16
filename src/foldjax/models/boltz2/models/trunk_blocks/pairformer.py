@@ -224,6 +224,9 @@ def pairformer_layer_forward(
             native_amp_norm=(
                 params["transition_z"]["fc1"]["kernel"].dtype == jnp.bfloat16
             ),
+            # `z` is the pair tensor the active layout shards, so the row
+            # block above is taken inside the shard instead of being dropped.
+            cp_pair=True,
         ),
         pair_residual_dtype,
     )
