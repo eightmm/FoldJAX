@@ -210,7 +210,7 @@ def test_msa_auto_fills_in_the_alignment_and_reaches_the_dialect(
 ) -> None:
     backend = _StubSearch()
     monkeypatch.setattr(
-        "foldjax.input._msa_pipeline", lambda: _stub_pipeline(tmp_path, backend)
+        "foldjax.msa_search._msa_pipeline", lambda: _stub_pipeline(tmp_path, backend)
     )
     source = _write(
         tmp_path / "job.json",
@@ -234,7 +234,7 @@ def test_a_searched_alignment_is_reused_for_the_next_model(
     """The cache is keyed by sequence, not by model: three backends, one search."""
     backend = _StubSearch()
     monkeypatch.setattr(
-        "foldjax.input._msa_pipeline", lambda: _stub_pipeline(tmp_path, backend)
+        "foldjax.msa_search._msa_pipeline", lambda: _stub_pipeline(tmp_path, backend)
     )
     source = _write(
         tmp_path / "job.json",
@@ -252,7 +252,7 @@ def test_boltz_takes_the_unpaired_alignment_and_never_a_paired_one(
 ) -> None:
     backend = _StubSearch()
     monkeypatch.setattr(
-        "foldjax.input._msa_pipeline", lambda: _stub_pipeline(tmp_path, backend)
+        "foldjax.msa_search._msa_pipeline", lambda: _stub_pipeline(tmp_path, backend)
     )
     source = _write(
         tmp_path / "job.json",
@@ -278,7 +278,7 @@ def test_openfold3_links_a_searched_alignment_under_a_stem_it_reads(
     """
     backend = _StubSearch()
     monkeypatch.setattr(
-        "foldjax.input._msa_pipeline", lambda: _stub_pipeline(tmp_path, backend)
+        "foldjax.msa_search._msa_pipeline", lambda: _stub_pipeline(tmp_path, backend)
     )
     source = _write(
         tmp_path / "job.json",
@@ -308,7 +308,7 @@ def test_a_failed_search_falls_back_under_auto_and_fails_under_required(
             raise SearchError("server is down")
 
     monkeypatch.setattr(
-        "foldjax.input._msa_pipeline", lambda: _stub_pipeline(tmp_path, _Broken())
+        "foldjax.msa_search._msa_pipeline", lambda: _stub_pipeline(tmp_path, _Broken())
     )
     source = _write(
         tmp_path / "job.json",
@@ -327,7 +327,7 @@ def test_an_explicit_alignment_is_never_replaced_by_a_search(
 ) -> None:
     backend = _StubSearch()
     monkeypatch.setattr(
-        "foldjax.input._msa_pipeline", lambda: _stub_pipeline(tmp_path, backend)
+        "foldjax.msa_search._msa_pipeline", lambda: _stub_pipeline(tmp_path, backend)
     )
     alignment = tmp_path / "mine.a3m"
     alignment.write_text(f">query\n{SEQUENCE}\n", encoding="utf-8")

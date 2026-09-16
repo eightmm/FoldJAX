@@ -211,7 +211,11 @@ def test_importing_the_table_imports_no_runtime() -> None:
     at the source tree, so `foldjax/__init__.py` never runs. Without that the
     test would be vacuous: the package root imports `api`, which imports
     `manifest`, `input` and `registry` already, and an allow-list for what the
-    root drags in would hide a leak these four modules introduced themselves.
+    root drags in would hide a leak these modules introduced themselves.
+
+    `msa_search` is named separately because it was lifted out of `input.py`,
+    and a module reached only through a search that most jobs never run is
+    exactly where such an import goes unnoticed.
 
     The subprocess is the point as well -- an in-process check cannot see a
     top-level import in a module some earlier test already loaded.
@@ -228,6 +232,7 @@ sys.modules["foldjax"] = stub
 import foldjax.portspec
 import foldjax.manifest
 import foldjax.input
+import foldjax.msa_search
 import foldjax.registry
 
 leaked = sorted(
