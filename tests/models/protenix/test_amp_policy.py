@@ -24,6 +24,7 @@ import pytest
 
 from foldjax.backends import protenix as backend_impl
 from foldjax.backends.protenix import ProtenixBackend
+from foldjax.models.protenix import runner as predict_runner
 from foldjax.models.protenix.amp_policy import (
     AMP_POLICY_CHOICES,
     DEFAULT_AMP_POLICY,
@@ -815,11 +816,11 @@ def test_preparing_a_tree_without_the_stage_leaves_the_named_error_to_the_model(
     Reaching through it here would replace that sentence with an
     `AttributeError` naming a tuple, and would do it on the default path.
     """
-    assert predict_cli._amp_realised_params((), AmpPolicy(True, True), {}) == ()
+    assert predict_runner._amp_realised_params((), AmpPolicy(True, True), {}) == ()
     params = _bf16_trunk_params()
     stripped = params._replace(confidence=None)
     assert (
-        predict_cli._amp_realised_params(stripped, AmpPolicy(True, False), {})
+        predict_runner._amp_realised_params(stripped, AmpPolicy(True, False), {})
         is stripped
     )
     with pytest.raises(ValueError, match="carry no confidence stage"):
@@ -942,7 +943,7 @@ def test_the_cli_resolves_the_policy_per_job_and_threads_it(
         featurize_json, "featurize_protein_json", lambda *a, **k: dict(features)
     )
     monkeypatch.setattr(
-        predict_cli, "_load_prepared_params", lambda *a, **k: _toy_params()
+        predict_runner, "_load_prepared_params", lambda *a, **k: _toy_params()
     )
     captured: list[AmpPolicy] = []
     prepared: list[bool] = []
@@ -1009,7 +1010,7 @@ def test_the_realised_policy_is_reported_per_job(
         featurize_json, "featurize_protein_json", lambda *a, **k: dict(features)
     )
     monkeypatch.setattr(
-        predict_cli, "_load_prepared_params", lambda *a, **k: _toy_params()
+        predict_runner, "_load_prepared_params", lambda *a, **k: _toy_params()
     )
     monkeypatch.setattr(predict_impl, "protenix_predict_static", lambda *a, **k: {})
     predict_cli.main(

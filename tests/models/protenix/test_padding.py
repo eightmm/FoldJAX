@@ -8,7 +8,6 @@ import numpy as np
 import pytest
 
 from foldjax.backends.protenix import ProtenixBackend
-from foldjax.models.protenix.cli.predict import _padded_noise_tapes
 from foldjax.models.protenix.data.padding import (
     crop_protenix_outputs,
     pad_protenix_features,
@@ -40,6 +39,7 @@ from foldjax.models.protenix.relative_position import (
     COMPACT_RELP_FIELDS,
     compact_relative_position_storage,
 )
+from foldjax.models.protenix.runner import _padded_noise_tapes
 from foldjax.padding import PaddingPlan
 from foldjax.schema import PaddingConfig, PredictionRequest
 

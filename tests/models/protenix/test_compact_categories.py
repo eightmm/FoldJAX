@@ -538,6 +538,7 @@ def test_cli_compacts_after_padding_and_uses_zero_row_sentinels(
 def test_cli_releases_all_dense_category_arrays_before_loading_params(
     tmp_path, monkeypatch, mode: str
 ) -> None:
+    from foldjax.models.protenix import runner as predict_runner
     from foldjax.models.protenix.cli import predict as predict_impl
 
     input_path = tmp_path / "input.json"
@@ -546,8 +547,8 @@ def test_cli_releases_all_dense_category_arrays_before_loading_params(
         encoding="utf-8",
     )
     dense_refs: list[weakref.ReferenceType[np.ndarray]] = []
-    real_compact = predict_impl.compact_ref_atom_category_storage
-    real_drop = predict_impl.drop_dense_categories_from_writer_snapshot
+    real_compact = predict_runner.compact_ref_atom_category_storage
+    real_drop = predict_runner.drop_dense_categories_from_writer_snapshot
 
     def remember_dense(features) -> None:
         for name in ("ref_element", "ref_atom_name_chars"):
@@ -564,10 +565,10 @@ def test_cli_releases_all_dense_category_arrays_before_loading_params(
         return real_drop(features)
 
     monkeypatch.setattr(
-        predict_impl, "compact_ref_atom_category_storage", recording_compact
+        predict_runner, "compact_ref_atom_category_storage", recording_compact
     )
     monkeypatch.setattr(
-        predict_impl, "drop_dense_categories_from_writer_snapshot", recording_drop
+        predict_runner, "drop_dense_categories_from_writer_snapshot", recording_drop
     )
     if mode == "esm":
 

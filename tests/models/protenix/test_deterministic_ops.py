@@ -41,6 +41,7 @@ import numpy as np
 import pytest
 
 from foldjax.models._compile_policy import DETERMINISTIC_COMPILER_OPTIONS
+from foldjax.models.protenix import runner as predict_runner
 from foldjax.models.protenix.cli import predict as predict_cli
 from foldjax.models.protenix.data import esm
 from foldjax.models.protenix.models import model as model_impl
@@ -251,7 +252,7 @@ def test_the_cli_threads_the_flag_to_the_prediction(
         lambda *_args, **_kwargs: dict(_toy_features()),
     )
     monkeypatch.setattr(
-        predict_cli,
+        predict_runner,
         "_load_prepared_params",
         lambda *_args, **_kwargs: _toy_params(),
     )

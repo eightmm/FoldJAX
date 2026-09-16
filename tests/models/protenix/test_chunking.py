@@ -146,9 +146,9 @@ def test_the_two_callers_name_the_table_they_measured() -> None:
     same breath because the two callers must not converge.
     """
     from foldjax.models.opendde.cli import predict as opendde_predict
-    from foldjax.models.protenix.cli import predict as protenix_predict
+    from foldjax.models.protenix import runner as protenix_runner
 
-    protenix_source = inspect.getsource(protenix_predict)
+    protenix_source = inspect.getsource(protenix_runner)
     opendde_source = inspect.getsource(opendde_predict)
 
     assert "thresholds=PROTENIX_MEASURED_CHUNK_SIZE_THRESHOLDS" in protenix_source

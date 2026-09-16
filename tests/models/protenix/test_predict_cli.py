@@ -1052,11 +1052,11 @@ def test_predict_pads_mini_esm_language_model_and_reports_profile(
         return fallback_init, fallback_steps
 
     monkeypatch.setattr(
-        "foldjax.models.protenix.cli.predict._prefix_rng_is_supported",
+        "foldjax.models.protenix.runner._prefix_rng_is_supported",
         lambda: False,
     )
     monkeypatch.setattr(
-        "foldjax.models.protenix.cli.predict._padded_noise_tapes", fake_tapes
+        "foldjax.models.protenix.runner._padded_noise_tapes", fake_tapes
     )
     captured.clear()
     predict_main(argv, on_padding_plan=collect_profile)
