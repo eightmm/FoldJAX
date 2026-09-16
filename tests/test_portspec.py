@@ -213,9 +213,12 @@ def test_importing_the_table_imports_no_runtime() -> None:
     `manifest`, `input` and `registry` already, and an allow-list for what the
     root drags in would hide a leak these modules introduced themselves.
 
-    `msa_search` is named separately because it was lifted out of `input.py`,
-    and a module reached only through a search that most jobs never run is
-    exactly where such an import goes unnoticed.
+    `msa_search` and `result_validation` are named separately because they
+    were lifted out of `input.py` and `api.py`. `input` imports `msa_search`
+    at module scope today, so naming it keeps the guard if that import ever
+    goes lazy; `result_validation` is reached only through `api`, which this
+    test cannot import at all -- `api` imports a backend base class -- so a
+    runtime import it acquired would otherwise go unnoticed.
 
     The subprocess is the point as well -- an in-process check cannot see a
     top-level import in a module some earlier test already loaded.
@@ -234,6 +237,7 @@ import foldjax.manifest
 import foldjax.input
 import foldjax.msa_search
 import foldjax.registry
+import foldjax.result_validation
 
 leaked = sorted(
     name
