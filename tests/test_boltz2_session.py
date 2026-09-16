@@ -368,6 +368,16 @@ def test_cache_defaults_are_pinned_to_the_native_predict_signature() -> None:
     # -- so the backend's copy cannot drift from what the port actually runs.
     assert released.pop("matmul_precision") == native_api.MATMUL_PRECISION
     assert "matmul_precision" not in signature.parameters
+    # `triangle_attention_ring_kernel` is the second, for the same reason one
+    # level down: it names a body of the 2-D triangle-attention ring, so the
+    # only signature that could carry it is the ring's own, and it travels in
+    # a ContextVar from `Boltz2Backend.predict`. Its authority is what the
+    # ring runs when nobody asks -- read from the ring rather than restated,
+    # so the backend's copy cannot drift from it.
+    from foldjax.models._cp_attention import ring_tile_kernel
+
+    assert released.pop("triangle_attention_ring_kernel") == ring_tile_kernel()
+    assert "triangle_attention_ring_kernel" not in signature.parameters
 
     actual = {name: signature.parameters[name].default for name in released}
 

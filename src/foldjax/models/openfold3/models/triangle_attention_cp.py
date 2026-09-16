@@ -11,7 +11,10 @@ from __future__ import annotations
 import jax.numpy as jnp
 
 from foldjax.models._cp import cp_layout, shard_pair_rows
-from foldjax.models._cp_attention import ring_triangle_attention_2d_from_pair
+from foldjax.models._cp_attention import (
+    ring_tile_kernel,
+    ring_triangle_attention_2d_from_pair,
+)
 from foldjax.models.openfold3.models.attention import flatten_heads, split_heads
 from foldjax.models.openfold3.models.primitives import (
     jax_sigmoid,
@@ -52,6 +55,13 @@ def triangle_attention(
     so one block bounds its own projections, its score tile and its
     accumulators. ``None`` leaves the ring's own rule
     (:func:`~foldjax.models._cp_attention.resolve_ring_row_block`) in force.
+
+    The fused *tile* kernel Boltz-2 and Protenix can opt into is refused here
+    rather than ignored. Nothing about it is port-specific -- the ring below is
+    the same object -- so what is missing is only that no OpenFold3 backend
+    option reaches this scope and no OpenFold3 run has measured it. A scope
+    this adapter silently dropped would make a spelled request and an omitted
+    one compile the same program under two names.
     """
 
     if cp_layout() != "2d":
@@ -71,8 +81,16 @@ def triangle_attention(
     if resolved_backend != "xla":
         raise ValueError(
             "2-D context-parallel OpenFold3 triangle attention requires "
-            "backend='xla'; fused local softmax outputs cannot be merged "
-            "across rotating key tiles."
+            "backend='xla'; a fused attention over the global token axis "
+            "cannot be partitioned."
+        )
+    requested_tile_kernel = ring_tile_kernel()
+    if requested_tile_kernel != "xla":
+        raise ValueError(
+            "OpenFold3 has no triangle_attention_ring_kernel option, so "
+            f"{requested_tile_kernel!r} cannot have been asked for through "
+            "this port; the scope is refused rather than ignored because "
+            "ignoring it would report a fused run that did not happen"
         )
     if x.ndim < 3:
         raise ValueError(

@@ -111,6 +111,19 @@ class _BoundedJitRunner:
             clear()
 
 
+def _ring_tile_kernel_scope(kernel: object):
+    """Enter the 2-D ring's tile-kernel scope for one prediction.
+
+    Imported here rather than at module scope because
+    `models/_cp_attention.py` imports JAX and this module must not: `foldjax
+    plan` validates a request without initialising a backend.
+    """
+
+    from foldjax.models._cp_attention import ring_tile_kernel_scope
+
+    return ring_tile_kernel_scope(None if kernel is None else str(kernel))
+
+
 def _native_module():
     """Import the Boltz-2 port and resolve its lazy prediction entry point.
 
@@ -286,6 +299,14 @@ def _padding_shape_profile(metadata: object) -> dict[str, object] | None:
 #: Keep this list beside the adapter rather than importing the native API while
 #: planning a request: cache-directory selection must stay free of the model
 #: runtime.  A signature drift test pins every value to the native authority.
+#: The 2-D ring bodies a request may ask for, spelled here rather than
+#: imported from `models/_cp_attention.py`, which pulls in JAX: this module is
+#: import-time JAX-free so that `foldjax plan` can validate a request without
+#: initialising a backend. `tests/test_cp_option_surface.py` asserts the two
+#: spellings are the same tuple, so the copy cannot drift.
+_RING_TILE_KERNELS: tuple[str, ...] = ("xla", "tokamax")
+
+
 _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "num_steps": 200,
     "num_recycles": 3,
@@ -324,6 +345,9 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     # not name two namespaces.
     "pair_residual_dtype": "auto",
     "triangle_backend": "cueq",
+    # The shipped 2-D ring body. Named here so an explicit `xla` shares the
+    # namespace an omitted option selects, and only `tokamax` forks.
+    "triangle_attention_ring_kernel": "xla",
     "glu_backend": "tokamax",
     "deterministic": False,
     "msa_deletions": "released",
@@ -395,6 +419,12 @@ class Boltz2Backend(Backend):
             "steering_args",
             "token_attention_chunk",
             "triangle_attention_q_chunk",
+            # Carried by a scope rather than by `**options`, the way
+            # `matmul_precision` is (`backends/base.py`): every signature
+            # between here and the ring -- trunk, Pairformer, MSA, template,
+            # confidence -- would otherwise grow an argument none of them
+            # reads. It is popped below, before the native call.
+            "triangle_attention_ring_kernel",
             "trunk_atom_attention_backend",
             "use_msa_server",
             "write_fmt",
@@ -458,6 +488,12 @@ class Boltz2Backend(Backend):
         # `resolve_long_sequence_chunks`, so there is no released width to
         # record and absence keeps meaning "the rung decided".
         "triangle_attention_q_chunk",
+        # A different ring body and different arithmetic, so a different
+        # program. The compilation cache keys on the name for that reason; the
+        # retained in-process runner does *not* fork on it, because the value
+        # lives in a ContextVar that no jit cache key carries -- one value per
+        # process, which is how the experiment runs its arms.
+        "triangle_attention_ring_kernel",
         "deterministic",
         # Two policies, two programs: it sets the `precision` attribute on
         # every float32 dot in the graph, the cuEquivariance triangle-
@@ -825,6 +861,25 @@ class Boltz2Backend(Backend):
             "2d",
         }:
             raise ValueError("cp_layout must be one of 'auto', '1d', or '2d'")
+        ring_kernel = options.get("triangle_attention_ring_kernel")
+        if ring_kernel is not None:
+            if ring_kernel not in _RING_TILE_KERNELS:
+                raise ValueError(
+                    "triangle_attention_ring_kernel must be one of "
+                    f"{_RING_TILE_KERNELS}"
+                )
+            # Whether the *card* can run the fused tile is settled at trace
+            # time (`_cp_attention.resolve_ring_tile_kernel`): asking here
+            # would initialise a JAX backend inside `foldjax plan`. What is
+            # settled here is whether there is a ring at all -- the option
+            # names a body of the 2-D ring, and a serial or 1-D run has none,
+            # so spelling it there is a request nothing would honour.
+            if ring_kernel != "xla" and square_grid_cp_layout(options) != "2d":
+                raise ValueError(
+                    "triangle_attention_ring_kernel selects a body of the 2-D "
+                    "context-parallel triangle-attention ring; it needs "
+                    "cp_layout=2d on a perfect-square cp_devices"
+                )
         if "attention_backend" in options and options["attention_backend"] not in {
             "tokamax",
             "xla",
@@ -1007,6 +1062,10 @@ class Boltz2Backend(Backend):
         # Out before `**options` reaches the native signature: no model takes
         # this as an argument, the scope carries it.
         matmul_precision = self.matmul_precision(options)
+        # The same, one level down: this one names a body of the 2-D
+        # triangle-attention ring, and the only signature that could carry it
+        # is the ring's own.
+        ring_tile_kernel = options.pop("triangle_attention_ring_kernel", None)
         mols = options.pop("mols", None) or _default_mols(request.weights)
         if mols is None:
             raise ValueError(
@@ -1056,7 +1115,7 @@ class Boltz2Backend(Backend):
         )
         if self._session_active:
             native_options["_runtime"] = self
-        with matmul_precision():
+        with matmul_precision(), _ring_tile_kernel_scope(ring_tile_kernel):
             output = native.predict(**native_options)
         if request.stop_after in {"inputs", "trunk"}:
             # Nothing was folded, so there are no samples to describe.

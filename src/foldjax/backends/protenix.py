@@ -16,6 +16,7 @@ from foldjax.backends.base import (
     MATMUL_PRECISION_OPTION,
     SAMPLING_OPTIONS,
     Backend,
+    square_grid_cp_layout,
     validate_memory_policy_options,
 )
 from foldjax.execution import DETERMINISTIC_ARGV_OPTION
@@ -225,6 +226,9 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     # slower.
     "diffusion_attention_backend": "tokamax",
     "trunk_single_attention_backend": "xla_jit",
+    # The shipped 2-D ring body. Named here so an explicit `xla` stays in the
+    # namespace an omitted option selects, and only `tokamax` forks.
+    "triangle_attention_ring_kernel": "xla",
     "chunk_policy": "auto",
     "cp_atom_windows": True,
     "cp_devices": 1,
@@ -401,6 +405,20 @@ def _negated_switch_option(key: str, value: Any) -> bool:
 #: other arm. Refused here, at prediction time, where argparse refused it:
 #: `validate_native_options` is also what `foldjax plan` runs, and planning
 #: never rendered these values.
+#: The 2-D ring bodies a request may ask for. Spelled here rather than
+#: imported from `models/_cp_attention.py`, which imports JAX, because this
+#: module must stay import-time JAX-free for `foldjax plan`.
+#: `tests/test_cp_option_surface.py` asserts the two spellings are the same
+#: tuple, so the copy cannot drift.
+#:
+#: Deliberately NOT an `_OPTION_SPECS` entry: that table is the *parser's*
+#: flag specs, pinned equal to `_CLI_OPTIONS` by
+#: `tests/test_native_config_equivalence.py`, and this option is not a flag --
+#: it is popped before the flag loop and carried by a scope. Its values are
+#: checked in `validate_native_options` instead.
+_RING_TILE_KERNELS: tuple[str, ...] = ("xla", "tokamax")
+
+
 _OPTION_SPECS: dict[str, tuple[Callable[[str, Any], Any], tuple[str, ...] | None]] = {
     "amp_policy": (_text_option, ("auto", "upstream", "fp32", "bf16")),
     "chunk_policy": (_text_option, ("auto", "manual", "off")),
@@ -443,6 +461,14 @@ _OPTION_SPECS: dict[str, tuple[Callable[[str, Any], Any], tuple[str, ...] | None
         ("xla", "xla_jit", "tokamax", "cueq", "cueq_jit"),
     ),
 }
+
+
+def _ring_tile_kernel_scope(kernel: str | None):
+    """Enter the 2-D ring's tile-kernel scope for one prediction."""
+
+    from foldjax.models._cp_attention import ring_tile_kernel_scope
+
+    return ring_tile_kernel_scope(kernel)
 
 
 def _option_field(key: str, value: Any) -> Any:
@@ -550,6 +576,11 @@ class _NativeInvocation(NamedTuple):
     cli_args: tuple[str, ...]
     representations: tuple[str, ...]
     matmul_precision: Callable[[], AbstractContextManager[None]]
+    #: Which body of the 2-D triangle-attention ring this run asks for. A
+    #: field rather than a rendered flag because no `PredictionConfig` field
+    #: and no native flag carries it: like `matmul_precision`, it travels in a
+    #: scope. `None` is the shipped body.
+    ring_tile_kernel: str | None
 
 
 class ProtenixBackend(ManagedCcdSession, Backend):
@@ -562,7 +593,10 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         "templates",
         "language_model_tokens",
     )
-    native_options = frozenset(_CLI_OPTIONS | {"cli_args", "output_format"})
+    native_options = frozenset(
+        _CLI_OPTIONS
+        | {"cli_args", "output_format", "triangle_attention_ring_kernel"}
+    )
     sampling_options = SAMPLING_OPTIONS
     # Protenix spells both the names and the values its own way: `bf16` for the
     # dtype, and `_jit` suffixes on the kernels for the traced variants.
@@ -602,6 +636,10 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         "chunk_policy",
         "triangle_mul_chunk_size",
         "triangle_att_q_chunk_size",
+        # A different ring body and different arithmetic, so a different
+        # program. Not a parser flag: it reaches the ring through a scope, for
+        # the reason the field on `_NativeInvocation` records.
+        "triangle_attention_ring_kernel",
         "single_att_q_chunk_size",
         "token_q_chunk_size",
         "opm_chunk_size",
@@ -691,6 +729,23 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             raise ValueError(
                 "output_format must be one of 'npz', 'protenix', or 'both'"
             )
+        ring_kernel = options.get("triangle_attention_ring_kernel")
+        if ring_kernel is not None:
+            if ring_kernel not in _RING_TILE_KERNELS:
+                raise ValueError(
+                    "triangle_attention_ring_kernel must be one of "
+                    f"{_RING_TILE_KERNELS}"
+                )
+            # Whether this card can run the fused tile is settled at trace
+            # time (`_cp_attention.resolve_ring_tile_kernel`); asking here
+            # would initialise a JAX backend inside `foldjax plan`. What is
+            # settled here is that there is a ring to pick a body of at all.
+            if ring_kernel != "xla" and square_grid_cp_layout(options) != "2d":
+                raise ValueError(
+                    "triangle_attention_ring_kernel selects a body of the 2-D "
+                    "context-parallel triangle-attention ring; it needs "
+                    "cp_layout=2d on a perfect-square cp_devices"
+                )
         glu_backend = options.get("glu_backend", "xla")
         if glu_backend not in _GLU_BACKENDS:
             # Rejected here rather than left to the parser: argparse answers a
@@ -826,6 +881,12 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         matmul_precision = self.matmul_precision(options)
         cli_args = _extra_cli_args(options.pop("cli_args", ()))
         output_format = str(options.pop("output_format", "protenix"))
+        # Out here for the same reason `matmul_precision` is: a scope carries
+        # it, so the leftover-option check below must not see it and the flag
+        # loop has no flag to render for it.
+        ring_tile_kernel = options.pop("triangle_attention_ring_kernel", None)
+        if ring_tile_kernel is not None:
+            ring_tile_kernel = str(ring_tile_kernel)
         argv = [
             "--input-json",
             str(request.input),
@@ -928,6 +989,7 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             cli_args=cli_args,
             representations=wanted,
             matmul_precision=matmul_precision,
+            ring_tile_kernel=ring_tile_kernel,
         )
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
@@ -976,7 +1038,11 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             keywords["on_padding_plan"] = on_padding_plan
         if use_session_loader:
             keywords["_prepared_params_loader"] = session_params_loader
-        with invocation.matmul_precision(), self._ccd_memory_scope():
+        with (
+            invocation.matmul_precision(),
+            self._ccd_memory_scope(),
+            _ring_tile_kernel_scope(invocation.ring_tile_kernel),
+        ):
             if invocation.cli_args:
                 written = module.main(argv, **keywords)
             else:

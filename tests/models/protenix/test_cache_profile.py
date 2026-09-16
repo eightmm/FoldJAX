@@ -61,19 +61,32 @@ def test_cache_defaults_track_native_parser_model_policy_and_cp_resolver(
     # an omitted knob runs is the model function's own default, read back
     # through `resolved_matmul_precision`. So it has a second authority rather
     # than an exemption, pinned below.
-    from_the_signature = {"matmul_precision"}
-    assert from_the_signature <= set(backend_impl._RELEASED_COMPILE_DEFAULTS)
-    assert not from_the_signature & set(captured)
+    #
+    # `triangle_attention_ring_kernel` is the second such default, and its
+    # authority is a third place again: it names a body of the 2-D
+    # triangle-attention ring, neither a parser flag nor a `PredictionConfig`
+    # field carries it, and what an omitted option runs is what the ring runs
+    # when nobody asks. Read from the ring rather than restated here, so the
+    # backend's copy cannot drift from it.
+    from foldjax.models._cp_attention import ring_tile_kernel
+
+    not_a_parser_flag = {"matmul_precision", "triangle_attention_ring_kernel"}
+    assert not_a_parser_flag <= set(backend_impl._RELEASED_COMPILE_DEFAULTS)
+    assert not not_a_parser_flag & set(captured)
     assert backend_impl._RELEASED_COMPILE_DEFAULTS["matmul_precision"] == (
         inspect.signature(predict_impl.protenix_predict_static)
         .parameters["matmul_precision"]
         .default
     )
+    assert (
+        backend_impl._RELEASED_COMPILE_DEFAULTS["triangle_attention_ring_kernel"]
+        == ring_tile_kernel()
+    )
 
     actual = {
         name: captured[name]
         for name in backend_impl._RELEASED_COMPILE_DEFAULTS
-        if name not in from_the_signature
+        if name not in not_a_parser_flag
     }
     assert actual["max_msa_depth"] is None
     actual["max_msa_depth"] = predict_cli._resolve_msa_depth(None)
@@ -84,7 +97,7 @@ def test_cache_defaults_track_native_parser_model_policy_and_cp_resolver(
     expected_from_parser = {
         name: value
         for name, value in backend_impl._RELEASED_COMPILE_DEFAULTS.items()
-        if name not in from_the_signature
+        if name not in not_a_parser_flag
     }
     for name, expected in expected_from_parser.items():
         assert type(actual[name]) is type(expected)

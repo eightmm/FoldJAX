@@ -13,7 +13,11 @@ import jax
 import jax.numpy as jnp
 
 from foldjax.models._cp import cp_layout, shard_pair_rows
-from foldjax.models._cp_attention import ring_triangle_attention_2d_from_pair
+from foldjax.models._cp_attention import (
+    resolve_ring_tile_kernel,
+    ring_tile_kernel,
+    ring_triangle_attention_2d_from_pair,
+)
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives._common import sigmoid as _sigmoid
 from foldjax.models.boltz2.models.triangle.triangle_attention import (
@@ -65,6 +69,17 @@ def triangle_attention_forward(
     ``chunk_size`` stays unused on this path, and so does ``native_amp``: the
     ring applies its own query scale in the caller's dtype and has no
     autocast branch to select.
+
+    What one ring step evaluates its tile with comes from the scope rather
+    than from this signature
+    (:func:`~foldjax.models._cp_attention.ring_tile_kernel`): the option would
+    otherwise have to be threaded through every trunk, Pairformer, MSA,
+    template and confidence signature between the adapter and here, none of
+    which has anything to do with it. ``triangle_backend`` stays the *serial*
+    kernel choice and is still refused here for anything but ``xla``: it
+    selects a whole fused attention over the global token axis, which is not
+    partitionable, where the ring's option selects a kernel for one local
+    tile.
     """
 
     if cp_layout() != "2d":
@@ -84,9 +99,11 @@ def triangle_attention_forward(
     if triangle_backend != "xla":
         raise ValueError(
             "2-D context-parallel triangle attention requires "
-            "triangle_backend='xla': a fused kernel normalises one local tile "
-            "before the ring can merge its softmax statistics."
+            "triangle_backend='xla': a fused kernel over the global token "
+            "axis cannot be partitioned. To run a fused kernel on each ring "
+            "tile instead, pass triangle_attention_ring_kernel=tokamax."
         )
+    tile_kernel = resolve_ring_tile_kernel(ring_tile_kernel())
     if x.ndim != 4:
         raise ValueError(
             "Boltz 2-D triangle attention expects [B, N, N, C], "
@@ -155,6 +172,7 @@ def triangle_attention_forward(
         project=project,
         precision=precision,
         q_block=q_chunk_size,
+        tile_kernel=tile_kernel,
     )
     out = jnp.swapaxes(out, -2, -3)
     out = out.reshape(out.shape[:-2] + (no_heads * hidden,))

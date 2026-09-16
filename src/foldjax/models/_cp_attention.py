@@ -15,7 +15,9 @@ its score tile and accumulators are the block's width, not the tile's. See
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 import jax
@@ -30,6 +32,97 @@ from foldjax.models._cp import (
     cp_mesh,
     permute,
 )
+from foldjax.models._tokamax_attention import tokamax_available
+
+#: What a ring step may evaluate one local tile with. ``xla`` is the shipped
+#: program -- the two-pass global-maximum ring below -- and the default
+#: everywhere. ``tokamax`` is experimental and GPU-only: it runs the fused
+#: Triton attention per tile and merges the tiles by their softmax statistics,
+#: which is a different program and different arithmetic, not a faster
+#: spelling of the same one.
+RING_TILE_KERNELS: tuple[str, ...] = ("xla", "tokamax")
+
+#: Every tile kernel :func:`_ring_local_rows` will run, which is one more than
+#: the option offers. ``xla_merge`` is the merge ring -- one rotation, tiles
+#: folded by :func:`merge_softmax_statistics` -- driven by the portable tile
+#: instead of the fused one. It is deliberately not a request a backend can
+#: spell: it is slower than both of the others and buys nothing in a
+#: prediction. What it buys is that the merge ring's rotation schedule,
+#: accumulator shapes and empty-row handling are executed by the CPU gates,
+#: rather than first executed on the four cards the experiment allocates.
+RING_TILE_BODIES: tuple[str, ...] = ("xla", "xla_merge", "tokamax")
+
+_TILE_KERNEL: ContextVar[str] = ContextVar(
+    "foldjax_ring_tile_kernel",
+    default="xla",
+)
+
+
+def ring_tile_kernel() -> str:
+    """The tile kernel the active scope asks a 2-D ring step to use.
+
+    A scope rather than a keyword because no model in this repository takes
+    this as an argument: it would have to be threaded through every trunk,
+    Pairformer, MSA, template and confidence signature between the adapter and
+    the ring. ``matmul_precision`` travels the same way and for the same
+    reason (``backends/base.py``).
+    """
+
+    return _TILE_KERNEL.get()
+
+
+@contextmanager
+def ring_tile_kernel_scope(kernel: str | None) -> Iterator[str]:
+    """Run the enclosed prediction with ``kernel`` inside every 2-D ring step.
+
+    ``None`` is the default: the scope is still entered, so a caller need not
+    branch, and the value it publishes is the shipped ``xla``.
+    """
+
+    name = "xla" if kernel is None else str(kernel)
+    if name not in RING_TILE_KERNELS:
+        raise ValueError(
+            f"triangle_attention_ring_kernel must be one of "
+            f"{RING_TILE_KERNELS}, got {name!r}"
+        )
+    token = _TILE_KERNEL.set(name)
+    try:
+        yield name
+    finally:
+        _TILE_KERNEL.reset(token)
+
+
+def resolve_ring_tile_kernel(kernel: str | None) -> str:
+    """Validate a tile-kernel request against what this process can run.
+
+    Refused rather than downgraded. A silent fallback would make two machines
+    run two different programs under one command, which is the rule
+    ``foldjax.execution`` states for every kernel knob: a build that cannot
+    reach a fused path says so. The refusal happens here, at trace time,
+    because the backend it needs to ask about does not exist when a request is
+    validated -- ``validate_request`` must not initialise JAX.
+    """
+
+    name = "xla" if kernel is None else str(kernel)
+    if name not in RING_TILE_KERNELS:
+        raise ValueError(
+            f"triangle_attention_ring_kernel must be one of "
+            f"{RING_TILE_KERNELS}, got {name!r}"
+        )
+    if name == "xla":
+        return name
+    if not tokamax_available():
+        raise RuntimeError(
+            "triangle_attention_ring_kernel='tokamax' needs the tokamax "
+            "package, which did not import in this process"
+        )
+    platform = jax.default_backend()
+    if platform != "gpu":
+        raise RuntimeError(
+            "triangle_attention_ring_kernel='tokamax' runs a Pallas/Triton "
+            f"kernel and needs the GPU backend; this process is on {platform!r}"
+        )
+    return name
 
 
 def _flat(
@@ -298,16 +391,12 @@ def _tile_scores(
     return scores + bias_b.astype(jnp.float32) + mask_t.astype(jnp.float32)
 
 
-def _tile_terms(
-    q_b: jax.Array,
-    k_t: jax.Array,
+def _tile_terms_from_scores(
+    scores: jax.Array,
     v_t: jax.Array,
-    bias_b: jax.Array,
-    mask_t: jax.Array,
     maximum_b: jax.Array,
     precision: jax.lax.Precision | None,
 ) -> tuple[jax.Array, jax.Array]:
-    scores = _tile_scores(q_b, k_t, bias_b, mask_t, precision)
     finite_maximum = jnp.isfinite(maximum_b)
     positive_infinity = jnp.isposinf(maximum_b)
     shifted = jnp.where(
@@ -333,6 +422,264 @@ def _tile_terms(
     return block_output, block_normalizer
 
 
+def _tile_terms(
+    q_b: jax.Array,
+    k_t: jax.Array,
+    v_t: jax.Array,
+    bias_b: jax.Array,
+    mask_t: jax.Array,
+    maximum_b: jax.Array,
+    precision: jax.lax.Precision | None,
+) -> tuple[jax.Array, jax.Array]:
+    return _tile_terms_from_scores(
+        _tile_scores(q_b, k_t, bias_b, mask_t, precision),
+        v_t,
+        maximum_b,
+        precision,
+    )
+
+
+#: One ring step's locally normalised tile: ``(output, maximum, normalizer)``
+#: in fp32, where ``output`` is ``sum_j exp(score_ij - maximum_i) v_j`` -- the
+#: *unnormalised* numerator -- and ``normalizer`` is the matching denominator.
+#: ``maximum`` and ``normalizer`` carry a trailing size-1 key axis so they
+#: broadcast against ``output`` without a reshape.
+#:
+#: A tile whose every key is masked away reports ``maximum = -inf`` and zeros,
+#: which is what :func:`_softmax_rescale` reads as "contributes nothing".
+TileAttention = Callable[
+    [jax.Array, jax.Array, jax.Array, jax.Array, jax.Array],
+    tuple[jax.Array, jax.Array, jax.Array],
+]
+
+
+def merge_softmax_statistics(
+    output: jax.Array,
+    output_correction: jax.Array,
+    normalizer: jax.Array,
+    normalizer_correction: jax.Array,
+    maximum: jax.Array,
+    block_output: jax.Array,
+    block_maximum: jax.Array,
+    block_normalizer: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Fold one locally normalised tile into a compensated online accumulator.
+
+    The standard statistics merge, ``m = max(m, m_t)`` then both sides rescaled
+    onto it, with :func:`_compensated_add` carrying the numerator's and the
+    denominator's low bits exactly as the two-pass ring does. The corrections
+    are rescaled with their totals: a correction is a residual *of* the total
+    it belongs to, so a scale the total takes and the correction does not would
+    make the pair describe two different sums.
+
+    :func:`online_softmax_update` is the same recurrence without the
+    compensation, and keeps its historical three-state API for callers outside
+    this module.
+    """
+
+    next_maximum = jnp.maximum(maximum, block_maximum)
+    previous_scale = _softmax_rescale(maximum, next_maximum)
+    block_scale = _softmax_rescale(block_maximum, next_maximum)
+    output, output_correction = _compensated_add(
+        output * previous_scale,
+        output_correction * previous_scale,
+        block_scale * block_output,
+    )
+    normalizer, normalizer_correction = _compensated_add(
+        normalizer * previous_scale,
+        normalizer_correction * previous_scale,
+        block_scale * block_normalizer,
+    )
+    return (
+        output,
+        output_correction,
+        normalizer,
+        normalizer_correction,
+        next_maximum,
+    )
+
+
+def tile_attention_xla(
+    q_b: jax.Array,
+    k_t: jax.Array,
+    v_t: jax.Array,
+    bias_b: jax.Array,
+    mask_t: jax.Array,
+    *,
+    precision: jax.lax.Precision | None = None,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """The :data:`TileAttention` contract in portable XLA.
+
+    This is the reference the fused tile is measured against, and the only one
+    of the two that runs anywhere: the merge below is arithmetic, not a kernel,
+    and a GPU-only tile would leave it untestable on the platform every gate in
+    this repository runs on.
+
+    It is *not* the shipped 2-D program. The default ring fixes one global row
+    maximum in a first pass and never rescales (:func:`_ring_local_rows`); this
+    normalises each tile against its own maximum, which is the input the
+    statistics merge exists to combine and what a fused kernel can report.
+    """
+
+    scores = _tile_scores(q_b, k_t, bias_b, mask_t, precision)
+    maximum = jnp.max(scores, axis=-1, keepdims=True)
+    block_output, block_normalizer = _tile_terms_from_scores(
+        scores,
+        v_t,
+        maximum,
+        precision,
+    )
+    return block_output, maximum, block_normalizer
+
+
+#: The tokamax attention implementation the option runs. One name, never a
+#: sequence: `tokamax.dot_product_attention` takes a list and uses the first
+#: implementation that does not raise `NotImplementedError`, which is a silent
+#: fallback chain -- exactly what this option must not have. Pinning the
+#: single object means an unsupported shape raises instead of quietly
+#: measuring XLA under a fused label.
+RING_TOKAMAX_IMPLEMENTATION = "triton"
+
+
+def tile_attention_tokamax(
+    q_b: jax.Array,
+    k_t: jax.Array,
+    v_t: jax.Array,
+    bias_b: jax.Array,
+    mask_t: jax.Array,
+    *,
+    precision: jax.lax.Precision | None = None,
+    implementation: str = RING_TOKAMAX_IMPLEMENTATION,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """The same contract from tokamax's fused Triton attention.
+
+    ``normalize_output=False`` leaves the numerator unnormalised and
+    ``return_residuals=True`` returns ``(maximum, normalizer)``, which together
+    are exactly this contract -- so the tile never materialises its
+    ``[rows, heads, queries, keys]`` score tensor, which is the whole reason
+    the option exists. The public ``tokamax.dot_product_attention`` returns
+    only the output, so the implementation object is addressed directly and
+    pinned to one name: a sequence would be a silent fallback chain.
+
+    Two operand conversions, both of which keep the bias broadcast-free:
+
+    * ``mask_t`` is the ring's additive mask bias, broadcast over heads and
+      queries. It becomes tokamax's boolean key mask. Adding its finite part
+      to ``bias_b`` instead would broadcast the two against each other and
+      materialise the tile this path exists to avoid.
+    * a tile with no valid key is forced back to ``(-inf, 0, 0)``. Tokamax
+      masks with ``finfo.min`` rather than ``-inf`` (an all-``-inf`` row makes
+      its stable softmax evaluate ``exp(nan)``), so such a row comes back as a
+      finite maximum and a nonzero denominator over keys that are all absent.
+
+    ``implementation`` exists so the operand conversions above -- the layout
+    swaps, the mask, the residual reshape and the empty-row forcing, which is
+    where a wiring bug would live -- can be executed by a CPU gate against
+    tokamax's own XLA implementation. Both implementations go through
+    `base.DotProductAttention.__call__`, so they share this contract; only the
+    Triton one is a request the option can make.
+    """
+
+    if not tokamax_available():
+        raise RuntimeError(
+            "triangle_attention_ring_kernel='tokamax' needs the tokamax "
+            "package, which did not import in this process"
+        )
+    from absl import flags
+    from tokamax._src.ops.attention.api import IMPLEMENTATIONS
+
+    if not flags.FLAGS.is_parsed():
+        flags.FLAGS(["foldjax.models._cp_attention"], known_only=True)
+
+    # f32 before the call, not after. Both tokamax implementations end their
+    # forward with `out.astype(q.dtype)`, so bf16 operands -- which is what
+    # the released `compute_dtype` gives this ring -- would round the
+    # *unnormalised* numerator to bf16 before the merge ever sees it, and a
+    # cast on the way out cannot undo that. The XLA tile already casts q, k
+    # and v to f32 inside `_tile_scores`, so this is the same arithmetic and
+    # the two bodies stay comparable. Running the kernel on bf16 operands for
+    # the tensor-core speed the serial fused path enjoys is a separate
+    # decision, and it needs the merge's error measured against this first.
+    query = jnp.swapaxes(q_b.astype(jnp.float32), -3, -2)
+    key = jnp.swapaxes(k_t.astype(jnp.float32), -3, -2)
+    value = jnp.swapaxes(v_t.astype(jnp.float32), -3, -2)
+    keys_valid = mask_t >= 0.0
+    if implementation not in IMPLEMENTATIONS:
+        raise ValueError(
+            f"tokamax has no {implementation!r} attention implementation in "
+            f"this process; it registered {sorted(IMPLEMENTATIONS)}"
+        )
+    output, (maximum, normalizer) = IMPLEMENTATIONS[implementation](
+        query,
+        key,
+        value,
+        bias=bias_b,
+        mask=keys_valid,
+        # The ring's callers divide the query by sqrt(channels) in `project`,
+        # before the tile ever sees it. `AUTO` would apply it a second time.
+        logits_scale=1.0,
+        logits_dtype=jnp.float32,
+        precision=precision,
+        normalize_output=False,
+        return_residuals=True,
+    )
+    # Residuals come back as [*B, H, T]; the ring carries [*B, H, T, 1].
+    output = jnp.swapaxes(output, -3, -2).astype(jnp.float32)
+    maximum = maximum[..., None].astype(jnp.float32)
+    normalizer = normalizer[..., None].astype(jnp.float32)
+    tile_valid = jnp.any(keys_valid, axis=-1, keepdims=True)
+    empty_maximum = jnp.full_like(maximum, -jnp.inf)
+    maximum = jnp.where(tile_valid, maximum, empty_maximum)
+    normalizer = jnp.where(tile_valid, normalizer, jnp.zeros_like(normalizer))
+    output = jnp.where(tile_valid, output, jnp.zeros_like(output))
+    return output, maximum, normalizer
+
+
+def _resolve_tile_attention(
+    tile_kernel: str,
+    precision: jax.lax.Precision | None,
+) -> TileAttention:
+    if tile_kernel not in RING_TILE_BODIES:
+        raise ValueError(
+            f"ring tile kernel must be one of {RING_TILE_BODIES}, "
+            f"got {tile_kernel!r}"
+        )
+    if tile_kernel == "tokamax":
+        return lambda *tile: tile_attention_tokamax(*tile, precision=precision)
+    return lambda *tile: tile_attention_xla(*tile, precision=precision)
+
+
+def _finish_block(
+    output: jax.Array,
+    normalizer: jax.Array,
+    *,
+    dtype: Any,
+    gate_b: jax.Array | None,
+) -> jax.Array:
+    """Normalise one row block's accumulator and apply its gate.
+
+    A query row with no valid key anywhere in the ring reaches here with a
+    zero denominator, and leaves as zeros rather than as a division: the
+    online recurrence is defined for an empty row and this is what it defines
+    it to be.
+    """
+
+    tiny = jnp.asarray(jnp.finfo(jnp.float32).tiny, dtype=jnp.float32)
+    result = jnp.where(
+        normalizer > 0,
+        output / jnp.maximum(normalizer, tiny),
+        jnp.zeros_like(output),
+    )
+    result = result.astype(dtype)
+    if gate_b is not None:
+        # Same order the callers applied it in outside the ring: the fp32
+        # accumulator is rounded to the value dtype first and only then
+        # gated, and an elementwise product commutes with the caller's
+        # transpose back to [..., rows, keys, heads, channels].
+        result = result * gate_b
+    return result
+
+
 def _ring_local_rows(
     *,
     tiles: Callable[
@@ -346,13 +693,38 @@ def _ring_local_rows(
     side: int,
     heads: int,
     precision: jax.lax.Precision | None,
+    tile_kernel: str = "xla",
 ) -> jax.Array:
-    """Run the two-pass ring on one ``shard_map`` shard, a row block at a time.
+    """Run the ring on one ``shard_map`` shard, a row block at a time.
 
     ``tiles(start, size)`` returns that block's ``q``, ``k``, ``v`` and gate --
     projected inside the block by the pair-representation entry point, sliced
     from already-projected tensors by the q/k/v one.
+
+    ``tile_kernel`` picks the block body, and the two are different programs
+    rather than two spellings of one:
+
+    ``xla``
+        the shipped two-pass ring. One global row maximum is fixed over a full
+        rotation before any exponential is accumulated, and the second
+        rotation combines tile terms against it. This is the default and its
+        arithmetic is what every 2-D measurement in this repository describes.
+    ``tokamax``
+        one pass of :data:`TileAttention` per key tile, merged by
+        :func:`merge_softmax_statistics`. Half the rotations and no score
+        tensor, at the cost of the repeated rescaling the two-pass ring was
+        written to remove. Experimental and GPU-only; see
+        :func:`resolve_ring_tile_kernel`.
+    ``xla_merge``
+        the same merge ring with the portable tile. See
+        :data:`RING_TILE_BODIES`.
     """
+
+    if tile_kernel not in RING_TILE_BODIES:
+        raise ValueError(
+            f"ring tile kernel must be one of {RING_TILE_BODIES}, "
+            f"got {tile_kernel!r}"
+        )
 
     bias_init0 = triangle_bias_stage0_perm(side)
     diagonal_init = triangle_bias_stage1_perm(side)
@@ -437,25 +809,88 @@ def _ring_local_rows(
                 mask_t = permute(mask_t, kv_hop)
                 bias_t = permute(bias_t, bias_hop)
 
-        output = output + output_correction
-        normalizer = normalizer + normalizer_correction
-        tiny = jnp.asarray(jnp.finfo(jnp.float32).tiny, dtype=jnp.float32)
-        result = jnp.where(
-            normalizer > 0,
-            output / jnp.maximum(normalizer, tiny),
-            jnp.zeros_like(output),
+        return _finish_block(
+            output + output_correction,
+            normalizer + normalizer_correction,
+            dtype=v_b.dtype,
+            gate_b=gate_b,
         )
-        result = result.astype(v_b.dtype)
-        if gate_b is not None:
-            # Same order the callers applied it in outside the ring: the fp32
-            # accumulator is rounded to the value dtype first and only then
-            # gated, and an elementwise product commutes with the caller's
-            # transpose back to [..., rows, keys, heads, channels].
-            result = result * gate_b
-        return result
+
+    def fused_block(start: int | jax.Array | None, size: int) -> jax.Array:
+        """One row block through a single rotation of fused tiles.
+
+        The tokamax arm. A fused kernel normalises its tile against the tile's
+        own maximum, so there is nothing for a first pass to fix and V has to
+        travel with K from the start -- one rotation instead of two, and the
+        merge carries the rescaling the two-pass body avoided.
+        """
+
+        tile_attention = _resolve_tile_attention(tile_kernel, precision)
+        q_b, k_b, v_b, gate_b = tiles(start, size)
+        if q_b.shape[-3] != heads or q_b.shape[-4] != size:
+            raise ValueError(
+                "ring row block expects [..., rows, heads, keys, channels]; "
+                f"got {q_b.shape} for {size} rows and {heads} heads"
+            )
+        mask_b = _rows_of(mask_l, start, size, -4)
+        k_t = permute(k_b, diagonal_init)
+        v_t = permute(v_b, diagonal_init)
+        mask_t = permute(mask_b, diagonal_init)
+        bias_t = bias_l
+
+        output = jnp.zeros(q_b.shape, dtype=jnp.float32)
+        output_correction = jnp.zeros_like(output)
+        normalizer = jnp.zeros(q_b.shape[:-1] + (1,), dtype=jnp.float32)
+        normalizer_correction = jnp.zeros_like(normalizer)
+        # Starting at -inf rather than at the first tile's statistics so that
+        # the merge is the same expression on every step: `_softmax_rescale`
+        # reads a -inf source as "the accumulator holds nothing yet", which is
+        # the same thing it reads an all-masked tile as.
+        maximum = jnp.full_like(normalizer, -jnp.inf)
+
+        for step in range(side):
+            block_output, block_maximum, block_normalizer = tile_attention(
+                q_b,
+                k_t,
+                v_t,
+                bias_t,
+                mask_t,
+            )
+            (
+                output,
+                output_correction,
+                normalizer,
+                normalizer_correction,
+                maximum,
+            ) = merge_softmax_statistics(
+                output,
+                output_correction,
+                normalizer,
+                normalizer_correction,
+                maximum,
+                block_output,
+                block_maximum,
+                block_normalizer,
+            )
+            if step + 1 < side:
+                k_t = permute(k_t, kv_hop)
+                v_t = permute(v_t, kv_hop)
+                mask_t = permute(mask_t, kv_hop)
+                bias_t = permute(bias_t, bias_hop)
+
+        return _finish_block(
+            output + output_correction,
+            normalizer + normalizer_correction,
+            dtype=v_b.dtype,
+            gate_b=gate_b,
+        )
+
+    # The default keeps the two-pass body, so `xla` compiles the program the
+    # ring compiled before this option existed.
+    block_body = fused_block if tile_kernel != "xla" else one_block
 
     if block >= rows:
-        return one_block(None, rows)
+        return block_body(None, rows)
 
     full_blocks, remainder = divmod(rows, block)
     # A ragged tail is its own static block, not a padded-and-masked axis: each
@@ -475,7 +910,7 @@ def _ring_local_rows(
     # varying-ness, which a freshly zeroed destination does not; and the peeled
     # block makes the loop's carry depend on a real tile, so XLA retires that
     # tile before the loop instead of scheduling the two side by side.
-    peeled = one_block(peel_start, peel_size)
+    peeled = block_body(peel_start, peel_size)
     destination = jnp.zeros(
         peeled.shape[:-4] + (rows,) + peeled.shape[-3:],
         dtype=peeled.dtype,
@@ -491,7 +926,7 @@ def _ring_local_rows(
         return (
             jax.lax.dynamic_update_slice_in_dim(
                 current,
-                one_block(start, block),
+                block_body(start, block),
                 start,
                 axis=-4,
             ),
@@ -604,6 +1039,7 @@ def ring_triangle_attention_2d(
     *,
     precision: jax.lax.Precision | None = None,
     q_block: int | None = None,
+    tile_kernel: str = "xla",
 ) -> jax.Array:
     """Run exact gather-free triangle attention on a square two-dimensional mesh.
 
@@ -627,6 +1063,9 @@ def ring_triangle_attention_2d(
     accumulators but not the projections.
     :func:`ring_triangle_attention_2d_from_pair` projects inside the block and
     bounds those too.
+
+    ``tile_kernel`` selects what one ring step evaluates its tile with; see
+    :func:`_ring_local_rows`. The default is the shipped two-pass ring.
     """
 
     side = _check_ring_mesh()
@@ -698,6 +1137,7 @@ def ring_triangle_attention_2d(
             side=side,
             heads=heads,
             precision=precision,
+            tile_kernel=tile_kernel,
         )
 
     out = jax.shard_map(
@@ -726,6 +1166,7 @@ def ring_triangle_attention_2d_from_pair(
     project: Callable[[Any, Any], tuple[jax.Array, jax.Array, jax.Array, Any]],
     precision: jax.lax.Precision | None = None,
     q_block: int | None = None,
+    tile_kernel: str = "xla",
 ) -> jax.Array:
     """Project Q/K/V one row block at a time and run the ring on each block.
 
@@ -742,6 +1183,9 @@ def ring_triangle_attention_2d_from_pair(
     contracts over the channel axis, so slicing the rows and then projecting is
     the same arithmetic as projecting and then slicing, and each row is still
     projected exactly once.
+
+    ``tile_kernel`` selects what one ring step evaluates its tile with; see
+    :func:`_ring_local_rows`. The default is the shipped two-pass ring.
     """
 
     side = _check_ring_mesh()
@@ -826,6 +1270,7 @@ def ring_triangle_attention_2d_from_pair(
             side=side,
             heads=heads,
             precision=precision,
+            tile_kernel=tile_kernel,
         )
 
     out = jax.shard_map(

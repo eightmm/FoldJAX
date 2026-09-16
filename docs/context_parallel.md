@@ -205,6 +205,55 @@ further when one block's score tile would pass 8 GiB, floored at 8 rows. A
 non-positive value asks for one block, which is the unblocked ring and the
 program the ring lowered to before blocking existed.
 
+## The ring tile kernel (experimental, GPU only, unmeasured)
+
+Under a mesh every fused kernel in the trunk resolves to an XLA path, because
+a kernel that consumes the whole token axis cannot be partitioned, and that
+resolution is most of the 2-D wall penalty: Boltz-2 at 2,096 tokens runs 231 s
+serial with its fused kernels, 555 s serial with the XLA ones, and 973 s on
+the 2x2 grid. The ring's per-step tile, though, is a *local* attention over
+`[rows, heads, queries, keys]` -- a shape a fused kernel can take.
+
+`--option triangle_attention_ring_kernel=tokamax` (Boltz-2 and Protenix)
+replaces the tile with tokamax's Pallas/Triton attention, called with
+`normalize_output=False` and `return_residuals=True` so it hands back the
+tile's unnormalised numerator together with the softmax maximum and
+denominator. Those three are exactly what a statistics merge needs, so the
+tiles combine without the tile ever materialising its score tensor -- which is
+also what the ring's two-pass body could not do, because a kernel normalises
+its tile before the ring gets to see it.
+
+It is a **different program and different arithmetic**, not a faster spelling
+of the default:
+
+- one rotation rather than two, with `V` travelling with `K` from the first
+  step, because there is no global maximum to fix in advance;
+- each tile is normalised against its own maximum and rescaled onto the
+  running one, which is the repeated rescaling the two-pass body was written
+  to remove. The Neumaier compensation on both the numerator and the
+  denominator is carried across the merge;
+- a query row with no valid key anywhere in the ring comes out as zeros.
+  Tokamax masks with `finfo.min` rather than `-inf`, so such a row is forced
+  back to `(-inf, 0, 0)` before the merge sees it. The default path instead
+  leaves a row whose keys are all *mask-biased* (`-1e9`, not absent) reducing
+  over those keys as the serial path does; only genuinely absent keys are
+  `-inf` there. The two therefore differ on rows the model masks away
+  downstream, and nowhere else.
+
+`xla` is the default and remains the program every 2-D measurement in this
+repository describes. The option is refused rather than downgraded: off the
+GPU backend, without tokamax installed, or without a 2-D layout to be a body
+of, it raises. It also forks the compilation-cache namespace, because it is a
+different program -- but the value travels in a `ContextVar`, which no `jax.jit`
+cache key carries, so the retained in-process runner does **not** fork on it:
+one value per process.
+
+No wall time or peak is recorded here yet. The experiment that would record it
+runs one layer's ring on four cards in both kernels, asserts the fused
+dispatch, compares the outputs, and only then times a full prediction pass.
+Until it has run, the option is an implementation with a CPU-proved merge and
+no measurement.
+
 ## Boltz-2 atom-window path
 
 Boltz-2 distributes the atom diffusion graph rather than only the pair trunk:

@@ -269,7 +269,15 @@ _RENDERED_OUTSIDE_THE_FLAG_LOOP = {
     # `cli_args` is the escape hatch: `:486` appends it verbatim, so it is not
     # a flag name at all but a list of them, guarded against colliding with a
     # reserved flag by `_RESERVED_CLI_FLAGS` at `:68`.
-    "protenix": {"output_format", "cli_args"},
+    #
+    # `triangle_attention_ring_kernel` is the third, and it is the
+    # `matmul_precision` case one level down: it names a body of the 2-D
+    # triangle-attention ring, no `PredictionConfig` field and no native flag
+    # carries it, and it reaches the ring through a ContextVar that
+    # `ProtenixBackend.predict` enters. It is popped in `_native_invocation`
+    # before the leftover-option check, so a misspelling is still an error --
+    # which is the property this invariant is protecting.
+    "protenix": {"output_format", "cli_args", "triangle_attention_ring_kernel"},
 }
 
 

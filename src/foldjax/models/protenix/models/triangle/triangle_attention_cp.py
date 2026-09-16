@@ -6,7 +6,11 @@ import jax
 import jax.numpy as jnp
 
 from foldjax.models._cp import cp_layout, shard_pair_rows
-from foldjax.models._cp_attention import ring_triangle_attention_2d_from_pair
+from foldjax.models._cp_attention import (
+    resolve_ring_tile_kernel,
+    ring_tile_kernel,
+    ring_triangle_attention_2d_from_pair,
+)
 from foldjax.models.protenix.models.primitives.primitives import (
     layer_norm,
     linear,
@@ -49,6 +53,14 @@ def triangle_attention(
     without touching the rotation schedule. ``None`` leaves the ring's own
     rule (:func:`~foldjax.models._cp_attention.resolve_ring_row_block`) in
     force.
+
+    What one ring step evaluates its tile with comes from the scope
+    (:func:`~foldjax.models._cp_attention.ring_tile_kernel`) rather than from
+    this signature, for the reason the Boltz-2 adapter records: nothing
+    between the backend and here would have a use for the argument.
+    ``attention_backend`` remains the serial kernel choice -- a fused
+    attention over the global token axis, which no mesh can partition -- and
+    is still refused for anything but ``xla`` here.
     """
 
     if cp_layout() != "2d":
@@ -70,9 +82,11 @@ def triangle_attention(
     if backend != "xla":
         raise ValueError(
             "2-D context-parallel Protenix triangle attention requires the "
-            "XLA ring backend; a fused local softmax cannot be merged across "
-            "rotating key tiles."
+            "XLA ring backend; a fused attention over the global token axis "
+            "cannot be partitioned. To run a fused kernel on each ring tile "
+            "instead, pass triangle_attention_ring_kernel=tokamax."
         )
+    tile_kernel = resolve_ring_tile_kernel(ring_tile_kernel())
     if x.ndim != 3:
         raise ValueError(
             "Protenix 2-D triangle attention expects [N, N, C], "
@@ -116,6 +130,7 @@ def triangle_attention(
         params.attention,
         project=project,
         q_block=q_chunk_size,
+        tile_kernel=tile_kernel,
     )
     out = jnp.swapaxes(out, -2, -3)
     out = out.reshape(out.shape[:-2] + (-1,))

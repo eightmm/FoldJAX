@@ -12,6 +12,31 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **The two-dimensional triangle-attention ring can run a fused kernel on each
+  ring tile**, opt-in and experimental, with
+  `--option triangle_attention_ring_kernel=tokamax` on Boltz-2 and Protenix.
+  Under a mesh every fused trunk kernel resolves to an XLA path, because a
+  kernel over the whole token axis cannot be partitioned -- and that accounts
+  for most of the 2-D wall penalty. A ring step's tile is a local attention,
+  so a fused kernel can take it: tokamax's Pallas/Triton attention is called
+  with `normalize_output=False` and `return_residuals=True`, which returns the
+  tile's unnormalised numerator with its softmax maximum and denominator, and
+  the tiles are combined by a softmax-statistics merge that carries Neumaier
+  compensation on both. The tile never materialises its score tensor.
+
+  This is a different program and different arithmetic from the default, not a
+  faster spelling of it: one rotation instead of two, each tile normalised
+  against its own maximum, and a query row with no valid key anywhere in the
+  ring coming out as zeros. `xla` remains the default and every recorded 2-D
+  measurement still describes it. **No wall time or peak has been measured
+  yet**; the option ships with its merge proved on CPU against a dense softmax
+  and with nothing measured on a card. It is GPU-only and refuses rather than
+  falls back: without the GPU backend, without tokamax, or without a 2-D
+  layout to be a body of, it raises. It forks the compilation-cache namespace;
+  it does not fork the retained in-process runner, because the value travels
+  in a `ContextVar` that no `jax.jit` cache key carries -- one value per
+  process.
+
 - **ESMFold2 has a two-dimensional context-parallel layout**, selected with
   `--option cp_layout=2d` beside `--option cp_devices=N` on a perfect-square
   device count. Both token axes of the pair state go on the mesh instead of
