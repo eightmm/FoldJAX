@@ -17,6 +17,7 @@ from foldjax.backends.base import (
     SAMPLING_OPTIONS,
     Backend,
     square_grid_cp_layout,
+    validate_memory_policy_options,
 )
 from foldjax.execution import DETERMINISTIC_ARGV_OPTION
 from foldjax.models import _representations
@@ -60,6 +61,12 @@ _CLI_OPTIONS = {
     "diffusion_dtype",
     "kalign_binary",
     "max_msa_depth",
+    # Admission against this card's own reported ceiling. Members here because
+    # this is the set of options the port's parser takes, and it takes them;
+    # subtracted from `compile_options` below, because a refused run and a
+    # warned run build the same program and must share one cache namespace.
+    "memory_budget_gib",
+    "memory_check",
     "token_q_chunk_size",
     "single_att_q_chunk_size",
     "triangle_att_q_chunk_size",
@@ -80,6 +87,11 @@ _CLI_OPTIONS = {
     "use_rna_msa",
     "use_template",
 }
+
+#: The members of :data:`_CLI_OPTIONS` that decide whether the run starts
+#: rather than what it compiles. Subtracted from `compile_options` so two runs
+#: differing only in a budget share one cache namespace and one executable.
+_MEMORY_OPTIONS = frozenset({"memory_budget_gib", "memory_check"})
 
 #: Compile-relevant defaults released by the native OpenDDE prediction CLI.
 #:
@@ -169,6 +181,8 @@ _PARSER_DEFAULTS: dict[str, object] = {
     "template_release_dates": None,
     "template_obsolete_map": None,
     "kalign_binary": None,
+    "memory_check": "refuse",
+    "memory_budget_gib": None,
 }
 
 
@@ -178,6 +192,14 @@ def _integer_option(key: str, value: object) -> int:
         return int(str(value))
     except ValueError as error:
         raise ValueError(f"{key} must be an integer; got {value!r}") from error
+
+
+def _number_option(key: str, value: object) -> float:
+    """The parser's `type=float`."""
+    try:
+        return float(str(value))
+    except ValueError as error:
+        raise ValueError(f"{key} must be a number; got {value!r}") from error
 
 
 def _path_option(_key: str, value: object) -> Path:
@@ -231,6 +253,8 @@ _OPTION_SPECS: dict[
     "diffusion_dtype": (_text_option, ("fp32", "bf16")),
     "kalign_binary": (_path_option, None),
     "max_msa_depth": (_integer_option, None),
+    "memory_budget_gib": (_number_option, None),
+    "memory_check": (_text_option, ("refuse", "warn")),
     "n_keys": (_integer_option, None),
     "n_queries": (_integer_option, None),
     "num_recycles": (_integer_option, None),
@@ -319,7 +343,9 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
     # sharing one namespace for two programs. This port calls
     # `resolved_matmul_precision` nowhere, so it pins no released value and
     # there is no spelling for `_RELEASED_COMPILE_DEFAULTS` to alias.
-    compile_options = tuple(sorted(_CLI_OPTIONS | {"matmul_precision"}))
+    compile_options = tuple(
+        sorted((_CLI_OPTIONS - _MEMORY_OPTIONS) | {"matmul_precision"})
+    )
 
     def __init__(self) -> None:
         self._weights = PreparedWeightSession(self.name)
@@ -338,6 +364,9 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
         )
 
     def validate_native_options(self, options: dict[str, object]) -> None:
+        # Here rather than at the parser, and here rather than at the admission
+        # check: `foldjax plan` runs this and never reaches one.
+        validate_memory_policy_options(options)
         _strict_boolean(options.get("include_raw", False), name="include_raw")
         _strict_boolean(options.get("use_template", False), name="use_template")
         _strict_boolean(options.get("use_rna_msa", False), name="use_rna_msa")

@@ -22,6 +22,9 @@ from foldjax.backends.openfold3 import OpenFold3Backend
 from foldjax.manifest import MANIFEST_NAME
 from foldjax.memory_policy import (
     BOLTZ2_PEAK,
+    ESMFOLD2_PEAK,
+    OPENDDE_BF16_PEAK,
+    OPENDDE_FP32_PEAK,
     OPENFOLD3_CHUNKED_PEAK,
     OPENFOLD3_UNCHUNKED_PEAK,
     PROTENIX_PEAK,
@@ -644,17 +647,31 @@ def test_two_budgets_share_one_cache_profile_and_one_program(
 
 def test_the_memory_options_are_never_compile_options() -> None:
     """Two runs that differ only in a budget must share one cache namespace."""
+    from foldjax.backends.alphafold3 import AlphaFold3Backend
     from foldjax.backends.boltz2 import Boltz2Backend
+    from foldjax.backends.esmfold2 import ESMFold2Backend
     from foldjax.backends.protenix import ProtenixBackend
 
-    for backend in (Boltz2Backend(), ProtenixBackend(), OpenFold3Backend()):
+    # Every port, including the three that gained the pair last: OpenDDE
+    # derives `compile_options` from the set of options its parser takes, so
+    # its two admission options have to be subtracted there by name.
+    backends = (
+        Boltz2Backend(),
+        ProtenixBackend(),
+        OpenFold3Backend(),
+        OpenDDEBackend(),
+        ESMFold2Backend(),
+        AlphaFold3Backend(),
+    )
+    for backend in backends:
         for name in ("memory_check", "memory_budget_gib"):
             assert name not in backend.compile_options, backend.name
-    for backend in (Boltz2Backend(), ProtenixBackend(), OpenFold3Backend()):
-        # OpenFold3 accepts the mode too now: with the blocked loop the only
-        # automatic configuration, an over-budget estimate has nothing cheaper
-        # to fall back to, so refuse/warn has something to decide.
-        assert {"memory_check", "memory_budget_gib"} <= set(backend.native_options)
+        # Accepted everywhere, so the flags mean the same thing on every port.
+        # AlphaFold 3 accepts them without a law: what they buy there is one
+        # `unknown` warning rather than an "unsupported options" failure.
+        assert {"memory_check", "memory_budget_gib"} <= set(
+            backend.native_options
+        ), backend.name
 
 
 class _AdmittingBackend(OpenDDEBackend):
@@ -797,6 +814,9 @@ def test_the_frozen_laws_are_what_the_calibration_script_fits() -> None:
         "protenix": PROTENIX_PEAK,
         "openfold3_chunked": OPENFOLD3_CHUNKED_PEAK,
         "openfold3_unchunked": OPENFOLD3_UNCHUNKED_PEAK,
+        "opendde_bf16": OPENDDE_BF16_PEAK,
+        "opendde_fp32": OPENDDE_FP32_PEAK,
+        "esmfold2": ESMFOLD2_PEAK,
     }
     assert set(fits) == set(shipped)
     for name, law in shipped.items():
@@ -833,6 +853,19 @@ def test_no_measured_completed_run_is_refused() -> None:
         (OPENFOLD3_CHUNKED_PEAK, calibration.OF3_CHUNKED_POINTS),
         (OPENFOLD3_UNCHUNKED_PEAK, calibration.OF3_UNCHUNKED_POINTS),
         (PROTENIX_PEAK, calibration.PROTENIX_PAIR + calibration.PROTENIX_MSA),
+        # The validation rows are here as well as the fit points: they are
+        # completed runs too, and a law fitted on one snapshot must still
+        # admit the same configuration measured on another (OpenDDE) and at
+        # another sample count (ESMFold2's released 32).
+        (
+            OPENDDE_BF16_PEAK,
+            calibration.OPENDDE_BF16_POINTS + calibration.OPENDDE_BF16_VALIDATION,
+        ),
+        (OPENDDE_FP32_PEAK, calibration.OPENDDE_FP32_POINTS),
+        (
+            ESMFOLD2_PEAK,
+            calibration.ESMFOLD2_POINTS + calibration.ESMFOLD2_VALIDATION,
+        ),
     )
     # The ceiling this host reports at the fraction `foldjax predict` asks for.
     pool = 91_779_760_128
@@ -854,13 +887,372 @@ def test_no_measured_completed_run_is_refused() -> None:
 def test_every_law_names_the_sample_count_it_was_fitted_at() -> None:
     """Boltz-2's released default is one sample, not the five every law was
     measured at, so this is the fact that decides whether its admission binds.
+
+    ESMFold2 is the exception, and it names the exception: its peak was
+    measured at 5 samples *and* at the released 32, 0.53% apart, so its
+    profile carries the whole validated range rather than the fitted point.
     """
     assert memory_policy.CALIBRATED_NUM_SAMPLES == 5
-    for law in (
-        BOLTZ2_PEAK,
-        PROTENIX_PEAK,
-        OPENFOLD3_CHUNKED_PEAK,
-        OPENFOLD3_UNCHUNKED_PEAK,
-    ):
-        assert "5 samples" in law.profile
-        assert law.calibration_id.endswith("2026-09-15")
+    expected = {
+        BOLTZ2_PEAK: ("5 samples", "2026-09-15"),
+        PROTENIX_PEAK: ("5 samples", "2026-09-15"),
+        OPENFOLD3_CHUNKED_PEAK: ("5 samples", "2026-09-15"),
+        OPENFOLD3_UNCHUNKED_PEAK: ("5 samples", "2026-09-15"),
+        OPENDDE_BF16_PEAK: ("5 samples", "2026-09-16"),
+        OPENDDE_FP32_PEAK: ("5 samples", "2026-09-16"),
+        ESMFOLD2_PEAK: ("5-32 samples", "2026-09-16"),
+    }
+    for law, (samples, date) in expected.items():
+        assert samples in law.profile, law.calibration_id
+        assert law.calibration_id.endswith(date), law.calibration_id
+    # Every law's own id, so a changed measurement cannot be half-applied
+    # under a shared date.
+    assert len({law.calibration_id for law in expected}) == len(expected)
+
+
+# --------------------------------------------------------------------------
+# OpenDDE and ESMFold2: the two ports admitted against a law of their own
+# --------------------------------------------------------------------------
+
+
+def _exact_budget(law, n_token: int) -> int:
+    """The budget whose threshold is exactly this law's upper estimate."""
+    upper = law.upper(n_token)
+    budget = math.ceil(upper / memory_policy.ADMISSION_FRACTION)
+    while int(budget * memory_policy.ADMISSION_FRACTION) > upper:
+        budget -= 1
+    assert int(budget * memory_policy.ADMISSION_FRACTION) == upper
+    return budget
+
+
+@pytest.mark.parametrize(
+    ("law", "n_token"),
+    [
+        (OPENDDE_BF16_PEAK, 1902),
+        (OPENDDE_BF16_PEAK, 4034),
+        (OPENDDE_FP32_PEAK, 1902),
+        (ESMFOLD2_PEAK, 1003),
+        (ESMFOLD2_PEAK, 2096),
+    ],
+    ids=lambda value: str(value),
+)
+def test_each_new_law_admits_at_its_threshold_and_refuses_one_byte_below(
+    law, n_token: int
+) -> None:
+    """The same inequality the four older laws are held to.
+
+    Worth repeating per law rather than trusting the shared comparison: these
+    two ports reach `resolve_memory_policy` through wiring of their own, and
+    the boundary is what a caller can arrange with `--memory-budget-gib`.
+    """
+    upper = law.upper(n_token)
+    assert upper == law.estimate(n_token) + law.allowance_bytes
+    budget = _exact_budget(law, n_token)
+
+    at = _decide(law, n_token, budget)
+    assert at.state == "fits"
+    assert at.threshold == upper
+    assert _decide(law, n_token, budget + 1).state == "fits"
+    below = _decide(law, n_token, budget - 1)
+    assert below.state == "over_budget"
+    assert below.threshold == upper - 1
+    assert below.selected is None
+
+
+def test_the_opendde_laws_are_keyed_on_structural_tokens_and_split_by_dtype() -> None:
+    """Two laws, one per realised trunk dtype, over one domain.
+
+    The float32 arm is not the bfloat16 arm plus a factor: it is measured, and
+    at the one size both were measured at it costs twice the peak. Keeping
+    them separate is what makes the dtype lever a lever rather than a guess.
+    """
+    assert OPENDDE_BF16_PEAK.domain_tokens == (1902, 7876)
+    assert OPENDDE_FP32_PEAK.domain_tokens == (1902, 7876)
+    assert "structural tokens" in OPENDDE_BF16_PEAK.profile
+    assert "structural tokens" in OPENDDE_FP32_PEAK.profile
+    # The two fitted rows, to the MiB, and the float32 measurement beside the
+    # bfloat16 one at the same size.
+    assert OPENDDE_BF16_PEAK.estimate(1902) == pytest.approx(21492 * 2**20, rel=1e-6)
+    assert OPENDDE_BF16_PEAK.estimate(2978) == pytest.approx(46858.2 * 2**20, rel=1e-6)
+    assert OPENDDE_FP32_PEAK.estimate(1902) == pytest.approx(42690.6 * 2**20, rel=1e-5)
+    assert not OPENDDE_BF16_PEAK.needs_msa_rows
+    assert not OPENDDE_FP32_PEAK.needs_msa_rows
+
+
+@pytest.mark.parametrize("n_token", [1901, 7877])
+def test_a_structural_token_count_outside_the_opendde_domain_is_unknown(
+    n_token: int,
+) -> None:
+    """Below the domain is the parity sizes, and they must never be refused.
+
+    A parity case folds a few hundred residues, which is a few hundred
+    structural tokens -- far below anything measured -- and the float32 arm
+    has no intercept, so its estimate down there is not a number to refuse a
+    run on. `unknown` is the answer, and the run proceeds.
+    """
+    decision = _decide(OPENDDE_BF16_PEAK, n_token, 80 * _GIB)
+    assert decision.state == "unknown"
+    assert decision.estimates == ()
+    assert "outside the fitted range" in decision.reason
+
+
+def test_a_parity_sized_opendde_job_is_never_refused() -> None:
+    """The sizes `tests/parity` runs, against a budget nothing would fit."""
+    for n_structural in (257, 948):
+        for law in (OPENDDE_BF16_PEAK, OPENDDE_FP32_PEAK):
+            decision = _decide(law, n_structural, 1 * _GIB)
+            assert decision.state == "unknown", (law.calibration_id, n_structural)
+
+
+def test_an_over_budget_opendde_run_names_the_structural_tokens_and_the_lever() -> None:
+    """The refusal the retired arena preflight could only warn about.
+
+    2,096 residues is about 4,034 structural tokens: the size that runs on no
+    layout but the 2x2 grid, and the one this port's ceiling is about.
+    """
+    from foldjax.models.opendde.runner import _BF16_TRUNK_LEVER, _FP32_TRUNK_LEVER
+
+    budget = resolve_budget(
+        pool_bytes=90 * _GIB, card_bytes=96 * _GIB, override_gib=None
+    )
+    with pytest.raises(MemoryError) as error:
+        memory_policy.admit(
+            model="opendde",
+            n_token=4034,
+            msa_rows=None,
+            candidates=(("bf16 trunk", OPENDDE_BF16_PEAK),),
+            budget=budget,
+            levers=(_BF16_TRUNK_LEVER,),
+            token_label="structural tokens",
+        )
+    message = str(error.value)
+    # The unit the law is keyed on, said out loud: a message that called these
+    # "tokens" would name a number the caller never typed.
+    assert "4034 structural tokens" in message
+    assert "80.7 GiB + 1.1 GiB allowance" in message
+    assert "81.0 GiB threshold" in message
+    assert "--mem-fraction" in message
+    assert "--cp-devices 4" in message
+    assert "--memory-check=warn" in message
+
+    # The float32 arm names the dtype lever instead, because it has one.
+    with pytest.warns(RuntimeWarning) as caught:
+        decision = memory_policy.admit(
+            model="opendde",
+            n_token=2978,
+            msa_rows=None,
+            candidates=(("fp32 trunk", OPENDDE_FP32_PEAK),),
+            budget=budget,
+            mode="warn",
+            levers=(_FP32_TRUNK_LEVER,),
+            token_label="structural tokens",
+        )
+    assert decision.state == "over_budget"
+    assert "--trunk-dtype bf16" in str(caught[0].message)
+    assert "Running anyway" in str(caught[0].message)
+
+
+def test_the_esmfold2_law_carries_no_sample_term_and_binds_at_32_samples() -> None:
+    """The released sample count has to be inside the profile, or nothing binds.
+
+    This port reads `num_samples` off its checkpoint, and the released value
+    is 32 where every law was fitted at 5. Treating that as off profile would
+    downgrade every default run's refusal to a warning -- so the measurement
+    that says the sample axis is not in this peak is what the widening rests
+    on, and a count *below* five is still off profile.
+    """
+    assert ESMFOLD2_PEAK.domain_tokens == (1003, 2096)
+    assert memory_policy.off_profile_reason(num_samples=32) != ()
+    assert memory_policy.off_profile_reason(num_samples=32, samples_validated=32) == ()
+    assert memory_policy.off_profile_reason(num_samples=5, samples_validated=32) == ()
+    below = memory_policy.off_profile_reason(num_samples=1, samples_validated=32)
+    assert below and "5-32" in below[0]
+    beyond = memory_policy.off_profile_reason(num_samples=64, samples_validated=32)
+    assert beyond and "64 samples" in beyond[0]
+    # A port may only widen the range, never narrow it.
+    with pytest.raises(ValueError, match="cannot be below"):
+        memory_policy.off_profile_reason(num_samples=5, samples_validated=1)
+
+
+def test_an_over_budget_esmfold2_run_refuses_and_warn_runs_it_anyway() -> None:
+    budget = resolve_budget(
+        pool_bytes=32 * _GIB, card_bytes=40 * _GIB, override_gib=None
+    )
+    lever = "--cp-devices N shards the pair state"
+    with pytest.raises(MemoryError) as error:
+        memory_policy.admit(
+            model="esmfold2",
+            n_token=2096,
+            msa_rows=None,
+            candidates=(("released", ESMFOLD2_PEAK),),
+            budget=budget,
+            levers=(lever,),
+        )
+    assert "2096 tokens" in str(error.value)
+    assert "28.8 GiB threshold" in str(error.value)
+    assert lever in str(error.value)
+
+    with pytest.warns(RuntimeWarning) as caught:
+        decision = memory_policy.admit(
+            model="esmfold2",
+            n_token=2096,
+            msa_rows=None,
+            candidates=(("released", ESMFOLD2_PEAK),),
+            budget=budget,
+            mode="warn",
+            levers=(lever,),
+        )
+    assert decision.state == "over_budget"
+    assert "Running anyway" in str(caught[0].message)
+    # 1,003 tokens fits the same budget, so the refusal above is about the
+    # size and not about the port.
+    assert _decide(ESMFOLD2_PEAK, 1003, 32 * _GIB).state == "fits"
+
+
+def test_an_explicit_budget_is_what_the_new_ports_are_admitted_against() -> None:
+    """`--memory-budget-gib` reaches the decision and survives into the record.
+
+    The smaller of the two ceilings wins, and the source says which -- the
+    same contract the older ports have, asserted through a decision taken
+    with a law of the new ports' own so the wiring cannot report someone
+    else's budget.
+    """
+    budget = resolve_budget(
+        pool_bytes=90 * _GIB, card_bytes=96 * _GIB, override_gib=24
+    )
+    assert budget.source == "override"
+    assert budget.budget_bytes == 24 * _GIB
+    decision = memory_policy.admit(
+        model="esmfold2",
+        n_token=1003,
+        msa_rows=None,
+        candidates=(("released", ESMFOLD2_PEAK),),
+        budget=budget,
+        mode="warn",
+    )
+    assert decision.state == "fits"
+    assert decision.threshold == int(24 * _GIB * memory_policy.ADMISSION_FRACTION)
+    record = memory_policy.recorded()
+    assert record is not None
+    assert record["budget_source"] == "override"
+    assert record["budget_bytes"] == 24 * _GIB
+    assert record["pool_bytes"] == 90 * _GIB
+    assert record["calibration_id"] == ESMFOLD2_PEAK.calibration_id
+    # An override above the pool would admit a job the allocator refuses.
+    wide = resolve_budget(pool_bytes=90 * _GIB, card_bytes=96 * _GIB, override_gib=200)
+    assert wide.source == "pool" and wide.budget_bytes == 90 * _GIB
+
+
+# --------------------------------------------------------------------------
+# A port with no law at all
+# --------------------------------------------------------------------------
+
+
+def test_a_port_with_no_law_warns_once_by_name_and_proceeds() -> None:
+    """AlphaFold 3's answer to the two flags: `unknown`, said out loud.
+
+    Before this the flags were not in its option set, so asking for them
+    ended the run with "unsupported alphafold3 options" -- which reads like a
+    misspelling rather than like a missing measurement.
+    """
+    budget = resolve_budget(
+        pool_bytes=90 * _GIB, card_bytes=96 * _GIB, override_gib=None
+    )
+    with pytest.warns(RuntimeWarning) as caught:
+        decision = memory_policy.admit_unmeasured(
+            model="alphafold3",
+            budget=budget,
+            mode="refuse",
+            detail="no law was fitted to them",
+        )
+    assert decision.state == "unknown"
+    assert decision.selected is None
+    assert decision.estimates == ()
+    message = str(caught[0].message)
+    assert message.startswith("alphafold3: no alphafold3 peak law is fitted")
+    assert "The run proceeds without the check." in message
+    # `refuse` cannot refuse what was never estimated.
+    assert len(caught) == 1
+
+    # Once per process, like every other `unknown`: a five-seed request does
+    # not say it five times.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        memory_policy.admit_unmeasured(
+            model="alphafold3", budget=budget, detail="no law was fitted to them"
+        )
+
+    record = memory_policy.recorded()
+    assert record is not None
+    assert record["state"] == "unknown"
+    assert record["model"] == "alphafold3"
+    # No shape and no calibration: this port tokenizes below the adapter, and
+    # there is no law to name.
+    assert record["n_token"] is None
+    assert record["calibration_id"] is None
+    assert json.loads(json.dumps(record, sort_keys=True)) == record
+
+
+def test_the_manifest_round_trips_an_opendde_decision(tmp_path: Path) -> None:
+    """The structural token count, the dtype arm and the law's own id.
+
+    The older round-trip test above records a Protenix decision; this one
+    records the shape that is new -- a count in structural tokens, which is
+    not the number the caller asked for, so the manifest has to carry it.
+    """
+
+    class _OpenDDEAdmitting(OpenDDEBackend):
+        def predict(self, request):
+            memory_policy.admit(
+                model="opendde",
+                n_token=1902,
+                msa_rows=None,
+                candidates=(("bf16 trunk", OPENDDE_BF16_PEAK),),
+                budget=resolve_budget(
+                    pool_bytes=90 * _GIB, card_bytes=96 * _GIB, override_gib=None
+                ),
+                token_label="structural tokens",
+            )
+            path = request.output_dir / f"s{request.seed}.cif"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("data_mock\n#\n", encoding="utf-8")
+            return PredictionResult(
+                model="opendde",
+                samples=(
+                    PredictionSample(
+                        seed=request.seed, structure_path=path, scores={"ptm": 0.5}
+                    ),
+                ),
+                output_dir=request.output_dir,
+            )
+
+    out = tmp_path / "out"
+    weights = tmp_path / "weights.jax"
+    weights.write_bytes(b"not really weights")
+    request = PredictionRequest(
+        model="opendde",
+        input=_job(tmp_path),
+        weights=weights,
+        profile="released",
+        output_dir=out,
+        use_compile_cache=False,
+    )
+    with backend_override("opendde", _OpenDDEAdmitting):
+        foldjax.predict(request)
+
+    block = json.loads((out / MANIFEST_NAME).read_text())["memory"]
+    assert block["state"] == "fits"
+    assert block["selected"] == "bf16 trunk"
+    assert block["n_token"] == 1902
+    assert block["msa_rows"] is None
+    assert block["calibration_id"] == OPENDDE_BF16_PEAK.calibration_id
+    assert block["budget_source"] == "pool"
+    assert block["estimates"] == [
+        {
+            "name": "bf16 trunk",
+            "estimate_bytes": OPENDDE_BF16_PEAK.estimate(1902),
+            "upper_bytes": OPENDDE_BF16_PEAK.upper(1902),
+            "fits": True,
+        }
+    ]
+    assert json.loads(json.dumps(block, sort_keys=True)) == block

@@ -714,11 +714,15 @@ exactly: chunked and unchunked it asks for **117.78 GiB**, the same number to
 two decimal places. Its peak is the same pair stack with `c_z` doubled, so
 there was nothing on the sample axis to serialise.
 
-*OpenDDE is not a lever problem at this size.* Its own preflight says so before
-it allocates anything: 4,100 tokens is 7,876 structural tokens, which need an
-estimated **331.5 GiB** of temp arena against roughly 76.9 GiB usable of this
-pool, and "the trunk is already bfloat16, so the dtype lever is spent -- this
-size needs a larger card". The chunked arm ran 829 s and failed anyway, its
+*OpenDDE is not a lever problem at this size.* Its own preflight said so
+before it allocated anything: 4,100 tokens is 7,876 structural tokens, which
+need an estimated **331.5 GiB** of temp arena against roughly 76.9 GiB usable
+of this pool, and "the trunk is already bfloat16, so the dtype lever is spent
+-- this size needs a larger card". (That preflight was retired on 2026-09-16:
+it estimated the temp arena, which is about 91% of the peak, and could only
+warn. `memory_policy.OPENDDE_BF16_PEAK` estimates the whole peak over the same
+structural-token axis and refuses; this size is inside its domain, which that
+failure is one of the two censored observations bounding.) The chunked arm ran 829 s and failed anyway, its
 allocator retrying one block at 88.75 GiB, then 44.38, then 29.59. That arm
 took OpenDDE's own bf16 default rather than the `dtype=float32` the comparison
 table pins, so it is not a clean A/B against the 88.75 GiB baseline -- but it

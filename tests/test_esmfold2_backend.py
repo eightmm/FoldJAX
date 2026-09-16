@@ -184,6 +184,12 @@ def test_scalar_backend_withholds_unused_graph_outputs_without_exposing_an_overr
         )
     )
 
+    # The admission pair travels on every call: the adapter reads the device
+    # so the port does not have to, and a budget with no readable ceiling is
+    # what a CPU host gives. Taken out of the comparison rather than spelled
+    # into it, because what this test is about is the graph outputs.
+    assert seen.pop("memory_check") == "refuse"
+    assert seen.pop("memory_budget").source == "none"
     assert seen == {
         "num_recycles": 9,
         "return_distogram_logits": False,
@@ -589,7 +595,10 @@ def test_padded_split_path_requests_managed_outputs(tmp_path, monkeypatch) -> No
     assert seen["msa_shape"] == (1, 4, 8)
     # No depth at all: padding spells none, so the model keeps the selection
     # depth in its own settings. `padding.msa` is a capacity for that axis.
-    assert seen["kwargs"] == {
+    kwargs = dict(seen["kwargs"])
+    assert kwargs.pop("memory_check") == "refuse"
+    assert kwargs.pop("memory_budget").source == "none"
+    assert kwargs == {
         "num_recycles": 9,
         "language_model_tokens": None,
         "preserve_prefix_rng": True,

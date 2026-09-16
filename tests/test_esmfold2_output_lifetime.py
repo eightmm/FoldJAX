@@ -235,16 +235,19 @@ def test_scalar_predict_job_graph_is_preserved_and_full_features_are_released(
         )
     )
 
-    assert seen == [
-        (
-            prediction_key,
-            {
-                "return_distogram_logits": False,
-                "return_auxiliary_outputs": False,
-                "num_recycles": 9,
-            },
-        )
-    ]
+    assert len(seen) == 1
+    key, kwargs = seen[0]
+    assert key is prediction_key
+    # The admission pair rides on every call; this test is about the graph
+    # outputs, so it is read and removed rather than spelled in below.
+    kwargs = dict(kwargs)
+    assert kwargs.pop("memory_check") == "refuse"
+    assert kwargs.pop("memory_budget").source == "none"
+    assert kwargs == {
+        "return_distogram_logits": False,
+        "return_auxiliary_outputs": False,
+        "num_recycles": 9,
+    }
 
 
 def test_writer_exception_observes_released_input_only_features(

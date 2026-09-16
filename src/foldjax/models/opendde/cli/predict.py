@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from foldjax import memory_policy
 from foldjax.models import _predict_flags
 from foldjax.models.opendde.runner import (
     DIFFUSION_DTYPE_CHOICES,
@@ -230,6 +231,24 @@ def main(
         "--kalign-binary",
         type=Path,
         help="Kalign 3.3.5 executable used for exact template realignment",
+    )
+    # This port's own fitted peak law against the ceiling the allocator
+    # reports, in place of the arena preflight that used to warn here and
+    # could only warn. Both flags are spelled exactly as Protenix spells
+    # them: one vocabulary across the ports, so a deployment does not have to
+    # learn which of them calls it what.
+    parser.add_argument(
+        "--memory-check",
+        choices=memory_policy.CHECK_MODES,
+        default=memory_policy.DEFAULT_CHECK_MODE,
+        help="what to do when the estimated peak does not fit the device: "
+        "refuse before the first trace, or warn and run anyway",
+    )
+    parser.add_argument(
+        "--memory-budget-gib",
+        type=float,
+        help="plan against this much device memory instead of what the "
+        "allocator reports; the smaller of the two is used",
     )
     args = parser.parse_args(argv)
     args.max_msa_depth = _resolve_msa_depth(args.max_msa_depth)

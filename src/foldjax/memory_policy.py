@@ -139,7 +139,10 @@ class PeakLaw:
 # ---------------------------------------------------------------------------
 # Frozen calibration. Re-derive with `python tests/calibrate_memory_policy.py`;
 # `tests/test_memory_policy.py` fails if these literals drift from that fit.
-# Measured 2026-09-15 on one 95.6 GiB device, peak = XLA peak_bytes_in_use.
+# All on one 95.6 GiB device, peak = XLA peak_bytes_in_use. The four laws
+# below were calibrated 2026-09-15; OpenDDE's two and ESMFold2's came later
+# (2026-09-16) off ledger rows measured 2026-08-23 and 2026-09-10, so each
+# law carries its own date in `calibration_id` rather than sharing one.
 # ---------------------------------------------------------------------------
 
 _CALIBRATION = "2026-09-15"
@@ -245,12 +248,113 @@ OPENFOLD3_UNCHUNKED_PEAK = PeakLaw(
     calibration_id=f"openfold3-unchunked-{_CALIBRATION}",
 )
 
+#: Measured later than the four laws above, so they carry their own date.
+_CALIBRATION_STRUCTURAL = "2026-09-16"
+
+#: OpenDDE under the released bfloat16 trunk. **Keyed on the structural token
+#: count, not the residue count**: this port folds in structural-token space,
+#: and the ratio between the two drifts with composition -- 1.896 at 1,003
+#: residues, 1.945 at 1,531 and at 4,100 -- so a law keyed on residues would
+#: carry that drift squared. The caller reads the count off
+#: ``structural_token_index``; :func:`admit`'s ``token_label`` is what makes
+#: the message say so.
+#:
+#: Fitted on two completed serial rows, 21,492 MiB at 1,902 structural tokens
+#: (1,003 residues) and 46,858.2 at 2,978 (1,531 residues). An exact fit over
+#: two points normally means no residual to take an allowance from; here both
+#: parameters are separately corroborated instead. The intercept comes out
+#: 4,016 MiB, inside the 3.0-4.6 GiB of arguments this port carries across
+#: these sizes, and the square term comes out 0.883 of the fused-arm arena
+#: coefficient against 0.866 measured -- the bf16 trunk routes its triangle
+#: multiplication to the blocked XLA path, which took 2,650 MiB off the
+#: 19,797 MiB fused arena at 1,902. So the allowance is the snapshot spread:
+#: the same configuration read 20,326.4 MiB one snapshot earlier.
+#:
+#: This law replaces the arena preflight `models/opendde/runner.py` used to
+#: carry. That estimated the temp arena alone -- about 91% of the peak -- and
+#: could only warn; this estimates the peak the pool has to hold, and it can
+#: refuse.
+#:
+#: The domain ends at 7,876, above everything fitted, and no failure was
+#: fitted to. What its top rests on is that the verdict has been checked
+#: against an outcome there: at about 4,034 structural tokens (2,096 residues)
+#: this port asked for an 87 GiB arena and died on a 95.6 GiB pool, serial and
+#: on both 1-D layouts, and at 7,876 (4,100 residues) it asked for 331.5 GiB
+#: and died. With both coefficients nonnegative the law bends nowhere between,
+#: so the refusal it gives there is the one those runs earned. Above 7,876 the
+#: answer is ``unknown``.
+OPENDDE_BF16_PEAK = PeakLaw(
+    model="opendde",
+    profile=(
+        "bf16 trunk, 5 samples, released schedule, structural tokens"
+    ),
+    coeffs=(("bf16 trunk", (("1", 4015.90712), ("n2", 0.0048308474))),),
+    domain_tokens=(1902, 7876),
+    allowance_bytes=1171 * _MIB,
+    calibration_id=f"opendde-bf16-{_CALIBRATION_STRUCTURAL}",
+)
+
+#: OpenDDE with the trunk pinned to float32, which since 2026-09-11 is a
+#: request rather than the default. One fitted size, measured twice --
+#: 43,090 MiB and 42,291.2 at 1,902 structural tokens -- so this arm is a
+#: square term with no intercept: one measurement determines one parameter.
+#: The arguments are absorbed into the coefficient, which makes it read high
+#: below its domain, and its domain does not reach down there. The coefficient
+#: lands at 1.092 of the measured fp32 arena coefficient, i.e. an arena that
+#: is 91.6% of the peak -- the share the bf16 arm shows too.
+#:
+#: Its own censored confirmation: at 2,978 structural tokens (1,531 residues)
+#: this arm asked for 93.40 GiB and died, and the documented escape hatch
+#: (`PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=xla`) asked 80.72 GiB and died
+#: too. Above the wall no backend choice helps and only bfloat16 does, which
+#: is why the bf16 trunk is the lever this law's refusal names.
+OPENDDE_FP32_PEAK = PeakLaw(
+    model="opendde",
+    profile=(
+        "fp32 trunk, 5 samples, released schedule, structural tokens"
+    ),
+    coeffs=(("fp32 trunk", (("n2", 0.0118007941),)),),
+    domain_tokens=(1902, 7876),
+    allowance_bytes=1199 * _MIB,
+    calibration_id=f"opendde-fp32-{_CALIBRATION_STRUCTURAL}",
+)
+
+#: ESMFold2, whose peak is one arena: 14,733.3 MiB at 1,003 tokens and
+#: 46,041.8 at 2,096, both from the control arm of the rows transcribed at
+#: `models/esmfold2/models/model.py`'s ``confidence_dtype`` note.
+#:
+#: **There is no sample term, and that is measured rather than assumed.**
+#: Three places in this repository still describe this peak as
+#: ``num_samples * L^2 * 4*c_z``; that is the confidence head's own term, and
+#: `confidence_sample_sequential` -- on by default -- divides it away. What
+#: remains is the folding trunk, which has no sample axis at all: at 2,096
+#: tokens the peak is 46,041.8 MiB at 5 samples and 46,284.8 at 32, the
+#: released count, a 0.53% move. So the law is fitted at 5, declared valid to
+#: 32 through :func:`off_profile_reason`'s ``samples_validated``, and its
+#: allowance covers the 32-sample row.
+#:
+#: The domain stops at 2,096 because that is the largest size this port has
+#: completed. 3,012 is censored and outside: the law reads 87.3 GiB there and
+#: the run's allocator asked for 86 GiB before failing on a 95.6 GiB card --
+#: consistent, and not fitted to.
+ESMFOLD2_PEAK = PeakLaw(
+    model="esmfold2",
+    profile="released schedule, 5-32 samples, sequential confidence head",
+    coeffs=(("whole run", (("1", 5434.59674), ("n2", 0.00924316111))),),
+    domain_tokens=(1003, 2096),
+    allowance_bytes=295 * _MIB,
+    calibration_id=f"esmfold2-{_CALIBRATION_STRUCTURAL}",
+)
+
 #: The sample count every law above was fitted at.
 CALIBRATED_NUM_SAMPLES = 5
 
 
 def off_profile_reason(
-    *, num_samples: int, extras: Sequence[str] = ()
+    *,
+    num_samples: int,
+    extras: Sequence[str] = (),
+    samples_validated: int | None = None,
 ) -> tuple[str, ...]:
     """What about this run the laws were not fitted at, if anything.
 
@@ -258,11 +362,32 @@ def off_profile_reason(
     over-prediction under a refusing policy is a run that never starts. So a
     run outside the calibrated configuration keeps its estimate -- it is still
     the best number available -- and loses the refusal.
+
+    ``samples_validated`` raises the top of the sample range this is silent
+    about, and only a port that *measured* a second count may pass it.
+    ESMFold2 is the one that did: at 2,096 tokens its peak is 46,041.8 MiB at
+    5 samples and 46,284.8 at 32, a 0.53% move, because its peak is a folding
+    trunk with no sample axis -- and 32 is its released count, so treating it
+    as off profile would mean a refusal that never fires on a default run. The
+    law's allowance carries the difference. A count *below* five is still off
+    profile everywhere, including there: that is the direction in which the
+    estimate reads high.
     """
+    high = CALIBRATED_NUM_SAMPLES if samples_validated is None else samples_validated
+    if high < CALIBRATED_NUM_SAMPLES:
+        raise ValueError(
+            "samples_validated cannot be below the count the laws were fitted "
+            f"at ({CALIBRATED_NUM_SAMPLES}); got {samples_validated!r}"
+        )
     reasons = []
-    if num_samples != CALIBRATED_NUM_SAMPLES:
+    if not CALIBRATED_NUM_SAMPLES <= num_samples <= high:
+        fitted = (
+            str(CALIBRATED_NUM_SAMPLES)
+            if high == CALIBRATED_NUM_SAMPLES
+            else f"{CALIBRATED_NUM_SAMPLES}-{high}"
+        )
         reasons.append(
-            f"{num_samples} samples rather than the {CALIBRATED_NUM_SAMPLES} "
+            f"{num_samples} samples rather than the {fitted} "
             "the law was fitted at"
         )
     reasons.extend(extras)
@@ -515,18 +640,31 @@ def check_message(
     decision: MemoryDecision,
     *,
     model: str,
-    n_token: int,
+    n_token: int | None,
     msa_rows: int | None,
     budget: MemoryBudget,
     mode: str = DEFAULT_CHECK_MODE,
     levers: Sequence[str] = (),
     off_profile: Sequence[str] = (),
+    token_label: str = "tokens",
 ) -> str:
-    """Say what was estimated, what it was compared with, and what to change."""
-    shape = f"{n_token} tokens"
-    if msa_rows is not None:
+    """Say what was estimated, what it was compared with, and what to change.
+
+    ``token_label`` names the unit ``n_token`` is counted in. Every law but
+    OpenDDE's is keyed on tokens; OpenDDE's is keyed on structural tokens,
+    which at these sizes is about 1.9x the residue count the caller asked for,
+    so a message that called them "tokens" would name a number the user never
+    typed. ``n_token`` of ``None`` is a port with no law at all -- see
+    :func:`admit_unmeasured` -- where there is no shape to report.
+    """
+    shape = None if n_token is None else f"{n_token} {token_label}"
+    if shape is not None and msa_rows is not None:
         shape += f", {msa_rows} processed MSA rows"
-    lines = [f"{model} at {shape}: {decision.reason}."]
+    lines = [
+        f"{model} at {shape}: {decision.reason}."
+        if shape is not None
+        else f"{model}: {decision.reason}."
+    ]
     if budget.pool_bytes is not None:
         lines.append(
             f"The allocator's pool is {_gib(budget.pool_bytes)}"
@@ -564,12 +702,13 @@ def enforce(
     decision: MemoryDecision,
     *,
     model: str,
-    n_token: int,
+    n_token: int | None,
     msa_rows: int | None,
     budget: MemoryBudget,
     mode: str = DEFAULT_CHECK_MODE,
     levers: Sequence[str] = (),
     off_profile: Sequence[str] = (),
+    token_label: str = "tokens",
 ) -> None:
     """Raise, warn, or say nothing, according to the state and the mode.
 
@@ -593,6 +732,7 @@ def enforce(
         mode=mode,
         levers=levers,
         off_profile=off_profile,
+        token_label=token_label,
     )
     if decision.state == "unknown":
         # Once per model per process. A run with no readable ceiling says so,
@@ -639,7 +779,7 @@ def record(
     decision: MemoryDecision,
     *,
     model: str,
-    n_token: int,
+    n_token: int | None,
     msa_rows: int | None,
     budget: MemoryBudget,
     calibration_id: str | None,
@@ -650,7 +790,7 @@ def record(
     _RECORDED.set(
         {
             "model": model,
-            "n_token": int(n_token),
+            "n_token": None if n_token is None else int(n_token),
             "msa_rows": None if msa_rows is None else int(msa_rows),
             "state": decision.state,
             "selected": decision.selected,
@@ -696,6 +836,7 @@ def admit(
     mode: str = "refuse",
     levers: Sequence[str] = (),
     off_profile: Sequence[str] = (),
+    token_label: str = "tokens",
 ) -> MemoryDecision:
     """Resolve, record and enforce in one call: what a port's wiring needs."""
     decision = resolve_memory_policy(
@@ -729,5 +870,59 @@ def admit(
         mode=mode,
         levers=levers,
         off_profile=off_profile,
+        token_label=token_label,
+    )
+    return decision
+
+
+def admit_unmeasured(
+    *,
+    model: str,
+    budget: MemoryBudget,
+    mode: str = DEFAULT_CHECK_MODE,
+    detail: str,
+    n_token: int | None = None,
+) -> MemoryDecision:
+    """Answer the memory flags on a port whose peak nobody has fitted.
+
+    ``--memory-check`` and ``--memory-budget-gib`` are one vocabulary across
+    every port, and a port with no law cannot admit or refuse. Before this
+    existed the two flags were not accepted at all on such a port, so asking
+    for them ended the run with "unsupported <port> options" -- which reads
+    like a spelling mistake rather than like a missing measurement.
+
+    So the answer is the third state this module already has. ``unknown`` is
+    reached deliberately here rather than by an uncovered size: the run
+    proceeds, with one warning per process that names the port and says the
+    check did not happen. The decision reaches the manifest like any other, so
+    a finished run records that nothing was compared and why.
+    """
+    decision = MemoryDecision(
+        state="unknown",
+        selected=None,
+        estimates=(),
+        threshold=(
+            None
+            if budget.budget_bytes is None
+            else _threshold(budget.budget_bytes)
+        ),
+        reason=f"no {model} peak law is fitted, so nothing was compared: {detail}",
+    )
+    record(
+        decision,
+        model=model,
+        n_token=n_token,
+        msa_rows=None,
+        budget=budget,
+        calibration_id=None,
+        mode=mode,
+    )
+    enforce(
+        decision,
+        model=model,
+        n_token=n_token,
+        msa_rows=None,
+        budget=budget,
+        mode=mode,
     )
     return decision

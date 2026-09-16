@@ -40,6 +40,7 @@ from typing import Any
 
 import numpy as np
 
+from foldjax import memory_policy
 from foldjax.backends._ccd_session import ManagedCcdMemory
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import WeightAnchors
@@ -48,6 +49,7 @@ from foldjax.backends.base import (
     MATMUL_PRECISION_OPTION,
     SAMPLING_OPTIONS,
     Backend,
+    validate_memory_policy_options,
 )
 from foldjax.execution import DETERMINISTIC_API_OPTION
 from foldjax.manifest import path_stat_identity
@@ -437,6 +439,11 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         {
             "cp_devices",
             "esmc_weights",
+            # Admission against this card's own reported ceiling, against this
+            # port's fitted peak law. Absent from `compile_options` below: a
+            # refused run and a warned run build the same program.
+            "memory_budget_gib",
+            "memory_check",
             # Opt-in fused SwiGLU for the diffusion token transformer. Native
             # rather than a neutral knob: no other port spells a GLU choice
             # the neutral vocabulary could rename, and Boltz-2's is native too.
@@ -909,6 +916,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
         managed_asset_profile(options)
+        # Here rather than at the admission check: `foldjax plan` runs this
+        # and never reaches one.
+        validate_memory_policy_options(options)
         _strict_boolean(
             options.get("structure_sample_sequential", False),
             name="structure_sample_sequential",
@@ -996,6 +1006,19 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         }
         if sequential_samples is not None:
             overrides["structure_sample_sequential"] = sequential_samples
+        # The device is read here and not in the port, so a direct
+        # `inference.predict` caller -- a tape replay, a parity run, a unit
+        # test -- neither initializes a backend to be told nothing nor hears
+        # a warning about a check it did not ask for. The port's contract for
+        # this pair is OpenFold3's: a budget of `None` means unasked.
+        overrides["memory_check"] = memory_policy.parse_check_mode(
+            options.pop("memory_check", None)
+        )
+        overrides["memory_budget"] = memory_policy.device_memory_budget(
+            override_gib=memory_policy.parse_budget_gib(
+                options.pop("memory_budget_gib", None)
+            )
+        )
         # Absent means unasked, for the reason above: the port's own default
         # is already `xla`, and naming it for every caller would put a value
         # nobody requested into the recorded overrides.

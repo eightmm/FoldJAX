@@ -88,8 +88,12 @@ Reading, where both sides ran:
   upstream at both sizes (the upstream row filled the 96 GiB card).
 - The memory ceilings match between sides where both OOM: OpenDDE from 2k,
   OpenFold3 from 4k, Protenix at 5k.
-- ESMFold2's 3k wall is its `num_samples x L^2` arena; OpenDDE's 2k wall is its
-  fp32 pair arena (both recorded before, now measured at the row).
+- ESMFold2's 3k wall is its folding-trunk pair arena, which has no sample axis
+  in it (46,041.8 MiB at 5 samples against 46,284.8 at the released 32, at
+  2,096 tokens); OpenDDE's 2k wall is its pair arena in either dtype (both
+  recorded before, now measured at the row). This line used to call the
+  ESMFold2 wall a `num_samples x L^2` arena, which is the confidence head's
+  own term and is divided away by `confidence_sample_sequential`.
 
 OpenDDE `--option dtype=bfloat16` (opt-in; upstream runs fp32/TF32 so this is
 not the parity arm): 1k 149 s / 21.0 GiB against the fp32 row's 235 s / 41.3
@@ -1254,12 +1258,69 @@ its admission test stays opt-in. `--memory-budget-gib` plans against an
 explicit budget (min with the pool when the pool is known), and the run
 manifest records the decision.
 
-| law | form (MiB) | allowance | domain |
-| --- | --- | ---: | --- |
-| Boltz-2 (5 samples) | 3910 + 4.58·N + 4.33e-7·N³ | 1,006 | 1,003–4,888 |
-| Protenix | max(1235 + 2.85e-3·N², 7.32e-4·M·N), M = processed MSA rows | 1,018 | 1,003–3,012 |
-| OpenFold3 chunked (128 rows) | 1460 + 0.875·N + 2.23e-3·N² | 783 | 1,003–4,888 |
-| OpenFold3 unchunked | 1438 + 4.85e-3·N² | 215 | 1,003–3,012 |
+| law | form (MiB) | allowance | domain | rows fitted |
+| --- | --- | ---: | --- | --- |
+| Boltz-2 (5 samples) | 3910 + 4.58·N + 4.33e-7·N³ | 1,006 | 1,003–4,888 | 8,453/18,511/29,416/51,712/77,312 |
+| Protenix | max(1235 + 2.85e-3·N², 7.32e-4·M·N), M = processed MSA rows | 1,018 | 1,003–3,012 | see the two-phase note below |
+| OpenFold3 chunked (128 rows) | 1460 + 0.875·N + 2.23e-3·N² | 783 | 1,003–4,888 | 4,316.7/13,882/23,774/42,468.6/59,214.8 |
+| OpenFold3 unchunked | 1438 + 4.85e-3·N² | 215 | 1,003–3,012 | 6,194.6/22,967/45,363 |
+| OpenDDE bf16 trunk (5 samples) | 4016 + 4.83e-3·S², S = structural tokens | 1,171 | 1,902–7,876 S | 21,492 at S=1,902 (1,003 res); 46,858.2 at S=2,978 (1,531 res) |
+| OpenDDE fp32 trunk (5 samples) | 1.180e-2·S² | 1,199 | 1,902–7,876 S | 43,090 and 42,291.2, both at S=1,902 |
+| ESMFold2 (5–32 samples) | 5435 + 9.24e-3·N² | 295 | 1,003–2,096 | 14,733.3/46,041.8 |
+
+The two laws added 2026-09-16 (`memory admission for OpenDDE and ESMFold2`)
+are the two ports whose `--memory-check` and `--memory-budget-gib` were inert
+before it, and each has a shape the four above do not:
+
+- **OpenDDE is keyed on the structural token count**, not the residue count:
+  S/residues is 1.896 at 1,003 residues and 1.945 at 1,531 and 4,100, so a
+  residue-keyed law would carry that drift squared. Two arms, one per realised
+  trunk dtype, because at S=1,902 float32 costs twice the peak (42,690 against
+  21,492 MiB fitted) and the dtype is therefore a lever the refusal names.
+  The bf16 arm is an exact two-point fit whose parameters are separately
+  corroborated rather than free: the intercept lands at 4,016 MiB, inside the
+  3.0–4.6 GiB of arguments this port carries across these sizes, and the
+  square term at 0.883 of the fused-arm arena coefficient 5.4724e-3 against
+  0.866 measured (the bf16 trunk routes its triangle multiplication to the
+  blocked XLA path, which took 2,650 MiB off the 19,797 MiB fused arena at
+  S=1,902). Its allowance is the snapshot spread: the same configuration read
+  20,326.4 MiB on 2026-08-23 and 21,492 on 2026-09-10. The fp32 arm has one
+  fitted size measured twice, so it is a square term with no intercept; its
+  coefficient lands at 1.092 of the measured fp32 arena coefficient, i.e. an
+  arena that is 91.6% of the peak, the share the bf16 arm shows too.
+  Both domains end at 7,876 S, above everything fitted and with no failure
+  fitted to anything: what the top rests on is that the verdict has been
+  checked against an outcome there — S≈4,034 (2,096 residues) asked an 87 GiB
+  arena and died serial and on both 1-D layouts, S=7,876 (4,100 residues)
+  asked 331.5 GiB and died, and the fp32 arm's own censored point is S=2,978
+  (93.40 GiB requested, and `PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=xla`
+  asked 80.72 and died too). Read the top of the domain as a verdict and not
+  as a value: at S≈4,034 the bf16 law estimates 80.7 GiB, below the ~86 GiB
+  the run actually exhausted, so above S=2,978 it reads *low* and what carries
+  the refusal is the 0.9 admission fraction rather than the estimate alone. This law replaces the arena preflight that used
+  to warn here, which estimated the temp arena alone.
+- **ESMFold2's law has no sample term, and that is measured.** Three places in
+  this repository still describe its peak as `num_samples · L² · 4c_z`; that is
+  the confidence head's term, which `confidence_sample_sequential` (on by
+  default) divides away, and what remains is the folding trunk, which has no
+  sample axis. At 2,096 tokens the peak is 46,041.8 MiB at 5 samples and
+  46,284.8 at the released 32 — 0.53% — so the law is fitted at 5, declared
+  valid to 32, and its allowance (243.0 + the 51.2 the 45.2 GiB row is quoted
+  to) carries the difference. Without that widening a refusal would never fire
+  on a default run, because this port reads its sample count off the
+  checkpoint and the released value is 32. Both rows come from the control arm
+  of GPU rows 1111/1112, which is where this port's peaks are recorded to the
+  tenth of a MiB. The domain stops at 2,096, the largest size it has
+  completed; 3,012 is censored and outside — the law reads 89,364 MiB = 87.3
+  GiB there against the 86 GiB its allocator asked for before failing on this
+  95.6 GiB card, which is a check and not a fit.
+
+AlphaFold 3 still has no law, and now says so: both flags are accepted and
+answered `unknown` once, naming the port, for a caller who passes one of them
+(a run that passes neither stays silent, the way a run that fits does). Its peaks here are the harness's own
+XLA-client high-water marks, which undercount its vendored runtime's
+allocations, so there is nothing to fit. Before this it rejected the flags
+outright, which reads like a misspelling rather than a missing measurement.
 
 The allowance is the largest in-sample underestimate plus the measured
 repeat spread; leave-one-size-out folds are printed by the calibration
@@ -1314,6 +1375,21 @@ Checked on the card with explicit budgets (5DEI, 2,096 tokens):
 | OpenFold3 | 20 GiB | fits, chunked (128) | 228.5 s / 13,990 MiB |
 | OpenFold3 | 40 GiB | fits, chunked (128) — unchunked before 2026-09-16 | same program as the row above; the unchunked arm this budget used to select ran 225.0 s / 22,967 MiB |
 | Boltz-2 | 18 GiB | over_budget | refused before compile |
+
+Checked on the CPU with `--memory-budget-gib 1` on the two ports added
+2026-09-16 (padding used to reach each law's domain, tiny examples otherwise
+falling below it and answering `unknown`):
+
+| port | shape | `refuse` | `warn` |
+| --- | --- | --- | --- |
+| OpenDDE | `--pad-structural-tokens 2048` | refused before the first trace: "2048 structural tokens … bf16 trunk 23.7 GiB + 1.1 GiB allowance against a 0.9 GiB threshold", naming `--cp-devices 4` | warned with the same text, then the host allocator refused 853 GB — "the allocator will answer", exactly as the message says |
+| ESMFold2 | `--pad-tokens 1024` | refused before the language model: "1024 tokens … released 14.8 GiB + 0.3 GiB allowance against a 0.9 GiB threshold" | warned with the same text and ran on into ESMC and the trunk |
+
+AlphaFold 3's `unknown` warning was not exercised end to end: the vendored
+`alphafold3` package is not installed in this environment, so the adapter's
+`predict` cannot be reached. What is checked is that both flags are in its
+option set, that `foldjax plan` validates them there, and that
+`memory_policy.admit_unmeasured` warns once and records the decision.
 
 Two knobs measured for Boltz-2 and found inert for memory (its peak is the
 trunk pair arena): `token_attention_chunk=256` (234.0 s / 18,511 MiB) and

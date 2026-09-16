@@ -178,6 +178,8 @@ _OPENDDE_OPTION_VALUES: dict[str, Any] = {
     "diffusion_dtype": "bf16",
     "kalign_binary": Path("/tmp/kalign"),
     "max_msa_depth": 1024,
+    "memory_budget_gib": 12.5,
+    "memory_check": "warn",
     "n_keys": 64,
     "n_queries": 16,
     "num_recycles": 2,

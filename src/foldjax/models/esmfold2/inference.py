@@ -23,6 +23,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax import memory_policy
 from foldjax.models import _capture
 from foldjax.models._compile_policy import (
     compiler_options as _compiler_options,
@@ -551,6 +552,13 @@ def predict(
     #: `foldjax.models._compile_policy` for the measurement and for why the
     #: setting rides on the executable rather than on the process.
     deterministic: bool = False,
+    #: The ceiling this run is admitted against, and what to do when the
+    #: estimate does not fit it. ``None`` means the caller is not asking --
+    #: the contract OpenFold3's `released_config` uses for the same pair --
+    #: so a direct caller, a tape replay or a parity run neither reads the
+    #: device nor hears about it. `backends/esmfold2.py` is what fills it in.
+    memory_budget: memory_policy.MemoryBudget | None = None,
+    memory_check: str = memory_policy.DEFAULT_CHECK_MODE,
 ) -> dict[str, jnp.ndarray]:
     """One forward over already-built features.
 
@@ -602,6 +610,60 @@ def predict(
         glu_backend=glu_backend,
         confidence_dtype=confidence_dtype,
     )
+    if memory_budget is not None:
+        # Before the language model, which is the expensive thing a refusal
+        # is worth skipping: ESMC is a 3B encoder and runs before the graph
+        # this estimate is about. After `with_overrides`, because the sample
+        # count that decides whether the estimate binds is resolved there --
+        # it comes off the checkpoint (`num_diffusion_samples`), not off a
+        # default here.
+        memory_policy.admit(
+            model="esmfold2",
+            n_token=int(np.asarray(features["token_attention_mask"]).shape[-1]),
+            msa_rows=None,
+            candidates=(("released", memory_policy.ESMFOLD2_PEAK),),
+            budget=memory_budget,
+            mode=memory_check,
+            levers=(
+                "--cp-devices N shards the pair state across N visible "
+                "devices, which is the only lever measured to move this "
+                "peak: the sample options do not, because the peak is a "
+                "folding-trunk arena with no sample axis in it "
+                "(--option structure_sample_sequential=true bought 0.3 GiB "
+                "at 32 samples for 84% more wall time)",
+            ),
+            off_profile=memory_policy.off_profile_reason(
+                num_samples=settings.num_samples,
+                # Measured, not assumed: 46,041.8 MiB at 5 samples against
+                # 46,284.8 at the released 32, at 2,096 tokens. Treating the
+                # released count as off profile would mean a refusal that
+                # never fires on a default run.
+                samples_validated=32,
+                extras=tuple(
+                    reason
+                    for reason, active in (
+                        # The arena is split across devices.
+                        ("context parallelism", cp_shards > 1),
+                        # Returns before the trunk, which *is* the peak.
+                        # `stop_after_trunk` is deliberately absent: it
+                        # returns after it, so the estimate still describes
+                        # the program's maximum.
+                        ("an inputs-only graph", stop_after_inputs),
+                        # The fused kernel replaces the packed SwiGLU, one of
+                        # the arena's named tenants, and its effect on the
+                        # peak is unmeasured in either direction. Read off
+                        # the resolved settings rather than the argument:
+                        # `None` here means "whatever the checkpoint carries",
+                        # and the realised value is what the program runs.
+                        (
+                            "a fused GLU",
+                            settings.diffusion.glu_backend != "xla",
+                        ),
+                    )
+                    if active
+                ),
+            ),
+        )
     # Resolve the process-wide escape hatch before choosing a bounded JIT
     # owner. The same integer is passed into the graph and pins every atom
     # attention call during tracing, so a later environment change cannot hit

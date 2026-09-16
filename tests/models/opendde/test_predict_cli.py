@@ -74,12 +74,6 @@ def _capture_predict_route(monkeypatch):
 
     monkeypatch.setattr(model_impl, "opendde_infer_compiled", fake_infer)
     monkeypatch.setattr(model_impl, "opendde_infer_static", fake_infer)
-
-    def fake_preflight(features, _trunk_dtype):
-        captured["preflight"] = features
-        return None
-
-    monkeypatch.setattr(predict_runner, "_preflight_arena", fake_preflight)
     return captured
 
 
@@ -94,7 +88,6 @@ def test_predict_drops_raw_msa_after_default_cycle_sampling(
     predict_runner._predict(features, params, **_predict_kwargs())
 
     routed = captured["features"]
-    assert captured["preflight"] is routed
     assert captured["params"] is params
     assert routed is not features
     for name in ("msa", "has_deletion", "deletion_value", "msa_mask"):
@@ -161,7 +154,6 @@ def test_predict_preserves_direct_msa_fallback(monkeypatch, fallback: str) -> No
         **_predict_kwargs(),
     )
 
-    assert captured["preflight"] is features
     assert captured["features"] is features
     assert captured["kwargs"]["cycle_msa_features"] is expected_cycles
 

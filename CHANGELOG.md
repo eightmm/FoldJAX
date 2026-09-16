@@ -48,6 +48,56 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **`--memory-check` and `--memory-budget-gib` now decide something on
+  OpenDDE, ESMFold2 and AlphaFold 3.** They were one vocabulary that only
+  three of the six ports answered: on the other three `--memory-check warn`
+  ended the run with "unsupported <port> options", and the default spelling
+  did nothing at all.
+
+  OpenDDE and ESMFold2 now carry a fitted peak law and go through the same
+  admission the other ports do -- estimate, compare with 0.9 of the
+  allocator's ceiling, then `fits` silently, `over_budget` refused under
+  `refuse` and warned under `warn`, `unknown` warned once outside the fitted
+  domain. Both laws, their measurements and their allowances are in
+  `src/foldjax/memory_policy.py` and re-derivable with `python
+  tests/calibrate_memory_policy.py`; `docs/cli.md` and
+  `docs/scale-rows-master-2026-09-10.md` carry the table.
+
+  Two things about them are worth knowing before reading a message.
+  **OpenDDE's laws are keyed on the structural token count**, which at these
+  sizes is about 1.9x the residue count and drifts with composition, so its
+  messages say "structural tokens" -- the number is not the one you typed.
+  There is one law per realised trunk dtype, because float32 costs twice the
+  peak at the one size both were measured at, and the refusal names
+  `--trunk-dtype bf16` when that lever is unspent and `--cp-devices 4` when
+  it is not: 2,096 residues is the one target here that no layout but the 2x2
+  grid completes -- and because the refusal names that grid, a distributed run
+  is warned rather than refused, since the laws are fitted on the serial arena
+  a mesh splits. **ESMFold2's law has no sample term**: its peak is a
+  folding-trunk arena with no sample axis in it (46,041.8 MiB at 5 samples
+  against 46,284.8 at the released 32, at 2,096 tokens), so the law is fitted
+  at 5, declared valid to 32, and its allowance carries the difference --
+  without which a refusal would never fire on a default run.
+
+  AlphaFold 3 gets no law: the peaks recorded for it are the harness's own
+  XLA-client high-water marks, which undercount its vendored runtime's
+  allocations, so there is nothing fitted to compare against. Both flags are
+  accepted there and answered with one `unknown` warning that names the port,
+  because a missing measurement should not read like a misspelling. A run that
+  passes neither flag is silent, the way a run that fits is silent everywhere
+  else.
+
+  Nothing else about a prediction changed. A refused run is a run that did not
+  start; a warned run is the run it always was; and neither flag is a compile
+  option on any port, so two runs that differ only in a budget still share one
+  cache namespace and one executable.
+
+- **OpenDDE's arena preflight is gone, replaced by that admission.** It
+  estimated the temp arena -- about 91% of the peak -- from the same measured
+  quadratic, and it could only warn. The law above estimates the peak the pool
+  has to hold and can refuse, and it keeps the preflight's dtype sentences as
+  the levers a refusal names, so the advice that message carried is not lost.
+
 - **An OpenDDE run in flight will not be resumed across this release.** The
   prediction body moved out of `models/opendde/cli/predict.py` into
   `models/opendde/runner.py`, and both files are recorded as run inputs,

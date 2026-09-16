@@ -7,18 +7,18 @@ stays there and still produces the identical run; what it produces now is a
 
 The body below is the CLI's, moved across byte for byte apart from reading its
 options off the config where it read them off ``argparse``'s namespace: the
-same environment exports, dtype resolution, parameter preparation, arena
-preflight and output writing, in the same order.
+same environment exports, dtype resolution, parameter preparation, memory
+admission and output writing, in the same order.
 """
 
 from __future__ import annotations
 
 import os
-import warnings
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from foldjax import memory_policy
 from foldjax.models import _representations
 from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models.opendde.data.compact_categories import (
@@ -85,6 +85,8 @@ class PredictionConfig(NamedTuple):
     template_release_dates: Path | None
     template_obsolete_map: Path | None
     kalign_binary: Path | None
+    memory_check: str
+    memory_budget_gib: float | None
 
 
 #: The featurizer's own candidate-row cap (`data/featurize_json.py`), resolved
@@ -172,89 +174,48 @@ def _resolve_diffusion_autocast(diffusion_dtype: str, trunk_dtype: str) -> bool:
     return True
 
 
-#: Arena size per structural-token pair, in MiB, measured 2026-08-23 on a
-#: 95.6 GiB card at HEAD 9af2892 and validated at a second size to 0.2%.
+#: The lever an over-budget OpenDDE run has, and the one it does not, as the
+#: retired arena preflight used to spell them. These reach the admission
+#: message through `memory_policy.admit(levers=...)`, so a refusal names what
+#: to change rather than only what it measured.
 #:
-#: OpenDDE's temp arena is ~86% of peak and is pure quadratic in the structural
-#: token count -- not the residue count, which is the whole reason this warning
-#: exists. bf16 fitted at N_st=1902 (19,797 MiB) predicts 48,532 at N_st=2978
-#: against 48,440 measured; fp32 fitted at 1902 (39,097 MiB) predicts 95,846
-#: against a 95,642 MiB allocation request. `num_samples` is deliberately absent:
-#: unlike ESMFold2 it is not a leading dimension of this peak, which is set by
-#: the pair-space trunk rather than the diffusion batch (43,090 MiB at 5 samples
-#: against 42,877 at 1 -- 0.5%).
-_ARENA_MIB_PER_PAIR = {"bfloat16": 5.4724e-3, "float32": 1.0807e-2}
+#: The dtype lever is real and one-way: at 1,003 residues the fp32 trunk peaks
+#: at 43,090 MiB against bf16's 21,492, and on the eight-case panel bf16 is
+#: 13-39% faster, 33-52% lighter and no further from upstream than fp32 is.
+#: Under a bf16 trunk it is already spent, and what is left is the card or a
+#: mesh: OpenDDE at 2,096 residues is the one target on this node that only
+#: the 2x2 grid runs (32,068 MiB per device, where serial and both 1-D layouts
+#: die on the same quadratic).
+_FP32_TRUNK_LEVER = (
+    "--trunk-dtype bf16 roughly halves this estimate (43,090 MiB against "
+    "21,492 at 1,003 residues) and is this port's released default; fp32 is "
+    "upstream's own trunk precision and a run that pins it is asking for the "
+    "larger arena"
+)
+_BF16_TRUNK_LEVER = (
+    "the trunk is already bfloat16, so the dtype lever is spent -- this size "
+    "needs more cards or a larger one. --cp-devices 4 on a 2x2 grid is the "
+    "only layout measured to complete 2,096 residues (32,068 MiB per device)"
+)
 
 
-#: The arena is not the pool's only tenant, so a job whose arena merely fits the
-#: pool does not fit. Arguments -- weights plus features -- measured 3.0-4.6 GiB
-#: across these sizes, and an fp32 blocked arena at 94% of the pool still died
-#: with preallocation on. 0.9 is therefore where "probably will not fit" starts,
-#: and it is a practical ceiling read off a failure, not an arithmetic one.
-_PRACTICAL_ARENA_FRACTION = 0.9
+def _structural_token_count(features: Mapping[str, Any]) -> int | None:
+    """How many structural tokens this job folds, or ``None`` if unreadable.
 
+    The count admission is keyed on, and not the residue count: the ratio
+    between them drifts with composition (1.896 at 1,003 residues, 1.945 at
+    1,531 and at 4,100), so the law is fitted in structural-token space and
+    read here in the same space.
 
-def _preflight_arena(features: Mapping[str, Any], trunk_dtype: Any) -> str | None:
-    """Warn when this job's arena probably will not fit. Never refuses.
-
-    Silent whenever it cannot establish something: no pool (preallocation off),
-    no structural token count, or an estimate that fits. A preflight that cried
-    wolf on a job that runs would be worse than none.
+    No module-level numpy import: a shape is all this needs, and this file
+    keeps its import surface light.
     """
-    from foldjax import oom
-
     index = features.get("structural_token_index")
     if index is None:
         return None
-    # No module-level numpy import here on purpose: this file keeps its import
-    # surface light, and a shape is all that is needed.
     shape = getattr(index, "shape", None)
-    n_structural = int(shape[-1]) if shape else len(index)
-    if n_structural < 1:
-        return None
-    # The *realized* trunk dtype, not the flag: `trunk_dtype` is what
-    # `cast_trunk_params` was actually applied with, and `None` means the
-    # parameters were left float32 -- which since 2026-09-11 means the caller
-    # pinned `--trunk-dtype fp32`, because the released default is bf16.
-    name = "bfloat16" if trunk_dtype is not None else "float32"
-    per_pair = _ARENA_MIB_PER_PAIR.get(name)
-    if per_pair is None:
-        return None
-    estimate_mib = per_pair * n_structural * n_structural
-
-    pool, card = oom.device_budget()
-    if pool is None:
-        return None
-    budget_mib = pool / 2**20 * _PRACTICAL_ARENA_FRACTION
-    if estimate_mib <= budget_mib:
-        return None
-
-    gib = 1024.0
-    lines = [
-        f"OpenDDE preflight: this job's {n_structural} structural tokens "
-        f"({name} trunk) need an estimated {estimate_mib / gib:.1f} GiB of temp "
-        f"arena, against roughly {budget_mib / gib:.1f} GiB usable of a "
-        f"{pool / 2**30:.1f} GiB pool"
-        + (f" on a {card / 2**30:.1f} GiB device" if card else "")
-        + ". It will probably not fit.",
-        "This is an estimate from a measured quadratic, not a guarantee in "
-        "either direction: the practical ceiling sits below the arithmetic one, "
-        "and a job near the line may still fail.",
-    ]
-    if name == "float32":
-        lines.append(
-            "This run pins --trunk-dtype fp32, upstream's own trunk "
-            "precision policy (the confidence head has its own flag). The "
-            "default is --trunk-dtype bf16, which roughly halves "
-            "the measured arena and on the eight-case panel is 13-39% faster, "
-            "33-52% lighter, and no further from upstream than fp32 is."
-        )
-    else:
-        lines.append(
-            "The trunk is already bfloat16, so the dtype lever is spent -- this "
-            "size needs a larger card."
-        )
-    return " ".join(lines)
+    count = int(shape[-1]) if shape else len(index)
+    return count if count > 0 else None
 
 
 def _predict(
@@ -393,9 +354,6 @@ def _predict(
     # count and the head count are known. `--chunk-policy off` restores the
     # unbounded form.
     n_residue = int(model_features["restype"].shape[-2])
-    preflight = _preflight_arena(model_features, trunk_dtype)
-    if preflight is not None:
-        warnings.warn(preflight, RuntimeWarning, stacklevel=2)
     # The residue count, as upstream feeds it: OpenDDE resolves the threshold
     # table twice, once with `N_token` for the residue trunk and once with
     # `len(parent_residue_idx)` for the structural branch (opendde.py:1481,
@@ -646,6 +604,54 @@ def run_prediction(
     )
     written: list[Path] = []
     deterministic = config.deterministic_ops == "on"
+    # Read once, before anything is featurized: it initializes the JAX backend
+    # and every job in this run is admitted against the same ceiling. The
+    # decision itself is taken per job below, where the structural token count
+    # exists -- this port featurizes inside its seed loop, so admission lands
+    # after the weight load rather than before it, but still before the first
+    # trace, which is what the refusal is for.
+    memory_budget = memory_policy.device_memory_budget(
+        override_gib=config.memory_budget_gib
+    )
+    off_profile = memory_policy.off_profile_reason(
+        num_samples=config.num_samples,
+        # Each of these leaves the run *below* the configuration the laws were
+        # fitted at, so the estimate reads high and a refusal drawn from it
+        # would refuse a run that fits. Context parallelism is the one that
+        # matters most here, because the bf16 refusal *names* `--cp-devices 4`
+        # as the lever: a law fitted on the serial arena must not then refuse
+        # the run that takes its own advice. `--trunk-dtype fp32` is
+        # deliberately not here -- it needs more than the law says, not less,
+        # so its refusals stay binding -- and neither is `--stop-after trunk`,
+        # which returns *after* the pair stack that sets this peak.
+        extras=tuple(
+            reason
+            for reason, active in (
+                # The arena is split across the mesh; at 2,096 residues a 2x2
+                # grid completed at 32,068 MiB per device where serial died.
+                ("context parallelism", config.cp_devices > 1),
+                ("an inputs-only graph", config.stop_after == "inputs"),
+                # The laws were fitted at the automatic policy. A pinned width
+                # narrower than it needs less memory than the law says.
+                (
+                    "pinned triangle/attention chunk widths",
+                    config.chunk_policy != "auto"
+                    or any(
+                        width is not None
+                        for width in (
+                            config.diffusion_chunk_size,
+                            config.triangle_mul_chunk_size,
+                            config.triangle_att_q_chunk_size,
+                            config.single_att_q_chunk_size,
+                            config.token_q_chunk_size,
+                        )
+                    ),
+                ),
+            )
+            if active
+        ),
+    )
+    admitted: set[int] = set()
     try:
         jobs = _load_jobs(config.input_json)
         if not jobs:
@@ -810,6 +816,34 @@ def run_prediction(
                 features = None
                 sampled = None
                 padded_features = None
+                n_structural = _structural_token_count(model_features)
+                if n_structural is not None and n_structural not in admitted:
+                    # Once per shape, not once per seed: the seeds of a job
+                    # fold the same structural tokens, and a warning repeated
+                    # five times is a warning nobody reads. The *realized*
+                    # trunk dtype picks the law -- `trunk_dtype` is what
+                    # `cast_trunk_params` was applied with, and `None` means
+                    # the parameters were left float32, which since 2026-09-11
+                    # means the caller pinned `--trunk-dtype fp32`.
+                    admitted.add(n_structural)
+                    bf16_trunk = trunk_dtype is not None
+                    memory_policy.admit(
+                        model="opendde",
+                        n_token=n_structural,
+                        msa_rows=None,
+                        candidates=(
+                            ("bf16 trunk", memory_policy.OPENDDE_BF16_PEAK)
+                            if bf16_trunk
+                            else ("fp32 trunk", memory_policy.OPENDDE_FP32_PEAK),
+                        ),
+                        budget=memory_budget,
+                        mode=config.memory_check,
+                        levers=(
+                            _BF16_TRUNK_LEVER if bf16_trunk else _FP32_TRUNK_LEVER,
+                        ),
+                        off_profile=off_profile,
+                        token_label="structural tokens",
+                    )
                 output = _predict(
                     model_features,
                     params,

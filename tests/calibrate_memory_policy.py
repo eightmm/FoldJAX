@@ -129,6 +129,106 @@ PROTENIX_MSA = (
 )
 
 
+#: OpenDDE, bf16 trunk (the released default since 2026-09-11), 5 samples,
+#: released 200-step/10-cycle schedule, serial. The token count here is the
+#: **structural** token count, not the residue count: OpenDDE folds in
+#: structural-token space and the ratio to residues drifts with composition
+#: (1.896 at 1,003 residues, 1.945 at 1,531 and at 4,100), so a law keyed on
+#: residues would import that drift squared.
+#:
+#: Two completed rows:
+#:
+#: * N_st 1,902 (1,003 residues, 3OG2) -> 21,492 MiB. The serial row of
+#:   `docs/scale-rows-master-2026-09-10.md` (the 1k comparison table and the
+#:   context-parallel table, which quote the same serial peak).
+#: * N_st 2,978 (1,531 residues) -> 45.76 GiB = 46,858.2 MiB. The blocked-arm
+#:   side of the 2026-08-23 clocked A/B recorded in the `opendde-arena-law-and-
+#:   fp32-ceiling` note; N_st = 2,978 was recovered there from the buffer dump.
+#:
+#: `a + c*n^2` over two points is an exact fit, which normally means a law
+#: with no residual to take an allowance from. It is kept here because the two
+#: fitted parameters are separately corroborated rather than free:
+#:
+#: * `a` comes out 4,016 MiB = 3.92 GiB, inside the 3.0-4.6 GiB of arguments
+#:   (weights plus features) this port was measured to carry across these
+#:   sizes -- the term that is *not* the quadratic arena.
+#: * `c` comes out 0.883 of the fused-arm arena coefficient 5.4724e-3 MiB per
+#:   structural-token pair, against 0.866 measured independently: the bf16
+#:   trunk routes its triangle multiplication to the blocked XLA path, which
+#:   took 2,650 MiB off the 19,797 MiB fused arena at N_st 1,902.
+#:
+#: So the allowance is the snapshot spread alone: the same 1,003-residue bf16
+#: configuration read 19.85 GiB = 20,326.4 MiB on 2026-08-23 and 21,492 MiB on
+#: 2026-09-10, 1,165.6 MiB apart, and the 45.76 GiB row is quoted to 0.01 GiB
+#: (5.12 MiB).
+OPENDDE_BF16_POINTS = (
+    # (structural tokens, processed msa rows, peak MiB)
+    (1902, None, 21492.0),
+    (2978, None, 46858.2),
+)
+
+#: The same configuration one snapshot earlier, kept as a validation row
+#: rather than a fit point: a law fitted across two snapshots describes
+#: neither, and this is where the 1,165.6 MiB spread above comes from.
+OPENDDE_BF16_VALIDATION = ((1902, None, 20326.4),)
+
+#: OpenDDE with the trunk pinned to float32 (`--trunk-dtype fp32`), 5 samples,
+#: released schedule, serial. One fitted size, measured twice:
+#:
+#: * N_st 1,902 -> 43,090 MiB, 2026-08-23, 5 samples (the figure the retired
+#:   arena preflight carried in its own docstring, beside 42,877 at 1 sample).
+#: * N_st 1,902 -> 41.3 GiB = 42,291.2 MiB, the 2026-09-10 serial row, taken
+#:   when fp32 was still this port's released default.
+#:
+#: One fitted size determines one parameter, so this arm is `c*n^2` with no
+#: intercept: the arguments are absorbed into the coefficient, which makes the
+#: law read high below its domain and is why its domain does not reach down
+#: there. The coefficient lands at 1.092 of the measured fp32 *arena*
+#: coefficient 1.0807e-2, i.e. the arena is 91.6% of the peak -- the same
+#: arena-to-peak share the bf16 arm shows, so the shape is not this arm's own
+#: invention.
+#:
+#: The allowance is the in-sample underestimate (half the 799 MiB the two
+#: measurements are apart, so the higher of them is covered by construction)
+#: plus the 798.8 MiB they are apart, which is what a repeat of this
+#: configuration was measured to move.
+OPENDDE_FP32_POINTS = (
+    (1902, None, 43090.0),
+    (1902, None, 42291.2),
+)
+
+#: ESMFold2, released defaults, 5 samples, 200 steps, 10 cycles, serial, in
+#: token counts (this port has no structural-token space):
+#:
+#: * 1,003 tokens -> 14,733.3 MiB
+#: * 2,096 tokens -> 46,041.8 MiB
+#:
+#: Both from the control arm of GPU rows 1111/1112, transcribed at
+#: `models/esmfold2/models/model.py`'s `confidence_dtype` note, which is where
+#: this port's peaks are recorded to the tenth of a MiB; the ledger's 14.4 and
+#: 45.0 GiB are the same two runs rounded.
+#:
+#: **No sample term, and that is measured rather than assumed.** Three places
+#: in this repository still describe this peak as `num_samples * L^2 * 4*c_z`;
+#: that is the confidence head's own term, and `confidence_sample_sequential`
+#: (on by default) divides it away. What is left is the folding trunk, which
+#: has no sample axis at all: at 2,096 tokens the peak is 46,041.8 MiB at 5
+#: samples and 45.2 GiB = 46,284.8 at 32 -- the released count -- a 0.53%
+#: move. So the law is fitted at 5, declared valid to 32, and its allowance
+#: covers the 32-sample row (243.0 MiB above the fit, plus the 51.2 MiB that
+#: row is quoted to). The true repeat is 0.5 MiB: the `confidence_dtype` arm
+#: read 46,042.3 against the control's 46,041.8 at the same size.
+ESMFOLD2_POINTS = (
+    (1003, None, 14733.3),
+    (2096, None, 46041.8),
+)
+
+#: The released 32-sample row at 2,096 tokens. A completed run, so the
+#: allowance has to admit it, but not a fit point: it is a different sample
+#: count, and the point of quoting it is that the peak barely noticed.
+ESMFOLD2_VALIDATION = ((2096, None, 46284.8),)
+
+
 def _design(terms, points):
     return np.array(
         [[_TERMS[name](n, m) for name in terms] for n, m, _ in points], float
@@ -169,9 +269,14 @@ def _calibrate(phases, phase_points, domain, repeat_spread=0.0):
         raise ValueError("the measured points do not determine every phase")
     points = [row for group in phase_points for row in group]
 
+    # Keyed by the point's position as well as its shape: OpenDDE's float32
+    # arm is the same configuration measured twice at one size, and a
+    # shape-keyed mapping would keep only the second of them -- which is the
+    # one whose residual is negative, so the allowance would have been taken
+    # from a law that underestimates a completed run by 399 MiB.
     residuals = {}
-    for n, m, peak in points:
-        residuals[(n, m)] = peak - _evaluate(phases, coeffs, n, m)
+    for index, (n, m, peak) in enumerate(points):
+        residuals[(index, n, m)] = peak - _evaluate(phases, coeffs, n, m)
 
     folds, skipped = {}, []
     for size in sorted({n for n, _, _ in points}):
@@ -180,8 +285,9 @@ def _calibrate(phases, phase_points, domain, repeat_spread=0.0):
         if any(fitted is None for fitted in refit):
             skipped.append(size)
             continue
-        for n, m, peak in [row for row in points if row[0] == size]:
-            folds[(n, m)] = peak - _evaluate(phases, refit, n, m)
+        for index, (n, m, peak) in enumerate(points):
+            if n == size:
+                folds[(index, n, m)] = peak - _evaluate(phases, refit, n, m)
 
     under = [value for value in residuals.values() if value > 0]
     return {
@@ -195,7 +301,10 @@ def _calibrate(phases, phase_points, domain, repeat_spread=0.0):
         "skipped_folds": tuple(skipped),
         "residuals": residuals,
         "repeat_spread_mib": repeat_spread,
-        "worst_residual": max(abs(residuals[(n, m)]) / peak for n, m, peak in points),
+        "worst_residual": max(
+            abs(residuals[(index, n, m)]) / peak
+            for index, (n, m, peak) in enumerate(points)
+        ),
     }
 
 
@@ -228,6 +337,43 @@ def fit_all() -> dict[str, dict]:
         "openfold3_unchunked": _calibrate(
             (("unchunked", ("1", "n2")),), (OF3_UNCHUNKED_POINTS,), (1003, 3012)
         ),
+        # Both OpenDDE arms are keyed on the *structural* token count, and
+        # both domains end at 7,876 -- the structural token count of a
+        # 4,100-residue job. Nothing above 2,978 was fitted, and no failure
+        # was: what the top of the domain rests on is that the law's
+        # *verdict* has been checked against an outcome there. At N_st ~4,034
+        # (2,096 residues, 5DEI) this port asked for an 87 GiB arena and died
+        # on a 95.6 GiB pool, serial and on both 1-D layouts; at 7,876 it
+        # asked for 331.5 GiB and died. `a + c*n^2` with both coefficients
+        # nonnegative bends nowhere in between, so the refusal it gives there
+        # is the refusal those runs earned. Above 7,876 the answer is
+        # `unknown` and the run proceeds.
+        "opendde_bf16": _calibrate(
+            (("bf16 trunk", ("1", "n2")),),
+            (OPENDDE_BF16_POINTS,),
+            (1902, 7876),
+            repeat_spread=(21_492.0 - 20_326.4) + 5.12,
+        ),
+        # The fp32 arm's censored confirmation is its own: at N_st 2,978
+        # (1,531 residues) it asked for 93.40 GiB and died, and the documented
+        # escape hatch (`PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=xla`) asked
+        # 80.72 GiB and died too.
+        "opendde_fp32": _calibrate(
+            (("fp32 trunk", ("n2",)),),
+            (OPENDDE_FP32_POINTS,),
+            (1902, 7876),
+            repeat_spread=43_090.0 - 42_291.2,
+        ),
+        # Fitted at 5 samples over 1,003-2,096 tokens; 3,012 is censored and
+        # outside. The law reads 89,364 MiB = 87.3 GiB there, and the 3,012
+        # row's allocator asked for 86 GiB before failing on this 95.6 GiB
+        # card -- consistent, and not fitted to.
+        "esmfold2": _calibrate(
+            (("whole run", ("1", "n2")),),
+            (ESMFOLD2_POINTS,),
+            (1003, 2096),
+            repeat_spread=(46_284.8 - 46_041.8) + 51.2,
+        ),
     }
     return fits
 
@@ -241,6 +387,9 @@ _POINTS = {
     "protenix": PROTENIX_PAIR + PROTENIX_MSA,
     "openfold3_chunked": OF3_CHUNKED_POINTS,
     "openfold3_unchunked": OF3_UNCHUNKED_POINTS,
+    "opendde_bf16": OPENDDE_BF16_POINTS + OPENDDE_BF16_VALIDATION,
+    "opendde_fp32": OPENDDE_FP32_POINTS,
+    "esmfold2": ESMFOLD2_POINTS + ESMFOLD2_VALIDATION,
 }
 
 

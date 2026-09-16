@@ -244,37 +244,86 @@ than JAX's own 0.75: one prediction owns the process, and a quarter of the card
 held in reserve is what stops jobs that would otherwise fit. Lower it to share
 the device with another process.
 
-Three models carry a fitted peak law, so they can answer *before* the run
-whether it fits: Boltz-2, OpenFold3 and Protenix. Each law is a curve through
-this repository's own measurements at 1,003 to 4,888 tokens, widened by the
-worst it underestimates any of them and by the spread a repeated measurement
-shows, and a run is admitted when that upper estimate is inside 0.9 of what
-`bytes_limit` reports for the card (`src/foldjax/memory_policy.py`,
-re-derivable with `python tests/calibrate_memory_policy.py`, which prints the
-verdict for every fit point). Every measured run that completed is admitted by
-construction; a held-out error is reported by that script as a diagnostic for
-unmeasured sizes and deliberately not carried as margin, because at the
-largest measured size it is an extrapolation and it refused a Boltz-2 run that
-had finished.
+Five models carry a fitted peak law, so they can answer *before* the run
+whether it fits: Boltz-2, OpenFold3, Protenix, OpenDDE and ESMFold2. Each law
+is a curve through this repository's own measurements, widened by the worst it
+underestimates any of them and by the spread a repeated measurement shows, and
+a run is admitted when that upper estimate is inside 0.9 of what `bytes_limit`
+reports for the card (`src/foldjax/memory_policy.py`, re-derivable with
+`python tests/calibrate_memory_policy.py`, which prints the verdict for every
+fit point). Every measured run that completed is admitted by construction; a
+held-out error is reported by that script as a diagnostic for unmeasured sizes
+and deliberately not carried as margin, because at the largest measured size
+it is an extrapolation and it refused a Boltz-2 run that had finished.
+
+Two of the five are shaped differently enough to be worth naming.
+
+**OpenDDE has one law per realised trunk dtype, and both are keyed on the
+structural token count rather than the residue count.** This port folds in
+structural-token space and the ratio to residues drifts with composition --
+1.896 at 1,003 residues, 1.945 at 1,531 and at 4,100 -- so a law keyed on
+residues would carry that drift squared; its messages say "structural tokens"
+for the same reason, because the number is not the one you typed. The bf16
+arm is the released default and the float32 arm costs twice the peak at the
+one size both were measured at, which is why the dtype is a lever the refusal
+names and not an assumption folded into one curve. The domain runs to 7,876
+structural tokens (4,100 residues): nothing above 2,978 was fitted and no
+failure was fitted to anything, but the verdict has been checked against an
+outcome at the top -- 2,096 residues asked for an 87 GiB arena and died on a
+95.6 GiB pool on every layout but the 2x2 grid, and 4,100 residues asked for
+331.5 GiB and died. Because that refusal *names* `--cp-devices 4` as the
+lever, a distributed run is outside the profile and is warned rather than
+refused: the laws are fitted on the serial arena, which a mesh splits, and a
+refusal must not stop the run that takes its own advice. So are an inputs-only
+graph and a pinned chunk width; a pinned `--trunk-dtype fp32` is not, because
+it needs more than the law says rather than less.
+This replaces the arena preflight OpenDDE used to print,
+which estimated the temp arena alone (about 91% of the peak) and could only
+warn.
+
+**ESMFold2's law has no sample term.** Its peak is a folding-trunk arena with
+no sample axis in it: at 2,096 tokens it is 46,041.8 MiB at 5 samples and
+46,284.8 at the released 32. So the law is fitted at 5, declared valid to 32,
+and its allowance carries the difference -- without which a refusal would
+never fire on a default run. A count below 5 is still outside the profile,
+and so is context parallelism, an inputs-only graph, and the fused GLU. The
+domain is 1,003 to 2,096 tokens, the two sizes this port has completed; 3,012
+is where it runs out of memory, the law reads 87.3 GiB there against the 86
+GiB its allocator asked for, and that agreement is a check rather than a fit,
+so the answer above 2,096 is `unknown`.
+
+AlphaFold 3 accepts both flags and answers `unknown`, once, naming itself:
+the peaks recorded for that port are the harness's own XLA-client high-water
+marks, which undercount its vendored runtime's allocations, so no law was
+fitted to them. The warning is what asking for the flags buys — a run that
+does not pass either one is silent, the way a run that fits is silent
+everywhere else. It used to reject the flags outright, which read like a
+misspelling rather than like a missing measurement.
 
 `--memory-check` says what happens when it does not fit. `refuse`, the
-default, raises before the weights load rather than after the first compile,
-and names what it estimated, what it compared against, and the levers.
-`warn` prints the same message and lets the allocator answer. All three of the
-models that carry a law accept it. OpenFold3 used to reject it, because it had
-a cheaper configuration of the same prediction to fall back to; it no longer
-selects between configurations, so an over-budget estimate there is a refusal
-like anywhere else.
+default, raises before the first compile -- before the weights load on
+Protenix, before the language model on ESMFold2, before the first trace on
+OpenDDE, whose featurizer runs per seed and so has to be read first -- and
+names what it estimated, what it compared against, and the levers. `warn`
+prints the same message and lets the allocator answer. Every port accepts it.
+OpenFold3 used to reject it, because it had a cheaper configuration of the
+same prediction to fall back to; it no longer selects between configurations,
+so an over-budget estimate there is a refusal like anywhere else.
 
 `--memory-budget-gib` plans against a stated ceiling instead of the one this
 card reports, and the smaller of the two wins. It is how you ask whether a job
-would fit a card you are not on, and it is accepted by all three.
+would fit a card you are not on, and every port accepts it.
 
 Nothing is narrowed automatically to make a job fit, and nothing is chosen by
 the card either. `--max-msa-depth` does lower a Protenix estimate, and the
 refusal message says so, but it lowers it by changing the input: fewer
 alignment rows is a different prediction rather than the same one in less
-memory, and it failed this repository's own accuracy admission test.
+memory, and it failed this repository's own accuracy admission test. The
+levers the other two refusals name are of the other kind -- they change how
+the same prediction runs: `--trunk-dtype bf16` on an OpenDDE float32 run
+(43,090 MiB against 21,492 at 1,003 residues), and `--cp-devices` on either
+port, which is the only lever measured to move an ESMFold2 peak and the only
+thing that runs OpenDDE at 2,096 residues at all.
 
 OpenFold3's pair-stack row loop used to be the exception -- the one
 configuration admission picked, running the loop whole whenever the unblocked

@@ -24,6 +24,7 @@ from typing import Any
 
 import numpy as np
 
+from foldjax import memory_policy
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._tokamax_autotune import create_store as _create_tokamax_store
 from foldjax.backends._tokamax_autotune import (
@@ -31,7 +32,12 @@ from foldjax.backends._tokamax_autotune import (
 )
 from foldjax.backends._tokamax_autotune import install_store as _install_tokamax_store
 from foldjax.backends._weight_session import WeightAnchors
-from foldjax.backends.base import MATMUL_PRECISION_OPTION, SAMPLING_OPTIONS, Backend
+from foldjax.backends.base import (
+    MATMUL_PRECISION_OPTION,
+    SAMPLING_OPTIONS,
+    Backend,
+    validate_memory_policy_options,
+)
 from foldjax.execution import DETERMINISTIC_API_OPTION
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
@@ -805,6 +811,13 @@ class AlphaFold3Backend(Backend):
             "buckets",
             "device",
             "kernel_autotuning",
+            # Accepted, and deliberately not answered with an estimate: no
+            # peak law is fitted for this port. What they buy here is one
+            # `unknown` warning that says so, in place of the "unsupported
+            # alphafold3 options" that used to end the run -- which reads like
+            # a misspelling rather than like a missing measurement.
+            "memory_budget_gib",
+            "memory_check",
             "platform",
             "return_distogram",
             "return_embeddings",
@@ -1020,6 +1033,9 @@ class AlphaFold3Backend(Backend):
             self._model_runner_key = key
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
+        # A malformed mode or budget is still a malformed request, and
+        # `foldjax plan` reaches this and never reaches the run.
+        validate_memory_policy_options(options)
         for name in ("return_embeddings", "return_distogram"):
             _strict_boolean(options.get(name, False), name=name)
         if "buckets" in options:
@@ -1170,9 +1186,50 @@ class AlphaFold3Backend(Backend):
                 ),
                 name="deterministic",
             )
+            # Read before the pops: presence is the only signal there is.
+            # `cli._memory_options` injects `memory_check` only when it is not
+            # the default, deliberately -- an omitted flag and the spelling it
+            # defaults to have to stay the same run -- so what this detects is
+            # a caller who asked for something this port cannot answer.
+            memory_flags_asked = (
+                "memory_check" in options or "memory_budget_gib" in options
+            )
+            memory_check = memory_policy.parse_check_mode(
+                options.pop("memory_check", None)
+            )
+            memory_budget_gib = memory_policy.parse_budget_gib(
+                options.pop("memory_budget_gib", None)
+            )
             if options:
                 raise ValueError(
                     f"unsupported AlphaFold 3 options: {', '.join(options)}"
+                )
+            # Before the config is built and the runtime loads its weights,
+            # which is where every other port's admission sits. There is
+            # nothing to admit -- the peaks this port reports come from the
+            # harness's XLA client and undercount its vendored runtime's own
+            # allocations, so nothing here has been fitted -- so the answer is
+            # `unknown`, once, and only for a caller who asked: every other
+            # port is silent on a run that fits, so a port that warned on
+            # every run would be the one nobody reads. The token count is
+            # deliberately absent: this port tokenizes inside the vendored
+            # pipeline, below this adapter, so a number here would be a guess
+            # at the shape the message is about.
+            if memory_flags_asked:
+                memory_policy.admit_unmeasured(
+                    model="alphafold3",
+                    budget=memory_policy.device_memory_budget(
+                        override_gib=memory_budget_gib
+                    ),
+                    mode=memory_check,
+                    detail=(
+                        "the peaks recorded for this port are the harness's "
+                        "own XLA-client high-water marks, which undercount "
+                        "the vendored runtime's allocations, so no law was "
+                        "fitted to them. --memory-check and "
+                        "--memory-budget-gib admit runs on boltz2, protenix, "
+                        "openfold3, opendde and esmfold2"
+                    ),
                 )
             config = runner.make_model_config(
                 flash_attention_implementation=attention_backend,
