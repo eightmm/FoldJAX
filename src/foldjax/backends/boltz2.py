@@ -317,7 +317,6 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "pair_residual_dtype": "auto",
     "triangle_backend": "cueq",
     "glu_backend": "tokamax",
-    "bucket": False,
     "deterministic": False,
     "msa_deletions": "released",
 }
@@ -361,7 +360,6 @@ class Boltz2Backend(Backend):
             "affinity_mw_correction",
             "affinity_num_steps",
             "affinity_weights",
-            "bucket",
             "cp_atom_windows",
             "cp_devices",
             "cp_layout",
@@ -452,7 +450,6 @@ class Boltz2Backend(Backend):
         # `resolve_long_sequence_chunks`, so there is no released width to
         # record and absence keeps meaning "the rung decided".
         "triangle_attention_q_chunk",
-        "bucket",
         "deterministic",
         # Two policies, two programs: it sets the `precision` attribute on
         # every float32 dot in the graph, the cuEquivariance triangle-
@@ -932,7 +929,6 @@ class Boltz2Backend(Backend):
             )
         for name in (
             "affinity_mw_correction",
-            "bucket",
             "cp_atom_windows",
             "return_confidence_logits",
             "use_msa_server",
@@ -974,10 +970,19 @@ class Boltz2Backend(Backend):
         )
 
     def validate_request(self, request: PredictionRequest) -> None:
-        if request.padding is not None and "bucket" in request.options:
+        # Ahead of `super()`, which would answer a removed name with its
+        # generic "unsupported boltz2 options" line and leave the caller to
+        # guess what replaced it. Any spelling fires, `false` included: the
+        # option is gone, so an explicit value cannot mean what it used to,
+        # and reading it as "padding off" would reinterpret a request rather
+        # than refuse it.
+        if "bucket" in request.options:
             raise ValueError(
-                "padding and the native Boltz2 option 'bucket' were both set; "
-                "pass one of them"
+                "the boltz2 option 'bucket' was removed with its legacy "
+                "padding ladder, which capped tokens at 4,096 and truncated "
+                "deep MSAs at 1,024 rows; use --padding (PaddingConfig) for "
+                "the shared 256-token grid, which pads the MSA axis instead "
+                "of cropping it, or omit it for an exact-shape run"
             )
         super().validate_request(request)
 

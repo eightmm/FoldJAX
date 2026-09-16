@@ -9,6 +9,14 @@ Evidence-only inventory of entry points, duplicated helpers, the shared layer an
 > command-specific tests have since been retired; see the CHANGELOG entry
 > "Retired the six standalone native CLIs". Rows naming them describe the tree
 > as of 2026-09-09 and are kept as the survey record, not as current interface.
+>
+> **Also retired since this snapshot.** Boltz-2's `bucket` padding option and
+> the port-local ladders behind it (`models/boltz2/data/bucket.py`
+> `TOKEN_BUCKETS`, `MSA_BUCKETS`, `resolve_legacy_padding_plan`,
+> `resolve_bucket_shape`), which shadowed the shared `padding.py` grids this
+> snapshot lists at the `padding.py` row. `--padding` / `PaddingConfig` is the
+> only padding interface now; see the CHANGELOG entry "Boltz-2's legacy
+> `bucket` padding mode is gone".
 
 Evidence-based survey of user-facing and cross-port interface code, for unification and de-duplication. Read-only survey; nothing was edited.
 

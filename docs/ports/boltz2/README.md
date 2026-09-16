@@ -183,7 +183,6 @@ The CUDA 13 install defaults both triangle kernels to Torch-compatible cuEq;
 | `--diffusion-samples` | integer | generate multiple structures in one call; confidence runs sequentially when >1 to cap peak VRAM |
 | `--compile-cache` | dir (default on) | eligible readable XLA executables may be reused across processes; missing or rejected entries recompile |
 | `--feature-cache` | dir (default on) | memoize features by input digest; cache hit is bit-identical and skips featurization |
-| `--bucket` | flag (default off) | schema-aware token/atom/MSA bucketing for shared serving executables; MSA is capped at 1024 before JIT |
 | `--prewarm-only` | flag | execute one input/profile to populate the persistent cache, then skip prediction-file writing |
 | `matmul_precision` | `highest` (default) / `default` | `default` = TF32 (GPU). Unlike the other three ports, `highest` here **matches** upstream: `main.py:1096` is `set_float32_matmul_precision("highest")`, not the `"high"`/`enable_tf32` that OpenFold3, Protenix and OpenDDE select. Asking for TF32 is a divergence from Boltz-2, not a convergence on it |
 | `attention_backend` | `xla` / `tokamax` | fused tokamax attention |
@@ -198,25 +197,29 @@ can prewarm only the shapes and static profiles it expects, on the same GPU and
 software image that will serve requests:
 
 ```bash
-uv run python scripts/predict.py \
+foldjax cache warm \
+  --model boltz2 \
   --input representative_768.yaml \
-  --bucket \
-  --compute-dtype bfloat16 \
-  --compile-cache outputs/compile_cache \
-  --prewarm-only
+  --padding \
+  --cache-dir outputs/compile_cache
 ```
 
-Repeat for required token/atom/MSA buckets and for profiles whose sample count,
-steps, recycles, backends, confidence, guidance, or affinity mode differ. The
-command executes once so GPU kernel autotuning and persistent XLA cache writes
-finish, but it does not write final PDB/CIF predictions. Featurization/prep cache
+`--padding` puts the job on the shared 256-token grid, so one executable serves
+every target in its band. Repeat for the token/atom/MSA capacities the
+deployment expects and for profiles whose sample count, steps, recycles,
+backends, confidence, guidance, or affinity mode differ. The command runs one
+representative seed through the same path prediction takes, so GPU kernel
+autotuning and persistent XLA cache writes finish, and it discards the
+prediction files unless `--output-dir` is supplied. Featurization/prep cache
 artifacts may still be created. Set `JAX_LOG_COMPILES=1` when auditing whether a
 serving call compiled a new executable.
 
-MSA depth uses `1, 128, 256, 512, 768, 1024` buckets. The single-sequence case
-stays at 1; padding every shallow/no-MSA target to 1024 would make MSA compute
-and activation memory unnecessarily large. Inputs deeper than 1024 are
-deterministically truncated before entering JIT, matching production inference.
+MSA depth pads up to the shared ladder (`1, 64, 128, ... 16,384`): the smallest
+capacity that holds every stored row, with the profile's 1,024-row floor only
+widening a shallower alignment so one token band still shares an executable.
+The single-sequence case therefore stays at 1, and a deeper alignment is padded
+rather than cropped -- `--max-msa-depth` remains the one option that changes how
+many rows the model reads. See `docs/token-padding-profiles.md`.
 
 The CUDA 13 extra installs NVIDIA cuEquivariance as part of the environment;
 the CLI and top-level inference API select both cuEq triangle kernels by

@@ -447,7 +447,6 @@ def test_released_default_cache_aliases_reuse_one_native_runner(
             "triangle_backend": "cueq",
             "glu_backend": "tokamax",
             "pair_residual_dtype": "auto",
-            "bucket": False,
             "msa_deletions": "released",
         },
     )
@@ -492,7 +491,6 @@ def test_released_default_cache_aliases_reuse_one_native_runner(
             triangle_backend="cueq",
             glu_backend="tokamax",
             pair_residual_dtype="auto",
-            bucket=False,
             msa_deletions="released",
         )
         # Same program, named by the width instead of by the policy: it must

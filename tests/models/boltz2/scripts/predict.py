@@ -139,14 +139,6 @@ def main() -> None:
         "digest; on by default, pass a different path to relocate)",
     )
     p.add_argument(
-        "--bucket",
-        action="store_true",
-        help="pad token/atom dims to a shape ladder so the compile cache hits "
-        "across different-length targets (serving). Pads FLOPs (single-run "
-        "loss, multi-run win); shifts real coords by ~1e-4 A (fp reassociation "
-        "from padded reductions), biologically negligible.",
-    )
-    p.add_argument(
         "--prewarm-only",
         action="store_true",
         help="compile and populate --compile-cache for this input/profile, then "
@@ -275,18 +267,6 @@ def main() -> None:
 
     original_tokens = int(feats_np["token_pad_mask"].shape[-1])
     original_atoms = int(feats_np["atom_pad_mask"].shape[-1])
-    if args.bucket:
-        from foldjax.models.boltz2.data.bucket import pad_feats, resolve_bucket_shape
-
-        tgt_tok, tgt_atom, tgt_msa = resolve_bucket_shape(feats_np)
-        feats_np, _log = pad_feats(
-            feats_np, tgt_tok, tgt_atom, target_msa=tgt_msa
-        )
-        print(
-            f"bucket: tokens {original_tokens}->{tgt_tok} "
-            f"atoms {original_atoms}->{tgt_atom} msa->{tgt_msa}"
-        )
-
     feats = {k: jnp.asarray(v) for k, v in feats_np.items()}
 
     predict_kwargs = {
@@ -334,16 +314,6 @@ def main() -> None:
             atom_pad_mask=feats_np["atom_pad_mask"],
             out_dir=args.out_dir / "affinity_stage",
         )
-        if args.bucket:
-            from foldjax.models.boltz2.data.bucket import (
-                pad_feats,
-                resolve_bucket_shape,
-            )
-
-            aff_tok, aff_atom, aff_msa = resolve_bucket_shape(affinity_feats_np)
-            affinity_feats_np, _ = pad_feats(
-                affinity_feats_np, aff_tok, aff_atom, target_msa=aff_msa
-            )
         affinity_feats = {
             key: jnp.asarray(value) for key, value in affinity_feats_np.items()
         }

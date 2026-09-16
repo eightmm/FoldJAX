@@ -1049,14 +1049,46 @@ def _sample_record(sample: Any, directory: Path | None) -> dict[str, Any]:
     return record
 
 
+#: Options a manifest can record that no release can run again, by the model
+#: that owned them.  A recorded one is refused rather than reported as a
+#: mismatch: every other mismatch means "this request is a different request,
+#: run it", and the rerun answers it correctly.  Here the rerun would answer a
+#: question nobody asked -- the directory claims shapes this build cannot
+#: produce, so the honest outcome is to say so and let the caller choose a
+#: fresh output directory.
+_RETIRED_OPTIONS: dict[str, dict[str, str]] = {
+    "boltz2": {
+        "bucket": (
+            "this output directory records the removed boltz2 option "
+            "'bucket', whose legacy padding ladder capped tokens at 4,096 and "
+            "truncated deep MSAs at 1,024 rows. No build since can reproduce "
+            "those shapes, so --resume refuses rather than overwriting the "
+            "directory with a different program: rerun with --padding "
+            "(PaddingConfig) for the shared 256-token grid, or without it for "
+            "an exact-shape run, under a fresh --output-dir"
+        ),
+    },
+}
+
+
 def matches_request(
     document: Mapping[str, Any], request: PredictionRequest, *, seed: int
 ) -> bool:
-    """Whether ``document`` proves it is this exact scalar prediction request."""
+    """Whether ``document`` proves it is this exact scalar prediction request.
+
+    Raises :class:`ValueError` when the manifest records an option this build
+    removed; see :data:`_RETIRED_OPTIONS` for why that is not a mismatch.
+    """
     if document.get("schema") != MANIFEST_SCHEMA:
         return False
     if document.get("artifact_paths") != "manifest-relative":
         return False
+    retired = _RETIRED_OPTIONS.get(str(document.get("model")), {})
+    recorded = document.get("options")
+    if retired and isinstance(recorded, Mapping):
+        for name in sorted(retired):
+            if name in recorded:
+                raise ValueError(retired[name])
 
     input_record = document.get("input")
     weights_record = document.get("weights")

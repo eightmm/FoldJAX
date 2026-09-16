@@ -267,6 +267,32 @@ def test_boltz_rejects_a_single_diffusion_step_before_loading_model(
         Boltz2Backend().validate_request(request)
 
 
+@pytest.mark.parametrize("spelled", [True, False])
+def test_boltz_refuses_the_retired_bucket_option_and_names_the_migration(
+    tmp_path: Path, spelled: object
+) -> None:
+    """Either spelling is refused, and the refusal says what replaced it.
+
+    `false` has to fail too. It used to mean "the legacy ladder is off", which
+    is what omitting the option now means on its own, so accepting it would
+    reinterpret the request instead of refusing a name this build removed --
+    and the generic `unsupported boltz2 options` line the base class would
+    otherwise give names nothing a caller can act on.
+    """
+
+    request = dataclasses.replace(
+        _request(tmp_path, "boltz2"),
+        input_format="native",
+        options={"bucket": spelled},
+    )
+
+    with pytest.raises(ValueError, match="'bucket' was removed") as refusal:
+        Boltz2Backend().validate_request(request)
+
+    assert "--padding" in str(refusal.value)
+    assert "PaddingConfig" in str(refusal.value)
+
+
 def test_boltz_accepts_a_pinned_token_attention_block_including_dense(
     tmp_path: Path,
 ) -> None:

@@ -237,59 +237,8 @@ def test_api_rejects_affinity_job_without_native_affinity_weights(
         )
 
 
-def test_bucket_api_crops_public_and_raw_outputs(tmp_path, monkeypatch) -> None:
-    feats = _fake_features(affinity=False)
-    monkeypatch.setattr(
-        api,
-        "featurize",
-        lambda **kwargs: (feats, "job", tmp_path),
-    )
-    monkeypatch.setattr(
-        "foldjax.models.boltz2.bridge.native.load_params", lambda path: {"trunk": {}}
-    )
-
-    def fake_predict(params, model_feats, key, **kwargs):
-        atoms = model_feats["atom_pad_mask"].shape[-1]
-        tokens = model_feats["token_pad_mask"].shape[-1]
-        samples = kwargs["multiplicity"]
-        return {
-            "sample_atom_coords": jnp.zeros((samples, atoms, 3)),
-            "plddt": jnp.ones((samples, tokens)),
-            "plddt_logits": jnp.ones((samples, tokens, 50)),
-            "pae": jnp.ones((samples, tokens, tokens)),
-            "pdistogram": jnp.ones((1, tokens, tokens, 1, 64)),
-            "iptm": jnp.ones((samples,)),
-        }
-
-    monkeypatch.setattr(
-        "foldjax.models.boltz2.models.predict.boltz2_predict", fake_predict
-    )
-
-    out = api.predict(
-        seq=["AC"],
-        weights=tmp_path / "boltz2_conf",
-        mols=tmp_path,
-        out_dir=tmp_path,
-        bucket=True,
-        num_samples=2,
-    )
-
-    assert out["coords"].shape == (2, 3, 3)
-    assert out["plddt"].shape == (2, 2)
-    assert out["raw"]["sample_atom_coords"].shape == (2, 3, 3)
-    assert out["raw"]["plddt_logits"].shape == (2, 2, 50)
-    assert out["raw"]["pae"].shape == (2, 2, 2)
-    assert out["raw"]["pdistogram"].shape == (1, 2, 2, 1, 64)
-    assert out["padding"]["primary"]["target"] == {
-        "tokens": 256,
-        "atoms": 256,
-        "msa": 1,
-    }
-
-
-@pytest.mark.parametrize("bucket", [False, True])
-def test_nonsteering_exact_and_bucket_routes_filter_dead_features(
-    tmp_path, monkeypatch, bucket
+def test_the_nonsteering_exact_route_filters_dead_features(
+    tmp_path, monkeypatch
 ) -> None:
     feats = _fake_features(affinity=False)
     feats["disto_target"] = np.full(
@@ -321,7 +270,6 @@ def test_nonsteering_exact_and_bucket_routes_filter_dead_features(
         weights=tmp_path / "boltz2_conf",
         mols=tmp_path,
         out_dir=tmp_path,
-        bucket=bucket,
         num_steps=1,
     )
 
@@ -596,55 +544,6 @@ def test_active_steering_retains_variable_and_host_features(
     )
 
     assert seen == [frozenset(feats)]
-
-
-def test_fk_bucket_tape_expands_the_particle_axis(tmp_path, monkeypatch) -> None:
-    feats = _fake_features(affinity=False)
-    monkeypatch.setattr(api, "featurize", lambda **kwargs: (feats, "job", tmp_path))
-    monkeypatch.setattr(
-        "foldjax.models.boltz2.bridge.native.load_params", lambda path: {"trunk": {}}
-    )
-    monkeypatch.setattr(api, "_prefix_rng_is_supported", lambda: False)
-    tape_calls = []
-
-    def fake_tape(key, *, multiplicity, storage_atoms, target_atoms, steps):
-        del key
-        tape_calls.append((multiplicity, storage_atoms, target_atoms, steps))
-        return (
-            jnp.zeros((multiplicity, target_atoms, 3), dtype=jnp.float32),
-            jnp.zeros((steps, multiplicity, target_atoms, 3), dtype=jnp.float32),
-        )
-
-    monkeypatch.setattr(api, "_prefix_stable_noise_tape", fake_tape)
-    seen = []
-
-    def fake_predict(params, model_feats, key, **kwargs):
-        del params, key
-        seen.append((kwargs["diffusion_chunk_size"], kwargs["init_noise"].shape))
-        return {
-            "sample_atom_coords": jnp.zeros(
-                (7, model_feats["atom_pad_mask"].shape[-1], 3)
-            ),
-            "plddt": jnp.ones((7, model_feats["token_pad_mask"].shape[-1])),
-            "iptm": jnp.ones((7,)),
-        }
-
-    monkeypatch.setattr(
-        "foldjax.models.boltz2.models.predict.boltz2_predict", fake_predict
-    )
-    api.predict(
-        seq=["AC"],
-        weights=tmp_path / "boltz2_conf",
-        mols=tmp_path,
-        out_dir=tmp_path,
-        steering_args={"fk_steering": True, "num_particles": 3},
-        num_samples=7,
-        num_steps=2,
-        bucket=True,
-    )
-
-    assert tape_calls == [(21, 3, 256, 2)]
-    assert seen == [(5, (21, 256, 3))]
 
 
 def test_neutral_padding_crops_back_to_the_default_public_shapes(
@@ -945,14 +844,21 @@ def test_affinity_dataset_receives_the_requested_msa_cap(tmp_path, monkeypatch) 
     assert seen["max_msa_seqs"] == 19
 
 
-def test_native_api_rejects_neutral_and_legacy_padding_together(tmp_path) -> None:
-    with pytest.raises(ValueError, match="cannot be used together"):
+def test_native_api_no_longer_accepts_the_retired_bucket_argument(tmp_path) -> None:
+    """The signature refuses the removed name before anything loads.
+
+    The unified surface answers `-o bucket=...` with the migration itself; see
+    `tests/test_backends.py`. Here the point is only that the native signature
+    has no `**kwargs` to swallow it into, so the old spelling cannot be
+    reinterpreted as an exact-shape run.
+    """
+
+    with pytest.raises(TypeError, match="bucket"):
         api.predict(
             seq=["AC"],
             weights=tmp_path / "boltz2_conf",
             mols=tmp_path,
             bucket=True,
-            padding=PaddingConfig(),
         )
 
 

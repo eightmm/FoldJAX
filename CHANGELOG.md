@@ -84,8 +84,8 @@ unless it says so here, in its own paragraph.
   still the rung every alignment between 14,337 and 16,384 rows lands on. The
   resolved MSA target is part of every plan's shape summary, so which rung a
   run took is reported rather than inferred. Boltz-2's legacy `bucket=true`
-  grid is a separate, deliberately frozen interface and keeps its own
-  1-to-1,024 MSA ladder, cap included.
+  grid was the one interface this did not reach, and it is removed in this
+  same release rather than left frozen beside it -- see Removed below.
 
 - **OpenFold3 resolves the blocked 128-row pair stack inside the validated
   domain instead of the unchunked loop that fits.** From 1,003 tokens up an
@@ -339,6 +339,44 @@ unless it says so here, in its own paragraph.
   one cold compile per shape.
 
 ### Removed
+
+- **Boltz-2's legacy `bucket` padding mode is gone.** The native
+  `predict(bucket=...)` argument, the `-o bucket=...` option, and the
+  port-local ladders behind them -- `models/boltz2/data/bucket.py`'s
+  `TOKEN_BUCKETS`, `MSA_BUCKETS`, `resolve_legacy_padding_plan` and
+  `resolve_bucket_shape` -- no longer exist. `--padding` / `PaddingConfig` is
+  the only padding interface.
+
+  It was a second padding policy shadowing the shared one, and the shadow was
+  the problem. Its token ladder stopped at 4,096 where the shared grid steps by
+  256 to 8,192, so a job between them silently ran unpadded. Worse, its MSA
+  ladder ended at 1,024 and *truncated* anything deeper -- the same silent
+  1,024-row cap that the MSA-axis fix above removed from `--padding` in this
+  release, on the grounds that which rows a model reads is a scientific choice
+  and not a shape option's business. Leaving one interface that still did it
+  would have kept the defect reachable under a different spelling.
+
+  What replaces it: `--padding` (or `PaddingConfig()`) puts the job on the
+  shared 256-token grid with derived atom capacity, and pads the MSA axis up to
+  the capacity that holds every stored row instead of cropping to it, so one
+  executable still serves a whole token band for serving deployments.
+  `--max-msa-depth` remains the one option that changes how many rows a model
+  reads.
+
+  Old spellings are refused, never reinterpreted. `-o bucket=true` *and*
+  `-o bucket=false` both fail before anything loads, with a message naming
+  `--padding` and `PaddingConfig`: `false` used to mean "the legacy ladder is
+  off", which is what omitting the option now means by itself, so accepting it
+  would answer a different request than the one asked. The native signature has
+  no `**kwargs`, so `predict(bucket=...)` raises `TypeError`.
+
+  A `--resume` against an output directory whose manifest recorded `bucket` is
+  also refused rather than recomputed, and the refusal names `--padding` and
+  `--output-dir`. Every other manifest mismatch means "this is a different
+  request, run it", and rerunning answers it correctly; this one cannot, because
+  the directory claims padded shapes no build since can produce. Rerunning
+  would overwrite a recorded result with a different program under the same
+  name, so the run stops and lets the caller choose.
 
 - **The six standalone native CLIs are gone, as an interface removal.** The
   console scripts `openfold3-jax-predict`, `openfold3-jax-verify-checkpoint`,

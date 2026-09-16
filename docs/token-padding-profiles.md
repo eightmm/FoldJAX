@@ -129,8 +129,11 @@ as it did before this policy existed.
 Existing masks, atom-to-token mappings, crop functions, and prefix-preserving
 random draws are reused. Explicit pins and padding-off behavior remain intact.
 A token-grid `overflow="exact"` choice never bypasses derived-capacity checks.
-The older Boltz-specific `bucket=True` interface retains its legacy policy;
-this change applies to the common `PaddingConfig` / `--padding` interface.
+This change applies to the common `PaddingConfig` / `--padding` interface,
+which is now the only one: the older Boltz-specific `bucket=True` mode, whose
+own ladder capped tokens at 4,096 and truncated deep MSAs at 1,024 rows, has
+been removed. See the CHANGELOG entry "Boltz-2's legacy `bucket` padding mode
+is gone".
 
 Equal padded dimensions are necessary but not sufficient for a cache hit.
 Device/JAX identity, dtype, native static options, chain/chemistry configuration,

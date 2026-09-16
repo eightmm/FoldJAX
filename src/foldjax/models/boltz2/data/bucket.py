@@ -27,9 +27,6 @@ from foldjax.models.boltz2.data.ownership import (
     TOKEN_TO_REP_ATOM_INDEX,
 )
 from foldjax.padding import (
-    ATOM_BUCKETS as STANDARD_ATOM_BUCKETS,
-)
-from foldjax.padding import (
     MSA_PROFILE_DEPTH,
     PaddingPlan,
     resolve_axis,
@@ -37,10 +34,6 @@ from foldjax.padding import (
     resolve_token_axis,
 )
 from foldjax.schema import PaddingConfig
-
-TOKEN_BUCKETS = (256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096)
-ATOM_BUCKETS = STANDARD_ATOM_BUCKETS
-MSA_BUCKETS = (1, 128, 256, 512, 768, 1024)
 
 _TOKEN = "token"
 _ATOM = "atom"
@@ -175,8 +168,8 @@ _STEERING_FEATURES = frozenset(
 
 # Every array read by the vendored non-steering forward graph.  This is narrower
 # than ``_FEATURE_AXES``: the latter also describes archive/writer fields such as
-# ``r_set_to_rep_atom`` that must be padded in legacy feature utilities but must
-# not enter the jitted prediction pytree.  Keeping this explicit prevents those
+# ``r_set_to_rep_atom`` that ``pad_feats`` must still pad when a caller hands it
+# one, but that must not enter the jitted prediction pytree.  Keeping this explicit prevents those
 # host-only dimensions from fragmenting the executable cache.
 _MODEL_FEATURES = frozenset(
     {
@@ -308,10 +301,10 @@ def select_model_features(
 
     The compiled single-device path can rely on JAX to prune unread NumPy
     arguments before transfer. Context parallelism cannot: it places every
-    feature at an explicit ownership boundary before calling ``jax.jit``.
-    Legacy bucketing also visits every feature on the host. Filtering both
-    routes here prevents training labels and writer-only arrays from becoming
-    live inputs while leaving the public featurizer result untouched.
+    feature at an explicit ownership boundary before calling ``jax.jit``, and
+    a padded run visits every feature on the host. Filtering both routes here
+    prevents training labels and writer-only arrays from becoming live inputs
+    while leaving the public featurizer result untouched.
 
     Active steering must retain its variable-length constraint arrays and must
     not call this helper.
@@ -386,39 +379,6 @@ def resolve_padding_plan(
     return PaddingPlan(actual=actual, storage=storage, target=target)
 
 
-def resolve_legacy_padding_plan(feats: Mapping[str, object]) -> PaddingPlan:
-    """Resolve ``bucket=True`` while retaining its historic overflow policy.
-
-    Token and MSA grids remain the port's legacy grids.  Atom storage now uses
-    real buckets instead of merely rounding an already 32-aligned featurizer
-    output, so two jobs in one atom bucket can actually share an executable.
-    """
-
-    actual, storage = _feature_sizes(feats)
-    target_tokens = next(
-        (size for size in TOKEN_BUCKETS if size >= storage["tokens"]),
-        storage["tokens"],
-    )
-    target_atoms = next(
-        (size for size in ATOM_BUCKETS if size >= storage["atoms"]),
-        storage["atoms"],
-    )
-    # Legacy bucket mode intentionally caps/truncates exceptionally deep MSAs.
-    target_msa = next(
-        (size for size in MSA_BUCKETS if size >= storage["msa"]),
-        MSA_BUCKETS[-1],
-    )
-    return PaddingPlan(
-        actual=actual,
-        storage=storage,
-        target={
-            "tokens": target_tokens,
-            "atoms": target_atoms,
-            "msa": target_msa,
-        },
-    )
-
-
 def align_padding_plan_for_context_parallel(
     feats: Mapping[str, object],
     plan: PaddingPlan | None,
@@ -472,13 +432,6 @@ def align_padding_plan_for_context_parallel(
     )
 
 
-def resolve_bucket_shape(feats: Mapping[str, object]) -> tuple[int, int, int]:
-    """Return the legacy ``(token, atom, MSA-depth)`` bucket for features."""
-
-    plan = resolve_legacy_padding_plan(feats)
-    return plan.target["tokens"], plan.target["atoms"], plan.target["msa"]
-
-
 #: Non-zero padding constants. Ownership indices mark an absent owner with
 #: ``-1``; a private compact category marks the all-zero row its dense form
 #: pads with by carrying its own class count as an out-of-range sentinel.
@@ -500,8 +453,11 @@ def pad_feats(
 ) -> tuple[dict[str, jnp.ndarray], list[str]]:
     """Pad known semantic axes and optionally truncate/pad MSA depth.
 
-    Token and atom targets may only grow. MSA depth may be truncated because
-    production inference already caps it at 1024 rows deterministically.
+    Token and atom targets may only grow.  So does every ``target_msa`` a
+    resolved plan can produce: :func:`padding.resolve_msa_axis` refuses a
+    capacity below the stored rows, so no route through the port's ``predict``
+    reaches the truncation below.  It stays for a directly spelled target, which keeps
+    this helper total over its arguments rather than raising on one axis only.
     """
     tokens = int(np.shape(feats["token_pad_mask"])[-1])
     atoms = int(np.shape(feats["atom_pad_mask"])[-1])
@@ -564,7 +520,7 @@ _TOKEN_OUTPUT_AXES: dict[str, tuple[int, ...]] = {
 def crop_prediction_outputs(
     outputs: Mapping[str, object], original_tokens: int, original_atoms: int
 ) -> dict[str, object]:
-    """Remove bucket-only padding from public model outputs."""
+    """Remove padding-only columns from public model outputs."""
     cropped: dict[str, object] = {}
     for key, value in outputs.items():
         if key == "sample_atom_coords":

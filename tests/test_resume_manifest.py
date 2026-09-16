@@ -1606,6 +1606,36 @@ def test_invalid_utf8_manifest_forces_a_rerun(tmp_path: Path) -> None:
     assert resumed.skipped == ()
 
 
+def test_a_recorded_retired_option_refuses_the_resume_instead_of_rerunning(
+    tmp_path: Path,
+) -> None:
+    """A manifest naming the removed `bucket` option stops the run.
+
+    Every other manifest mismatch means "this is a different request, run it",
+    and the rerun answers it. This one cannot: the directory records padded
+    shapes no build since can produce, so a rerun would overwrite it with a
+    different program under the same name. Refuse and name the migration.
+    """
+
+    request = _request(tmp_path)
+    calls: list[tuple[str, str, int]] = []
+    with _backends(calls):
+        foldjax.predict(request)
+        path = request.output_dir / MANIFEST_NAME
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["options"]["bucket"] = True
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="removed boltz2 option") as refusal:
+            foldjax.predict_batch(dataclasses.replace(request, resume=True))
+
+    # Refused, not recomputed: the one call is the run that wrote the manifest.
+    assert len(calls) == 1
+    message = str(refusal.value)
+    assert "--padding" in message
+    assert "--output-dir" in message
+
+
 @pytest.mark.parametrize("score", [True, "0.75", 10**400])
 def test_manifest_score_type_drift_forces_a_rerun(
     tmp_path: Path, score: object

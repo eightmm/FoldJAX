@@ -380,7 +380,6 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
             "triangle_backend": "cueq",
             "glu_backend": "tokamax",
             "pair_residual_dtype": "auto",
-            "bucket": False,
             "matmul_precision": "high",
         },
     )
@@ -399,7 +398,6 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
             "attention_kernel": "auto",
             "triangle_kernel": "auto",
             "glu_backend": "tokamax",
-            "bucket": False,
             "matmul_precision": "high",
         },
     )
@@ -702,7 +700,6 @@ def test_boltz2_profile_spells_the_triangle_query_block_only_when_asked(
         # be answered out of the default rung's entry.
         ({}, {"triangle_attention_q_chunk": 128}),
         ({}, {"triangle_attention_q_chunk": 0}),
-        ({}, {"bucket": True}),
         # Upstream's float32 is a second program -- a different `precision`
         # attribute on every float32 dot, a different cuEquivariance
         # triangle-multiplication mode, a different Tokamax preset -- so the

@@ -5,7 +5,6 @@ import pytest
 
 from foldjax.models.boltz2.data.bucket import (
     pad_feats,
-    resolve_bucket_shape,
     resolve_padding_plan,
     select_model_features,
     select_model_features_for_padding,
@@ -61,23 +60,20 @@ def test_pad_feats_handles_equal_token_and_atom_counts() -> None:
 
 
 def test_pad_feats_truncates_msa_before_padding() -> None:
+    """A directly spelled target below the stored depth still truncates.
+
+    No resolved plan reaches this: `padding.resolve_msa_axis` refuses a
+    capacity under the stored rows, which is what retiring the legacy ladder
+    removed the last caller of. The branch keeps `pad_feats` total over its
+    arguments, so it keeps a test.
+    """
+
     feats = _features(tokens=6, atoms=8, msa=1100)
     padded, _ = pad_feats(feats, 256, 32, target_msa=1024)
 
     assert padded["msa"].shape == (1, 1024, 256)
     assert padded["msa_mask"].shape == (1, 1024, 256)
     np.testing.assert_array_equal(np.asarray(padded["msa"][:, :, :6]), 1)
-
-
-def test_resolve_bucket_shape_normalizes_msa_without_overpadding_shallow_inputs() -> (
-    None
-):
-    assert resolve_bucket_shape(_features(msa=1)) == (256, 256, 1)
-    assert resolve_bucket_shape(_features(msa=77)) == (256, 256, 128)
-    assert resolve_bucket_shape(_features(msa=249)) == (256, 256, 256)
-    assert resolve_bucket_shape(_features(msa=400)) == (256, 256, 512)
-    assert resolve_bucket_shape(_features(msa=900)) == (256, 256, 1024)
-    assert resolve_bucket_shape(_features(msa=2000)) == (256, 256, 1024)
 
 
 def test_neutral_padding_resolves_all_three_compile_shape_axes() -> None:
@@ -108,13 +104,6 @@ def test_neutral_padding_never_shrinks_materialized_features() -> None:
             _features(tokens=8, atoms=32, msa=4),
             PaddingConfig(tokens=4),
         )
-
-
-def test_atom_buckets_reuse_shapes_beyond_the_featurizers_32_alignment() -> None:
-    first = resolve_bucket_shape(_features(atoms=33))
-    second = resolve_bucket_shape(_features(atoms=200))
-
-    assert first[1] == second[1] == 256
 
 
 def test_public_crop_requires_real_mask_entries_to_be_a_prefix() -> None:

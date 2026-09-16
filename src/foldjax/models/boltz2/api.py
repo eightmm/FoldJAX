@@ -733,7 +733,6 @@ def predict(
     msa_api_key_value: str | None = None,
     feature_cache: str | Path | None = None,
     compile_cache: str | Path | None = None,
-    bucket: bool = False,
     padding: PaddingConfig | None = None,
     write_fmt: str | None = None,
     max_msa_depth: int | None = None,
@@ -775,8 +774,6 @@ def predict(
 
     if num_samples <= 0:
         raise ValueError("num_samples must be positive")
-    if padding is not None and bucket:
-        raise ValueError("padding and legacy bucket=True cannot be used together")
     if cp_devices < 1:
         raise ValueError("cp_devices must be positive")
     if not isinstance(cp_atom_windows, bool):
@@ -1024,16 +1021,11 @@ def predict(
     original_tokens = int(feats_np["token_pad_mask"].shape[-1])
     original_atoms = int(feats_np["atom_pad_mask"].shape[-1])
     padding_plan = None
-    if padding is not None or bucket:
-        from foldjax.models.boltz2.data.bucket import (
-            resolve_legacy_padding_plan,
-            resolve_padding_plan,
-        )
+    if padding is not None:
+        from foldjax.models.boltz2.data.bucket import resolve_padding_plan
 
-        padding_plan = (
-            resolve_padding_plan(feats_np, padding, max_msa_depth=max_msa_depth)
-            if padding is not None
-            else resolve_legacy_padding_plan(feats_np)
+        padding_plan = resolve_padding_plan(
+            feats_np, padding, max_msa_depth=max_msa_depth
         )
     if cp_atom_active:
         from foldjax.models.boltz2.data.bucket import (
@@ -1067,8 +1059,8 @@ def predict(
         )
 
     # Admission, with the compiled token count final: every source of a
-    # padding plan -- an explicit one, the legacy bucket, and the context
-    # parallel alignment -- has been folded in above, and nothing
+    # padding plan -- an explicit one and the context parallel alignment --
+    # has been folded in above, and nothing
     # activation-sized has been traced or placed. The weights are already on
     # the device by this point; moving the check above them would mean hoisting
     # the plan resolution over the feature-selection compaction it reads, which
@@ -1427,18 +1419,14 @@ def predict(
         affinity_feats_np = compact_token_to_rep_atom_storage(affinity_feats_np)
         affinity_feats_np = compact_atom_to_token_storage(affinity_feats_np)
         affinity_feats_np = compact_category_storage(affinity_feats_np)
-        if padding is not None or bucket:
+        if padding is not None:
             from foldjax.models.boltz2.data.bucket import (
                 pad_feats,
-                resolve_legacy_padding_plan,
                 resolve_padding_plan,
             )
-            affinity_padding_plan = (
-                resolve_padding_plan(
-                    affinity_feats_np, padding, max_msa_depth=max_msa_depth
-                )
-                if padding is not None
-                else resolve_legacy_padding_plan(affinity_feats_np)
+
+            affinity_padding_plan = resolve_padding_plan(
+                affinity_feats_np, padding, max_msa_depth=max_msa_depth
             )
             affinity_feats_np, _ = pad_feats(
                 affinity_feats_np,
