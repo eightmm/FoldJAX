@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
 import jax
@@ -84,10 +85,14 @@ def test_cueq_mixed_path_has_native_internal_casts(monkeypatch, direction, batch
     def unexpected(**kwargs):
         pytest.fail("the homogeneous public API cannot express mixed native AMP")
 
-    monkeypatch.setattr(
-        cueq,
-        "load_cueq",
-        lambda: SimpleNamespace(
+    # Patch the module, not `triangle_cueq.load_cueq`: the homogeneous branch
+    # reaches the public API through `models/_cueq.py`, which resolves
+    # `load_cueq` in its own namespace, so a binding patched here would leave
+    # the `unexpected` tripwire below unreachable.
+    monkeypatch.setitem(
+        sys.modules,
+        "cuequivariance_jax",
+        SimpleNamespace(
             TriMulPrecision=SimpleNamespace(DEFAULT="DEFAULT", IEEE="IEEE"),
             triangle_multiplicative_update=unexpected,
         ),
@@ -117,10 +122,10 @@ def test_cueq_homogeneous_path_still_uses_public_api(monkeypatch, dtype):
         calls.append(kwargs)
         return kwargs["x"]
 
-    monkeypatch.setattr(
-        cueq,
-        "load_cueq",
-        lambda: SimpleNamespace(
+    monkeypatch.setitem(
+        sys.modules,
+        "cuequivariance_jax",
+        SimpleNamespace(
             TriMulPrecision=SimpleNamespace(DEFAULT="DEFAULT", IEEE="IEEE"),
             triangle_multiplicative_update=public,
         ),
