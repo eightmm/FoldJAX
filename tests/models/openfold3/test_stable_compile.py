@@ -119,6 +119,17 @@ def test_backend_cache_defaults_track_released_config_signature() -> None:
     # reason `_DEFAULT_DTYPE` is pinned to the signature.
     assert openfold3_backend._MATMUL_PRECISION == inference._MATMUL_PRECISION
 
+    # The context-parallel rollout width is the model's constant too, and the
+    # adapter records what an omitted option resolves to rather than the
+    # spelling -- so a copy that drifted would file the chunked mesh program
+    # under a name the unchunked one wrote. The serial half of the same rule
+    # needs no copy: both sides call `auto_diffusion_chunk_size`.
+    assert (
+        openfold3_backend._CP_DIFFUSION_CHUNK_SIZE
+        == inference.CP_DIFFUSION_CHUNK_SIZE
+    )
+    assert signature["diffusion_chunk_size"].default == "auto"
+
 
 def test_released_default_aliases_share_one_backend_jit_owner(
     tmp_path,

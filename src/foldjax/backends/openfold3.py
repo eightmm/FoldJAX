@@ -40,7 +40,7 @@ from foldjax.backends.base import (
     validate_memory_policy_options,
 )
 from foldjax.cache import compilation_cache_scope
-from foldjax.execution import DETERMINISTIC_API_OPTION
+from foldjax.execution import DETERMINISTIC_API_OPTION, auto_diffusion_chunk_size
 from foldjax.models import _representations
 from foldjax.padding import (
     PaddingPlan,
@@ -100,6 +100,15 @@ _COMPILE_OPTIONS = (
 #: import the model package or JAX -- and a test pins the copy to
 #: `released_config`'s signature.
 _DEFAULT_DTYPE = "bfloat16"
+
+#: The diffusion sample width `released_config` resolves an omitted
+#: `diffusion_chunk_size` to under a context-parallel mesh. Serially it
+#: resolves from the sample count instead, through the shared
+#: `auto_diffusion_chunk_size` imported above -- one name, one constant -- and
+#: this is the other half of that rule. Copied rather than imported for the
+#: same reason as `_DEFAULT_DTYPE`, and a drift test pins the copy to
+#: `inference.CP_DIFFUSION_CHUNK_SIZE`.
+_CP_DIFFUSION_CHUNK_SIZE = 1
 
 #: The float32 matmul precision this port pins for itself, which is upstream's
 #: TF32 (`models/openfold3/inference.py:549`, read at :577 through
@@ -239,6 +248,31 @@ def _sampler_noise_mask(plan: PaddingPlan, *, num_samples: int) -> np.ndarray:
     target_atoms = plan.target["atoms"]
     stored_atom_prefix = np.arange(target_atoms) < source["atoms"]
     return np.broadcast_to(stored_atom_prefix, (num_samples, target_atoms))
+
+
+def _resolved_diffusion_chunk_size(
+    requested: Any, *, num_samples: int, cp_shards: int
+) -> Any:
+    """The rollout width this request will run, from the spelling it carries.
+
+    The adapter's half of `inference.resolve_diffusion_chunk_size`: an absent
+    option is the one that resolves -- to `_CP_DIFFUSION_CHUNK_SIZE` under a
+    mesh and to the sample count's own width serially -- and anything spelled
+    is returned as the integer the request carries. A spelling
+    `validate_native_options` refuses keeps its raw value, so a request that
+    cannot run is never filed under a width that can.
+    """
+
+    if requested is None:
+        return (
+            _CP_DIFFUSION_CHUNK_SIZE
+            if cp_shards > 1
+            else auto_diffusion_chunk_size(num_samples)
+        )
+    try:
+        return int(requested)
+    except (TypeError, ValueError):
+        return requested
 
 
 def _compile_enabled(options: dict[str, Any]) -> bool:
@@ -430,6 +464,22 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         )
         profile["triangle_kernel"] = resolve_triangle_kernel(
             options.get("triangle_kernel"), cp_shards=cp_shards
+        )
+        # The rollout width, recorded as the value the run resolves to and
+        # never stripped -- the same rule the two dtypes above follow, and for
+        # the same reason. An omitted option resolved to the unchunked rollout
+        # at every released schedule until the mesh default landed; leaving it
+        # absent would now file the chunked context-parallel program under the
+        # name every unchunked run before it wrote. Two programs, one name.
+        # Recording the width instead pins absence to "this record predates the
+        # width being written". It is read *after* `cp_devices`, because the
+        # shard count is what decides which automatic answer applies.
+        profile["diffusion_chunk_size"] = _resolved_diffusion_chunk_size(
+            options.get("diffusion_chunk_size"),
+            num_samples=int(
+                options.get("num_samples", _RELEASED_COMPILE_DEFAULTS["num_samples"])
+            ),
+            cp_shards=cp_shards,
         )
         # The released SwiGLU is the unfused one, so a request that spells
         # that default out must name the namespace an omitted option names.
@@ -655,9 +705,14 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             overrides["memory_budget"] = memory_policy.device_memory_budget(
                 override_gib=budget_gib
             )
-        # Left unset the config resolves it from the sample count, the way
-        # Protenix does, so the shipped five-sample run is untouched and only a
-        # caller who raises the count pays for the loop.
+        # Left unset the config resolves it: serially from the sample count,
+        # the way Protenix does, so the shipped five-sample run is untouched
+        # and only a caller who raises the count pays for the loop; under a
+        # mesh to one sample, because there the sample axis is the axis
+        # sharding does not touch and the pair conditioning is five copies of
+        # the largest value in the program. An explicit width -- including a
+        # width at or above the sample count, which is the unchunked rollout --
+        # is passed through and wins.
         sample_chunk = options.pop("diffusion_chunk_size", None)
         if sample_chunk is not None:
             overrides["diffusion_chunk_size"] = int(sample_chunk)

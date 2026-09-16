@@ -292,6 +292,21 @@ on coordinates of magnitude 10–30 — and 4,100 tokens is past anything either
 implementation validates. What comes out says so itself: all five samples
 reported a clash at a mean pLDDT near 42. Fitting is not the same as working.
 
+**Under a context-parallel mesh that width is the default.** With `--option
+cp_devices=N` for `N > 1` and no `diffusion_chunk_size` of your own, the
+rollout denoises one sample at a time. The pair axis is sharded and the sample
+axis is not, so under a mesh the conditioning is what remains full width: at
+6,568 tokens on four devices the rollout's `f32[5, N/4, N, 128]` is 25.7 GiB
+per rank, and one sample at a time is 5.1 GiB of it. A mesh is asked for
+because the target does not otherwise fit, which is why capacity wins here and
+not serially. The price is wall time -- the denoiser runs one sample where it
+would have run five -- and it is unmeasured here: the 4,100-token comparison
+above has no unchunked wall time to compare against, because that arm does not
+run. Say `--option diffusion_chunk_size=5` (any width at or above
+the sample count, or `None` through `released_config`) to get the unchunked
+rollout back on a mesh with room to spare; serial runs are unchanged, and the
+two spellings compile and cache separately.
+
 The common `foldjax.predict()` backend additionally has a narrower managed
 default: its `*_raw.npz` keeps coordinates, pLDDT, pTM, ipTM, chain-pair ipTM,
 and the experimentally-resolved logits, but omits `pae_logits`, `pde_logits`,

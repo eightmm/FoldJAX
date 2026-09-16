@@ -84,6 +84,42 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **OpenFold3 denoises one diffusion sample at a time under context
+  parallelism**, when `--option diffusion_chunk_size` is not given and
+  `--option cp_devices` is more than one. A mesh shards the pair rows and
+  leaves the sample axis alone, so under one the rollout's widest value is the
+  diffusion pair conditioning: hoisted out of the sampler loop at a leading
+  axis of one and widened to the rollout's sample width at the point of use,
+  which at 6,568 tokens on four devices is `f32[5, N/4, N, 128]` -- 25.7 GiB
+  *per rank*, held by the rollout and by the 24-block diffusion transformer.
+  One sample at a time is 5.1 GiB of that. A mesh is asked for because the
+  target does not otherwise fit, which is why capacity wins here and does not
+  serially.
+
+  The chunk takes nothing else with it. The conditioning is constructed per
+  chunk rather than retained outside the loop -- checked on the compiled
+  program, where no `[samples, N/4, N, channels]` value survives the chunked
+  rollout in either the per-device SPMD text or the unoptimised HLO while one
+  does survive without the chunk -- every noise draw is narrowed from the full
+  sample width rather than redrawn, augmentation still sees every sample, and
+  the same five samples come back in the same order within the chunk loop's own
+  float32 tolerance. What it costs is wall time -- the denoiser runs one sample
+  where it would have run five -- and how much is not measured on this port at
+  the sizes a mesh is for: the 4,100-token arm it is compared against does not
+  run at all, and the nearest number for this knob is Boltz-2's `+33%` at 3k
+  tokens.
+
+  Serial runs are untouched: without a mesh the width still comes from the
+  sample count, which is the unchunked rollout at every released schedule. An
+  explicit value always wins, and the unchunked rollout stays reachable on a
+  mesh -- `--option diffusion_chunk_size=5` at the released five samples, or
+  any width at or above the sample count, or `None` through `released_config`.
+  The compile-cache namespace records the width the run resolves to rather than
+  the spelling, so an omitted option under a mesh and an explicit `1` name one
+  namespace and the unchunked rollout keeps its own; because the width is now
+  recorded for every run, entries written before this release do not answer a
+  new one. `docs/context_parallel.md` carries the rule and the gates.
+
 - **`--memory-check` and `--memory-budget-gib` now decide something on
   OpenDDE, ESMFold2 and AlphaFold 3.** They were one vocabulary that only
   three of the six ports answered: on the other three `--memory-check warn`

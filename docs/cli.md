@@ -1391,6 +1391,17 @@ The default is unchunked for the released five-sample schedules; the automatic
 width engages only above five samples. Per-model measurements:
 [docs/engineering-notes.md](engineering-notes.md).
 
+**On OpenFold3 with `--option cp_devices=N` (`N > 1`) the default is `1`.** A
+mesh shards the pair rows and not the samples, so there the rollout's pair
+conditioning is the value left at full width -- `f32[5, N/4, N, 128]`, 25.7 GiB
+per rank at 6,568 tokens on four devices, against 5.1 GiB one sample at a time
+-- and a mesh is asked for because the target does not otherwise fit. Pass a
+width at or above the sample count (`diffusion_chunk_size=5` at the released
+five samples) for the unchunked rollout on a mesh with room to spare. An
+explicit value always wins, serial runs are unchanged, and the width the run
+resolves to is what the compile-cache namespace records:
+[docs/context_parallel.md](context_parallel.md).
+
 ### `--option token_attention_chunk=N` (Boltz-2)
 
 Sets the query block the Boltz-2 diffusion token transformer's pair-bias

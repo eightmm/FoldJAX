@@ -160,8 +160,11 @@ class InferenceConfig(NamedTuple):
     #: seen anyway -- to float32 round-off, 9.5e-06 absolute, not to the bit.
     #: `None` denoises every sample at once.
     #:
-    #: Resolved from the sample count by `released_config` rather than pinned
-    #: here, so a one-sample run keeps the single unchunked rollout it had.
+    #: Resolved by `released_config` rather than pinned here -- from the sample
+    #: count serially, so a one-sample run keeps the single unchunked rollout it
+    #: had, and from the shard count under a mesh, where
+    #: :data:`CP_DIFFUSION_CHUNK_SIZE` is the capacity-first answer. See
+    #: :func:`resolve_diffusion_chunk_size`.
     diffusion_chunk_size: int | None = None
     # Alignment rows the trunk sees. Upstream subsamples inside the network, in
     # ``MSAModuleEmbedder.forward``, with ``subsample_all_msa=True`` and
@@ -593,8 +596,10 @@ def resolve_pair_chunk_size(
                     "--option diffusion_chunk_size=N denoises N samples at a "
                     "time instead of all of them, which narrows the sample "
                     "axis without dropping a prediction (the law above was "
-                    "fitted with it off, the way the released five-sample "
-                    "schedule leaves it)"
+                    "fitted with it off, the way a serial run of the released "
+                    "five-sample schedule leaves it; under a mesh an omitted "
+                    "option already denoises one at a time, so this lever is "
+                    "spent there)"
                 ),
             ),
             off_profile=off_profile,
@@ -623,6 +628,58 @@ def _blocked_width(n_token: int) -> int | None:
     if n_token < validated_from or RESOLVED_PAIR_CHUNK_SIZE >= n_token:
         return None
     return RESOLVED_PAIR_CHUNK_SIZE
+
+
+#: Diffusion samples the rollout denoises at once under a context-parallel
+#: mesh, when the caller has not asked for a width.
+#:
+#: One, because under a mesh the sample axis is the one axis sharding does not
+#: touch. The rollout's widest value is the diffusion pair conditioning, which
+#: `denoise_fn` widens to the rollout's sample width at the point of use: at
+#: 6,568 tokens on four devices that is ``f32[5, N/4, N, 128]``, 25.7 GiB *per
+#: rank*, and both the rollout and the 24-block diffusion transformer hold it.
+#: Denoising one sample at a time takes the same value to 5.1 GiB and takes
+#: nothing else with it -- the conditioning is constructed per chunk rather
+#: than retained outside the loop, every noise draw is narrowed from the full
+#: sample width rather than redrawn, and augmentation still sees every sample
+#: (`models/sampler.py`, and the census in
+#: `tests/models/openfold3/scripts/diffusion_chunk_cp_census.py`).
+#:
+#: A mesh is asked for because a target does not otherwise fit, so capacity is
+#: what its default is judged on. The price is wall time -- the denoiser runs
+#: one sample where it would have run five -- and how much is not measured on
+#: this port at the sizes a mesh is for: at 4,100 tokens the unchunked arm has
+#: no wall time because it does not run at all (`docs/openfold3.md`), and the
+#: nearest number for this knob is Boltz-2's +33% at 3k tokens
+#: (`docs/scale-rows-master-2026-09-10.md`). A caller who has the room says so
+#: -- any width at or above the sample count, or ``None`` through the Python
+#: API, is the unchunked rollout -- and serial runs are untouched.
+CP_DIFFUSION_CHUNK_SIZE = 1
+
+
+def resolve_diffusion_chunk_size(
+    requested: int | None | str,
+    *,
+    num_samples: int,
+    cp_shards: int,
+) -> int | None:
+    """Turn ``requested`` into the width the rollout will run.
+
+    ``"auto"`` is the omitted spelling and the only one that resolves: under a
+    mesh to :data:`CP_DIFFUSION_CHUNK_SIZE`, and serially to
+    :func:`~foldjax.execution.auto_diffusion_chunk_size`'s width from the
+    sample count, which is ``None`` at every released schedule. Anything else
+    is the caller's own and is returned as written, ``None`` included -- so an
+    explicit ``None`` still asks for the unchunked rollout under a mesh, and is
+    a different config, a different compiled program and a different cache
+    namespace from having said nothing.
+    """
+
+    if requested != "auto":
+        return requested
+    if cp_shards > 1:
+        return CP_DIFFUSION_CHUNK_SIZE
+    return auto_diffusion_chunk_size(num_samples)
 
 
 def _per_sample_confidence(config: InferenceConfig) -> bool:
@@ -1510,6 +1567,13 @@ def released_config(
     returns all three distributions; callers must also give the writer the same
     value if they intend to persist them.
 
+    ``diffusion_chunk_size`` has two automatic answers, and which one an
+    omitted option gets is decided by ``cp_shards`` alone:
+    :data:`CP_DIFFUSION_CHUNK_SIZE` under a mesh, the width
+    :func:`~foldjax.execution.auto_diffusion_chunk_size` reads off the sample
+    count without one. An explicit value always wins, ``None`` included. See
+    :func:`resolve_diffusion_chunk_size`.
+
     ``memory_budget`` and ``memory_check`` are the admission pair, and they
     reach only the ``"auto"`` spelling of ``pair_chunk_size``: a caller who
     pins a width has chosen a configuration no law here was fitted at, so it
@@ -1624,10 +1688,10 @@ def released_config(
         step_scale=1.5,
         pair_chunk_size=resolved_chunk,
         per_sample_token_cutoff=per_sample_token_cutoff,
-        diffusion_chunk_size=(
-            auto_diffusion_chunk_size(num_samples)
-            if diffusion_chunk_size == "auto"
-            else diffusion_chunk_size
+        diffusion_chunk_size=resolve_diffusion_chunk_size(
+            diffusion_chunk_size,
+            num_samples=num_samples,
+            cp_shards=cp_shards,
         ),
         msa_depth=msa_depth,
         cp_shards=cp_shards,

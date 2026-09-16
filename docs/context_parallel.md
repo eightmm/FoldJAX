@@ -84,6 +84,49 @@ parallelism is for here: fitting targets that otherwise do not run. On a square
 device count where the job already fits and wall time is what matters, ask for
 `1d` explicitly.
 
+`cp_layout` is not the only default a mesh moves. A mesh is asked for because a
+target does not otherwise fit, so under one a capacity-first default beats a
+speed-first one, and the knobs that answer to that are resolved per port too:
+
+| Model | Knob | Omitted, serially | Omitted, `cp_devices > 1` |
+|---|---|---|---|
+| OpenFold3 | `diffusion_chunk_size` | unchunked at every released schedule (the width engages above five samples) | `1` |
+
+**Why OpenFold3's rollout denoises one sample at a time under a mesh.** The
+sample axis is the one axis sharding does not touch, and the rollout's widest
+value hangs off it: the diffusion pair conditioning is hoisted out of the
+sampler loop at a leading axis of one and widened to the rollout's sample width
+at the point of use, which at 6,568 tokens on four devices is
+`f32[5, N/4, N, 128]` -- **25.7 GiB per rank**, held by the rollout and by the
+24-block diffusion transformer. `diffusion_chunk_size=1` takes the same value
+to 5.1 GiB, and it takes nothing else with it: the conditioning is constructed
+per chunk rather than retained outside the loop, every noise draw is narrowed
+from the full sample width rather than redrawn, and augmentation still sees
+every sample. What it costs is wall time: the denoiser runs one sample where it
+would have run five. How much is not measured on this port at the sizes a mesh
+is for -- at 4,100 tokens the unchunked arm has no wall time because it does not
+run at all, and the nearest number for this knob is Boltz-2's `+33%` at 3k
+tokens in
+[docs/scale-rows-master-2026-09-10.md](scale-rows-master-2026-09-10.md).
+
+A caller with the room says so, and an explicit value always wins: any width at
+or above the sample count is the unchunked rollout -- `--option
+diffusion_chunk_size=5` at the released five samples -- as is `None` through
+the Python API. Serial runs are untouched. The resolved width, not the
+spelling, is what the compile-cache namespace records, so an omitted option
+under a mesh and an explicit `1` are one namespace while the unchunked rollout
+keeps its own.
+
+The gates are in `tests/models/openfold3/test_diffusion_chunk_cp.py`: the
+resolution rule and the recorded identity in-process, and the program itself in
+a four-device CPU subprocess, where no `[samples, N/4, N, channels]` value
+survives the chunked rollout, one does survive without the chunk -- the
+tripwire that gives the bound its power -- and all five samples come back
+within the chunk loop's own float32 tolerance. The census is read on the
+per-device SPMD text, because the pre-partition HLO shows a local tile only
+inside a `shard_map` body and carries global shapes everywhere else; it is
+counted there too, and both numbers are printed.
+
 ## Runtime and input placement
 
 The active CP runtime is immutable and task-local, so concurrent requests
