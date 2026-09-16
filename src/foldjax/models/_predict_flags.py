@@ -1,10 +1,12 @@
 """Flag declarations the ports' predict CLIs share verbatim.
 
-Protenix and OpenDDE each publish a `foldjax-<port>-predict` console script,
-and the FoldJAX backends drive those same parsers in-process by rendering argv
-from their `_CLI_OPTIONS` sets. So a spelling, alias, type, default or choice
-that drifts between the two ports is user-visible twice over: once in `--help`,
-and once as a command one port accepts and the other rejects.
+Protenix and OpenDDE each publish a `foldjax-<port>-predict` console script.
+The FoldJAX backends build the runner's `PredictionConfig` directly from their
+`_CLI_OPTIONS` sets, mirroring these parsers' types, choices and defaults, and
+still render argv for the `cli_args` passthrough and for the recorded
+invocation. So a spelling, alias, type, default or choice that drifts between
+the two ports is user-visible twice over: once in `--help`, and once as a
+command one port accepts and the other rejects.
 
 Only declarations that were already byte-identical in both parsers live here.
 Flags the two ports spell the same but describe or default differently --
