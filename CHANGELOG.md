@@ -437,6 +437,32 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **Boltz-2 and ESMFold2 runs now report a best sample.** Four of the six
+  models named the score they rank by, so `foldjax_run.json`'s `best` block,
+  the `foldjax predict` summary table and `foldjax show` had nothing to print
+  for the other two: asking either for several samples returned several
+  structures and no order. Nothing about the coordinates changes -- `best` is a
+  pointer to one of the samples already written, and the sample order the
+  backends return is untouched.
+
+  Boltz-2 ranks by `confidence_score`, upstream's own
+  `(4*complex_plddt + tm) / 5` where `tm` is ipTM unless the whole sample
+  batch's ipTM is zero and then pTM. `Boltz2.predict_step` sorts the models it
+  writes by exactly this, and the port's predict wrapper already computed the
+  same expression; it was simply not being carried out to `sample.scores`
+  beside its components. It now is, so a Boltz-2 `confidence.json` gains a
+  `confidence_score` field, and a run whose confidence heads did not execute
+  reports no such field and still gets no `best`.
+
+  ESMFold2 has no upstream ranking to match -- upstream emits a single
+  structure -- so **the order of ESMFold2's samples is FoldJAX's choice, not
+  something ESMFold2 publishes.** Drawing several samples is this port's
+  design, and the key is `plddt`, the confidence head's per-token pLDDT
+  averaged over the real tokens on the head's own 0-1 scale, which is already
+  in every ESMFold2 `confidence.json`. It is deliberately not `complex_plddt`
+  and it is not comparable with another model's ranking score, which is the
+  same caveat the confidence files have always carried.
+
 - **OpenDDE distributes its diffusion atom graph under context parallelism**,
   through the same shared adapters Protenix uses -- its diffusion module calls
   the same Protenix denoiser, and until now its option surface deliberately

@@ -138,7 +138,11 @@ def sample_scores(
                 entry[name] = float(_numpy(output[name])[index])
         if "plddt" in output:
             # The per-token mean, masked to real tokens, which is the number
-            # people quote as "the pLDDT".
+            # people quote as "the pLDDT". It is also what `foldjax.output`
+            # orders ESMFold2's samples by -- upstream writes one structure and
+            # so publishes no ranking, and this scalar is the only thing the
+            # model says about a sample as a whole. That ordering is FoldJAX's
+            # choice, recorded here because this is where the number is made.
             plddt = _numpy(output["plddt"])[index]
             if token_mask is not None:
                 mask = _numpy(token_mask).astype(bool).reshape(-1)

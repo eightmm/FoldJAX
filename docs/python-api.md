@@ -121,6 +121,43 @@ GiB at long sequences and come back only on request
 include_raw=true` on OpenDDE, or the raw `.npz` output formats). Both are
 native option names passed through `--option`, not FoldJAX flags of their own.
 
+`foldjax.output.best_sample(result)` names the top-ranked sample of one run,
+and is what fills the manifest's `best` block, the `foldjax predict` summary
+table and `foldjax show`. It is a pointer -- score name, value, seed, sample
+index and structure path -- not a copy: the samples keep the order the backend
+returned them in, and nothing is rewritten or re-placed.
+
+Each model is ranked by the score that model ranks itself by, descending, and a
+tie keeps the sample the sampler produced first:
+
+| model | key | where it comes from |
+|---|---|---|
+| `alphafold3` | `ranking_score` | upstream's released ranking score |
+| `boltz2` | `confidence_score` | upstream's `(4*complex_plddt + tm) / 5` -- `tm` is ipTM, or pTM when the whole batch's ipTM is zero -- which `Boltz2.predict_step` sorts by |
+| `esmfold2` | `plddt` | **FoldJAX's choice**, see below |
+| `opendde` | `ranking_score` | upstream's released ranking score |
+| `openfold3` | `sample_ranking_score` | upstream's released ranking score |
+| `protenix` | `ranking_score` | upstream's released ranking score |
+
+ESMFold2 is the exception, and it is labelled as one on purpose: upstream emits
+a single structure and therefore publishes no ranking at all. Drawing several
+samples is this port's design, so **the order of ESMFold2's samples is
+FoldJAX's, not ESMFold2's.** The key is `plddt`, the confidence head's
+per-token pLDDT averaged over the real tokens, on the head's own 0-1 scale --
+the one scalar the model states about a finished sample.
+
+A model reports no `best` when the key is missing from any sample or is not a
+finite number, and the components of a ranking score are never combined here to
+stand in for it. That is deliberate rather than a fallback: a "best" chosen by a
+different quantity than the model ranks by is a different claim wearing the same
+word. So a run stopped before its confidence
+heads has no `best`, and OpenFold3 protein inputs report
+`sample_ranking_score_no_disorder` for inspection and no `best`, because the
+disorder term its complete score needs is not derivable in the torch-free
+writer. Ranking is always *within* one model's run: scores from two models are
+different quantities on different scales, and `best_sample` never compares
+them.
+
 Leave a sampling knob unset and each backend runs its own upstream's released
 default -- which differ, deliberately: matching each upstream is the whole
 point of the ports. What `None` means per model:

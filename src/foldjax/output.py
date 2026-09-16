@@ -42,18 +42,32 @@ from foldjax.schema import PredictionOutputError, PredictionResult, PredictionSa
 #: The score each model ranks its own samples by, best first. Used only to name
 #: a `best` sample within one model's run -- never to compare two models.
 #:
-#: Boltz-2 is absent on purpose. Upstream ranks by `confidence_score`
-#: (0.8*complex_plddt + 0.2*iptm), which this port does not compute, and the
-#: fields it does report -- `complex_plddt`, `iptm`, `ptm`, `mean_plddt` -- are
-#: components rather than the ranking. Electing one of them here would publish a
-#: "best" under a rule Boltz does not use, which is worse than saying nothing:
-#: `best_sample` returns None and the per-sample scores are all still there.
+#: Boltz-2 ranks by `confidence_score`: upstream's own summary
+#: `(4*complex_plddt + tm) / 5`, where `tm` is ipTM unless the whole sample
+#: batch's ipTM is zero and then pTM. `Boltz2.predict_step` builds that value
+#: and sorts the models it writes by it, and this port computes the same
+#: expression in `foldjax.models.boltz2.models.predict`, so what is ranked here
+#: is upstream's combination rather than a blend invented at this layer. Its
+#: components -- `complex_plddt`, `iptm`, `ptm`, `mean_plddt` -- are reported
+#: beside it and are still not the ranking: a run whose confidence heads did not
+#: execute reports no `confidence_score` and gets no `best`.
+#:
+#: ESMFold2 is the one entry that is not an upstream rule. Upstream emits a
+#: single structure, so it never ranks anything; drawing several samples is this
+#: port's design, which leaves the ordering to FoldJAX. The choice is `plddt` --
+#: the confidence head's per-token pLDDT averaged over the real tokens, on the
+#: head's own 0-1 scale -- because it is the number the model itself reports
+#: about the structure it just produced. It is FoldJAX's choice and is
+#: documented as such; it is not something ESMFold2 publishes.
+#:
 #: OpenFold3 exposes the exact key only when its complete score is available.
 #: Protein inputs need a disorder term that the torch-free writer cannot derive;
 #: those runs report `sample_ranking_score_no_disorder` for inspection and are
 #: deliberately absent from `best_sample`.
 _RANKING_SCORE = {
     "alphafold3": "ranking_score",
+    "boltz2": "confidence_score",
+    "esmfold2": "plddt",
     "opendde": "ranking_score",
     "openfold3": "sample_ranking_score",
     "protenix": "ranking_score",

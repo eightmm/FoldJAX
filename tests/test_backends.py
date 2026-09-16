@@ -218,6 +218,42 @@ def test_boltz_reports_the_heads_own_plddt_aggregate(
     )
 
 
+def test_boltz_surfaces_the_confidence_score_upstream_ranks_by(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`confidence_score` reaches `sample.scores`, per sample, so `best` exists.
+
+    The predict wrapper already computes upstream's `(4*complex_plddt + tm) / 5`
+    into `raw`; until it was surfaced here a multi-sample Boltz-2 run came back
+    with no ranking at all, which is the reason to ask for several samples.
+    """
+    from foldjax.output import best_sample
+
+    mols = tmp_path / "mols"
+    mols.mkdir()
+
+    def native_predict(**kwargs):
+        return {
+            "coords": np.zeros((3, 4, 3)),
+            "plddt": np.asarray([[0.2] * 4, [0.5] * 4, [0.8] * 4]),
+            "out_paths": [tmp_path / f"{name}.cif" for name in "abc"],
+            "raw": {"confidence_score": np.asarray([0.30, 0.90, 0.60])},
+        }
+
+    monkeypatch.setattr(
+        "foldjax.backends.boltz2.import_module",
+        lambda name: SimpleNamespace(predict=native_predict),
+    )
+    result = Boltz2Backend().predict(_request(tmp_path, "boltz2", mols=mols))
+
+    assert [
+        sample.scores["confidence_score"] for sample in result.samples
+    ] == pytest.approx([0.30, 0.90, 0.60])
+    best = best_sample(result)
+    assert best["score"] == "confidence_score"
+    assert (best["value"], best["sample"]) == (pytest.approx(0.90), 1)
+
+
 def test_boltz_shares_a_confidence_value_that_is_not_per_sample(
     tmp_path: Path, monkeypatch
 ) -> None:

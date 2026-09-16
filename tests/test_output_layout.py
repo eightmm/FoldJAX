@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
+from foldjax.models.esmfold2.output import sample_scores as esmfold2_sample_scores
 from foldjax.output import best_sample, normalize, safe_job_name
 from foldjax.schema import PredictionOutputError, PredictionResult, PredictionSample
 
@@ -398,10 +400,14 @@ def test_best_is_absent_rather_than_guessed(tmp_path: Path) -> None:
 def test_a_model_whose_ranking_score_is_not_reported_gets_no_best(
     tmp_path: Path,
 ) -> None:
-    """Boltz-2 is the case: upstream ranks by a score this port does not compute.
+    """`foldjax.output` never reassembles a ranking score from its components.
 
-    The fields it does report are the components of that score, not the score,
-    so electing one would publish a ranking under a rule Boltz does not use.
+    Boltz-2 is the case, because the components are all present: given
+    `complex_plddt`, `iptm` and `ptm` this layer could compute upstream's
+    `confidence_score` itself. It must not -- the value that is ranked has to
+    be the one the port's predict wrapper produced, so that a build which stops
+    producing it stops reporting a "best" instead of quietly publishing one
+    assembled here under a rule of its own.
     """
     result = PredictionResult(
         model="boltz2",
@@ -416,6 +422,141 @@ def test_a_model_whose_ranking_score_is_not_reported_gets_no_best(
         raw={},
     )
     assert best_sample(result) is None
+
+
+def test_boltz2_is_ranked_by_the_score_upstream_ranks_by(tmp_path: Path) -> None:
+    """`confidence_score` is upstream's own summary, so it is the ranking.
+
+    Descending, and a tie keeps the sample the sampler produced first.
+    """
+    result = PredictionResult(
+        model="boltz2",
+        samples=(
+            PredictionSample(
+                seed=3,
+                scores={"confidence_score": 0.61, "complex_plddt": 0.99},
+                metadata={"sample": 0},
+            ),
+            PredictionSample(
+                seed=3,
+                scores={"confidence_score": 0.83, "complex_plddt": 0.50},
+                metadata={"sample": 1},
+            ),
+            PredictionSample(
+                seed=3,
+                scores={"confidence_score": 0.72, "complex_plddt": 0.90},
+                metadata={"sample": 2},
+            ),
+        ),
+        output_dir=tmp_path,
+    )
+    assert best_sample(result) == {
+        "score": "confidence_score",
+        "value": 0.83,
+        "seed": 3,
+        "sample": 1,
+        "structure_path": None,
+    }
+
+    tied = PredictionResult(
+        model="boltz2",
+        samples=(
+            PredictionSample(
+                seed=3, scores={"confidence_score": 0.83}, metadata={"sample": 5}
+            ),
+            PredictionSample(
+                seed=3, scores={"confidence_score": 0.83}, metadata={"sample": 6}
+            ),
+        ),
+        output_dir=tmp_path,
+    )
+    assert best_sample(tied)["sample"] == 5
+
+
+def test_esmfold2_is_ranked_by_mean_plddt_as_foldjax_choice(tmp_path: Path) -> None:
+    """Upstream writes one structure, so the ordering of several is this port's.
+
+    `plddt` is the confidence head's per-token pLDDT averaged over the real
+    tokens. Ranking is descending on it like every other model's key, and it is
+    deliberately not `complex_plddt`, which the head also reports.
+    """
+    result = PredictionResult(
+        model="esmfold2",
+        samples=(
+            PredictionSample(
+                seed=11,
+                scores={"plddt": 0.41, "complex_plddt": 0.95, "ptm": 0.7},
+                metadata={"sample": 0},
+            ),
+            PredictionSample(
+                seed=11,
+                scores={"plddt": 0.88, "complex_plddt": 0.10, "ptm": 0.2},
+                metadata={"sample": 1},
+            ),
+        ),
+        output_dir=tmp_path,
+    )
+    assert best_sample(result) == {
+        "score": "plddt",
+        "value": 0.88,
+        "seed": 11,
+        "sample": 1,
+        "structure_path": None,
+    }
+
+    tied = PredictionResult(
+        model="esmfold2",
+        samples=(
+            PredictionSample(seed=11, scores={"plddt": 0.5}, metadata={"sample": 2}),
+            PredictionSample(seed=11, scores={"plddt": 0.5}, metadata={"sample": 3}),
+        ),
+        output_dir=tmp_path,
+    )
+    assert best_sample(tied)["sample"] == 2
+
+    # A sampler run without the confidence heads reports no scalar pLDDT, and
+    # that is still absent rather than substituted.
+    unscored = PredictionResult(
+        model="esmfold2",
+        samples=(PredictionSample(seed=11, scores={"ptm": 0.7}),),
+        output_dir=tmp_path,
+    )
+    assert best_sample(unscored) is None
+
+
+def test_esmfold2_ranks_the_scores_its_own_writer_produces(tmp_path: Path) -> None:
+    """The ranked key is the one the port's confidence writer actually emits.
+
+    Asserting the spelling in `_RANKING_SCORE` alone would survive a rename on
+    the producing side, so the scores here come from that writer.
+    """
+    produced = esmfold2_sample_scores(
+        {
+            "plddt": np.asarray([[0.30, 0.34], [0.90, 0.94], [0.60, 0.64]]),
+            "complex_plddt": np.asarray([0.99, 0.10, 0.50]),
+        }
+    )
+    result = PredictionResult(
+        model="esmfold2",
+        samples=tuple(
+            # Exactly what `ESMFold2Backend` builds from the writer's summary.
+            PredictionSample(
+                seed=2,
+                scores={
+                    key: float(value)
+                    for key, value in entry.items()
+                    if key != "sample"
+                },
+                metadata={"sample": entry["sample"]},
+            )
+            for entry in produced
+        ),
+        output_dir=tmp_path,
+    )
+    best = best_sample(result)
+    assert best["score"] == "plddt"
+    assert best["sample"] == 1
+    assert best["value"] == pytest.approx(0.92)
 
 
 def test_openfold3_is_ranked_only_by_its_complete_score(tmp_path: Path) -> None:

@@ -138,7 +138,15 @@ def _native_module():
 #: upstream writes into its confidence JSON, so they are the pLDDT that can be
 #: compared against it -- unlike the plain mean below, which weights padding
 #: and interface tokens the same as everything else.
+#:
+#: `confidence_score` is upstream's `(4*complex_plddt + tm) / 5` ranking
+#: summary, computed by the port's predict wrapper exactly as
+#: `Boltz2.predict_step` computes it. It is reported alongside its components
+#: rather than instead of them: the components are what a reader compares
+#: against upstream's JSON, and this is the one number Boltz-2 orders its own
+#: samples by, which is what `foldjax.output` ranks with.
 _CONFIDENCE_FIELDS = (
+    "confidence_score",
     "ptm",
     "iptm",
     "ligand_iptm",
