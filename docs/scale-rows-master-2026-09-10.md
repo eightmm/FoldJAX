@@ -1285,7 +1285,15 @@ what these defaults are judged on, so the seconds do not buy the
 gigabytes. `OPENFOLD3_UNCHUNKED_PEAK` stays as the estimate for a run that
 asks for the unblocked loop by name (`--option pair_chunk_size=0`); it is
 no longer a candidate, so `--memory-check` now reaches this port like the
-other two and an over-budget estimate is a refusal.
+other two and an over-budget estimate is a refusal. Measured on the
+landed rule (`8a84569`, same 5DEI row): 230.4 s / 13,990 MiB, coordinates
+bitwise identical to the unchunked row it replaced, deposited identical.
+
+The MSA padding ladder moved the same day (`f0683e7`): 2,048-row steps
+above 2,048 rows, so a padded Protenix job pays at most one step on the
+axis that sets its peak — 13,267 stored rows now pad to 14,336, 25,281 MiB
+against 28,202 on the 16,384 rung (+19% over the exact run instead of
++33%), coordinates 0.007 Å from the exact run, deposited identical.
 
 128 replaces the score-tensor formula because it was never worse over five
 sizes and won where the formula lost: 1,003 tokens 4,317 MiB against the
