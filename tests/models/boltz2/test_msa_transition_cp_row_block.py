@@ -1,11 +1,19 @@
 """The context-parallel MSA transition must keep its widened form one block wide.
 
 The MSA transition is the one transition whose axis 1 is *not* a token axis:
-``m`` is ``[B, M, N, C]`` with ``M`` the alignment depth. No layout shards that
-axis -- the carry measures ``PartitionSpec(None, None, "cp")`` under the 1-D
-layout and ``PartitionSpec(None, None, "cp_row")`` under the 2-D one -- so the
-serial row block is shard-aligned as written and needs no ``shard_map``, unlike
-the pair transition next door (``test_transition_cp_row_block``).
+``m`` is ``[B, M, N, C]`` with ``M`` the alignment depth, and the two layouts
+treat it differently. The one-dimensional layout does not shard it -- the carry
+measures ``PartitionSpec(None, None, "cp")`` -- so the serial row block is
+shard-aligned on the global axis as written and needs no ``shard_map``. The
+two-dimensional grid *does* shard it, on the column axis
+(``PartitionSpec(None, "cp_col", "cp_row", None)``), so there the block has to
+be taken inside a shard exactly as the pair transition next door takes it
+(``test_transition_cp_row_block``) -- which is what ``_msa_transition_grid``
+does, with ``cp_msa=True`` still the declaration that the block survives.
+
+The block each layout takes is therefore read off the tensor that layout hands
+the transition -- the global one under the 1-D layout, the device's own tile
+under the grid -- by calling the shipped rule rather than by restating it.
 
 Dropping it anyway is what ``transition_forward`` used to do for every caller
 that was not a declared pair tensor, and it made the MSA transition the largest
@@ -65,21 +73,25 @@ _PROBE = textwrap.dedent(
     from foldjax.models.boltz2.models.trunk_blocks import msa as msa_module
 
     # `N` divides both meshes (4, and 2 on each side of the grid). `S` is the
-    # alignment depth, which no layout shards; seven rows against a three-row
-    # block leave a short last block, and neither `S` nor the local token
-    # width is a multiple of the block.
-    N, S, CM, CZ, HEADS, BLOCK = 20, 7, 8, 12, 2, 3
+    # alignment depth, which the grid's column axis shards, so it divides the
+    # grid side as well -- the returned carry's own depth has to be shardable
+    # or the partitioner answers the tripwire below with a replicated axis.
+    N, S, CM, CZ, HEADS = 20, 8, 8, 12, 2
     # The MSA transition's widened pre-gate width, `fc1 + fc2`. No other
     # dimension in this program carries it: `CM` is 8 and its hidden form 32,
     # `CZ` is 12 and the pair widened form 96, the triangle projections are 24
     # and the head count is 2.
     WIDE = 2 * 4 * CM
-    # Set so the shipped `_auto_row_chunk` rule returns exactly `BLOCK` for a
-    # float32 `[1, S, N, CM]`: `N * WIDE * 4` = 5,120 bytes per row, and
-    # `16384 // 5120 == 3`. The rule itself is the code under test; only its
-    # budget is moved, so that a probe-sized tensor reaches the same branch a
-    # 2,096-token job reaches.
-    BUDGET = 16384
+    # Per layout, because each layout hands the rule a different tensor and
+    # the budget has to leave each of them a *short last* block of three rows:
+    # the global `[1, 8, 20, 8]` costs `20 * WIDE * 4` = 5,120 bytes a row, so
+    # 16,384 takes three of its eight; the grid's own `[1, 4, 10, 8]` tile
+    # costs 2,560, so 8,192 takes three of its four. One budget for both would
+    # have to give one of them a single-row block, and at that size XLA merges
+    # adjacent block dots back into one and the bound stops meaning anything.
+    # The rule itself is the code under test; only its budget is moved, so that
+    # a probe-sized tensor reaches the same branch a 2,096-token job reaches.
+    BUDGET = {"1d": 16384, "2d": 8192}
 
     # `(?:[0-9]+,)*` rather than `[0-9,]*`: the latter also matches a shape
     # whose dimensions merely end in the right digits.
@@ -181,7 +193,6 @@ _PROBE = textwrap.dedent(
         ((rng.random((S, N)) > 0.1) & keep[None, :])[None]
     ).astype(jnp.float32)
 
-    transition_module._WIDE_BUDGET_BYTES = BUDGET
     shipped = msa_module.transition_forward
     fired = {"unblocked": 0, "blocked": 0}
 
@@ -235,10 +246,33 @@ _PROBE = textwrap.dedent(
             "collectives": sum(text.count(" " + name + "(") for name in COLLECTIVES),
         }
 
+    def geometry(layout, rows, params, width):
+        # What each layout hands the transition, and what the shipped rule
+        # blocks it into. Under the 1-D layout that is the global tensor: the
+        # alignment axis is unsharded, so the block is a global-row slice and
+        # the *per-device* value it bounds is that block against the local
+        # token width. Under the grid it is the device's own tile, alignment
+        # included, so both extents are local.
+        if layout == "1d":
+            local = (1, S, N // rows, width)
+            rule = (1, S, N, width)
+        else:
+            depth = (S + (-S) % rows) // rows
+            local = (1, S // rows, N // rows, width)
+            rule = (1, depth, N // rows, width)
+        block = transition_module._auto_row_chunk(
+            jnp.zeros(rule, dtype=jnp.float32), params["msa_transition"]
+        )
+        # A rule that returned the whole tile would make every bound below the
+        # tile itself, and the unblocked arm would satisfy it too.
+        assert block is not None and block < rule[1], (layout, block, rule)
+        return local, block * local[2] * (2 * 4 * width), rule[1] * local[2] * width
+
     m_single = arr(1, S, N, CM)
     for dtype_name, dtype in (("float32", jnp.float32), ("bfloat16", jnp.bfloat16)):
         params = build(dtype, CM)
         for layout, rows in (("1d", 4), ("2d", 2)):
+            transition_module._WIDE_BUDGET_BYTES = BUDGET[layout]
             before = one(params, m_single, unblocked, layout, PRE_GATE)
             after = one(params, m_single, blocked, layout, PRE_GATE)
 
@@ -246,9 +280,11 @@ _PROBE = textwrap.dedent(
             # or one of the arms is the other one measured twice.
             assert fired["unblocked"] and fired["blocked"], fired
             # The tripwire: without it a program that quietly ran unsharded
-            # would satisfy every bound below. The alignment depth stays whole
-            # and the token axis is halved on the grid, quartered on the mesh.
-            expected = (1, S, N // rows, CM)
+            # would satisfy every bound below. The token axis is halved on the
+            # grid and quartered on the mesh; the alignment depth stays whole
+            # on the mesh and is halved on the grid, which is what the column
+            # axis now carries.
+            expected, bound, _ = geometry(layout, rows, params, CM)
             assert before["local"] == after["local"] == expected, (
                 dtype_name, layout, before["local"], after["local"]
             )
@@ -256,7 +292,6 @@ _PROBE = textwrap.dedent(
             # Non-empty, so a regex that stopped matching cannot pass in
             # silence: the widened form has to appear in both programs.
             assert before["found"] and after["found"], (dtype_name, layout)
-            bound = BLOCK * (N // rows) * WIDE
             oversized = sorted(
                 (dims, size)
                 for dims, size in after["found"].items()
@@ -311,24 +346,32 @@ _PROBE = textwrap.dedent(
     # blocked result is *closer* to the serial one than the unblocked result
     # was (bfloat16 1-D `m` 7.8e-3 -> 2.0e-3), which is the direction that
     # settles whether the block is the perturbation or the reference.
-    CM_WIDE, BUDGET_WIDE = 64, 131072
+    # Per layout again, and for the same reason: under the grid the rule reads
+    # the device's own tile, a quarter of the global one, so the budget comes
+    # down with it or the tile fits whole and the block this branch is about
+    # never appears. `[1, 4, 10, 64]` costs `10 * 8 * 64 * 4` = 20,480 bytes a
+    # row against the global `[1, 8, 20, 64]`'s 40,960, and each budget leaves
+    # three rows.
+    CM_WIDE = 64
+    BUDGET_WIDE = {"1d": 131072, "2d": 61440}
     ACCUMULATOR = re.compile(r"\b\w+\[((?:[0-9]+,)*" + str(CM_WIDE) + r")\]")
     msa_module._NATIVE_CHUNK_THRESHOLD = 0
-    transition_module._WIDE_BUDGET_BYTES = BUDGET_WIDE
     m_chunked = arr(1, S, N, CM_WIDE)
     for dtype_name, dtype in (("float32", jnp.float32), ("bfloat16", jnp.bfloat16)):
         params = build(dtype, CM_WIDE)
         for layout, rows in (("1d", 4), ("2d", 2)):
+            transition_module._WIDE_BUDGET_BYTES = BUDGET_WIDE[layout]
             before = one(params, m_chunked, unblocked, layout, ACCUMULATOR)
             after = one(params, m_chunked, blocked, layout, ACCUMULATOR)
 
             assert fired["unblocked"] and fired["blocked"], fired
-            expected = (1, S, N // rows, CM_WIDE)
+            expected, block, full = geometry(layout, rows, params, CM_WIDE)
             assert before["local"] == after["local"] == expected, (
                 dtype_name, layout, before["local"], after["local"]
             )
-            full = S * (N // rows) * CM_WIDE
-            block = BLOCK * (N // rows) * CM_WIDE
+            # `geometry` returns the *widened* bound; the accumulator here is
+            # the narrow channel width, so divide the widening back out.
+            block = block // (2 * 4)
 
             def occurrences(arm, wanted):
                 return sum(

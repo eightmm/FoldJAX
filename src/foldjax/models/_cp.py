@@ -3,6 +3,9 @@
 Fold-CP shards the quadratic ``[N, N, C]`` pair state across a JAX mesh.  The
 one-dimensional layout splits pair rows; the two-dimensional layout uses a
 square row/column grid and supports gather-free Cannon and ring schedules.
+Under that grid an MSA stack may also split its alignment depth, on the
+grid's column axis -- see :func:`msa_spec` for what the two layouts then mean
+and for the bridge each operator between them owes.
 
 The active runtime is context-local rather than module-global.  That matters
 for serving and tests: concurrent requests may use different device meshes, and
@@ -445,6 +448,70 @@ def single_spec(ndim: int, *, token_axis: int = -2) -> PartitionSpec:
         CP_ROW_AXIS if cp_layout() == "2d" else CP_AXIS
     )
     return PartitionSpec(*entries)
+
+
+def msa_spec(
+    ndim: int,
+    *,
+    depth_axis: int = 1,
+    token_axis: int = 2,
+) -> PartitionSpec:
+    """Spec for an MSA tensor ``[B, M, N, C]`` under the active layout.
+
+    ``M`` is alignment depth and ``N`` the token axis.  The one-dimensional
+    layout splits only the tokens, beside the pair rows.  The two-dimensional
+    layout splits the depth as well, on the grid's *column* axis, so rank
+    ``(r, s)`` owns alignment rows ``M_s`` against token positions ``N_r``
+    while the pair tensor at that same rank owns token rows ``N_r`` against
+    token columns ``N_s``.
+
+    The column axis therefore names alignment rows in the MSA stack and token
+    columns in the pair stack.  That is a valid reuse -- the two tensors are
+    different objects -- but it is not a reshard: an operator that reads one
+    layout and writes the other has to bridge them with explicit collectives.
+    Boltz-2's MSA module is where those two bridges live.
+    """
+
+    entries: list[str | None] = [None] * ndim
+    token = _resolve_axis(token_axis, ndim, what="token axis")
+    if cp_layout() == "2d":
+        depth = _resolve_axis(depth_axis, ndim, what="depth axis")
+        if depth == token:
+            raise ValueError("depth and token axes must differ")
+        entries[depth] = CP_COL_AXIS
+        entries[token] = CP_ROW_AXIS
+    else:
+        entries[token] = CP_AXIS
+    return PartitionSpec(*entries)
+
+
+def shard_msa(
+    x: jax.Array,
+    *,
+    depth_axis: int = 1,
+    token_axis: int = 2,
+) -> jax.Array:
+    """Constrain an MSA tensor to the grid; identity off the 2-D layout.
+
+    Identity under the one-dimensional layout as well as outside context
+    parallelism, and deliberately so rather than for want of a spec: there the
+    partitioner already places the token axis beside the pair rows, carried in
+    from the token-sharded single stream the MSA embedding adds, and the
+    one-dimensional program's lowering is pinned byte-identical to the serial
+    one.  Emitting a constraint that only restates what the partitioner
+    already chose would put a sharding custom-call in it for nothing.
+    """
+
+    mesh = cp_mesh()
+    if mesh is None or cp_layout() != "2d":
+        return x
+    return jax.lax.with_sharding_constraint(
+        x,
+        NamedSharding(
+            mesh,
+            msa_spec(x.ndim, depth_axis=depth_axis, token_axis=token_axis),
+        ),
+    )
 
 
 def shard_pair_rows(

@@ -24,7 +24,7 @@ expected explicit collectives for the atom-window adapters.
 
 | Model | 1D pair CP | 2D pair CP | Atom-window CP | Notes |
 |---|---:|---:|---:|---|
-| Boltz-2 | yes | yes | yes | Cannon/ring pair core, CP-row atom windows, halo exchange, sparse token/pair routing |
+| Boltz-2 | yes | yes | yes | Cannon/ring pair core, CP-row atom windows, halo exchange, sparse token/pair routing; the 2-D layout also splits the MSA alignment depth on the grid's column axis |
 | Protenix | yes | yes | yes | Pair trunk and confidence pair path use the common pair core; the diffusion atom graph is distributed over CP rows (`cp_atom_windows`, default on) |
 | OpenDDE | yes | yes | yes | Structural-token refinement uses the Protenix pair primitives; its diffusion module calls the same Protenix denoiser with the atom graph distributed over CP rows (`cp_atom_windows`, default on), aligned on the *structural* token axis |
 | OpenFold3 | yes | yes | yes | Pair stack, template stack, confidence pair re-embedding; the diffusion atom graph is distributed over CP rows (`cp_atom_windows`, default on) with an index-driven ring gather instead of a halo |
@@ -273,6 +273,105 @@ dispatch, compares the outputs, and only then times a full prediction pass.
 Until it has run, the option is an implementation with a CPU-proved merge and
 no measurement.
 
+## Boltz-2's MSA stack on the grid
+
+Everything above shards a quadratic `[N, N, C]` pair state. Boltz-2's MSA
+module carries a second large tensor that is not pair-shaped at all: `m` is
+`[B, M, N, C]`, with `M` the alignment depth -- 8,192 rows at full depth,
+because upstream subsamples only when `--subsample_msa` is given. Sharding
+only its token axis leaves that tensor merely halved on a 2x2 grid while the
+pair stack is quartered, and the MSA stack is what owns the peak: of the
+16,956 MiB per-device peak-live set measured at 2,096 tokens on four cards,
+the residual stream is two `f32[1,8192,1048,64]` (2,096 MiB each), the MSA
+transition's hidden-chunk accumulators eight BF16 tiles of 1,048 MiB, and
+PairWeightedAveraging's output one more `bf16[1,8192,1048,64]`.
+
+Under the 2-D layout the MSA tensor therefore uses **both** grid axes, and its
+column axis means something different from the pair tensor's:
+
+```text
+MSA  P(None, cp_col, cp_row, None) -> [1, M/side, N/side, c_m]
+pair P(None, cp_row, cp_col, None) -> [1, N/side, N/side, c_z]
+```
+
+Rank `(r, s)` owns alignment rows `M_s` against token positions `N_r`, while
+the pair tile at that same rank owns token rows `N_r` against token columns
+`N_s`. Reusing the column axis for two meanings is sound -- they are different
+tensors -- but it is not a reshard, so the two operators that read one layout
+and write the other bridge them explicitly:
+
+- **PairWeightedAveraging** derives its weights from the pair tensor per
+  `(i, j)` and applies them to every alignment row independently. Each rank
+  projects its own pair tile to head logits, masks them *there* -- on the rank
+  that owns the key block, so the gathered value is the logit the serial
+  softmax is fed -- and `all-gather`s those logits along the column axis. The
+  softmax then normalises over the complete key axis. The widened values ride
+  a `collective-permute` ring along the row axis, which keeps the alignment
+  shard fixed; after `t` hops a rank holds token block `(r - t) % side` and
+  contracts it against that block of the gathered weights. Nothing is summed
+  along the column axis: those ranks hold different alignment sequences. What
+  travels is `[B, heads, N/side, N]` -- 70 MiB at 2,096 tokens and eight heads
+  -- against the 4.4 GiB the widened values would have cost.
+- **OuterProductMean** needs, for output block `(I, J)`, the `a` operand of
+  token block `I` and the `b` operand of block `J` over the whole alignment.
+  `b` and its mask ride the same row-axis ring, so at step `t` every rank of
+  grid row `r` holds key block `(r - t) % side` -- the same block for the
+  entire grid column, which is what makes the column reduction coherent. Each
+  rank contributes its own alignment shard's numerator and its own mask count,
+  both are `psum`ed along the column axis, the mean is taken *after* that
+  reduction against the reduced count and the same clamp, and the output bias
+  is added once. Exactly one rank of each reduction group owns the block the
+  group computed and keeps it. Output rows and, on the AMP path, the hidden
+  axis are blocked, so no collective carries more than the byte budget one
+  serial block carried -- and the blocks are chained through
+  `optimization_barrier`, because a loop of *independent* collectives is one
+  XLA merges into a single collective whose every operand and every result is
+  co-live. Measured at 2,112 tokens on a 2x2 CPU mesh, the 272 reductions of
+  this loop and the ring merged into two all-reduces of 256 and 16 members,
+  8,712 MiB of results; chained, the largest is one block's 33 MiB. It is the
+  same trade the triangle ring's row block took when it became a `lax.scan`:
+  one block's communication no longer overlaps the next block's arithmetic.
+- **The transition, the channel norms and the gates** are elementwise in both
+  split axes and contract only over channels, so they need no collective --
+  but the transition's row block now has to be taken *inside* the shard, for
+  the reason the pair transition's does: axis 1 is a sharded axis there.
+  `cp_msa=True` still declares that the block survives; on the grid it marks
+  the local tile.
+
+The alignment depth is the one axis no padding plan aligns, so the module pads
+it once, for the whole stack, at the entry features -- `m` is never returned,
+so those rows are never removed again, and the masked padding keeps them out
+of OuterProductMean's mean and so out of every pair value the module returns.
+The token axis is already grid-aligned by
+`align_padding_plan_for_context_parallel`, so its padding is inert on the
+deployment path -- a trunk-only capture or `cp_atom_windows=false` skips that
+alignment, and an unaligned width then takes the per-layer pad, which is
+correct and costs one copy of the pair tensor a layer. One detail is load-bearing there:
+the pair mask's token padding is `-1` rather than `0`, which puts a padded key
+column one penalty level below a masked real one. A query row with any
+unmasked key cannot tell the two apart, and a row with *none* must stay a
+softmax over the real tokens rather than pick up columns that do not exist.
+
+Neither bridge is bitwise equal to the serial program and neither can be:
+summing a shard at a time reassociates both reductions. The contract is
+CP-versus-serial tolerance, and `tests/models/boltz2/test_msa_grid_bridges.py`
+pins it on 2x2 and 3x3 CPU grids -- both operators against serial in FP32 and
+BF16 and on both sides of `_NATIVE_CHUNK_THRESHOLD`, so the released regime's
+per-head groups and hand-added bias are covered; uneven padding on both axes;
+an alignment mask that zeroes every row of one depth shard; an empty mask
+whose output must be the bias and nothing else; the whole module against both
+the serial and the 1-D residual; and a before/after census of the per-device
+shape, the widest value carrying the stream's channel width, and every
+`all-gather` in the program.
+
+Compiled through the released CLI path on four forced CPU devices at 2,112
+tokens, every MSA value in the grid program falls from `[1,960,1056,*]` to
+`[1,480,1056,*]` -- 1,150 of the 32-channel shape and 97 of the 64-channel one
+become 430 and 67, with none of the full-depth shape left -- and its temp
+arena falls 29.5%, from 18,423,041,840 to 12,995,040,856 bytes (31.1% at
+1,088). The serial and 1-D arms are byte-identical before and after, arena
+included.
+
 ## Boltz-2 atom-window path
 
 Boltz-2 distributes the atom diffusion graph rather than only the pair trunk:
@@ -481,6 +580,12 @@ persisted.
   `exp(-inf - -inf)`;
 - pair-biased attention uses an exact `-inf` key mask, so a globally all-masked
   query returns a finite zero output rather than a uniform distribution;
+- a mean whose numerator and denominator are reduced across shards is
+  normalised after the reduction, never averaged from locally normalised
+  means, and its output bias is added once;
+- token padding introduced to divide a mesh is masked one penalty level below
+  a masked real position, so an all-masked query row stays a distribution over
+  the real positions;
 - 2x2 and 3x3 meshes are tested because modulo two cannot distinguish opposite
   ring directions;
 - serial, 1D, and 2D programs are traced through fresh closures to prevent a
@@ -497,6 +602,7 @@ uv run pytest -q \
   tests/models/test_cp_ring_attention.py \
   tests/models/test_cp_masked_ring.py \
   tests/models/boltz2/test_context_parallel.py \
+  tests/models/boltz2/test_msa_grid_bridges.py \
   tests/models/boltz2/test_atom_context_parallel.py \
   tests/models/boltz2/test_atom_cp_numerics.py \
   tests/models/boltz2/test_atom_cp_model_integration.py \

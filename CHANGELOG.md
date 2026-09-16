@@ -37,6 +37,52 @@ unless it says so here, in its own paragraph.
   in a `ContextVar` that no `jax.jit` cache key carries -- one value per
   process.
 
+- **Boltz-2's two-dimensional layout splits the MSA alignment depth too.** The
+  MSA tensor `m` is `[B, M, N, C]` with `M` the alignment depth -- 8,192 rows
+  at full depth, since upstream subsamples only when `--subsample_msa` is
+  given -- and sharding only its token axis left it halved on a 2x2 grid while
+  the pair state was quartered. It now goes on both grid axes,
+  `P(None, cp_col, cp_row, None)`, so rank `(r, s)` holds alignment rows `M_s`
+  against token positions `N_r`: a quarter of the stack on four cards. That
+  makes the grid's column axis mean alignment rows in this stack and token
+  columns in the pair stack, so the two operators that couple them bridge the
+  layouts explicitly -- PairWeightedAveraging gathers its small projected head
+  logits along the column axis and streams the widened values around a
+  row-axis ring, and OuterProductMean streams its key operand and mask around
+  that ring and reduces numerator and mask count along the column axis, taking
+  the mean after that reduction and adding the output bias once. The MSA
+  transition's row block moves inside the same shard, for the reason the pair
+  transition's did. The reductions of an unrolled block loop are chained
+  through `optimization_barrier`, because independent collectives are ones XLA
+  merges into a single one whose every operand and result is co-live: at 2,112
+  tokens on a 2x2 CPU mesh the 272 reductions became two all-reduces of 8,712
+  MiB of results, against 33 MiB for one block once chained.
+
+  Neither bridge is bitwise equal to the serial program -- summing a shard at a
+  time reassociates both reductions -- so the contract is context-parallel
+  tolerance. On forced CPU grids both operators agree with the unsharded
+  program to eight roundings of the compute dtype on 2x2 and 3x3 meshes, in
+  float32 and bfloat16, with uneven padding on both axes, with an alignment
+  mask that zeroes every row of one depth shard, and with an empty mask whose
+  output is the output bias and nothing else. The whole module's residual
+  against serial on a 2x2 grid is 2.4e-6 float32 and 8.0e-2 bfloat16, against
+  the 2.7e-6 and 6.2e-2 the one-dimensional layout already had in the same
+  process -- the same reassociation, not a new kind of error. Per device, the
+  residual stream census moves from the whole alignment to its own share, and
+  the only `all-gather` left in the program is the projected logits.
+
+  Compiled through the released CLI path on four forced CPU devices, the
+  2,112-token grid program's every MSA value falls from `[1,960,1056,*]` to
+  `[1,480,1056,*]` -- 1,150 of the 32-channel shape and 97 of the 64-channel
+  one become 430 and 67 of the halved shape, and none of the full-depth shape
+  remains -- and its temp arena falls 29.5% (18,423,041,840 to 12,995,040,856
+  bytes), 31.1% at 1,088 tokens. A CPU arena is not a GPU one; the ratio
+  against the unchanged serial arm is what transfers.
+
+  The serial and one-dimensional programs are untouched: compiled before and
+  after at 1,088 and 2,112 tokens, identical optimized HLO modulo source
+  locations, with `temp_size_in_bytes` unchanged to the byte.
+
 - **ESMFold2 has a two-dimensional context-parallel layout**, selected with
   `--option cp_layout=2d` beside `--option cp_devices=N` on a perfect-square
   device count. Both token axes of the pair state go on the mesh instead of
