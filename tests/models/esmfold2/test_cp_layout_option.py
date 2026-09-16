@@ -232,6 +232,35 @@ _MESH_PROBE = textwrap.dedent(
         else:
             raise AssertionError("a grid executable ran on the row mesh")
 
+    # And the layout has to reach the executable owner, not just the mesh: two
+    # layouts are two programs, so a grid request must never be answered out
+    # of the row mesh's cache entry. The model call is replaced by something
+    # that records the ambient layout it was traced under, which is the only
+    # thing being asked about here.
+    from foldjax.models.esmfold2 import inference
+    from foldjax.models._cp import cp_layout as active_layout
+
+    traced = []
+
+    def fake_predict(*args, **kwargs):
+        del args, kwargs
+        traced.append(active_layout())
+        return {}
+
+    inference.structure_model.predict = fake_predict
+    settings = inference.structure_model.ModelSettings()
+    row = inference.compiled_predict(settings, 1, False, 4)
+    grid = inference.compiled_predict(settings, 1, False, 4, cp_layout="2d")
+    assert row is not grid
+    with context_parallel(4, layout="1d"):
+        row(None, {}, {}, None, settings, 1, False, 4)
+    with context_parallel(4, layout="2d"):
+        grid(None, {}, {}, None, settings, 1, False, 4, cp_layout="2d")
+    assert traced == ["1d", "2d"], traced
+    # Two entries, not one reused: the tell for a static argument that does
+    # not reach the cache key is a second arm that never retraces.
+    assert inference._compiled_predict_pool._cache_size() == 2
+
     print("CP_LAYOUT_MESH_OK")
     """
 )
