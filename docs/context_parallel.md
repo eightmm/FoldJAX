@@ -28,7 +28,7 @@ expected explicit collectives for the atom-window adapters.
 | Protenix | yes | yes | yes | Pair trunk and confidence pair path use the common pair core; the diffusion atom graph is distributed over CP rows (`cp_atom_windows`, default on) |
 | OpenDDE | yes | yes | yes | Structural-token refinement uses the Protenix pair primitives; its diffusion module calls the same Protenix denoiser with the atom graph distributed over CP rows (`cp_atom_windows`, default on), aligned on the *structural* token axis |
 | OpenFold3 | yes | yes | yes | Pair stack, template stack, confidence pair re-embedding; the diffusion atom graph is distributed over CP rows (`cp_atom_windows`, default on) with an index-driven ring gather instead of a halo |
-| ESMFold2 | yes | no | no | Pair-row constraint path; no two-dimensional triangle-attention ring |
+| ESMFold2 | yes | yes | no | Pair-row constraint path; the grid runs the shared Cannon schedule for the triangle contraction and blocks the pair transition inside the shard. This trunk has no triangle attention, so there is no ring to run; GPU rows are unmeasured, so `auto` keeps rows |
 | AlphaFold3 | no | no | no | The vendored publisher runtime is not rewritten for FoldJAX CP |
 
 `cp_layout` chooses the mesh, and `auto` is resolved per port:
@@ -39,7 +39,7 @@ expected explicit collectives for the atom-window adapters.
 | Boltz-2 | `2d` | `1d` |
 | Protenix | `1d` | `1d` |
 | OpenFold3 | `1d` | `1d` |
-| ESMFold2 | -- (no `cp_layout` option: 1-D only) | -- |
+| ESMFold2 | `1d` | `1d` |
 
 An explicit `1d` or `2d` is passed through unchanged on every port; `2d` on a
 non-square device count is refused rather than degraded to rows; and
@@ -59,6 +59,23 @@ device against 19.0 in the 1-D layout and 18.5 serial, with coordinates within
 decimals (0.44 0.43 0.42 0.47 0.43). Protenix measured the other way on the
 same node -- 11.6 GiB per device in the grid against 10.7 in the 1-D layout --
 so it keeps rows, and OpenFold3's grid is unmeasured there.
+
+**ESMFold2's grid is implemented and unmeasured.** Both pair axes go on the
+mesh, the triangle contraction runs the same Cannon schedule as the other pair
+cores, and the pair transition takes its row block inside the shard; its trunk
+has no triangle attention, so the ring schedule the other ports need has
+nothing to run here. What is checked is the arithmetic and the partitioning, on
+forced CPU meshes: the pair trunk and the MSA encoder block agree with the
+unsharded program to 1.1e-5 on a 2x2 grid and 1.8e-5 on a 3x3 one against a
+3e-5 tolerance, a device holds `(N/side)^2` of the pair state, and the
+partitioned trunk contains no `all-gather` and no value carrying both token
+axes at full width. What is *not* checked is a card: no per-device peak and no
+wall time have been measured for this port in either layout, which is why
+`auto` stays on rows here and the grid is opt-in. The arena the grid is meant
+to quarter is a single one -- a folding-trunk pair tensor, quadratic in the
+token count and with no sample axis in it -- and serial runs out of memory at
+3,012 tokens on 96 GiB, so this is the port where the ceiling should move; that
+sentence is a prediction until the rows exist.
 
 **The grid is the slower program.** Boltz-2 at 2,096 tokens costs about 3.5x
 the serial wall time in it, and the 1-D layout is not free either. The layout
@@ -379,7 +396,8 @@ uv run pytest -q \
   tests/models/opendde/test_atom_context_parallel.py \
   tests/models/openfold3/test_context_parallel.py \
   tests/models/openfold3/test_atom_context_parallel.py \
-  tests/models/esmfold2/test_context_parallel.py
+  tests/models/esmfold2/test_context_parallel.py \
+  tests/models/esmfold2/test_cp_layout_option.py
 ```
 
 On August 20, 2026, the cross-model branch gate passed 66 tests. The subsequent

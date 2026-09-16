@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from importlib import import_module
@@ -85,6 +86,11 @@ DEFAULTS = {
 # injected into every effective request and retained in its compile identity.
 _FIXED_COMPILE_DEFAULTS = {
     "cp_devices": 1,
+    # The mesh alias, whose resolution is this port's own rule rather than a
+    # checkpoint value: `auto` is the row mesh here, because no per-device GPU
+    # measurement of the square grid exists for ESMFold2 yet. `cache_profile`
+    # strips the explicit `1d` beside it and records a resolved `2d`.
+    "cp_layout": "auto",
     "no_language_model": False,
     "max_msa_depth": DEFAULTS["max_msa_depth"],
     "structure_sample_sequential": False,
@@ -99,6 +105,37 @@ _FIXED_COMPILE_DEFAULTS = {
     # it either.
     "confidence_dtype": "float32",
 }
+
+#: The layouts `cp_layout` accepts, and the resolution of an omitted one.
+#: `foldjax.models._cp.resolve_cp_layout` is the authority for both, but it
+#: imports JAX, and this module keeps option planning free of the model
+#: runtime; the port passes `auto="1d"` to that resolver, which is the rule
+#: `_resolved_cp_layout` below reproduces and a test pins them together.
+_CP_LAYOUTS = ("auto", "1d", "2d")
+
+
+def _resolved_cp_layout(options: Mapping[str, Any]) -> str | None:
+    """The grid this request builds, or ``None`` when it builds no grid.
+
+    ``None`` for a serial request, for a ``cp_devices`` this adapter cannot
+    read as a device count -- a malformed count then keeps its own cache
+    namespace rather than borrowing a resolved one, and the port itself
+    reports the value -- and for every request that runs on the row mesh,
+    which is the namespace every recorded ESMFold2 run already has.
+
+    This is deliberately *not* `backends/base.square_grid_cp_layout`: that
+    resolves ``auto`` through `padding.square_grid_auto_layout`, which is
+    OpenDDE's and Boltz-2's rule and rests on their per-device measurements
+    on the four-card node. ESMFold2 has none yet, so its ``auto`` stays the
+    row mesh and the grid is opt-in.
+    """
+
+    devices = options.get("cp_devices", 1)
+    if isinstance(devices, bool) or not isinstance(devices, int) or devices <= 1:
+        return None
+    layout = str(options.get("cp_layout", "auto"))
+    return "2d" if layout == "2d" else None
+
 
 #: The values `glu_backend` accepts, named here from the adapters' shared copy
 #: rather than imported from the model package.
@@ -120,6 +157,33 @@ def _checked_glu_backend(value: object) -> str:
             f"glu_backend must be one of {', '.join(_GLU_BACKENDS)}; got {value!r}"
         )
     return str(value)
+
+
+def _checked_cp_layout(value: object, *, devices: object = 1) -> str:
+    """Reject a misspelled or unbuildable mesh layout before anything loads.
+
+    The square grid needs a perfect-square device count greater than one, and
+    refusing it here rather than inside `context_parallel` is what puts the
+    error in front of `foldjax plan` and ahead of the 939 MB checkpoint. A
+    count this adapter cannot read is left to the port, which reports the
+    value itself.
+    """
+
+    if value not in _CP_LAYOUTS:
+        raise ValueError(
+            f"cp_layout must be one of {', '.join(_CP_LAYOUTS)}; got {value!r}"
+        )
+    layout = str(value)
+    readable = not isinstance(devices, bool) and isinstance(devices, int)
+    if layout == "2d" and readable:
+        count = int(devices)
+        side = math.isqrt(count)
+        if count <= 1 or side * side != count:
+            raise ValueError(
+                "cp_layout='2d' needs a perfect-square cp_devices greater "
+                f"than one; got {count}"
+            )
+    return layout
 
 
 #: The values `confidence_dtype` accepts, spelled here for the reason above.
@@ -438,6 +502,10 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
     native_options = frozenset(
         {
             "cp_devices",
+            # Which mesh those devices form. Native for the same reason
+            # `cp_devices` is, and spelled the way the other ports spell it so
+            # one request reads the same across the fleet.
+            "cp_layout",
             "esmc_weights",
             # Admission against this card's own reported ceiling, against this
             # port's fitted peak law. Absent from `compile_options` below: a
@@ -483,6 +551,10 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         "max_msa_depth",
         "no_language_model",
         "cp_devices",
+        # The layout decides which pair schedule is traced -- the row mesh's
+        # constraint path or the grid's Cannon ring -- so the two are two
+        # executables and must not share one namespace.
+        "cp_layout",
         # Traced into the program rather than read at run time, so it selects
         # its own compilation namespace.
         "structure_sample_sequential",
@@ -911,7 +983,18 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         """
 
         profile = super().cache_profile(request)
+        # Read before the strip, because the strip removes both values it
+        # depends on: an omitted `cp_devices` is the fixed default and an
+        # omitted `cp_layout` never entered the profile at all.
+        resolved_cp_layout = _resolved_cp_layout(profile)
         self._strip_released_defaults(profile, _FIXED_COMPILE_DEFAULTS)
+        # An explicit `1d` is the alias of the omitted layout on this port --
+        # `auto` resolves to the row mesh here -- so it names the namespace
+        # every recorded ESMFold2 run already has. Only the grid is recorded,
+        # and only for a request with a mesh to build it on.
+        self._strip_released_defaults(profile, {"cp_layout": "1d"})
+        if resolved_cp_layout is not None:
+            profile["cp_layout"] = resolved_cp_layout
         return profile
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
@@ -922,6 +1005,10 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         _strict_boolean(
             options.get("structure_sample_sequential", False),
             name="structure_sample_sequential",
+        )
+        _checked_cp_layout(
+            options.get("cp_layout", "auto"),
+            devices=options.get("cp_devices", 1),
         )
         glu_backend = _checked_glu_backend(options.get("glu_backend", "xla"))
         # Refused here as well as in the port: this runs before the 939 MB
@@ -1039,6 +1126,16 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         deterministic = bool(options.pop("deterministic", False))
         if deterministic:
             overrides["deterministic"] = True
+        # Popped whether or not it is spelled, because the padding alignment
+        # below needs the layout this run builds and `options` is emptied by
+        # the leftover check. `auto` is left unspelled in the overrides for
+        # the usual reason: the port's own default is already the row mesh.
+        cp_layout = _checked_cp_layout(
+            options.pop("cp_layout", "auto"),
+            devices=options.get("cp_devices", 1),
+        )
+        if cp_layout != "auto":
+            overrides["cp_layout"] = cp_layout
         if "cp_devices" in options:
             cp_devices = int(options.pop("cp_devices"))
             if cp_devices < 1:
@@ -1180,10 +1277,13 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                         model_features,
                         # The mesh this run will build decides what its
                         # automatic token and atom targets have to divide.
-                        # ESMFold2 shards rows only, so shards are rows.
+                        # The row mesh divides by every shard; the square grid
+                        # divides each pair axis by one side, so the layout has
+                        # to travel with the count rather than be assumed.
                         cp_aligned_padding(
                             request.padding,
                             cp_devices=int(overrides.get("cp_shards", 1)),
+                            cp_layout=cp_layout,
                         ),
                         max_msa_depth=active_msa_depth,
                         language_model_tokens=lm_tokens,

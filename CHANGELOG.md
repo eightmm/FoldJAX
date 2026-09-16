@@ -10,6 +10,42 @@ unless it says so here, in its own paragraph.
 
 ## Unreleased
 
+### Added
+
+- **ESMFold2 has a two-dimensional context-parallel layout**, selected with
+  `--option cp_layout=2d` beside `--option cp_devices=N` on a perfect-square
+  device count. Both token axes of the pair state go on the mesh instead of
+  only the rows, so a device holds `(N/side)^2` of it -- a quarter on four
+  cards -- and the triangle contraction runs the shared Cannon schedule inside
+  a `shard_map`: skew once, then one local product per ring hop, with nothing
+  full-width ever built. The pair transition's row block moves inside the same
+  shard, because a block of globally-numbered rows is a slice of a sharded axis
+  that the partitioner can only serve by moving data. This trunk has no
+  triangle attention, so the ring schedule the other ports run has nothing to
+  run here.
+
+  This is the port where the grid should matter most: its peak is one
+  folding-trunk pair arena, quadratic in the token count with no sample axis in
+  it, and a serial run leaves 96 GiB at 3,012 tokens. That is a prediction, not
+  a measurement -- no per-device peak or wall time has been recorded for either
+  ESMFold2 layout on a card, which is why `cp_layout=auto` and an omitted
+  layout both stay on the row mesh here, where OpenDDE and Boltz-2 resolve
+  `auto` to the grid on the strength of their own four-card rows. What is
+  measured is on forced CPU meshes: the pair trunk and the MSA encoder block
+  agree with the unsharded program to 1.1e-5 on a 2x2 grid and 1.8e-5 on a 3x3
+  one against a 3e-5 tolerance, and the partitioned trunk carries no
+  `all-gather`. The 3x3 arm is the one that can see a mis-paired ring at all: a
+  2x2 grid passes every sign error there is, because `(x + 1) % 2` and
+  `(x - 1) % 2` are the same hop, and the suite keeps that arm to say so.
+
+  The serial and one-dimensional programs are untouched. Both were compiled
+  before and after: identical optimized HLO modulo source locations, and
+  `temp_size_in_bytes` unchanged to the byte (trunk 73,728 serial and 22,624
+  1-D; MSA encoder block 80,384 and 25,952, on the two-layer CPU fixture at 16
+  tokens). An omitted layout, `auto` and an explicit `1d` name one compile-cache
+  namespace, which is the namespace every recorded ESMFold2 context-parallel
+  run already has; only `2d` is recorded, resolved, and forks the executable.
+
 ### Fixed
 
 - **`--padding` pads the MSA axis instead of capping the input at the profile

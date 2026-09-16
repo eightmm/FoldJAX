@@ -35,6 +35,10 @@ from foldjax.models._compile_policy import (
 from foldjax.models._cp import (
     context_parallel,
     replicate_tree,
+    resolve_cp_layout,
+)
+from foldjax.models._cp import (
+    cp_layout as _active_cp_layout,
 )
 from foldjax.models._cp import (
     cp_shards as _active_cp_shards,
@@ -513,6 +517,25 @@ def _model_bound_features(
     return compact
 
 
+def _resolve_cp_layout(layout: str, n_devices: int) -> str:
+    """Resolve ESMFold2's context-parallel layout alias.
+
+    ``auto`` is the row mesh on this port, on every device count. The square
+    grid is implemented -- both pair axes on the mesh, Cannon's schedule for
+    the triangle contraction -- and checked against the serial trunk on forced
+    CPU meshes, but nothing has measured a per-device peak or a wall time for
+    it on a card, and `auto` is what such a measurement would move. OpenDDE
+    and Boltz-2 resolve `auto` to the grid because they have that measurement
+    (`docs/context_parallel.md`); asking `padding.square_grid_auto_layout`
+    here would borrow their evidence for a port that does not have it.
+
+    An explicit ``"2d"`` on a count the grid cannot use is refused by the
+    shared resolver, and ``auto`` never reaches that refusal.
+    """
+
+    return resolve_cp_layout(layout, n_devices, auto="1d")
+
+
 def predict(
     key: jnp.ndarray,
     features: Mapping[str, np.ndarray],
@@ -543,6 +566,13 @@ def predict(
     #: requires the compiled path, and replicates everything token-linear --
     #: the ESMC hidden states or compact embedding and the checkpoint included.
     cp_shards: int = 1,
+    #: Which mesh the shards form: ``"1d"`` splits pair rows only, ``"2d"``
+    #: splits rows and columns on Fold-CP's square grid, and ``"auto"`` --
+    #: the default -- resolves to ``"1d"``. The grid is implemented and
+    #: checked against the serial trunk on forced CPU meshes, but this port
+    #: has no per-device GPU measurement yet, and `auto` is where such a
+    #: measurement would be recorded: see `docs/context_parallel.md`.
+    cp_layout: str = "auto",
     return_representations: tuple[str, ...] = (),
     stop_after_trunk: bool = False,
     return_distogram_logits: bool = True,
@@ -600,6 +630,10 @@ def predict(
             "context parallelism requires glu_backend='xla'; a fused GLU "
             "cannot be partitioned"
         )
+    # Resolved before anything is traced, and carried resolved from here on:
+    # the alias decides which program is built, so the executable's static
+    # topology has to be what runs rather than what was spelled.
+    resolved_cp_layout = _resolve_cp_layout(cp_layout, cp_shards)
     settings = structure_model.with_overrides(
         model.settings,
         num_recycles=num_recycles,
@@ -723,12 +757,19 @@ def predict(
     # Named only when asked, like every other optional key on this call: an
     # unrequested run must reach the factory in the call form it always used.
     policy_kwargs = {"deterministic": True} if deterministic else {}
+    # The row mesh is what every recorded run of this port built, so it is
+    # spelled by omission here too: naming it would move the executable
+    # identity and the graph of every existing one-dimensional run.
+    layout_kwargs = (
+        {} if resolved_cp_layout == "1d" else {"cp_layout": resolved_cp_layout}
+    )
     runner = (
         compiled_predict(
             settings, n_chains, preserve_prefix_rng, cp_shards,
             return_representations, stop_after_trunk, contiguous_atom_groups,
             compact_token_bond_encoding, return_distogram_logits,
             compact_lm_input, atom_rows_per_block,
+            **layout_kwargs,
             **policy_kwargs,
             **auxiliary_output_kwargs,
         )
@@ -738,7 +779,10 @@ def predict(
     parameters = model.parameters
     # A tap records a tracer of the graph being built, so the capture set
     # has to be live while the program is traced, not while it runs.
-    with _capture.capturing(return_representations), context_parallel(cp_shards):
+    with (
+        _capture.capturing(return_representations),
+        context_parallel(cp_shards, layout=resolved_cp_layout),
+    ):
         if cp_shards > 1:
             # A checkpoint committed to one device fails the multi-device
             # jit's device-assignment check; everything token-linear is
@@ -764,6 +808,7 @@ def predict(
             return_distogram_logits,
             compact_lm_input,
             atom_rows_per_block,
+            **layout_kwargs,
             **auxiliary_output_kwargs,
         )
 
@@ -785,6 +830,7 @@ def _run(
     compact_lm_input: bool = False,
     atom_rows_per_block: int | None = None,
     *,
+    cp_layout: str = "1d",
     return_auxiliary_outputs: bool = True,
     stop_after_inputs: bool = False,
 ) -> dict[str, jnp.ndarray]:
@@ -793,6 +839,16 @@ def _run(
             f"cp_shards={cp_shards} but the active context-parallel mesh has "
             f"{_active_cp_shards()} shard(s); run through `predict`, which "
             "activates context_parallel() around this call"
+        )
+    if cp_layout != (_active_cp_layout() or "1d"):
+        # The topology is one decision spread over two places: this static
+        # argument selects the executable and the ambient mesh decides what
+        # the trace shards. Disagreeing silently would serve a grid program
+        # from a row mesh, or the reverse, with plausible coordinates.
+        raise RuntimeError(
+            f"cp_layout={cp_layout!r} but the active context-parallel mesh is "
+            f"{_active_cp_layout()!r}; run through `predict`, which activates "
+            "context_parallel() around this call"
         )
     resolved_atom_rows = atom_model._resolve_rows_per_block(atom_rows_per_block)
     with atom_model._atom_rows_per_block_scope(resolved_atom_rows):
@@ -827,6 +883,7 @@ _COMPILED_PREDICT_STATIC_ARGNAMES = (
     "return_distogram_logits",
     "compact_lm_input",
     "atom_rows_per_block",
+    "cp_layout",
     "return_auxiliary_outputs",
     "stop_after_inputs",
 )
@@ -882,6 +939,7 @@ def _compiled_predict_factory(
     compact_lm_input: bool = False,
     atom_rows_per_block: int = atom_model.ATOM_ROWS_PER_BLOCK,
     *,
+    cp_layout: str = "1d",
     return_auxiliary_outputs: bool = True,
     stop_after_inputs: bool = False,
     deterministic: bool = False,
@@ -898,6 +956,7 @@ def _compiled_predict_factory(
         return_distogram_logits,
         compact_lm_input,
         atom_rows_per_block,
+        cp_layout,
         return_auxiliary_outputs,
         stop_after_inputs,
     )
@@ -917,6 +976,7 @@ def compiled_predict(
     compact_lm_input: bool = False,
     atom_rows_per_block: int | None = None,
     *,
+    cp_layout: str = "1d",
     return_auxiliary_outputs: bool = True,
     stop_after_inputs: bool = False,
     deterministic: bool = False,
@@ -957,7 +1017,12 @@ def compiled_predict(
     # Spelled only when asked, like every other optional key here: an
     # unrequested run must reach the factory in the call form it always used,
     # so its owner and its cache entry are the ones it already had.
-    policy = {"deterministic": True} if deterministic else {}
+    policy: dict[str, Any] = {"deterministic": True} if deterministic else {}
+    # The row mesh is the recorded default, so it is spelled by omission for
+    # the same reason: an existing one-dimensional or serial caller must land
+    # on the cache entry and the executable it always had.
+    if cp_layout != "1d":
+        policy["cp_layout"] = cp_layout
     if stop_after_inputs:
         return _compiled_predict_factory(
             *identity, return_auxiliary_outputs=return_auxiliary_outputs,

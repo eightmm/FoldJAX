@@ -20,11 +20,117 @@ from math import prod
 
 import jax
 import jax.numpy as jnp
+from jax.sharding import PartitionSpec
 
-from foldjax.models._cp import cp_mesh, shard_pair_rows
+from foldjax.models._cp import (
+    CP_COL_AXIS,
+    CP_ROW_AXIS,
+    col_skew_perm,
+    cp_grid,
+    cp_mesh,
+    pair_spec,
+    permute,
+    ring_perm,
+    row_skew_perm,
+    shard_pair_rows,
+    transpose_perm,
+)
+from foldjax.models._cp import cp_layout as _cp_layout
 from foldjax.models.esmfold2.models.primitives import layer_norm, linear, swiglu
 
 Params = Mapping[str, jnp.ndarray]
+
+
+def _cannon_contract(
+    a: jnp.ndarray,
+    b: jnp.ndarray,
+    *,
+    outgoing: bool,
+) -> jnp.ndarray:
+    """Contract two doubly-sharded pair projections by Cannon's algorithm.
+
+    Under the ``2d`` layout device ``(p, q)`` holds the ``(p, q)`` tile of every
+    pair tensor, so the contracted axis lives on a different device from the
+    operand that needs it and no sharding constraint can express the schedule.
+    Cannon's algorithm is what the other ports' pair cores use, through the same
+    shared tile routing: align the operands once so every device starts on a
+    matching block of ``k``, then alternate a local product with a one-hop
+    shift, ``side`` times. The per-device transient is two tiles --
+    ``O((N/side)^2 C)`` -- and nothing full-width is ever built.
+
+    The local einsum is deliberately the *same* one the dense path uses, once
+    per direction. Cannon permutes whole tiles; it does not change what the axes
+    inside a tile mean, so a tile of ``a`` is still indexed ``[i, k]`` for
+    outgoing and ``[k, i]`` for incoming. Rewriting the step as a canonical
+    ``[i,k] @ [k,j]`` matmul is the tempting error and it is wrong in both
+    directions -- measured elsewhere in this tree at 15.9 (outgoing) and 12.3
+    (incoming) on values of order one.
+
+    The result is float32, which is what ``preferred_element_type`` gives the
+    serial and one-dimensional einsums this replaces; the native-autocast
+    caller narrows it again itself, exactly where its own chunk loop did.
+    """
+
+    mesh = cp_mesh()
+    side = cp_grid()[0]
+    if a.ndim < 3 or a.shape[-3] != a.shape[-2]:
+        raise ValueError(
+            "the 2-D context-parallel triangle contraction needs square pair "
+            f"axes, got shape {tuple(a.shape)}"
+        )
+    n = a.shape[-3]
+    pad = (-n) % side
+    if pad:
+        # `shard_map` needs both pair axes to divide the grid. The projections
+        # are padded rather than the pair state, so the padding is exactly zero
+        # by construction rather than by way of the mask: a padded block of `k`
+        # contributes nothing to the sum, and the padded output region is
+        # sliced off below.
+        widths = [(0, 0)] * a.ndim
+        widths[-3] = widths[-2] = (0, pad)
+        a = jnp.pad(a, widths)
+        b = jnp.pad(b, widths)
+    spec = pair_spec(a.ndim)
+    subscript = "...ikd,...jkd->...ijd" if outgoing else "...kid,...kjd->...ijd"
+
+    def body(lhs: jnp.ndarray, rhs: jnp.ndarray) -> jnp.ndarray:
+        if outgoing:
+            rhs = permute(rhs, transpose_perm(side))
+        else:
+            lhs = permute(lhs, transpose_perm(side))
+        lhs = permute(lhs, row_skew_perm(side))
+        rhs = permute(rhs, col_skew_perm(side))
+        total = None
+        correction = None
+        for step in range(side):
+            # Float32 accumulation without widening the operands, which is what
+            # the dense path's `preferred_element_type` does; with a float32
+            # trunk the two forms are identical.
+            term = jnp.einsum(
+                subscript, lhs, rhs, preferred_element_type=jnp.float32
+            )
+            if total is None:
+                total = term
+                correction = jnp.zeros_like(term)
+            else:
+                updated = total + term
+                residual = jnp.where(
+                    jnp.abs(total) >= jnp.abs(term),
+                    (total - updated) + term,
+                    (term - updated) + total,
+                )
+                total = updated
+                correction = correction + residual
+            if step + 1 < side:
+                lhs = permute(lhs, ring_perm(side, axis=CP_COL_AXIS, delta=-1))
+                rhs = permute(rhs, ring_perm(side, axis=CP_ROW_AXIS, delta=-1))
+        return total + correction
+
+    out = jax.shard_map(body, mesh=mesh, in_specs=(spec, spec), out_specs=spec)(a, b)
+    if pad:
+        out = jax.lax.slice_in_dim(out, 0, n, axis=-3)
+        out = jax.lax.slice_in_dim(out, 0, n, axis=-2)
+    return out
 
 
 def _native_bf16_linear(x, weight):
@@ -127,6 +233,29 @@ def _autocast_triangle(pair, params, prefix, outgoing, mask, eps):
         # multiply promotes the widest tensor this block owns.
         routed = routed * mask[..., None].astype(routed.dtype)
     left, right = jnp.split(routed, 2, axis=-1)
+    if _cp_layout() == "2d":
+        # Both pair axes are sharded, so the contraction is Cannon's algorithm
+        # -- skew, then one local matmul per ring hop -- and nothing full-width
+        # is built. The narrowing back to bfloat16 is the one the chunk loop
+        # below does to each of its chunks, done once to the whole result:
+        # `preferred_element_type` keeps the float32 accumulation inside the
+        # ring exactly as it keeps it inside the dense einsum.
+        #
+        # This branch is reachable and the reference path's is not the only one
+        # that needs it: `lm_encoder_params` is gated on the trunk dtype alone
+        # (`models/model.py:1444`), so the language-model encoder's trunk runs
+        # native autocast under a mesh while every other pair stack falls back.
+        return _finish_autocast_triangle(
+            _cannon_contract(
+                left.astype(jnp.bfloat16),
+                right.astype(jnp.bfloat16),
+                outgoing=outgoing,
+            ).astype(jnp.bfloat16),
+            normalized,
+            params,
+            engine,
+            eps,
+        )
     equation = "bikd,bjkd->bijd" if outgoing else "bkid,bkjd->bijd"
     # Pinned native default chunks the output i dimension at 64. Upstream
     # spells `routed.float().chunk(2, ...)` here and lets autocast narrow the
@@ -150,6 +279,11 @@ def _autocast_triangle(pair, params, prefix, outgoing, mask, eps):
             ).astype(jnp.bfloat16)
         )
     contracted = jnp.concatenate(chunks, axis=1)
+    return _finish_autocast_triangle(contracted, normalized, params, engine, eps)
+
+
+def _finish_autocast_triangle(contracted, normalized, params, engine, eps):
+    """The native block's epilogue, shared by its dense and Cannon branches."""
     mixed = _autocast_linear(
         _autocast_norm(contracted, params, f"{engine}.norm_mix", eps),
         params,
@@ -224,17 +358,27 @@ def triangle_multiplicative(
     # not, and never did in any released version.
     half = routed.shape[-1] // 2
     left, right = routed[..., :half], routed[..., half:]
-    contract_outgoing = outgoing
-    if cp_mesh() is not None and not outgoing:
-        # The incoming contraction sums over the sharded row axis, which the
-        # partitioner realises as a full-size float32 partial plus an
-        # all-reduce per device. Swapping the pair axes and contracting in
-        # the outgoing form is the same arithmetic with sharded partials.
-        left = shard_pair_rows(jnp.swapaxes(left, 1, 2))
-        right = shard_pair_rows(jnp.swapaxes(right, 1, 2))
-        contract_outgoing = True
-    equation = "bikd,bjkd->bijd" if contract_outgoing else "bkid,bkjd->bijd"
-    contracted = jnp.einsum(equation, left, right, preferred_element_type=jnp.float32)
+    if _cp_layout() == "2d":
+        # Fold-CP's own schedule: both pair axes are sharded, so the
+        # contraction runs as Cannon's algorithm -- skew, then one local matmul
+        # per ring hop. Nothing full-width is ever built, so the row-transpose
+        # rewrite below, which only moves the all-reduce off the sharded axis,
+        # has nothing left to fix.
+        contracted = _cannon_contract(left, right, outgoing=outgoing)
+    else:
+        contract_outgoing = outgoing
+        if cp_mesh() is not None and not outgoing:
+            # The incoming contraction sums over the sharded row axis, which
+            # the partitioner realises as a full-size float32 partial plus an
+            # all-reduce per device. Swapping the pair axes and contracting in
+            # the outgoing form is the same arithmetic with sharded partials.
+            left = shard_pair_rows(jnp.swapaxes(left, 1, 2))
+            right = shard_pair_rows(jnp.swapaxes(right, 1, 2))
+            contract_outgoing = True
+        equation = "bikd,bjkd->bijd" if contract_outgoing else "bkid,bkjd->bijd"
+        contracted = jnp.einsum(
+            equation, left, right, preferred_element_type=jnp.float32
+        )
     contracted = shard_pair_rows(contracted)
 
     mixed = layer_norm(
@@ -256,13 +400,28 @@ def transition(
     residual: bool,
     eps: float = 1e-5,
     native_autocast: bool = False,
+    cp_pair: bool = False,
 ) -> jnp.ndarray:
     """Norm, SwiGLU, and upstream's two different opinions about the residual.
 
     `common.Transition` adds `x` back; `modeling.PairTransition` returns the
     update alone and lets its caller add it. Same parameters, same shapes --
     only the caller can tell them apart, so it is a flag rather than a guess.
+
+    `cp_pair` declares `x` a pair tensor `[B, N, N, C]` laid out by the active
+    context-parallel layout, which is what lets the row block survive the
+    square grid -- see `_cp_pair_transition`. Any other caller, and every
+    caller on the row mesh, keeps the path it already had.
     """
+    if cp_pair and _cp_layout() == "2d" and x.ndim == 4:
+        return _cp_pair_transition(
+            x,
+            params,
+            prefix,
+            residual=residual,
+            eps=eps,
+            native_autocast=native_autocast,
+        )
     if native_autocast:
         return _autocast_transition(x, params, prefix, residual, eps)
     dot = f"{prefix}." if prefix else ""
@@ -271,6 +430,96 @@ def transition(
     )
     update = swiglu(normalised, params, f"{dot}ffn")
     return x + update if residual else update
+
+
+def _cp_pair_transition(
+    x: jnp.ndarray,
+    params: Params,
+    prefix: str,
+    *,
+    residual: bool,
+    eps: float,
+    native_autocast: bool,
+) -> jnp.ndarray:
+    """Row-block the transition on each device's own tile of a pair tensor.
+
+    `w12` widens `[..., C]` to `[..., 2 * hidden]` and the split halves plus
+    their product are live at once, so `primitives.swiglu` blocks a leading
+    axis once the widened form passes its budget -- and the axis it picks on a
+    pair tensor is the token rows. Under the square grid those rows are
+    sharded, and a block of them is a slice of a sharded axis: the partitioner
+    cannot serve it without moving data. Measured on the two-layer CPU fixture
+    at twelve tokens on a 2x2 mesh, with the budget lowered so the block
+    fires, the partitioned trunk carried 104 `all-to-all`s that the unblocked
+    program has none of.
+
+    The block therefore has to be taken inside the shard, the way
+    `_cannon_contract` above takes the contraction. Every operation in the
+    transition is elementwise in the two token axes and contracts only over
+    channels, so a device's tile is the whole computation for its own rows and
+    columns: no collective, and the arithmetic per element is the arithmetic
+    the unblocked sharded program did.
+
+    The row mesh is deliberately left alone. Its block is a slice of the
+    sharded rows too, but the one-dimensional program is what every recorded
+    ESMFold2 context-parallel number describes, and it stays byte-identical.
+
+    The body is `transition` itself with the flag off rather than a third
+    function, so the serial and one-dimensional programs keep the call stack
+    they had: a frame this path added would appear in their debug metadata,
+    which is the one part of an "identical program" claim that is checkable
+    and would then be false.
+    """
+
+    mesh = cp_mesh()
+    rows, columns = cp_grid()
+    n_rows, n_columns = x.shape[1], x.shape[2]
+    # `shard_map` needs both sharded axes to divide the grid. The padded region
+    # is its own set of rows and columns and the transition never mixes them
+    # with a kept one, so the padded output is sliced away unread.
+    row_pad, column_pad = (-n_rows) % rows, (-n_columns) % columns
+    if row_pad or column_pad:
+        x = jnp.pad(x, ((0, 0), (0, row_pad), (0, column_pad), (0, 0)))
+    spec = pair_spec(x.ndim)
+    dot = f"{prefix}." if prefix else ""
+    # This block's own parameters, spelled the way the checkpoint spells them
+    # so the body reads them under the same prefix it always did.
+    block_params = (
+        {name: value for name, value in params.items() if name.startswith(dot)}
+        if dot
+        else dict(params)
+    )
+
+    def local(x_local: jnp.ndarray, params_local: Params) -> jnp.ndarray:
+        return transition(
+            x_local,
+            params_local,
+            prefix,
+            residual=residual,
+            eps=eps,
+            native_autocast=native_autocast,
+        )
+
+    # Parameters go in as a replicated operand rather than a closure: the
+    # trunk runs inside the recycling `lax.scan`, where they are traced
+    # values, and an operand keeps the whole tree on the mesh.
+    out = jax.shard_map(
+        local,
+        mesh=mesh,
+        in_specs=(spec, PartitionSpec()),
+        out_specs=spec,
+    )(x, block_params)
+    if row_pad or column_pad:
+        # Re-pinning the slice keeps the partitioner from answering the
+        # narrower shape with a replicated result.
+        out = shard_pair_rows(
+            jax.lax.slice(
+                out,
+                (0, 0, 0, 0),
+                (out.shape[0], n_rows, n_columns, out.shape[3]),
+            )
+        )
+    return out
 
 
 def pair_update_block(
@@ -317,6 +566,10 @@ def pair_update_block(
             f"{dot}pair_transition",
             residual=True,
             native_autocast=native_autocast,
+            # `pair` is the tensor the active layout shards, so under the grid
+            # the row block is taken inside the shard instead of slicing a
+            # sharded axis.
+            cp_pair=True,
         )
     )
 

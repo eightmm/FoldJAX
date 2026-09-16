@@ -188,6 +188,8 @@ def msa_encoder_block(
             f"{dot}pair_transition",
             residual=False,
             native_autocast=native_opm_params is not None,
+            # The pair tensor the active layout shards; see `trunk.transition`.
+            cp_pair=True,
         )
     )
     return msa, pair
