@@ -293,10 +293,21 @@ def msa_layer_forward(
             compute_dtype=transition_dtype,
             native_amp_norm=transition_dtype == jnp.bfloat16,
             chunk_size=32 if z.shape[1] > _NATIVE_CHUNK_THRESHOLD else None,
+            # Axis 1 of `m` is alignment depth, which no context-parallel
+            # layout shards, so the row block the serial program takes is
+            # shard-aligned here and is kept rather than dropped. Without
+            # this the eight unrolled hidden-chunk accumulators stay at full
+            # `M x N_local` width: `bf16[8585216, 64]` x8, 8.4 GiB, half the
+            # per-device peak of the 2,096-token 2-D program.
+            cp_msa=True,
         )
     else:
         m = m + transition_forward(
-            params["msa_transition"], m, eps=eps, glu_backend=glu_backend
+            params["msa_transition"],
+            m,
+            eps=eps,
+            glu_backend=glu_backend,
+            cp_msa=True,
         )
     # Above 384 tokens OuterProductMean returns FP32 (it adds the original
     # FP32 bias outside its AMP matmuls), so this add is the one promoter on

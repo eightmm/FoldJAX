@@ -48,6 +48,7 @@ def transition_forward(
     compute_dtype: jnp.dtype | None = None,
     native_amp_norm: bool = False,
     cp_pair: bool = False,
+    cp_msa: bool = False,
 ) -> jnp.ndarray:
     """Run a Boltz Transition block using mapped PyTorch parameters.
 
@@ -63,9 +64,20 @@ def transition_forward(
 
     ``cp_pair`` declares ``x`` a pair tensor ``[B, N, N, C]`` laid out by the
     active context-parallel layout, which is what lets the row block survive
-    context parallelism -- see ``_cp_pair_transition``. Any other caller keeps
-    the whole local tile, because slicing the global row axis of a sharded
-    tensor is what the partitioner cannot serve without a gather.
+    context parallelism -- see ``_cp_pair_transition``.
+
+    ``cp_msa`` declares ``x`` an MSA tensor ``[B, M, N, C]`` whose axis 1 is
+    alignment depth. No layout shards that axis -- the MSA carry measures
+    ``PartitionSpec(None, None, "cp")`` under the 1-D layout and
+    ``PartitionSpec(None, None, "cp_row")`` under the 2-D one -- so the row
+    block is shard-aligned as written and needs no ``shard_map``. It is also
+    *tighter* there than a block taken inside a shard would be: the budget is
+    read off the global token width, so one block holds
+    ``_WIDE_BUDGET_BYTES / shards`` per device.
+
+    An undeclared rank-4 caller keeps the whole local tile, because slicing the
+    global row axis of a *sharded* tensor is what the partitioner cannot serve
+    without a gather.
 
     ``glu_backend="tokamax"`` runs the swish GLU through the fused Triton kernel
     (GPU, low precision); ``"xla"`` (default) keeps the bit-exact split-matmul.
@@ -89,10 +101,13 @@ def transition_forward(
             compute_dtype=compute_dtype,
             native_amp_norm=native_amp_norm,
         )
-    if mesh is not None:
-        # Under context parallelism axis 1 is the sharded row axis; slicing
-        # it block by block would fight the partitioner, and the memory the
-        # row chunk exists to bound is already divided across devices.
+    if mesh is not None and not cp_msa:
+        # Under context parallelism axis 1 of a pair tensor is the sharded row
+        # axis; slicing it block by block would fight the partitioner, and the
+        # memory the row chunk exists to bound is already divided across
+        # devices. An MSA tensor is the exception -- its axis 1 is alignment
+        # depth, which no layout shards -- and it says so with ``cp_msa``,
+        # because a rank-4 shape alone cannot tell the two apart.
         row_chunk_size = 0
     if row_chunk_size is None:
         row_chunk_size = _auto_row_chunk(x, params)
