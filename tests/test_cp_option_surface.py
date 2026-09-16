@@ -1,22 +1,25 @@
 """Every model the docs call two-dimensional must accept `cp_layout`.
 
-`docs/context_parallel.md` marks Boltz-2, Protenix, OpenDDE and OpenFold3 as
-supporting the square grid, and each of their native command lines takes
-`--cp-layout`. The unified CLI reaches those through a per-backend option set,
-and OpenDDE's was missing the entry: `opendde-jax-predict --cp-layout 2d` ran
-while `foldjax --model opendde --option cp_layout=2d` was refused as an
+`docs/context_parallel.md` marks Boltz-2, Protenix, OpenDDE, OpenFold3 and
+ESMFold2 as supporting the square grid, and each of their native command lines
+takes `--cp-layout`. The unified CLI reaches those through a per-backend option
+set, and OpenDDE's was missing the entry: `opendde-jax-predict --cp-layout 2d`
+ran while `foldjax --model opendde --option cp_layout=2d` was refused as an
 unsupported option, so the documented layout was unreachable through the
 interface the project puts first.
 
-ESMFold2 is the deliberate exception -- it has no triangle attention and no
-square-grid path -- so its refusal is asserted rather than tolerated.
+AlphaFold 3 is the deliberate exception -- the vendored publisher runtime is
+not rewritten for FoldJAX context parallelism at all -- so its refusal is
+asserted rather than tolerated. ESMFold2 was that exception until it gained
+the grid; what it still refuses is a device count the grid cannot be built
+from, which is a different sentence and has its own case below.
 """
 
 import pytest
 
 from foldjax import PredictionRequest, resolve_request
 
-SQUARE_GRID_MODELS = ("boltz2", "opendde", "openfold3", "protenix")
+SQUARE_GRID_MODELS = ("boltz2", "esmfold2", "opendde", "openfold3", "protenix")
 
 
 def _request(model: str, job) -> PredictionRequest:
@@ -48,6 +51,30 @@ def test_the_square_grid_is_reachable_through_the_common_option(model, job) -> N
     resolve_request(_request(model, job))
 
 
-def test_esmfold2_refuses_a_layout_it_does_not_have(job) -> None:
+def test_a_model_without_context_parallelism_refuses_the_layout(job) -> None:
+    """AlphaFold 3 carries neither option, and says so rather than ignoring it."""
+
     with pytest.raises(ValueError, match="cp_layout"):
-        resolve_request(_request("esmfold2", job))
+        resolve_request(_request("alphafold3", job))
+
+
+@pytest.mark.parametrize("devices", [1, 2, 3, 8])
+def test_the_grid_is_refused_on_a_count_it_cannot_be_built_from(devices, job) -> None:
+    """A square mesh needs a perfect-square count, and the refusal is early.
+
+    ESMFold2 is asked because it is the port that most recently gained the
+    option; the message comes from its adapter, before any checkpoint opens.
+    """
+
+    request = _request("esmfold2", job)
+    options = dict(request.options)
+    options["cp_devices"] = devices
+    with pytest.raises(ValueError, match="perfect-square"):
+        resolve_request(
+            PredictionRequest(
+                model=request.model,
+                input=request.input,
+                weights=request.weights,
+                options=options,
+            )
+        )
