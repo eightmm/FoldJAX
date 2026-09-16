@@ -172,8 +172,8 @@ def resolve_cp_layout(layout: str, n_devices: int, *, auto: str = "1d") -> str:
     ``auto`` is resolved by the caller, which is the port: the default stays
     ``"1d"`` for a model that has recorded no two-dimensional GPU evidence, and
     a model with that evidence passes what its own count resolves to --
-    ``auto=foldjax.padding.square_grid_auto_layout(n_devices)`` for OpenDDE and
-    Boltz-2, which is ``"2d"`` on a perfect-square count and ``"1d"``
+    ``auto=foldjax.padding.square_grid_auto_layout(n_devices)`` for OpenDDE,
+    Boltz-2 and OpenFold3, which is ``"2d"`` on a perfect-square count and ``"1d"``
     otherwise.  Two-dimensional layouts require a non-trivial perfect-square
     device count whether they were asked for or resolved to, so a port whose
     ``auto`` picks the grid can never reach that refusal through ``auto``.

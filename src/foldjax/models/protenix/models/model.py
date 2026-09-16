@@ -943,7 +943,7 @@ def protenix_infer_compiled(
         # measurement rather than caution: on the four-card deployment node
         # (4 x 96 GiB, 2x2 mesh) a 2,096-token 5DEI took 11.6 GiB per device
         # in the grid against 10.7 in the 1-D layout, so the grid costs memory
-        # here instead of saving it. OpenDDE and Boltz-2 measured the other
+        # here instead of saving it. OpenDDE, Boltz-2 and OpenFold3 measured the other
         # way on the same node and their `auto` picks the grid
         # (`foldjax.padding.square_grid_auto_layout`). Ask for "2d"
         # explicitly; this flips if a Protenix measurement ever inverts.
