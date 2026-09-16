@@ -1543,6 +1543,131 @@ a tax on every single-shape run — and `foldjax cache warm` bakes the
 bucketed executables for deployments that want them. A finer MSA ladder
 above 8,192 rows would bound Protenix's padded cost to one step.
 
+
+**Boltz-2 under the 2-D grid, second look (2026-09-16).** A matched-kernel
+serial control (triangle, GLU and diffusion attention all on XLA, the family
+every CP arm resolves to) runs 5DEI at 2,096 tokens in 554.9 s at 17,455 MiB
+against the released kernels' 230.95 s / 18,511. Two readings follow. The CP
+arms' wall penalty is mostly that resolution, not communication: the 2-D arm
+at 973 s is 1.75× the like-for-like serial and 4.2× the released one, so
+bringing the fused kernels inside `shard_map` is the next wall lever. And the
+2-D memory win against the same family is only 5%. A CPU four-device probe
+named the transition's pre-gate GLU (built unblocked under a mesh, 15 ×
+f32[1, 1056, 1056, 1024] per device at 2,112 tokens where serial keeps 64
+rows) and the trunk's row-only pair constraint; both were fixed (`93b3c52`
+blocks local rows inside the shard, `d6ada16` shards the trunk's pair tensors
+on both axes; serial program byte-identical, CP outputs bit-identical), and
+the 2-D row moved 16,642 → 16,056 MiB, −3.5%, at unchanged wall and
+deposited scores. The buffer the CPU probe ranked first was not in the card's
+peak-live set — the arena-cover lesson again — so Boltz-2's 2-D peak owner
+on the card is still unattributed and the next step is a GPU-side buffer
+assignment, not another CPU probe.
+
+### The ceiling wave and the fixes it forced (2026-09-16/17)
+
+The question the whole feature exists to answer: does a four-card node run
+what one 96 GiB card cannot? A 6,568-token case (6NYF's 821-residue chain
+in eight copies, its own alignment reused) and the 3,012-residue 6ZTX put
+every port against the wall.
+
+| port | one card | four cards | per device | pass wall | verdict |
+| --- | --- | --- | ---: | ---: | --- |
+| Protenix, 6,568 | OOM (99.6 GiB) | 1-D completes | 44,432 MiB | 1 h 56 min | ceiling opened |
+| OpenFold3, 6,568 | OOM | 1-D OOM (101 GiB on every rank); 2-D completes | 42,209 MiB | 2 h 56 min | ceiling opened on the grid |
+| OpenDDE, 3,012 res | 180 GiB estimate | 2-D completes | 64,322 MiB | 1 h 14 min | ceiling opened; 6.5k needs 828 GiB and is out of reach |
+| Boltz-2, 6,568 | OOM (130 GiB) | 2-D: one pass OOMed (46.9 GiB arena), the other ran 3 h 45 min without finishing | ~70 GB/card | > 4 h | not established |
+| ESMFold2, 3,012 | OOM | 1-D warmup completes | – | > 1 h | opened; wall-bound |
+
+OpenDDE's 3,012 residues score 0.51–0.56 Å against 6ZTX, the best any port
+has on that target; Protenix's warmup pass had the first-invocation OOM
+(41.5 GiB) that the second pass does not, the same pattern the 3,012-token
+OpenFold3 serial run has always shown. The two ports that did not open
+their ceiling were attributed, on the card and on CPU, and fixed:
+
+**Boltz-2.** A compile-only attribution on the four cards (XLA's own
+peak-live section, 2,096 tokens, 2×2) named the MSA stack, not the pair
+stack: the f32 residual stream `f32[1, 8192, 1048, 64]` twice (2,096 MiB
+each), the MSA transition's intermediates `bf16[8585216, 64]` eight times
+co-live (8.4 GiB, half the peak), pair-weighted averaging's output once.
+Two things followed from that. The MSA transition had lost its row block
+under a mesh (`transition.py` zeroed the chunk for every rank-4 tensor,
+though the MSA depth axis is replicated under 1-D and is exactly the axis a
+serial block slices); `dff6709` keeps the block, and the same rule reached
+the diffusion-conditioning and template pair transitions (`e0a9c4d`). And a
+2×2 grid only halved that stack because it split the token axis alone:
+`021b240` shards the alignment depth over the grid's column axis
+(`P(None, cp_col, cp_row, None)`, a quarter of the stack per card), with
+explicit bridges to the pair layout — pair-weighted averaging gathers its
+small projected logits along the column axis and streams values around a
+row-axis ring, the outer product mean streams its key operand and reduces
+numerator and mask count along the column axis before taking the mean once.
+Its reductions are chained through `optimization_barrier`, because XLA
+otherwise merged 272 of them into two all-reduces whose results were 8.7
+GiB co-live. On CPU the 2-D arena fell 29.5% at 2,112 tokens; the two
+GPU rows on that code are recorded below when they land. The processed
+depth itself is upstream's: `subsample_msa` is off by default there too.
+
+That probe also found what CPU probes had missed twice, and one CPU probe
+found what the GPU could not show: a real miscompile. Under the 1-D
+layout the float32 outer product mean assembled its output with a chain of
+`out.at[:, a:b].set(block)`; when the pairformer pinned that result on the
+CP row axis one statement later, the SPMD partitioner (Shardy and GSPMD
+alike, jax 0.11.1) returned the last row of every shard but the last
+wrong — 37.9 on a scale of 74 at 848 tokens with the released chunk of 77,
+irregular in token count and chunk, and flipping with layer count and
+`lax.scan`. The released configuration sat in the clean column (four scanned
+layers, and the bf16 path assembles by concatenation, which is the whole
+f32/bf16 asymmetry), so no released run was wrong; `9df6826` assembles by
+concatenation on both paths, bitwise equal in serial, and pins the 848/77
+geometry.
+
+**OpenFold3.** Its 1-D failure at 6,568 tokens is two phase-local sets per
+rank, not one tenant: the transition phase held the widened SwiGLU as one
+whole local tile (`f32[1115136, 512]` eighteen times, 20.6 GiB each at that
+size, in both layouts) because `pair_block.py` disabled the row chunk under
+a mesh — `5ec4a91` chunks local rows inside the shard, serial byte-identical
+— and the triangle multiplication's 1-D full-width operand all-gather
+(`f32[1, 128, N, N]` twelve times, 20.6 GiB) that the Cannon path replaces
+with half-width tiles; that gather is the entire 1-D/2-D gap and is inherent
+to 1-D (the pair bias's full width under 1-D is inherent too: axis −2 is the
+query axis, refuted as a lever). The diffusion pair conditioning
+(`f32[5, N/4, N, 128]`, 25.7 GiB) is the third; `67ddd48` resolves an
+omitted `diffusion_chunk_size` to 1 under a mesh (5.1 GiB; chunk against
+unchunked 1.6e-7 relative; the resolved width is in the compile profile).
+With the grid completing at 6,568 tokens where 1-D and one card both die,
+`368c190` makes `cp_layout=auto` the square grid for OpenFold3 too; the
+2,096-token grid row measured 6,955 MiB per device against 13,990 serial
+and 11,489 for 1-D (−50% / −39%; coordinates 0.022 Å from serial, deposited
+identical).
+
+**The wall.** A matched-kernel Boltz-2 serial control (triangle, GLU and
+diffusion attention all on XLA, the family every CP arm resolves to) runs
+5DEI at 2,096 tokens in 554.9 s at 17,455 MiB against the released kernels'
+230.95 s / 18,511. Most of the CP arms' wall penalty is therefore that
+resolution, not communication (the 2-D arm is 1.75× the like-for-like
+serial, 4.2× the released one), and the fused kernels are the next lever.
+`bee0cef` adds `--option triangle_attention_ring_kernel=tokamax` (Boltz-2,
+Protenix): the ring's per-step tile — a local attention — runs tokamax's
+fused attention with `normalize_output=False, return_residuals=True` and the
+tiles combine by a softmax-statistics merge with Neumaier compensation on
+numerator and denominator. It is a different program (one rotation, tiles
+normalised against their own maximum; rows the model masks away come out as
+zeros), opt-in, GPU-only, refused rather than downgraded; the default path is
+byte-identical. Its GPU experiment is queued; nothing is measured yet.
+
+**ESMFold2** gained the 2-D layout (`880a99d`: Cannon triangle multiplication,
+pair transition blocked inside the shard; 2×2 and 3×3 within 2e-5 of serial
+on CPU, serial and 1-D byte-identical). On the card its 1-D arm completes
+3,012 tokens — the size one card cannot — but a pass exceeds an hour, and
+4,100 tokens did not finish one pass in two hours: this port's ceiling is
+wall, not memory, until the fused kernels return under a mesh.
+
+**Admission** now covers every port but AlphaFold 3 (`bb4aae8`): OpenDDE
+`4016 + 4.83e-3·S²` MiB on structural tokens for the bf16 trunk
+(`1.18e-2·S²` fp32), ESMFold2 `5435 + 9.24e-3·N²`, both from the ledger's
+rows with OOMs treated as censored; AlphaFold 3 warns `unknown` instead of
+ignoring the flags.
+
 ### Boltz-2, 2,096 tokens (5DEI)
 
 | cell | wall s | vs released | peak MiB | same-index RMSD vs released |
