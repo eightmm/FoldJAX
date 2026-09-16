@@ -449,14 +449,17 @@ _NON_VACUOUS_PROBE = _PREAMBLE + textwrap.dedent(
 _PORT_AUTO_LAYOUT_PROBE = _PREAMBLE + textwrap.dedent(
     r"""
     # What `cp_layout="auto"` actually builds, per port, read from each port's
-    # own resolver rather than from a copy of the rule. OpenDDE and Boltz-2
-    # pick the square grid on a perfect-square device count: on the four-card
-    # deployment node (4 x 96 GiB, 2x2) a 2,096-token 5DEI completes at 32.1
-    # GiB per device on OpenDDE where serial, 1-D on two cards and 1-D on four
-    # cards all run out of memory, and at 16.6 GiB on Boltz-2 against 19.0 in
-    # the 1-D layout. Protenix measured better on the 1-D mesh there (10.7
-    # against 11.6 GiB per device) and OpenFold3 is unmeasured, so both keep
-    # rows. The grid is the slower program, chosen for the memory ceiling.
+    # own resolver rather than from a copy of the rule. OpenDDE, Boltz-2 and
+    # OpenFold3 pick the square grid on a perfect-square device count, each on
+    # its own four-card measurement (4 x 96 GiB, 2x2). A 2,096-token 5DEI
+    # completes at 32.1 GiB per device on OpenDDE where serial, 1-D on two
+    # cards and 1-D on four cards all run out of memory, and at 16.6 GiB on
+    # Boltz-2 against 19.0 in the 1-D layout. OpenFold3's target is a
+    # 6,568-token one: the grid completes it at 42,209 MiB per device where a
+    # single card runs out of memory and 1-D on four cards runs out on every
+    # rank, each asking for a 101 GiB arena. Protenix measured better on the
+    # 1-D mesh there (10.7 against 11.6 GiB per device), so it keeps rows. The
+    # grid is the slower program, chosen for the memory ceiling.
     from foldjax.models._cp import resolve_cp_layout as shared_resolver
     from foldjax.models.boltz2.api import _resolve_cp_layout as boltz2_resolver
     from foldjax.models.opendde.models.model import (
@@ -482,12 +485,15 @@ _PORT_AUTO_LAYOUT_PROBE = _PREAMBLE + textwrap.dedent(
         )
 
 
-    GRID_PORTS = {"opendde": opendde_resolver, "boltz2": boltz2_resolver}
+    GRID_PORTS = {
+        "opendde": opendde_resolver,
+        "boltz2": boltz2_resolver,
+        "openfold3": openfold3,
+    }
     ROW_PORTS = {
         # Protenix hands `auto` to `context_parallel` unexpanded, so the
         # shared resolver's own default is this port's rule.
         "protenix": shared_resolver,
-        "openfold3": openfold3,
     }
     GRID_IDENTITY = ("2d", DEVICES, (2, 2), (CP_ROW_AXIS, CP_COL_AXIS))
     ROW_IDENTITY = ("1d", DEVICES, (DEVICES, 1), (CP_AXIS,))
@@ -513,6 +519,15 @@ _PORT_AUTO_LAYOUT_PROBE = _PREAMBLE + textwrap.dedent(
         with context_parallel(DEVICES, layout=resolver("auto", DEVICES)) as mesh:
             assert mesh is not None, name
             assert cp_identity() == ROW_IDENTITY, (name, cp_identity())
+
+    # Two devices are not a square, so even a grid port's `auto` is rows
+    # there: a 2x1 mesh, and never a shape the ring schedules cannot accept.
+    TWO_ROW_IDENTITY = ("1d", 2, (2, 1), (CP_AXIS,))
+    for name, resolver in {**GRID_PORTS, **ROW_PORTS}.items():
+        assert resolver("auto", 2) == "1d", name
+        with context_parallel(2, layout=resolver("auto", 2)) as mesh:
+            assert mesh is not None, name
+            assert cp_identity() == TWO_ROW_IDENTITY, (name, cp_identity())
 
     # One device is the serial program on every port: the layout decides
     # nothing without a mesh, and `auto` must not turn a one-card run into a
@@ -601,12 +616,12 @@ def test_both_layouts_lower_to_their_own_sharded_program() -> None:
 def test_each_port_resolves_auto_to_the_mesh_it_has_evidence_for() -> None:
     """`auto` is a per-port decision, and this is where it is pinned.
 
-    OpenDDE and Boltz-2 resolve it to the square grid on a perfect-square
-    device count, Protenix and OpenFold3 to the row mesh, and a one-device
-    request to the serial program everywhere. Read from the ports' own
-    resolvers and then from the mesh those answers build, because a rule that
-    agreed with itself while building the other topology would be invisible in
-    a table of strings.
+    OpenDDE, Boltz-2 and OpenFold3 resolve it to the square grid on a
+    perfect-square device count, Protenix to the row mesh, every port to the
+    row mesh on a non-square count, and a one-device request to the serial
+    program everywhere. Read from the ports' own resolvers and then from the
+    mesh those answers build, because a rule that agreed with itself while
+    building the other topology would be invisible in a table of strings.
     """
 
     assert "PORT_AUTO_LAYOUT_OK" in _run_probe(_PORT_AUTO_LAYOUT_PROBE)

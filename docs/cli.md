@@ -1153,11 +1153,11 @@ replicated graph, so pin `--pad-atoms` and `--pad-tokens` (or
 `PaddingConfig(atoms=..., tokens=...)`) to reach the distributed one. In the
 1-D layout on four devices that is `--pad-atoms` a multiple of 128 and
 `--pad-tokens` a multiple of 4; on a 2x2 grid, 64 and 2 -- and four devices
-*are* a 2x2 grid here unless `--cp-layout 1d` asks otherwise, because Boltz-2
-and OpenDDE resolve an omitted layout to the square grid on a perfect-square
-device count (`docs/context_parallel.md`). Automatic padding follows the
-resolved layout, so an omitted layout and an explicit `2d` pad identically. The
-sampler loop and its noise tape are unchanged.
+*are* a 2x2 grid here unless `--cp-layout 1d` asks otherwise, because Boltz-2,
+OpenDDE and OpenFold3 resolve an omitted layout to the square grid on a
+perfect-square device count (`docs/context_parallel.md`). Automatic padding
+follows the resolved layout, so an omitted layout and an explicit `2d` pad
+identically. The sampler loop and its noise tape are unchanged.
 
 Protenix and OpenFold3 reach the same split through different key-window
 mechanisms. Protenix' windows sit at a fixed offset from their query block, so

@@ -551,7 +551,7 @@ def test_cp_mesh_rows_matches_the_layout_the_real_resolver_builds() -> None:
 
 
 def test_the_square_grid_auto_rule_is_the_layout_a_grid_port_resolves() -> None:
-    """The host-side rule OpenDDE's and Boltz-2's resolvers read for `auto`.
+    """The host-side rule the three grid ports' resolvers read for `auto`.
 
     Two properties: the count it calls square, and that feeding its answer back
     to the mesh-row rule gives the grid's side rather than one row per device.
@@ -894,3 +894,100 @@ def test_the_boltz2_backend_hands_its_native_api_a_mesh_aware_profile(
         )
     )
     assert cp_rows(seen["padding"]) == 4
+
+
+def _openfold3_aligned_padding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: dict[str, object]
+) -> PaddingConfig:
+    """The padding config this port's adapter hands its own planner.
+
+    The adapter runs the port in-process rather than calling a native entry
+    point, so there is no single seam to double the way OpenDDE's and Boltz-2's
+    tests do. The featurizer, the config builder and the planner are stubbed,
+    and the planner records the aligned profile and stops the run there --
+    everything after it needs weights and a compilation.
+    """
+
+    from types import SimpleNamespace
+
+    from foldjax.backends import openfold3 as adapter
+
+    features = {
+        "token_mask": np.ones((1, 8), dtype=np.float32),
+        "atom_mask": np.ones((1, 16), dtype=np.float32),
+    }
+    seen: dict[str, PaddingConfig] = {}
+
+    class _StopError(Exception):
+        pass
+
+    def capture(_features, config, **_kwargs):
+        seen["padding"] = config
+        raise _StopError
+
+    modules = {
+        "foldjax.models.openfold3.data": SimpleNamespace(
+            featurize_query_with_metadata=lambda *args, **kwargs: (features, None),
+            prepare_msa_cycle_features=lambda batch, depth, **kwargs: batch,
+            collapse_identical_templates=lambda batch: batch,
+            has_atomized_tokens=lambda batch: False,
+        ),
+        "foldjax.models.openfold3.inference": SimpleNamespace(
+            released_config=lambda **kwargs: SimpleNamespace(
+                msa_depth=1024, num_recycles=4, num_samples=5
+            ),
+        ),
+        "foldjax.models.openfold3.output": SimpleNamespace(),
+        "foldjax.models.openfold3.bridge.chemistry": SimpleNamespace(),
+        "foldjax.models.openfold3.bridge.checkpoint": SimpleNamespace(),
+        "foldjax.models.openfold3.bridge.torch_mapping": SimpleNamespace(),
+        "jax": SimpleNamespace(),
+    }
+    monkeypatch.setattr(adapter, "import_module", lambda name: modules[name])
+    monkeypatch.setattr(adapter, "_padding_plan", capture)
+
+    weights = tmp_path / "openfold3.pt"
+    weights.write_bytes(b"native")
+    with pytest.raises(_StopError):
+        adapter.OpenFold3Backend().predict(
+            PredictionRequest(
+                model="openfold3",
+                input=_input(tmp_path),
+                weights=weights,
+                output_dir=tmp_path / "out",
+                padding=True,
+                options=options,
+            )
+        )
+    return seen["padding"]
+
+
+def test_the_openfold3_adapter_aligns_padding_to_the_grid_it_will_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The alignment follows the resolved layout, not the spelled one.
+
+    Four devices with an omitted layout are a 2x2 grid on this port, and a grid
+    aligns to its side: two rows, not one row per device. An explicit `1d`
+    still asks for the four-row mesh and gets its alignment, and an explicit
+    `2d` pads exactly as the omission does.
+    """
+
+    from foldjax.padding import cp_rows
+
+    omitted = _openfold3_aligned_padding(tmp_path, monkeypatch, {"cp_devices": 4})
+    assert cp_rows(omitted) == 2
+
+    grid = _openfold3_aligned_padding(
+        tmp_path, monkeypatch, {"cp_devices": 4, "cp_layout": "2d"}
+    )
+    assert cp_rows(grid) == 2
+
+    rows = _openfold3_aligned_padding(
+        tmp_path, monkeypatch, {"cp_devices": 4, "cp_layout": "1d"}
+    )
+    assert cp_rows(rows) == 4
+
+    # Two devices have no square, so the omitted layout is still rows there.
+    two = _openfold3_aligned_padding(tmp_path, monkeypatch, {"cp_devices": 2})
+    assert cp_rows(two) == 2

@@ -60,8 +60,8 @@ def test_auto_is_the_row_mesh_on_every_device_count() -> None:
     """The port's own resolver, not a copy of the rule.
 
     Including the perfect squares, which is the whole content of the decision:
-    on four devices this port answers `1d` where OpenDDE and Boltz-2 answer
-    `2d`.
+    on four devices this port answers `1d` where OpenDDE, Boltz-2 and
+    OpenFold3 answer `2d`.
     """
 
     from foldjax.models.esmfold2.inference import _resolve_cp_layout

@@ -47,6 +47,7 @@ from foldjax.padding import (
     cp_aligned_padding,
     resolve_axis,
     resolve_token_axis,
+    square_grid_auto_layout,
 )
 from foldjax.schema import (
     InputRequirement,
@@ -455,10 +456,18 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         cp_shards = int(options.get("cp_devices", 1))
         requested_layout = str(options.get("cp_layout", "auto"))
         profile["cp_devices"] = cp_shards
+        # Resolved, never as spelled: this port's omitted layout is the square
+        # grid on a perfect-square device count
+        # (`models/openfold3/inference.resolve_cp_layout`), so on four devices
+        # an omitted layout and an explicit `2d` are one program and an
+        # explicit `1d` is another. `base.square_grid_cp_layout` is the same
+        # rule for the other two grid adapters; it is spelled here against the
+        # count this adapter has already coerced, because a serial run of this
+        # port records `serial` where that helper records nothing.
         profile["cp_layout"] = (
             "serial"
             if cp_shards <= 1
-            else "1d"
+            else square_grid_auto_layout(cp_shards)
             if requested_layout == "auto"
             else requested_layout
         )
@@ -786,14 +795,28 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         features = data.collapse_identical_templates(features)
         padding_plan = None
         if request.padding is not None:
+            cp_padding_devices = int(overrides.get("cp_shards", 1))
+            cp_padding_layout = str(overrides.get("cp_layout", "auto"))
+            if cp_padding_layout == "auto":
+                cp_padding_layout = square_grid_auto_layout(cp_padding_devices)
             padding_plan = _padding_plan(
                 features,
                 # The mesh this run will build decides what its automatic
-                # token and atom targets have to divide.
+                # token and atom targets have to divide. The layout is
+                # resolved rather than taken as spelled: an omitted one builds
+                # the square grid on a perfect-square count
+                # (`models/openfold3/inference.resolve_cp_layout`) and the
+                # grid aligns to its side rather than to the device count, so
+                # an omitted layout and an explicit `2d` pad to the same
+                # shapes. The rule is read here, on the host, for the reason
+                # `padding.square_grid_auto_layout` records -- a request is
+                # planned before anything imports JAX -- and a probe pins this
+                # copy against every port's own resolver
+                # (`tests/models/test_cp_invariance.py`).
                 cp_aligned_padding(
                     request.padding,
-                    cp_devices=int(overrides.get("cp_shards", 1)),
-                    cp_layout=str(overrides.get("cp_layout", "auto")),
+                    cp_devices=cp_padding_devices,
+                    cp_layout=cp_padding_layout,
                 ),
                 max_msa_depth=config.msa_depth,
             )

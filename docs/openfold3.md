@@ -307,6 +307,27 @@ the sample count, or `None` through `released_config`) to get the unchunked
 rollout back on a mesh with room to spare; serial runs are unchanged, and the
 two spellings compile and cache separately.
 
+**The mesh shape is the other capacity-first default.** `cp_layout=auto` --
+which is what an omitted layout means -- builds Fold-CP's square grid on a
+perfect-square device count and the row mesh on every other one, so `--option
+cp_devices=4` is a 2x2 grid unless `--option cp_layout=1d` asks otherwise.
+What it rests on is one measurement on the four-card deployment node
+(4 x 96 GiB): a 6,568-token target of eight 821-residue chains completes in
+the grid at 42,209 MiB per device in 10,554 s (2 h 56 min), where a single
+card runs out of memory and the 1-D layout on four cards runs out on every
+rank, each asking for a 101 GiB arena. A CPU SPMD probe attributes that to the
+1-D triangle multiplication's full-width operand all-gather -- `f32[1, 128, N,
+N]` twelve times over, 20.6 GiB at this size -- which the Cannon schedule
+replaces with half-width tiles. That figure predates two memory fixes landed
+the same day, so it is an upper bound on the same run today. **The grid is the
+slower layout and its wall time at ordinary sizes is unmeasured here** -- the
+2,096-token comparison the other ports have does not exist for OpenFold3 yet
+-- and it is chosen for the memory ceiling, which is the point of a mesh.
+Automatic padding follows the resolved layout, so an omitted layout and an
+explicit `2d` pad to the same shapes: a grid aligns to its side, two rows on
+four devices rather than four. The two layouts compile and cache separately.
+See [`docs/context_parallel.md`](context_parallel.md).
+
 The common `foldjax.predict()` backend additionally has a narrower managed
 default: its `*_raw.npz` keeps coordinates, pLDDT, pTM, ipTM, chain-pair ipTM,
 and the experimentally-resolved logits, but omits `pae_logits`, `pde_logits`,

@@ -37,8 +37,8 @@ expected explicit collectives for the atom-window adapters.
 |---|---|---|
 | OpenDDE | `2d` | `1d` |
 | Boltz-2 | `2d` | `1d` |
+| OpenFold3 | `2d` | `1d` |
 | Protenix | `1d` | `1d` |
-| OpenFold3 | `1d` | `1d` |
 | ESMFold2 | `1d` | `1d` |
 
 An explicit `1d` or `2d` is passed through unchanged on every port; `2d` on a
@@ -49,16 +49,34 @@ topology, the out-of-memory diagnosis, and the compile-cache namespace the
 adapters write -- so an omitted layout shares a namespace with the explicit
 spelling that builds the same mesh, and the other spelling keeps its own.
 
-OpenDDE and Boltz-2 pick the grid because it is what fits on the four-card
-deployment node (4 x 96 GiB, 2x2 mesh, a 2,096-token 5DEI). OpenDDE completes
-there at 32.1 GiB per device where the serial run, 1-D on two cards and 1-D on
-four cards all run out of memory, at 0.59-0.75 Å CA RMSD to the deposited
-structure against a 0.007 Å two-process floor. Boltz-2 runs at 16.6 GiB per
-device against 19.0 in the 1-D layout and 18.5 serial, with coordinates within
-0.11 Å of its serial run on one sample and deposited RMSD unchanged to two
-decimals (0.44 0.43 0.42 0.47 0.43). Protenix measured the other way on the
-same node -- 11.6 GiB per device in the grid against 10.7 in the 1-D layout --
-so it keeps rows, and OpenFold3's grid is unmeasured there.
+OpenDDE, Boltz-2 and OpenFold3 pick the grid because it is what fits on the
+four-card deployment node (4 x 96 GiB, 2x2 mesh). On a 2,096-token 5DEI,
+OpenDDE completes there at 32.1 GiB per device where the serial run, 1-D on
+two cards and 1-D on four cards all run out of memory, at 0.59-0.75 Å CA RMSD
+to the deposited structure against a 0.007 Å two-process floor. Boltz-2 runs
+at 16.6 GiB per device against 19.0 in the 1-D layout and 18.5 serial, with
+coordinates within 0.11 Å of its serial run on one sample and deposited RMSD
+unchanged to two decimals (0.44 0.43 0.42 0.47 0.43). Protenix measured the
+other way on the same node -- 11.6 GiB per device in the grid against 10.7 in
+the 1-D layout -- so it keeps rows.
+
+**OpenFold3's row is a completion where nothing else completes.** Its target
+is a 6,568-token one -- eight 821-residue chains -- and at that size a single
+card runs out of memory and so does the 1-D layout on four cards, on *every*
+rank, each asking for a 101 GiB arena. The grid finishes it: 42,209 MiB per
+device in 10,554 s (2 h 56 min), job 1518, measured before two further memory
+fixes landed on the same day (the pair-transition local-row chunk `5ec4a91`
+and the context-parallel `diffusion_chunk_size=1` default `67ddd48`), so the
+per-device figure is an upper bound on what the same run costs now. A CPU SPMD
+probe attributes the gap to the 1-D triangle multiplication's full-width
+operand all-gather -- `f32[1, 128, N, N]` twelve times over, 20.6 GiB at 6.5k
+-- which the Cannon path replaces with half-width tiles. Because the other
+arms do not run, there is no serial-versus-1-D-versus-2-D parity arm at this
+size for this port: what is answered here is the per-device ceiling (item 2 of
+the deployment list below), not item 1. **The grid is also the slower layout
+for OpenFold3 and its wall time at ordinary sizes is unmeasured** -- there is
+no 2,096-token row yet -- and it is chosen for the memory ceiling per the
+project rule, the same trade the other two ports take.
 
 **ESMFold2's grid is implemented and unmeasured.** Both pair axes go on the
 mesh, the triangle contraction runs the same Cannon schedule as the other pair
@@ -78,7 +96,8 @@ token count and with no sample axis in it -- and serial runs out of memory at
 sentence is a prediction until the rows exist.
 
 **The grid is the slower program.** Boltz-2 at 2,096 tokens costs about 3.5x
-the serial wall time in it, and the 1-D layout is not free either. The layout
+the serial wall time in it, and the 1-D layout is not free either; the
+OpenFold3 figure at that size is not measured at all. The layout
 is chosen for the memory ceiling and nothing else, which is what context
 parallelism is for here: fitting targets that otherwise do not run. On a square
 device count where the job already fits and wall time is what matters, ask for
@@ -422,9 +441,10 @@ divide the rows (and the columns under `2d`). Unlike the halo paths there is no
 requirement on `n_key`: a CP row owning a single query block is legal. A request
 that cannot be split resolves to the replicated path **with a warning naming the
 multiples to pad to**; automatic padding supplies the alignment, and a pin is
-taken as written. At the released `n_query=32` on four devices that is
-`atoms % 128 == 0` and `tokens % 4 == 0`; on a 2x2 grid, `atoms % 64 == 0` and
-`tokens % 2 == 0`.
+taken as written. At the released `n_query=32` on four devices in the 1-D
+layout that is `atoms % 128 == 0` and `tokens % 4 == 0`; on a 2x2 grid --
+which is what four devices build here unless `cp_layout=1d` asks otherwise --
+`atoms % 64 == 0` and `tokens % 2 == 0`.
 
 The sampler loop and its RNG tape are unchanged: the coordinate state stays
 replicated (`[samples, atoms, 3]` is linear in the atom count and three channels
@@ -523,12 +543,16 @@ production-ready:
 Items 1 and 2 are answered for OpenDDE and Boltz-2 on one topology -- the
 four-card 96 GiB node, a 2x2 mesh, one 2,096-token target -- and that is the
 whole basis of their `auto = 2d`, quoted above. It is a memory-ceiling result:
-the grid runs a job the other layouts do not, and it is slower. Everything else
-on the list is open, for every port: 8 GPUs, multi-node, other targets and
-token counts, and the run-to-run determinism reservation recorded in
-`PROJECT.md`. Protenix has the measurement and it went the other way;
-OpenFold3's grid has no GPU measurement at all. Neither default moves without
-its own numbers.
+the grid runs a job the other layouts do not, and it is slower. OpenFold3's
+`auto = 2d` rests on **item 2 only**, on the same node and one 6,568-token
+target: the grid's per-device peak is recorded and the run completes, while
+the arms item 1 would compare it against -- serial, and 1-D on four cards --
+both run out of memory there, so there is no parity comparison to make at that
+size and no wall-time comparison either. Everything else on the list is open,
+for every port: 8 GPUs, multi-node, other targets and token counts, and the
+run-to-run determinism reservation recorded in `PROJECT.md`. Protenix has the
+measurement and it went the other way. No default moves without its own
+numbers.
 
 For Boltz-2, Protenix, OpenDDE and OpenFold3, the pair trunk scales over both
 two-dimensional mesh axes, while atom windows scale over CP rows and are

@@ -544,16 +544,19 @@ def test_two_dimensional_pairformer_holds_on_a_three_by_three_grid() -> None:
     assert "GRID_STACK_PARITY_OK" in _run_probe(_GRID_STACK_PROBE, devices=9)
 
 
-def test_auto_layout_stays_on_the_one_dimensional_default() -> None:
-    """``auto`` must not silently change the program anyone has measured.
+def test_auto_layout_picks_the_grid_on_a_square_shard_count() -> None:
+    """``auto`` is the square grid where there is a square to build.
 
-    The square grid is the better layout and is gated above, but this port has
-    no GPU measurement of it: the four-card deployment node has 2-D evidence
-    for OpenDDE and Boltz-2, whose ``auto`` now picks the grid, and Protenix
-    measured better on the 1-D mesh there. OpenFold3 is the one port neither
-    measurement covers, so ``auto`` stays on rows here until it does. This pins
-    that as a decision rather than an accident: flipping the default should
-    require editing this test and quoting the measurement.
+    The measurement it rests on, on the four-card deployment node (4 x 96 GiB,
+    2x2): a 6,568-token target -- eight 821-residue chains -- completes in the
+    grid at 42,209 MiB per device in 10,554 s, where a single card runs out of
+    memory and the 1-D layout on four cards runs out on every rank, each
+    asking for a 101 GiB arena. A CPU SPMD probe attributes that to the 1-D
+    triangle multiplication's full-width operand all-gather, ``f32[1, 128, N,
+    N]`` twelve times over and 20.6 GiB at this size, which the Cannon
+    schedule replaces with half-width tiles. It is a ceiling result and not a
+    faster program. This pins the rule as a decision rather than an accident:
+    moving it should require editing this test and quoting a measurement.
     """
     from foldjax.models.openfold3.inference import (
         InferenceConfig,
@@ -572,15 +575,21 @@ def test_auto_layout_stays_on_the_one_dimensional_default() -> None:
             )
         )
 
-    # A square shard count does not opt anyone in by itself.
-    for shards in (1, 2, 3, 4, 8, 9):
+    # The grid on a perfect square greater than one, rows on everything else.
+    # One shard is the serial program whatever it says, so `auto` must not ask
+    # a one-card run for a grid that cannot exist.
+    for shards in (1, 2, 3, 8):
         assert layout(shards) == "1d", shards
+    for shards in (4, 9, 16):
+        assert layout(shards) == "2d", shards
     # An explicit choice is passed through untouched, so asking for a grid on a
     # non-square count still fails loudly in `context_parallel` rather than
-    # quietly degrading to rows.
+    # quietly degrading to rows -- and asking for rows on a square count still
+    # gets rows.
     assert layout(4, "2d") == "2d"
     assert layout(3, "2d") == "2d"
     assert layout(4, "1d") == "1d"
+    assert layout(9, "1d") == "1d"
 
 
 def test_context_parallel_matches_the_unsharded_program() -> None:

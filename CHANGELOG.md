@@ -54,9 +54,9 @@ unless it says so here, in its own paragraph.
   it, and a serial run leaves 96 GiB at 3,012 tokens. That is a prediction, not
   a measurement -- no per-device peak or wall time has been recorded for either
   ESMFold2 layout on a card, which is why `cp_layout=auto` and an omitted
-  layout both stay on the row mesh here, where OpenDDE and Boltz-2 resolve
-  `auto` to the grid on the strength of their own four-card rows. What is
-  measured is on forced CPU meshes: the pair trunk and the MSA encoder block
+  layout both stay on the row mesh here, where OpenDDE, Boltz-2 and OpenFold3
+  resolve `auto` to the grid on the strength of their own four-card rows. What
+  is measured is on forced CPU meshes: the pair trunk and the MSA encoder block
   agree with the unsharded program to 1.1e-5 on a 2x2 grid and 1.8e-5 on a 3x3
   one against a 3e-5 tolerance, and the partitioned trunk carries no
   `all-gather`. The 3x3 arm is the one that can see a mis-paired ring at all: a
@@ -108,6 +108,46 @@ unless it says so here, in its own paragraph.
   `ModelConfig(msa_depth=...)`, since padding no longer chooses a depth.
 
 ### Changed
+
+- **`cp_layout=auto` builds the square grid on OpenFold3 when the device count
+  is a perfect square.** Four cards are a 2x2 mesh there unless `cp_layout=1d`
+  asks otherwise; nine are 3x3. Every other count stays one-dimensional, an
+  explicit `1d`/`2d` is unchanged, `cp_devices=1` is the serial program it
+  always was, and Protenix and ESMFold2 keep `auto = 1d`. This is the rule
+  OpenDDE and Boltz-2 already follow, applied to the third port that now has
+  its own four-card numbers.
+
+  What held this on rows was that the grid had no GPU measurement for this
+  port. It has one, and it is a completion rather than a saving: on the
+  four-card deployment node (4 x 96 GiB, 2x2) a 6,568-token target -- eight
+  821-residue chains -- finishes in the grid at 42,209 MiB per device in
+  10,554 s (2 h 56 min), where a single card runs out of memory and the 1-D
+  layout on four cards runs out on *every* rank, each asking for a 101 GiB
+  arena. A CPU SPMD probe attributes that to the 1-D triangle
+  multiplication's full-width operand all-gather -- `f32[1, 128, N, N]`
+  twelve times over, 20.6 GiB at this size -- which the Cannon schedule
+  replaces with half-width tiles. The per-device figure predates the two
+  memory fixes that landed the same day, so it is an upper bound on what the
+  same run costs now.
+
+  **The grid is the slower layout, and for OpenFold3 how much slower is
+  unmeasured**: the 2,096-token wall-time comparison the other two ports have
+  does not exist here, and at 6,568 tokens there is no arm that completes to
+  compare against. It is chosen for the memory ceiling, which is what context
+  parallelism exists for -- fitting targets that otherwise do not run -- so
+  ask for `1d` on a square count when the job already fits and wall time is
+  what matters.
+
+  Two consequences to expect. On a square count the compile-cache namespace an
+  omitted layout writes is now the one an explicit `2d` writes, and an explicit
+  `1d` has its own; a warm four-device cache built by an omitted layout is
+  therefore cold once. Non-square distributed runs and serial runs keep exactly
+  the namespaces they had -- this adapter already recorded the layout it
+  resolved for every distributed run, so nothing that was absent becomes
+  present. And automatic padding follows the resolved layout, so on four
+  devices an omitted layout aligns to the grid's two rows rather than to four:
+  `--pad-atoms` a multiple of 64 and `--pad-tokens` a multiple of 2, and an
+  omitted layout and an explicit `2d` pad to the same shapes.
 
 - **OpenFold3 denoises one diffusion sample at a time under context
   parallelism**, when `--option diffusion_chunk_size` is not given and
@@ -272,9 +312,10 @@ unless it says so here, in its own paragraph.
 - **`cp_layout=auto` builds the square grid on OpenDDE and Boltz-2 when the
   device count is a perfect square.** Four cards are a 2x2 mesh there unless
   `cp_layout=1d` asks otherwise; nine are 3x3. Every other count stays
-  one-dimensional, Protenix and OpenFold3 keep `auto = 1d`, an explicit
-  `1d`/`2d` is unchanged everywhere, and `cp_devices=1` is the serial program
-  it always was.
+  one-dimensional, Protenix keeps `auto = 1d`, an explicit `1d`/`2d` is
+  unchanged everywhere, and `cp_devices=1` is the serial program it always was.
+  OpenFold3 kept `auto = 1d` when this landed and joined the grid later in the
+  same release, on its own numbers; the entry above is that change.
 
   The 1-D default was held because every published number for the feature had
   been taken there. On the four-card deployment node (4 x 96 GiB, a 2,096-token
@@ -284,8 +325,9 @@ unless it says so here, in its own paragraph.
   two-process floor; Boltz-2 runs at 16.6 GiB per device against 19.0 in the
   1-D layout and 18.5 serial, with coordinates within 0.11 A of its serial run
   on one sample and deposited RMSD unchanged to two decimals. Protenix measured
-  the other way on the same node -- 11.6 GiB against 10.7 -- so it keeps rows,
-  and OpenFold3's grid is unmeasured there.
+  the other way on the same node -- 11.6 GiB against 10.7 -- so it keeps rows.
+  OpenFold3's grid was unmeasured when this landed; its measurement came
+  afterwards and is quoted in the entry above.
 
   **The grid is slower**: Boltz-2 at this size costs about 3.5x the serial wall
   time. It is chosen for the memory ceiling, which is what context parallelism

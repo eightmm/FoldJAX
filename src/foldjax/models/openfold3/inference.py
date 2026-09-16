@@ -95,6 +95,7 @@ from foldjax.models.openfold3.output import (
     DEFAULT_ARRAY_BUDGET_BYTES,
     plan_returned_pair_logits,
 )
+from foldjax.padding import square_grid_auto_layout
 
 
 class InferenceConfig(NamedTuple):
@@ -203,11 +204,11 @@ class InferenceConfig(NamedTuple):
     #: rows only; ``"2d"`` is Fold-CP's square grid, which splits columns too
     #: and drops the per-device pair cost from ``O(N^2/P)`` with a full-width
     #: row of tiles to ``O(N^2/P)`` outright, at the price of a Cannon ring in
-    #: the triangle multiplication. ``"auto"`` resolves to ``"1d"`` whatever
-    #: the shard count on this port -- see :func:`resolve_cp_layout` for why
-    #: the better layout is not its default, while it is OpenDDE's and
-    #: Boltz-2's. ``"2d"`` needs a square shard count, which is the only shape
-    #: the ring schedules accept.
+    #: the triangle multiplication. ``"auto"`` resolves to ``"2d"`` on a
+    #: perfect-square shard count and ``"1d"`` on every other one -- see
+    #: :func:`resolve_cp_layout` for the four-card measurement that decided
+    #: it, the rule OpenDDE and Boltz-2 also follow. ``"2d"`` needs a square
+    #: shard count, which is the only shape the ring schedules accept.
     cp_layout: str = "auto"
     #: Split the diffusion atom graph -- the atom-pair block cache, both atom
     #: transformer stacks, and the atom<->token routing -- over the CP rows
@@ -1721,21 +1722,37 @@ RELEASED_BLOCK_COUNTS = {
 def resolve_cp_layout(config: InferenceConfig) -> str:
     """Turn ``config.cp_layout`` into a layout :func:`context_parallel` accepts.
 
-    ``"auto"`` stays on the 1-D layout. The square grid is the better design
-    and is verified on CPU meshes, but it has no GPU measurement on this port:
-    the four-card deployment node measured OpenDDE and Boltz-2, whose ``auto``
-    now picks the grid on a perfect-square count
-    (`foldjax.padding.square_grid_auto_layout`), and Protenix, which measured
-    better on the 1-D mesh. Until OpenFold3 has its own numbers, a default that
-    silently changed the program would make every published figure for this
-    port describe a configuration nobody measured. An explicit
-    ``"1d"``/``"2d"`` is passed through and validated by ``context_parallel``,
-    so ``"2d"`` on a non-square shard count still fails loudly instead of
-    quietly falling back.
+    ``"auto"`` is the square grid on a perfect-square shard count and rows on
+    every other one -- :func:`foldjax.padding.square_grid_auto_layout`, the
+    same rule OpenDDE and Boltz-2 resolve, and the rule this port's adapter
+    resolves on the host for the same request.
+
+    What held this on rows was that the grid had no GPU measurement here. It
+    has one now, and it is a ceiling result rather than a faster program: on
+    the four-card deployment node (4 x 96 GiB, 2x2) a 6,568-token target
+    (eight 821-residue chains) completes in the grid at 42,209 MiB per device
+    in 10,554 s, where one card runs out of memory and the 1-D layout on four
+    cards runs out on *every* rank, each asking for a 101 GiB arena. A CPU
+    SPMD probe attributes that gap to the 1-D triangle multiplication's
+    full-width operand all-gather -- ``f32[1, 128, N, N]`` twelve times over,
+    20.6 GiB at this size -- which the Cannon schedule replaces with
+    half-width tiles. That per-device figure is an upper bound: it was taken
+    before the pair-transition local-row chunk and the context-parallel
+    ``diffusion_chunk_size=1`` default landed the same day. The grid is the
+    slower layout -- by how much is not measured for this port, there being no
+    arm that completes at this size and no smaller row yet -- and is chosen
+    for the memory ceiling, which is what context parallelism is for here; ask
+    for ``"1d"`` explicitly on a square count when the job already fits.
+    ``docs/context_parallel.md`` carries the rest of the record.
+
+    An explicit ``"1d"``/``"2d"`` is passed through and validated by
+    ``context_parallel``, so ``"2d"`` on a non-square shard count still fails
+    loudly instead of quietly falling back. ``auto`` can never reach that
+    refusal, because it only ever names the grid on a count that has one.
     """
     if config.cp_layout != "auto":
         return config.cp_layout
-    return "1d"
+    return square_grid_auto_layout(config.cp_shards)
 
 
 @dataclass(frozen=True, slots=True)
