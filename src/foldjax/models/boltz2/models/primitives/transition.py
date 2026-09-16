@@ -67,13 +67,14 @@ def transition_forward(
     context parallelism -- see ``_cp_pair_transition``.
 
     ``cp_msa`` declares ``x`` an MSA tensor ``[B, M, N, C]`` whose axis 1 is
-    alignment depth. No layout shards that axis -- the MSA carry measures
-    ``PartitionSpec(None, None, "cp")`` under the 1-D layout and
-    ``PartitionSpec(None, None, "cp_row")`` under the 2-D one -- so the row
-    block is shard-aligned as written and needs no ``shard_map``. It is also
-    *tighter* there than a block taken inside a shard would be: the budget is
-    read off the global token width, so one block holds
-    ``_WIDE_BUDGET_BYTES / shards`` per device.
+    alignment depth. Under the 1-D layout no layout shards that axis -- the
+    MSA carry measures ``PartitionSpec(None, None, "cp")`` -- so the row block
+    is shard-aligned as written and needs no ``shard_map``. Under the 2-D
+    layout the depth axis is split over the grid's column axis, and the MSA
+    module calls this function on the local tile from inside its own
+    ``shard_map`` (``trunk_blocks/msa.py``), where ``x`` is again a plain
+    array whose axis 1 no mesh axis touches; ``cp_msa`` keeps meaning "block
+    axis 1 as written" in both cases.
 
     An undeclared rank-4 caller keeps the whole local tile, because slicing the
     global row axis of a *sharded* tensor is what the partitioner cannot serve
@@ -106,8 +107,9 @@ def transition_forward(
         # axis; slicing it block by block would fight the partitioner, and the
         # memory the row chunk exists to bound is already divided across
         # devices. An MSA tensor is the exception -- its axis 1 is alignment
-        # depth, which no layout shards -- and it says so with ``cp_msa``,
-        # because a rank-4 shape alone cannot tell the two apart.
+        # depth, unsharded under 1-D and handed in as a local tile under 2-D
+        # -- and it says so with ``cp_msa``, because a rank-4 shape alone
+        # cannot tell the two apart.
         row_chunk_size = 0
     if row_chunk_size is None:
         row_chunk_size = _auto_row_chunk(x, params)
