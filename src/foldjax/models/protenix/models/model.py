@@ -454,7 +454,7 @@ def protenix_infer_static(
     #: instead of holding one copy of it on every device. Ignored without a
     #: mesh, and resolved down to False with a warning when the atom or token
     #: axis cannot be split (see
-    #: `foldjax.models.protenix.models.diffusion._cp.resolve_atom_windows`).
+    #: `foldjax.models._cp_atom.resolve_atom_windows`, re-exported by `diffusion._cp`).
     cp_atom_windows: bool = True,
 ) -> dict[str, jnp.ndarray]:
     """Run the currently ported static-feature Protenix inference path.
