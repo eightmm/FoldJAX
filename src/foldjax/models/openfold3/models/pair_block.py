@@ -16,10 +16,12 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
+import jax
 import jax.numpy as jnp
+from jax.sharding import PartitionSpec
 
 from foldjax._openfold3_compile import resolve_triangle_kernel
-from foldjax.models._cp import cp_mesh, shard_pair_rows
+from foldjax.models._cp import cp_grid, cp_mesh, pair_spec, shard_pair_rows
 from foldjax.models.openfold3.models.primitives import (
     SwiGLUTransitionParams,
     swiglu_transition,
@@ -144,6 +146,148 @@ def tri_att_start_end(
     return shard_pair_rows(jnp.swapaxes(z, -2, -3))
 
 
+def _swiglu_row_blocks(
+    params: SwiGLUTransitionParams,
+    z: jnp.ndarray,
+    pair_mask: jnp.ndarray | None,
+    *,
+    eps: float,
+    glu_backend: str,
+    chunk_size: int | None,
+) -> jnp.ndarray:
+    """The SwiGLU transition over whatever rows it is handed.
+
+    Nothing here reads the sharding: the caller decides whether the row block
+    is taken on the global row axis or inside a shard.
+    """
+
+    def one(rows: jnp.ndarray, mask: jnp.ndarray | None = None) -> jnp.ndarray:
+        return swiglu_transition(
+            rows, params, mask=mask, eps=eps, glu_backend=glu_backend
+        )
+
+    if pair_mask is None:
+        return map_row_chunks(one, z, chunk_size=chunk_size)
+    return map_row_chunks(one, z, pair_mask, chunk_size=chunk_size, row_axes=(-3, -2))
+
+
+def _pair_transition(
+    z: jnp.ndarray,
+    params: SwiGLUTransitionParams,
+    *,
+    pair_mask: jnp.ndarray | None,
+    eps: float,
+    glu_backend: str,
+    chunk_size: int | None,
+) -> jnp.ndarray:
+    """Row-block the pair transition, on local rows when a mesh is active.
+
+    SwiGLU widens the pair representation to ``4 * C_z`` twice before the
+    output projection reads the product, and leaving that widened form
+    unblocked made it the largest buffer in the context-parallel program: at
+    2,112 tokens on four devices it was ``f32[1115136, 512]``, 2,178 MiB, at 18
+    allocated sites -- *identically* under the 1-D layout (528 x 2112) and the
+    2-D one (1056 x 1056), because ``N/4 x N`` and ``N/2 x N/2`` are the same
+    area, so the square grid does not touch it.
+
+    Restoring the block on the *global* row axis does not recover that: a
+    128-row slice of a 4-way-sharded axis is not shard-aligned, so the
+    partitioner has to gather. The block therefore has to be taken inside the
+    shard, the way ``triangle_attention`` already runs its chunked row loop and
+    the way Boltz-2's ``_cp_pair_transition`` does it. Every op in the
+    transition is elementwise in the two token axes and contracts only over
+    channels, so a local tile is the whole computation for its own rows and
+    columns: no collective, and the same arithmetic per element that the
+    unblocked sharded program did -- the sharded blocked output is bitwise
+    equal to the *serial* blocked output in both layouts and in both dtypes,
+    where the unblocked sharded one was 3.8e-6 away from it at float32.
+
+    Measured by compiling the shipped program on four fake CPU devices at
+    2,112 tokens, all 18 full-tile widened buffers go to zero and are replaced
+    by the serial block width -- ``f32[270336, 512]``, 528 MiB, under 1-D and
+    ``f32[135168, 512]`` (128 x 1056), 264 MiB, under 2-D, with the bfloat16
+    twins halving alongside. The collective census is unchanged at both sizes
+    (1-D 175 -> 175, 2-D 640 -> 640): the block adds no communication.
+
+    Two things the block does *not* buy. It makes ``map_row_chunks``
+    materialise the local tile restacked into blocks, a new per-device tenant
+    of ``f32[5, 1, 128, 2112, 128]`` (660 MiB) under 1-D and
+    ``f32[9, 1, 128, 1056, 128]`` (594 MiB) under 2-D -- still a third of the
+    buffer it removes, and the serial program has always paid the same thing at
+    full width (``f32[17, 1, 128, 2112, 128]``, 2,240 MiB). And the CPU temp
+    arena *rises* 8-9%, which is the XLA-CPU packing artefact Boltz-2 recorded
+    from the same experiment: that backend merges blocks where it likes and
+    materialises the ones it keeps rather than fusing them. The per-device
+    shape is the part of a CPU partitioning probe that transfers; the arena is
+    not.
+    """
+
+    mesh = cp_mesh()
+    settings = {"eps": eps, "glu_backend": glu_backend}
+    if mesh is None:
+        return _swiglu_row_blocks(
+            params, z, pair_mask, chunk_size=chunk_size, **settings
+        )
+
+    rows, columns = cp_grid()
+    n_rows, n_columns = z.shape[-3], z.shape[-2]
+    # `shard_map` needs both sharded axes to divide the grid. The padded region
+    # is its own set of rows and columns, and the transition never mixes them
+    # with a kept one, so the padded output is sliced away unread.
+    row_pad, column_pad = (-n_rows) % rows, (-n_columns) % columns
+    local_rows = (n_rows + row_pad) // rows
+    if chunk_size is None or chunk_size <= 0 or chunk_size >= local_rows:
+        # A block at least as wide as the local tile would not block anything;
+        # asking for it on the global axis is what forces the gather, so the
+        # request is dropped rather than moved, leaving the sharded program
+        # exactly as it was.
+        return _swiglu_row_blocks(params, z, pair_mask, chunk_size=None, **settings)
+
+    operands = [z] if pair_mask is None else [z, pair_mask]
+    # The first token axis of each operand: `[..., N, N, C]` is at -3 and its
+    # mask `[..., N, N]` at -2, with the second token axis the next one along.
+    first_axes = [-3] if pair_mask is None else [-3, -2]
+    padded, specs = [], []
+    for array, first_axis in zip(operands, first_axes, strict=True):
+        row = first_axis % array.ndim
+        if row_pad or column_pad:
+            width = [(0, 0)] * array.ndim
+            width[row] = (0, row_pad)
+            width[row + 1] = (0, column_pad)
+            array = jnp.pad(array, width)
+        padded.append(array)
+        specs.append(pair_spec(array.ndim, row_axis=row, col_axis=row + 1))
+
+    def local(*sharded: jnp.ndarray) -> jnp.ndarray:
+        *arrays, params_local = sharded
+        return _swiglu_row_blocks(
+            params_local,
+            arrays[0],
+            arrays[1] if len(arrays) > 1 else None,
+            chunk_size=chunk_size,
+            **settings,
+        )
+
+    # Parameters go in as a replicated operand rather than a closure, as in
+    # `triangle_attention._triangle_attention_cp`: under a layer scan they are
+    # traced values, and an operand keeps the whole tree on the mesh.
+    out = jax.shard_map(
+        local,
+        mesh=mesh,
+        in_specs=(*specs, PartitionSpec()),
+        out_specs=specs[0],
+    )(*padded, params)
+    if row_pad:
+        out = jax.lax.slice_in_dim(out, 0, n_rows, axis=-3)
+    if column_pad:
+        out = jax.lax.slice_in_dim(out, 0, n_columns, axis=-2)
+    if row_pad or column_pad:
+        # Re-pinning the slice keeps the partitioner from answering the
+        # narrower shape with a replicated result.
+        out = shard_pair_rows(out)
+    return out
+
+
 def pair_block(
     z: jnp.ndarray,
     params: PairBlockParams,
@@ -177,15 +321,13 @@ def pair_block(
     """
     # Under context parallelism the pair representation is sharded along its
     # rows; pinning it here keeps every block of every stack -- trunk, MSA,
-    # template, confidence re-embedding -- on the same layout. The transition's
-    # row chunking is disabled in that mode: `map_row_chunks` is a `lax.map`
-    # over slices of the sharded axis, which the partitioner could only
-    # satisfy by gathering the whole tensor, and the sharding already divides
-    # the widened intermediate by the mesh size. Triangle attention keeps its
-    # chunk: its blocked loop runs *inside* the shard_map, on local rows,
-    # where it still bounds the score tensor.
+    # template, confidence re-embedding -- on the same layout. Both chunked
+    # stages keep their block in that mode, and both take it *inside* a
+    # `shard_map` on local rows: `map_row_chunks` on the global row axis is a
+    # `lax.map` over slices of the sharded axis, which the partitioner could
+    # only satisfy by gathering the whole tensor. Triangle attention's blocked
+    # loop already ran there; see `_pair_transition` for the transition's.
     z = shard_pair_rows(z)
-    transition_chunk = None if cp_mesh() is not None else chunk_size
     if tri_mul_first:
         z = tri_mul_out_in(z, params, pair_mask=pair_mask, eps=eps)
         z = tri_att_start_end(
@@ -213,28 +355,11 @@ def pair_block(
     # projection reads the product. Rows are independent, so ``chunk_size`` caps that
     # widened tensor without changing a value -- the same knob the triangle attention
     # above uses, and for the same reason.
-    if mask_transition:
-        return z + map_row_chunks(
-            lambda rows, mask: swiglu_transition(
-                rows,
-                params.pair_transition,
-                mask=mask,
-                eps=eps,
-                glu_backend=glu_backend,
-            ),
-            z,
-            pair_mask,
-            chunk_size=transition_chunk,
-            row_axes=(-3, -2),
-        )
-    return z + map_row_chunks(
-        lambda rows: swiglu_transition(
-            rows,
-            params.pair_transition,
-            mask=None,
-            eps=eps,
-            glu_backend=glu_backend,
-        ),
+    return z + _pair_transition(
         z,
-        chunk_size=transition_chunk,
+        params.pair_transition,
+        pair_mask=pair_mask if mask_transition else None,
+        eps=eps,
+        glu_backend=glu_backend,
+        chunk_size=chunk_size,
     )

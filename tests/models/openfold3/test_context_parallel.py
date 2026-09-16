@@ -1,11 +1,15 @@
 """Context parallelism must not change what OpenFold3 computes.
 
-The CP path re-routes triangle attention through ``shard_map``, disables the
-pair transition's row chunking, and re-shards around the pair block's own
-transposes, so the property to hold is numerical parity against the unsharded
-program on a mesh whose size does not divide the token count. A mesh needs more
-than one device and the device count is fixed at process start, so the parity
-checks run in a subprocess with four forced CPU devices.
+The CP path re-routes triangle attention through ``shard_map``, takes the pair
+transition's row chunk inside a ``shard_map`` of its own, and re-shards around
+the pair block's own transposes, so the property to hold is numerical parity
+against the unsharded program on a mesh whose size does not divide the token
+count. A mesh needs more than one device and the device count is fixed at
+process start, so the parity checks run in a subprocess with four forced CPU
+devices.
+
+``test_pair_transition_row_chunk_cp`` holds the transition's own memory
+property; this file holds the parity one.
 """
 
 from __future__ import annotations
