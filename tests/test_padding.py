@@ -551,7 +551,7 @@ def test_cp_mesh_rows_matches_the_layout_the_real_resolver_builds() -> None:
 
 
 def test_the_square_grid_auto_rule_is_the_layout_a_grid_port_resolves() -> None:
-    """The host-side rule the three grid ports' resolvers read for `auto`.
+    """The host-side rule the four grid ports' resolvers read for `auto`.
 
     Two properties: the count it calls square, and that feeding its answer back
     to the mesh-row rule gives the grid's side rather than one row per device.
@@ -990,4 +990,116 @@ def test_the_openfold3_adapter_aligns_padding_to_the_grid_it_will_build(
 
     # Two devices have no square, so the omitted layout is still rows there.
     two = _openfold3_aligned_padding(tmp_path, monkeypatch, {"cp_devices": 2})
+    assert cp_rows(two) == 2
+
+
+def _esmfold2_aligned_padding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: dict[str, object]
+) -> PaddingConfig:
+    """The padding config this port's adapter hands its own planner.
+
+    Like OpenFold3's, this adapter runs the port in-process rather than through
+    a native entry point, so the seam that is doubled is the planner itself:
+    it records the aligned profile and stops the run there, everything after it
+    needing the 939 MB checkpoint and a compilation. The language model is
+    switched off so the stub module never has to answer for it.
+    """
+
+    from types import SimpleNamespace
+
+    from foldjax.backends import esmfold2 as adapter
+
+    job = tmp_path / "job.json"
+    job.write_text(
+        json.dumps(
+            {
+                "name": "t",
+                "entities": [{"type": "protein", "id": ["A"], "sequence": "ACD"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    weights = tmp_path / "weights"
+    weights.mkdir(exist_ok=True)
+    model = SimpleNamespace(
+        has_language_model=False,
+        settings=SimpleNamespace(max_msa_depth=16, msa_n_layers=1, num_recycles=3),
+    )
+    seen: dict[str, PaddingConfig] = {}
+
+    class _StopError(Exception):
+        pass
+
+    def capture(_features, config, **_kwargs):
+        seen["padding"] = config
+        raise _StopError
+
+    modules = {
+        "foldjax.models.esmfold2.inference": SimpleNamespace(
+            MANAGED_AUXILIARY_OUTPUT_API=True,
+            LANGUAGE_MODEL_FEATURES=(),
+            load=lambda *args, **kwargs: model,
+            seed_key=lambda seed: seed,
+            build_job_features=lambda *args, **kwargs: {
+                "token_attention_mask": np.ones((1, 3), dtype=bool),
+                "atom_attention_mask": np.ones((1, 24), dtype=bool),
+                "msa_attention_mask": np.ones((1, 2, 3), dtype=bool),
+            },
+            language_model_states=lambda *args, **kwargs: pytest.fail(
+                "the disabled language model was evaluated"
+            ),
+            predict=lambda *args, **kwargs: pytest.fail("the model was run"),
+        ),
+        "foldjax.models.esmfold2.output": SimpleNamespace(),
+    }
+    monkeypatch.setattr(adapter, "import_module", lambda name: modules[name])
+    monkeypatch.setattr(adapter, "_padding_plan", capture)
+
+    with pytest.raises(_StopError):
+        adapter.ESMFold2Backend().predict(
+            PredictionRequest(
+                model="esmfold2",
+                input=job,
+                weights=weights,
+                output_dir=tmp_path / "out",
+                padding=True,
+                options={"no_language_model": True, **options},
+            )
+        )
+    return seen["padding"]
+
+
+def test_the_esmfold2_adapter_aligns_padding_to_the_grid_it_will_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The alignment follows the resolved layout, not the spelled one.
+
+    Four devices with an omitted layout are a 2x2 grid on this port, and a grid
+    aligns to its side: two rows, not one row per device. An explicit `1d`
+    still asks for the four-row mesh and gets its alignment, and an explicit
+    `2d` pads exactly as the omission does.
+    """
+
+    from foldjax.padding import cp_rows
+
+    omitted = _esmfold2_aligned_padding(tmp_path, monkeypatch, {"cp_devices": 4})
+    assert cp_rows(omitted) == 2
+
+    grid = _esmfold2_aligned_padding(
+        tmp_path, monkeypatch, {"cp_devices": 4, "cp_layout": "2d"}
+    )
+    assert cp_rows(grid) == 2
+
+    rows = _esmfold2_aligned_padding(
+        tmp_path, monkeypatch, {"cp_devices": 4, "cp_layout": "1d"}
+    )
+    assert cp_rows(rows) == 4
+
+    automatic = _esmfold2_aligned_padding(
+        tmp_path, monkeypatch, {"cp_devices": 4, "cp_layout": "auto"}
+    )
+    assert cp_rows(automatic) == 2
+
+    # Two devices have no square, so the omitted layout is still rows there.
+    two = _esmfold2_aligned_padding(tmp_path, monkeypatch, {"cp_devices": 2})
     assert cp_rows(two) == 2

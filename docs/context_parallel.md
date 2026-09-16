@@ -28,7 +28,7 @@ expected explicit collectives for the atom-window adapters.
 | Protenix | yes | yes | yes | Pair trunk and confidence pair path use the common pair core; the diffusion atom graph is distributed over CP rows (`cp_atom_windows`, default on) |
 | OpenDDE | yes | yes | yes | Structural-token refinement uses the Protenix pair primitives; its diffusion module calls the same Protenix denoiser with the atom graph distributed over CP rows (`cp_atom_windows`, default on), aligned on the *structural* token axis |
 | OpenFold3 | yes | yes | yes | Pair stack, template stack, confidence pair re-embedding; the diffusion atom graph is distributed over CP rows (`cp_atom_windows`, default on) with an index-driven ring gather instead of a halo |
-| ESMFold2 | yes | yes | no | Pair-row constraint path; the grid runs the shared Cannon schedule for the triangle contraction and blocks the pair transition inside the shard. This trunk has no triangle attention, so there is no ring to run; GPU rows are unmeasured, so `auto` keeps rows |
+| ESMFold2 | yes | yes | no | Pair-row constraint path; the grid runs the shared Cannon schedule for the triangle contraction and blocks the pair transition inside the shard. This trunk has no triangle attention, so there is no ring to run; at 3,012 tokens the grid is the only arm that finishes, so `auto` picks it on a square count |
 | AlphaFold3 | no | no | no | The vendored publisher runtime is not rewritten for FoldJAX CP |
 
 `cp_layout` chooses the mesh, and `auto` is resolved per port:
@@ -38,8 +38,8 @@ expected explicit collectives for the atom-window adapters.
 | OpenDDE | `2d` | `1d` |
 | Boltz-2 | `2d` | `1d` |
 | OpenFold3 | `2d` | `1d` |
+| ESMFold2 | `2d` | `1d` |
 | Protenix | `1d` | `1d` |
-| ESMFold2 | `1d` | `1d` |
 
 An explicit `1d` or `2d` is passed through unchanged on every port; `2d` on a
 non-square device count is refused rather than degraded to rows; and
@@ -49,16 +49,16 @@ topology, the out-of-memory diagnosis, and the compile-cache namespace the
 adapters write -- so an omitted layout shares a namespace with the explicit
 spelling that builds the same mesh, and the other spelling keeps its own.
 
-OpenDDE, Boltz-2 and OpenFold3 pick the grid because it is what fits on the
-four-card deployment node (4 x 96 GiB, 2x2 mesh). On a 2,096-token 5DEI,
-OpenDDE completes there at 32.1 GiB per device where the serial run, 1-D on
-two cards and 1-D on four cards all run out of memory, at 0.59-0.75 Å CA RMSD
-to the deposited structure against a 0.007 Å two-process floor. Boltz-2 runs
-at 16.6 GiB per device against 19.0 in the 1-D layout and 18.5 serial, with
-coordinates within 0.11 Å of its serial run on one sample and deposited RMSD
-unchanged to two decimals (0.44 0.43 0.42 0.47 0.43). Protenix measured the
-other way on the same node -- 11.6 GiB per device in the grid against 10.7 in
-the 1-D layout -- so it keeps rows.
+OpenDDE, Boltz-2, OpenFold3 and ESMFold2 pick the grid on the strength of the
+same four-card deployment node (4 x 96 GiB, 2x2 mesh), each on its own target.
+On a 2,096-token 5DEI, OpenDDE completes there at 32.1 GiB per device where the
+serial run, 1-D on two cards and 1-D on four cards all run out of memory, at
+0.59-0.75 Å CA RMSD to the deposited structure against a 0.007 Å two-process
+floor. Boltz-2 runs at 16.6 GiB per device against 19.0 in the 1-D layout and
+18.5 serial, with coordinates within 0.11 Å of its serial run on one sample and
+deposited RMSD unchanged to two decimals (0.44 0.43 0.42 0.47 0.43). Protenix
+measured the other way on the same node -- 11.6 GiB per device in the grid
+against 10.7 in the 1-D layout -- so it keeps rows.
 
 **OpenFold3's row is a completion where nothing else completes.** Its target
 is a 6,568-token one -- eight 821-residue chains -- and at that size a single
@@ -78,30 +78,39 @@ for OpenFold3 and its wall time at ordinary sizes is unmeasured** -- there is
 no 2,096-token row yet -- and it is chosen for the memory ceiling per the
 project rule, the same trade the other two ports take.
 
-**ESMFold2's grid is implemented and unmeasured.** Both pair axes go on the
-mesh, the triangle contraction runs the same Cannon schedule as the other pair
-cores, and the pair transition takes its row block inside the shard; its trunk
-has no triangle attention, so the ring schedule the other ports need has
-nothing to run here. What is checked is the arithmetic and the partitioning, on
-forced CPU meshes: the pair trunk and the MSA encoder block agree with the
-unsharded program to 1.1e-5 on a 2x2 grid and 1.8e-5 on a 3x3 one against a
-3e-5 tolerance, a device holds `(N/side)^2` of the pair state, and the
-partitioned trunk contains no `all-gather` and no value carrying both token
-axes at full width. What is *not* checked is a card: no per-device peak and no
-wall time have been measured for this port in either layout, which is why
-`auto` stays on rows here and the grid is opt-in. The arena the grid is meant
-to quarter is a single one -- a folding-trunk pair tensor, quadratic in the
-token count and with no sample axis in it -- and serial runs out of memory at
-3,012 tokens on 96 GiB, so this is the port where the ceiling should move; that
-sentence is a prediction until the rows exist.
+**ESMFold2's grid is the only arm that finishes, and it is not slower.** Both
+pair axes go on the mesh, the triangle contraction runs the same Cannon
+schedule as the other pair cores, and the pair transition takes its row block
+inside the shard; its trunk has no triangle attention, so the ring schedule the
+other ports need has nothing to run here. The arena the grid quarters is a
+single one -- a folding-trunk pair tensor, quadratic in the token count and
+with no sample axis in it -- and a serial run exhausts 96 GiB at 3,012 tokens.
+On the four-card node at that size the grid completed both benchmark passes in
+30 minutes: 772 s and 23,430 MiB per device for five structures. The 1-D layout
+on the same four cards did not finish a single pass in one to two hours, at
+3,012 tokens or at 4,100, so **the comparison here is not a peak against a
+peak, it is a completion against a wall clock that ran out** -- there is no 1-D
+number to quote at either size. The mechanism is this trunk's own: the
+language-model encoder's pair stack keeps a dense einsum and an all-reduce
+under the row mesh, which the Cannon schedule replaces with half-width tiles.
+Alongside the card, the arithmetic and the partitioning are checked on forced
+CPU meshes: the pair trunk and the MSA encoder block agree with the unsharded
+program to 1.1e-5 on a 2x2 grid and 1.8e-5 on a 3x3 one against a 3e-5
+tolerance, a device holds `(N/side)^2` of the pair state, and the partitioned
+trunk contains no `all-gather` and no value carrying both token axes at full
+width.
 
-**The grid is the slower program.** Boltz-2 at 2,096 tokens costs about 3.5x
-the serial wall time in it, and the 1-D layout is not free either; the
-OpenFold3 figure at that size is not measured at all. The layout
-is chosen for the memory ceiling and nothing else, which is what context
-parallelism is for here: fitting targets that otherwise do not run. On a square
-device count where the job already fits and wall time is what matters, ask for
-`1d` explicitly.
+**The grid is the slower program everywhere it has been timed except
+ESMFold2.** Boltz-2 at 2,096 tokens costs about 3.5x the serial wall time in
+it, and the 1-D layout is not free either; the OpenFold3 figure at that size
+is not measured at all. On those ports the layout is chosen for the memory
+ceiling and nothing else, which is what context parallelism is for here:
+fitting targets that otherwise do not run, so on a square device count where
+the job already fits and wall time is what matters, ask for `1d` explicitly.
+**ESMFold2 is the exception**: at 3,012 tokens its 1-D arm is the one that does
+not finish, so asking for `1d` there buys nothing -- see its paragraph above.
+Below the sizes that need a mesh at all, no ESMFold2 wall-time comparison
+between the two layouts has been recorded either way.
 
 `cp_layout` is not the only default a mesh moves. A mesh is asked for because a
 target does not otherwise fit, so under one a capacity-first default beats a
@@ -654,11 +663,16 @@ the grid runs a job the other layouts do not, and it is slower. OpenFold3's
 target: the grid's per-device peak is recorded and the run completes, while
 the arms item 1 would compare it against -- serial, and 1-D on four cards --
 both run out of memory there, so there is no parity comparison to make at that
-size and no wall-time comparison either. Everything else on the list is open,
-for every port: 8 GPUs, multi-node, other targets and token counts, and the
-run-to-run determinism reservation recorded in `PROJECT.md`. Protenix has the
-measurement and it went the other way. No default moves without its own
-numbers.
+size and no wall-time comparison either. ESMFold2's `auto = 2d` rests on
+**item 2 only** as well, on the same node and one 3,012-token target, and for
+a different reason: the grid's per-device peak and wall time are recorded
+(23,430 MiB, 772 s per pass) and both passes complete, while serial runs out
+of 96 GiB and the 1-D arm on four cards was still in its first pass after one
+to two hours, so neither arm produced coordinates to compare against or a
+latency to compare with. Everything else on the list is open, for every port:
+8 GPUs, multi-node, other targets and token counts, and the run-to-run
+determinism reservation recorded in `PROJECT.md`. Protenix has the measurement
+and it went the other way. No default moves without its own numbers.
 
 For Boltz-2, Protenix, OpenDDE and OpenFold3, the pair trunk scales over both
 two-dimensional mesh axes, while atom windows scale over CP rows and are

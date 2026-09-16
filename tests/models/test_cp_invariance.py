@@ -449,19 +449,29 @@ _NON_VACUOUS_PROBE = _PREAMBLE + textwrap.dedent(
 _PORT_AUTO_LAYOUT_PROBE = _PREAMBLE + textwrap.dedent(
     r"""
     # What `cp_layout="auto"` actually builds, per port, read from each port's
-    # own resolver rather than from a copy of the rule. OpenDDE, Boltz-2 and
-    # OpenFold3 pick the square grid on a perfect-square device count, each on
-    # its own four-card measurement (4 x 96 GiB, 2x2). A 2,096-token 5DEI
-    # completes at 32.1 GiB per device on OpenDDE where serial, 1-D on two
-    # cards and 1-D on four cards all run out of memory, and at 16.6 GiB on
-    # Boltz-2 against 19.0 in the 1-D layout. OpenFold3's target is a
-    # 6,568-token one: the grid completes it at 42,209 MiB per device where a
-    # single card runs out of memory and 1-D on four cards runs out on every
-    # rank, each asking for a 101 GiB arena. Protenix measured better on the
-    # 1-D mesh there (10.7 against 11.6 GiB per device), so it keeps rows. The
-    # grid is the slower program, chosen for the memory ceiling.
+    # own resolver rather than from a copy of the rule. OpenDDE, Boltz-2,
+    # OpenFold3 and ESMFold2 pick the square grid on a perfect-square device
+    # count, each on its own four-card measurement (4 x 96 GiB, 2x2). A
+    # 2,096-token 5DEI completes at 32.1 GiB per device on OpenDDE where
+    # serial, 1-D on two cards and 1-D on four cards all run out of memory,
+    # and at 16.6 GiB on Boltz-2 against 19.0 in the 1-D layout. OpenFold3's
+    # target is a 6,568-token one: the grid completes it at 42,209 MiB per
+    # device where a single card runs out of memory and 1-D on four cards runs
+    # out on every rank, each asking for a 101 GiB arena. ESMFold2's is a
+    # 3,012-token one, where serial exhausts 96 GiB: the grid completed both
+    # benchmark passes in 30 minutes (772 s, 23,430 MiB per device, five
+    # structures) while the 1-D layout finished no pass in one to two hours,
+    # at 3,012 tokens or at 4,100 -- its language-model encoder trunk keeps a
+    # dense einsum and an all-reduce that Cannon avoids. Protenix measured
+    # better on the 1-D mesh there (10.7 against 11.6 GiB per device), so it
+    # keeps rows. For the first three ports the grid is the slower program,
+    # chosen for the memory ceiling; on ESMFold2 it is the only arm that
+    # finishes.
     from foldjax.models._cp import resolve_cp_layout as shared_resolver
     from foldjax.models.boltz2.api import _resolve_cp_layout as boltz2_resolver
+    from foldjax.models.esmfold2.inference import (
+        _resolve_cp_layout as esmfold2_resolver,
+    )
     from foldjax.models.opendde.models.model import (
         _resolve_cp_layout as opendde_resolver,
     )
@@ -489,6 +499,7 @@ _PORT_AUTO_LAYOUT_PROBE = _PREAMBLE + textwrap.dedent(
         "opendde": opendde_resolver,
         "boltz2": boltz2_resolver,
         "openfold3": openfold3,
+        "esmfold2": esmfold2_resolver,
     }
     ROW_PORTS = {
         # Protenix hands `auto` to `context_parallel` unexpanded, so the
@@ -498,7 +509,10 @@ _PORT_AUTO_LAYOUT_PROBE = _PREAMBLE + textwrap.dedent(
     GRID_IDENTITY = ("2d", DEVICES, (2, 2), (CP_ROW_AXIS, CP_COL_AXIS))
     ROW_IDENTITY = ("1d", DEVICES, (DEVICES, 1), (CP_AXIS,))
 
-    # The rule, including counts this four-device process cannot build.
+    # The rule, including counts this four-device process cannot build. Nine
+    # is one of them and stays: a rule that read "four" rather than "a perfect
+    # square" would pass every other row here, and every grid port has to
+    # answer 3x3 for the same count.
     for devices, grid in ((1, "1d"), (2, "1d"), (3, "1d"), (4, "2d"), (9, "2d")):
         assert square_grid_auto_layout(devices) == grid, devices
         for name, resolver in GRID_PORTS.items():
@@ -616,8 +630,8 @@ def test_both_layouts_lower_to_their_own_sharded_program() -> None:
 def test_each_port_resolves_auto_to_the_mesh_it_has_evidence_for() -> None:
     """`auto` is a per-port decision, and this is where it is pinned.
 
-    OpenDDE, Boltz-2 and OpenFold3 resolve it to the square grid on a
-    perfect-square device count, Protenix to the row mesh, every port to the
+    OpenDDE, Boltz-2, OpenFold3 and ESMFold2 resolve it to the square grid on
+    a perfect-square device count, Protenix to the row mesh, every port to the
     row mesh on a non-square count, and a one-device request to the serial
     program everywhere. Read from the ports' own resolvers and then from the
     mesh those answers build, because a rule that agreed with itself while

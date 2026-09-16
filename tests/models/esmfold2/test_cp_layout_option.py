@@ -1,19 +1,24 @@
 """`cp_layout` on ESMFold2: what `auto` means, and what each spelling records.
 
-Three things can disagree here and none of them is visible in the other two.
-The port resolves the alias (`models/esmfold2/inference._resolve_cp_layout`),
-the adapter resolves it again while a request is still being planned on the
-host, because that path must not import JAX
-(`backends/esmfold2._resolved_cp_layout`), and the compile profile records what
-runs. A copy of a rule is a place it can drift, so the two resolvers are read
-against each other rather than each against a table of strings.
+Four things can disagree here and none of them is visible in the others. The
+port resolves the alias (`models/esmfold2/inference._resolve_cp_layout`); the
+adapter resolves it twice more while a request is still being planned on the
+host, because that path must not import JAX -- once for the compile profile
+(`backends/base.square_grid_cp_layout`) and once for the padding alignment,
+which reads `padding.square_grid_auto_layout` directly; and the compile profile
+records what runs. A copy of a rule is a place it can drift, so the resolvers
+are read against each other rather than each against a table of strings. The
+padding copy is pinned in `tests/test_padding.py`, against the shapes it
+produces rather than the string it returns.
 
-`auto` is the row mesh on this port. The square grid is implemented and
-checked against the serial trunk in `test_context_parallel.py`, but nothing
-has measured a per-device peak or a wall time for it on a card; OpenDDE and
-Boltz-2 resolve `auto` to the grid because they have that measurement. The
-test below is where that decision is pinned, so flipping it means coming here
-with a number.
+`auto` is the square grid on a perfect-square device count here, the rule
+OpenDDE, Boltz-2 and OpenFold3 also resolve. What decided it is the four-card
+deployment node (4 x 96 GiB, 2x2): at 3,012 tokens, where a serial run
+exhausts 96 GiB, the grid completed both benchmark passes in 30 minutes --
+772 s and 23,430 MiB per device for five structures -- while the 1-D layout on
+the same four cards finished no pass in one to two hours, at 3,012 tokens or
+at 4,100. The tests below are where that decision is pinned, so flipping it
+back means coming here with a number.
 """
 
 from __future__ import annotations
@@ -24,12 +29,9 @@ import textwrap
 
 import pytest
 
-from foldjax.backends.esmfold2 import (
-    _FIXED_COMPILE_DEFAULTS,
-    ESMFold2Backend,
-    _resolved_cp_layout,
-)
-from foldjax.padding import cp_mesh_rows
+from foldjax.backends.base import square_grid_cp_layout
+from foldjax.backends.esmfold2 import _FIXED_COMPILE_DEFAULTS, ESMFold2Backend
+from foldjax.padding import cp_mesh_rows, square_grid_auto_layout
 from foldjax.schema import PredictionRequest
 from tests.models.cp_probe_env import inherited_environment
 
@@ -56,18 +58,21 @@ def profile_of(tmp_path):
     return build
 
 
-def test_auto_is_the_row_mesh_on_every_device_count() -> None:
+def test_auto_is_the_grid_on_a_square_count_and_rows_otherwise() -> None:
     """The port's own resolver, not a copy of the rule.
 
-    Including the perfect squares, which is the whole content of the decision:
-    on four devices this port answers `1d` where OpenDDE, Boltz-2 and
-    OpenFold3 answer `2d`.
+    The perfect squares are the whole content of the decision: on four devices
+    this port now answers `2d`, as OpenDDE, Boltz-2 and OpenFold3 do. An
+    explicit `1d` is untouched by that on every count, which is what keeps a
+    job that already fits on the faster layout.
     """
 
     from foldjax.models.esmfold2.inference import _resolve_cp_layout
 
+    expected = {1: "1d", 2: "1d", 3: "1d", 4: "2d", 8: "1d", 9: "2d", 16: "2d"}
+    assert set(expected) == set(_COUNTS)
     for devices in _COUNTS:
-        assert _resolve_cp_layout("auto", devices) == "1d", devices
+        assert _resolve_cp_layout("auto", devices) == expected[devices], devices
         assert _resolve_cp_layout("1d", devices) == "1d", devices
 
 
@@ -85,9 +90,11 @@ def test_the_adapter_and_the_port_resolve_one_rule() -> None:
     """The plan-time copy must answer what the run-time resolver builds.
 
     The adapter cannot call the port's resolver -- that would pull JAX into
-    option planning -- so it carries the rule, and this is what keeps the two
-    from drifting. The adapter answers `None` wherever there is no grid to
-    name, which is every case the port answers `1d` for.
+    option planning -- so it shares the grid ports' host-side copy of the
+    rule, and this is what keeps the two from drifting. The adapter answers
+    `None` only where there is no mesh at all, which is the serial request:
+    with the flip, every distributed run has a resolved layout to record,
+    whichever mesh it builds.
     """
 
     from foldjax.models.esmfold2.inference import _resolve_cp_layout
@@ -100,10 +107,10 @@ def test_the_adapter_and_the_port_resolve_one_rule() -> None:
                 # A refusal the adapter reports through
                 # `validate_native_options` instead; checked below.
                 continue
-            adapter = _resolved_cp_layout(
+            adapter = square_grid_cp_layout(
                 {"cp_devices": devices, "cp_layout": layout}
             )
-            expected = "2d" if resolved == "2d" and devices > 1 else None
+            expected = None if devices <= 1 else resolved
             assert adapter == expected, (devices, layout, adapter)
 
 
@@ -115,32 +122,45 @@ def test_a_malformed_device_count_keeps_its_own_namespace() -> None:
     """
 
     for devices in (True, "4", 4.0, None):
-        assert _resolved_cp_layout({"cp_devices": devices, "cp_layout": "2d"}) is None
+        assert square_grid_cp_layout({"cp_devices": devices, "cp_layout": "2d"}) is None
 
 
-def test_the_row_mesh_keeps_the_namespace_every_recorded_run_has(
-    profile_of,
-) -> None:
-    """Omitted, `auto` and `1d` are one program and one cache namespace.
+def test_every_distributed_run_records_the_mesh_it_resolves(profile_of) -> None:
+    """Omitted, `auto` and the spelling they resolve to are one namespace.
 
-    They have to be: `auto` resolves to the row mesh here, so the three
-    spellings build the same mesh and trace the same graph. Splitting them
-    would move every namespace recorded before `cp_layout` existed.
+    On four devices that spelling is `2d`, so the omission now shares the
+    grid's namespace and an explicit `1d` keeps its own -- the reverse of what
+    this port aliased before the flip. On two devices, which have no square,
+    the omission resolves to `1d` and is recorded as `1d`: that namespace
+    moves too, because this adapter used to record nothing for a resolved row
+    mesh. Both are a distributed compile cache going cold once; a serial run
+    names no layout and keeps every namespace it ever wrote.
     """
 
-    baseline = profile_of(cp_devices=4)
-    assert "cp_layout" not in baseline, baseline
-    assert profile_of(cp_devices=4, cp_layout="auto") == baseline
-    assert profile_of(cp_devices=4, cp_layout="1d") == baseline
+    grid = profile_of(cp_devices=4)
+    assert grid["cp_layout"] == "2d", grid
+    assert profile_of(cp_devices=4, cp_layout="auto") == grid
+    assert profile_of(cp_devices=4, cp_layout="2d") == grid
+    rows = profile_of(cp_devices=4, cp_layout="1d")
+    assert rows["cp_layout"] == "1d", rows
+    assert rows != grid
+
+    two = profile_of(cp_devices=2)
+    assert two["cp_layout"] == "1d", two
+    assert profile_of(cp_devices=2, cp_layout="auto") == two
+    assert profile_of(cp_devices=2, cp_layout="1d") == two
+
     assert "cp_layout" not in profile_of(), "a serial run names no layout"
+    assert "cp_layout" not in profile_of(cp_layout="auto")
+    assert "cp_layout" not in profile_of(cp_layout="1d")
 
 
 def test_the_grid_is_recorded_resolved(profile_of) -> None:
-    """The grid is a different program, so it is a different namespace."""
+    """The grid is a different program from the row mesh, so it is its own."""
 
     grid = profile_of(cp_devices=4, cp_layout="2d")
     assert grid["cp_layout"] == "2d", grid
-    assert grid != profile_of(cp_devices=4)
+    assert grid != profile_of(cp_devices=4, cp_layout="1d")
     assert profile_of(cp_devices=9, cp_layout="2d")["cp_layout"] == "2d"
 
 
@@ -185,9 +205,12 @@ def test_the_grid_pads_tokens_to_one_side_of_the_mesh() -> None:
     assert cp_mesh_rows(4, "1d") == 4
     assert cp_mesh_rows(4, "2d") == 2
     assert cp_mesh_rows(9, "2d") == 3
-    # An omitted layout is the row mesh in that helper as well, which is what
-    # makes passing this port's `auto` through it correct rather than lucky.
+    # `auto` is still the row mesh *in that helper*, which is why the adapter
+    # no longer hands it one: it resolves the alias itself before asking for
+    # an alignment, so an omitted layout on four devices aligns to the grid's
+    # two rows rather than to four.
     assert cp_mesh_rows(4, "auto") == 4
+    assert cp_mesh_rows(4, square_grid_auto_layout(4)) == 2
 
 
 _MESH_PROBE = textwrap.dedent(
@@ -205,13 +228,16 @@ _MESH_PROBE = textwrap.dedent(
 
     assert jax.device_count() == 4, jax.devices()
 
-    # The mesh each answer builds, not just the string it is.
+    # The mesh each answer builds, not just the string it is. Four devices
+    # are a 2x2 grid here unless an explicit `1d` asks otherwise, so `auto`
+    # and `2d` build one mesh and `1d` builds the other.
+    GRID = ("2d", 4, (2, 2), (CP_ROW_AXIS, CP_COL_AXIS))
     with context_parallel(4, layout=_resolve_cp_layout("auto", 4)):
-        assert cp_identity() == ("1d", 4, (4, 1), (CP_AXIS,)), cp_identity()
+        assert cp_identity() == GRID, cp_identity()
     with context_parallel(4, layout=_resolve_cp_layout("2d", 4)):
-        assert cp_identity() == (
-            "2d", 4, (2, 2), (CP_ROW_AXIS, CP_COL_AXIS),
-        ), cp_identity()
+        assert cp_identity() == GRID, cp_identity()
+    with context_parallel(4, layout=_resolve_cp_layout("1d", 4)):
+        assert cp_identity() == ("1d", 4, (4, 1), (CP_AXIS,)), cp_identity()
 
     # The static argument and the ambient mesh are one decision, and the guard
     # is what says so. Both directions: a grid executable served from a row

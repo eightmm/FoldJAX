@@ -234,6 +234,52 @@ def test_esmfold2_unproven_defaults_and_lookalikes_stay_distinct(
     assert resolve_cache_dir(changed, backend) != resolve_cache_dir(omitted, backend)
 
 
+def test_esmfold2_records_the_context_parallel_mesh_it_resolves(
+    tmp_path: Path,
+) -> None:
+    """Four devices are a 2x2 grid here unless `1d` asks otherwise.
+
+    So an omitted layout and an explicit `2d` are one namespace and an
+    explicit `1d` is another -- the reverse of what this port used to alias.
+    Two devices have no square, so there the omitted layout is rows, and it is
+    recorded as rows: this adapter used to record nothing for a resolved row
+    mesh, which is why that namespace moves as well. A serial run still names
+    no layout at all.
+    """
+
+    backend = ESMFold2Backend()
+    request = dataclasses.replace(
+        _request(tmp_path), model="esmfold2", input_format="foldjax"
+    )
+    omitted = dataclasses.replace(request, options={"cp_devices": 4})
+    automatic = dataclasses.replace(
+        request, options={"cp_devices": 4, "cp_layout": "auto"}
+    )
+    rows = dataclasses.replace(request, options={"cp_devices": 4, "cp_layout": "1d"})
+    grid = dataclasses.replace(request, options={"cp_devices": 4, "cp_layout": "2d"})
+    two_omitted = dataclasses.replace(request, options={"cp_devices": 2})
+    two_rows = dataclasses.replace(
+        request, options={"cp_devices": 2, "cp_layout": "1d"}
+    )
+
+    assert backend.cache_profile(automatic)["cp_layout"] == "2d"
+    assert backend.cache_profile(automatic) == backend.cache_profile(omitted)
+    assert backend.cache_profile(automatic) == backend.cache_profile(grid)
+    assert backend.cache_profile(rows)["cp_layout"] == "1d"
+    assert resolve_cache_dir(automatic, backend) == resolve_cache_dir(grid, backend)
+    assert resolve_cache_dir(automatic, backend) != resolve_cache_dir(rows, backend)
+
+    assert backend.cache_profile(two_omitted)["cp_layout"] == "1d"
+    assert resolve_cache_dir(two_omitted, backend) == resolve_cache_dir(
+        two_rows, backend
+    )
+    assert resolve_cache_dir(two_omitted, backend) != resolve_cache_dir(
+        automatic, backend
+    )
+
+    assert "cp_layout" not in backend.cache_profile(request)
+
+
 def test_alphafold3_managed_defaults_share_the_omitted_cache_namespace(
     tmp_path: Path,
 ) -> None:

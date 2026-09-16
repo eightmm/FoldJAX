@@ -50,6 +50,7 @@ from foldjax.backends.base import (
     MATMUL_PRECISION_OPTION,
     SAMPLING_OPTIONS,
     Backend,
+    square_grid_cp_layout,
     validate_memory_policy_options,
 )
 from foldjax.execution import DETERMINISTIC_API_OPTION
@@ -61,6 +62,7 @@ from foldjax.padding import (
     cp_aligned_padding,
     resolve_axis,
     resolve_token_axis,
+    square_grid_auto_layout,
 )
 from foldjax.schema import (
     InputRequirement,
@@ -87,9 +89,10 @@ DEFAULTS = {
 _FIXED_COMPILE_DEFAULTS = {
     "cp_devices": 1,
     # The mesh alias, whose resolution is this port's own rule rather than a
-    # checkpoint value: `auto` is the row mesh here, because no per-device GPU
-    # measurement of the square grid exists for ESMFold2 yet. `cache_profile`
-    # strips the explicit `1d` beside it and records a resolved `2d`.
+    # checkpoint value: `auto` is the square grid on a perfect-square device
+    # count and the row mesh on every other one, on the four-card measurement
+    # `models/esmfold2/inference._resolve_cp_layout` records. `cache_profile`
+    # strips the spelling and records what the request resolves to.
     "cp_layout": "auto",
     "no_language_model": False,
     "max_msa_depth": DEFAULTS["max_msa_depth"],
@@ -109,32 +112,10 @@ _FIXED_COMPILE_DEFAULTS = {
 #: The layouts `cp_layout` accepts, and the resolution of an omitted one.
 #: `foldjax.models._cp.resolve_cp_layout` is the authority for both, but it
 #: imports JAX, and this module keeps option planning free of the model
-#: runtime; the port passes `auto="1d"` to that resolver, which is the rule
-#: `_resolved_cp_layout` below reproduces and a test pins them together.
+#: runtime; the port passes `auto=padding.square_grid_auto_layout(n)` to that
+#: resolver, which is the rule `base.square_grid_cp_layout` reproduces on the
+#: host for every grid port, and a test pins the two together.
 _CP_LAYOUTS = ("auto", "1d", "2d")
-
-
-def _resolved_cp_layout(options: Mapping[str, Any]) -> str | None:
-    """The grid this request builds, or ``None`` when it builds no grid.
-
-    ``None`` for a serial request, for a ``cp_devices`` this adapter cannot
-    read as a device count -- a malformed count then keeps its own cache
-    namespace rather than borrowing a resolved one, and the port itself
-    reports the value -- and for every request that runs on the row mesh,
-    which is the namespace every recorded ESMFold2 run already has.
-
-    This is deliberately *not* `backends/base.square_grid_cp_layout`: that
-    resolves ``auto`` through `padding.square_grid_auto_layout`, which is
-    OpenDDE's and Boltz-2's rule and rests on their per-device measurements
-    on the four-card node. ESMFold2 has none yet, so its ``auto`` stays the
-    row mesh and the grid is opt-in.
-    """
-
-    devices = options.get("cp_devices", 1)
-    if isinstance(devices, bool) or not isinstance(devices, int) or devices <= 1:
-        return None
-    layout = str(options.get("cp_layout", "auto"))
-    return "2d" if layout == "2d" else None
 
 
 #: The values `glu_backend` accepts, named here from the adapters' shared copy
@@ -986,12 +967,15 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # Read before the strip, because the strip removes both values it
         # depends on: an omitted `cp_devices` is the fixed default and an
         # omitted `cp_layout` never entered the profile at all.
-        resolved_cp_layout = _resolved_cp_layout(profile)
+        resolved_cp_layout = square_grid_cp_layout(profile)
         self._strip_released_defaults(profile, _FIXED_COMPILE_DEFAULTS)
-        # An explicit `1d` is the alias of the omitted layout on this port --
-        # `auto` resolves to the row mesh here -- so it names the namespace
-        # every recorded ESMFold2 run already has. Only the grid is recorded,
-        # and only for a request with a mesh to build it on.
+        # Every distributed run records the layout it resolved rather than the
+        # one it spelled: `auto` is the square grid on a perfect-square device
+        # count here (`models/esmfold2/inference._resolve_cp_layout`), so on
+        # four devices an omitted layout and an explicit `2d` are one program
+        # and an explicit `1d` is another. A serial run keeps the alias it had
+        # -- the layout decides nothing without a mesh -- so no namespace a
+        # one-device run ever wrote moves.
         self._strip_released_defaults(profile, {"cp_layout": "1d"})
         if resolved_cp_layout is not None:
             profile["cp_layout"] = resolved_cp_layout
@@ -1129,7 +1113,8 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # Popped whether or not it is spelled, because the padding alignment
         # below needs the layout this run builds and `options` is emptied by
         # the leftover check. `auto` is left unspelled in the overrides for
-        # the usual reason: the port's own default is already the row mesh.
+        # the usual reason: it is the port's own default, and the port applies
+        # exactly the rule this adapter resolves for the padding below.
         cp_layout = _checked_cp_layout(
             options.pop("cp_layout", "auto"),
             devices=options.get("cp_devices", 1),
@@ -1273,17 +1258,30 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                     else None
                 )
                 if request.padding is not None:
+                    cp_padding_devices = int(overrides.get("cp_shards", 1))
+                    cp_padding_layout = (
+                        square_grid_auto_layout(cp_padding_devices)
+                        if cp_layout == "auto"
+                        else cp_layout
+                    )
                     padding_plan = _padding_plan(
                         model_features,
                         # The mesh this run will build decides what its
                         # automatic token and atom targets have to divide.
                         # The row mesh divides by every shard; the square grid
                         # divides each pair axis by one side, so the layout has
-                        # to travel with the count rather than be assumed.
+                        # to travel with the count rather than be assumed --
+                        # and resolved rather than as spelled, because an
+                        # omitted layout builds the grid on a perfect-square
+                        # count here and a grid aligns to its side. The rule
+                        # is read on the host for the reason
+                        # `padding.square_grid_auto_layout` records, and a
+                        # probe pins this copy against the port's own resolver
+                        # (`tests/models/test_cp_invariance.py`).
                         cp_aligned_padding(
                             request.padding,
-                            cp_devices=int(overrides.get("cp_shards", 1)),
-                            cp_layout=cp_layout,
+                            cp_devices=cp_padding_devices,
+                            cp_layout=cp_padding_layout,
                         ),
                         max_msa_depth=active_msa_depth,
                         language_model_tokens=lm_tokens,

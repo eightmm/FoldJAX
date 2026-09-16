@@ -97,14 +97,14 @@ unless it says so here, in its own paragraph.
 
   This is the port where the grid should matter most: its peak is one
   folding-trunk pair arena, quadratic in the token count with no sample axis in
-  it, and a serial run leaves 96 GiB at 3,012 tokens. That is a prediction, not
-  a measurement -- no per-device peak or wall time has been recorded for either
-  ESMFold2 layout on a card, which is why `cp_layout=auto` and an omitted
-  layout both stay on the row mesh here, where OpenDDE, Boltz-2 and OpenFold3
-  resolve `auto` to the grid on the strength of their own four-card rows. What
-  is measured is on forced CPU meshes: the pair trunk and the MSA encoder block
-  agree with the unsharded program to 1.1e-5 on a 2x2 grid and 1.8e-5 on a 3x3
-  one against a 3e-5 tolerance, and the partitioned trunk carries no
+  it, and a serial run leaves 96 GiB at 3,012 tokens. That was a prediction
+  when this landed -- no per-device peak or wall time had been recorded for
+  either ESMFold2 layout on a card, so `cp_layout=auto` stayed on the row mesh
+  and the grid was opt-in. The four-card measurement arrived later in the same
+  release and `auto` moved with it; the Changed entry above is that flip. What
+  was measured here is on forced CPU meshes: the pair trunk and the MSA encoder
+  block agree with the unsharded program to 1.1e-5 on a 2x2 grid and 1.8e-5 on
+  a 3x3 one against a 3e-5 tolerance, and the partitioned trunk carries no
   `all-gather`. The 3x3 arm is the one that can see a mis-paired ring at all: a
   2x2 grid passes every sign error there is, because `(x + 1) % 2` and
   `(x - 1) % 2` are the same hop, and the suite keeps that arm to say so.
@@ -113,9 +113,10 @@ unless it says so here, in its own paragraph.
   before and after: identical optimized HLO modulo source locations, and
   `temp_size_in_bytes` unchanged to the byte (trunk 73,728 serial and 22,624
   1-D; MSA encoder block 80,384 and 25,952, on the two-layer CPU fixture at 16
-  tokens). An omitted layout, `auto` and an explicit `1d` name one compile-cache
-  namespace, which is the namespace every recorded ESMFold2 context-parallel
-  run already has; only `2d` is recorded, resolved, and forks the executable.
+  tokens). When this landed, an omitted layout, `auto` and an explicit `1d`
+  named one compile-cache namespace and only `2d` was recorded; the Changed
+  entry above moved both, because an omitted layout on a square count is now
+  the grid and every distributed run records the mesh it resolved.
 
 ### Fixed
 
@@ -196,13 +197,53 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **`cp_layout=auto` builds the square grid on ESMFold2 when the device count
+  is a perfect square.** Four cards are a 2x2 mesh there unless `cp_layout=1d`
+  asks otherwise; nine are 3x3. Every other count stays one-dimensional, an
+  explicit `1d`/`2d` is unchanged, `cp_devices=1` is the serial program it
+  always was, and Protenix keeps `auto = 1d`. This is the rule OpenDDE,
+  Boltz-2 and OpenFold3 already follow, applied to the fourth port that now has
+  its own four-card numbers.
+
+  What held this on rows was that the grid had no GPU measurement for this
+  port. It has one, and unlike the other three ports the grid is not a slower
+  program bought for a ceiling -- **it is the only arm that finishes.** On the
+  four-card deployment node (4 x 96 GiB, 2x2) a 3,012-token target, where a
+  serial run exhausts 96 GiB, completed both benchmark passes in the grid in
+  30 minutes: 772 s and 23,430 MiB per device for five structures. The 1-D
+  layout on the same four cards did not finish a single pass in one to two
+  hours, at 3,012 tokens or at 4,100. So there is no 1-D peak or wall time to
+  quote against those figures at either size -- what is recorded is a
+  completion against an arm that ran out of clock. The mechanism is this
+  trunk's own: the language-model encoder's pair stack keeps a dense einsum and
+  an all-reduce under the row mesh, which the Cannon schedule replaces with
+  half-width tiles.
+
+  Two consequences to expect, and they are wider here than on the other ports.
+  Every *distributed* run now records the layout it resolved, where this
+  adapter used to record nothing for a resolved row mesh: on a square count the
+  namespace an omitted layout writes is the one an explicit `2d` writes, and on
+  a non-square count an omitted layout now writes `1d` where it wrote no layout
+  key at all. Both are a warm distributed compile cache going cold once. Serial
+  runs are untouched -- they still name no layout, so every one-card namespace
+  is the one it was. And automatic padding follows the resolved layout, so on
+  four devices an omitted layout aligns its automatic targets to the grid's two
+  rows rather than to four: the token axis, which is the axis the mesh actually
+  divides here, to a multiple of 2 instead of 4. The atom target moves with it
+  -- 64 rather than 128 -- because the shared alignment rounds every axis it
+  knows about by the row count, not because this port splits its atom graph; it
+  does not. An omitted layout and an explicit `2d` therefore pad to the same
+  shapes, and a pinned target is still taken as written.
+
 - **`cp_layout=auto` builds the square grid on OpenFold3 when the device count
   is a perfect square.** Four cards are a 2x2 mesh there unless `cp_layout=1d`
   asks otherwise; nine are 3x3. Every other count stays one-dimensional, an
   explicit `1d`/`2d` is unchanged, `cp_devices=1` is the serial program it
-  always was, and Protenix and ESMFold2 keep `auto = 1d`. This is the rule
-  OpenDDE and Boltz-2 already follow, applied to the third port that now has
-  its own four-card numbers.
+  always was, and Protenix keeps `auto = 1d`. This is the rule OpenDDE and
+  Boltz-2 already follow, applied to the third port that now has its own
+  four-card numbers. ESMFold2 kept `auto = 1d` when this landed and joined the
+  grid later in the same release, on its own numbers; the entry above is that
+  change.
 
   What held this on rows was that the grid had no GPU measurement for this
   port. It has one, and it is a completion rather than a saving: on the

@@ -186,10 +186,10 @@ def square_grid_auto_layout(cp_devices: int) -> str:
 
     ``"2d"`` on a perfect-square device count greater than one (4, 9, 16, ...)
     and ``"1d"`` on every other count, a square being the only shape the ring
-    schedules accept.  OpenDDE, Boltz-2 and OpenFold3 resolve ``auto`` through
-    this; Protenix keeps the shared one-dimensional default.  Which ports read
-    it, and the per-device measurements that decided each of those answers,
-    are recorded beside the ports' own resolvers and in
+    schedules accept.  OpenDDE, Boltz-2, OpenFold3 and ESMFold2 resolve
+    ``auto`` through this; Protenix keeps the shared one-dimensional default.
+    Which ports read it, and the per-device measurements that decided each of
+    those answers, are recorded beside the ports' own resolvers and in
     ``docs/context_parallel.md`` -- not here, so that a remeasurement moves
     the prose it belongs to.
 

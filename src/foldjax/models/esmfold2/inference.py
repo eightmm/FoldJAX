@@ -55,6 +55,7 @@ from foldjax.models.esmfold2.models import esmc as esmc_model
 from foldjax.models.esmfold2.models import model as structure_model
 from foldjax.models.esmfold2.models.model import CONFIDENCE_DTYPES
 from foldjax.models.esmfold2.models.segments import MAX_ATOMS_PER_TOKEN
+from foldjax.padding import square_grid_auto_layout
 
 #: Where `assets.py` stages the language model beside the structure weights.
 ESMC_SUBDIRECTORY = "esmc"
@@ -520,20 +521,29 @@ def _model_bound_features(
 def _resolve_cp_layout(layout: str, n_devices: int) -> str:
     """Resolve ESMFold2's context-parallel layout alias.
 
-    ``auto`` is the row mesh on this port, on every device count. The square
-    grid is implemented -- both pair axes on the mesh, Cannon's schedule for
-    the triangle contraction -- and checked against the serial trunk on forced
-    CPU meshes, but nothing has measured a per-device peak or a wall time for
-    it on a card, and `auto` is what such a measurement would move. OpenDDE
-    and Boltz-2 resolve `auto` to the grid because they have that measurement
-    (`docs/context_parallel.md`); asking `padding.square_grid_auto_layout`
-    here would borrow their evidence for a port that does not have it.
+    ``auto`` is the square grid on a perfect-square device count and the row
+    mesh on every other one (:func:`foldjax.padding.square_grid_auto_layout`),
+    the same rule OpenDDE, Boltz-2 and OpenFold3 resolve and the rule this
+    port's adapter resolves on the host for the same request.
+
+    What held this on rows was that the grid had no GPU measurement here.
+    It has one, and unlike the other three ports it is not a slower program
+    bought for a ceiling -- it is the only arm that finishes. On the four-card
+    deployment node (4 x 96 GiB, 2x2) a 3,012-token target, where a serial run
+    exhausts 96 GiB, completes both benchmark passes in the grid in 30 minutes
+    -- 772 s and 23,430 MiB per device for five structures -- while the 1-D
+    layout on the same four cards did not finish a single pass in one to two
+    hours, at 3,012 tokens or at 4,100. The mechanism is this trunk's own: the
+    language-model encoder's pair stack keeps a dense einsum and an all-reduce
+    under the row mesh, which the Cannon schedule replaces with half-width
+    tiles. `docs/context_parallel.md` carries the rest of the record.
 
     An explicit ``"2d"`` on a count the grid cannot use is refused by the
-    shared resolver, and ``auto`` never reaches that refusal.
+    shared resolver, and ``auto`` never reaches that refusal, because it only
+    ever names the grid on a count that has one.
     """
 
-    return resolve_cp_layout(layout, n_devices, auto="1d")
+    return resolve_cp_layout(layout, n_devices, auto=square_grid_auto_layout(n_devices))
 
 
 def predict(
@@ -568,10 +578,10 @@ def predict(
     cp_shards: int = 1,
     #: Which mesh the shards form: ``"1d"`` splits pair rows only, ``"2d"``
     #: splits rows and columns on Fold-CP's square grid, and ``"auto"`` --
-    #: the default -- resolves to ``"1d"``. The grid is implemented and
-    #: checked against the serial trunk on forced CPU meshes, but this port
-    #: has no per-device GPU measurement yet, and `auto` is where such a
-    #: measurement would be recorded: see `docs/context_parallel.md`.
+    #: the default -- resolves to ``"2d"`` on a perfect-square shard count and
+    #: ``"1d"`` on every other one. See :func:`_resolve_cp_layout` for the
+    #: four-card measurement that decided it, the rule OpenDDE, Boltz-2 and
+    #: OpenFold3 also follow.
     cp_layout: str = "auto",
     return_representations: tuple[str, ...] = (),
     stop_after_trunk: bool = False,

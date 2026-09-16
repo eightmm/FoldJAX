@@ -82,13 +82,13 @@ def square_grid_cp_layout(options: Mapping[str, Any]) -> str | None:
     count then keeps its own cache namespace rather than borrowing a resolved
     one, and the port itself reports the value.
 
-    For OpenDDE and Boltz-2, this helper's two callers, an omitted
-    ``cp_layout`` resolves to the square grid on a perfect-square count
-    (`models/opendde/models/model.py`, `models/boltz2/api.py`), so both the
-    recorded namespace and the padding alignment have to be resolved here
-    rather than assumed one-dimensional. An explicit spelling is returned as
-    written, including one the port will refuse, because it is the request's
-    own identity.
+    For OpenDDE, Boltz-2 and ESMFold2, this helper's three grid callers, an
+    omitted ``cp_layout`` resolves to the square grid on a perfect-square
+    count (`models/opendde/models/model.py`, `models/boltz2/api.py`,
+    `models/esmfold2/inference.py`), so both the recorded namespace and the
+    padding alignment have to be resolved here rather than assumed
+    one-dimensional. An explicit spelling is returned as written, including
+    one the port will refuse, because it is the request's own identity.
 
     OpenFold3's ``auto`` picks the grid on the same rule
     (`models/openfold3/inference.py`) but its adapter applies that rule
