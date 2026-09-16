@@ -1097,16 +1097,32 @@ def outer_product_mean_forward(
     n = a.shape[2]
     out_dtype = m.dtype
     chunk = _auto_outer_product_chunk(n, a.shape[-1] * b.shape[-1], chunk_size)
-    out = jnp.zeros((a.shape[0], n, n, proj_o["kernel"].shape[-1]), dtype=out_dtype)
+    # Concatenation rather than a chain of `out.at[:, start:end].set(...)`,
+    # which is what this loop used to write. The two are bitwise equal in the
+    # serial program -- both assemble disjoint constant-offset row blocks --
+    # but XLA's SPMD partitioner miscompiles the chain when a downstream
+    # `with_sharding_constraint` pins the result on the context-parallel row
+    # axis, which `msa_layer_forward` does one statement later through the
+    # pairformer's `shard_pair_rows`: the last row of every device's shard but
+    # the last comes out wrong, by half the output scale, silently. It is a
+    # partitioner choice, irregular in both token count and chunk (848 tokens
+    # at the released chunk 77 corrupt rows 211/423/635 on four devices, 128
+    # does not), so no chunk rule replaces removing the pattern. The AMP path
+    # below has always assembled its blocks this way, which is the only reason
+    # the released bfloat16 configuration never met it. `astype` keeps the
+    # implicit cast the update-slice form performed against `out`'s dtype.
+    blocks = []
     for start in range(0, n, chunk):
         end = min(start + chunk, n)
         a_blk = a[:, :, start:end]
         z = jnp.einsum("bsic,bsjd->bijcd", a_blk, b, preferred_element_type=jnp.float32)
         z = jnp.reshape(z, (*z.shape[:3], -1)) / num_mask[:, start:end]
-        out = out.at[:, start:end].set(
-            _linear(z.astype(out_dtype), proj_o["kernel"], proj_o["bias"])
+        blocks.append(
+            _linear(z.astype(out_dtype), proj_o["kernel"], proj_o["bias"]).astype(
+                out_dtype
+            )
         )
-    return out
+    return jnp.concatenate(blocks, axis=1)
 
 
 def _outer_product_mean_amp(

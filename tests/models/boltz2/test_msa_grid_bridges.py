@@ -31,22 +31,31 @@ become:
   against the serial ones, and the sparse arms compare against a serial
   program that has every row.
 
-The tolerances are calibrated rather than chosen: the operator arms and the
-single-layer arm are bounded at eight roundings of the compute dtype, and the
-whole-module arm against the residual the *one-dimensional* layout already has
-against serial in the same process, because that is the reassociation that was
-there before this change and the question is whether splitting the depth adds a
-different kind of error rather than more of the same one.
+The tolerances are calibrated rather than chosen: the operator arms at eight
+roundings of the compute dtype, the single-layer arm at sixty-four because it
+composes six of them with the pair stack, and the whole-module arm against the
+residual the *one-dimensional* layout already has against serial in the same
+process, because that is the reassociation that was there before this change
+and the question is whether splitting the depth adds a different kind of error
+rather than more of the same one.  That 1-D residual is itself held to eight
+roundings first, so a bound derived from it cannot inflate with a defect in the
+arm it is derived from -- which is not hypothetical: it happened here once, see
+below.
 
 One arm enters at ``msa_layer_forward`` with a depth and a token count that
 divide neither grid.  That is the only way to reach the transition's own
 pad-and-slice -- the module pads the depth once above it, for the whole stack
 -- and it is also where both bridges compose with the pair stack rather than
-being measured one at a time.  That arm's 1-D residual is printed and not used:
-at a token count the 1-D mesh does not divide either, it is of order the values
-themselves, which is a defect somewhere in the row-sharded pair stack and not
-in anything here, and calibrating against it would hide this file's own
-arithmetic behind that one's size.
+being measured one at a time.  That arm's 1-D residual used to be of order the
+values themselves rather than of their roundings, and this file read that as a
+defect "somewhere in the row-sharded pair stack".  It was not: it was the plain
+float32 ``OuterProductMean``, upstream of the pair stack, assembling its output
+with a chain of update-slices that XLA's SPMD partitioner miscompiles once a
+downstream ``with_sharding_constraint`` pins the result on the row axis
+(``test_opm_row_shard_assembly``, which pins the operator itself).  It
+assembles by concatenation now, as the bfloat16 path always did -- which is
+the only reason the bfloat16 arms here never showed it -- and both layouts'
+residuals are roundings at every arm below.
 
 The census is a before/after pair in one process: ``_on_msa_grid`` patched off
 and ``shard_msa`` patched to identity is exactly the program that ran before the
@@ -449,19 +458,22 @@ _PROBE = textwrap.dedent(
         scale = max(float(np.abs(ref).max()), 1.0)
         gap_1d = float(np.abs(one_d - ref).max())
         gap_2d = float(np.abs(two_d - ref).max())
-        # Roundings, not a multiple of the 1-D residual, and deliberately so
-        # here: at a token count that does not divide the 1-D mesh either,
-        # that arm's own residual against serial is of order the values
-        # themselves (measured 3.7 in float32 on four devices, against 4.6e-6
-        # for the grid) -- something in the row-sharded pair stack, not in
-        # anything this file changes, and a bound calibrated against it would
-        # be the size of that defect rather than of this one. It is printed
-        # rather than used. Sixty-four roundings rather than the operators'
-        # eight, because a layer is six reassociated reductions composed with
-        # the pair stack; measured 4.6e-6 in float32 and 9.9e-2 in bfloat16
-        # against bounds of 3.3e-5 and 1.1, where the 1-D arm above misses by
-        # six orders of magnitude.
+        # Roundings, and the same bound for both layouts. Sixty-four rather
+        # than the operators' eight, because a layer is six reassociated
+        # reductions composed with the pair stack; measured 4.6e-6 (2-D) and
+        # 5.3e-6 (1-D) in float32 and 9.9e-2 to 1.3e-1 in bfloat16, over both
+        # device counts, against bounds of 3.3e-5 and 1.4.
+        #
+        # The 1-D arm used to measure 3.7 in float32 here -- of order the
+        # values, not their roundings -- and was printed and excluded as "a
+        # defect somewhere in the row-sharded pair stack". It was the plain
+        # float32 `OuterProductMean`'s update-slice output assembly under the
+        # row constraint the pair stack applies, one operator above it, and it
+        # is asserted rather than printed now that the assembly is a
+        # concatenation. `test_opm_row_shard_assembly` pins the operator; this
+        # arm is what says the composed layer carries the fix.
         bound = 64 * ulps(dtype) * scale
+        assert gap_1d <= bound, (dtype_name, scale, gap_1d, bound)
         assert gap_2d <= bound, (dtype_name, scale, gap_1d, gap_2d, bound)
         print(
             f"layer {dtype_name} side={SIDE} M={depth} N={tokens} "
@@ -521,12 +533,28 @@ _PROBE = textwrap.dedent(
             # The 1-D residual is the reassociation context parallelism had
             # before the depth axis was split. Splitting it may not introduce
             # a different *kind* of error, which is what a multiple of that
-            # residual bounds and an absolute constant would not.
-            bound = max(4 * gap_1d, 8 * ulps(dtype) * scale)
+            # residual bounds and an absolute constant would not -- but only
+            # while the arm it is read off is itself right. It was not: until
+            # the float32 `OuterProductMean` stopped assembling its output
+            # with update-slices, this layout's residual was of order the
+            # values at a geometry the partitioner miscompiled, and a bound
+            # four times that would have passed anything. So the reference is
+            # bounded first, at the operators' eight roundings, which caps
+            # the 2-D bound at thirty-two of them however the reference moves.
+            # Measured on both device counts: the reference is 2.7e-6 at a
+            # scale of 5.9 in float32 (3.9 roundings of the eight) and 6.2e-2
+            # at 7.0 in bfloat16 (2.3), against 2-D residuals of at most
+            # 3.3e-6 and 8.7e-2.
+            reference_bound = 8 * ulps(dtype) * scale
+            assert gap_1d <= reference_bound, (
+                dtype_name, use_scan, scale, gap_1d, reference_bound
+            )
+            bound = max(4 * gap_1d, reference_bound)
             assert gap_2d <= bound, (dtype_name, use_scan, gap_1d, gap_2d, bound)
             print(
                 f"module {dtype_name} scan={use_scan} side={SIDE} M={depth} "
-                f"N={tokens} 1d={gap_1d:.3e} 2d={gap_2d:.3e} (<= {bound:.3e})",
+                f"N={tokens} scale={scale:.3e} 1d={gap_1d:.3e} "
+                f"(<= {reference_bound:.3e}) 2d={gap_2d:.3e} (<= {bound:.3e})",
                 flush=True,
             )
 

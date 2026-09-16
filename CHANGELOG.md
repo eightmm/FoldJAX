@@ -119,6 +119,47 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **Boltz-2's float32 OuterProductMean assembles its output by concatenation,
+  which XLA partitions correctly.** The operator computes its output in
+  token-row blocks, and the float32 path used to write them into a preallocated
+  result with a chain of `out = out.at[:, start:end].set(...)`. Under context
+  parallelism that is not a spelling choice: when the value is then pinned on
+  the row axis -- which the MSA layer does one statement later, by handing `z +
+  OuterProductMean(...)` to the pairformer's row constraint -- XLA's SPMD
+  partitioner (jax 0.11.1, Shardy and legacy GSPMD alike) miscompiles the
+  chain. The last token row of every device's shard except the last one, row
+  `k * ceil(N / devices) - 1`, came out wrong, silently, by about half the
+  output scale: at 848 tokens with the chunk the shipped budget picks there,
+  77, rows 211, 423 and 635 were off by 33 of 58 on four devices, and the same
+  token count at chunk 128 was exact. The trigger is irregular in both token
+  count and chunk -- the operator at 16 tokens failed at chunks 3 and 5 and was
+  exact at 4 and 8 -- so no chunk rule replaces removing the pattern, and it is
+  the shard boundary rather than token divisibility that decides: 848 and 16
+  are both divisible by two, four and eight, and all three device counts
+  corrupted their boundary rows.
+
+  The blocks are now concatenated, which is what `_outer_product_mean_amp` has
+  always done and what XLA partitions correctly. No serial result moves: the
+  two assemblies are bitwise equal at eight geometries, including a bfloat16
+  residual stream. The serial *program* is not the same text -- the
+  concatenation lets XLA fuse the per-block bias adds into one fusion instead
+  of one per block, so a serial executable is recompiled and, at 16 tokens,
+  8 KiB smaller in scratch; at 848 its scratch is unchanged to the byte.
+  Under the one-dimensional layout the residual against a float64 reference
+  falls from 33 to 1.6e-5 at 848 tokens.
+
+  **The released configuration was not affected**, and the only reason is the
+  bfloat16/float32 asymmetry: the released `compute_dtype` is bfloat16, whose
+  OuterProductMean is the AMP path that already concatenated, and in float32
+  the miscompile also depended on the surrounding program -- it fired for a
+  one-layer unrolled MSA stack and not for the released four layers under
+  `lax.scan`. No released-shape failure was produced. Since that is a
+  partitioner choice rather than a guarantee, and `trunk_use_scan=False`,
+  a float32 `compute_dtype` and a different layer count are all reachable
+  configurations, the pattern is gone rather than avoided. Evidence is CPU
+  with forced device counts; the transform is at the HLO level, so a GPU mesh
+  was expected to inherit it and was not separately measured.
+
 - **`--padding` pads the MSA axis instead of capping the input at the profile
   depth.** A padded run used to hand each port's own row-selection control the
   padding profile's depth, so it read a different alignment than the same job
