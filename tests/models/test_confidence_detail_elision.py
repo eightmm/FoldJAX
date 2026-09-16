@@ -180,6 +180,10 @@ def test_protenix_model_coordinates_and_summaries_are_exact() -> None:
             atom_decoder_heads=1,
             n_queries=2,
             n_keys=4,
+            # The shipped default is `tokamax`, which pins Triton with no
+            # fallback; the elision property is kernel-independent, so this
+            # witness takes the same XLA denoiser every other CPU test does.
+            diffusion_attention_backend="xla_jit",
             sigma_data=4.0,
             centre_each_step=False,
             return_trunk=False,
