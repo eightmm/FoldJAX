@@ -6,13 +6,13 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from foldjax.models.opendde.cli.predict import _write
 from foldjax.models.opendde.postprocess import (
     SHAPE_COMPLEMENTARITY_SCORE_KEYS,
     compute_contact_prob,
     opendde_confidence_scores,
     repair_terminal_oxt_coordinates,
 )
+from foldjax.models.opendde.runner import _write
 from foldjax.models.protenix.data.output import _sample_summary
 
 

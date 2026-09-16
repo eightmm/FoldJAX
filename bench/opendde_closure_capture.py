@@ -341,7 +341,7 @@ def main():
         import jax
 
         from foldjax import predict
-        from foldjax.models.opendde.cli import predict as cli
+        from foldjax.models.opendde import runner as native
 
         for name in ("native-input.npz", "native-identity.npz", "native-derived.npz"):
             shutil.copy2(args.reference / name, args.out / name)
@@ -363,7 +363,11 @@ def main():
             tape_meta["num_recycles"],
         ) == (200, 5, 10)
         msa = driver.arrays(args.reference / "torch/msa.npz")
-        featurize, infer, score = cli._featurize, cli._predict, cli._score
+        featurize, infer, score = (
+            native._featurize,
+            native._predict,
+            native._score,
+        )
         seen = {"input": 0, "predict": 0, "score": 0}
         selected = {}
         consumed = None
@@ -481,9 +485,9 @@ def main():
             ffi_context = patch.object(ffi, "use_tf32", observed_policy)
         with (
             ffi_context,
-            patch.object(cli, "_featurize", checked_features),
-            patch.object(cli, "_predict", replay),
-            patch.object(cli, "_score", captured_scores),
+            patch.object(native, "_featurize", checked_features),
+            patch.object(native, "_predict", replay),
+            patch.object(native, "_score", captured_scores),
         ):
             predict(audit_request(args))
         if seen != {"input": 1, "predict": 1, "score": 1}:

@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from foldjax.models.opendde import runner as predict_runner
 from foldjax.models.opendde.cli import predict as predict_impl
 from foldjax.schema import PredictionError
 from tests.models.opendde.toy_params import inference_params
@@ -78,7 +79,7 @@ def _capture_predict_route(monkeypatch):
         captured["preflight"] = features
         return None
 
-    monkeypatch.setattr(predict_impl, "_preflight_arena", fake_preflight)
+    monkeypatch.setattr(predict_runner, "_preflight_arena", fake_preflight)
     return captured
 
 
@@ -90,7 +91,7 @@ def test_predict_drops_raw_msa_after_default_cycle_sampling(
     features = _raw_msa_features(include_mask=include_mask)
     params = _params_double()
 
-    predict_impl._predict(features, params, **_predict_kwargs())
+    predict_runner._predict(features, params, **_predict_kwargs())
 
     routed = captured["features"]
     assert captured["preflight"] is routed
@@ -124,7 +125,7 @@ def test_predict_compacts_complete_binary_msa_cycles(monkeypatch) -> None:
         0.0, 1.0, np.prod(shape), dtype=np.float32
     ).reshape(shape)
 
-    predict_impl._predict(features, _params_double(), **_predict_kwargs())
+    predict_runner._predict(features, _params_double(), **_predict_kwargs())
 
     sampled = captured["kwargs"]["cycle_msa_features"]
     assert len(sampled) == 2
@@ -152,7 +153,7 @@ def test_predict_preserves_direct_msa_fallback(monkeypatch, fallback: str) -> No
         )
         expected_cycles = cycles
 
-    predict_impl._predict(
+    predict_runner._predict(
         features,
         _params_double(),
         graph_jit=False,
@@ -206,15 +207,15 @@ def test_predict_cli_runs_native_json_to_ranked_output(
     calls = []
     featurize_calls = []
 
-    monkeypatch.setattr(predict_impl, "_load_jobs", lambda path: [job])
+    monkeypatch.setattr(predict_runner, "_load_jobs", lambda path: [job])
 
     def fake_featurize(value, **kwargs):
         featurize_calls.append((value, kwargs))
         return features
 
-    monkeypatch.setattr(predict_impl, "_featurize", fake_featurize)
+    monkeypatch.setattr(predict_runner, "_featurize", fake_featurize)
     monkeypatch.setattr(
-        predict_impl,
+        predict_runner,
         "_load_prepared_params",
         lambda path, trunk_dtype: params,
     )
@@ -223,7 +224,7 @@ def test_predict_cli_runs_native_json_to_ranked_output(
         calls.append((value, model_params, kwargs))
         return raw_output
 
-    monkeypatch.setattr(predict_impl, "_predict", fake_predict)
+    monkeypatch.setattr(predict_runner, "_predict", fake_predict)
 
     def fake_score(
         output,
@@ -235,7 +236,7 @@ def test_predict_cli_runs_native_json_to_ranked_output(
     ):
         return scored_output
 
-    monkeypatch.setattr(predict_impl, "_score", fake_score)
+    monkeypatch.setattr(predict_runner, "_score", fake_score)
     expected_path = output_dir / "tiny" / "seed_101" / "predictions" / "tiny.cif"
     write_calls = []
 
@@ -243,7 +244,7 @@ def test_predict_cli_runs_native_json_to_ranked_output(
         write_calls.append((root, kwargs))
         return [expected_path]
 
-    monkeypatch.setattr(predict_impl, "_write", fake_write)
+    monkeypatch.setattr(predict_runner, "_write", fake_write)
 
     argv = [
         "--input-json",
@@ -321,7 +322,7 @@ def test_predict_cli_runs_native_json_to_ranked_output(
 
     calls.clear()
     monkeypatch.setattr(
-        predict_impl,
+        predict_runner,
         "_load_prepared_params",
         lambda _path, _dtype: pytest.fail(
             "injected params must bypass checkpoint loading"
@@ -375,11 +376,11 @@ def test_predict_cli_rejects_pt_weight_at_runtime(tmp_path) -> None:
 
 
 def test_predict_cli_module_does_not_import_torch() -> None:
-    assert "torch" not in predict_impl.__dict__
+    assert "torch" not in predict_runner.__dict__
     assert not any(
         name == "opendde" or name.startswith("opendde.") for name in sys.modules
     )
 
 
 def test_empty_model_seeds_use_release_default() -> None:
-    assert predict_impl._job_seeds({"modelSeeds": []}, None) == [101]
+    assert predict_runner._job_seeds({"modelSeeds": []}, None) == [101]

@@ -3,7 +3,8 @@
 Use the arguments of ``python -m bench.opendde_closure_capture foldjax`` with
 this module instead. The first raw result is returned unchanged to that capture.
 ``--repeat-boundary compiled`` normalizes inputs once before repeating the pool
-dispatch; the default ``public`` repeats the underlying ``cli._predict`` call.
+dispatch; the default ``public`` repeats the underlying runner ``_predict``
+call.
 This is a same-process diagnostic, not a performance run or parity admission.
 Host-side JIT-owner observations do not prove runtime-executable identity.
 """
@@ -333,7 +334,7 @@ def main():
 
         def checked_parse(parser, *args, **kwargs):
             # Reuse capture's real parser, including its abbreviation rules, and
-            # install before it binds cli._predict as its local replay target.
+            # install before it binds the runner's _predict as its replay target.
             parser.add_argument(
                 "--repeat-boundary", choices=("public", "compiled"), default="public"
             )
@@ -342,9 +343,9 @@ def main():
             stack.enter_context(
                 patch.object(argparse.ArgumentParser, "parse_args", original_parse)
             )
-            from foldjax.models.opendde.cli import predict as cli
+            from foldjax.models.opendde import runner as native
 
-            infer = cli._predict
+            infer = native._predict
             seen = []
 
             @wraps(infer)
@@ -401,7 +402,7 @@ def main():
                     ),
                 )
 
-            stack.enter_context(patch.object(cli, "_predict", repeated))
+            stack.enter_context(patch.object(native, "_predict", repeated))
             return arguments
 
         stack.enter_context(

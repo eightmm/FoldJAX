@@ -17,12 +17,12 @@ import pytest
 from foldjax.api import resolve_cache_dir
 from foldjax.backends.opendde import OpenDDEBackend
 from foldjax.backends.protenix import ProtenixBackend
-from foldjax.models.opendde.cli.predict import _score as opendde_score
 from foldjax.models.opendde.models import model as opendde_model
 from foldjax.models.opendde.postprocess import (
     CONFIDENCE_DETAIL_KEYS,
     SHAPE_COMPLEMENTARITY_SCORE_KEYS,
 )
+from foldjax.models.opendde.runner import _score as opendde_score
 from foldjax.models.protenix.models import model as protenix_model
 from foldjax.models.protenix.models.diffusion.diffusion import (
     inference_noise_schedule,

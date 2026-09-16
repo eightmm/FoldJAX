@@ -230,6 +230,11 @@ PORTS: Mapping[str, PortSpec] = {
             # default is now FP32.
             SourceSpec("backends/opendde.py"),
             SourceSpec("models/opendde/cli/predict.py"),
+            # The prediction body `cli/predict.py` used to hold. It moved out
+            # from under this entry, and everything the entry above was tracked
+            # for -- the precision defaults, the order they are applied in --
+            # moved with it, so both halves are bound or neither is.
+            SourceSpec("models/opendde/runner.py"),
             SourceSpec("models/opendde/models/geometry.py"),
             SourceSpec("models/opendde/models/sampling.py"),
             SourceSpec("models/opendde/models/model.py"),

@@ -201,9 +201,13 @@ def test_opendde_adapter_restores_every_environment_variable_the_cli_exports(
     import re
 
     from foldjax.backends import opendde
+    from foldjax.models.opendde import runner as native_runner
     from foldjax.models.opendde.cli import predict as native
 
-    source = inspect.getsource(native)
+    # Both halves of the native path: the argument parser and the runner it
+    # hands a config to. The exports all live in the runner today; scanning
+    # both means moving one back to the parser cannot make this vacuous.
+    source = inspect.getsource(native) + inspect.getsource(native_runner)
     pattern = r'os\.environ(?:\.setdefault)?[\[(]\s*"([A-Z_]+)"'
     exported = set(re.findall(pattern, source))
     assert exported, "no environment exports found in the native CLI"

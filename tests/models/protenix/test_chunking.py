@@ -145,11 +145,11 @@ def test_the_two_callers_name_the_table_they_measured() -> None:
     so the change only ships if this line is there. OpenDDE is asserted in the
     same breath because the two callers must not converge.
     """
-    from foldjax.models.opendde.cli import predict as opendde_predict
+    from foldjax.models.opendde import runner as opendde_runner
     from foldjax.models.protenix import runner as protenix_runner
 
     protenix_source = inspect.getsource(protenix_runner)
-    opendde_source = inspect.getsource(opendde_predict)
+    opendde_source = inspect.getsource(opendde_runner)
 
     assert "thresholds=PROTENIX_MEASURED_CHUNK_SIZE_THRESHOLDS" in protenix_source
     assert "PROTENIX_MEASURED_CHUNK_SIZE_THRESHOLDS" not in opendde_source

@@ -205,7 +205,20 @@ def test_exact_request_reuses_nonempty_recorded_artifacts(tmp_path: Path) -> Non
 
 @pytest.mark.parametrize(
     "change",
-    [None, "legacy", "backend", "cli", "confidence", "geometry", "sampling", "model"],
+    [
+        None,
+        "legacy",
+        "backend",
+        "cli",
+        # The prediction body the "cli" entry above was tracked for lives here
+        # now. Parametrized beside it so the split cannot quietly drop half the
+        # precision policy out of the tracked set.
+        "runner",
+        "confidence",
+        "geometry",
+        "sampling",
+        "model",
+    ],
 )
 def test_opendde_resume_binds_implicit_precision_policy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str | None
@@ -220,6 +233,7 @@ def test_opendde_resume_binds_implicit_precision_policy(
     sources = {
         "backend": (package / "backends/opendde.py").resolve(),
         "cli": (package / "models/opendde/cli/predict.py").resolve(),
+        "runner": (package / "models/opendde/runner.py").resolve(),
         **{
             name: (package / f"models/opendde/models/{name}.py").resolve()
             for name in ("geometry", "sampling", "model")

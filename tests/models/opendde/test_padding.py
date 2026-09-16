@@ -12,6 +12,7 @@ import pytest
 
 from foldjax.backends.opendde import OpenDDEBackend, _shape_profile
 from foldjax.models.opendde import postprocess as postprocess_impl
+from foldjax.models.opendde import runner as predict_runner
 from foldjax.models.opendde.cli import predict as predict_impl
 from foldjax.models.opendde.data.compact_categories import (
     COMPACT_REF_ATOM_NAME_CHAR_IDS,
@@ -287,22 +288,22 @@ def test_native_cli_pads_after_sampling_and_reports_profile(
     seen: dict[str, object] = {}
 
     monkeypatch.setattr(
-        predict_impl,
+        predict_runner,
         "_load_jobs",
         lambda _path: [{"name": "job"}],
     )
     monkeypatch.setattr(
-        predict_impl,
+        predict_runner,
         "_load_prepared_params",
         lambda _path, _dtype: _params_double(),
     )
-    monkeypatch.setattr(predict_impl, "_featurize", lambda _job, **_kwargs: features)
+    monkeypatch.setattr(predict_runner, "_featurize", lambda _job, **_kwargs: features)
 
     def fake_predict(_features, _params, **kwargs):
         seen.update(kwargs)
         return {"coordinate": np.zeros((1, 3, 3), dtype=np.float32)}
 
-    monkeypatch.setattr(predict_impl, "_predict", fake_predict)
+    monkeypatch.setattr(predict_runner, "_predict", fake_predict)
 
     def fake_score(
         output,
@@ -314,10 +315,10 @@ def test_native_cli_pads_after_sampling_and_reports_profile(
     ):
         return output
 
-    monkeypatch.setattr(predict_impl, "_score", fake_score)
+    monkeypatch.setattr(predict_runner, "_score", fake_score)
     output_path = tmp_path / "out" / "job.cif"
     monkeypatch.setattr(
-        predict_impl,
+        predict_runner,
         "_write",
         lambda _root, **_kwargs: [output_path],
     )
@@ -385,14 +386,14 @@ def test_native_cli_falls_back_to_materialized_tapes_for_other_prngs(
     features = _opendde_features(msa_depth=5)
     seen: dict[str, object] = {}
 
-    monkeypatch.setattr(predict_impl, "_load_jobs", lambda _path: [{"name": "job"}])
+    monkeypatch.setattr(predict_runner, "_load_jobs", lambda _path: [{"name": "job"}])
     monkeypatch.setattr(
-        predict_impl,
+        predict_runner,
         "_load_prepared_params",
         lambda _path, _dtype: _params_double(),
     )
-    monkeypatch.setattr(predict_impl, "_featurize", lambda _job, **_kwargs: features)
-    monkeypatch.setattr(predict_impl, "_prefix_rng_is_supported", lambda: False)
+    monkeypatch.setattr(predict_runner, "_featurize", lambda _job, **_kwargs: features)
+    monkeypatch.setattr(predict_runner, "_prefix_rng_is_supported", lambda: False)
 
     sentinels = tuple(object() for _ in range(4))
     tape_calls: list[dict[str, object]] = []
@@ -410,7 +411,7 @@ def test_native_cli_falls_back_to_materialized_tapes_for_other_prngs(
         seen.update(kwargs)
         return {"coordinate": np.zeros((1, 3, 3), dtype=np.float32)}
 
-    monkeypatch.setattr(predict_impl, "_predict", fake_predict)
+    monkeypatch.setattr(predict_runner, "_predict", fake_predict)
 
     def fake_score(
         output,
@@ -422,10 +423,10 @@ def test_native_cli_falls_back_to_materialized_tapes_for_other_prngs(
     ):
         return output
 
-    monkeypatch.setattr(predict_impl, "_score", fake_score)
+    monkeypatch.setattr(predict_runner, "_score", fake_score)
     output_path = tmp_path / "out" / "job.cif"
     monkeypatch.setattr(
-        predict_impl,
+        predict_runner,
         "_write",
         lambda _root, **_kwargs: [output_path],
     )

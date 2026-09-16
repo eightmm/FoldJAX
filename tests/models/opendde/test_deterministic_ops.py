@@ -29,6 +29,7 @@ import pytest
 
 from foldjax.models._compile_policy import DETERMINISTIC_COMPILER_OPTIONS
 from foldjax.models.opendde import postprocess as postprocess_impl
+from foldjax.models.opendde import runner as predict_runner
 from foldjax.models.opendde.cli import predict as predict_cli
 from foldjax.models.opendde.models import model as model_impl
 from foldjax.models.opendde.models import shape_complementarity as shape_comp
@@ -128,7 +129,7 @@ def test_the_eager_path_refuses_instead_of_running_without_the_option() -> None:
     is the failure this whole option exists to remove.
     """
     with pytest.raises(ValueError, match="deterministic reductions"):
-        predict_cli._predict(
+        predict_runner._predict(
             {},
             None,
             seed=0,
@@ -350,10 +351,10 @@ def test_the_cli_threads_the_flag_to_both_stages(
     predicted: list[bool] = []
     scored: list[bool] = []
 
-    monkeypatch.setattr(predict_cli, "_load_jobs", lambda _path: [job])
-    monkeypatch.setattr(predict_cli, "_featurize", lambda *_a, **_k: features)
+    monkeypatch.setattr(predict_runner, "_load_jobs", lambda _path: [job])
+    monkeypatch.setattr(predict_runner, "_featurize", lambda *_a, **_k: features)
     monkeypatch.setattr(
-        predict_cli,
+        predict_runner,
         "_load_prepared_params",
         lambda _path, _dtype: inference_params(),
     )
@@ -366,10 +367,10 @@ def test_the_cli_threads_the_flag_to_both_stages(
         scored.append(kwargs["deterministic"])
         return dict(output)
 
-    monkeypatch.setattr(predict_cli, "_predict", capture_predict)
-    monkeypatch.setattr(predict_cli, "_score", capture_score)
+    monkeypatch.setattr(predict_runner, "_predict", capture_predict)
+    monkeypatch.setattr(predict_runner, "_score", capture_score)
     monkeypatch.setattr(
-        predict_cli,
+        predict_runner,
         "_write",
         lambda root, **kwargs: [root / kwargs["job_name"] / "predictions" / "tiny.cif"],
     )

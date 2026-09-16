@@ -21,6 +21,7 @@
     "opendde": [
       "backends/opendde.py",
       "models/opendde/cli/predict.py",
+      "models/opendde/runner.py",
       "models/opendde/models/geometry.py",
       "models/opendde/models/sampling.py",
       "models/opendde/models/model.py",
@@ -62,6 +63,7 @@
       "models/opendde/models/geometry.py",
       "models/opendde/models/model.py",
       "models/opendde/models/sampling.py",
+      "models/opendde/runner.py",
       "models/protenix/models/heads/confidence.py"
     ],
     "openfold3": [

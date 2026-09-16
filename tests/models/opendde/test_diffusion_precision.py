@@ -18,10 +18,6 @@ import numpy as np
 import pytest
 
 import foldjax.models.opendde.models.diffusion_module as diffusion_impl
-from foldjax.models.opendde.cli.predict import (
-    DIFFUSION_DTYPE_CHOICES,
-    _resolve_diffusion_autocast,
-)
 from foldjax.models.opendde.models.diffusion_conditioning import (
     DiffusionConditioningParams,
     diffusion_conditioning_prepare_cache,
@@ -33,6 +29,10 @@ from foldjax.models.opendde.models.model import (
     GRAPH_STATIC_ARGNAMES,
     _require_realised_diffusion_params,
     opendde_infer_static,
+)
+from foldjax.models.opendde.runner import (
+    DIFFUSION_DTYPE_CHOICES,
+    _resolve_diffusion_autocast,
 )
 from foldjax.models.protenix.models.input_precision import (
     native_diffusion_autocast_params as protenix_diffusion_autocast_params,
@@ -530,6 +530,7 @@ def _run_cli(monkeypatch, tmp_path, argv_extra):
     import numpy as np
 
     import foldjax.models.opendde.cli.predict as predict_impl
+    from foldjax.models.opendde import runner as predict_runner
     from foldjax.models.opendde.models.model import OpenDDEInferenceParams
 
     input_path = tmp_path / "tiny.json"
@@ -552,24 +553,24 @@ def _run_cli(monkeypatch, tmp_path, argv_extra):
     )
     calls = []
 
-    monkeypatch.setattr(predict_impl, "_load_jobs", lambda path: [job])
+    monkeypatch.setattr(predict_runner, "_load_jobs", lambda path: [job])
     monkeypatch.setattr(
-        predict_impl,
+        predict_runner,
         "_featurize",
         lambda value, **kwargs: {"restype": np.zeros((2, 32), dtype=np.float32)},
     )
     monkeypatch.setattr(
-        predict_impl, "_load_prepared_params", lambda path, trunk_dtype: loaded
+        predict_runner, "_load_prepared_params", lambda path, trunk_dtype: loaded
     )
 
     def fake_predict(value, model_params, **kwargs):
         calls.append((model_params, kwargs))
         return {"coordinate": np.zeros((1, 3, 3), dtype=np.float32)}
 
-    monkeypatch.setattr(predict_impl, "_predict", fake_predict)
-    monkeypatch.setattr(predict_impl, "_score", lambda output, *a, **k: output)
+    monkeypatch.setattr(predict_runner, "_predict", fake_predict)
+    monkeypatch.setattr(predict_runner, "_score", lambda output, *a, **k: output)
     monkeypatch.setattr(
-        predict_impl, "_write", lambda root, **kwargs: [tmp_path / "tiny.cif"]
+        predict_runner, "_write", lambda root, **kwargs: [tmp_path / "tiny.cif"]
     )
 
     predict_impl.main(

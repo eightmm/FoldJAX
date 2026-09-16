@@ -595,6 +595,7 @@ def _run_cli(monkeypatch, tmp_path, argv_extra=()):
     import json
 
     import foldjax.models.opendde.cli.predict as predict_impl
+    from foldjax.models.opendde import runner as predict_runner
 
     input_path = tmp_path / "tiny.json"
     weights_path = tmp_path / "opendde.jax"
@@ -604,26 +605,26 @@ def _run_cli(monkeypatch, tmp_path, argv_extra=()):
     loaded = _params()
     calls: list[tuple[object, dict[str, object]]] = []
 
-    monkeypatch.setattr(predict_impl, "_load_jobs", lambda path: [job])
+    monkeypatch.setattr(predict_runner, "_load_jobs", lambda path: [job])
     monkeypatch.setattr(
-        predict_impl,
+        predict_runner,
         "_featurize",
         lambda value, **kwargs: {
             "restype": np.zeros((N_TOKEN, 32), dtype=np.float32)
         },
     )
     monkeypatch.setattr(
-        predict_impl, "_load_prepared_params", lambda path, trunk_dtype: loaded
+        predict_runner, "_load_prepared_params", lambda path, trunk_dtype: loaded
     )
 
     def fake_predict(value, model_params, **kwargs):
         calls.append((model_params, kwargs))
         return {"coordinate": np.zeros((1, N_ATOM, 3), dtype=np.float32)}
 
-    monkeypatch.setattr(predict_impl, "_predict", fake_predict)
-    monkeypatch.setattr(predict_impl, "_score", lambda output, *a, **k: output)
+    monkeypatch.setattr(predict_runner, "_predict", fake_predict)
+    monkeypatch.setattr(predict_runner, "_score", lambda output, *a, **k: output)
     monkeypatch.setattr(
-        predict_impl, "_write", lambda root, **kwargs: [tmp_path / "tiny.cif"]
+        predict_runner, "_write", lambda root, **kwargs: [tmp_path / "tiny.cif"]
     )
 
     predict_impl.main(

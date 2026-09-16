@@ -244,7 +244,7 @@ def test_outer_wrapper_is_installed_before_capture_binds_infer(
 
     from bench import opendde_closure_capture as capture
     from bench import opendde_repeat_forward as repeat
-    from foldjax.models.opendde.cli import predict as cli
+    from foldjax.models.opendde import runner as native
     from foldjax.models.opendde.models import model
 
     kwargs, calls = tape(), []
@@ -265,13 +265,13 @@ def test_outer_wrapper_is_installed_before_capture_binds_infer(
         args = parser.parse_args(boundary_args)
         assert args.repeat_boundary == "public"
         # This reproduces closure_capture's late binding and subsequent replay.
-        infer = cli._predict
+        infer = native._predict
         assert infer is not underlying
         result = infer(object(), **kwargs)
         assert result is expected[0]
 
     original_parse = argparse.ArgumentParser.parse_args
-    monkeypatch.setattr(cli, "_predict", underlying)
+    monkeypatch.setattr(native, "_predict", underlying)
     monkeypatch.setattr(capture, "main", fake_capture)
     monkeypatch.setattr(repeat, "observe_jit_owner", lambda pool: nullcontext([]))
     monkeypatch.setattr(jax, "block_until_ready", lambda x: x)
@@ -281,7 +281,7 @@ def test_outer_wrapper_is_installed_before_capture_binds_infer(
     repeat.main()
     assert len(calls) == 3
     assert all(kw[name] is kwargs[name] for kw in calls for name in kwargs)
-    assert cli._predict is underlying
+    assert native._predict is underlying
     assert argparse.ArgumentParser.parse_args is original_parse
     assert (tmp_path / "repeat-forward-source.json").exists()
     evidence = json.loads((tmp_path / "repeat-forward.json").read_text())
@@ -309,7 +309,7 @@ def test_compiled_main_normalizes_once_and_bypasses_other_pools(tmp_path, monkey
 
     from bench import opendde_closure_capture as capture
     from bench import opendde_repeat_forward as repeat
-    from foldjax.models.opendde.cli import predict as cli
+    from foldjax.models.opendde import runner as native
     from foldjax.models.opendde.models import model
 
     outputs = [{"coords": np.array([i], np.float32)} for i in range(3)]
@@ -346,11 +346,11 @@ def test_compiled_main_normalizes_once_and_bypasses_other_pools(tmp_path, monkey
         )
         args = parser.parse_args(["--repeat-boundary", "compiled"])
         assert args.repeat_boundary == "compiled"
-        infer = cli._predict
+        infer = native._predict
         assert infer is not underlying
         assert infer(object(), weight_sentinel, **tapes) is outputs[0]
 
-    monkeypatch.setattr(cli, "_predict", underlying)
+    monkeypatch.setattr(native, "_predict", underlying)
     monkeypatch.setattr(model, "_compiled_opendde_infer", pool)
     monkeypatch.setattr(capture, "main", fake_capture)
     monkeypatch.setattr(jax, "block_until_ready", lambda x: x)

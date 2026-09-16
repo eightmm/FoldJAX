@@ -48,6 +48,21 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **An OpenDDE run in flight will not be resumed across this release.** The
+  prediction body moved out of `models/opendde/cli/predict.py` into
+  `models/opendde/runner.py`, and both files are recorded as run inputs,
+  because their content changes what an otherwise identical request predicts
+  (the precision defaults and the order they are applied in). A result written
+  before this release therefore no longer satisfies `--resume` for OpenDDE:
+  those output directories are recomputed once, and every later resume matches
+  again. Nothing about the prediction changed -- the body is byte-identical
+  apart from reading its options off a configuration object instead of
+  `argparse`'s namespace -- so a recomputed result is the same result.
+
+  Protenix went through the same split (`models/protenix/runner.py`) and is
+  unaffected: its manifest records the model implementation rather than its
+  CLI, so no Protenix manifest identity moved.
+
 - **The MSA padding ladder steps by 2,048 rows above 2,048.** The rungs are now
   1, 64, 128, 256, 512, 768, 1024, 1280, 2048, 3072, 4096, 6144, 8192, 10240,
   12288, 14336 and 16384. Below 2,048 nothing moved -- those are the released

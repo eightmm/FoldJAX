@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from foldjax.models._feature_storage import compact_msa_storage
+from foldjax.models.opendde import runner as predict_runner
 from foldjax.models.opendde.cli import predict as predict_impl
 from foldjax.models.opendde.data.compact_categories import (
     compact_ref_atom_category_storage,
@@ -142,7 +143,7 @@ def test_opendde_projection_falls_back_by_identity() -> None:
 
 
 def test_shape_score_poison_and_writer_bytes_pin_the_reader_union(tmp_path) -> None:
-    from foldjax.models.opendde.cli.predict import _write
+    from foldjax.models.opendde.runner import _write
 
     job = {
         "name": "mixed",
@@ -257,7 +258,7 @@ def test_padded_cli_projection_never_reaches_model_bound_features(
     weights_path.write_bytes(b"fixture")
     padding = PaddingConfig(msa=8)
 
-    expected_source = predict_impl._featurize(
+    expected_source = predict_runner._featurize(
         job,
         base_dir=input_path.parent,
         n_queries=2,
@@ -316,9 +317,9 @@ def test_padded_cli_projection_never_reaches_model_bound_features(
     monkeypatch.setattr(
         postprocess_impl, "project_generated_output_features", writer_only_projection
     )
-    monkeypatch.setattr(predict_impl, "_predict", fake_predict)
-    monkeypatch.setattr(predict_impl, "_score", fake_score)
-    monkeypatch.setattr(predict_impl, "_write", fake_write)
+    monkeypatch.setattr(predict_runner, "_predict", fake_predict)
+    monkeypatch.setattr(predict_runner, "_score", fake_score)
+    monkeypatch.setattr(predict_runner, "_write", fake_write)
 
     predict_impl.main(
         [
@@ -389,7 +390,7 @@ def test_padded_cli_releases_source_intermediates_and_model_before_score(
     padded_refs: list[weakref.ReferenceType[np.ndarray]] = []
     model_refs: list[weakref.ReferenceType[np.ndarray]] = []
     actual_atoms: list[int] = []
-    real_featurize = predict_impl._featurize
+    real_featurize = predict_runner._featurize
     real_sample = msa_impl.sample_opendde_msa_cycle_features
     real_pad = padding_impl.pad_opendde_features
 
@@ -415,7 +416,7 @@ def test_padded_cli_releases_source_intermediates_and_model_before_score(
         padded_refs.append(weakref.ref(padded["template_distogram"]))
         return padded, cycles, plan
 
-    monkeypatch.setattr(predict_impl, "_featurize", recording_featurize)
+    monkeypatch.setattr(predict_runner, "_featurize", recording_featurize)
     monkeypatch.setattr(msa_impl, "sample_opendde_msa_cycle_features", recording_sample)
     monkeypatch.setattr(padding_impl, "pad_opendde_features", recording_pad)
 
@@ -439,10 +440,10 @@ def test_padded_cli_releases_source_intermediates_and_model_before_score(
         }
 
     writes: list[Mapping[str, Any]] = []
-    monkeypatch.setattr(predict_impl, "_predict", fake_predict)
-    monkeypatch.setattr(predict_impl, "_score", fake_score)
+    monkeypatch.setattr(predict_runner, "_predict", fake_predict)
+    monkeypatch.setattr(predict_runner, "_score", fake_score)
     monkeypatch.setattr(
-        predict_impl,
+        predict_runner,
         "_write",
         lambda root, **kwargs: writes.append(kwargs)
         or [Path(root) / "job" / "prediction.cif"],
@@ -498,7 +499,7 @@ def test_trunk_only_cli_does_not_build_an_output_projection(
         ),
     )
     monkeypatch.setattr(
-        predict_impl,
+        predict_runner,
         "_predict",
         lambda *_args, **_kwargs: {"coordinate": np.zeros((1, 5, 3), np.float32)},
     )

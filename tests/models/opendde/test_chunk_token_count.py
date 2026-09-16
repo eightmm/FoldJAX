@@ -80,8 +80,8 @@ def test_the_cli_resolves_from_the_residue_count() -> None:
     """
     import inspect
 
-    from foldjax.models.opendde.cli import predict
+    from foldjax.models.opendde import runner
 
-    source = inspect.getsource(predict)
+    source = inspect.getsource(runner)
     assert "n_token=n_residue" in source
     assert "n_token=max(n_residue, n_structural)" not in source

@@ -16,6 +16,7 @@ from foldjax.api import resolve_cache_dir
 from foldjax.backends.opendde import OpenDDEBackend
 from foldjax.cache import compilation_cache_scope
 from foldjax.models._jit_pool import BoundedJitPool
+from foldjax.models.opendde import runner as predict_runner
 from foldjax.models.opendde.cli import predict as predict_cli
 from foldjax.models.opendde.models import model as model_impl
 from foldjax.models.protenix.chunking import resolve_chunk_config
@@ -48,11 +49,11 @@ def test_cache_defaults_track_the_native_parser_and_cp_resolver(monkeypatch) -> 
 
     actual = {name: captured[name] for name in backend_impl._RELEASED_COMPILE_DEFAULTS}
     assert actual["max_msa_depth"] is None
-    actual["max_msa_depth"] = predict_cli._resolve_msa_depth(None)
+    actual["max_msa_depth"] = predict_runner._resolve_msa_depth(None)
     # The featurizer's own cap, whether or not the run is padded; the per-cycle
     # sampler keeps its released 1,280 rows in both routes.
-    assert predict_cli._resolve_msa_depth(None) == 16384
-    assert predict_cli._resolve_msa_depth(128) == 128
+    assert predict_runner._resolve_msa_depth(None) == 16384
+    assert predict_runner._resolve_msa_depth(128) == 128
     for name, expected in backend_impl._RELEASED_COMPILE_DEFAULTS.items():
         assert type(actual[name]) is type(expected)
     assert actual == backend_impl._RELEASED_COMPILE_DEFAULTS
@@ -118,12 +119,14 @@ def test_released_default_cache_aliases_reuse_one_bounded_native_owner(
         "asym_id": np.zeros((2,), dtype=np.int32),
     }
 
-    monkeypatch.setattr(predict_cli, "_load_jobs", lambda _path: [{"name": "tiny"}])
-    monkeypatch.setattr(predict_cli, "_featurize", lambda *_args, **_kwargs: features)
-    monkeypatch.setattr(predict_cli, "compact_msa_storage", lambda value: value)
-    monkeypatch.setattr(predict_cli, "dedup_templates", lambda value: value)
+    monkeypatch.setattr(predict_runner, "_load_jobs", lambda _path: [{"name": "tiny"}])
     monkeypatch.setattr(
-        predict_cli, "compact_ref_atom_category_storage", lambda value: value
+        predict_runner, "_featurize", lambda *_args, **_kwargs: features
+    )
+    monkeypatch.setattr(predict_runner, "compact_msa_storage", lambda value: value)
+    monkeypatch.setattr(predict_runner, "dedup_templates", lambda value: value)
+    monkeypatch.setattr(
+        predict_runner, "compact_ref_atom_category_storage", lambda value: value
     )
 
     def load_prepared(_path: Path, _dtype: str) -> object:
@@ -181,14 +184,14 @@ def test_released_default_cache_aliases_reuse_one_bounded_native_owner(
         outputs.append(np.asarray(coordinate))
         return {"coordinate": coordinate.reshape(1, 1, 1)}
 
-    monkeypatch.setattr(predict_cli, "_predict", tiny_predict)
+    monkeypatch.setattr(predict_runner, "_predict", tiny_predict)
     monkeypatch.setattr(
-        predict_cli,
+        predict_runner,
         "_score",
         lambda output, *_args, **_kwargs: output,
     )
     monkeypatch.setattr(
-        predict_cli,
+        predict_runner,
         "_write",
         lambda root, **kwargs: [
             root
