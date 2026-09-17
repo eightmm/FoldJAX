@@ -692,6 +692,117 @@ _NATIVE_GRID_PROBE = _FIXTURE + textwrap.dedent(
 )
 
 
+_LOCAL_BLOCK_PROBE = _FIXTURE + textwrap.dedent(
+    r"""
+    # The native triangle prologue's row block, taken inside the shard.
+    #
+    # At the released 64 rows the block drops itself on every fixture the
+    # suite can afford -- a device holds a handful of rows, and a block wider
+    # than the local tile divides nothing -- so the sharded path here is the
+    # one nothing else reaches. The width is lowered until it fires, which is
+    # the only way to run the code a 3,012-token program would run.
+    from foldjax.models.esmfold2.models import trunk as trunk_module
+    from foldjax.models.esmfold2.models.trunk import folding_trunk
+
+    COLLECTIVES = ("all-gather", "all-reduce", "all-to-all", "collective-permute")
+
+
+    def collectives(text):
+        return {name: text.count(name) for name in COLLECTIVES if text.count(name)}
+
+
+    def stack():
+        def run(pair_in, mask_in):
+            return folding_trunk(
+                pair_in.astype(jnp.bfloat16),
+                TRUNK,
+                n_layers=LAYERS,
+                mask=mask_in,
+                native_autocast=True,
+            )
+
+        return run
+
+
+    def arm(pair, mask, rows, layout):
+        # How many times the body is traced is the witness that the block
+        # fired: dropped, it runs once per direction per layer; taken, once
+        # per block of local rows. Without it both arms would be the dropped
+        # program and every assertion below would be comparing it to itself.
+        original = trunk_module._AUTOCAST_ROWS
+        body = trunk_module._triangle_prologue
+        calls = []
+
+        def counted(*args, **kwargs):
+            calls.append(args[0].shape)
+            return body(*args, **kwargs)
+
+        trunk_module._AUTOCAST_ROWS = rows
+        trunk_module._triangle_prologue = counted
+        try:
+            jax.clear_caches()
+            if layout is None:
+                value = jax.jit(stack())(pair, mask)
+                value.block_until_ready()
+                text = jax.jit(stack()).lower(pair, mask).compile().as_text()
+            else:
+                with context_parallel(DEVICES, layout=layout):
+                    value = jax.jit(stack())(pair, mask)
+                    value.block_until_ready()
+                    text = jax.jit(stack()).lower(pair, mask).compile().as_text()
+            return np.asarray(jax.device_get(value), np.float32), text, calls
+        finally:
+            trunk_module._AUTOCAST_ROWS = original
+            trunk_module._triangle_prologue = body
+
+
+    # 13 rows: 4 shards of 4 after padding on the row mesh, 2x2 tiles of 7
+    # after padding on the grid, and neither divides the block of 2.
+    n = 13
+    pair, pair_mask, _, _ = inputs(n)
+    serial, _, serial_calls = arm(pair, pair_mask, 10 ** 6, None)
+    scale = float(np.abs(serial).max())
+    assert scale > 0.0, scale
+    # In units of the output's own bfloat16 ULP: this stack rounds to
+    # bfloat16 at every linear, so a decimal tolerance would be meaningless.
+    ulp = 2.0 ** (np.floor(np.log2(scale)) - 7)
+
+    for layout in ("1d", "2d"):
+        whole, whole_text, whole_calls = arm(pair, pair_mask, 10 ** 6, layout)
+        blocked, blocked_text, blocked_calls = arm(pair, pair_mask, 2, layout)
+        # The block fired, on rows narrower than the tile the whole arm used.
+        assert len(blocked_calls) > len(whole_calls), (
+            layout,
+            whole_calls,
+            blocked_calls,
+        )
+        assert max(shape[-3] for shape in blocked_calls) <= 2, blocked_calls
+        # ... and on *local* rows. The rows handed to the body add up to the
+        # padded local tile, not to the global axis: a global block would
+        # trace exactly `n` rows per prologue and is the version the
+        # partitioner can only serve by gathering.
+        traced = sum(shape[-3] for shape in blocked_calls)
+        assert traced < len(whole_calls) * n, (layout, traced, blocked_calls)
+        # The block must buy its rows without buying communication.
+        assert collectives(whole_text) == collectives(blocked_text), (
+            layout,
+            collectives(whole_text),
+            collectives(blocked_text),
+        )
+        for tag, got in (("whole", whole), ("blocked", blocked)):
+            difference = float(np.abs(serial - got).max())
+            assert difference <= 8 * ulp, (layout, tag, difference, ulp)
+        print(
+            "layout=%s calls=%d->%d collectives=%s"
+            % (layout, len(whole_calls), len(blocked_calls),
+               collectives(blocked_text))
+        )
+
+    print("LOCAL_BLOCK_OK")
+    """
+)
+
+
 def _run_grid_probe(source: str, devices: int) -> str:
     completed = subprocess.run(
         [sys.executable, "-c", source],
@@ -733,6 +844,18 @@ def test_the_native_autocast_block_runs_the_grid_schedule_too(devices: int) -> N
     """
 
     assert "NATIVE_GRID_OK" in _run_grid_probe(_NATIVE_GRID_PROBE, devices)
+
+
+def test_the_prologue_row_block_is_taken_inside_the_shard() -> None:
+    """The block fires on local rows, agrees with serial, and adds nothing.
+
+    The row block on a *global* axis is a slice of a sharded one, which the
+    partitioner can only serve by moving data -- 104 `all-to-all`s when
+    `_cp_pair_transition` measured it. Inside the shard it is free, and the
+    census before and after the block is what says so.
+    """
+
+    assert "LOCAL_BLOCK_OK" in _run_grid_probe(_LOCAL_BLOCK_PROBE, 4)
 
 
 @pytest.mark.parametrize("devices", [4, 9])

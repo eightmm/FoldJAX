@@ -218,8 +218,28 @@ def _autocast_norm(x, params, prefix, eps=1e-5):
     )
 
 
-def _autocast_triangle(pair, params, prefix, outgoing, mask, eps):
-    engine = f"{prefix}._engine" if prefix else "_engine"
+#: Rows of a pair tensor the native autocast path shapes at once.
+#:
+#: The same 64-row rule `_autocast_transition` below spells inline, named so
+#: the triangle prologue and a test can share it.
+_AUTOCAST_ROWS = 64
+
+
+def _triangle_prologue(pair, params, engine, mask, eps):
+    """`norm_start` through the split, over whatever rows it is handed.
+
+    Everything here is elementwise in the two token axes and contracts only
+    over channels, so a block of rows is the whole computation for its own
+    rows: nothing reads a row it was not given, and no value depends on how
+    the rows were divided.
+
+    `proj_gate` is computed here rather than in the epilogue for that reason.
+    It is a pure function of `normalized`, so moving it changes no value --
+    and it is the only other consumer of `normalized`, whose live range
+    otherwise straddles the whole O(N^3) contraction and is what forces the
+    float32 normalisation to exist at full width. Handing the epilogue the
+    bfloat16 gate instead halves what the contraction has to step over.
+    """
     normalized = _autocast_norm(pair, params, f"{engine}.norm_start", eps)
     bundled = _autocast_linear(normalized, params, f"{engine}.proj_bundle")
     signal, logits = jnp.split(bundled, 2, axis=-1)
@@ -233,6 +253,149 @@ def _autocast_triangle(pair, params, prefix, outgoing, mask, eps):
         # multiply promotes the widest tensor this block owns.
         routed = routed * mask[..., None].astype(routed.dtype)
     left, right = jnp.split(routed, 2, axis=-1)
+    output_gate = jax.nn.sigmoid(
+        _autocast_linear(normalized, params, f"{engine}.proj_gate").astype(jnp.float32)
+    ).astype(jnp.bfloat16)
+    return left, right, output_gate
+
+
+def _triangle_prologue_rows(pair, params, engine, mask, eps, *, rows):
+    """`_triangle_prologue` in row blocks, assembling the whole operands.
+
+    The contraction is left whole and fed whole operands: `left` is sliced on
+    its *row* axis for the outgoing direction and on its *column* axis for the
+    incoming one (`bkid,bkjd->bijd`), so a row-blocked prologue cannot feed
+    both, and both directions need `right` entire in any case. What the block
+    removes is everything between the normalisation and the split -- the
+    float32 `normalized`, the `proj_bundle` output that
+    `_native_bf16_linear`'s barrier pins at four times the pair width, and
+    `routed` -- which is the largest unblocked pair region in this port and
+    none of which the contraction reads.
+    """
+    n_rows = pair.shape[-3]
+    if rows is None or rows >= n_rows:
+        return _triangle_prologue(pair, params, engine, mask, eps)
+    pieces = []
+    for start in range(0, n_rows, rows):
+        # `min` because a trailing block is shorter whenever the axis does not
+        # divide, and `slice_in_dim` rejects an overrun rather than clamping
+        # it the way Python slicing would.
+        stop = min(start + rows, n_rows)
+        pieces.append(
+            _triangle_prologue(
+                jax.lax.slice_in_dim(pair, start, stop, axis=-3),
+                params,
+                engine,
+                # `[B, N, N]` against the pair's `[B, N, N, C]`: the mask's
+                # first token axis is one further along.
+                None
+                if mask is None
+                else jax.lax.slice_in_dim(mask, start, stop, axis=-2),
+                eps,
+            )
+        )
+    return tuple(
+        jnp.concatenate(parts, axis=-3) for parts in zip(*pieces, strict=True)
+    )
+
+
+def _triangle_prologue_blocked(pair, params, engine, mask, eps):
+    """Row-block the prologue, on local rows whenever a mesh is active.
+
+    A block of a sharded row axis is a slice the partitioner can only serve by
+    moving data -- the cost `_cp_pair_transition` records 104 `all-to-all`s
+    for -- so under either layout the block is taken inside a `shard_map`, on
+    the tile the device already holds. Every operation in the prologue is
+    elementwise in the two token axes and contracts only over channels, so a
+    tile is the whole computation for its own rows and columns: no collective,
+    and the same arithmetic per element the unblocked sharded program did.
+
+    A block at least as wide as the local tile would divide nothing, and
+    asking for it on the global axis is what forces the move, so the request
+    is dropped rather than relocated and the sharded program is left exactly
+    as it was. At the released 64 rows that is every context-parallel program
+    below 64 rows per device, which is every fixture the suite runs.
+    """
+    mesh = cp_mesh()
+    if mesh is None:
+        return _triangle_prologue_rows(
+            pair, params, engine, mask, eps, rows=_AUTOCAST_ROWS
+        )
+    grid_rows, grid_columns = cp_grid()
+    n_rows, n_columns = pair.shape[-3], pair.shape[-2]
+    row_pad, column_pad = (-n_rows) % grid_rows, (-n_columns) % grid_columns
+    if _AUTOCAST_ROWS >= (n_rows + row_pad) // grid_rows:
+        return _triangle_prologue(pair, params, engine, mask, eps)
+    operands, specs = [], []
+    # The first token axis of each operand: `[B, N, N, C]` has it at -3 and its
+    # mask `[B, N, N]` at -2, with the second token axis the next one along.
+    for array, first_axis in ((pair, -3), *(() if mask is None else ((mask, -2),))):
+        row = first_axis % array.ndim
+        if row_pad or column_pad:
+            # `shard_map` needs both sharded axes to divide the grid. The
+            # padded rows and columns are their own, and the prologue never
+            # mixes them with a kept one, so the padded output is sliced away
+            # unread before the contraction sees it.
+            width = [(0, 0)] * array.ndim
+            width[row], width[row + 1] = (0, row_pad), (0, column_pad)
+            array = jnp.pad(array, width)
+        # Pinning each operand to the layout its blocks are cut on keeps
+        # `shard_map` from having to reshard the mask, which is built from a
+        # per-token mask rather than placed as a pair tensor.
+        operands.append(shard_pair_rows(array, row_axis=row, col_axis=row + 1))
+        specs.append(pair_spec(array.ndim, row_axis=row, col_axis=row + 1))
+
+    def local(*sharded):
+        *arrays, params_local = sharded
+        return _triangle_prologue_rows(
+            arrays[0],
+            params_local,
+            engine,
+            arrays[1] if len(arrays) > 1 else None,
+            eps,
+            rows=_AUTOCAST_ROWS,
+        )
+
+    # Parameters go in as a replicated operand rather than a closure: the
+    # trunk runs inside the recycling `lax.scan`, where they are traced
+    # values, and an operand keeps the whole tree on the mesh. Only this
+    # engine's own leaves, the way `_cp_pair_transition` takes them -- the
+    # whole trunk tree as an operand is a `shard_map` input per direction per
+    # layer, which the compiler then has to prune.
+    block_params = {
+        name: value
+        for name, value in params.items()
+        if name.startswith(f"{engine}.")
+    }
+    out_spec = pair_spec(pair.ndim)
+    out = jax.shard_map(
+        local,
+        mesh=mesh,
+        in_specs=(*specs, PartitionSpec()),
+        out_specs=(out_spec, out_spec, out_spec),
+    )(*operands, block_params)
+    if not (row_pad or column_pad):
+        return out
+    # Re-pinning each slice keeps the partitioner from answering the narrower
+    # shape with a replicated result.
+    return tuple(
+        shard_pair_rows(
+            jax.lax.slice_in_dim(
+                jax.lax.slice_in_dim(part, 0, n_rows, axis=-3),
+                0,
+                n_columns,
+                axis=-2,
+            )
+        )
+        for part in out
+    )
+
+
+def _autocast_triangle(pair, params, prefix, outgoing, mask, eps):
+    engine = f"{prefix}._engine" if prefix else "_engine"
+    left, right, output_gate = _triangle_prologue_blocked(
+        pair, params, engine, mask, eps
+    )
     if _cp_layout() == "2d":
         # Both pair axes are sharded, so the contraction is Cannon's algorithm
         # -- skew, then one local matmul per ring hop -- and nothing full-width
@@ -251,7 +414,7 @@ def _autocast_triangle(pair, params, prefix, outgoing, mask, eps):
                 right.astype(jnp.bfloat16),
                 outgoing=outgoing,
             ).astype(jnp.bfloat16),
-            normalized,
+            output_gate,
             params,
             engine,
             eps,
@@ -279,19 +442,22 @@ def _autocast_triangle(pair, params, prefix, outgoing, mask, eps):
             ).astype(jnp.bfloat16)
         )
     contracted = jnp.concatenate(chunks, axis=1)
-    return _finish_autocast_triangle(contracted, normalized, params, engine, eps)
+    return _finish_autocast_triangle(contracted, output_gate, params, engine, eps)
 
 
-def _finish_autocast_triangle(contracted, normalized, params, engine, eps):
-    """The native block's epilogue, shared by its dense and Cannon branches."""
+def _finish_autocast_triangle(contracted, output_gate, params, engine, eps):
+    """The native block's epilogue, shared by its dense and Cannon branches.
+
+    The output gate arrives already computed: it is a function of the
+    normalised *input*, not of the contraction, and `_triangle_prologue`
+    produces it beside `left` and `right` so the float32 normalisation does
+    not have to outlive the contraction to be read here.
+    """
     mixed = _autocast_linear(
         _autocast_norm(contracted, params, f"{engine}.norm_mix", eps),
         params,
         f"{engine}.proj_emit",
     )
-    output_gate = jax.nn.sigmoid(
-        _autocast_linear(normalized, params, f"{engine}.proj_gate").astype(jnp.float32)
-    ).astype(jnp.bfloat16)
     return mixed * output_gate
 
 

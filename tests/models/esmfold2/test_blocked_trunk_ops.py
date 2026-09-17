@@ -1,4 +1,4 @@
-"""Blocking the trunk's two widest operations changes bytes, not arithmetic.
+"""Blocking the trunk's widest operations changes bytes, not arithmetic.
 
 `swiglu` widens `[..., C]` to `[..., 2 * hidden]` and holds the split halves
 and their product at once; `outer_product_mean` builds `[B, N, N, c, d]` before
@@ -11,12 +11,21 @@ Both are blocked along an axis nothing reduces over, so the result is the same
 value computed in smaller pieces. These tests pin that, and pin that the block
 only engages when it is worth engaging.
 
-Only one of the two is still on the released path. `trunk_dtype="bfloat16"`
+Only one of those two is still on the released path. `trunk_dtype="bfloat16"`
 routes every transition to `trunk._autocast_transition`, whose own 64-row chunk
 loop replaces `swiglu` entirely; `outer_product_mean` blocks on both arms of
 its `native_autocast` branch and is untouched. The last test here pins that
 routing, because it is the fact the `swiglu` docstring's arena numbers no
 longer describe.
+
+The third blocked stage is the native triangle prologue --
+`trunk._triangle_prologue`, everything from `norm_start` to the split -- which
+is on that released path and was the widest unblocked pair region left: the
+`proj_bundle` output alone is four times the pair width and is pinned by
+`_native_bf16_linear`'s barrier. Its arm here is a value comparison against
+the unblocked form and a census saying nothing wider than the pair survives
+at full width; the sharded half lives in `test_context_parallel`, because the
+block is taken inside a `shard_map` when a mesh is active.
 """
 
 from __future__ import annotations
@@ -208,6 +217,168 @@ def test_triangle_multiplication_keeps_its_operand_width():
     operands, result = signature.split("->")
     assert operands.count("bf16") == 2, signature
     assert "f32" in result, signature
+
+
+def _random_triangle_params(channels: int, seed: int) -> dict:
+    """`_triangle_params` with weights, which the zero ones cannot replace.
+
+    The shared fixture zeroes every projection because the tests that use it
+    read the *program*, not its output. A value comparison run on it agrees
+    perfectly and proves nothing, which is what the non-zero tripwire in each
+    test below is there to say.
+    """
+    rng = np.random.default_rng(seed)
+
+    def arr(*shape, dtype=jnp.float32):
+        return jnp.asarray(rng.normal(size=shape, scale=0.5), dtype)
+
+    params = _triangle_params(channels)
+    engine = "t._engine"
+    params[f"{engine}.norm_start.weight"] = arr(channels) * 0.1 + 1.0
+    params[f"{engine}.norm_start.bias"] = arr(channels) * 0.1
+    params[f"{engine}.norm_mix.weight"] = arr(channels) * 0.1 + 1.0
+    params[f"{engine}.norm_mix.bias"] = arr(channels) * 0.1
+    params[f"{engine}.proj_bundle.weight"] = arr(
+        4 * channels, channels, dtype=jnp.bfloat16
+    )
+    params[f"{engine}.proj_emit.weight"] = arr(channels, channels, dtype=jnp.bfloat16)
+    params[f"{engine}.proj_gate.weight"] = arr(channels, channels, dtype=jnp.bfloat16)
+    return params
+
+
+def _ulp(reference: np.ndarray) -> float:
+    """One bfloat16 ULP at the magnitude of `reference`.
+
+    A blocked native block rounds to bfloat16 at every linear, so its floor is
+    the format and a decimal tolerance would be either unmeetable or
+    meaningless -- the same unit `tests/models/esmfold2/test_context_parallel`
+    states its grid tolerance in.
+    """
+    scale = float(np.abs(reference).max())
+    return 2.0 ** (np.floor(np.log2(scale)) - 7)
+
+
+@pytest.mark.parametrize("outgoing", [True, False])
+@pytest.mark.parametrize("tokens", [11, 12])
+def test_the_blocked_triangle_prologue_matches_the_whole_one(outgoing, tokens):
+    """`norm_start` through the split, in row blocks versus in one piece.
+
+    11 rows in blocks of 4 leaves 3, which is the trailing-block case every
+    other blocked path in this file also keeps an arm for. Both contraction
+    directions are run because only one of them slices `left` on the axis the
+    prologue blocks, and a prologue that leaked its blocking into the
+    contraction would fail on exactly the other one.
+
+    Asserted to a bfloat16 ULP rather than bitwise: a blocked shape reaches a
+    different GEMM tiling, which is the caveat every blocked path in this
+    repository carries.
+    """
+    channels = 8
+    params = _random_triangle_params(channels, 0)
+    rng = np.random.default_rng(0)
+    pair = jnp.asarray(
+        rng.normal(size=(1, tokens, tokens, channels), scale=0.5), jnp.bfloat16
+    )
+    keep = rng.random(tokens) > 0.15
+    mask = jnp.asarray((keep[:, None] & keep[None, :])[None].astype(np.float32))
+
+    def run():
+        return np.asarray(
+            trunk.triangle_multiplicative(
+                pair,
+                params,
+                "t",
+                outgoing=outgoing,
+                mask=mask,
+                native_autocast=True,
+            ),
+            dtype=np.float32,
+        )
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(trunk, "_AUTOCAST_ROWS", 10**6)
+        whole = run()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(trunk, "_AUTOCAST_ROWS", 4)
+        blocked = run()
+
+    assert blocked.shape == whole.shape
+    assert float(np.abs(whole).max()) > 0.0
+    assert float(np.abs(whole - blocked).max()) <= 8 * _ulp(whole)
+
+
+def test_the_blocked_prologue_leaves_nothing_full_width_but_its_operands():
+    """The census the block exists for, read off the jaxpr.
+
+    `_autocast_linear` hides the native arm inside a `platform_dependent`, so
+    a compile on any one platform prunes exactly the branch whose buffers this
+    is about; the jaxpr carries both. What must be gone is every pair-shaped
+    value wider than the pair itself -- `proj_bundle`'s output at four times
+    the width, the float32 copy its sigmoid takes, and `routed` at twice --
+    since those are what the prologue builds and the contraction never reads.
+    """
+    tokens, channels = 12, 8
+    params = _triangle_params(channels)
+    pair = jnp.zeros((1, tokens, tokens, channels), jnp.bfloat16)
+    mask = jnp.ones((1, tokens, tokens), jnp.float32)
+
+    def widths(rows):
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(trunk, "_AUTOCAST_ROWS", rows)
+            jaxpr = jax.make_jaxpr(
+                lambda p, m: trunk.triangle_multiplicative(
+                    p, params, "t", outgoing=True, mask=m, native_autocast=True
+                )
+            )(pair, mask)
+        found = set()
+
+        def walk(eqns):
+            for eqn in eqns:
+                for var in eqn.outvars:
+                    shape = getattr(getattr(var, "aval", None), "shape", ())
+                    if len(shape) == 4 and shape[1] == shape[2] == tokens:
+                        found.add(shape[3])
+                for value in eqn.params.values():
+                    for inner in _sub_jaxprs(value):
+                        walk(inner.eqns)
+
+        walk(jaxpr.jaxpr.eqns)
+        return found
+
+    # Unblocked, the prologue's own widths are there to be removed.
+    assert {2 * channels, 4 * channels} <= widths(10**6)
+    # Blocked, nothing full-width is wider than the pair representation.
+    assert max(widths(4)) <= channels
+
+
+def test_the_output_gate_is_taken_from_the_normalised_input():
+    """`proj_gate` reads `norm_start`'s output, not the contraction's.
+
+    Moving `proj_gate` into the prologue is what lets the float32
+    normalisation stop straddling the contraction, and it is only sound
+    because the gate never depended on the contraction in the first place --
+    which is one of the three facts this module's docstring opens with.
+    Changing the contraction must therefore not change the gate.
+    """
+    channels = 8
+    params = _random_triangle_params(channels, 1)
+    pair = jnp.asarray(
+        np.random.default_rng(2).normal(size=(1, 6, 6, channels), scale=0.5),
+        jnp.bfloat16,
+    )
+
+    engine = "t._engine"
+    normalized = trunk._autocast_norm(pair, params, f"{engine}.norm_start")
+    expected = jax.nn.sigmoid(
+        trunk._autocast_linear(normalized, params, f"{engine}.proj_gate").astype(
+            jnp.float32
+        )
+    ).astype(jnp.bfloat16)
+
+    _, _, gate = trunk._triangle_prologue(pair, params, engine, None, 1e-5)
+    np.testing.assert_array_equal(np.asarray(gate), np.asarray(expected))
+    assert gate.dtype == jnp.bfloat16
+    assert float(np.abs(np.asarray(gate, np.float32) - 0.5).max()) > 0.0
 
 
 def _triangle_params(channels: int) -> dict:

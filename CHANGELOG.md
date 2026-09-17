@@ -224,6 +224,47 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **ESMFold2's native triangle block normalises and projects in row blocks.**
+  Everything between the block's normalisation and its split -- `norm_start`,
+  `proj_bundle`, the input gate, the mask, and the split itself -- now runs 64
+  rows at a time, the same rule the pair transition beside it has always used.
+  Nothing else in the block moves: the contraction keeps its own 64-row chunk
+  loop and its arithmetic, and the square grid keeps Cannon's schedule.
+
+  This was the largest unblocked pair region in the port and it is on the
+  released path. `proj_bundle` widens the pair representation four times over
+  and `_native_bf16_linear` pins that output behind an `optimization_barrier`
+  to hold the native BF16 GEMM destination, so at 3,012 tokens the prologue
+  asked for a float32 `[1, N, N, 256]`, a bfloat16 `[1, N, N, 1024]` and a
+  bfloat16 `[1, N, N, 512]` at once -- 34.6 GiB against an 87 GiB admission
+  law, none of which the contraction reads. Compiled at 2,112 tokens with the
+  released widths, every full-width value wider than the pair representation
+  is gone from the block's jaxpr: two float32 and eight bfloat16
+  `[1, N, N, 1024]`, four float32 and ten bfloat16 `[1, N, N, 512]`, replaced
+  by 64-row slices of the same widths, with the full-width float32
+  `[1, N, N, 256]` count falling 44 to 20 alongside.
+
+  The output gate moves with them. It was computed in the block's epilogue
+  from the normalised *input*, which is what kept that float32 normalisation
+  alive across the whole O(N^3) contraction; it is now computed in the
+  prologue, so what the contraction steps over is a bfloat16 gate at half the
+  width. The value is identical -- upstream's gate never depended on the
+  contraction, which is the third of the three facts `models/trunk.py` opens
+  with.
+
+  Under a mesh the block is taken inside a `shard_map`, on the rows the device
+  already holds, and is dropped entirely when it would be wider than the local
+  tile -- so a block of a sharded axis is never asked for, and no sharded
+  program below 64 rows per device changes at all. Measured on four forced CPU
+  devices at a token count neither layout divides, the collective census is
+  unchanged in both: 1-D 9 all-gather / 6 all-reduce / 12 all-to-all, 2-D 6
+  all-gather / 20 collective-permute, before and after.
+
+  Exact arithmetic, not bit-identical, which is the caveat every blocked path
+  in this repository carries: a blocked shape reaches a different GEMM tiling.
+  Measured against the unblocked form at 1.5 to 2.75 bfloat16 ULP of the
+  block's own output, on serial, a four-shard row mesh and a 2x2 grid.
+
 - **`cp_layout=auto` builds the square grid on ESMFold2 when the device count
   is a perfect square.** Four cards are a 2x2 mesh there unless `cp_layout=1d`
   asks otherwise; nine are 3x3. Every other count stays one-dimensional, an
