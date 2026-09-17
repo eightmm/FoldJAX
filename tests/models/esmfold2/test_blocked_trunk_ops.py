@@ -18,14 +18,21 @@ its `native_autocast` branch and is untouched. The last test here pins that
 routing, because it is the fact the `swiglu` docstring's arena numbers no
 longer describe.
 
-The third blocked stage is the native triangle prologue --
-`trunk._triangle_prologue`, everything from `norm_start` to the split -- which
-is on that released path and was the widest unblocked pair region left: the
-`proj_bundle` output alone is four times the pair width and is pinned by
-`_native_bf16_linear`'s barrier. Its arm here is a value comparison against
-the unblocked form and a census saying nothing wider than the pair survives
-at full width; the sharded half lives in `test_context_parallel`, because the
-block is taken inside a `shard_map` when a mesh is active.
+The third blocked stage is the native triangle itself. Its prologue --
+`trunk._triangle_prologue`, everything from `norm_start` to the split -- was
+the widest unblocked pair region left on that released path: the `proj_bundle`
+output alone is four times the pair width and is pinned by
+`_native_bf16_linear`'s barrier. Blocking the prologue alone only moved those
+bytes, because assembling `left`, `right` and `output_gate` for a whole
+contraction is three full-width destinations that did not exist before, so the
+serial path now streams the contraction instead
+(`trunk._autocast_triangle_streamed`): one operand whole, everything else --
+the other operand, the gate, the contraction's destination and the whole
+epilogue -- a block of the output at a time. Its arms here are a value
+comparison against the unblocked form and a census counting what survives at
+full width; the sharded half lives in `test_context_parallel`, because a mesh
+keeps the whole-operand arrangement and blocks the prologue inside a
+`shard_map` instead.
 """
 
 from __future__ import annotations
@@ -261,17 +268,19 @@ def _ulp(reference: np.ndarray) -> float:
 @pytest.mark.parametrize("outgoing", [True, False])
 @pytest.mark.parametrize("tokens", [11, 12])
 def test_the_blocked_triangle_prologue_matches_the_whole_one(outgoing, tokens):
-    """`norm_start` through the split, in row blocks versus in one piece.
+    """The streamed native triangle against the same call in one piece.
 
     11 rows in blocks of 4 leaves 3, which is the trailing-block case every
     other blocked path in this file also keeps an arm for. Both contraction
-    directions are run because only one of them slices `left` on the axis the
-    prologue blocks, and a prologue that leaked its blocking into the
-    contraction would fail on exactly the other one.
+    directions are run because the streamed form is not symmetric: it cuts
+    the output on `i` outgoing and on `j` incoming, and holds the other
+    operand whole, so a direction whose cut and whose whole operand disagree
+    fails on exactly one of the two.
 
     Asserted to a bfloat16 ULP rather than bitwise: a blocked shape reaches a
     different GEMM tiling, which is the caveat every blocked path in this
-    repository carries.
+    repository carries. Measured 0.0 ULP against the unblocked arm at these
+    sizes and 1.0 at 65 tokens in blocks of 64, where the tiling does change.
     """
     channels = 8
     params = _random_triangle_params(channels, 0)
@@ -307,48 +316,70 @@ def test_the_blocked_triangle_prologue_matches_the_whole_one(outgoing, tokens):
     assert float(np.abs(whole - blocked).max()) <= 8 * _ulp(whole)
 
 
-def test_the_blocked_prologue_leaves_nothing_full_width_but_its_operands():
+def _full_width_values(rows, tokens, channels, params, outgoing=True):
+    """Every pair-shaped `[b, N, N, *]` value one native triangle call emits.
+
+    `_autocast_linear` and `_autocast_norm` hide their native arms inside a
+    `platform_dependent`, so a compile on any one platform prunes exactly the
+    branch whose buffers this is about; the jaxpr carries both, which makes
+    this an upper bound on what any one platform allocates and a sound basis
+    for a before/after comparison.
+    """
+    pair = jax.ShapeDtypeStruct((1, tokens, tokens, channels), jnp.bfloat16)
+    mask = jax.ShapeDtypeStruct((1, tokens, tokens), jnp.float32)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(trunk, "_AUTOCAST_ROWS", rows)
+        jaxpr = jax.make_jaxpr(
+            lambda p, m: trunk.triangle_multiplicative(
+                p, params, "t", outgoing=outgoing, mask=m, native_autocast=True
+            )
+        )(pair, mask)
+    found: collections.Counter = collections.Counter()
+
+    def walk(eqns):
+        for eqn in eqns:
+            for var in eqn.outvars:
+                aval = getattr(var, "aval", None)
+                shape = getattr(aval, "shape", ())
+                if len(shape) == 4 and shape[1] == shape[2] == tokens:
+                    found[(aval.dtype, shape[3])] += 1
+            for value in eqn.params.values():
+                for inner in _sub_jaxprs(value):
+                    walk(inner.eqns)
+
+    walk(jaxpr.jaxpr.eqns)
+    return found
+
+
+@pytest.mark.parametrize("outgoing", [True, False])
+def test_the_streamed_triangle_leaves_two_full_width_values(outgoing):
     """The census the block exists for, read off the jaxpr.
 
-    `_autocast_linear` hides the native arm inside a `platform_dependent`, so
-    a compile on any one platform prunes exactly the branch whose buffers this
-    is about; the jaxpr carries both. What must be gone is every pair-shaped
-    value wider than the pair itself -- `proj_bundle`'s output at four times
-    the width, the float32 copy its sigmoid takes, and `routed` at twice --
-    since those are what the prologue builds and the contraction never reads.
+    The contraction sums over `k`, so one operand is read whole by every
+    block of the output and cannot be cut; the count this pins is therefore
+    two and not one. They are that whole operand -- `right` outgoing, `left`
+    incoming -- and the pair update the epilogue writes, both bfloat16 and
+    both the pair's own width.
+
+    Everything else the call used to leave at full width is gone: the other
+    operand, the output gate, the contraction's concatenated destination, the
+    float32 `norm_mix` output and the `proj_emit` chain that read it. At
+    2,112 tokens and 256 channels the same census reads 11 bfloat16 values
+    (23,958 MiB) and 10 float32 (43,560 MiB) before, 2 bfloat16
+    (4,356 MiB) and no float32 after.
     """
     tokens, channels = 12, 8
     params = _triangle_params(channels)
-    pair = jnp.zeros((1, tokens, tokens, channels), jnp.bfloat16)
-    mask = jnp.ones((1, tokens, tokens), jnp.float32)
-
-    def widths(rows):
-        with pytest.MonkeyPatch.context() as patch:
-            patch.setattr(trunk, "_AUTOCAST_ROWS", rows)
-            jaxpr = jax.make_jaxpr(
-                lambda p, m: trunk.triangle_multiplicative(
-                    p, params, "t", outgoing=True, mask=m, native_autocast=True
-                )
-            )(pair, mask)
-        found = set()
-
-        def walk(eqns):
-            for eqn in eqns:
-                for var in eqn.outvars:
-                    shape = getattr(getattr(var, "aval", None), "shape", ())
-                    if len(shape) == 4 and shape[1] == shape[2] == tokens:
-                        found.add(shape[3])
-                for value in eqn.params.values():
-                    for inner in _sub_jaxprs(value):
-                        walk(inner.eqns)
-
-        walk(jaxpr.jaxpr.eqns)
-        return found
+    whole = _full_width_values(10**6, tokens, channels, params, outgoing)
+    streamed = _full_width_values(4, tokens, channels, params, outgoing)
 
     # Unblocked, the prologue's own widths are there to be removed.
-    assert {2 * channels, 4 * channels} <= widths(10**6)
-    # Blocked, nothing full-width is wider than the pair representation.
-    assert max(widths(4)) <= channels
+    bf16 = jnp.dtype(jnp.bfloat16)
+    assert {(bf16, 2 * channels), (bf16, 4 * channels)} <= set(whole)
+    # Streamed, two values of the pair's own width and nothing else at all --
+    # no float32 pair tensor, and nothing wider than the pair.
+    assert streamed == {(bf16, channels): 2}, streamed
+    assert sum(whole.values()) > sum(streamed.values())
 
 
 def test_the_output_gate_is_taken_from_the_normalised_input():

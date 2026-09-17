@@ -224,6 +224,43 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **ESMFold2's native triangle block streams its contraction instead of
+  blocking only the prologue.** Blocking the prologue alone (below) moved
+  bytes rather than removing them: a contraction fed whole operands needs
+  `left`, `right` and the output gate assembled, which is three full-width
+  destinations the unblocked form never built, and the concatenated
+  contraction result is a fourth. At 2,096 tokens on a card the measured peak
+  fell 46,042 to 43,325 MiB against a predicted 20.7 GiB, and a GPU
+  attribution re-read named those three -- 3 x 2,145 MiB -- plus the epilogue
+  running at full width as what took the rest back.
+
+  The contraction sums over `k`, so exactly one of its operands is read whole
+  by every block of the output: the serial path now cuts the output on `i` for
+  the outgoing direction and on `j` for the incoming one, assembles that one
+  operand -- `right` outgoing, `left` incoming -- and computes the other
+  operand, the output gate, the contraction and the whole epilogue (`norm_mix`
+  and `proj_emit`) 64 rows of the output at a time. Cutting the output on the
+  axis the *cut* operand and the gate share is what keeps the cost flat: each
+  block normalises one slice of the pair rather than two, and `proj_bundle` is
+  evaluated on the rows for the operand that block needs -- half its output
+  columns, which a matmul computes independently of the other half -- so the
+  two passes over the pair together still spend one `proj_bundle`.
+
+  Compiled at 2,112 tokens with the released widths, the block's jaxpr keeps
+  two full-width pair values: the whole operand and the pair update it
+  returns, both bfloat16 `[1, N, N, 256]`, 4,356 MiB together. Before, the
+  same census counted eleven bfloat16 (23,958 MiB) and ten float32
+  (43,560 MiB, both platform branches included).
+
+  Nothing sharded changes. A mesh keeps the whole-operand arrangement, Cannon's
+  schedule on the grid and the row-blocked prologue inside its `shard_map`, so
+  the collective census is untouched by construction; the streamed route is
+  taken only off a mesh and only when the pair is wider than the block.
+  Bit-identical to the released blocked form on CPU at 11, 12, 13 and 17
+  tokens in blocks of 4, both directions; 1.0 bfloat16 ULP against the
+  unblocked form at 65 tokens in blocks of 64, where the GEMM tiling does
+  change -- inside the 1.5 to 2.75 ULP the row block was accepted at.
+
 - **ESMFold2 builds its MSA profile over blocks of alignment rows.** The
   profile needs only the sum of the residue-type one-hot over the alignment
   depth, and the expansion in between is 33 times the alignment: at 2,096

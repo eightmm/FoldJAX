@@ -161,7 +161,9 @@ def test_native_block_boundaries_and_chunk_tail(monkeypatch, compiled, length):
     einsum = jnp.einsum
 
     def contract(equation, left, right, **kwargs):
-        contractions.append((equation, left.shape, left.dtype, right.dtype))
+        contractions.append(
+            (equation, left.shape, right.shape, left.dtype, right.dtype)
+        )
         return einsum(equation, left, right, **kwargs)
 
     def norm(x, p, name, eps=1e-5):
@@ -188,12 +190,31 @@ def test_native_block_boundaries_and_chunk_tail(monkeypatch, compiled, length):
         shape[1] for name, shape, _, _ in observed if name.endswith("transition.norm")
     ]
     assert transition == ([64, 1] if length == 65 else [3])
-    for equation, axis in (("bikd,bjkd->bijd", 1), ("bkid,bkjd->bijd", 2)):
+    # Which operand carries the block differs by direction, because the
+    # streamed contraction cuts the output on `i` outgoing and on `j`
+    # incoming, and the operand the other index reads is passed whole: `left`
+    # blocked on axis 1 against a whole `right` for `bikd,bjkd`, a whole
+    # `left` against `right` blocked on axis 2 for `bkid,bkjd`. Reading the
+    # left operand for both is how this test read 65 where it wanted 64.
+    for equation, operand, axis in (
+        ("bikd,bjkd->bijd", 0, 1),
+        ("bkid,bkjd->bijd", 1, 2),
+    ):
         selected = [
-            (shape[axis], a, b) for eq, shape, a, b in contractions if eq == equation
+            (shapes[operand][axis], a, b)
+            for eq, *shapes, a, b in contractions
+            if eq == equation
         ]
         assert [size for size, _, _ in selected] == transition
         assert all(a == b == jnp.bfloat16 for _, a, b in selected)
+        # The whole operand really is whole: a block on both would be a
+        # partial contraction, and nothing here would say so.
+        whole = [
+            shapes[1 - operand][axis]
+            for eq, *shapes, _, _ in contractions
+            if eq == equation
+        ]
+        assert whole == [length] * len(selected)
 
 
 def test_affine_is_not_prematurely_rounded():

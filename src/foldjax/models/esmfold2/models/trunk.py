@@ -225,6 +225,37 @@ def _autocast_norm(x, params, prefix, eps=1e-5):
 _AUTOCAST_ROWS = 64
 
 
+#: `proj_bundle`'s two contraction operands, in the order it emits them.
+_LEFT, _RIGHT = 0, 1
+
+
+def _route(bundled, mask):
+    """`proj_bundle`'s output through its own gate and the visibility mask.
+
+    Split in half rather than into the two operands: the halves are the signal
+    and the gate logits, and `[left | right]` sits *inside* each of them. A
+    bundle restricted to one operand's rows (`_operand_params`) is therefore
+    routed by this same function, unchanged.
+    """
+    signal, logits = jnp.split(bundled, 2, axis=-1)
+    routed = signal * jax.nn.sigmoid(logits.astype(jnp.float32)).astype(jnp.bfloat16)
+    if mask is not None:
+        # Cast down, the way `triangle_multiplicative`'s own body does and the
+        # way upstream does at `modeling_esmfold2.py:1098` -- "so masking does
+        # not promote the O(N^3) contraction to fp32". `pair_mask` is float32
+        # (`model.py:1310`) and `routed` is bfloat16, so without this the
+        # multiply promotes the widest tensor this block owns.
+        routed = routed * mask[..., None].astype(routed.dtype)
+    return routed
+
+
+def _output_gate(normalized, params, engine):
+    """`proj_gate`, which reads the normalised input and not the contraction."""
+    return jax.nn.sigmoid(
+        _autocast_linear(normalized, params, f"{engine}.proj_gate").astype(jnp.float32)
+    ).astype(jnp.bfloat16)
+
+
 def _triangle_prologue(pair, params, engine, mask, eps):
     """`norm_start` through the split, over whatever rows it is handed.
 
@@ -239,41 +270,88 @@ def _triangle_prologue(pair, params, engine, mask, eps):
     otherwise straddles the whole O(N^3) contraction and is what forces the
     float32 normalisation to exist at full width. Handing the epilogue the
     bfloat16 gate instead halves what the contraction has to step over.
+
+    Both operands and the gate at once, which is what the contraction needs
+    when it is fed whole -- the sharded schedules below, and any pair small
+    enough that a block would divide nothing. The serial program streams the
+    contraction instead and asks for one operand at a time
+    (`_autocast_triangle_streamed`).
     """
     normalized = _autocast_norm(pair, params, f"{engine}.norm_start", eps)
-    bundled = _autocast_linear(normalized, params, f"{engine}.proj_bundle")
-    signal, logits = jnp.split(bundled, 2, axis=-1)
-    gate = jax.nn.sigmoid(logits.astype(jnp.float32)).astype(jnp.bfloat16)
-    routed = signal * gate
-    if mask is not None:
-        # Cast down, the way `triangle_multiplicative`'s own body does and the
-        # way upstream does at `modeling_esmfold2.py:1098` -- "so masking does
-        # not promote the O(N^3) contraction to fp32". `pair_mask` is float32
-        # (`model.py:1310`) and `routed` is bfloat16, so without this the
-        # multiply promotes the widest tensor this block owns.
-        routed = routed * mask[..., None].astype(routed.dtype)
+    routed = _route(_autocast_linear(normalized, params, f"{engine}.proj_bundle"), mask)
     left, right = jnp.split(routed, 2, axis=-1)
-    output_gate = jax.nn.sigmoid(
-        _autocast_linear(normalized, params, f"{engine}.proj_gate").astype(jnp.float32)
-    ).astype(jnp.bfloat16)
-    return left, right, output_gate
+    return left, right, _output_gate(normalized, params, engine)
+
+
+def _operand_params(params, engine, half):
+    """`proj_bundle` restricted to the rows one contraction operand reads.
+
+    The bundle emits `[signal | logits]`, each of which is `[left | right]`,
+    so operand `half` keeps output columns `[h*L, (h+1)*L)` of the signal and
+    the matching columns of the logits, `2L` further along -- rows of the
+    weight, which is stored `[out, in]`.
+
+    A matmul's output columns do not depend on one another, so taking those
+    rows alone computes exactly the columns that operand keeps, for half the
+    arithmetic. That is what lets the streamed contraction below pass over
+    `norm_start` twice and still spend one `proj_bundle` in total rather than
+    two. Measured bitwise identical to slicing the full product, per operand,
+    on CPU.
+    """
+    prefix = f"{engine}.proj_bundle"
+    latent = params[f"{prefix}.weight"].shape[0] // 4
+    selected = {}
+    for name in ("weight", "bias"):
+        if f"{prefix}.{name}" not in params:
+            continue
+        rows = params[f"{prefix}.{name}"]
+        selected[f"{prefix}.{name}"] = jnp.concatenate(
+            [
+                rows[half * latent : (half + 1) * latent],
+                rows[(2 + half) * latent : (3 + half) * latent],
+            ],
+            axis=0,
+        )
+    return selected
+
+
+def _triangle_operand(pair, params, engine, mask, eps, *, half, gate):
+    """One contraction operand, and optionally the output gate beside it.
+
+    `half` is `_LEFT` or `_RIGHT`. Everything here is elementwise in the two
+    token axes, so the caller may hand this a block of rows *or* a block of
+    columns and get that block of the operand back.
+    """
+    normalized = _autocast_norm(pair, params, f"{engine}.norm_start", eps)
+    operand = _route(
+        _autocast_linear(
+            normalized, _operand_params(params, engine, half), f"{engine}.proj_bundle"
+        ),
+        mask,
+    )
+    if not gate:
+        return operand, None
+    return operand, _output_gate(normalized, params, engine)
 
 
 def _triangle_prologue_rows(pair, params, engine, mask, eps, *, rows):
     """`_triangle_prologue` in row blocks, assembling the whole operands.
 
-    The contraction is left whole and fed whole operands: `left` is sliced on
-    its *row* axis for the outgoing direction and on its *column* axis for the
-    incoming one (`bkid,bkjd->bijd`), so a row-blocked prologue cannot feed
-    both, and both directions need `right` entire in any case. What the block
-    removes is everything between the normalisation and the split -- the
-    float32 `normalized`, the `proj_bundle` output that
-    `_native_bf16_linear`'s barrier pins at four times the pair width, and
-    `routed` -- which is the largest unblocked pair region in this port and
-    none of which the contraction reads.
+    The sharded arrangement, and the reason it is not the serial one: a
+    sharded contraction is a fixed schedule over whole operands -- Cannon's
+    algorithm on the grid, one dense einsum plus an all-reduce on the row mesh
+    -- so its operands have to be assembled before it starts, and this keeps
+    only what the block was for. What the block removes is everything between
+    the normalisation and the split: the float32 `normalized`, the
+    `proj_bundle` output that `_native_bf16_linear`'s barrier pins at four
+    times the pair width, and `routed`, none of which the contraction reads.
+
+    The three assembled operands are themselves full width, which the serial
+    program does not pay: it streams the contraction and never assembles more
+    than one (`_autocast_triangle_streamed`).
     """
     n_rows = pair.shape[-3]
-    if rows is None or rows >= n_rows:
+    if rows >= n_rows:
         return _triangle_prologue(pair, params, engine, mask, eps)
     pieces = []
     for start in range(0, n_rows, rows):
@@ -315,12 +393,15 @@ def _triangle_prologue_blocked(pair, params, engine, mask, eps):
     is dropped rather than relocated and the sharded program is left exactly
     as it was. At the released 64 rows that is every context-parallel program
     below 64 rows per device, which is every fixture the suite runs.
+
+    Serially there is nothing to relocate and the prologue is whole: the
+    blocked serial route is `_autocast_triangle_streamed`, which cuts the
+    contraction rather than the prologue, so the only serial caller left here
+    is a pair the block would not divide.
     """
     mesh = cp_mesh()
     if mesh is None:
-        return _triangle_prologue_rows(
-            pair, params, engine, mask, eps, rows=_AUTOCAST_ROWS
-        )
+        return _triangle_prologue(pair, params, engine, mask, eps)
     grid_rows, grid_columns = cp_grid()
     n_rows, n_columns = pair.shape[-3], pair.shape[-2]
     row_pad, column_pad = (-n_rows) % grid_rows, (-n_columns) % grid_columns
@@ -391,8 +472,115 @@ def _triangle_prologue_blocked(pair, params, engine, mask, eps):
     )
 
 
+def _triangle_operand_rows(pair, params, engine, mask, eps, *, rows, half):
+    """The one operand the streamed contraction needs whole, in row blocks.
+
+    Row blocks and not column blocks only because the pair's first token axis
+    is the major one; the prologue is elementwise in both, so either would
+    give the same value. What the block keeps out is the `proj_bundle` output
+    at twice this operand's width, pinned by `_native_bf16_linear`'s barrier.
+    """
+    n_rows = pair.shape[1]
+    if rows >= n_rows:
+        return _triangle_operand(
+            pair, params, engine, mask, eps, half=half, gate=False
+        )[0]
+    pieces = []
+    for start in range(0, n_rows, rows):
+        # `min` because a trailing block is shorter whenever the axis does not
+        # divide, and `slice_in_dim` rejects an overrun rather than clamping it
+        # the way Python slicing would.
+        stop = min(start + rows, n_rows)
+        pieces.append(
+            _triangle_operand(
+                jax.lax.slice_in_dim(pair, start, stop, axis=1),
+                params,
+                engine,
+                # The pair's `[B, N, N, C]` and its mask's `[B, N, N]` carry
+                # the token axes at 1 and 2 alike, which is why one index
+                # serves both here and in the loop below.
+                None
+                if mask is None
+                else jax.lax.slice_in_dim(mask, start, stop, axis=1),
+                eps,
+                half=half,
+                gate=False,
+            )[0]
+        )
+    return jnp.concatenate(pieces, axis=1)
+
+
+def _autocast_triangle_streamed(pair, params, engine, outgoing, mask, eps):
+    """Contract in blocks of the output, with one operand whole and the rest cut.
+
+    The contraction sums over `k`, so one of its two operands is read entirely
+    by every block of the output and the other is read a block at a time::
+
+        outgoing  out[i, j] = sum_k left[i, k] * right[j, k]
+        incoming  out[i, j] = sum_k left[k, i] * right[k, j]
+
+    Cutting the output on `i` for the outgoing direction and on `j` for the
+    incoming one is what makes the *same* slice of the pair serve both the
+    operand that is cut and the output gate the epilogue multiplies by -- so
+    each block costs one `norm_start` rather than two, and the whole operand
+    is `right` outgoing and `left` incoming. That is the one full-width
+    bfloat16 pair tensor this block builds; `left`/`right`/`output_gate`
+    assembled whole, and the contraction's own concatenated destination, were
+    four of them, and at 2,096 tokens each is 2,145 MiB.
+
+    The epilogue is elementwise in the two token axes like the prologue, so it
+    runs on the block too and the emitted pair update is written straight into
+    the result. Nothing here reduces over a cut axis; the block is a choice of
+    shapes, and the GEMM tiling it reaches is the reason the tests assert a
+    bfloat16 ULP rather than bit equality.
+    """
+    rows = _AUTOCAST_ROWS
+    axis = 1 if outgoing else 2
+    whole = _triangle_operand_rows(
+        pair,
+        params,
+        engine,
+        mask,
+        eps,
+        rows=rows,
+        half=_RIGHT if outgoing else _LEFT,
+    )
+    equation = "bikd,bjkd->bijd" if outgoing else "bkid,bkjd->bijd"
+    blocks = []
+    for start in range(0, pair.shape[axis], rows):
+        stop = min(start + rows, pair.shape[axis])
+        operand, output_gate = _triangle_operand(
+            jax.lax.slice_in_dim(pair, start, stop, axis=axis),
+            params,
+            engine,
+            None
+            if mask is None
+            else jax.lax.slice_in_dim(mask, start, stop, axis=axis),
+            eps,
+            half=_LEFT if outgoing else _RIGHT,
+            gate=True,
+        )
+        lhs, rhs = (operand, whole) if outgoing else (whole, operand)
+        # The float32 accumulation is `preferred_element_type`'s, as it was
+        # when this loop only chunked the einsum: upstream spells
+        # `routed.float().chunk(2, ...)` here and lets autocast narrow the
+        # operands back at the GEMM, which is bfloat16 in and float32 out.
+        contracted = jnp.einsum(
+            equation,
+            lhs.astype(jnp.bfloat16),
+            rhs.astype(jnp.bfloat16),
+            preferred_element_type=jnp.float32,
+        ).astype(jnp.bfloat16)
+        blocks.append(
+            _finish_autocast_triangle(contracted, output_gate, params, engine, eps)
+        )
+    return jnp.concatenate(blocks, axis=axis)
+
+
 def _autocast_triangle(pair, params, prefix, outgoing, mask, eps):
     engine = f"{prefix}._engine" if prefix else "_engine"
+    if cp_mesh() is None and _AUTOCAST_ROWS < pair.shape[1]:
+        return _autocast_triangle_streamed(pair, params, engine, outgoing, mask, eps)
     left, right, output_gate = _triangle_prologue_blocked(
         pair, params, engine, mask, eps
     )
