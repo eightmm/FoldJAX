@@ -95,7 +95,23 @@ def _cuda_affine(x, scale, bias, out_dtype=jnp.float32):
     return out.reshape(x.shape)
 
 
-def _cuda_layer_norm(x, scale, bias, eps=1e-5):
+def _cuda_layer_norm(x, scale, bias, eps=1e-5, out_dtype=jnp.float32):
+    """The pinned CUDA Welford/FMA layer norm, delivered in ``out_dtype``.
+
+    ``out_dtype`` chooses only the width the normalised result is stored at.
+    The reduction and the affine FMA always run in FP32, so narrowing it is
+    bit-exact by the argument ``amp_affine`` records: FP32 storage followed by
+    one round-nearest-even convert and a direct narrow store perform the same
+    FMA and the same single rounding. Emitting the narrow width from the
+    kernel is what removes the FP32 buffer rather than shortening its life,
+    because a ``pallas_call`` output is a real buffer that a following convert
+    cannot be fused into. ``mean`` and ``rstd`` stay FP32; they are a residual
+    output, not a stored activation.
+
+    The default keeps every existing caller's result: Boltz-2 and OpenFold3
+    ask for FP32 here, and ESMFold2 asks for BF16 at the three pair norms
+    whose only consumer rounds to BF16 itself.
+    """
     from jax.experimental import pallas as pl
     from jax.experimental.pallas import triton as pt
 
@@ -165,13 +181,15 @@ def _cuda_layer_norm(x, scale, bias, eps=1e-5):
             op("add.rn.f32", op("mul.rn.f32", variance, 1.0 / width), eps_ref[0]),
         )
         normed = op("mul.rn.f32", rstd, op("sub.rn.f32", values, mean))
-        out_ref[0, :] = op("fma.rn.f32", scale_ref[:], normed, bias_ref[:])
+        out_ref[0, :] = op("fma.rn.f32", scale_ref[:], normed, bias_ref[:]).astype(
+            out_dtype
+        )
         mean_ref[0, 0], rstd_ref[0, 0] = mean, rstd
 
     result = pl.pallas_call(
         kernel,
         out_shape=(
-            jax.ShapeDtypeStruct((rows, width), jnp.float32),
+            jax.ShapeDtypeStruct((rows, width), out_dtype),
             jax.ShapeDtypeStruct((rows, 1), jnp.float32),
             jax.ShapeDtypeStruct((rows, 1), jnp.float32),
         ),

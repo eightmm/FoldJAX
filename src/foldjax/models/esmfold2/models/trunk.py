@@ -183,7 +183,23 @@ def _autocast_linear(x, params, prefix):
     return _autocast_linear_fallback(x, params, prefix)
 
 
-def _autocast_norm(x, params, prefix, eps=1e-5):
+def _autocast_norm(x, params, prefix, eps=1e-5, *, out_dtype=jnp.float32):
+    """The native norm boundary, delivered in ``out_dtype``.
+
+    Native autocast leaves LayerNorm in FP32 and the pair tensors this reads
+    are the widest in the port, so the stored width is worth choosing per
+    site. It is a storage choice only: the reduction and the affine are FP32
+    on every route, and one round-nearest-even convert is the same value
+    whether the kernel or the caller performs it, so `out_dtype=bfloat16`
+    changes no arithmetic wherever the *only* consumer rounds to bfloat16 --
+    which is what `_autocast_linear` does to its input.
+
+    It is therefore opt-in per call site rather than a rule. The default is
+    FP32, because a consumer that reads this dtype rather than rounding it is
+    a different question: `outer_product_mean` masks in `normalised.dtype` to
+    reproduce native's promotion, and the recycle injection and the MSA norms
+    are read at FP32 by their own captured boundaries.
+    """
     from foldjax.models._cp import cp_mesh
     from foldjax.models.boltz2.models.primitives.native_amp_norm import _cuda_layer_norm
 
@@ -207,21 +223,24 @@ def _autocast_norm(x, params, prefix, eps=1e-5):
             x,
             weight,
             bias,
-            cuda=lambda a, w, b: _cuda_layer_norm(a, w, b, eps)[0],
-            default=lambda a, w, b: layer_norm(a, w, b, eps=eps),
+            cuda=lambda a, w, b: _cuda_layer_norm(a, w, b, eps, out_dtype=out_dtype)[0],
+            default=lambda a, w, b: layer_norm(a, w, b, eps=eps).astype(out_dtype),
         )
     return layer_norm(
         x,
         weight,
         bias,
         eps=eps,
-    )
+    ).astype(out_dtype)
 
 
 #: Rows of a pair tensor the native autocast path shapes at once.
 #:
 #: The same 64-row rule `_autocast_transition` below spells inline, named so
-#: the triangle prologue and a test can share it.
+#: the triangle block and a test can share it. It is the streamed
+#: contraction's block of the output serially, and the prologue's block of the
+#: local tile under a mesh; both also read it as the threshold below which
+#: there is nothing to divide.
 _AUTOCAST_ROWS = 64
 
 
@@ -267,9 +286,10 @@ def _triangle_prologue(pair, params, engine, mask, eps):
     `proj_gate` is computed here rather than in the epilogue for that reason.
     It is a pure function of `normalized`, so moving it changes no value --
     and it is the only other consumer of `normalized`, whose live range
-    otherwise straddles the whole O(N^3) contraction and is what forces the
-    float32 normalisation to exist at full width. Handing the epilogue the
-    bfloat16 gate instead halves what the contraction has to step over.
+    otherwise straddles the whole O(N^3) contraction and is what made the
+    normalisation exist at full width across it, in float32 until
+    `_autocast_norm`'s stored width became a per-site choice. Handing the
+    epilogue the gate instead halves what the contraction steps over.
 
     Both operands and the gate at once, which is what the contraction needs
     when it is fed whole -- the sharded schedules below, and any pair small
@@ -277,7 +297,9 @@ def _triangle_prologue(pair, params, engine, mask, eps):
     contraction instead and asks for one operand at a time
     (`_autocast_triangle_streamed`).
     """
-    normalized = _autocast_norm(pair, params, f"{engine}.norm_start", eps)
+    normalized = _autocast_norm(
+        pair, params, f"{engine}.norm_start", eps, out_dtype=jnp.bfloat16
+    )
     routed = _route(_autocast_linear(normalized, params, f"{engine}.proj_bundle"), mask)
     left, right = jnp.split(routed, 2, axis=-1)
     return left, right, _output_gate(normalized, params, engine)
@@ -322,7 +344,9 @@ def _triangle_operand(pair, params, engine, mask, eps, *, half, gate):
     token axes, so the caller may hand this a block of rows *or* a block of
     columns and get that block of the operand back.
     """
-    normalized = _autocast_norm(pair, params, f"{engine}.norm_start", eps)
+    normalized = _autocast_norm(
+        pair, params, f"{engine}.norm_start", eps, out_dtype=jnp.bfloat16
+    )
     operand = _route(
         _autocast_linear(
             normalized, _operand_params(params, engine, half), f"{engine}.proj_bundle"
@@ -342,9 +366,9 @@ def _triangle_prologue_rows(pair, params, engine, mask, eps, *, rows):
     algorithm on the grid, one dense einsum plus an all-reduce on the row mesh
     -- so its operands have to be assembled before it starts, and this keeps
     only what the block was for. What the block removes is everything between
-    the normalisation and the split: the float32 `normalized`, the
-    `proj_bundle` output that `_native_bf16_linear`'s barrier pins at four
-    times the pair width, and `routed`, none of which the contraction reads.
+    the normalisation and the split: `normalized`, the `proj_bundle` output
+    that `_native_bf16_linear`'s barrier pins at four times the pair width,
+    and `routed`, none of which the contraction reads.
 
     The three assembled operands are themselves full width, which the serial
     program does not pay: it streams the contraction and never assembles more
@@ -523,10 +547,11 @@ def _autocast_triangle_streamed(pair, params, engine, outgoing, mask, eps):
     incoming one is what makes the *same* slice of the pair serve both the
     operand that is cut and the output gate the epilogue multiplies by -- so
     each block costs one `norm_start` rather than two, and the whole operand
-    is `right` outgoing and `left` incoming. That is the one full-width
-    bfloat16 pair tensor this block builds; `left`/`right`/`output_gate`
-    assembled whole, and the contraction's own concatenated destination, were
-    four of them, and at 2,096 tokens each is 2,145 MiB.
+    is `right` outgoing and `left` incoming. That is the only full-width
+    operand this arrangement builds, and the pair update it returns is the
+    only other full-width value in it: `left`/`right`/`output_gate` assembled
+    whole and the contraction's own concatenated destination were four, and at
+    2,096 tokens each of those is 2,145 MiB.
 
     The epilogue is elementwise in the two token axes like the prologue, so it
     runs on the block too and the emitted pair update is written straight into
@@ -608,6 +633,10 @@ def _autocast_triangle(pair, params, prefix, outgoing, mask, eps):
             eps,
         )
     equation = "bikd,bjkd->bijd" if outgoing else "bkid,bkjd->bijd"
+    # The whole-operand contraction, reached by the row-mesh program and by a
+    # pair the streamed route would not divide; serially the blocked route is
+    # `_autocast_triangle_streamed` above.
+    #
     # Pinned native default chunks the output i dimension at 64. Upstream
     # spells `routed.float().chunk(2, ...)` here and lets autocast narrow the
     # operands back at the GEMM; this reproduces the arithmetic without
@@ -637,12 +666,18 @@ def _finish_autocast_triangle(contracted, output_gate, params, engine, eps):
     """The native block's epilogue, shared by its dense and Cannon branches.
 
     The output gate arrives already computed: it is a function of the
-    normalised *input*, not of the contraction, and `_triangle_prologue`
-    produces it beside `left` and `right` so the float32 normalisation does
-    not have to outlive the contraction to be read here.
+    normalised *input*, not of the contraction, and the prologue produces it
+    beside the operands so the normalisation does not have to outlive the
+    contraction to be read here.
+
+    `norm_mix` is asked for in bfloat16 because `proj_emit` is its only
+    consumer and rounds to bfloat16 itself; stored float32 this is the widest
+    value in the epilogue, and on a card it was the widest in the block.
     """
     mixed = _autocast_linear(
-        _autocast_norm(contracted, params, f"{engine}.norm_mix", eps),
+        _autocast_norm(
+            contracted, params, f"{engine}.norm_mix", eps, out_dtype=jnp.bfloat16
+        ),
         params,
         f"{engine}.proj_emit",
     )
@@ -976,6 +1011,11 @@ def outer_product_mean(
     """
     dot = f"{prefix}." if prefix else ""
     if native_autocast:
+        # Float32 deliberately, unlike the triangle's pair norms: the line
+        # below reads `normalised.dtype` to reproduce native's promotion, so
+        # this norm has a consumer that does something other than round it and
+        # `out_dtype=bfloat16` here would be a change of policy, not of
+        # storage.
         normalised = _autocast_norm(msa, params, f"{dot}norm", eps)
         projected = _autocast_linear(normalised, params, f"{dot}W")
     else:
@@ -1061,7 +1101,14 @@ def msa_pair_weighted_averaging(
         )
     )
     bias = (
-        _autocast_norm(pair, params, f"{dot}compute_bias.0", eps)
+        # Bfloat16 because `compute_bias.1` below is the only consumer and
+        # rounds to bfloat16 itself: this is the one norm in this operator
+        # that reads a *pair* tensor, so stored float32 it is the widest value
+        # the MSA stack owns. `norm_single` reads the MSA tensor and keeps the
+        # float32 its own captured boundary was checked at.
+        _autocast_norm(
+            pair, params, f"{dot}compute_bias.0", eps, out_dtype=jnp.bfloat16
+        )
         if native_autocast
         else layer_norm(
             pair,

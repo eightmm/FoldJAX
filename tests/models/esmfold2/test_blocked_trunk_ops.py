@@ -382,6 +382,60 @@ def test_the_streamed_triangle_leaves_two_full_width_values(outgoing):
     assert sum(whole.values()) > sum(streamed.values())
 
 
+@pytest.mark.parametrize("channels", [8, 256])
+@pytest.mark.parametrize("rows", [10**6, 4])
+def test_the_narrow_pair_norms_change_no_value(channels, rows):
+    """`norm_start` and `norm_mix` stored bfloat16 is the same block, bit for bit.
+
+    Their only consumers are `proj_bundle`, `proj_gate` and `proj_emit`, and
+    `_autocast_linear` rounds its input to bfloat16 before the GEMM, so the
+    narrowed store differs from the float32 one by which side of one
+    round-nearest-even convert it happens on. Both selection branches of
+    `_autocast_norm` are run -- 256 channels is the width that reaches the
+    pinned CUDA reduction, 8 the one that keeps the ESM formula -- and both
+    the streamed and the whole arrangement, since they normalise different
+    shapes.
+
+    A fresh closure and cleared caches per arm: `jax.jit` keyed on one shared
+    function would answer the second arm from the first arm's program, and the
+    comparison would be of that program with itself. The tripwire arm is what
+    says the patch fires at all.
+    """
+    params = _random_triangle_params(channels, 3)
+    rng = np.random.default_rng(4)
+    pair = jnp.asarray(
+        rng.normal(size=(1, 12, 12, channels), scale=0.5), jnp.bfloat16
+    )
+    mask = jnp.ones((1, 12, 12), jnp.float32)
+    original = trunk._autocast_norm
+
+    def arm(rewrite):
+        def run(z, m):
+            return trunk.triangle_multiplicative(
+                z, params, "t", outgoing=True, mask=m, native_autocast=True
+            )
+
+        jax.clear_caches()
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(trunk, "_AUTOCAST_ROWS", rows)
+            patch.setattr(trunk, "_autocast_norm", rewrite)
+            value = jax.jit(run)(pair, mask)
+        return np.asarray(value, np.float32)
+
+    def widened(x, p, name, eps=1e-5, *, out_dtype=jnp.float32):
+        del out_dtype
+        return original(x, p, name, eps)
+
+    def doubled(x, p, name, eps=1e-5, *, out_dtype=jnp.float32):
+        result = original(x, p, name, eps, out_dtype=out_dtype)
+        return result * 2 if name.endswith(".norm_start") else result
+
+    shipped = arm(original)
+    assert float(np.abs(shipped).max()) > 0.0
+    np.testing.assert_array_equal(shipped, arm(widened))
+    assert not np.array_equal(shipped, arm(doubled))
+
+
 def test_the_output_gate_is_taken_from_the_normalised_input():
     """`proj_gate` reads `norm_start`'s output, not the contraction's.
 

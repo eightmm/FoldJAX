@@ -92,11 +92,11 @@ def test_native_norm_cuda_selection_preserves_other_routes(
     monkeypatch.setattr(_cp, "cp_mesh", lambda: object() if cp else None)
     calls = []
 
-    def cuda(x, weight, bias, eps):
+    def cuda(x, weight, bias, eps, out_dtype=jnp.float32):
         assert x.dtype == weight.dtype == bias.dtype == jnp.float32
         assert eps == 1e-5
         calls.append("cuda")
-        return (jnp.full_like(x, 7), None, None)
+        return (jnp.full_like(x, 7, out_dtype), None, None)
 
     monkeypatch.setattr(native_amp_norm, "_cuda_layer_norm", cuda)
     monkeypatch.setattr(
@@ -115,6 +115,80 @@ def test_native_norm_cuda_selection_preserves_other_routes(
             x.astype(jnp.float32), params[prefix + ".weight"], params[prefix + ".bias"]
         )
         np.testing.assert_array_equal(result, expected)
+
+
+@pytest.mark.parametrize("width", [4, 256])
+@pytest.mark.parametrize("jit", [False, True])
+def test_the_narrowed_norm_is_one_rounding_and_not_two(width, jit):
+    """`out_dtype` moves the rounding into the norm; it does not add one.
+
+    The reduction and the affine are float32 on every route and `out_dtype`
+    only chooses the width the result is stored at, so float32 storage
+    followed by one round-nearest-even convert and a direct bfloat16 store
+    are the same value -- the argument `amp_affine` records for its own
+    parameter. Asserted bitwise, because "the same value" is the whole claim
+    that lets the triangle's two pair norms hand `_autocast_linear` the
+    bfloat16 it would otherwise round to itself.
+
+    Both widths: 256 reaches the pinned CUDA reduction (whose CPU arm is the
+    ESM formula), and 4 reaches the formula directly.
+    """
+    rng = np.random.default_rng(7)
+    params = {
+        "n.weight": jnp.asarray(rng.normal(size=width) * 0.1 + 1.0, jnp.float32),
+        "n.bias": jnp.asarray(rng.normal(size=width) * 0.1, jnp.float32),
+    }
+    x = jnp.asarray(rng.normal(size=(3, width), scale=2.0), jnp.bfloat16)
+
+    def wrap(f):
+        return jax.jit(f) if jit else f
+
+    direct = wrap(
+        lambda a: trunk._autocast_norm(a, params, "n", out_dtype=jnp.bfloat16)
+    )(x)
+    twice = wrap(
+        lambda a: trunk._autocast_norm(a, params, "n").astype(jnp.bfloat16)
+    )(x)
+
+    assert direct.dtype == jnp.bfloat16
+    np.testing.assert_array_equal(direct, twice)
+    # Not a comparison of two zeros, and not of two saturated stores either.
+    assert 0.0 < float(np.abs(np.asarray(direct, np.float32)).max()) < np.inf
+
+
+def test_the_narrow_out_dtype_is_stored_by_the_cuda_kernel_itself():
+    """The Pallas store, read off the kernel's jaxpr rather than run.
+
+    A `pallas_call` output is a real buffer and a following convert cannot be
+    fused into it, so asking the kernel for bfloat16 is what removes the
+    float32 buffer rather than shortening its life. Two things are pinned:
+    the normalised output is bfloat16 while `mean` and `rstd` stay float32,
+    and the affine FMA is still float32 with the convert after it -- a kernel
+    that narrowed its operands instead would be a different reduction.
+    """
+    from foldjax.models.boltz2.models.primitives import native_amp_norm
+
+    traced = jax.make_jaxpr(
+        lambda x, s, b: native_amp_norm._cuda_layer_norm(
+            x, s, b, 1e-5, out_dtype=jnp.bfloat16
+        )
+    )(jnp.zeros((2, 256), jnp.float32), jnp.ones(256), jnp.zeros(256))
+    call = next(e for e in traced.jaxpr.eqns if e.primitive.name == "pallas_call")
+    assert [v.aval.dtype for v in call.outvars] == [
+        jnp.dtype(jnp.bfloat16),
+        jnp.dtype(jnp.float32),
+        jnp.dtype(jnp.float32),
+    ]
+
+    kernel = call.params["jaxpr"]
+    kernel = getattr(kernel, "jaxpr", kernel)
+    affine = [
+        e for e in kernel.eqns if e.params.get("asm") == "fma.rn.f32 $0, $1, $2, $3;"
+    ][-1]
+    assert affine.outvars[0].aval.dtype == jnp.float32
+    consumers = [e for e in kernel.eqns if affine.outvars[0] in e.invars]
+    assert [e.primitive.name for e in consumers] == ["convert_element_type"]
+    assert consumers[0].params["new_dtype"] == jnp.bfloat16
 
 
 def test_native_norm_cpu_keeps_esm_formula():
@@ -166,8 +240,8 @@ def test_native_block_boundaries_and_chunk_tail(monkeypatch, compiled, length):
         )
         return einsum(equation, left, right, **kwargs)
 
-    def norm(x, p, name, eps=1e-5):
-        result = original(x, p, name, eps)
+    def norm(x, p, name, eps=1e-5, **kwargs):
+        result = original(x, p, name, eps, **kwargs)
         observed.append((name, x.shape, x.dtype, result.dtype))
         assert p[name + ".weight"].dtype == jnp.float32
         return result
@@ -183,9 +257,20 @@ def test_native_block_boundaries_and_chunk_tail(monkeypatch, compiled, length):
     out = (jax.jit(run) if compiled else run)(pair)
     assert out.dtype == jnp.bfloat16
     assert np.isfinite(np.asarray(out.astype(jnp.float32))).all()
-    assert all(
-        inp == jnp.bfloat16 and out == jnp.float32 for _, _, inp, out in observed
-    )
+    # Every norm here reads the bfloat16 pair state, and the width it *emits*
+    # is a per-site choice rather than a rule: the two pair norms of the
+    # triangle block hand their result to one linear that rounds it anyway and
+    # are asked for bfloat16, and the transition's norm keeps the float32
+    # native autocast leaves a LayerNorm at. A blanket assertion here is what
+    # let the narrowing look like a policy change it is not.
+    narrowed = (".norm_start", ".norm_mix")
+    for name, _, inp, out in observed:
+        assert inp == jnp.bfloat16, (name, inp)
+        assert out == (jnp.bfloat16 if name.endswith(narrowed) else jnp.float32), (
+            name,
+            out,
+        )
+    assert any(name.endswith(narrowed) for name, _, _, _ in observed)
     transition = [
         shape[1] for name, shape, _, _ in observed if name.endswith("transition.norm")
     ]

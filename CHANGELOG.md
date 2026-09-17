@@ -224,6 +224,38 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **ESMFold2's normalised pair operands are stored bfloat16 past the layer
+  norm.** Native autocast leaves LayerNorm in float32, and three of this
+  port's norms read a pair tensor: the triangle block's `norm_start` and
+  `norm_mix`, and PairWeightedAveraging's `compute_bias.0`. Each has exactly
+  one consumer -- `proj_bundle`/`proj_gate`, `proj_emit`, `compute_bias.1` --
+  and `_autocast_linear` rounds its input to bfloat16 before the GEMM, so the
+  float32 store was a buffer whose every reader immediately halved it. On a
+  card at 2,096 tokens the largest of them was the peak's own tenant: a
+  float32 `[1, N, N, 256]` of 4,290 MiB with a transposed copy of the same
+  size beside it, co-live with the float32 LM pair state.
+
+  The three sites now ask the norm for bfloat16 and the shared CUDA kernel
+  stores it, rather than a convert being appended: a `pallas_call` output is a
+  real buffer that a following convert cannot be fused into, so narrowing the
+  kernel's own `out_shape` is what removes the float32 buffer instead of
+  shortening its life -- the argument, and now the parameter, that
+  `amp_affine` already carried. `_cuda_layer_norm`'s `out_dtype` defaults to
+  float32, so Boltz-2 and OpenFold3, which share it, are unchanged.
+
+  Bit-identical, not merely close: the reduction and the affine FMA are
+  float32 on every route and `out_dtype` chooses only the width the result is
+  stored at, so float32 storage plus one round-nearest-even convert and a
+  direct bfloat16 store are the same value. Asserted bitwise on both
+  selection branches of the norm and both triangle arrangements, with a
+  tripwire arm in each, because a monkeypatched arm that never fires and a
+  `jax.jit` answering from another arm's cache both report agreement.
+
+  The norms this does *not* touch are the ones whose width is read rather
+  than rounded: `outer_product_mean` masks in `normalised.dtype` to reproduce
+  native's promotion, and the MSA norms and the recycle injection keep the
+  float32 their own captured boundaries were checked at.
+
 - **ESMFold2's native triangle block streams its contraction instead of
   blocking only the prologue.** Blocking the prologue alone (below) moved
   bytes rather than removing them: a contraction fed whole operands needs
@@ -253,13 +285,23 @@ unless it says so here, in its own paragraph.
   (43,560 MiB, both platform branches included).
 
   Nothing sharded changes. A mesh keeps the whole-operand arrangement, Cannon's
-  schedule on the grid and the row-blocked prologue inside its `shard_map`, so
-  the collective census is untouched by construction; the streamed route is
-  taken only off a mesh and only when the pair is wider than the block.
-  Bit-identical to the released blocked form on CPU at 11, 12, 13 and 17
-  tokens in blocks of 4, both directions; 1.0 bfloat16 ULP against the
-  unblocked form at 65 tokens in blocks of 64, where the GEMM tiling does
-  change -- inside the 1.5 to 2.75 ULP the row block was accepted at.
+  schedule on the grid and the row-blocked prologue inside its `shard_map`, and
+  the streamed route is taken only off a mesh and only when the pair is wider
+  than the block. Measured rather than asserted: on four forced CPU devices at
+  13 tokens in blocks of 2 -- a count neither grid nor the block divides --
+  both layouts agree with the released form bit for bit and carry the same
+  censuses as before, 1-D 9 all-gather / 6 all-reduce / 12 all-to-all and 2-D
+  6 all-gather / 20 collective-permute.
+  Bit-identical to the released blocked form on CPU wherever the two reach the
+  same GEMM shapes -- 11, 12, 13 and 17 tokens in blocks of 4, both directions
+  -- and 1.00 to 1.06 bfloat16 ULP against it at the shipped 64-row block, on
+  65, 76 and 130 tokens, both directions, with and without a mask. That is the
+  same caveat and the same band the row block was accepted at, and it reaches
+  the coordinates: on the 1UBQ tape, 76 tokens and so the streamed route, the
+  CPU parity's worst asserted entity RMSD moves 0.022838 to 0.025820 A against
+  a declared 0.030 A tolerance, with the five samples moving in both
+  directions -- the diffusion sampler amplifying one ULP of trunk, which is
+  what the port's own rerun spread already does.
 
 - **ESMFold2 builds its MSA profile over blocks of alignment rows.** The
   profile needs only the sum of the residue-type one-hot over the alignment
