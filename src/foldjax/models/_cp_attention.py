@@ -905,11 +905,13 @@ def _ring_local_rows(
         scan_starts = scan_starts[1:]
 
     # One block is peeled off ahead of the scan -- the ragged one where there
-    # is one -- for two reasons, either of which would be enough: a `shard_map`
-    # scan refuses an initial carry that does not already carry this mesh's
-    # varying-ness, which a freshly zeroed destination does not; and the peeled
-    # block makes the loop's carry depend on a real tile, so XLA retires that
-    # tile before the loop instead of scheduling the two side by side.
+    # is one -- for two reasons, either of which would be enough: a checked
+    # `shard_map` scan refuses an initial carry that does not already carry
+    # this mesh's varying-ness, which a freshly zeroed destination does not
+    # (the fused body's `shard_map` is unchecked -- `_ring_shard_map_options`
+    # -- so there only the second reason holds); and the peeled block makes
+    # the loop's carry depend on a real tile, so XLA retires that tile before
+    # the loop instead of scheduling the two side by side.
     peeled = block_body(peel_start, peel_size)
     destination = jnp.zeros(
         peeled.shape[:-4] + (rows,) + peeled.shape[-3:],
@@ -1030,6 +1032,26 @@ def _unpad_ring_output(
     return out
 
 
+def _ring_shard_map_options(tile_kernel: str) -> dict[str, bool]:
+    """``shard_map`` keywords the fused ring body needs and the shipped one does not.
+
+    The fused tile is a Pallas kernel, and a Pallas kernel declares its outputs
+    as :class:`jax.ShapeDtypeStruct` with no ``manual_axis_type``, which
+    ``check_vma=True`` requires of every output produced inside a ``shard_map``
+    (``jax/_src/pallas/core.py``, ``_convert_out_shape_to_aval``); the kernel
+    raises before it computes anything. The check is bookkeeping, not
+    arithmetic: what each device holds is the same either way, and the ring's
+    output varies over both mesh axes, which its ``out_specs`` already says.
+    Skipping it also relaxes the initial-carry rule the peeled block in
+    :func:`_ring_local_rows` names, which is not that block's only reason.
+
+    The default passes no keyword at all, so ``xla`` calls ``shard_map`` the
+    way the ring called it before the option existed.
+    """
+
+    return {} if tile_kernel == "xla" else {"check_vma": False}
+
+
 def ring_triangle_attention_2d(
     query: jax.Array,
     key: jax.Array,
@@ -1145,6 +1167,7 @@ def ring_triangle_attention_2d(
         mesh=mesh,
         in_specs=(qkv_spec, qkv_spec, qkv_spec, bias_spec, mask_spec),
         out_specs=qkv_spec,
+        **_ring_shard_map_options(tile_kernel),
     )(query, key, value, triangle_bias, mask_bias)
     return _unpad_ring_output(
         out,
@@ -1280,6 +1303,7 @@ def ring_triangle_attention_2d_from_pair(
         # projection contracts over the channel axis, which no shard splits.
         in_specs=(pair_specs, bias_spec, mask_spec, PartitionSpec()),
         out_specs=out_spec,
+        **_ring_shard_map_options(tile_kernel),
     )(pair, triangle_bias, mask_bias, params)
     return _unpad_ring_output(
         out,

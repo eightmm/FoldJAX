@@ -349,6 +349,164 @@ def test_the_merge_ring_matches_dense_on_a_real_mesh(devices: int, tokens: int) 
     assert "MERGE_RING_OK" in _run(_MERGE_RING_PROBE, devices=devices, tokens=tokens)
 
 
+_PALLAS_TILE_PROBE = textwrap.dedent(
+    r"""
+    import os
+
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+    from jax.experimental import pallas as pl
+
+    import foldjax.models._cp_attention as cp_attention
+    from foldjax.models._cp import context_parallel
+
+    DEVICES = int(os.environ["FOLDJAX_CP_PROBE_DEVICES"])
+    assert jax.device_count() == DEVICES, jax.devices()
+
+    rng = np.random.default_rng(20260926)
+    BATCH, HEADS, DIM = 1, 2, 4
+    N = int(os.environ["FOLDJAX_CP_PROBE_TOKENS"])
+
+    def copy_kernel(x_ref, o_ref):
+        o_ref[...] = x_ref[...]
+
+    def through_pallas(x):
+        # The narrowest Pallas kernel there is: the arithmetic stays the
+        # portable tile's and only the output *declaration* is the fused
+        # tile's -- a `jax.ShapeDtypeStruct` that names no varying axes.
+        return pl.pallas_call(
+            copy_kernel,
+            out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+            interpret=True,
+        )(x)
+
+    def pallas_resolve(tile_kernel, precision):
+        def tile(*operands):
+            terms = cp_attention.tile_attention_xla(*operands, precision=precision)
+            return tuple(through_pallas(term) for term in terms)
+
+        return tile
+
+    def arr(*shape, scale=0.4):
+        return jnp.asarray(rng.normal(size=shape, scale=scale), dtype=jnp.float32)
+
+    q = arr(BATCH, N, HEADS, N, DIM)
+    k = arr(BATCH, N, HEADS, N, DIM)
+    v = arr(BATCH, N, HEADS, N, DIM)
+    pair = arr(BATCH, N, N, 2 * HEADS * DIM)
+    weight = arr(2 * HEADS * DIM, 3 * HEADS * DIM)
+    bias = arr(BATCH, 1, HEADS, N, N, scale=7.0)
+    keep = rng.random((BATCH, N, N)) > 0.2
+    keep[..., 0] = True
+    mask = jnp.where(
+        jnp.asarray(keep)[:, :, None, None, :],
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(-1.0e9, dtype=jnp.float32),
+    )
+
+    def dense(q_in, k_in, v_in, b_in, m_in):
+        scores = jnp.einsum("...hqd,...hkd->...hqk", q_in, k_in)
+        scores = scores + b_in + m_in
+        probs = jax.nn.softmax(scores.astype(jnp.float32), axis=-1)
+        return jnp.einsum("...hqk,...hkd->...hqd", probs, v_in)
+
+    def split_heads(array):
+        array = array.reshape(array.shape[:-1] + (HEADS, DIM))
+        return jnp.swapaxes(array, -2, -3)
+
+    def project(params, rows):
+        projected = jnp.matmul(rows, params)
+        query, key, value = jnp.split(projected, 3, axis=-1)
+        query = split_heads(query) / jnp.sqrt(jnp.asarray(DIM, dtype=query.dtype))
+        return query, split_heads(key), split_heads(value), None
+
+    reference = jax.device_get(jax.jit(dense)(q, k, v, bias, mask))
+    pair_q, pair_k, pair_v, _ = project(weight, pair)
+    pair_reference = jax.device_get(
+        jax.jit(dense)(pair_q, pair_k, pair_v, bias, mask)
+    )
+
+    def run(block):
+        def ring(q_in, k_in, v_in, b_in, m_in):
+            return cp_attention.ring_triangle_attention_2d(
+                q_in, k_in, v_in, b_in, m_in, tile_kernel="xla_merge", q_block=block
+            )
+
+        return jax.device_get(jax.jit(ring)(q, k, v, bias, mask))
+
+    def run_from_pair(block):
+        def ring(p_in, b_in, m_in, w_in):
+            return cp_attention.ring_triangle_attention_2d_from_pair(
+                p_in,
+                b_in,
+                m_in,
+                w_in,
+                project=project,
+                tile_kernel="xla_merge",
+                q_block=block,
+            )
+
+        return jax.device_get(jax.jit(ring)(pair, bias, mask, weight))
+
+    cp_attention._resolve_tile_attention = pallas_resolve
+    with context_parallel(DEVICES, layout="2d"):
+        # Blocked as well as unblocked: the merge carry crosses a `lax.scan`
+        # boundary only in the second, and the initial-carry rule is one of
+        # the things the varying-axis check enforces.
+        np.testing.assert_allclose(reference, run(None), atol=3e-5, rtol=3e-5)
+        np.testing.assert_allclose(reference, run(1), atol=3e-5, rtol=3e-5)
+        print("PALLAS_TILE_OK")
+
+        # Both entry points, because each builds its own `shard_map` and the
+        # GPU failure came through this one.
+        for block in (None, 1):
+            np.testing.assert_allclose(
+                pair_reference, run_from_pair(block), atol=3e-5, rtol=3e-5
+            )
+        print("PALLAS_TILE_FROM_PAIR_OK")
+
+        # The tripwire. Without it a passing probe could mean the Pallas
+        # declaration is accepted everywhere and the arm proves nothing.
+        spec = cp_attention._two_axis_spec(q.ndim, -4, -2)
+        checked = jax.shard_map(
+            through_pallas,
+            mesh=cp_attention.cp_mesh(),
+            in_specs=(spec,),
+            out_specs=spec,
+        )
+        try:
+            jax.jit(checked).lower(q)
+        except ValueError as error:
+            assert "manual_axis_type" in str(error), error
+            print("VMA_CHECK_REFUSES")
+
+    print("PROBE_DONE")
+    """
+)
+
+
+def test_the_fused_ring_runs_a_tile_the_varying_axis_check_refuses() -> None:
+    """A Pallas tile inside the fused arm's `shard_map`, which cannot check it.
+
+    A Pallas kernel declares its outputs as `jax.ShapeDtypeStruct`s carrying no
+    `manual_axis_type`, and a checked `shard_map` requires one of every output
+    produced inside it: on four GPUs the tokamax arm raised out of
+    `pl.pallas_call` before computing anything. Here a one-line copy kernel
+    stands in for the Triton one -- same arithmetic as the portable tile, the
+    same output declaration as the fused one -- so the arm the GPU refused is
+    the arm this runs, through both ring entry points, and the tripwire shows
+    that declaration still being refused by a `shard_map` the change did not
+    touch.
+    """
+
+    output = _run(_PALLAS_TILE_PROBE, devices=4, tokens=8)
+    assert "PALLAS_TILE_OK" in output, output
+    assert "PALLAS_TILE_FROM_PAIR_OK" in output, output
+    assert "VMA_CHECK_REFUSES" in output, output
+    assert "PROBE_DONE" in output, output
+
+
 # ---------------------------------------------------------------------------
 # The tokamax side of the contract, as far as a CPU can take it
 # ---------------------------------------------------------------------------
