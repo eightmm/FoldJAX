@@ -224,6 +224,23 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **ESMFold2 builds its MSA profile over blocks of alignment rows.** The
+  profile needs only the sum of the residue-type one-hot over the alignment
+  depth, and the expansion in between is 33 times the alignment: at 2,096
+  tokens and 13,280 rows a GPU attribution of the shipped program found it as
+  a 1,752 MiB `bf16[1, N, 13280, 33]` tenant of the peak-live set, the largest
+  tensor the input stage builds. It is now summed against the same 512 MiB
+  budget the trunk's blocked stages use -- 1,940 rows at that shape, seven
+  blocks -- and accumulated.
+
+  **Bit-identical**, which is stronger than the other blocked paths here can
+  claim and is asserted as such. Both the one-hot and `msa_attention_mask` are
+  0.0/1.0 -- the featurizer emits the mask as `bool` and the per-loop column
+  masking works later on its own copy -- so every partial sum is a whole
+  number no larger than the alignment depth, which float32 represents exactly,
+  and exact integers add in any order to the same bits. An alignment under the
+  budget keeps the single-call route it had.
+
 - **ESMFold2's diffusion pair conditioning and its transitions run in row
   blocks.** `condition_pair` builds the sampler's cached pair state once per
   run and held four full-width pair tensors while it did: the trunk pair, the

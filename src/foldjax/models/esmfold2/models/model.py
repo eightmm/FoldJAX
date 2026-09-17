@@ -1045,6 +1045,64 @@ def validate_initial_pair_state(value, *, batch, tokens, width, check_values=Tru
         raise ValueError("initial pair state must be finite")
 
 
+#: Bytes of expanded MSA one-hot allowed live at once before the alignment
+#: rows are blocked. The 512 MiB budget every other blocked stage here uses.
+_MSA_PROFILE_BUDGET_BYTES = 512 * 1024**2
+
+
+def _msa_profile_rows(msa: jnp.ndarray) -> int | None:
+    """Alignment rows whose one-hot fits the budget, or None for all of them."""
+    per_row = NUM_RES_TYPES * 4
+    for axis, size in enumerate(msa.shape):
+        if axis != 1:
+            per_row *= size
+    if per_row <= 0 or per_row * msa.shape[1] <= _MSA_PROFILE_BUDGET_BYTES:
+        return None
+    return max(1, _MSA_PROFILE_BUDGET_BYTES // per_row)
+
+
+def _masked_one_hot_totals(
+    msa: jnp.ndarray,
+    msa_mask: jnp.ndarray | None,
+    *,
+    rows: int | None,
+) -> jnp.ndarray:
+    """Per-token residue-type counts, over blocks of alignment rows.
+
+    The MSA profile needs only the sum of the one-hot over the depth axis, and
+    the expansion in between is 33 times the alignment: at 2,096 tokens and
+    13,280 rows it is the largest tensor the input stage builds. Summing it in
+    blocks of rows and accumulating is **bit-identical**, not merely exact.
+    Both the one-hot and `msa_attention_mask` are 0.0/1.0 -- the featurizer
+    emits the mask as `bool` (`data/features.py:505`) and the per-loop column
+    masking happens later, on its own copy -- so every partial sum is a whole
+    number no larger than the alignment depth, which float32 represents
+    exactly. Exact integers add in any order to the same bits.
+    """
+    depth = msa.shape[1]
+
+    def block(start: int, stop: int) -> jnp.ndarray:
+        part = jax.nn.one_hot(
+            jax.lax.slice_in_dim(msa, start, stop, axis=1).astype(jnp.int32),
+            NUM_RES_TYPES,
+        )
+        if msa_mask is not None:
+            part = part * jax.lax.slice_in_dim(msa_mask, start, stop, axis=1)[
+                ..., None
+            ].astype(jnp.float32)
+        return jnp.sum(part, axis=1)
+
+    if rows is None or rows >= depth:
+        return block(0, depth)
+    total = None
+    for start in range(0, depth, rows):
+        # `min` because a trailing block is shorter whenever the depth does not
+        # divide, and `slice_in_dim` rejects an overrun rather than clamping it.
+        part = block(start, min(start + rows, depth))
+        total = part if total is None else total + part
+    return total
+
+
 def predict(
     key: jnp.ndarray,
     features: Mapping[str, jnp.ndarray],
@@ -1174,11 +1232,10 @@ def predict(
     msa_mask = features.get("msa_attention_mask")
     profile = features.get("msa_profile")
     if msa is not None and profile is None:
-        msa_one_hot = jax.nn.one_hot(msa.astype(jnp.int32), NUM_RES_TYPES)
+        rows = _msa_profile_rows(msa)
+        totals = _masked_one_hot_totals(msa, msa_mask, rows=rows)
         if msa_mask is not None:
-            msa_one_hot = msa_one_hot * msa_mask[..., None].astype(jnp.float32)
             counts = jnp.clip(jnp.sum(msa_mask.astype(jnp.float32), axis=1), min=1.0)
-            totals = jnp.sum(msa_one_hot, axis=1)
             if settings.trunk_dtype == "bfloat16" and cp_mesh() is None:
                 profile = jax.lax.platform_dependent(
                     totals,
@@ -1189,7 +1246,7 @@ def predict(
             else:
                 profile = totals / counts[..., None]
         else:
-            profile = jnp.mean(msa_one_hot, axis=1)
+            profile = totals / float(msa.shape[1])
     if profile is None:
         profile = res_type_one_hot
 
