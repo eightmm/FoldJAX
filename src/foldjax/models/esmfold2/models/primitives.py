@@ -119,15 +119,35 @@ def _swiglu_row_axis(x: jnp.ndarray) -> int | None:
     return None
 
 
-def _swiglu_rows(x: jnp.ndarray, axis: int, wide: int) -> int | None:
-    """Rows along `axis` whose widened form fits the budget, or None for whole."""
-    per_row = wide * x.dtype.itemsize
+def _wide_rows(
+    x: jnp.ndarray,
+    axis: int,
+    wide: int,
+    budget: int,
+    *,
+    itemsize: int | None = None,
+) -> int | None:
+    """Rows along `axis` whose widened form fits `budget`, or None for whole.
+
+    `wide` is the widened channel count held live at once, counting every
+    copy: a caller that keeps two projections and their product alive names
+    three times its hidden width, not one. `itemsize` overrides the input's
+    own, for a caller whose widened form is promoted away from it.
+    """
+    per_row = wide * (x.dtype.itemsize if itemsize is None else itemsize)
     for index, size in enumerate(x.shape[:-1]):
         if index != axis:
             per_row *= size
-    if per_row <= 0 or per_row * x.shape[axis] <= _SWIGLU_WIDE_BUDGET_BYTES:
+    if per_row <= 0 or per_row * x.shape[axis] <= budget:
         return None
-    return max(1, _SWIGLU_WIDE_BUDGET_BYTES // per_row)
+    return max(1, budget // per_row)
+
+
+def _swiglu_rows(x: jnp.ndarray, axis: int, wide: int) -> int | None:
+    """Rows along `axis` whose widened form fits the budget, or None for whole."""
+    # The budget is read here rather than bound as a default, so a test that
+    # lowers it still reaches this call.
+    return _wide_rows(x, axis, wide, _SWIGLU_WIDE_BUDGET_BYTES)
 
 
 def swiglu(x: jnp.ndarray, params: Params, prefix: str = "") -> jnp.ndarray:
@@ -191,21 +211,20 @@ def swiglu(x: jnp.ndarray, params: Params, prefix: str = "") -> jnp.ndarray:
     )
 
 
-def transition_layer(
+#: Bytes of widened transition form allowed live at once before the rows are
+#: blocked. The same budget `swiglu` above it carries, for the same three
+#: buffers in a different spelling.
+_TRANSITION_WIDE_BUDGET_BYTES = 512 * 1024**2
+
+
+def _transition_block(
     x: jnp.ndarray,
     params: Params,
-    prefix: str = "",
-    eps: float = 1e-5,
-    *,
-    linear_dtype: object | None = None,
+    dot: str,
+    eps: float,
+    linear_dtype: object | None,
 ) -> jnp.ndarray:
-    """`TransitionLayer`: norm, two projections, silu gate, project back.
-
-    The same arithmetic as `swiglu` with the projections kept apart and a
-    normalisation in front; upstream keeps both forms, so this port does too
-    rather than unifying them and having to un-unify them at load time.
-    """
-    dot = f"{prefix}." if prefix else ""
+    """`transition_layer`'s body over whatever rows it is handed."""
     x = layer_norm(x, params[f"{dot}norm.weight"], params[f"{dot}norm.bias"], eps=eps)
     if linear_dtype is not None:
         # Autocast narrows Linear operands, not the preceding FP32 LayerNorm.
@@ -220,6 +239,78 @@ def transition_layer(
     a = linear(x, params, f"{dot}a_proj")
     b = linear(x, params, f"{dot}b_proj")
     return linear(jax.nn.silu(a) * b, params, f"{dot}out_proj")
+
+
+def transition_layer(
+    x: jnp.ndarray,
+    params: Params,
+    prefix: str = "",
+    eps: float = 1e-5,
+    *,
+    linear_dtype: object | None = None,
+) -> jnp.ndarray:
+    """`TransitionLayer`: norm, two projections, silu gate, project back.
+
+    The same arithmetic as `swiglu` with the projections kept apart and a
+    normalisation in front; upstream keeps both forms, so this port does too
+    rather than unifying them and having to un-unify them at load time.
+
+    **Blocked along a leading axis when the widened form is large**, on the
+    same grounds and against the same budget as `swiglu`: `a`, `b` and their
+    product are all live at once, so the widened form is three times
+    `a_proj`'s output width, and every operation here is elementwise in the
+    leading axes and contracts only over channels. Exact arithmetic, not
+    bit-identical -- a blocked shape gets a different GEMM tiling.
+
+    The budget is measured against the dtype the projections *realise*, not
+    against the input's: under autocast the normalisation stays float32 and
+    the three widened buffers are bfloat16, so costing them at four bytes
+    would divide rows nothing needs divided -- and on this model's pair
+    conditioning that showed up directly, as a second layer of blocks inside
+    `diffusion.condition_pair`'s own.
+
+    **Which configurations reach the block.** Not the released pair
+    conditioning: `condition_pair` divides its rows against a budget that
+    already covers what this function widens them to, so the rows arriving
+    here are under it. What is left is a caller that has not divided them --
+    the single conditioning's `s_transitions`, token-shaped and far under the
+    budget at any length this model runs, and a float32 pair caller, whose
+    widened form is twice the bytes.
+    """
+    dot = f"{prefix}." if prefix else ""
+    axis = _swiglu_row_axis(x)
+    rows = (
+        None
+        if axis is None
+        else _wide_rows(
+            x,
+            axis,
+            3 * params[f"{dot}a_proj.weight"].shape[0],
+            _TRANSITION_WIDE_BUDGET_BYTES,
+            itemsize=(
+                None if linear_dtype is None else jnp.dtype(linear_dtype).itemsize
+            ),
+        )
+    )
+    if rows is None or rows >= x.shape[axis]:
+        return _transition_block(x, params, dot, eps, linear_dtype)
+    return jnp.concatenate(
+        [
+            _transition_block(
+                # `min` because a trailing block is shorter whenever the axis
+                # does not divide, and `slice_in_dim` rejects an overrun.
+                jax.lax.slice_in_dim(
+                    x, start, min(start + rows, x.shape[axis]), axis=axis
+                ),
+                params,
+                dot,
+                eps,
+                linear_dtype,
+            )
+            for start in range(0, x.shape[axis], rows)
+        ],
+        axis=axis,
+    )
 
 
 def adaptive_layer_norm(

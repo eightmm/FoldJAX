@@ -798,6 +798,132 @@ _LOCAL_BLOCK_PROBE = _FIXTURE + textwrap.dedent(
                collectives(blocked_text))
         )
 
+    # And the diffusion pair conditioning, whose block is taken the same way.
+    # Its inputs reach it already on the layout and `build_cache` pins its
+    # result, so the arms below are compiled the way the shipped call site is
+    # -- an unpinned probe leaves both arms unsharded and asserts nothing.
+    from foldjax.models._cp import shard_pair_rows
+    from foldjax.models.esmfold2.models import diffusion as diffusion_module
+
+    rng = np.random.default_rng(11)
+    CONDITION = {
+        "c.z_input_norm.weight": jnp.asarray(
+            rng.normal(size=2 * C, scale=0.5).astype(np.float32) * 0.1 + 1.0
+        ),
+        "c.z_input_norm.bias": jnp.asarray(
+            rng.normal(size=2 * C, scale=0.5).astype(np.float32) * 0.1
+        ),
+        "c.z_proj.weight": jnp.asarray(
+            rng.normal(size=(C, 2 * C), scale=0.5).astype(np.float32)
+        ),
+    }
+    for index in range(2):
+        dot = "c.z_transitions.%d" % index
+        CONDITION[dot + ".norm.weight"] = jnp.asarray(
+            rng.normal(size=C, scale=0.5).astype(np.float32) * 0.1 + 1.0
+        )
+        CONDITION[dot + ".norm.bias"] = jnp.asarray(
+            rng.normal(size=C, scale=0.5).astype(np.float32) * 0.1
+        )
+        for name, shape in (
+            (".a_proj.weight", (2 * C, C)),
+            (".b_proj.weight", (2 * C, C)),
+            (".out_proj.weight", (C, 2 * C)),
+        ):
+            CONDITION[dot + name] = jnp.asarray(
+                rng.normal(size=shape, scale=0.5).astype(np.float32)
+            )
+
+
+    def conditioning():
+        def run(pair_in, encoding_in):
+            return shard_pair_rows(
+                diffusion_module.condition_pair(
+                    shard_pair_rows(pair_in),
+                    shard_pair_rows(encoding_in),
+                    CONDITION,
+                    "c",
+                    trunk_dtype=jnp.bfloat16,
+                )
+            )
+
+        return run
+
+
+    def condition_arm(pair_in, encoding_in, budget, layout):
+        original = diffusion_module._CONDITION_PAIR_BUDGET_BYTES
+        body = diffusion_module._condition_pair_body
+        calls = []
+
+        def counted(*args, **kwargs):
+            calls.append(args[0].shape)
+            return body(*args, **kwargs)
+
+        diffusion_module._CONDITION_PAIR_BUDGET_BYTES = budget
+        diffusion_module._condition_pair_body = counted
+        try:
+            jax.clear_caches()
+            if layout is None:
+                value = jax.jit(conditioning())(pair_in, encoding_in)
+                value.block_until_ready()
+                text = (
+                    jax.jit(conditioning())
+                    .lower(pair_in, encoding_in)
+                    .compile()
+                    .as_text()
+                )
+            else:
+                with context_parallel(DEVICES, layout=layout):
+                    value = jax.jit(conditioning())(pair_in, encoding_in)
+                    value.block_until_ready()
+                    text = (
+                        jax.jit(conditioning())
+                        .lower(pair_in, encoding_in)
+                        .compile()
+                        .as_text()
+                    )
+            return np.asarray(jax.device_get(value), np.float32), text, calls
+        finally:
+            diffusion_module._CONDITION_PAIR_BUDGET_BYTES = original
+            diffusion_module._condition_pair_body = body
+
+
+    encoding, _, _, _ = inputs(n)
+    # Two rows per block at this width, which 13 does not divide.
+    BUDGET = 2 * n * 4 * 4 * C
+    condition_serial, _, _ = condition_arm(pair, encoding, 1 << 40, None)
+    condition_scale = float(np.abs(condition_serial).max())
+    assert condition_scale > 0.0, condition_scale
+
+    for layout in ("1d", "2d"):
+        whole, whole_text, whole_calls = condition_arm(
+            pair, encoding, 1 << 40, layout
+        )
+        blocked, blocked_text, blocked_calls = condition_arm(
+            pair, encoding, BUDGET, layout
+        )
+        assert len(blocked_calls) > len(whole_calls), (
+            layout,
+            whole_calls,
+            blocked_calls,
+        )
+        assert max(shape[-3] for shape in blocked_calls) <= 2, blocked_calls
+        traced = sum(shape[-3] for shape in blocked_calls)
+        assert traced < len(whole_calls) * n, (layout, traced, blocked_calls)
+        assert collectives(whole_text) == collectives(blocked_text), (
+            layout,
+            collectives(whole_text),
+            collectives(blocked_text),
+        )
+        for tag, got in (("whole", whole), ("blocked", blocked)):
+            difference = float(np.abs(condition_serial - got).max())
+            assert difference <= 3e-5 * condition_scale, (layout, tag, difference)
+        print(
+            "condition layout=%s calls=%d->%d collectives=%s"
+            % (layout, len(whole_calls), len(blocked_calls),
+               collectives(blocked_text))
+        )
+
     print("LOCAL_BLOCK_OK")
     """
 )
@@ -846,13 +972,15 @@ def test_the_native_autocast_block_runs_the_grid_schedule_too(devices: int) -> N
     assert "NATIVE_GRID_OK" in _run_grid_probe(_NATIVE_GRID_PROBE, devices)
 
 
-def test_the_prologue_row_block_is_taken_inside_the_shard() -> None:
-    """The block fires on local rows, agrees with serial, and adds nothing.
+def test_the_row_blocks_are_taken_inside_the_shard() -> None:
+    """The blocks fire on local rows, agree with serial, and add nothing.
 
     The row block on a *global* axis is a slice of a sharded one, which the
     partitioner can only serve by moving data -- 104 `all-to-all`s when
     `_cp_pair_transition` measured it. Inside the shard it is free, and the
-    census before and after the block is what says so.
+    census before and after the block is what says so. Both of the stages
+    that take a block this way are here: the trunk's triangle prologue and
+    the diffusion pair conditioning.
     """
 
     assert "LOCAL_BLOCK_OK" in _run_grid_probe(_LOCAL_BLOCK_PROBE, 4)

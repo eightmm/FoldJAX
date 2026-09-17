@@ -32,8 +32,14 @@ from dataclasses import dataclass, replace
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.sharding import PartitionSpec
 
-from foldjax.models._cp import shard_pair_rows
+from foldjax.models._cp import (
+    cp_grid,
+    cp_mesh,
+    pair_spec,
+    shard_pair_rows,
+)
 from foldjax.models._glu import gated_linear_unit_packed
 from foldjax.models._random import masked_prefix_draw
 from foldjax.models.esmfold2.models.atom import (
@@ -43,6 +49,7 @@ from foldjax.models.esmfold2.models.atom import (
     atom_encoder,
 )
 from foldjax.models.esmfold2.models.primitives import (
+    _wide_rows,
     adaptive_layer_norm,
     fourier_embedding,
     layer_norm,
@@ -294,20 +301,27 @@ def diffusion_transformer(
     return a
 
 
-def condition_pair(
+#: Bytes of widened pair conditioning allowed live at once before the rows are
+#: blocked. The 512 MiB budget the trunk's other blocked stages carry.
+_CONDITION_PAIR_BUDGET_BYTES = 512 * 1024**2
+
+
+def _condition_pair_body(
     z_trunk: jnp.ndarray,
     relative_position_encoding: jnp.ndarray,
     params: Params,
-    prefix: str = "",
+    dot: str,
     *,
-    trunk_dtype: object = jnp.float32,
+    trunk_dtype: object,
 ) -> jnp.ndarray:
-    """`DiffusionConditioning`'s pair half, which no timestep enters.
+    """`condition_pair`'s arithmetic over whatever rows it is handed.
 
-    Upstream caches it across the whole sampling run for that reason; it is
-    separate here so a caller cannot accidentally recompute it per step.
+    Every step is elementwise in the two token axes and contracts only over
+    channels -- the concatenation joins channels, the normalisation is
+    per-`(i, j)`, and `z_proj` and both transitions are channel contractions
+    -- so a block of rows is the whole computation for its own rows, and the
+    concatenation and its normalisation never exist at full width.
     """
-    dot = f"{prefix}." if prefix else ""
     z = jnp.concatenate(
         [
             z_trunk.astype(jnp.float32),
@@ -331,6 +345,164 @@ def condition_pair(
             z, params, f"{dot}z_transitions.{index}", linear_dtype=trunk_dtype
         ).astype(jnp.float32)
     return z
+
+
+def _condition_pair_rows(z_trunk: jnp.ndarray) -> int | None:
+    """Rows whose widened conditioning fits the budget, or None for whole.
+
+    The widest thing a block holds is the `2 * C` float32 concatenation
+    together with its normalisation, which is four times the pair width in
+    float32 bytes. The two transitions below them widen to three times `2 * C`
+    each, but in the trunk's own dtype -- bfloat16 on the released path, where
+    that is the smaller of the two and this budget bounds both. A float32
+    trunk makes them the larger, and `primitives.transition_layer` blocks its
+    own rows against the same budget for exactly that case.
+    """
+    return _wide_rows(
+        z_trunk,
+        z_trunk.ndim - 3,
+        4 * z_trunk.shape[-1],
+        _CONDITION_PAIR_BUDGET_BYTES,
+        # The concatenation and its normalisation are float32 whatever the
+        # trunk handed in.
+        itemsize=4,
+    )
+
+
+def condition_pair(
+    z_trunk: jnp.ndarray,
+    relative_position_encoding: jnp.ndarray,
+    params: Params,
+    prefix: str = "",
+    *,
+    trunk_dtype: object = jnp.float32,
+) -> jnp.ndarray:
+    """`DiffusionConditioning`'s pair half, which no timestep enters.
+
+    Upstream caches it across the whole sampling run for that reason; it is
+    separate here so a caller cannot accidentally recompute it per step.
+
+    **Blocked by rows above a byte budget.** Unblocked this stage held four
+    full-width pair tensors at once -- the trunk pair, the relative position
+    encoding, the `2 * C` float32 concatenation of the two, and that
+    concatenation's normalisation -- which is 51.9 GiB at 3,012 tokens, of
+    which the last two are pure intermediates. `_condition_pair_body` is
+    row-local, so blocking it removes them and leaves only the inputs and the
+    result. Exact arithmetic, not bit-identical: the blocked shapes reach
+    different GEMM tilings.
+
+    Under a mesh the block is taken inside a `shard_map`, on the rows the
+    device already holds. A block of a *sharded* row axis is a slice the
+    partitioner can only serve by moving data, which is what
+    `trunk._cp_pair_transition` measured 104 `all-to-all`s for; a block at
+    least as wide as the local tile divides nothing, so the request is
+    dropped rather than relocated and the sharded program is left as it was.
+    """
+    dot = f"{prefix}." if prefix else ""
+    settings = {"trunk_dtype": trunk_dtype}
+    mesh = cp_mesh()
+    if mesh is None:
+        return _condition_pair_blocks(
+            z_trunk,
+            relative_position_encoding,
+            params,
+            dot,
+            rows=_condition_pair_rows(z_trunk),
+            **settings,
+        )
+
+    grid_rows, grid_columns = cp_grid()
+    n_rows, n_columns = z_trunk.shape[-3], z_trunk.shape[-2]
+    row_pad, column_pad = (-n_rows) % grid_rows, (-n_columns) % grid_columns
+    local_rows = (n_rows + row_pad) // grid_rows
+    rows = _condition_pair_rows(z_trunk)
+    if rows is None or rows >= local_rows:
+        return _condition_pair_blocks(
+            z_trunk, relative_position_encoding, params, dot, rows=None, **settings
+        )
+
+    operands = []
+    for array in (z_trunk, relative_position_encoding):
+        if row_pad or column_pad:
+            # `shard_map` needs both sharded axes to divide the grid. The
+            # padded rows and columns are their own and nothing here mixes
+            # them with a kept one, so the padded output is sliced away.
+            width = [(0, 0)] * array.ndim
+            width[-3], width[-2] = (0, row_pad), (0, column_pad)
+            array = jnp.pad(array, width)
+        operands.append(shard_pair_rows(array))
+
+    def local(pair_local, encoding_local, params_local):
+        return _condition_pair_blocks(
+            pair_local, encoding_local, params_local, dot, rows=rows, **settings
+        )
+
+    # Parameters go in as a replicated operand rather than a closure, the way
+    # the trunk's own sharded blocks take them, and only this stage's own
+    # leaves: a whole diffusion tree as an operand is one the compiler has to
+    # prune again.
+    block_params = (
+        {name: value for name, value in params.items() if name.startswith(dot)}
+        if dot
+        else dict(params)
+    )
+    spec = pair_spec(z_trunk.ndim)
+    out = jax.shard_map(
+        local,
+        mesh=mesh,
+        in_specs=(spec, spec, PartitionSpec()),
+        out_specs=spec,
+    )(*operands, block_params)
+    if not (row_pad or column_pad):
+        return out
+    # Re-pinning the slice keeps the partitioner from answering the narrower
+    # shape with a replicated result.
+    return shard_pair_rows(
+        jax.lax.slice_in_dim(
+            jax.lax.slice_in_dim(out, 0, n_rows, axis=-3), 0, n_columns, axis=-2
+        )
+    )
+
+
+def _condition_pair_blocks(
+    z_trunk: jnp.ndarray,
+    relative_position_encoding: jnp.ndarray,
+    params: Params,
+    dot: str,
+    *,
+    trunk_dtype: object,
+    rows: int | None,
+) -> jnp.ndarray:
+    """`_condition_pair_body` in row blocks, assembling the whole result."""
+    settings = {"trunk_dtype": trunk_dtype}
+    axis = z_trunk.ndim - 3
+    n_rows = z_trunk.shape[axis]
+    if rows is None or rows >= n_rows:
+        return _condition_pair_body(
+            z_trunk, relative_position_encoding, params, dot, **settings
+        )
+    return jnp.concatenate(
+        [
+            _condition_pair_body(
+                # `min` because a trailing block is shorter whenever the axis
+                # does not divide, and `slice_in_dim` rejects an overrun.
+                jax.lax.slice_in_dim(
+                    z_trunk, start, min(start + rows, n_rows), axis=axis
+                ),
+                jax.lax.slice_in_dim(
+                    relative_position_encoding,
+                    start,
+                    min(start + rows, n_rows),
+                    axis=axis,
+                ),
+                params,
+                dot,
+                **settings,
+            )
+            for start in range(0, n_rows, rows)
+        ],
+        axis=axis,
+    )
 
 
 def condition_single(

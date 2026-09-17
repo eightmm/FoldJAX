@@ -224,6 +224,37 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **ESMFold2's diffusion pair conditioning and its transitions run in row
+  blocks.** `condition_pair` builds the sampler's cached pair state once per
+  run and held four full-width pair tensors while it did: the trunk pair, the
+  relative position encoding, the `2 * C` float32 concatenation of the two,
+  and that concatenation's normalisation -- 51.9 GiB at 3,012 tokens, of which
+  the last two are intermediates nothing outside the stage reads. Its whole
+  body is row-local (the concatenation joins channels, the normalisation is
+  per-`(i, j)`, and `z_proj` and both transitions contract channels only), so
+  it now runs against the same 512 MiB budget `outer_product_mean` and
+  `swiglu` use. Compiled at 2,112 tokens with the released widths, the
+  stage's jaxpr keeps exactly one full-width value -- its float32
+  `[1, N, N, 256]` result -- where it previously held seven float32 and twelve
+  bfloat16 `[1, N, N, 512]` and seventeen float32 `[1, N, N, 256]`; the
+  blocks are 62 rows.
+
+  `primitives.transition_layer` gained the row block `swiglu` beside it
+  already had, for the same three widened buffers, and it is measured against
+  the dtype the projections *realise* rather than the input's: under the
+  released bfloat16 trunk they are bfloat16 and the concatenation above them
+  is the wider tenant, so `condition_pair`'s block bounds both and this one
+  does not fire. It fires for a caller that has not divided its rows, and for
+  a float32 trunk, where the widened form is twice the bytes.
+
+  Under a mesh the block is taken inside a `shard_map` on local rows and
+  dropped when it would be wider than the local tile, exactly as the triangle
+  prologue's is. The collective census is unchanged in both layouts on four
+  forced CPU devices at a token count neither divides. The blocked and
+  unblocked results were bit-identical on every CPU arm measured, which is
+  luck rather than a guarantee -- a blocked shape may reach a different GEMM
+  tiling, which is the caveat every blocked path here carries.
+
 - **ESMFold2's native triangle block normalises and projects in row blocks.**
   Everything between the block's normalisation and its split -- `norm_start`,
   `proj_bundle`, the input gate, the mask, and the split itself -- now runs 64
