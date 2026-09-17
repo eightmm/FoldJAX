@@ -122,6 +122,15 @@ def test_predict_scopes_triton_to_trunk_atom_attention(monkeypatch) -> None:
 def test_predict_canonicalizes_explicit_inherited_backend_before_cp_guard(
     monkeypatch,
 ) -> None:
+    """An explicit scoped value equal to the global does not trip the CP guard.
+
+    Spelled ``xla`` on both, not ``tokamax``: the base knob is now refused
+    outright under a mesh (see the test below), so the fused spelling can no
+    longer reach this canonicalization -- which is the point of that refusal.
+    The assertion still discriminates, because without the canonicalization
+    the trunk would see ``"xla"`` here rather than ``None``.
+    """
+
     seen = {}
 
     def fake_trunk(params, feats, **kwargs):
@@ -146,11 +155,40 @@ def test_predict_canonicalizes_explicit_inherited_backend_before_cp_guard(
         run_confidence=False,
         run_distogram=False,
         compute_dtype=jnp.bfloat16,
-        attention_backend="tokamax",
-        trunk_atom_attention_backend="tokamax",
+        attention_backend="xla",
+        trunk_atom_attention_backend="xla",
     )
 
     assert seen == {"atom": None}
+
+
+def test_predict_refuses_the_fused_base_attention_under_a_mesh(monkeypatch) -> None:
+    """The base knob, which the two scoped refusals cannot speak for.
+
+    ``trunk_atom_attention_backend`` and ``diffusion_attention_backend`` each
+    canonicalize an explicit value equal to the global one to ``None`` before
+    their own mesh check, so a caller who names the fused kernel *globally*
+    passed both and reached ``diffusion/atom.py``'s atom-window ``shard_map``
+    -- where a Pallas kernel's outputs carry no ``manual_axis_type`` and the
+    checked partitioner raises mid-run. This is the door that was open.
+
+    The trunk is left unpatched on purpose: the refusal has to land before any
+    model work, so reaching a real trunk with an empty parameter tree would be
+    a different failure.
+    """
+
+    monkeypatch.setattr(predict_module, "cp_mesh", lambda: object())
+
+    with pytest.raises(ValueError, match="requires attention_backend='xla'"):
+        predict_module.boltz2_predict(
+            {"trunk": {}},
+            {},
+            jax.random.PRNGKey(0),
+            run_confidence=False,
+            run_distogram=False,
+            compute_dtype=jnp.bfloat16,
+            attention_backend="tokamax",
+        )
 
 
 def test_predict_can_map_confidence_sequentially(monkeypatch) -> None:

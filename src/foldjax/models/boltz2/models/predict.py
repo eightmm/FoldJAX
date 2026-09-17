@@ -156,6 +156,18 @@ def boltz2_predict(
             "attention_backend must be 'tokamax' or 'xla'; "
             f"got {attention_backend!r}"
         )
+    if cp_mesh() is not None and attention_backend != "xla":
+        # The base knob is the one the two scoped refusals below cannot speak
+        # for: an explicit value equal to the global collapses to None, so a
+        # caller who names the fused kernel *globally* used to pass both of
+        # them and reach `diffusion/atom.py`'s atom-window `shard_map`, where
+        # a Pallas kernel declares outputs with no `manual_axis_type` and the
+        # checked partitioner refuses mid-run. `xla` is this knob's released
+        # value, so there is nothing to resolve -- anything else was asked for.
+        raise ValueError(
+            "context parallelism requires attention_backend='xla'; fused "
+            "attention is not partitioned"
+        )
     if trunk_atom_attention_backend == attention_backend:
         trunk_atom_attention_backend = None
     if trunk_atom_attention_backend not in (None, "tokamax", "triton", "xla"):

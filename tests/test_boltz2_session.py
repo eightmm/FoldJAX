@@ -164,6 +164,12 @@ _FORCED_CP_SESSION_PROBE = textwrap.dedent(
             # the XLA path before it reached the model -- if the resolution
             # ever stops happening, the requested spelling arrives here.
             assert kwargs["glu_backend"] == "xla", kwargs["glu_backend"]
+            # The base attention knob ships `xla`, so there is nothing to
+            # resolve -- and that is the reason a named `tokamax` is refused
+            # rather than quietly rewritten. Pin what the model receives: if
+            # the released default ever flips, this arm stops being the
+            # partitionable one and the refusal starts hitting the default.
+            assert kwargs["attention_backend"] == "xla", kwargs["attention_backend"]
             assert "token_to_rep_atom" not in feats
             assert feats[COMPACT_TOKEN_TO_REP_ATOM].dtype == jnp.uint8
             assert feats[TOKEN_TO_REP_ATOM_INDEX].dtype == jnp.int32

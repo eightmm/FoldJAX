@@ -120,6 +120,33 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **Boltz-2 now refuses its fused attention and its fused GLU under a mesh at
+  every entry, instead of raising from a kernel mid-run.** Two doors were
+  open. `attention_backend=tokamax` with `cp_devices > 1` passed every check
+  the port had: the two scoped refusals (`trunk_atom_attention_backend`,
+  `diffusion_attention_backend`) canonicalize an explicit value equal to the
+  global one to "unset" before their own mesh check, so naming the fused
+  kernel *globally* satisfied both, and the request then reached the atom
+  context-parallel `shard_map`, where a Pallas kernel declares its outputs
+  with no `manual_axis_type` and the checked partitioner raised after the run
+  had started. It is now refused at plan time -- in the adapter's option dict,
+  in `api.predict`, and at the model entry -- with the message the sibling
+  knobs use. Unlike `glu_backend`, `triangle_backend` and
+  `diffusion_attention_backend`, this knob ships `xla`, so there is no
+  released default to resolve away and nothing to resolve: an omitted request
+  is already the partitionable spelling and reaches the model untouched.
+
+  Second, a library caller who opens a mesh with `context_parallel` and calls
+  a transition directly -- the shape the MSA module's own `shard_map` calls it
+  in -- reached the fused GLU with neither the option dict nor `api.predict`
+  consulted. The transition now refuses at the site, as Protenix and
+  OpenFold3 already do and as this port's triangle multiplication already did.
+
+  Every compiled program is unchanged: the serial fused and XLA transitions
+  and both context-parallel routes under both layouts compile to identical HLO
+  (modulo source metadata) with identical `temp_size_in_bytes` before and
+  after. No released configuration is refused.
+
 - **Boltz-2's float32 OuterProductMean assembles its output by concatenation,
   which XLA partitions correctly.** The operator computes its output in
   token-row blocks, and the float32 path used to write them into a preallocated

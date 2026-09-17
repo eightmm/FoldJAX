@@ -870,6 +870,18 @@ def predict(
     cp_atom_active = cp_devices > 1 and cp_atom_windows and stop_after == "full"
     cp_rows = int(math.isqrt(cp_devices)) if resolved_cp_layout == "2d" else cp_devices
     cp_cols = int(math.isqrt(cp_devices)) if resolved_cp_layout == "2d" else 1
+    if cp_devices > 1 and attention_backend != "xla":
+        # The released value of the base knob is `xla`, unlike the fused
+        # `glu_backend`, `triangle_backend` and `diffusion_attention_backend`
+        # defaults resolved away above -- so there is nothing here to resolve
+        # and no default to protect. Anything else was named, and it reaches
+        # the atom-window `shard_map` the two scoped refusals below do not
+        # cover, because an explicit scoped value equal to the global one
+        # canonicalizes to `None`.
+        raise ValueError(
+            "context parallelism requires attention_backend='xla'; fused "
+            "attention is not partitioned"
+        )
     if (
         cp_devices > 1
         and resolved_trunk_atom_attention_backend not in (None, "xla")

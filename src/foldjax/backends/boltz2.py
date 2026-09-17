@@ -950,6 +950,20 @@ class Boltz2Backend(Backend):
                 "pair_residual_dtype='bfloat16' requires "
                 "compute_dtype='bfloat16'"
             )
+        # The base knob first, because the two scoped checks below read it and
+        # collapse an equal spelling to `None` -- which is right for a scoped
+        # request and silent about a global one. `xla` is what this knob
+        # ships, so any other value is a request for a fused attention that
+        # reaches the atom-window `shard_map` and cannot be partitioned.
+        if (
+            type(options.get("cp_devices", 1)) is int
+            and options.get("cp_devices", 1) > 1
+            and options.get("attention_backend", "xla") != "xla"
+        ):
+            raise ValueError(
+                "context parallelism requires attention_backend='xla'; fused "
+                "attention is not partitioned"
+            )
         scoped_diffusion_backend = options.get("diffusion_attention_backend")
         if scoped_diffusion_backend == options.get("attention_backend", "xla"):
             scoped_diffusion_backend = None

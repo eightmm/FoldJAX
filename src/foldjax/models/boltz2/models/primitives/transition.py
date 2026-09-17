@@ -10,7 +10,10 @@ from jax.sharding import PartitionSpec
 
 from foldjax.models._cp import cp_grid, cp_mesh, pair_spec, shard_pair_rows
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
-from foldjax.models.boltz2.models.primitives.glu_backend import gated_linear_unit
+from foldjax.models.boltz2.models.primitives.glu_backend import (
+    gated_linear_unit,
+    reject_fused_glu_under_cp,
+)
 from foldjax.models.boltz2.models.primitives.native_amp_norm import amp_layer_norm
 
 TransitionParams = Mapping[str, Mapping[str, jnp.ndarray]]
@@ -290,6 +293,7 @@ def _transition_rows(
         return jax.nn.silu(value)
 
     if glu_backend != "xla":
+        reject_fused_glu_under_cp(glu_backend)
         hidden = gated_linear_unit(
             x, fc1_kernel, fc2_kernel, jax.nn.silu, backend=glu_backend
         )

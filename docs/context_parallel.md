@@ -398,6 +398,21 @@ Inputs are padded to a complete query-window partition and halo width, then all
 public coordinates, confidence outputs, and captured representations are
 cropped back to the biological prefix.
 
+These `shard_map` bodies are also why `attention_backend=tokamax` is refused
+under a mesh rather than resolved. A Pallas kernel declares its outputs with no
+`manual_axis_type`, which a checked `shard_map` requires of everything produced
+inside it, so the fused attention raises from the partitioner once the atom
+windows are active -- and they are, whenever `cp_atom_windows` is on and the
+shapes line up. Unlike `glu_backend`, `triangle_backend` and
+`diffusion_attention_backend`, this knob ships `xla`, so there is no released
+default to protect and nothing to resolve: an omitted request is already the
+partitionable spelling, and any other value was named. The refusal lands at
+plan time on all three surfaces -- the adapter's option dict, `api.predict`,
+and the model entry -- and it has to be the base knob that says so, because
+`trunk_atom_attention_backend` and `diffusion_attention_backend` canonicalize
+an explicit value equal to the global one to "unset" before their own mesh
+check, which is what used to carry a globally named fused kernel past both.
+
 ## Protenix atom-window path
 
 Protenix distributes the same four operations over CP rows, through the shared

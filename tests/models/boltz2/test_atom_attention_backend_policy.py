@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+import foldjax.backends.boltz2 as backend_module
 import foldjax.models.boltz2.models.diffusion.diffusion_transformer as dt_module
 import foldjax.models.boltz2.models.trunk_blocks.trunk as trunk_module
 from foldjax.backends.boltz2 import Boltz2Backend
@@ -310,11 +312,99 @@ def test_backend_rejects_unsupported_atom_attention_policy(
         Boltz2Backend().validate_native_options(options)
 
 
-def test_backend_accepts_explicit_inherited_fused_backend_with_cp() -> None:
+def test_backend_refuses_the_fused_base_attention_under_cp() -> None:
+    """The base knob is refused, and it is the base knob that is named.
+
+    This used to assert the same option dict was *accepted*: the scoped check
+    reads the global and collapses an equal spelling to ``None``, so naming
+    the fused kernel globally passed every mesh refusal the adapter had and
+    left the atom-window ``shard_map`` to raise out of Pallas on a card.
+
+    The scoped canonicalization is still what happens first -- which is why
+    the message has to be matched, not just the raise: a scoped refusal firing
+    here would mean the collapse broke, and the base one firing means the gap
+    is closed. ``attention_backend`` ships as ``xla``, so unlike
+    ``glu_backend`` there is no default to resolve away.
+    """
+
+    with pytest.raises(ValueError) as raised:
+        Boltz2Backend().validate_native_options(
+            {
+                "attention_backend": "tokamax",
+                "trunk_atom_attention_backend": "tokamax",
+                "cp_devices": 2,
+            }
+        )
+
+    assert "requires attention_backend='xla'" in str(raised.value)
+    assert "trunk_atom_attention_backend" not in str(raised.value)
+
+
+def test_backend_accepts_the_partitionable_base_attention_with_cp() -> None:
     Boltz2Backend().validate_native_options(
         {
-            "attention_backend": "tokamax",
-            "trunk_atom_attention_backend": "tokamax",
+            "attention_backend": "xla",
+            "trunk_atom_attention_backend": "xla",
             "cp_devices": 2,
         }
     )
+
+
+def test_backend_accepts_the_fused_base_attention_without_cp() -> None:
+    # The refusal is the mesh's, not the kernel's: serial runs keep the knob.
+    Boltz2Backend().validate_native_options(
+        {"attention_backend": "tokamax", "cp_devices": 1}
+    )
+    Boltz2Backend().validate_native_options({"attention_backend": "tokamax"})
+
+
+def test_high_level_refuses_the_fused_base_attention_before_featurization(
+    monkeypatch, tmp_path
+) -> None:
+    """Plan time, not run time: the refusal precedes the featurizer.
+
+    ``api.predict`` is the surface the CLI and the adapter both go through,
+    and it cannot distinguish an explicit ``tokamax`` from a default one --
+    but it does not have to, because this knob's default is ``xla``.
+    """
+
+    monkeypatch.setattr(
+        api,
+        "featurize",
+        lambda **kwargs: pytest.fail("featurization ran before the mesh refusal"),
+    )
+
+    with pytest.raises(ValueError, match="requires attention_backend='xla'"):
+        api.predict(
+            seq=["ACD"],
+            weights=tmp_path / "unused",
+            mols=tmp_path,
+            cp_devices=4,
+            attention_backend="tokamax",
+        )
+
+
+def test_the_base_attention_ships_partitionable_so_nothing_is_resolved() -> None:
+    """Why the fix above is a refusal and not a resolution.
+
+    ``glu_backend``, ``triangle_backend`` and ``diffusion_attention_backend``
+    ship fused, so a mesh has to resolve them or refuse the released
+    configuration; this knob ships ``xla`` on both surfaces, so an omitted
+    request is already the partitionable spelling and reaches the model
+    untouched. That is the fact a resolution added here would contradict, and
+    it has to be pinned on both surfaces, because a flip on either would
+    silently reopen the door the refusal closes.
+
+    The end-to-end proof on a real four-device mesh -- that the omitted knob
+    is what the model receives -- is the forced probe in
+    ``tests/test_boltz2_session.py``, beside the same assertion for
+    ``glu_backend``.
+    """
+
+    assert (
+        inspect.signature(api.predict).parameters["attention_backend"].default == "xla"
+    )
+    assert backend_module._RELEASED_COMPILE_DEFAULTS["attention_backend"] == "xla"
+    # Omitting the knob under a mesh is accepted, which is the other half of
+    # the refusal: only a named fused kernel is a request the run cannot honour.
+    Boltz2Backend().validate_native_options({"cp_devices": 4})

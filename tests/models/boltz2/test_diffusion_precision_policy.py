@@ -329,6 +329,16 @@ def test_context_parallelism_rejects_a_fused_diffusion_backend(
 def test_context_parallelism_accepts_an_inherited_diffusion_backend(
     monkeypatch,
 ) -> None:
+    """An explicit scoped value equal to the global does not trip the CP guard.
+
+    Spelled ``xla`` on both, not ``tokamax``: the base knob is refused outright
+    under a mesh now (``test_predict_refuses_the_fused_base_attention_under_a_mesh``),
+    because this canonicalization is exactly what used to carry a globally
+    named fused kernel past every mesh refusal the port had. The assertion
+    still discriminates -- without the canonicalization the sampler would see
+    ``"xla"`` here rather than ``None``.
+    """
+
     seen = {}
 
     def fake_sample(params, feats, key, *, trunk, **kwargs):
@@ -353,8 +363,8 @@ def test_context_parallelism_accepts_an_inherited_diffusion_backend(
         jax.random.PRNGKey(0),
         run_confidence=False,
         run_distogram=False,
-        attention_backend="tokamax",
-        diffusion_attention_backend="tokamax",
+        attention_backend="xla",
+        diffusion_attention_backend="xla",
     )
 
     assert seen == {"diffusion": None}
@@ -386,11 +396,39 @@ def test_backend_rejects_unsupported_diffusion_policy(
         Boltz2Backend().validate_native_options(options)
 
 
+def test_backend_refuses_an_inherited_diffusion_backend_with_cp() -> None:
+    """The base knob answers for this dict now, and it is the base knob named.
+
+    This used to assert the same options were *accepted*, and it was right
+    about its own subject: the scoped check reads the global and canonicalizes
+    an equal spelling to ``None``, so the diffusion knob is not what refuses.
+    What it missed is that nothing else refused either -- a globally named
+    fused kernel passed every mesh check the adapter had and left the atom
+    ``shard_map`` to raise out of Pallas on a card.
+
+    Matching the message, not just the raise, is what keeps the original
+    subject: a scoped refusal firing here would mean the canonicalization
+    broke.
+    """
+
+    with pytest.raises(ValueError) as raised:
+        Boltz2Backend().validate_native_options(
+            {
+                "attention_backend": "tokamax",
+                "diffusion_attention_backend": "tokamax",
+                "cp_devices": 2,
+            }
+        )
+
+    assert "requires attention_backend='xla'" in str(raised.value)
+    assert "diffusion_attention_backend" not in str(raised.value)
+
+
 def test_backend_accepts_an_inherited_diffusion_backend_with_cp() -> None:
     Boltz2Backend().validate_native_options(
         {
-            "attention_backend": "tokamax",
-            "diffusion_attention_backend": "tokamax",
+            "attention_backend": "xla",
+            "diffusion_attention_backend": "xla",
             "cp_devices": 2,
         }
     )
