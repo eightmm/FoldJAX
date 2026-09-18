@@ -25,6 +25,12 @@ def result(
     options=None,
     runtime=None,
     source=None,
+    implementation="implementation-a",
+    upstream_git=None,
+    upstream_runtime=None,
+    parent_runtime=None,
+    implicit_assets=None,
+    identity_options=None,
     failed=False,
 ):
     body = {
@@ -47,12 +53,19 @@ def result(
         "seed": seed,
         "options": options,
         "runtime": runtime or {"python": {"version": "3.13"}},
-        "impl": "implementation-a",
+        "impl": implementation,
+        "upstream_git": upstream_git,
+        "upstream_runtime": upstream_runtime,
+        "parent_runtime": parent_runtime,
         "artifacts": {
             "checkpoints": {"model": {"sha256": "d" * 64}},
             "inputs": {"job": {"sha256": "e" * 64}},
+            "implicit_assets": implicit_assets if implicit_assets is not None else {},
         },
         "execution": {"timing_state": "warm-after-successful-prefill"},
+        "identity": (
+            {"options": identity_options} if identity_options is not None else {}
+        ),
         "source": source
         or {
             "foldjax": {"sha256": "a" * 64},
@@ -333,3 +346,148 @@ def test_success_timing_state_mismatch_and_cross_cell_seed_are_rejected(tmp_path
     )
     with pytest.raises(ValueError, match="timing_state"):
         performance.build_table(manifest, aggregate, tmp_path)
+
+
+def _native_kwargs():
+    return {
+        "upstream_git": {"revision": "upstream-a"},
+        "upstream_runtime": {"python": {"version": "3.11"}, "torch": "2.12"},
+        "implicit_assets": {"native.model": {"sha256": "c" * 64}},
+    }
+
+
+def test_identical_native_runtime_and_implicit_assets_are_preserved(tmp_path):
+    first, second = tmp_path / "first.json", tmp_path / "second.json"
+    result(first, wall=1, peak=1, **_native_kwargs())
+    result(second, wall=2, peak=2, **_native_kwargs())
+    manifest, aggregate = write(
+        tmp_path,
+        [
+            run("one", first, arm="native", timing="warm-after-successful-prefill"),
+            run("two", second, arm="native", timing="warm-after-successful-prefill"),
+        ],
+        {"cells": [cell("native", ["one", "two"], "native")], "comparisons": []},
+    )
+    identity = performance.build_table(manifest, aggregate, tmp_path)["cells"][0][
+        "success_execution_identity"
+    ]
+    assert identity["upstream_runtime"] == _native_kwargs()["upstream_runtime"]
+    assert identity["implicit_assets"] == _native_kwargs()["implicit_assets"]
+
+
+@pytest.mark.parametrize("upstream_runtime", [None, {}, "python-3.11"])
+def test_native_result_requires_a_dictionary_upstream_runtime(
+    tmp_path, upstream_runtime
+):
+    source = tmp_path / "native.json"
+    kwargs = _native_kwargs() | {"upstream_runtime": upstream_runtime}
+    result(source, wall=1, peak=1, **kwargs)
+    manifest, aggregate = write(
+        tmp_path,
+        [run("one", source, arm="native", timing="warm-after-successful-prefill")],
+        {"cells": [cell("native", ["one"], "native")], "comparisons": []},
+    )
+    with pytest.raises(ValueError, match="upstream runtime"):
+        performance.build_table(manifest, aggregate, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("field", "changed"),
+    [
+        ("upstream_runtime", {"python": {"version": "3.12"}, "torch": "2.12"}),
+        ("parent_runtime", {"python": {"version": "3.13"}, "jax": "0.11.2"}),
+        ("implicit_assets", {"native.model": {"sha256": "f" * 64}}),
+    ],
+)
+def test_cell_rejects_mixed_additional_execution_identity(tmp_path, field, changed):
+    first, second = tmp_path / "first.json", tmp_path / "second.json"
+    kwargs = _native_kwargs()
+    kwargs["parent_runtime"] = {"python": {"version": "3.13"}, "jax": "0.11.1"}
+    result(first, wall=1, peak=1, **kwargs)
+    result(second, wall=2, peak=2, **(kwargs | {field: changed}))
+    manifest, aggregate = write(
+        tmp_path,
+        [
+            run("one", first, arm="native", timing="warm-after-successful-prefill"),
+            run("two", second, arm="native", timing="warm-after-successful-prefill"),
+        ],
+        {"cells": [cell("native", ["one", "two"], "native")], "comparisons": []},
+    )
+    with pytest.raises(ValueError, match="execution identity"):
+        performance.build_table(manifest, aggregate, tmp_path)
+
+
+def test_nested_options_fallback_and_disagreement_are_checked(tmp_path):
+    first, second = tmp_path / "first.json", tmp_path / "second.json"
+    result(
+        first,
+        wall=1,
+        peak=1,
+        implementation="alphafold3-common-jax-reference",
+        parent_runtime={"python": {"version": "3.13"}, "jax": "0.11.1"},
+        identity_options={"source": "external", "attention_backend": "triton"},
+        implicit_assets={"alphafold3.external.runner": {"sha256": "g" * 64}},
+    )
+    fallback_manifest, fallback_aggregate = write(
+        tmp_path,
+        [run("one", first, arm="native", timing="warm-after-successful-prefill")],
+        {"cells": [cell("native", ["one"], "native")], "comparisons": []},
+    )
+    fallback = performance.build_table(
+        fallback_manifest, fallback_aggregate, tmp_path
+    )["cells"][0]["success_execution_identity"]
+    assert fallback["options"]["attention_backend"] == "triton"
+    assert fallback["model_execution_source"]["kind"] == "alphafold3_external_runner"
+
+    result(
+        second,
+        wall=2,
+        peak=2,
+        implementation="alphafold3-common-jax-reference",
+        options={"source": "external"},
+        identity_options={"source": "foldjax"},
+        parent_runtime={"python": {"version": "3.13"}, "jax": "0.11.1"},
+        implicit_assets={"alphafold3.external.runner": {"sha256": "g" * 64}},
+    )
+    manifest, aggregate = write(
+        tmp_path,
+        [
+            run("one", first, arm="native", timing="warm-after-successful-prefill"),
+            run("two", second, arm="native", timing="warm-after-successful-prefill"),
+        ],
+        {"cells": [cell("native", ["one", "two"], "native")], "comparisons": []},
+    )
+    with pytest.raises(ValueError, match="options disagree"):
+        performance.build_table(manifest, aggregate, tmp_path)
+
+
+def test_af3_common_reference_requires_external_options_identity(tmp_path):
+    source = tmp_path / "af3.json"
+    result(
+        source,
+        wall=1,
+        peak=1,
+        implementation="alphafold3-common-jax-reference",
+        implicit_assets={"alphafold3.external.runner": {"sha256": "g" * 64}},
+    )
+    manifest, aggregate = write(
+        tmp_path,
+        [run("one", source, arm="native", timing="warm-after-successful-prefill")],
+        {"cells": [cell("native", ["one"], "native")], "comparisons": []},
+    )
+    with pytest.raises(ValueError, match="external AF3 options"):
+        performance.build_table(manifest, aggregate, tmp_path)
+
+
+def test_foldjax_result_without_upstream_runtime_remains_valid(tmp_path):
+    source = tmp_path / "foldjax.json"
+    result(source, wall=1, peak=1, implicit_assets={"runtime": {"sha256": "h" * 64}})
+    manifest, aggregate = write(
+        tmp_path,
+        [run("one", source, arm="foldjax", timing="warm-after-successful-prefill")],
+        {"cells": [cell("foldjax", ["one"], "foldjax")], "comparisons": []},
+    )
+    identity = performance.build_table(manifest, aggregate, tmp_path)["cells"][0][
+        "success_execution_identity"
+    ]
+    assert identity["upstream_runtime"] is None

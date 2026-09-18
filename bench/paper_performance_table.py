@@ -87,9 +87,26 @@ def _execution_identity(result: dict[str, Any], run_id: str) -> dict[str, Any]:
     options = result.get("options")
     if options is not None and not isinstance(options, dict):
         raise ValueError(f"run {run_id!r} has invalid options")
+    nested_identity = result.get("identity")
+    if nested_identity is not None and not isinstance(nested_identity, dict):
+        raise ValueError(f"run {run_id!r} has invalid nested identity")
+    nested_options = (
+        None if nested_identity is None else nested_identity.get("options")
+    )
+    if nested_options is not None and not isinstance(nested_options, dict):
+        raise ValueError(f"run {run_id!r} has invalid identity.options")
+    if options is not None and nested_options is not None and options != nested_options:
+        raise ValueError(f"run {run_id!r} options disagree with identity.options")
+    effective_options = options if options is not None else nested_options
     runtime = result.get("runtime")
     if not isinstance(runtime, dict):
         raise ValueError(f"run {run_id!r} has no runtime identity")
+    upstream_runtime = result.get("upstream_runtime")
+    if upstream_runtime is not None and not isinstance(upstream_runtime, dict):
+        raise ValueError(f"run {run_id!r} has invalid upstream runtime identity")
+    parent_runtime = result.get("parent_runtime")
+    if parent_runtime is not None and not isinstance(parent_runtime, dict):
+        raise ValueError(f"run {run_id!r} has invalid parent runtime identity")
     artifacts = result.get("artifacts")
     if not isinstance(artifacts, dict):
         raise ValueError(f"run {run_id!r} has no artifact identity")
@@ -100,13 +117,37 @@ def _execution_identity(result: dict[str, Any], run_id: str) -> dict[str, Any]:
         isinstance(value, dict) and value for value in checkpoint_inputs.values()
     ):
         raise ValueError(f"run {run_id!r} has incomplete checkpoint/input identity")
+    implicit_assets = artifacts.get("implicit_assets")
+    if not isinstance(implicit_assets, dict):
+        raise ValueError(f"run {run_id!r} has invalid implicit asset identity")
     source = result.get("source")
     if not isinstance(source, dict):
         raise ValueError(f"run {run_id!r} has no source identity")
     upstream = result.get("upstream_git")
+    if upstream is not None and not isinstance(upstream, dict):
+        raise ValueError(f"run {run_id!r} has invalid upstream source identity")
     foldjax = source.get("foldjax")
-    if isinstance(upstream, dict):
+    if upstream is not None:
+        if not upstream_runtime:
+            raise ValueError(f"run {run_id!r} has no upstream runtime identity")
         model_source = {"kind": "upstream_git", "identity": upstream}
+    elif implementation == "alphafold3-common-jax-reference":
+        if (
+            effective_options is None
+            or effective_options.get("source") != "external"
+        ):
+            raise ValueError(f"run {run_id!r} has no external AF3 options identity")
+        external_runner = implicit_assets.get("alphafold3.external.runner")
+        if not (
+            isinstance(external_runner, dict)
+            and isinstance(external_runner.get("sha256"), str)
+            and external_runner["sha256"]
+        ):
+            raise ValueError(f"run {run_id!r} has no external AF3 runner identity")
+        model_source = {
+            "kind": "alphafold3_external_runner",
+            "identity": external_runner,
+        }
     elif isinstance(foldjax, dict) and isinstance(foldjax.get("sha256"), str):
         model_source = {"kind": "foldjax_source", "identity": foldjax}
     else:
@@ -117,10 +158,13 @@ def _execution_identity(result: dict[str, Any], run_id: str) -> dict[str, Any]:
     return {
         "implementation": implementation,
         "seed": seed,
-        "options": options,
+        "options": effective_options,
         "runtime": runtime,
+        "upstream_runtime": upstream_runtime,
+        "parent_runtime": parent_runtime,
         "model_execution_source": model_source,
         "checkpoint_input_artifacts": checkpoint_inputs,
+        "implicit_assets": implicit_assets,
         "harness_source": harness,
     }
 
@@ -214,8 +258,11 @@ def _cell(spec: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> dict[str, A
                 "seed",
                 "options",
                 "runtime",
+                "upstream_runtime",
+                "parent_runtime",
                 "model_execution_source",
                 "checkpoint_input_artifacts",
+                "implicit_assets",
             )
         }
         if any(
@@ -271,8 +318,11 @@ def _cell(spec: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> dict[str, A
                     "seed",
                     "options",
                     "runtime",
+                    "upstream_runtime",
+                    "parent_runtime",
                     "model_execution_source",
                     "checkpoint_input_artifacts",
+                    "implicit_assets",
                 )
             }
         ),
