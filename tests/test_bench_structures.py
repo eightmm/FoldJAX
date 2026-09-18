@@ -277,3 +277,121 @@ def test_no_shared_sequence_leaves_the_keys_alone(tmp_path):
     mapping, permuted = structures.best_assignment(left, right)
     assert mapping == {}
     assert permuted is False
+
+
+def test_structures_selects_each_explicit_sample_and_excludes_ranked_aliases(tmp_path):
+    """AF3 root-level top-ranked file is an alias, not a sixth sample."""
+    run = tmp_path / "run"
+    expected = []
+    for index in range(2):
+        path = run / f"seed-101_sample-{index:02d}" / f"sample-{index}.cif"
+        path.parent.mkdir(parents=True)
+        path.write_text("sample")
+        expected.append(path)
+    alias = run / "job" / "job_model.cif"
+    alias.parent.mkdir()
+    alias.write_text("sample")
+
+    assert structures.structures(run) == expected
+
+
+def test_structures_preserves_distinct_sample_identities_with_equal_bytes(tmp_path):
+    """Equal coordinates are still two independently requested samples."""
+    run = tmp_path / "run"
+    expected = []
+    for index in range(2):
+        path = run / f"seed-101_sample-{index:02d}" / "prediction.cif"
+        path.parent.mkdir(parents=True)
+        path.write_text("identical coordinates")
+        expected.append(path)
+
+    assert structures.structures(run) == expected
+
+
+def test_structures_uses_measured_phase_without_merging_warmup(tmp_path):
+    run = tmp_path / "run"
+    measured = run / "measured" / "seed-101_sample-00" / "measured.cif"
+    warmup = run / "warmup" / "seed-101_sample-00" / "warmup.cif"
+    for path in (measured, warmup):
+        path.parent.mkdir(parents=True)
+        path.write_text(path.stem)
+
+    assert structures.structures(run) == [measured]
+
+
+def test_structures_selects_nested_samples_and_excludes_root_aliases(tmp_path):
+    run = tmp_path / "run"
+    sample = run / "native" / "predictions" / "seed-101_sample-00" / "sample.cif"
+    sample.parent.mkdir(parents=True)
+    sample.write_text("sample")
+    alias = run / "ranked_0.cif"
+    alias.write_text("sample")
+
+    assert structures.structures(run) == [sample]
+
+
+def test_structures_rejects_duplicate_numeric_sample_identities(tmp_path):
+    run = tmp_path / "run"
+    for parent, sample in (("first", "00"), ("second", "0")):
+        path = run / parent / f"seed-101_sample-{sample}" / "sample.cif"
+        path.parent.mkdir(parents=True)
+        path.write_text(parent)
+
+    with pytest.raises(ValueError, match=r"duplicate sample identity \(101, 0\)"):
+        structures.structures(run)
+
+
+def test_structures_rejects_empty_or_multiple_sample_cifs(tmp_path):
+    for count in (0, 2):
+        run = tmp_path / str(count)
+        sample = run / "seed-101_sample-00"
+        sample.mkdir(parents=True)
+        for index in range(count):
+            (sample / f"structure-{index}.cif").write_text("sample")
+
+        with pytest.raises(ValueError, match=f"found {count}"):
+            structures.structures(run)
+
+
+def test_structures_preserves_legacy_upstream_file_listing(tmp_path):
+    run = tmp_path / "run"
+    expected = [run / "native" / "a.cif", run / "native" / "b.cif"]
+    for path in expected:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(path.stem)
+
+    assert structures.structures(run) == expected
+
+
+def test_structures_rejects_warmup_only_run_but_accepts_explicit_warmup(tmp_path):
+    run = tmp_path / "run"
+    warmup = run / "warmup"
+    sample = warmup / "seed-101_sample-00" / "warmup.cif"
+    sample.parent.mkdir(parents=True)
+    sample.write_text("warmup")
+
+    with pytest.raises(ValueError, match="warmup but no measured"):
+        structures.structures(run)
+    assert structures.structures(warmup) == [sample]
+
+
+def test_structures_prefers_direct_samples_over_nested_native_metadata(tmp_path):
+    run = tmp_path / "run"
+    expected = []
+    for index in range(2):
+        path = run / f"seed-101_sample-{index:02d}" / "structure.cif"
+        path.parent.mkdir(parents=True)
+        path.write_text("canonical")
+        expected.append(path)
+    for index in range(2):
+        metadata = (
+            run
+            / "native"
+            / "predictions"
+            / f"seed-101_sample-{index}"
+            / "summary.json"
+        )
+        metadata.parent.mkdir(parents=True)
+        metadata.write_text("metadata only")
+
+    assert structures.structures(run) == expected

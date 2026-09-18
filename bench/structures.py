@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import re
 import statistics
 from pathlib import Path
 from typing import NamedTuple
@@ -488,14 +489,84 @@ def tm_and_rmsd(p: np.ndarray, q: np.ndarray) -> tuple[float, float]:
     return float(best), rmsd(p, q)
 
 
+_SAMPLE_DIRECTORY = re.compile(
+    r"seed-(?P<seed>-?[0-9]+)_sample-(?P<sample>[0-9]+)"
+)
+
+
+def _measurement_directory(directory: Path) -> Path:
+    """Select the measured phase, never an implicit warmup substitute."""
+    measured = directory / "measured"
+    if measured.is_dir():
+        return measured
+    if (directory / "warmup").is_dir():
+        raise ValueError(
+            f"run root has warmup but no measured phase: {directory}; "
+            "pass the warmup directory directly to inspect it"
+        )
+    return directory
+
+
+def _sample_directories_from_paths(
+    paths: list[Path],
+) -> list[tuple[tuple[int, int], Path]]:
+    """Canonical sample directories, keyed by numeric (seed, sample) identity."""
+    found: dict[tuple[int, int], Path] = {}
+    for path in paths:
+        if not path.is_dir():
+            continue
+        match = _SAMPLE_DIRECTORY.fullmatch(path.name)
+        if match is None:
+            continue
+        identity = (int(match["seed"]), int(match["sample"]))
+        previous = found.get(identity)
+        if previous is not None:
+            raise ValueError(
+                f"duplicate sample identity {identity}: {previous} and {path}"
+            )
+        found[identity] = path
+    return sorted(found.items())
+
+
+def _sample_directories(root: Path) -> list[tuple[tuple[int, int], Path]]:
+    """Direct canonical output wins; nested directories are legacy fallback."""
+    direct = _sample_directories_from_paths(sorted(root.iterdir()))
+    if direct:
+        return direct
+    return _sample_directories_from_paths(sorted(root.rglob("*")))
+
+
 def structures(directory: Path) -> list[Path]:
-    """Every written .cif under one run directory, in a stable order."""
-    found = sorted(
+    """One nonempty CIF per explicit sample, or legacy CIFs in stable order.
+
+    Canonical FoldJAX output names each prediction ``seed-*_sample-*``. When
+    that layout is present anywhere below the selected phase, files elsewhere
+    in the run can be native aliases (notably AlphaFold 3 top-ranked copies)
+    and are not samples. Legacy upstream layouts lack those directories, so
+    retain their complete file listing for compatibility.
+    """
+    root = _measurement_directory(directory)
+    sample_dirs = _sample_directories(root)
+    if sample_dirs:
+        found: list[Path] = []
+        for _identity, sample_dir in sample_dirs:
+            files = sorted(
+                path
+                for path in sample_dir.rglob("*.cif")
+                if path.is_file() and path.stat().st_size > 0
+            )
+            if len(files) != 1:
+                raise ValueError(
+                    f"expected one nonempty CIF for sample {sample_dir}, "
+                    f"found {len(files)}"
+                )
+            found.append(files[0])
+        return found
+    return [
         path
-        for path in directory.rglob("*.cif")
-        if "input" not in path.parent.name.lower() or path.name.endswith(".cif")
-    )
-    return [path for path in found if path.stat().st_size > 0]
+        for path in sorted(root.rglob("*.cif"))
+        if path.is_file() and path.stat().st_size > 0
+    ]
 
 
 def _pairs(values: list[float]) -> dict[str, float] | None:
