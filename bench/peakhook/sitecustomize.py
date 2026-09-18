@@ -30,6 +30,21 @@ def _peak_engine() -> str:
     return "jax" if os.environ.get("BENCH_PEAK_ENGINE") == "jax" else "torch"
 
 
+def _register_jax_cleanup_first() -> None:
+    """Import JAX so its cleanup runs after this observer at process exit.
+
+    JAX 0.11 registers its backend cleanup while importing ``jax._src.api``.
+    Python runs atexit callbacks in reverse registration order, so importing it
+    before registering our read-only observer preserves the initialized client
+    until the observer has read its live peak.  This deliberately does not
+    call ``jax.devices()`` or any backend-discovery API.
+    """
+    try:
+        __import__("jax")
+    except Exception:
+        pass
+
+
 def _torch_peak() -> int | None:
     try:
         import torch
@@ -94,6 +109,8 @@ def _install() -> None:
     if not destination:
         return
     engine = _peak_engine()
+    if engine == "jax":
+        _register_jax_cleanup_first()
 
     def report() -> None:
         _report(destination, engine)

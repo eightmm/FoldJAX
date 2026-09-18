@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import builtins
 import importlib.util
 import sys
 from pathlib import Path
@@ -94,3 +95,96 @@ def test_jax_peak_engine_is_bound_in_execution_provenance():
     )
 
     assert identity["environment"]["BENCH_PEAK_ENGINE"] == "jax"
+
+
+def test_jax_import_registers_cleanup_before_observer_without_device_init(
+    monkeypatch, tmp_path
+):
+    callbacks = []
+    imports = []
+    destination = tmp_path / "peak.txt"
+    bridge = SimpleNamespace(
+        _backends={
+            "cuda": SimpleNamespace(
+                platform="gpu",
+                local_devices=lambda: [
+                    SimpleNamespace(memory_stats=lambda: {"peak_bytes_in_use": 1234})
+                ],
+            )
+        }
+    )
+
+    def cleanup():
+        bridge._backends.clear()
+
+    real_import = builtins.__import__
+
+    def importing(name, *args, **kwargs):
+        imports.append(name)
+        if name == "jax":
+            atexit.register(cleanup)
+            monkeypatch.setitem(sys.modules, "jax._src.xla_bridge", bridge)
+            return SimpleNamespace(
+                devices=lambda: (_ for _ in ()).throw(AssertionError)
+            )
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setenv("BENCH_PEAK_FILE", str(destination))
+    monkeypatch.setenv("BENCH_PEAK_ENGINE", "jax")
+    monkeypatch.setattr(atexit, "register", callbacks.append)
+    monkeypatch.setattr(builtins, "__import__", importing)
+    spec = importlib.util.spec_from_file_location("test_peakhook_order", HOOK)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert imports.count("jax") == 1
+    assert callbacks[-2:] == [cleanup, callbacks[-1]]
+    assert "torch" not in imports
+    for callback in reversed(callbacks):
+        callback()
+    assert destination.read_text(encoding="utf-8") == "1234"
+    assert bridge._backends == {}
+
+
+def test_jax_import_failure_keeps_observer_fail_closed(monkeypatch, tmp_path):
+    callbacks = []
+    imports = []
+    real_import = builtins.__import__
+
+    def importing(name, *args, **kwargs):
+        imports.append(name)
+        if name == "jax":
+            raise ImportError("missing jax")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setenv("BENCH_PEAK_FILE", str(tmp_path / "peak.txt"))
+    monkeypatch.setenv("BENCH_PEAK_ENGINE", "jax")
+    monkeypatch.setattr(atexit, "register", callbacks.append)
+    monkeypatch.setattr(builtins, "__import__", importing)
+    spec = importlib.util.spec_from_file_location("test_peakhook_missing_jax", HOOK)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert imports.count("jax") == 1
+    assert len(callbacks) == 1
+
+
+def test_no_destination_does_not_import_jax(monkeypatch):
+    imports = []
+    real_import = builtins.__import__
+
+    def importing(name, *args, **kwargs):
+        imports.append(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delenv("BENCH_PEAK_FILE", raising=False)
+    monkeypatch.setenv("BENCH_PEAK_ENGINE", "jax")
+    monkeypatch.setattr(builtins, "__import__", importing)
+    spec = importlib.util.spec_from_file_location("test_peakhook_no_destination", HOOK)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert "jax" not in imports
