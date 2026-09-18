@@ -124,16 +124,27 @@ def audit_request(args):
         seed=101,
         options={
             "dtype": "float32",
+            "confidence_dtype": "fp32",
+            "diffusion_dtype": "fp32",
             "include_raw": True,
             "matmul_precision": getattr(args, "jax_matmul_precision", "high"),
         },
     )
 
 
-def require_native_fp32_trunk_dtype(value):
-    """Reject a capture unless the public execution option reached the trunk."""
-    if value != "fp32":
-        raise ValueError("native FP32 must reach the public model boundary")
+def require_native_fp32_runner_dtypes(
+    *, trunk_dtype, confidence_dtype, diffusion_autocast
+):
+    """Reject a capture unless the public FP32 policy reached the runner."""
+    if (
+        trunk_dtype is not None
+        or confidence_dtype is not None
+        or diffusion_autocast is not False
+    ):
+        raise ValueError(
+            "native FP32 must reach the runner as None trunk/confidence dtypes "
+            "and disabled diffusion autocast"
+        )
 
 
 def main():
@@ -425,8 +436,12 @@ def main():
                 kw.get("num_recycles"),
             ) != (101, 5, 200, 10):
                 raise ValueError("public sampling profile differs from native audit")
-            require_native_fp32_trunk_dtype(kw.get("trunk_dtype"))
             kw.update(selected)
+            require_native_fp32_runner_dtypes(
+                trunk_dtype=kw.get("trunk_dtype"),
+                confidence_dtype=kw.get("confidence_dtype"),
+                diffusion_autocast=kw.get("diffusion_autocast"),
+            )
             if args.capture_trunk_boundary:
                 kw["capture_names"] = ("single_inputs", "single", "pair")
             observer_context = nullcontext()

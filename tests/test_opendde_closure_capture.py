@@ -10,7 +10,7 @@ from bench.opendde_closure_capture import (
     native_consumer_cycles,
     native_deterministic_policy,
     observer_policy,
-    require_native_fp32_trunk_dtype,
+    require_native_fp32_runner_dtypes,
 )
 from bench.opendde_confidence_boundary import validate_representatives
 
@@ -41,6 +41,8 @@ def test_audit_request_pins_seed_and_routes_native_fp32(tmp_path):
     assert request.options == {
         "dtype": "float32",
         "include_raw": True,
+        "confidence_dtype": "fp32",
+        "diffusion_dtype": "fp32",
         "matmul_precision": "high",
     }
     assert request.input_format == "native"
@@ -48,18 +50,85 @@ def test_audit_request_pins_seed_and_routes_native_fp32(tmp_path):
 
     invocation = OpenDDEBackend()._native_invocation(request)
     assert invocation.config_fields["trunk_dtype"] == "fp32"
+    assert invocation.config_fields["confidence_dtype"] == "fp32"
+    assert invocation.config_fields["diffusion_dtype"] == "fp32"
     trunk_dtype_flag = invocation.argv.index("--trunk-dtype")
     assert invocation.argv[trunk_dtype_flag + 1] == "fp32"
 
 
-@pytest.mark.parametrize("value", (None, "bf16", "bfloat16", "float32"))
-def test_native_capture_rejects_non_fp32_public_trunk_route(value):
+@pytest.mark.parametrize(
+    ("trunk_dtype", "confidence_dtype", "diffusion_autocast"),
+    (
+        ("bf16", None, False),
+        (None, "bf16", False),
+        (None, None, True),
+    ),
+)
+def test_native_capture_rejects_non_fp32_runner_route(
+    trunk_dtype, confidence_dtype, diffusion_autocast
+):
     with pytest.raises(ValueError, match="native FP32"):
-        require_native_fp32_trunk_dtype(value)
+        require_native_fp32_runner_dtypes(
+            trunk_dtype=trunk_dtype,
+            confidence_dtype=confidence_dtype,
+            diffusion_autocast=diffusion_autocast,
+        )
 
 
-def test_native_capture_accepts_fp32_public_trunk_route():
-    require_native_fp32_trunk_dtype("fp32")
+def test_native_capture_accepts_fp32_runner_route():
+    require_native_fp32_runner_dtypes(
+        trunk_dtype=None, confidence_dtype=None, diffusion_autocast=False
+    )
+
+
+def test_audit_request_reaches_runner_with_native_fp32_dtypes(tmp_path, monkeypatch):
+    """Exercise public options through the backend and real runner boundary."""
+    from foldjax.backends.opendde import OpenDDEBackend
+    from foldjax.models.opendde import runner
+
+    document = tmp_path / "input.json"
+    document.write_text('[{"name":"tiny","modelSeeds":[101]}]')
+    weights = tmp_path / ".foldjax/weights/opendde/opendde.jax"
+    weights.parent.mkdir(parents=True)
+    weights.write_bytes(b"fixture")
+    request = audit_request(
+        SimpleNamespace(input=document, repo=tmp_path, out=tmp_path / "out")
+    )
+    invocation = OpenDDEBackend()._native_invocation(request)
+    fields = dict(invocation.config_fields)
+    fields["stop_after"] = "inputs"
+    config = runner.PredictionConfig(**fields)
+    seen = {}
+
+    monkeypatch.setattr(runner, "_load_jobs", lambda _path: [{"name": "tiny"}])
+    monkeypatch.setattr(
+        runner,
+        "_featurize",
+        lambda _job, **_kwargs: {"structural_token_index": np.arange(1)},
+    )
+    monkeypatch.setattr(runner, "dedup_templates", lambda features: features)
+    monkeypatch.setattr(
+        runner, "compact_ref_atom_category_storage", lambda features: features
+    )
+
+    def predict(_features, _params, **kwargs):
+        seen.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(runner, "_predict", predict)
+    runner.run_prediction(
+        config,
+        _prepared_params_loader=lambda _path, trunk_dtype, _cacheable: seen.update(
+            loader_trunk_dtype=trunk_dtype
+        )
+        or object(),
+    )
+
+    assert seen["loader_trunk_dtype"] == "fp32"
+    assert seen["trunk_dtype"] is None
+
+    assert seen["confidence_dtype"] is None
+    assert seen["diffusion_autocast"] is False
 
 
 def test_confidence_boundary_captures_consumed_features_not_lazy_trunk_state():
