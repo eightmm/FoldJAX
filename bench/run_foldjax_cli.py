@@ -29,7 +29,7 @@ from bench.provenance import (
     runtime_identity,
     source_identity,
 )
-from bench.run_upstream import produced_structures
+from bench.structures import structures as selected_structures
 
 
 def cli_argv(args, case, schedule: dict[str, int], seed: int) -> list[str]:
@@ -379,9 +379,14 @@ def main() -> int:
     except (ArtifactFingerprintError, RuntimeError) as error:
         postflight_error = str(error)
     peak = _read_peak(peak_file)
-    structures = produced_structures(args.output_dir)
     summary = parse_stdout_summary(stdout)
     samples = summary["samples"]
+    try:
+        structures = selected_structures(args.output_dir)
+        structure_error = None
+    except (OSError, ValueError) as error:
+        structures = []
+        structure_error = str(error)
     record = {
         "schema": CURRENT_RESULT_SCHEMA,
         "identity": identity,
@@ -424,6 +429,11 @@ def main() -> int:
     elif peak is None:
         record.update(
             failed=True, reason="FoldJAX CLI produced no peak observer result"
+        )
+    elif structure_error:
+        record.update(
+            failed=True,
+            reason=f"canonical public structure selection failed: {structure_error}",
         )
     elif not structures:
         record.update(

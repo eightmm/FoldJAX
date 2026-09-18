@@ -258,3 +258,37 @@ def test_main_refuses_json_output_alias_to_input_or_weights(
 
     with pytest.raises(SystemExit):
         runner.main()
+
+
+
+def test_main_counts_canonical_af3_samples_not_top_rank_alias(
+    monkeypatch, tmp_path, capsys
+):
+    _case, _weights, output_dir = _configure_main(monkeypatch, tmp_path)
+    original_child = runner.run_cli_child
+
+    def child_with_af3_alias(argv, environment, timeout):
+        returncode, stdout, stderr, elapsed, error = original_child(
+            argv, environment, timeout
+        )
+        summary = json.loads(stdout)
+        for index, sample in enumerate(summary["samples"]):
+            source = output_dir / f"sample-{index}.cif"
+            structure = (
+                output_dir
+                / f"seed-101_sample-{index:02d}"
+                / f"case_seed-101_sample-{index:02d}.cif"
+            )
+            structure.parent.mkdir()
+            source.replace(structure)
+            sample["structure_path"] = str(structure)
+        (output_dir / "case_model.cif").write_text("top-ranked alias")
+        return returncode, json.dumps(summary), stderr, elapsed, error
+
+    monkeypatch.setattr(runner, "run_cli_child", child_with_af3_alias)
+
+    assert runner.main() == 0
+
+    record = json.loads(capsys.readouterr().out)
+    assert len(record["samples"]) == 2
+    assert len(list(output_dir.rglob("*.cif"))) == 3
