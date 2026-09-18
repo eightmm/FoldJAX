@@ -473,7 +473,9 @@ def upstream_checkpoint_paths(model: str) -> dict[str, Path]:
 
     root = _upstream_root()
     if model == "boltz2":
-        return {"model": Path.home() / ".boltz" / "boltz2_conf.ckpt"}
+        cache = os.environ.get("BOLTZ_CACHE")
+        root = Path(cache).expanduser().resolve() if cache else Path.home() / ".boltz"
+        return {"model": root / "boltz2_conf.ckpt"}
     if model in {"protenix", "protenix-v2"}:
         name = (
             "protenix-v2" if model == "protenix-v2" else "protenix_base_default_v1.0.0"
