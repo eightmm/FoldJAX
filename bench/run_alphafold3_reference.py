@@ -4,6 +4,9 @@ This is not an independent-port speed comparison: FoldJAX's external-source
 route executes the same AlphaFold 3 source.  It records a fresh child process
 with that source, the locally licensed parameters, and (when supplied) the
 same prebuilt cpp/CCD runtime used by the FoldJAX environment.
+
+The optional supplied-MSA arm skips external database search while publisher
+model featurisation and inference still run in the child process.
 """
 
 from __future__ import annotations
@@ -59,8 +62,55 @@ runpy.run_path(str(runner), run_name="__main__")
 """
 
 
-def _native_input(path: Path) -> Path:
-    """Reject FoldJAX's common entity dialect at the native CLI boundary."""
+def _provided_msa(protein: dict, path: Path, *, field: str, path_field: str) -> None:
+    if field in protein and path_field in protein:
+        raise ValueError(
+            f"--native-input protein entries cannot set both {field} and {path_field}"
+        )
+    inline, external = protein.get(field), protein.get(path_field)
+    if field in protein and isinstance(inline, str):
+        return
+    if path_field in protein and isinstance(external, str) and external:
+        candidate = (path.parent / external).resolve()
+        try:
+            with candidate.open(encoding="utf-8"):
+                return
+        except OSError:
+            pass
+    raise ValueError(
+        f"--native-input protein entries require a {field} string or "
+        f"a readable {path_field}"
+    )
+
+
+def _provided_protein_inputs(document: dict, path: Path) -> None:
+    sequences = document.get("sequences")
+    if not isinstance(sequences, list):
+        raise ValueError("--native-input sequences must be a list")
+    for sequence in sequences:
+        protein = sequence.get("protein") if isinstance(sequence, dict) else None
+        if protein is None:
+            continue
+        if not isinstance(protein, dict):
+            raise ValueError("--native-input protein entry must be an object")
+        _provided_msa(
+            protein,
+            path,
+            field="unpairedMsa",
+            path_field="unpairedMsaPath",
+        )
+        _provided_msa(
+            protein,
+            path,
+            field="pairedMsa",
+            path_field="pairedMsaPath",
+        )
+        if not isinstance(protein.get("templates"), list):
+            raise ValueError("--native-input protein entries require a templates list")
+
+
+def _native_input(path: Path, *, require_provided: bool = False) -> Path:
+    """Validate the native dialect and, for supplied-MSA arms, its inputs."""
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
@@ -76,6 +126,8 @@ def _native_input(path: Path) -> Path:
             "--native-input must use the AlphaFold 3 sequences dialect, not the "
             "common entities dialect"
         )
+    if require_provided:
+        _provided_protein_inputs(document, path)
     return path
 
 
@@ -129,7 +181,8 @@ def native_argv(args) -> list[str]:
         str(args.weights),
         "--jax_compilation_cache_dir",
         str(args.cache_dir),
-        "--run_data_pipeline=true",
+        "--run_data_pipeline="
+        + ("false" if getattr(args, "skip_database_search", False) else "true"),
         "--run_inference=true",
         "--jax_backend=gpu",
         "--gpu_device=0",
@@ -237,6 +290,7 @@ def main() -> int:
     parser.add_argument("--json-out", type=Path)
     parser.add_argument("--cache-dir", type=Path, required=True)
     parser.add_argument("--common-runtime", type=Path)
+    parser.add_argument("--skip-database-search", action="store_true")
     parser.add_argument("--num-recycles", type=int, default=10)
     parser.add_argument("--num-samples", type=int, default=5)
     parser.add_argument("--timeout", type=int, default=7200)
@@ -250,7 +304,9 @@ def main() -> int:
         parser.error("--timeout, --num-recycles, and --num-samples must be positive")
     args.source = args.source.resolve()
     args.weights = args.weights.resolve()
-    args.native_input = _native_input(args.native_input.resolve())
+    args.native_input = _native_input(
+        args.native_input.resolve(), require_provided=args.skip_database_search
+    )
     try:
         seed = _native_seed(args.native_input)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
@@ -314,6 +370,12 @@ def main() -> int:
             "source": "external",
             "common_runtime_bootstrap": args.common_runtime is not None,
             "attention_backend": "triton",
+            "data_pipeline": (
+                "disabled_with_supplied_native_msa_templates"
+                if args.skip_database_search
+                else "publisher_database_search_pipeline"
+            ),
+            "native_featurization": "publisher_featurise_input",
         },
         artifacts=artifacts,
         source=source,
