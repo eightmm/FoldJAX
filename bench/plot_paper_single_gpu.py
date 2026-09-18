@@ -391,7 +391,8 @@ def _plot(export: dict[str, Any], pdf: Path, png: Path) -> None:
     from matplotlib.lines import Line2D
 
     comparisons = sorted({row["comparison_id"] for row in export["performance_rows"]})
-    figure, axes = plt.subplots(2, 3, figsize=(15, 10))
+    figure_width = max(15, 1.9 * len(comparisons))
+    figure, axes = plt.subplots(2, 3, figsize=(figure_width, 10))
     figure.subplots_adjust(top=0.80, bottom=0.18, left=0.07, right=0.98, hspace=0.65)
     figure.suptitle(
         "Schedule-matched descriptive performance and structural cross-metrics",
@@ -492,7 +493,7 @@ def _plot(export: dict[str, Any], pdf: Path, png: Path) -> None:
         axis.set_title(title, fontsize=10)
         axis.set_ylabel(ylabel)
         axis.set_xticks(
-            range(len(comparisons)), labels, rotation=25, ha="right", fontsize=7
+            range(len(comparisons)), labels, rotation=35, ha="right", fontsize=7
         )
         axis.grid(axis="y", alpha=0.25)
     metric_specs = {
@@ -538,7 +539,7 @@ def _plot(export: dict[str, Any], pdf: Path, png: Path) -> None:
         axis.set_title(title, fontsize=10)
         axis.set_ylabel(ylabel)
         axis.set_xticks(
-            range(len(comparisons)), comparisons, rotation=25, ha="right", fontsize=7
+            range(len(comparisons)), comparisons, rotation=35, ha="right", fontsize=7
         )
         axis.grid(axis="y", alpha=0.25)
     figure.text(
