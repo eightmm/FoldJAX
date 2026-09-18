@@ -480,7 +480,13 @@ def upstream_checkpoint_paths(model: str) -> dict[str, Path]:
         name = (
             "protenix-v2" if model == "protenix-v2" else "protenix_base_default_v1.0.0"
         )
-        return {"model": Path.home() / "protenix" / "checkpoint" / f"{name}.pt"}
+        data_root = os.environ.get("PROTENIX_ROOT_DIR")
+        root = (
+            Path(data_root).expanduser().resolve()
+            if data_root
+            else Path.home() / "protenix"
+        )
+        return {"model": root / "checkpoint" / f"{name}.pt"}
     if model == "openfold3":
         return {
             "model": root
