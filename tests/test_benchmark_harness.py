@@ -2134,3 +2134,31 @@ def test_run_foldjax_options_follow_the_cli_literal_rule(monkeypatch):
     import bench.run_foldjax as harness
 
     assert "_parse_cli_options(list(args.option))" in inspect.getsource(harness.main)
+
+
+def test_opendde_comparison_options_reach_all_native_dtype_fields(
+    tmp_path: Path,
+) -> None:
+    """The publisher FP32 row must not leave confidence at its BF16 default."""
+    from bench.spec import COMPARISON_OPTIONS
+    from foldjax.backends.opendde import OpenDDEBackend
+    from foldjax.schema import PredictionRequest
+
+    job = tmp_path / "job.json"
+    weights = tmp_path / "opendde.jax"
+    job.write_text("{}")
+    weights.write_bytes(b"weights")
+    request = PredictionRequest(
+        model="opendde",
+        input=job,
+        weights=weights,
+        output_dir=tmp_path / "output",
+        seed=101,
+        options=COMPARISON_OPTIONS["opendde"],
+    )
+
+    invocation = OpenDDEBackend()._native_invocation(request)
+
+    assert invocation.config_fields["trunk_dtype"] == "fp32"
+    assert invocation.config_fields["confidence_dtype"] == "fp32"
+    assert invocation.config_fields["diffusion_dtype"] == "fp32"

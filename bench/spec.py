@@ -1,19 +1,13 @@
-"""The one schedule every measurement in this directory runs under.
+"""Historical shared schedule and explicit controls for benchmark records.
 
-Comparing implementations only means something if both sides do the same work,
-and comparing models only means something if they all do. So there is exactly
-one schedule here, and it is not invented: it is AlphaFold 3's released
-inference default, which Protenix's base model also ships. Every other model
-here can express all four values, so nothing is left at a different setting and
-quietly compared anyway.
+The values below are the historical common schedule used by earlier matrix
+records. Managed modern runs can have separate model-specific defaults and
+protocols, so a record must state its effective schedule rather than treating
+these values as every model's native inference default.
 
-MSA depth is deliberately *not* in the schedule, even though it is the dominant
-term in peak memory. Not every upstream exposes a depth argument, so pinning one
-would mean FoldJAX doing something its own reference implementation cannot --
-which is the opposite of a controlled comparison. Both sides therefore read the
-same alignment file and apply each implementation's own default, which is
-identical between them by construction. The depth each model actually used is
-reported alongside the peak, because it is what makes the peaks differ.
+MSA depth is deliberately not a shared schedule field. Implementations can
+consume different effective depths from the same alignment, so each result must
+record the depth the model actually used alongside its peak-memory evidence.
 """
 
 from __future__ import annotations
@@ -22,12 +16,9 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-#: AlphaFold 3's released default (`run_alphafold.make_model_config` plus
-#: `Model.Config`): 5 diffusion samples, 200 diffusion steps, 10 recycles.
-#: Protenix's base model ships the same three. Boltz-2 defaults to 3
-#: recycles rather than 10, so this asks more of it than its own default
-#: does -- but it asks the same of their upstream, which is what makes the
-#: FoldJAX-vs-upstream column mean something.
+#: Historical common matrix schedule: 5 diffusion samples, 200 diffusion
+#: steps, and 10 recycles. It is retained for reproducibility of those records;
+#: managed current protocols record their own effective per-model settings.
 SCHEDULE = {
     "num_samples": 5,
     "num_steps": 200,
@@ -70,9 +61,9 @@ MODELS = (
 #: The models with a meaningful "upstream" column, i.e. the ones `run_upstream`
 #: knows how to drive.
 #:
-#: `alphafold3` is absent because FoldJAX drives the user's own AlphaFold 3
-#: installation rather than reimplementing it, so both columns would run the
-#: same code.
+#: `alphafold3` is absent because ``run_upstream`` has no native upstream
+#: adapter for AlphaFold 3. Its external installation is therefore outside this
+#: shared matrix.
 #:
 #: OpenFold3 is included through the upstream v0.5.0 environment and the
 #: OpenBind checkpoint this port implements. ``openfold3_runner.yml`` pins the
@@ -90,9 +81,15 @@ REIMPLEMENTED = (
 #: OpenDDE and OpenFold3 ship BF16 defaults while their upstream inference
 #: columns run FP32. Leaving either default here would compare two precisions,
 #: not two implementations. Both pins apply to the warm-up, measured command,
-#: and request identity through this one mapping.
+#: and request identity through this one mapping. OpenDDE's neutral ``dtype``
+#: alone does not set its confidence or diffusion fields, so all three are
+#: explicit here.
 COMPARISON_OPTIONS: dict[str, dict[str, str]] = {
-    "opendde": {"dtype": "float32"},
+    "opendde": {
+        "dtype": "float32",
+        "confidence_dtype": "fp32",
+        "diffusion_dtype": "fp32",
+    },
     "openfold3": {"dtype": "float32"},
 }
 
