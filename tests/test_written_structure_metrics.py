@@ -368,3 +368,136 @@ def test_nonpolymer_residues_in_one_chain_entity_stay_separate(tmp_path):
     assert len(counts) == 2
     assert set(counts.values()) == {1}
     assert result["policies"]["left"]["entity_metadata_uncertainty"]
+
+
+def _three_chain_rows():
+    left = []
+    for chain, entity, points in (
+        (
+            "A",
+            "1",
+            np.array(
+                [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]]
+            ),
+        ),
+        (
+            "B",
+            "2",
+            np.array(
+                [[10.0, 3.0, 1.0], [13.0, 3.0, 1.0], [10.0, 5.0, 1.0], [10.0, 3.0, 4.0]]
+            ),
+        ),
+        (
+            "C",
+            "3",
+            np.array(
+                [[-4.0, 6.0, 2.0], [-2.0, 6.0, 2.0], [-4.0, 7.0, 2.0], [-4.0, 6.0, 5.0]]
+            ),
+        ),
+    ):
+        left.extend(protein_rows(points, chain, entity))
+    by_chain = {
+        chain: [row for row in left if row["chain"] == chain]
+        for chain in ("A", "B", "C")
+    }
+    right = (
+        [dict(row, chain="A") for row in by_chain["B"]]
+        + [dict(row, chain="B") for row in by_chain["A"]]
+        + by_chain["C"]
+    )
+    return left, right
+
+
+def test_explicit_chain_map_is_separate_full_all_atom_diagnostic(tmp_path):
+    left, right = tmp_path / "left.cif", tmp_path / "right.cif"
+    left_rows, right_rows = _three_chain_rows()
+    write_cif(left, left_rows, polymer_entities=("1", "2", "3"))
+    write_cif(right, right_rows, polymer_entities=("1", "2", "3"))
+
+    strict = compare_written_structures(left, right)
+    mapped = compare_written_structures(
+        left, right, left_chain_to_right_chain={"A": "B", "B": "A"}
+    )
+
+    assert strict["metrics"]["all_atom_rmsd"] > 1.0
+    assert mapped["metrics"]["all_atom_rmsd"] < 1e-12
+    assert mapped["coverage"]["atom"] == {"left": 12, "right": 12, "matched": 12}
+    assert mapped["metrics"]["per_chain_atom_counts"] == {"A": 4, "B": 4, "C": 4}
+    assert mapped["inputs"] == strict["inputs"]
+    assert mapped["policies"]["left_chain_to_original_right_chain"] == {
+        "A": "B",
+        "B": "A",
+    }
+    assert (
+        "caller-supplied diagnostic"
+        in mapped["policies"]["explicit_supplied_chain_correspondence"]
+    )
+    assert "caller-supplied right-chain reindexing" in mapped["policies"]["primary_fit"]
+    assert (
+        "no correspondence search"
+        in mapped["policies"]["homomer_permutation_diagnostic"]
+    )
+    assert "not_run" not in mapped["policies"]["homomer_permutation_diagnostic"]
+    assert "written chain identities" not in mapped["policies"]["primary_fit"]
+
+
+def test_none_identity_and_empty_chain_maps_are_distinguished(tmp_path):
+    left, right = tmp_path / "left.cif", tmp_path / "right.cif"
+    rows, _ = _three_chain_rows()
+    write_cif(left, rows, polymer_entities=("1", "2", "3"))
+    write_cif(right, rows, polymer_entities=("1", "2", "3"))
+
+    default = compare_written_structures(left, right)
+    explicit_none = compare_written_structures(
+        left, right, left_chain_to_right_chain=None
+    )
+    identity = compare_written_structures(
+        left,
+        right,
+        left_chain_to_right_chain={"A": "A", "B": "B", "C": "C"},
+    )
+    empty = compare_written_structures(left, right, left_chain_to_right_chain={})
+
+    assert default == explicit_none
+    assert "explicit_supplied_chain_correspondence" not in default["policies"]
+    assert identity["metrics"] == default["metrics"]
+    assert identity["policies"]["left_chain_to_original_right_chain"] == {
+        "A": "A",
+        "B": "B",
+        "C": "C",
+    }
+    assert empty["metrics"] == default["metrics"]
+    assert empty["policies"]["left_chain_to_original_right_chain"] == {}
+
+
+@pytest.mark.parametrize(
+    ("mapping", "message"),
+    [
+        ({"D": "A"}, "unknown left"),
+        ({"A": "D"}, "unknown right"),
+        ({"A": "B", "B": "B"}, "injective"),
+        ({"A": "B"}, "collides"),
+        ({" ": "A"}, "nonempty"),
+    ],
+)
+def test_invalid_explicit_chain_maps_are_rejected(tmp_path, mapping, message):
+    left, right = tmp_path / "left.cif", tmp_path / "right.cif"
+    rows, _ = _three_chain_rows()
+    write_cif(left, rows, polymer_entities=("1", "2", "3"))
+    write_cif(right, rows, polymer_entities=("1", "2", "3"))
+
+    with pytest.raises(ValueError, match=message):
+        compare_written_structures(left, right, left_chain_to_right_chain=mapping)
+
+
+def test_mapped_chain_identity_still_requires_every_atom(tmp_path):
+    left, right = tmp_path / "left.cif", tmp_path / "right.cif"
+    left_rows, right_rows = _three_chain_rows()
+    right_rows[0] = dict(right_rows[0], seq=99)
+    write_cif(left, left_rows, polymer_entities=("1", "2", "3"))
+    write_cif(right, right_rows, polymer_entities=("1", "2", "3"))
+
+    with pytest.raises(ValueError, match="identity mismatch"):
+        compare_written_structures(
+            left, right, left_chain_to_right_chain={"A": "B", "B": "A"}
+        )

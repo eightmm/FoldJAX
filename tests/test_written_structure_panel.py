@@ -358,3 +358,87 @@ def test_cli_rejects_hardlink_alias_before_comparison(
 
     with pytest.raises(ValueError, match="manifest|referenced CIF"):
         panel.main()
+
+
+def test_panel_passes_optional_explicit_chain_map_with_provenance(tmp_path):
+    left, right, manifest = (
+        tmp_path / "left.cif",
+        tmp_path / "right.cif",
+        tmp_path / "pairs.json",
+    )
+    left_rows = [
+        {
+            "element": "C",
+            "atom": "CA",
+            "component": "ALA",
+            "chain": "A",
+            "sequence": 1,
+            "xyz": [0, 0, 0],
+        },
+        {
+            "element": "C",
+            "atom": "CA",
+            "component": "ALA",
+            "chain": "B",
+            "sequence": 1,
+            "xyz": [5, 1, 0],
+        },
+    ]
+    right_rows = [
+        dict(left_rows[1], chain="A"),
+        dict(left_rows[0], chain="B"),
+    ]
+    write_cif(left, left_rows)
+    write_cif(right, right_rows)
+    pair = manifest_pair("mapped", left, right)
+    pair["left_chain_to_right_chain"] = {"A": "B", "B": "A"}
+    pair["chain_mapping_provenance"] = {
+        "description": "externally recorded CA pair correspondence",
+        "source_sha256": "a" * 64,
+    }
+    write_manifest(manifest, [pair])
+
+    result = panel.build_panel(manifest, tmp_path)
+
+    record = result["pairs"][0]
+    assert record["status"] == "ok"
+    assert record["manifest_pair"] == pair
+    assert record["result"]["policies"]["left_chain_to_original_right_chain"] == {
+        "A": "B",
+        "B": "A",
+    }
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        None,
+        {},
+        {"description": "", "source_sha256": "a" * 64},
+        {"description": "x", "source_sha256": "A" * 64},
+    ],
+)
+def test_panel_rejects_missing_or_malformed_mapping_provenance_before_comparison(
+    tmp_path, monkeypatch, provenance
+):
+    left, right, manifest = (
+        tmp_path / "left.cif",
+        tmp_path / "right.cif",
+        tmp_path / "pairs.json",
+    )
+    row = {"element": "P", "atom": "P", "component": "A", "xyz": [0, 0, 0]}
+    write_cif(left, [row])
+    write_cif(right, [row])
+    pair = manifest_pair("mapped", left, right)
+    pair["left_chain_to_right_chain"] = {"A": "A"}
+    if provenance is not None:
+        pair["chain_mapping_provenance"] = provenance
+    write_manifest(manifest, [pair])
+    monkeypatch.setattr(
+        panel,
+        "compare_written_structures",
+        lambda *_args, **_kwargs: pytest.fail("called"),
+    )
+
+    with pytest.raises(ValueError, match="chain_mapping_provenance"):
+        panel.build_panel(manifest, tmp_path)

@@ -293,12 +293,70 @@ def _group_counts(labels: np.ndarray) -> dict[str, int]:
     }
 
 
-def compare_written_structures(left: str | Path, right: str | Path) -> dict[str, Any]:
+def _validate_chain_mapping(
+    mapping: dict[str, str], left_atoms: WrittenAtoms, right_atoms: WrittenAtoms
+) -> dict[str, str]:
+    """Validate an explicitly supplied correspondence without inferring one."""
+    if not isinstance(mapping, dict):
+        raise ValueError("left_chain_to_right_chain must be a dict")
+    if any(
+        not isinstance(left_chain, str)
+        or not left_chain.strip()
+        or not isinstance(right_chain, str)
+        or not right_chain.strip()
+        for left_chain, right_chain in mapping.items()
+    ):
+        raise ValueError("left_chain_to_right_chain requires nonempty string names")
+    left_chains = set(left_atoms.chains.tolist())
+    right_chains = set(right_atoms.chains.tolist())
+    unknown_left = sorted(set(mapping) - left_chains)
+    if unknown_left:
+        raise ValueError(f"chain mapping names unknown left chains: {unknown_left}")
+    targets = list(mapping.values())
+    unknown_right = sorted(set(targets) - right_chains)
+    if unknown_right:
+        raise ValueError(f"chain mapping names unknown right chains: {unknown_right}")
+    if len(set(targets)) != len(targets):
+        raise ValueError("chain mapping must be injective")
+    collisions = sorted(set(mapping) & (right_chains - set(targets)))
+    if collisions:
+        raise ValueError(
+            f"chain mapping collides with unmapped right chains: {collisions}"
+        )
+    return dict(mapping)
+
+
+def _reindexed_right_index(
+    atoms: WrittenAtoms, mapping: dict[str, str] | None
+) -> dict[tuple[str, str, str, str, str], int]:
+    """Use original right coordinates but optional caller-supplied chain labels."""
+    if mapping is None:
+        return {key: index for index, key in enumerate(atoms.keys)}
+    inverse = {right_chain: left_chain for left_chain, right_chain in mapping.items()}
+    index = {
+        (inverse.get(key[0], key[0]), *key[1:]): row
+        for row, key in enumerate(atoms.keys)
+    }
+    if len(index) != len(atoms.keys):
+        raise ValueError("chain mapping creates duplicate strict atom identities")
+    return index
+
+
+def compare_written_structures(
+    left: str | Path,
+    right: str | Path,
+    *,
+    left_chain_to_right_chain: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Compare strict matching written atom identities under one proper fit."""
     left_atoms = read_written_atoms(left)
     right_atoms = read_written_atoms(right)
+    if left_chain_to_right_chain is not None:
+        left_chain_to_right_chain = _validate_chain_mapping(
+            left_chain_to_right_chain, left_atoms, right_atoms
+        )
     left_index = {key: index for index, key in enumerate(left_atoms.keys)}
-    right_index = {key: index for index, key in enumerate(right_atoms.keys)}
+    right_index = _reindexed_right_index(right_atoms, left_chain_to_right_chain)
     left_only = sorted(set(left_index) - set(right_index))
     right_only = sorted(set(right_index) - set(left_index))
     if left_only or right_only:
@@ -341,6 +399,43 @@ def compare_written_structures(left: str | Path, right: str | Path) -> dict[str,
         "atom_displacement_p95": float(np.quantile(displacements, 0.95)),
         "atom_displacement_max": float(displacements.max()),
     }
+    policies = {
+        "primary_fit": (
+            "strict identity all-atom proper Kabsch fit; "
+            "one transform reused for every metric"
+        ),
+        "raw_network_atom_mask": "not_available_from_written_cif",
+        "homomer_permutation_diagnostic": (
+            "not_run; primary metric retains written chain identities"
+        ),
+        "per_entity_instance_comparison": (
+            "left-defined grouping; right entity annotation is "
+            "not independently verified"
+        ),
+        "left_to_right_transform": {
+            "rotation": rotation.tolist(),
+            "translation": (qm - pm @ rotation.T).tolist(),
+            "coordinate_convention": "right = left @ rotation.T + translation",
+        },
+        "left": left_atoms.metadata,
+        "right": right_atoms.metadata,
+    }
+    if left_chain_to_right_chain is not None:
+        policies["primary_fit"] = (
+            "strict full all-atom identity after caller-supplied right-chain "
+            "reindexing; one transform reused for every metric"
+        )
+        policies["homomer_permutation_diagnostic"] = (
+            "caller-supplied chain correspondence applied; no correspondence "
+            "search was performed"
+        )
+        policies["explicit_supplied_chain_correspondence"] = (
+            "caller-supplied diagnostic only; unmapped right chains retain "
+            "their original labels"
+        )
+        policies["left_chain_to_original_right_chain"] = dict(
+            sorted(left_chain_to_right_chain.items())
+        )
     return {
         "schema_version": SCHEMA_VERSION,
         "scope": "written_coordinates",
@@ -353,27 +448,7 @@ def compare_written_structures(left: str | Path, right: str | Path) -> dict[str,
                 "sha256": hashlib.sha256(right_atoms.path.read_bytes()).hexdigest()
             },
         },
-        "policies": {
-            "primary_fit": (
-                "strict identity all-atom proper Kabsch fit; "
-                "one transform reused for every metric"
-            ),
-            "raw_network_atom_mask": "not_available_from_written_cif",
-            "homomer_permutation_diagnostic": (
-                "not_run; primary metric retains written chain identities"
-            ),
-            "per_entity_instance_comparison": (
-                "left-defined grouping; right entity annotation is "
-                "not independently verified"
-            ),
-            "left_to_right_transform": {
-                "rotation": rotation.tolist(),
-                "translation": (qm - pm @ rotation.T).tolist(),
-                "coordinate_convention": "right = left @ rotation.T + translation",
-            },
-            "left": left_atoms.metadata,
-            "right": right_atoms.metadata,
-        },
+        "policies": policies,
         "atom_identity": {
             "strict_match": True,
             "key_fields": [

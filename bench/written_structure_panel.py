@@ -96,6 +96,40 @@ def _validate_pairs(manifest: dict[str, Any], root: Path) -> list[dict[str, Any]
                     f"pair {pair_id!r} {arm} SHA256 does not match manifest"
                 )
             arms[arm] = path
+        mapping = row.get("left_chain_to_right_chain")
+        provenance = row.get("chain_mapping_provenance")
+        if mapping is None:
+            if provenance is not None:
+                raise ValueError(
+                    f"pair {pair_id!r} has chain_mapping_provenance without a chain map"
+                )
+        else:
+            if not isinstance(mapping, dict) or any(
+                not isinstance(left_chain, str)
+                or not left_chain.strip()
+                or not isinstance(right_chain, str)
+                or not right_chain.strip()
+                for left_chain, right_chain in mapping.items()
+            ):
+                raise ValueError(
+                    f"pair {pair_id!r} requires a chain map of nonempty strings"
+                )
+            if not isinstance(provenance, dict):
+                raise ValueError(f"pair {pair_id!r} requires chain_mapping_provenance")
+            if (
+                not isinstance(provenance.get("description"), str)
+                or not provenance["description"].strip()
+            ):
+                raise ValueError(
+                    f"pair {pair_id!r} requires nonempty "
+                    "chain_mapping_provenance.description"
+                )
+            source_sha = provenance.get("source_sha256")
+            if not isinstance(source_sha, str) or _SHA256.fullmatch(source_sha) is None:
+                raise ValueError(
+                    f"pair {pair_id!r} requires lowercase "
+                    "chain_mapping_provenance.source_sha256"
+                )
         validated.append(
             {"row": deepcopy(row), "left": arms["left"], "right": arms["right"]}
         )
@@ -109,7 +143,9 @@ def _build_panel_from_validated(
     for pair in pairs:
         row = pair["row"]
         try:
-            result = compare_written_structures(pair["left"], pair["right"])
+            mapping = row.get("left_chain_to_right_chain")
+            kwargs = {} if mapping is None else {"left_chain_to_right_chain": mapping}
+            result = compare_written_structures(pair["left"], pair["right"], **kwargs)
         except ValueError as error:
             results.append(
                 {
