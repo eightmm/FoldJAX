@@ -1138,9 +1138,11 @@ def scores(model: str, out: Path) -> list[dict]:
         #    <case>_seed_<n>_sample_<k>_confidences_aggregated.json`;
         # the runner YAML supplies the requested seed directly.
         # `ptm` is the key the FoldJAX column also writes, so the report can
-        # compare like with like; `avg_plddt` is 0-100 where FoldJAX's
-        # `mean_plddt` is 0-1, so both ride along unrenamed rather than
-        # pretending to be the same number.
+        # compare that field by name. The public OpenFold3 mean pLDDT is
+        # already 0-100 after
+        # output.confidence_summary/_plddt_percent; raw Prediction.plddt is 0-1.
+        # Keep avg_plddt and mean_plddt distinct because aggregation and masks
+        # still need audit, not because their current public scales must differ.
         for path in sorted(out.rglob("*_confidences_aggregated.json")):
             body = json.loads(path.read_text())
             found.append(

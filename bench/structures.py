@@ -9,11 +9,9 @@ tape: torch and JAX draw different diffusion noise even from the same seed, so
 even a bit-exact port would return different samples. Historical OpenFold3
 upstream artifacts recorded before the 2026-08-31 harness fix additionally use
 a generated seed rather than the requested 101. A cross-implementation
-TM-score is therefore uninterpretable on its own. What makes it interpretable
-is the same number computed *within* each implementation, across its own
-samples. If FoldJAX's five samples agree with each other no better than they
-agree with upstream's, the implementations are as close as the model's own
-sampling allows, and no tighter comparison exists to make.
+TM-score is therefore a descriptive comparison across unpaired samples. The
+within-implementation distributions provide context but do not establish
+equivalence, equal distributions, or a maximum attainable agreement.
 
 For an unconverged target that spread is enormous -- Boltz-2 at 132 tokens
 produces samples of its own that share TM 0.06 -- and reading a low
@@ -24,8 +22,10 @@ by (chain id, residue id), and nothing makes two implementations -- or two
 samples of one implementation -- assign the same label to the same copy of a
 repeated chain. On 2026-09-10 that put OpenFold3's homotetramer at 37 A and
 TM 0.569 while each side agreed with itself to TM 1.000, and it split Boltz-2's
-own 4k samples across TM 0.59-1.00. Interchangeable chains are therefore
-matched by minimum RMSD before the score is computed; see `best_assignment`.
+own 4k samples across TM 0.59-1.00. Interchangeable chains are reassigned
+by the scoring policy before the score is computed; see `best_assignment`.
+This is an applied alignment policy, not a claim that any arbitrary pair
+differs only in labels.
 
 Usage:
 
@@ -415,17 +415,46 @@ def best_assignment(
     return mapping, not _is_identity(mapping)
 
 
+def _matched_chain_labels(left: CAStructure, right: CAStructure) -> list[str]:
+    """Left chain labels represented by the exact common-residue keys."""
+    right_keys = set(right.keys)
+    return list(
+        dict.fromkeys(
+            chain
+            for key, chain in zip(left.keys, left.chains, strict=True)
+            if key in right_keys
+        )
+    )
+
+
+def _aligned_residues_detail(
+    left: CAStructure, right: CAStructure
+) -> tuple[np.ndarray, np.ndarray, bool, dict[str, str]]:
+    """Shared residues plus every chain mapping actually used for scoring."""
+    mapping, permuted = best_assignment(left, right)
+    if permuted and len(set(mapping.values())) == len(mapping):
+        renamed = relabel(right, mapping)
+        if renamed is not None:
+            a, b = common_residues(left, renamed)
+            inverse = {ours: theirs for ours, theirs in mapping.items()}
+            applied = {
+                chain: inverse.get(chain, chain)
+                for chain in _matched_chain_labels(left, renamed)
+            }
+            return a, b, True, applied
+    # A rejected relabel must not appear as an applied mapping.  The fallback
+    # compares written labels directly, so record only those identity matches.
+    a, b = common_residues(left, right)
+    applied = {chain: chain for chain in _matched_chain_labels(left, right)}
+    return a, b, False, applied
+
+
 def aligned_residues(
     left: CAStructure, right: CAStructure
 ) -> tuple[np.ndarray, np.ndarray, bool]:
     """Shared residues under the best chain assignment, and whether it permuted."""
-    mapping, permuted = best_assignment(left, right)
-    if not permuted:
-        return (*common_residues(left, right), False)
-    renamed = relabel(right, mapping)
-    if renamed is None:
-        return (*common_residues(left, right), False)
-    return (*common_residues(left, renamed), True)
+    a, b, permuted, _mapping = _aligned_residues_detail(left, right)
+    return a, b, permuted
 
 
 def _tm_from_alignment(p: np.ndarray, q: np.ndarray, subset, d0: float, n: int):
@@ -580,15 +609,8 @@ def _pairs(values: list[float]) -> dict[str, float] | None:
     }
 
 
-def compare(
-    left: list[CAStructure], right: list[CAStructure] | None
-) -> dict | None:
-    """Pairwise TM over one set, or between two sets.
-
-    `permuted` counts the scored pairs whose interchangeable chains had to be
-    reassigned. It is the difference between a homomer that disagrees and one
-    that was merely labelled in another order.
-    """
+def compare(left: list[CAStructure], right: list[CAStructure] | None) -> dict | None:
+    """Pairwise TM with per-pair provenance and unchanged aggregate summaries."""
     tms: list[float] = []
     rmsds: list[float] = []
     permuted = 0
@@ -599,12 +621,42 @@ def compare(
     )
     other = left if right is None else right
     dropped = 0
+    records: list[dict] = []
     for i, j in combos:
-        a, b, moved = aligned_residues(left[i], other[j])
-        if len(a) < 4:
+        a, b, moved, mapping = _aligned_residues_detail(left[i], other[j])
+        matched = len(a)
+        left_count = len(left[i].coords)
+        right_count = len(other[j].coords)
+        record = {
+            "left_sample_index": i,
+            "right_sample_index": j,
+            "sample_index_policy": (
+                "array ordinal only; not a noise-paired sample identity"
+            ),
+            "left_ca_count": left_count,
+            "right_ca_count": right_count,
+            "matched_ca_count": matched,
+            "left_matched_coverage": matched / left_count if left_count else None,
+            "right_matched_coverage": matched / right_count if right_count else None,
+            "tm_normalization_length": matched,
+            "denominator_policy": (
+                "matched CA residues only; "
+                "missing residues not penalized by normalization"
+            ),
+            "left_chain_to_right_chain": mapping,
+            "permuted": moved,
+            "dropped": matched < 4,
+            "tm": None,
+            "ca_fit_rmsd": None,
+        }
+        if matched < 4:
             dropped += 1
+            records.append(record)
             continue
         tm, distance = tm_and_rmsd(a, b)
+        record["tm"] = tm
+        record["ca_fit_rmsd"] = distance
+        records.append(record)
         tms.append(tm)
         rmsds.append(distance)
         permuted += int(moved)
@@ -615,6 +667,7 @@ def compare(
         "rmsd": _pairs(rmsds),
         "dropped": dropped,
         "permuted": permuted,
+        "pair_records": records,
     }
 
 
@@ -712,18 +765,16 @@ def main() -> int:
             f"| {cell(row['cross'], 'rmsd')} | {permutations(row)} |"
         )
     print(
-        "\nTM-score, iterative search, median over all pairs (min-max in "
-        "brackets). Read `cross` against the two `within` columns: torch and "
-        "JAX do not share a diffusion random tape even from the same seed; "
-        "historical OpenFold3 upstream artifacts also used a different "
-        "effective seed. Therefore `within` -- how well an implementation "
-        "agrees with *itself* across samples -- is the closest any correct port "
-        "could come. `cross` at or above `within` means the two are as close as "
-        "this model's own sampling allows. `chain perm` counts the scored "
-        "pairs -- cross, within FoldJAX, within upstream -- whose "
-        "interchangeable chains had to be reassigned before scoring, because "
-        "the two structures labelled the identical copies in a different "
-        "order. It is a labelling difference, not a structural one."
+        "\nTM-score uses iterative search and is summarized as the median over "
+        "all scoreable pairs (min-max in brackets). Cross and within distributions "
+        "are descriptive, unpaired context: torch and JAX do not share a diffusion "
+        "random tape, and historical OpenFold3 artifacts can have a different "
+        "effective seed. They do not establish equivalence, distribution equality, "
+        "or a model pass/closure result. `chain perm` counts scored pairs whose "
+        "interchangeable chains the applied scoring policy reassigned before "
+        "scoring. Pair records state the actual mapping and normalize TM over common "
+        "CA residues only; missing residues are not penalized. These diagnostics do "
+        "not assess all-atom agreement, raw confidence, or raw network masks."
     )
 
     if args.out is not None:

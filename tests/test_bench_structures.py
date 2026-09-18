@@ -164,6 +164,12 @@ def test_swapped_homodimer_realigns(tmp_path):
     assert block["rmsd"]["median"] == pytest.approx(0.0, abs=1e-6)
     assert block["tm"]["median"] == pytest.approx(1.0, abs=1e-6)
     assert structures.best_assignment(left, right)[0] == {"A": "B", "B": "A"}
+    pair = block["pair_records"][0]
+    assert pair["left_chain_to_right_chain"] == {"A": "B", "B": "A"}
+    assert pair["left_ca_count"] == pair["right_ca_count"] == 48
+    assert pair["matched_ca_count"] == 48
+    assert pair["tm_normalization_length"] == 48
+    assert pair["left_matched_coverage"] == pair["right_matched_coverage"] == 1.0
 
 
 def test_single_chain_numbers_do_not_move(tmp_path):
@@ -211,15 +217,24 @@ def test_heteromer_swaps_only_the_interchangeable_pair(tmp_path):
     right = load(
         tmp_path,
         "right",
-        {"A": (comps, second), "B": (comps, first), "C": (other, third)},
+        {
+            "A": (comps, second),
+            "B": (comps, first),
+            "C": (sequence(18, offset=5), third),
+        },
     )
 
     mapping, permuted = structures.best_assignment(left, right)
     assert permuted is True
-    assert mapping == {"A": "B", "B": "A", "C": "C"}
+    assert mapping == {"A": "B", "B": "A"}
 
     block = structures.compare([left], [right])
     assert block["permuted"] == 1
+    assert block["pair_records"][0]["left_chain_to_right_chain"] == {
+        "A": "B",
+        "B": "A",
+        "C": "C",
+    }
     assert block["rmsd"]["median"] == pytest.approx(0.0, abs=1e-6)
 
 
@@ -395,3 +410,66 @@ def test_structures_prefers_direct_samples_over_nested_native_metadata(tmp_path)
         metadata.write_text("metadata only")
 
     assert structures.structures(run) == expected
+
+
+def test_pair_records_expose_partial_overlap_and_ordinal_policy(tmp_path):
+    comps = sequence(6)
+    left = load(tmp_path, "left", {"A": (comps, helix(6, np.zeros(3)))})
+    right = load(tmp_path, "right", {"A": (comps[:4], helix(4, np.zeros(3)))})
+
+    record = structures.compare([left], [right])["pair_records"][0]
+
+    assert record["left_sample_index"] == record["right_sample_index"] == 0
+    assert record["sample_index_policy"] == (
+        "array ordinal only; not a noise-paired sample identity"
+    )
+    assert record["matched_ca_count"] == record["tm_normalization_length"] == 4
+    assert record["left_ca_count"] == 6
+    assert record["right_ca_count"] == 4
+    assert record["left_matched_coverage"] == pytest.approx(4 / 6)
+    assert record["right_matched_coverage"] == 1.0
+    assert record["denominator_policy"] == (
+        "matched CA residues only; missing residues not penalized by normalization"
+    )
+
+
+def test_pair_records_keep_dropped_pairs_when_other_pairs_score(tmp_path):
+    full = sequence(5)
+    first = load(tmp_path, "first", {"A": (full, helix(5, np.zeros(3)))})
+    second = load(tmp_path, "second", {"A": (full, helix(5, np.ones(3)))})
+    short = load(tmp_path, "short", {"A": (full[:3], helix(3, np.zeros(3)))})
+
+    block = structures.compare([first, second, short], None)
+
+    assert block["tm"]["n"] == 1
+    assert block["dropped"] == 2
+    assert [
+        (pair["left_sample_index"], pair["right_sample_index"])
+        for pair in block["pair_records"]
+    ] == [
+        (0, 1),
+        (0, 2),
+        (1, 2),
+    ]
+    assert [pair["dropped"] for pair in block["pair_records"]] == [False, True, True]
+    assert all(pair["tm"] is None for pair in block["pair_records"][1:])
+
+
+def test_rejected_collision_mapping_is_not_reported_as_applied(tmp_path, monkeypatch):
+    comps = sequence(5)
+    chains = {
+        "A": (comps, helix(5, np.zeros(3))),
+        "B": (comps, zigzag(5, np.array([20.0, 0.0, 0.0]))),
+    }
+    left = load(tmp_path, "left", chains)
+    right = load(tmp_path, "right", chains)
+    monkeypatch.setattr(
+        structures,
+        "best_assignment",
+        lambda _left, _right: ({"A": "B", "B": "B"}, True),
+    )
+
+    record = structures.compare([left], [right])["pair_records"][0]
+
+    assert not record["permuted"]
+    assert record["left_chain_to_right_chain"] == {"A": "A", "B": "B"}
