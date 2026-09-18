@@ -123,10 +123,17 @@ def audit_request(args):
         cache_dir=args.out / "cache",
         seed=101,
         options={
+            "dtype": "float32",
             "include_raw": True,
             "matmul_precision": getattr(args, "jax_matmul_precision", "high"),
         },
     )
+
+
+def require_native_fp32_trunk_dtype(value):
+    """Reject a capture unless the public execution option reached the trunk."""
+    if value != "fp32":
+        raise ValueError("native FP32 must reach the public model boundary")
 
 
 def main():
@@ -418,8 +425,7 @@ def main():
                 kw.get("num_recycles"),
             ) != (101, 5, 200, 10):
                 raise ValueError("public sampling profile differs from native audit")
-            if kw.get("trunk_dtype") is not None:
-                raise ValueError("native FP32 must reach the public model boundary")
+            require_native_fp32_trunk_dtype(kw.get("trunk_dtype"))
             kw.update(selected)
             if args.capture_trunk_boundary:
                 kw["capture_names"] = ("single_inputs", "single", "pair")

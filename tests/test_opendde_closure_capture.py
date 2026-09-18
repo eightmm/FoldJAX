@@ -10,6 +10,7 @@ from bench.opendde_closure_capture import (
     native_consumer_cycles,
     native_deterministic_policy,
     observer_policy,
+    require_native_fp32_trunk_dtype,
 )
 from bench.opendde_confidence_boundary import validate_representatives
 
@@ -27,7 +28,7 @@ def test_observer_policy_binds_every_optional_switch():
         observer_policy(SimpleNamespace(**{**switches, "capture_consumed_tape": 1}))
 
 
-def test_audit_request_pins_seed_without_overriding_native_dtype(tmp_path):
+def test_audit_request_pins_seed_and_routes_native_fp32(tmp_path):
     path = tmp_path / "input.json"
     path.write_text('[{"name":"tiny","modelSeeds":[101],"sequences":[]}]')
     weights = tmp_path / ".foldjax/weights/opendde/opendde.jax"
@@ -37,8 +38,28 @@ def test_audit_request_pins_seed_without_overriding_native_dtype(tmp_path):
         SimpleNamespace(input=path, repo=tmp_path, out=tmp_path / "out")
     )
     assert request.seed == 101
-    assert request.options == {"include_raw": True, "matmul_precision": "high"}
+    assert request.options == {
+        "dtype": "float32",
+        "include_raw": True,
+        "matmul_precision": "high",
+    }
     assert request.input_format == "native"
+    from foldjax.backends.opendde import OpenDDEBackend
+
+    invocation = OpenDDEBackend()._native_invocation(request)
+    assert invocation.config_fields["trunk_dtype"] == "fp32"
+    trunk_dtype_flag = invocation.argv.index("--trunk-dtype")
+    assert invocation.argv[trunk_dtype_flag + 1] == "fp32"
+
+
+@pytest.mark.parametrize("value", (None, "bf16", "bfloat16", "float32"))
+def test_native_capture_rejects_non_fp32_public_trunk_route(value):
+    with pytest.raises(ValueError, match="native FP32"):
+        require_native_fp32_trunk_dtype(value)
+
+
+def test_native_capture_accepts_fp32_public_trunk_route():
+    require_native_fp32_trunk_dtype("fp32")
 
 
 def test_confidence_boundary_captures_consumed_features_not_lazy_trunk_state():
