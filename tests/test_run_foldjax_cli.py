@@ -11,6 +11,63 @@ import pytest
 from bench import run_foldjax_cli as runner
 
 
+def _summary(samples: int = 1) -> dict:
+    return {
+        "model": "opendde",
+        "samples": [
+            {
+                "seed": 101,
+                "structure_path": f"sample-{index}.cif",
+                "scores": {"iptm": 0.6 + index / 100},
+            }
+            for index in range(samples)
+        ],
+    }
+
+
+def test_terminal_prediction_summary_allows_diagnostic_prefix_for_five_samples():
+    parsed = runner.parse_stdout_summary(
+        "wrote: predictions\n" + json.dumps(_summary(5)) + "\n"
+    )
+
+    assert parsed["stdout_summary_framing"] == "terminal_line_json"
+    assert parsed["stdout_summary_prefix_present"] is True
+    assert parsed["samples"] == _summary(5)["samples"]
+
+
+def test_terminal_prediction_summary_allows_one_pretty_printed_list():
+    parsed = runner.parse_stdout_summary(
+        "wrote: predictions\n" + json.dumps([_summary(), _summary()], indent=2)
+    )
+
+    assert parsed["stdout_summary_framing"] == "terminal_line_json"
+    assert len(parsed["samples"]) == 2
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    (
+        'wrote: predictions\n{"model":"opendde","samples":[',
+        ('wrote: predictions\n{"model":"opendde","samples":[{"scores":{"iptm":NaN}}]}'),
+        (
+            "wrote: predictions\n"
+            '{"model":"opendde","samples":[{"scores":{"iptm":1e309}}]}'
+        ),
+        '{"model":"opendde","samples":[]}',
+        json.dumps(_summary()) + "\ntrailing diagnostics",
+        json.dumps(_summary()) + "\n" + json.dumps(_summary()),
+    ),
+)
+def test_terminal_prediction_summary_rejects_invalid_or_ambiguous_stdout(stdout):
+    parsed = runner.parse_stdout_summary(stdout)
+
+    assert parsed == {
+        "samples": [],
+        "stdout_summary_framing": "rejected",
+        "stdout_summary_prefix_present": False,
+    }
+
+
 def test_child_boundary_passes_only_constructed_environment(monkeypatch):
     calls = {}
 
@@ -140,6 +197,8 @@ def test_main_records_nested_prediction_samples_and_full_child_logs(
     record = json.loads(capsys.readouterr().out)
     assert record["timing_scope"] == "cli_subprocess"
     assert record["peak_mib"] == 1.0
+    assert record["stdout_summary_framing"] == "pure_json"
+    assert record["stdout_summary_prefix_present"] is False
     assert record["samples"] == [
         {
             "scores": {"iptm": 0.6, "ptm": 0.5},

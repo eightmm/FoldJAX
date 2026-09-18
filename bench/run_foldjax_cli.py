@@ -87,30 +87,115 @@ def _read_peak(path: Path) -> float | None:
     return value / 2**20 if value >= 0 else None
 
 
-def _stdout_samples(stdout: str) -> list[dict]:
-    try:
-        payload = json.loads(
-            stdout,
-            parse_constant=lambda value: (_ for _ in ()).throw(
-                ValueError(f"non-finite JSON value: {value}")
-            ),
-        )
-    except (json.JSONDecodeError, ValueError):
-        return []
+def _finite_json(value) -> bool:
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, dict):
+        return all(_finite_json(item) for item in value.values())
+    if isinstance(value, list):
+        return all(_finite_json(item) for item in value)
+    return True
+
+
+def _summary_samples(payload) -> list[dict] | None:
     rows = payload if isinstance(payload, list) else [payload]
+    if not rows or any(
+        not isinstance(row, dict)
+        or not isinstance(row.get("model"), str)
+        or not row["model"]
+        or not isinstance(row.get("samples"), list)
+        or not row["samples"]
+        for row in rows
+    ):
+        return None
     samples = []
     for row in rows:
-        if not isinstance(row, dict) or not isinstance(row.get("samples"), list):
-            continue
         for sample in row["samples"]:
-            if isinstance(sample, dict) and isinstance(sample.get("scores"), dict):
-                if any(
-                    isinstance(value, float) and not math.isfinite(value)
-                    for value in sample["scores"].values()
-                ):
-                    return []
-                samples.append(sample)
-    return samples
+            if not isinstance(sample, dict) or not isinstance(
+                sample.get("scores"), dict
+            ):
+                return None
+            if not sample["scores"] or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                for value in sample["scores"].values()
+            ):
+                return None
+            samples.append(sample)
+    return samples if samples and _finite_json(payload) else None
+
+
+def parse_stdout_summary(stdout: str) -> dict:
+    """Parse one complete public prediction summary without discarding stdout.
+
+    Public CLI JSON is normally the whole stream. Some backends emit a
+    diagnostic line before that terminal summary; accept it only if exactly one
+    schema-valid summary begins at a line boundary and no non-whitespace text
+    follows it. This function is also safe for offline recovery from retained
+    ``cli_stdout.txt`` files.
+    """
+
+    decoder = json.JSONDecoder(
+        parse_constant=lambda value: (_ for _ in ()).throw(
+            ValueError(f"non-finite JSON value: {value}")
+        )
+    )
+    try:
+        payload = decoder.decode(stdout)
+    except (json.JSONDecodeError, ValueError):
+        payload = None
+    else:
+        samples = _summary_samples(payload)
+        if samples is not None:
+            return {
+                "samples": samples,
+                "stdout_summary_framing": "pure_json",
+                "stdout_summary_prefix_present": False,
+            }
+
+    candidates = []
+    for line_start in (
+        0,
+        *(index + 1 for index, char in enumerate(stdout) if char == "\n"),
+    ):
+        line = stdout[line_start:]
+        start = line_start + len(line) - len(line.lstrip(" \t"))
+        try:
+            payload, end = decoder.raw_decode(stdout, start)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        samples = _summary_samples(payload)
+        if samples is not None:
+            candidates.append((start, end, samples))
+    top_level_candidates = [
+        candidate
+        for candidate in candidates
+        if not any(
+            other_start <= candidate[0]
+            and candidate[1] <= other_end
+            and (other_start < candidate[0] or candidate[1] < other_end)
+            for other_start, other_end, _other_samples in candidates
+        )
+    ]
+    if len(top_level_candidates) == 1:
+        start, end, samples = top_level_candidates[0]
+        if start and not stdout[end:].strip():
+            return {
+                "samples": samples,
+                "stdout_summary_framing": "terminal_line_json",
+                "stdout_summary_prefix_present": True,
+            }
+    return {
+        "samples": [],
+        "stdout_summary_framing": "rejected",
+        "stdout_summary_prefix_present": False,
+    }
+
+
+def _stdout_samples(stdout: str) -> list[dict]:
+    """Backward-compatible sample-only access for existing callers."""
+    return parse_stdout_summary(stdout)["samples"]
 
 
 def _same_file(left: Path, right: Path) -> bool:
@@ -295,7 +380,8 @@ def main() -> int:
         postflight_error = str(error)
     peak = _read_peak(peak_file)
     structures = produced_structures(args.output_dir)
-    samples = _stdout_samples(stdout)
+    summary = parse_stdout_summary(stdout)
+    samples = summary["samples"]
     record = {
         "schema": CURRENT_RESULT_SCHEMA,
         "identity": identity,
@@ -317,6 +403,8 @@ def main() -> int:
         "peak_mib": None if peak is None else round(peak, 1),
         "returncode": returncode,
         "samples": samples,
+        "stdout_summary_framing": summary["stdout_summary_framing"],
+        "stdout_summary_prefix_present": summary["stdout_summary_prefix_present"],
         "public_manifest": str(args.output_dir / "foldjax_run.json")
         if (args.output_dir / "foldjax_run.json").is_file()
         else None,
