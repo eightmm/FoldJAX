@@ -1668,6 +1668,131 @@ wall, not memory, until the fused kernels return under a mesh.
 rows with OOMs treated as censored; AlphaFold 3 warns `unknown` instead of
 ignoring the flags.
 
+### After the ceiling wave: the rows the fixes were waiting for (2026-09-17)
+
+The fixes above were measured on the 2,096-token 5DEI rows as they landed,
+one snapshot per commit, all on the 2×2 grid with the ring's query block at
+128. Per-device peak, wall of the measured pass, and the same-index distance
+from the released serial run (its rerun floor is 0.066 Å on Boltz-2):
+
+| snapshot | port | what changed | per device | pass wall | vs serial |
+| --- | --- | --- | ---: | ---: | --- |
+| `bef3922` | Boltz-2 | row-blocked ring | 16,642 MiB | 973 s | 0.013–0.112 Å, deposited identical |
+| `d6ada16` | Boltz-2 | transition local rows, pair spec on both axes | 16,056 MiB | 971 s | 0.013–0.046 Å |
+| `e0a9c4d` | Boltz-2 | MSA transition keeps its row block | 15,111 MiB | 975 s | 0.013–0.039 Å |
+| `021b240` | Boltz-2 | MSA depth over the column axis | **8,296 MiB** | 943 s | 0.013–0.018 Å on four samples, 0.112 on the fifth |
+| `2eb9e15` | OpenFold3 | first grid row | 6,955 MiB | 603 s | 0.021–0.023 Å |
+| `67ddd48` | OpenFold3 | transition local rows, `diffusion_chunk_size=1` | 7,250 MiB | 607 s | 0.024–0.029 Å; deposited 0.51–0.56 against 0.52–0.57 |
+
+Boltz-2's grid now sits at −55% of the released serial peak (18,511 MiB)
+and −56% of its own 1-D arm (19,040), the same class of gain Protenix's
+grid showed first; the sample that moves 0.11 Å is the same sample on every
+2-D arm, and its deposited distance is unchanged. The OpenFold3 fixes were
+costed at 6,568 tokens (20.6 GiB per SwiGLU copy there) and are neutral at
+2,096, where the removed tile was not in the peak-live set and the
+row-blocked restacking adds a small tenant. On the 6,568-token target the
+post-fix warmup pass completed without the first-invocation OOM the
+pre-fix row had, but serialising the five samples' diffusion pushed the
+measured pass past its 4-hour cap; that row (6 h) and Boltz-2's 6,568-token
+grid row (9 h) were cancelled on 2026-09-17 when the node was handed over
+for external use, so **Boltz-2's four-card ceiling above 4,888 tokens and
+OpenFold3's post-fix 6,568-token peak are still unmeasured.**
+
+**ESMFold2 on the grid.** The 2-D layout is where this port's ceiling
+actually opens: 3,012 tokens (6ZTX) completed both passes in 30 minutes,
+772 s / 23,430 MiB per device, where the 1-D arm had not finished one pass
+in two hours; 4,100 tokens (1GTE) 1,375 s / 37,380 MiB per device (its
+warmup had the first-invocation OOM once). One card dies at 3,012.
+`9fb9185` makes `cp_layout=auto` the grid for ESMFold2 on square counts.
+The paper-artefact pass over the CIFs then raised a flag against that
+default: on 6ZTX the 2-D row's best sample is 3.88 Å from the deposited
+structure with all four chains near 4.0 Å, while the 1-D warmup structures
+score 0.95 and 1.04 Å — and 6ZTX is the target on which every port's CP arm
+has flipped a sample's basin (0.77–3.54 Å on OpenFold3). Whether that is
+the port's sampling spread, the target's chaos, or a 2-D defect that the
+CPU parity probes (2e-5 at small sizes) cannot see is decided by a
+same-seed serial / 2-D / 1-D comparison. The CPU half of that ran on
+2026-09-20 (four fake devices, 3DHA at 254 tokens, released schedule,
+seed 101 — 127-row shards, so two 64-row blocks per shard and the ring's
+row blocks engaged): against the deposited structure serial scores
+0.77 / 0.87 / 0.87 / 0.60 / 0.83 Å, the grid 0.77 / 0.86 / 0.81 / 0.60 /
+0.82, the row mesh 0.77 / 0.87 / 0.81 / 0.60 / 0.82; same-index the grid is
+0.008–0.082 Å from serial, the row mesh 0.007–0.086, and the two CP arms
+0.012 from each other (they share the XLA-kernel resolution that serial
+does not). A serial run against itself is 0.0000, so the sharded programs
+did run. A second geometry (4REK, 499 tokens: 250-row shards, four
+64-row blocks per shard) reads the same way: the grid 0.018–0.043 Å from
+serial, deposited 1.13–1.18 Å on both arms. No defect at either geometry;
+the 6ZTX reading stays a GPU same-index question. On 1GTE (4,100 tokens, four chains of 1,005) the
+grid's ESMFold2 scores 1.35–1.91 Å per chain, which also settles an older
+note: OpenFold3's 13.7–22 Å per chain there is a misplaced C-terminal
+domain (its first 600 residues sit at 0.7–1.1 Å, the last 400 at 12–19 Å
+in 200-residue windows), a property of that port on that target, not of
+the target.
+
+**ESMFold2 on one card.** Its 3,012-token wall was attributed on the card
+(compile-only, 2,096 tokens, released schedule; peak-live 41,733 MiB against
+46,042 measured): the triangle prologue's packed projection at full width
+(`bf16[N², 1024]` and its transposed copy, 8,580 MiB each, 41% of the peak),
+the f32 layer norm of the language-model pair (4,290 MiB), six full pair
+state copies (2,145 MiB each), and the alignment one-hot
+(`bf16[1, N, 13280, 33]`, 1,752 MiB). `3531fb4`, `999d1e8` and `fb9328b`
+block the prologue, the conditioning and transition layers, and the MSA
+profile over rows (CPU parity worst case 0.0193 → 0.0228 Å against a 0.030
+tolerance). On the card that landed 2,717 MiB: 43,325 against 46,042 at
+2,096 tokens, and 3,012 tokens still asks for a single 82.45 GiB arena — the
+trunk program's arena, not the `jit_dynamic_slice` executable the OOM names
+(9,759 bytes per pair element against the admission law's 9,692). The
+interval reading explains the shortfall: removing the 1024-wide class moves
+the maximal co-live moment from 43,322 MiB to a 34,775 MiB moment owned by
+the f32 `normalized` tensor, its transpose and the f32 language-model pair
+(4,290 MiB each), and the blocked prologue itself added three full-width
+concatenation destinations (3 × 2,145 MiB) — the third time this wave a
+named removal moved the peak to the next co-live set instead of landing
+whole. `1814601` streams the triangle so that only one full-width bf16
+operand per direction remains and every other intermediate lives per
+64-row block, and `a70f261` stores the normalised operand in bf16 past the
+layer norm (f32 kept at the transition norm, the outer product mean, the
+single norm and the Parcae injection). The census at 2,112 tokens goes from
+29 full-width values (67,654 MiB) to 2 (4,356 MiB), with no f32 full-width
+value left; bitwise on both fake meshes; parity worst case 0.0258 Å. Two
+blocked changes have now used 0.0065 Å of the 0.0107 Å margin, so a third
+recalibrates the tolerance first. Neither commit has run on a card yet.
+
+**The fused ring, measured.** The experiment behind `bee0cef` ran once the
+Pallas call inside the ring's `shard_map` was allowed (`ae896e1`,
+`check_vma=False` on the fused body only): one Boltz-2 triangle-attention
+layer's ring at 2,096 tokens on the 2×2 grid takes 146.7 ms median with the
+tokamax tile against 281.1 ms on XLA (−48%; compile 1.7 s against 12.2 s),
+and a cold five-sample prediction 786 s against 1,119 s (−30%). Rows with
+valid keys differ by at most 0.125 on a range of 46 (mean 5.2e-6); rows the
+model masks come out as zeros, as documented. Coordinates were not compared
+by the experiment, so the option stays opt-in until a bench row with
+`--option triangle_attention_ring_kernel=tokamax` is read against the
+deposited structure.
+
+**The miscompile census.** After `9df6826` every traced write on a sharded
+axis was enumerated: 41 sites across the five ports and the shared CP
+code, of which the outer product mean was the only member of the failing
+class; 1,072 arms over two and four devices, both partitioners and both
+layouts came back clean, with the fixed defect as a positive control firing
+20 of 20. The grid is affected as well as the row mesh. The two Protenix
+sites that looked similar are unreachable under a mesh.
+
+Gates on `fb9328b`: 7,464 passed, 0 failed, CPU parity 59/59; on
+`a70f261` the worker's full suite 7,458 passed and parity 59/59 with the
+worktree on `PYTHONPATH` (the shared editable install otherwise measures
+`main`).
+
+**Still to run on the node** (in this order, once Slurm accepts the
+account again): the ESMFold2 attribution re-read on `main` (one card,
+45 min) and its 2,096 / 3,012-token serial rows, then the admission law
+refit; the ESMFold2 same-seed serial / 1-D / 2-D comparison on 5DEI at
+2,096 tokens and the 6ZTX 3,012-token 2-D against 1-D same-index (revert
+`auto → 2d` if the grid sits above the 1-D floor); the two cancelled
+6,568-token rows (OpenFold3 post-fix, 6 h; Boltz-2 grid, 9 h); one
+deposited bench row on the fused ring.
+
 ### Boltz-2, 2,096 tokens (5DEI)
 
 | cell | wall s | vs released | peak MiB | same-index RMSD vs released |
