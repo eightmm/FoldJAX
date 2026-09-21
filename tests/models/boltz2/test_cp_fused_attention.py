@@ -24,9 +24,11 @@ costs -- is not here. What is here is everything a CPU can settle:
 * **refusal** -- every way of asking for a site nothing would honour raises.
 
 Each probe runs in a subprocess because a forced device count has to be set
-before JAX initialises. Every arm builds its own `jax.jit` object: two arms
-over one function object share one trace, and an exactly-zero difference
-between them is what that looks like.
+before JAX initialises. Every arm builds its own `jax.jit` object, because two
+arms over one function object share one trace and the second never enters the
+scope. That failure used to be readable off an exactly-zero difference; it is
+not, because several of the cases below legitimately agree to the last bit --
+so the arms that can be exactly zero carry a count of fused calls instead.
 """
 
 from __future__ import annotations
