@@ -34,7 +34,11 @@ from foldjax.models.esmfold2.models.segments import (
     MAX_ATOMS_PER_TOKEN,
     sum_by_token,
 )
-from foldjax.models.esmfold2.models.trunk import _autocast_linear, folding_trunk
+from foldjax.models.esmfold2.models.trunk import (
+    LentBuffers,
+    _autocast_linear,
+    folding_trunk,
+)
 
 Params = Mapping[str, jnp.ndarray]
 
@@ -165,6 +169,7 @@ def confidence_head(
     relative_position_encoding: jnp.ndarray | None = None,
     token_bonds_encoding: jnp.ndarray | None = None,
     contiguous_atom_groups: bool = False,
+    trunk_workspace: LentBuffers | None = None,
 ) -> dict[str, jnp.ndarray]:
     """`ConfidenceHead`, returning upstream's dictionary key for key.
 
@@ -203,6 +208,13 @@ def confidence_head(
       pooling softmax, and `pae_head`'s output reaches `jax.nn.softmax` below
       with no float32 guard of its own, which is where pTM and ipTM come
       from. A tensor that feeds a softmax or an exponential is not rounded.
+
+    `trunk_workspace` is the `trunk.LentBuffers` the caller's earlier trunk
+    calls are finished with; this head's own trunk writes its rolled block
+    loops into them rather than allocating a pair of its own. It is the last
+    call in `predict`'s chain, so nothing reads them afterwards -- but the
+    slot is still threaded rather than consumed, because the sequential
+    sample loop hands one iteration's buffers to the next.
     """
     dot = f"{prefix}." if prefix else ""
     # AlphaFold 3 casts the pair and single activations at
@@ -327,6 +339,7 @@ def confidence_head(
         n_layers=n_layers,
         mask=pair_mask,
         native_autocast=native_autocast,
+        workspace=trunk_workspace,
     ).astype(jnp.float32)
     single = row_attention_pooling(pair, mask, params, f"{dot}row_attention_pooling")
 

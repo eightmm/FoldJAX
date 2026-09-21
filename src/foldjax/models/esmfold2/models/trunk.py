@@ -1207,7 +1207,45 @@ def _pair_update_block(
     ), workspace
 
 
-def _streamed_workspace(pair, params, engine):
+def buffer_spec(buffers):
+    """`(shape, dtype)` per buffer, or `None`, for comparing two workspaces.
+
+    A lent pair only serves a call whose loops write exactly its shapes, and
+    a scan carrying one only stays a scan while what the body returns has the
+    type the loop started from. Both questions are this tuple.
+    """
+    return (
+        None
+        if buffers is None
+        else tuple((tuple(part.shape), jnp.dtype(part.dtype)) for part in buffers)
+    )
+
+
+class LentBuffers:
+    """The block loops' two destinations, threaded across `folding_trunk` calls.
+
+    A mutable slot rather than a returned value because `folding_trunk`
+    returns the pair and nothing else: its callers add the result to their
+    own, and the native-injection capture in `bench/esmfold2_tape.py` records
+    exactly what it returns as a boundary. What the next call needs is the
+    buffers the previous one is *finished* with, so they come back here.
+
+    Only a call that used or made a pair stores one, so a call with nothing to
+    roll -- a float32 trunk, a mesh, a pair below three blocks -- leaves the
+    slot as it found it and the next call that can roll still gets the dead
+    buffers. It never crosses a `jax.lax.scan` boundary on its own: a slot
+    filled inside a traced body holds that body's tracers, so a caller with a
+    loop puts the pair in the scan carry and stores what comes back out here
+    (`model.run_loops`).
+    """
+
+    __slots__ = ("buffers",)
+
+    def __init__(self, buffers=None):
+        self.buffers = buffers
+
+
+def _streamed_workspace(pair, params, engine, lent=None):
     """The two buffers the trunk's streamed block loops write into, or `None`.
 
     `None` wherever those loops would not be loops -- under a mesh, where the
@@ -1220,16 +1258,24 @@ def _streamed_workspace(pair, params, engine):
     starting from the previous call's -- dead by then -- that the whole chain
     shares two of them instead of two each.
 
-    A chain begins here, so a program that calls `folding_trunk` more than
-    once holds a pair of buffers for each call: this model makes four -- the
-    LM encoder and the trunk inside the recycle body, the parcae coda, the
-    confidence head. Measured at 512 tokens on a chain of native-autocast
-    trunks, each added call costs two pair widths and is flat in its layer
-    count, against three a layer unrolled: four two-layer calls read 378 MiB
-    of arena here against 1,218, and four six-layer calls 381 against 2,755.
-    Threading one pair through all four would take the four down to one, and
-    is not done: it would put a trunk-internal buffer in the signature of
-    every caller between here and `predict`.
+    `lent` is a pair another call is finished with, and it is returned
+    unchanged wherever it is the shape and dtype this one writes: that is what
+    makes the chain span `folding_trunk` calls rather than begin at each. The
+    check is not a formality -- the confidence head's pair carries a sample
+    axis whenever `confidence_sample_sequential` is off, and a lent pair from
+    the trunk is then the wrong buffer, so this allocates rather than
+    silently reshaping one stage's destination into another's.
+
+    This model makes four `folding_trunk` calls -- the LM encoder and the
+    trunk inside the recycle body, the parcae coda, the confidence head --
+    and each began its own chain before `LentBuffers` existed, so the program
+    held eight full-width buffers rather than two. The law is two pair widths
+    per unthreaded call, flat in the layer count, measured on chains of
+    native-autocast trunks at 512 tokens: four two-layer calls read 378 MiB
+    of arena against the 1,218 the unrolled blocks cost and four six-layer
+    calls 381 against 2,755, and at this model's own 256 channels -- 128 MiB
+    a buffer -- one to four calls read 736, 992, 1,248 and 1,504 MiB
+    unthreaded and 736 at every count threaded.
     """
     weight = params.get(f"{engine}.proj_bundle.weight")
     if (
@@ -1239,10 +1285,29 @@ def _streamed_workspace(pair, params, engine):
         or pair.shape[1] // _AUTOCAST_ROWS <= 1
     ):
         return None
-    return (
-        jnp.zeros(pair.shape[:-1] + (weight.shape[0] // 4,), jnp.bfloat16),
-        jnp.zeros(pair.shape, jnp.bfloat16),
+    wanted = (
+        (tuple(pair.shape[:-1]) + (weight.shape[0] // 4,), jnp.dtype(jnp.bfloat16)),
+        (tuple(pair.shape), jnp.dtype(jnp.bfloat16)),
     )
+    if buffer_spec(lent) == wanted:
+        return tuple(lent)
+    return tuple(jnp.zeros(shape, dtype) for shape, dtype in wanted)
+
+
+def trunk_workspace(pair, params, prefix="", *, native_autocast):
+    """What `folding_trunk` would lend its own loops, for a caller to lend it.
+
+    The trunk allocates its workspace at its first layer, which is inside the
+    recycle scan for two of this model's four calls. A buffer made there is
+    the scan body's own, and the program holds it beside the ones the calls
+    outside the scan hold. `model.run_loops` therefore makes the pair here,
+    before the scan, and carries it -- so the body's loops start from a value
+    the enclosing program defines and every chain merges into one allocation.
+    """
+    if not native_autocast:
+        return None
+    dot = f"{prefix}." if prefix else ""
+    return _streamed_workspace(pair, params, f"{dot}blocks.0.tri_mul_out._engine")
 
 
 def folding_trunk(
@@ -1253,12 +1318,18 @@ def folding_trunk(
     n_layers: int,
     mask: jnp.ndarray | None = None,
     native_autocast: bool = False,
+    workspace: LentBuffers | None = None,
 ) -> jnp.ndarray:
     """`FoldingTrunk`: `n_layers` blocks in sequence, no output norm.
 
     Whether the result replaces the pair or is added to it is the caller's
     business and upstream disagrees with itself about it: the main loop
     overwrites, the confidence head adds. Neither is done here.
+
+    `workspace` is a `LentBuffers` a caller threads from one trunk call to
+    the next. Without one this call makes its own pair and the buffers it
+    allocates are its alone, which is what every caller outside this model's
+    own stack gets and what this function did before the slot existed.
     """
     dot = f"{prefix}." if prefix else ""
     # Two buffers down the whole stack, or none. Each layer's streamed
@@ -1268,20 +1339,30 @@ def folding_trunk(
     # block loop in the trunk rather than once each. `_assemble_row_blocks`
     # records what that costs unthreaded; `_streamed_workspace` records when
     # there is nothing to thread.
-    workspace = (
-        _streamed_workspace(pair, params, f"{dot}blocks.0.tri_mul_out._engine")
+    buffers = (
+        _streamed_workspace(
+            pair,
+            params,
+            f"{dot}blocks.0.tri_mul_out._engine",
+            None if workspace is None else workspace.buffers,
+        )
         if native_autocast
         else None
     )
     for index in range(n_layers):
-        pair, workspace = _pair_update_block(
+        pair, buffers = _pair_update_block(
             pair,
-            workspace,
+            buffers,
             params,
             f"{dot}blocks.{index}",
             mask=mask,
             native_autocast=native_autocast,
         )
+    # Only what this call actually wrote: a call with nothing to roll never
+    # touched the lent pair, which is therefore still the dead one the next
+    # call should start from.
+    if workspace is not None and buffers is not None:
+        workspace.buffers = buffers
     return pair
 
 

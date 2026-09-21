@@ -187,13 +187,45 @@ unless it says so here, in its own paragraph.
   writes into its own input, and the streamed contraction's whole operand and
   pair update go into two buffers `folding_trunk` threads from one layer to
   the next, so the whole stack shares two allocations rather than two per
-  call site. A chain begins at a `folding_trunk` call, and this model makes
-  four of them, so four pairs of buffers are held: measured at 512 tokens,
-  each added call costs two pair widths here and is flat in its layer count,
-  against three a layer before -- four two-layer calls read 378 MiB of arena
-  against 1,218, and four six-layer calls 381 against 2,755. The stages with
-  neither -- the sharded prologue's three assembled
+  call site. The stages with neither -- the sharded prologue's three assembled
   operands and the outer product's projection -- keep their separate slices.
+
+  A chain used to begin at each `folding_trunk` call, and this model makes
+  four -- the LM encoder and the trunk inside the recycle body, the parcae
+  coda, the confidence head -- so the forward held eight full-width buffers
+  rather than two. It now threads one pair through all four, so it holds two.
+  The slot is `trunk.LentBuffers`, made once in `predict` and handed to each
+  call in turn; a call with nothing to roll leaves it as it found it. Two of
+  the four sit inside a `jax.lax.scan` body, where a buffer allocated is that
+  body's own and a buffer closed over from outside is invariant across its
+  trips, so the pair is made before the recycle scan and *carried* through
+  it, and the confidence head's sequential sample loop is spelled as the
+  `scan` its `lax.map` already lowered to in order to carry it too. Measured
+  at 512 tokens on a bare chain of native-autocast trunks, where the buffers
+  are the peak: unthreaded the arena grows by two pair widths for every added
+  call -- 736, 992, 1,248, 1,504 MiB for one to four calls -- and threaded it
+  is 736 MiB at every count.
+
+  On the released `predict` that saving does not reach the CPU arena at all,
+  and the reason matters more than the number. Six of the eight buffers lived
+  inside the two scan bodies, and XLA's buffer assignment reuses that space
+  once the loop is over; the two that were live for the whole program are the
+  coda's, and they are still live for the whole program -- made before the
+  recycle scan now instead of at the coda, but two either way. So
+  `temp_size_in_bytes` is unchanged to the byte at 254 and 499 tokens on a
+  four-layer trunk and at 254 on the released 48-layer, 3-recycle, 32-sample
+  settings, and 0.30% larger at 1,003 tokens, all of that last from the
+  confidence loop's carry, which is the one lifetime this lengthens. In
+  XLA's own arena report every offset that holds a full-width pair holds 7 to
+  149 other values beside it and none holds one alone, before and after.
+
+  **Nothing here is measured on a GPU, and this is not shown to recover the
+  +4.66 GB of `peak_bytes` the card measured for the rolled form at 2,096
+  tokens.** Two full-width pairs there are 4.29 GB, which is the size of that
+  regression and is exactly what this change keeps. Buffer assignment is a
+  shared HLO pass rather than backend code, so the card most likely counted
+  the same two. Settling it needs three `peak_bytes` arms at 2,096 on a card:
+  the unrolled form, this one, and this one with the confidence carry off.
 
   At 2,096 tokens, on CPU with the weights as arguments, the 24-layer trunk
   program falls from 442,494 StableHLO lines to 32,914 and from 95.9 s of

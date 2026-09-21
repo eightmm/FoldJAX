@@ -806,6 +806,7 @@ def run_loops(
     recurrence_params: Params | None = None,
     injection_norm_params: Params | None = None,
     msa_opm_params: Params | None = None,
+    workspace: trunk_ops.LentBuffers | None = None,
 ) -> jnp.ndarray:
     """The parcae recurrence, `total_steps` times.
 
@@ -813,6 +814,15 @@ def run_loops(
     `delta = softplus(log_delta)`, `a = exp(-delta * exp(log_a))`, and
     `B = delta * B_cont`. Reading `log_a` as the decay directly -- the obvious
     misreading -- gives a stable-looking recurrence with the wrong timescale.
+
+    `workspace` is the pair of block-loop destinations `folding_trunk` lends
+    its rolled loops (`trunk.LentBuffers`). The two calls in the body share
+    one pair, and the pair is *carried* rather than made inside the body:
+    buffers a scan body allocates are the body's own, and it is by starting
+    from a value the enclosing program defines that they merge with the
+    coda's and the confidence head's into one allocation. The last one is put
+    back in the slot for the caller, which is the only way out of a traced
+    body -- nothing here reads a tracer after the scan.
     """
     if preserve_prefix_rng and (
         lm_dropout_masks is not None or msa_row_choices is not None
@@ -860,12 +870,38 @@ def run_loops(
         check_values=False,
     )
 
+    # Made here and not at the first trunk layer, which is inside the body:
+    # see this function's docstring and `trunk.trunk_workspace`. Whichever of
+    # the two native call sites can say what the loops write decides the
+    # shapes; they agree on the released checkpoint, and a tree where they do
+    # not simply leaves the second call to allocate its own.
+    lent = trunk_ops.trunk_workspace(
+        z,
+        params if pair_trunk_params is None else pair_trunk_params,
+        "folding_trunk",
+        native_autocast=pair_trunk_params is not None,
+    )
+    if (
+        lent is None
+        and lm_encoder_params is not None
+        and settings.lm_encoder_n_layers is not None
+    ):
+        lent = trunk_ops.trunk_workspace(
+            z, lm_encoder_params, "lm_encoder", native_autocast=True
+        )
+    lent_spec = trunk_ops.buffer_spec(lent)
+
     def body(carry, loop_inputs):
         dropout_mask = None
         rows_tape = None
         if lm_dropout_masks is not None or msa_row_choices is not None:
             loop_inputs, dropout_mask, rows_tape = loop_inputs
-        z, key = carry
+        z, key, carried = carry
+        # One slot for both calls below: the LM encoder's loops write into it
+        # and hand it to the trunk's, which hand it back out through the
+        # carry. A local slot, because a value made inside a traced body may
+        # not escape it.
+        lent_here = trunk_ops.LentBuffers(carried)
         key, dropout_key, msa_key = jax.random.split(key, 3)
 
         loop_lm = lm_pair
@@ -890,6 +926,7 @@ def run_loops(
                 n_layers=settings.lm_encoder_n_layers,
                 mask=pair_mask,
                 native_autocast=lm_encoder_params is not None,
+                workspace=lent_here,
             )
 
         injected = z_init
@@ -973,15 +1010,27 @@ def run_loops(
             n_layers=settings.trunk_n_layers,
             mask=pair_mask,
             native_autocast=pair_trunk_params is not None,
+            workspace=lent_here,
         )
-        return (z, key), None
+        # A carry keeps one type for every trip, so what goes back is the
+        # buffers only where they are the ones it started from -- a call that
+        # had to make its own pair keeps it inside the body rather than
+        # changing the shape of the loop.
+        written = lent_here.buffers
+        if trunk_ops.buffer_spec(written) != lent_spec:
+            written = carried
+        return (z, key, written), None
 
     scan_inputs = (
         (loop_tape, lm_dropout_masks, msa_row_choices)
         if lm_dropout_masks is not None or msa_row_choices is not None
         else loop_tape
     )
-    (z, _), _ = jax.lax.scan(body, (z, key), scan_inputs, length=total_steps)
+    (z, _, lent), _ = jax.lax.scan(
+        body, (z, key, lent), scan_inputs, length=total_steps
+    )
+    if workspace is not None and lent is not None:
+        workspace.buffers = lent
     return z
 
 
@@ -1530,6 +1579,15 @@ def predict(
                 "x_inputs": pair_inputs,
             }
 
+    # One pair of block-loop destinations for the whole forward. Every
+    # `folding_trunk` call here lends the previous one's, dead by the time it
+    # starts, so the colocated allocation a rolled loop's destination is --
+    # which XLA never lets another value reuse -- is paid once rather than
+    # once per call site (`trunk._assemble_row_blocks`,
+    # `trunk._streamed_workspace`). This model makes four such calls and held
+    # eight full-width buffers before the slot was threaded.
+    workspace = trunk_ops.LentBuffers()
+
     z = run_loops(
         loop_key,
         z,
@@ -1580,6 +1638,7 @@ def predict(
             if native_pair_autocast
             else None
         ),
+        workspace=workspace,
     )
     z = linear(z, trunk_params, "parcae_readout")
     z = folding_trunk(
@@ -1589,6 +1648,7 @@ def predict(
         n_layers=settings.coda_n_layers,
         mask=pair_mask,
         native_autocast=native_pair_autocast,
+        workspace=workspace,
     )
     # Upstream's `z = z.float()`, which closes the autocast region. Everything
     # after this -- the distogram head, the sampler, the confidence head -- is
@@ -1700,7 +1760,11 @@ def predict(
         }
     )
 
-    def _confidence(sample_coords: jnp.ndarray, samples: int) -> dict:
+    def _confidence(
+        sample_coords: jnp.ndarray,
+        samples: int,
+        lent: trunk_ops.LentBuffers | None = None,
+    ) -> dict:
         return confidence_head(
             x_inputs,
             z,
@@ -1721,17 +1785,38 @@ def predict(
             relative_position_encoding=rel_pos,
             token_bonds_encoding=token_bonds_encoding,
             contiguous_atom_groups=contiguous_atom_groups,
+            trunk_workspace=lent,
         )
 
     if settings.confidence_sample_sequential and n_samples > 1:
         # Protenix's `confidence_sample_sequential`, same shape of answer: map
         # over the sample axis with a size-1 sample axis kept, so the head's
         # own shapes are untouched and only the batch factor disappears.
-        conf = rebuild_batched_confidence(
-            jax.lax.map(lambda one: _confidence(one[None], 1), coords)
-        )
+        if workspace.buffers is None:
+            conf = rebuild_batched_confidence(
+                jax.lax.map(lambda one: _confidence(one[None], 1), coords)
+            )
+        else:
+            # The same map, spelled as the `scan` it already lowers to, so
+            # that the pair the coda is finished with can be its carry. A
+            # buffer closed over from outside a loop body is invariant across
+            # its trips and cannot be the destination a rolled loop writes:
+            # the partitioner would copy it once per sample rather than write
+            # in place. Carried, it is the dead value each trip starts from,
+            # which is what merges this head's allocation with the trunk's.
+            def one_sample(carried, sample_coords):
+                lent_here = trunk_ops.LentBuffers(carried)
+                result = _confidence(sample_coords[None], 1, lent_here)
+                written = lent_here.buffers
+                if trunk_ops.buffer_spec(written) != trunk_ops.buffer_spec(carried):
+                    written = carried
+                return written, result
+
+            conf = rebuild_batched_confidence(
+                jax.lax.scan(one_sample, workspace.buffers, coords)[1]
+            )
     else:
-        conf = _confidence(coords, n_samples)
+        conf = _confidence(coords, n_samples, workspace)
     output.update(conf)
     if not settings.return_confidence_logits:
         # Dropped here, inside the traced function, so they stop being entry

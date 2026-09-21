@@ -966,3 +966,251 @@ def test_the_block_body_is_traced_once_however_many_blocks_there_are():
     assert separate[0] > rolled[0], (separate, rolled)
 
 
+
+
+# --- one pair of buffers for the whole forward, not one per trunk call ------
+#
+# The section above ends at a single `folding_trunk` call, where the chain of
+# lent buffers begins and ends. A program that calls the trunk more than once
+# began a chain at each: a `while`'s initial value, loop parameter and result
+# are one colocated allocation XLA never lets another value reuse, so every
+# call held its own pair for the whole program. This model makes four calls --
+# the LM encoder and the trunk inside the recycle body, the parcae coda, the
+# confidence head -- which is eight full-width buffers, 2,145 MiB each at
+# 2,096 tokens.
+#
+# `trunk.LentBuffers` is the slot that carries one pair across them, and the
+# tests below are its two halves: the arena law on a bare chain, where the
+# buffers *are* the peak and the saving is exactly two pair widths a call, and
+# the census on the released `predict`, where they are not and only the count
+# says whether the threading reached every site.
+
+
+def _pair_fills(text: str, shape: str) -> int:
+    """Zero-fills of one full-width pair shape anywhere in a lowered program.
+
+    A lent buffer is `jnp.zeros`, which lowers to a scalar constant broadcast
+    with no dimensions mapped; a broadcast that *does* map dimensions is some
+    operand being widened and is not one. Counted across every function in the
+    module, because two of this model's four trunk calls are inside the
+    recycle scan's body and one is inside the confidence sample loop's.
+    """
+    return sum(
+        1
+        for line in text.splitlines()
+        if "stablehlo.broadcast_in_dim" in line
+        and "dims = []" in line
+        and line.rstrip().endswith(f"-> tensor<{shape}>")
+    )
+
+
+def _chain(calls: int, params, threaded: bool):
+    def run(pair, mask):
+        slot = trunk.LentBuffers() if threaded else None
+        for _ in range(calls):
+            pair = trunk.folding_trunk(
+                pair,
+                params,
+                n_layers=1,
+                mask=mask,
+                native_autocast=True,
+                workspace=slot,
+            )
+        return pair
+
+    return run
+
+
+@pytest.mark.parametrize("calls", [1, 2, 4])
+def test_a_chain_of_trunk_calls_fills_two_buffers_however_many_it_is(calls):
+    """Two zero-fills threaded, two per call unthreaded.
+
+    The count is the whole contract: a lent buffer is the one value in this
+    stack that is *allocated* rather than computed, so a program that fills
+    more of them than the threading allows is a program holding more of them.
+    The unthreaded arm is the tripwire -- it grows, which is what a census
+    that measured nothing would fail to do.
+    """
+    channels, tokens = 8, 12
+    params = _trunk_params(channels)
+    pair = jax.ShapeDtypeStruct((1, tokens, tokens, channels), jnp.bfloat16)
+    mask = jax.ShapeDtypeStruct((1, tokens, tokens), jnp.float32)
+    shape = f"1x{tokens}x{tokens}x{channels}xbf16"
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(trunk, "_AUTOCAST_ROWS", 4)
+        jax.clear_caches()
+        threaded = jax.jit(_chain(calls, params, True)).lower(pair, mask).as_text()
+        jax.clear_caches()
+        alone = jax.jit(_chain(calls, params, False)).lower(pair, mask).as_text()
+    assert _pair_fills(threaded, shape) == 2
+    assert _pair_fills(alone, shape) == 2 * calls
+
+
+def test_the_chain_costs_two_pair_widths_once_rather_than_once_a_call():
+    """The arena law behind the count, on a program where the buffers are it.
+
+    Measured at 128 tokens and 128 channels, one full-width pair being
+    4.0 MiB. Unthreaded the temporary arena grows by two pair widths for
+    every added call -- 5.51, 7.51, 9.51, 11.51 widths -- and threaded it
+    grows by one width once, when the pair first has to outlive the call that
+    made it, and then by nothing at all: 5.51, 6.51, 6.51, 6.51. That is the
+    colocated allocation -- an initial value, loop parameter and result XLA
+    never lets another value reuse -- being paid once for the whole chain
+    instead of once at each call that starts one.
+
+    The few hundred bytes either side of each step are the small per-call
+    temporaries an extra layer carries; they are the same on both arms, which
+    is why the law is asserted as a band around the pair width rather than as
+    an equality.
+
+    On the released `predict` this saving does not reach the arena, because
+    six of the eight buffers it removes live inside the recycle scan's body
+    and the confidence sample loop's, whose space XLA:CPU reuses after the
+    loop, and the two that remain are co-tenants of offsets other values
+    already hold. The count is therefore the contract that travels; the
+    arena is this program, where nothing else is live to absorb it.
+    """
+    channels, tokens = 128, 128
+    width = tokens * tokens * channels * 2
+    slack = width // 1000
+    params = _trunk_params(channels)
+    pair = jax.ShapeDtypeStruct((1, tokens, tokens, channels), jnp.bfloat16)
+    mask = jax.ShapeDtypeStruct((1, tokens, tokens), jnp.float32)
+
+    def arena(calls, threaded):
+        jax.clear_caches()
+        compiled = jax.jit(_chain(calls, params, threaded)).lower(pair, mask).compile()
+        return compiled.memory_analysis().temp_size_in_bytes
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(trunk, "_AUTOCAST_ROWS", 32)
+        alone = [arena(calls, False) for calls in (1, 2, 3, 4)]
+        threaded = [arena(calls, True) for calls in (1, 2, 3, 4)]
+    assert threaded[0] == alone[0], (threaded, alone)
+    steps_alone = [b - a for a, b in zip(alone[:-1], alone[1:], strict=True)]
+    steps_threaded = [b - a for a, b in zip(threaded[:-1], threaded[1:], strict=True)]
+    for step in steps_alone:
+        assert 2 * width <= step < 2 * width + slack, (steps_alone, width)
+    assert steps_threaded[0] < width + slack, (steps_threaded, width)
+    for step in steps_threaded[1:]:
+        assert step < slack, (steps_threaded, width)
+
+
+def _released_predict_text(tokens: int, rows: int) -> str:
+    """The whole released `predict`, lowered, with every trunk call reached.
+
+    Real weights: the widths the lent buffers take come off the checkpoint's
+    own `proj_bundle`, and a synthetic tree that happened to disagree between
+    two call sites would make them separate buffers for a reason this test is
+    not about. Layer counts are cut to one apiece because the census counts
+    call sites and not layers, and the released 48 would only make it slow.
+    """
+    import dataclasses
+
+    from foldjax.models.esmfold2.bridge import checkpoint
+    from foldjax.models.esmfold2.models import model as structure_model
+    from foldjax.paths import weights_dir
+
+    directory = weights_dir("esmfold2")
+    if not (directory / checkpoint.WEIGHTS_NAME).exists():
+        pytest.skip("esmfold2 weights are not in the store")
+    parameters = checkpoint.load_parameters(directory)
+    settings = dataclasses.replace(
+        checkpoint.load_settings(directory),
+        trunk_n_layers=1,
+        lm_encoder_n_layers=1,
+        coda_n_layers=1,
+        confidence_n_layers=1,
+        msa_n_layers=None,
+        num_recycles=1,
+        # Above one so the confidence head takes its sequential sample loop,
+        # which is the fourth call site and the only one inside a second scan.
+        num_samples=2,
+    )
+    settings = dataclasses.replace(
+        settings, diffusion=dataclasses.replace(settings.diffusion, num_steps=2)
+    )
+    atoms = tokens * 3
+    rng = np.random.default_rng(0)
+    index = np.arange(tokens, dtype=np.int64)[None]
+    features = {
+        "token_index": index,
+        "residue_index": index.copy(),
+        "asym_id": (np.arange(tokens, dtype=np.int64) // (tokens // 2))[None],
+        "sym_id": np.zeros((1, tokens), dtype=np.int64),
+        "entity_id": (np.arange(tokens, dtype=np.int64) // (tokens // 2))[None],
+        "mol_type": np.zeros((1, tokens), dtype=np.int64),
+        "res_type": rng.integers(0, 20, (1, tokens)).astype(np.int64),
+        "token_bonds": np.zeros((1, tokens, tokens, 1), dtype=np.float32),
+        "token_attention_mask": np.ones((1, tokens), dtype=np.float32),
+        "ref_pos": rng.standard_normal((1, atoms, 3)).astype(np.float32),
+        "ref_element": np.full((1, atoms), 6, dtype=np.int64),
+        "ref_charge": np.zeros((1, atoms), dtype=np.float32),
+        "ref_atom_name_chars": np.zeros((1, atoms, 4), dtype=np.int64),
+        "ref_space_uid": (np.arange(atoms, dtype=np.int64) // 3)[None],
+        "atom_attention_mask": np.ones((1, atoms), dtype=np.float32),
+        "atom_to_token": (np.arange(atoms, dtype=np.int64) // 3)[None],
+        "distogram_atom_idx": (np.arange(tokens, dtype=np.int64) * 3)[None],
+    }
+    hidden = np.zeros((1, tokens, 81, 2560), dtype=np.float32)
+
+    def run(key, arrays, weights):
+        return structure_model.predict(
+            key,
+            arrays,
+            weights,
+            settings=settings,
+            lm_hidden_states=hidden,
+            n_chains=2,
+        )
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(trunk, "_AUTOCAST_ROWS", rows)
+        jax.clear_caches()
+        return jax.jit(run).lower(jax.random.key(0), features, parameters).as_text()
+
+
+@pytest.mark.slow
+def test_the_released_forward_fills_two_pair_buffers_and_not_eight():
+    """The count on the model itself, at every site the threading has to reach.
+
+    Four `folding_trunk` calls -- the LM encoder and the trunk inside the
+    recycle scan's body, the parcae coda in the entry function, the confidence
+    head inside the sequential sample loop -- and one pair of buffers between
+    them. Eight is what this read before `predict` threaded a
+    `trunk.LentBuffers` through all four, and it is what it reads again if any
+    one call stops being handed the previous one's.
+
+    The three loops matter as much as the four calls: buffers a scan body
+    allocates are that body's own, so the pair is made before the recycle scan
+    and carried through it, and the confidence sample loop is spelled as the
+    `scan` its `lax.map` already lowers to so that the pair can be its carry
+    as well. A buffer closed over from outside a loop instead is invariant
+    across its trips and cannot be written in place.
+    """
+    tokens, rows = 8, 4
+    text = _released_predict_text(tokens, rows)
+    assert _pair_fills(text, f"1x{tokens}x{tokens}x256xbf16") == 2
+
+
+def test_a_lent_pair_is_reused_only_where_it_is_the_shape_the_loops_write():
+    """The shape check is load-bearing, not a formality.
+
+    `confidence_sample_sequential` is on by default and the head's trunk then
+    sees the same `[1, N, N, C]` pair the rest of the stack does. Turned off,
+    the head batches every structure through at once and its pair carries a
+    sample axis -- a buffer lent by the trunk is the wrong destination there,
+    and this is where that is noticed.
+    """
+    params = _random_triangle_params(8, 254)
+    pair = jnp.zeros((1, 254, 254, 8), jnp.bfloat16)
+    made = trunk._streamed_workspace(pair, params, "t._engine")
+    again = trunk._streamed_workspace(pair, params, "t._engine", made)
+    assert all(a is b for a, b in zip(made, again, strict=True))
+
+    spread = jnp.zeros((2, 254, 254, 8), jnp.bfloat16)
+    fresh = trunk._streamed_workspace(spread, params, "t._engine", made)
+    assert trunk.buffer_spec(fresh) == trunk.buffer_spec(
+        trunk._streamed_workspace(spread, params, "t._engine")
+    )
+    assert trunk.buffer_spec(fresh) != trunk.buffer_spec(made)
