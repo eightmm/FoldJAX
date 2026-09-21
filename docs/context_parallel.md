@@ -336,9 +336,15 @@ have keys is the whole answer. A row with no valid key anywhere is zeros.
 Refused, never downgraded. `foldjax plan` refuses a spelling outside the
 vocabulary, any site on `cp_devices=1`, and `token` without the 2-D layout the
 site lives on. The model entry refuses a missing mesh, a missing tokamax, a
-1-D `token`, and an `atom` request on a run whose diffusion atom graph is not
-distributed -- `cp_atom_windows=false`, or a `stop_after` that runs no
-diffusion. A *misaligned* target is a separate refusal and not this option's:
+1-D `token`, an `atom` request on a run whose diffusion atom graph is not
+distributed (`cp_atom_windows=false`, or a `stop_after` that runs no
+diffusion), and `token` off the GPU backend -- that last one only for the
+token site, because only its tile is pinned to a Pallas/Triton implementation.
+Saying it at the entry means a request that cannot run stops before the
+featurizer rather than inside a traced `shard_map`; leaving the atom site
+unpinned and unchecked is what lets a CPU gate execute its dispatch and its
+sharding contract at all. A *misaligned* target is a separate refusal and not
+this option's:
 unlike Protenix and OpenFold3, Boltz-2 has no replicated fallback to resolve
 to, and its atom adapter raises `local atom shard is not query-window aligned`
 inside the `shard_map` body before any kernel is selected. That refusal is

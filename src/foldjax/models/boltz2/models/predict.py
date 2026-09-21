@@ -210,6 +210,22 @@ def boltz2_predict(
                 "atom attention, which runs only where the diffusion atom "
                 "graph is distributed; it is not distributed in this run"
             )
+        # Last, because it is the narrowest: only the token site is pinned to
+        # a Pallas/Triton implementation, and only because that is the entry
+        # point returning the softmax residuals its merge needs. Tokamax would
+        # refuse this itself, deep inside a traced `shard_map` and in its own
+        # words; saying it here means a request that cannot run says so before
+        # a featurizer does any work. The atom site is not pinned and needs no
+        # such check -- which is also what lets a CPU gate execute its
+        # dispatch and its sharding contract.
+        if "token" in fused_sites:
+            platform = jax.default_backend()
+            if platform != "gpu":
+                raise ValueError(
+                    f"cp_fused_attention={fused_request!r} names the diffusion "
+                    "token attention, whose tile is a Pallas/Triton kernel and "
+                    f"needs the GPU backend; this process is on {platform!r}"
+                )
     if trunk_atom_attention_backend == attention_backend:
         trunk_atom_attention_backend = None
     if trunk_atom_attention_backend not in (None, "tokamax", "triton", "xla"):

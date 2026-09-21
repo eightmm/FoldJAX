@@ -1139,7 +1139,8 @@ column tile contributes nothing in either order, and every unreachable request
 raises. `docs/context_parallel.md` has the mechanism and the gate list.
 
 Refusals: a spelling outside `off|atom|token|atom+token`, any site with
-`--cp-devices 1`, `token` without `--cp-layout 2d`, a missing tokamax, and an
+`--cp-devices 1`, `token` without `--cp-layout 2d`, `token` off the GPU
+backend (only the token tile is pinned to Triton), a missing tokamax, and an
 `atom` request on a run whose diffusion atom graph is not distributed --
 `--option cp_atom_windows=false`, or `--stop-after trunk`, which runs no
 diffusion. A *misaligned* target is a different refusal with a different

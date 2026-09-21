@@ -664,6 +664,16 @@ _ENTRY_REFUSAL_PROBE = textwrap.dedent(
         # diffusion module, means the adapter that owns it never runs.
         with cp_fused_attention_scope("atom"):
             refused("not distributed in this run", atom_context_parallel=False)
+    with context_parallel(4, layout="2d"):
+        # The token tile is pinned to Triton, so off a GPU the entry says so
+        # in this project's words rather than letting tokamax say it in its
+        # own, from inside a traced `shard_map`. The atom site is not pinned
+        # and is deliberately *not* refused here, which is what lets the
+        # probes above execute its dispatch on a CPU.
+        with cp_fused_attention_scope("token"):
+            refused("needs the GPU backend", atom_context_parallel=True)
+        with cp_fused_attention_scope("atom+token"):
+            refused("needs the GPU backend", atom_context_parallel=True)
     print("ENTRY_REFUSAL_OK")
     """
 )

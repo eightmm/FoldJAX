@@ -46,10 +46,12 @@ unless it says so here, in its own paragraph.
   and what it does to a deposited structure are open.
 
   Refused, never downgraded: a spelling outside the vocabulary, any site on
-  `cp_devices=1`, `token` without the 2-D layout, a missing mesh, a missing
-  tokamax, and an `atom` request on a run whose diffusion atom graph is not
-  distributed (`cp_atom_windows=false`, or a `stop_after` that runs no
-  diffusion). Two refusals it does not touch: the atom adapter's own
+  `cp_devices=1`, `token` without the 2-D layout, `token` off the GPU backend
+  (only that site's tile is pinned to a Pallas/Triton implementation), a
+  missing mesh, a missing tokamax, and an `atom` request on a run whose
+  diffusion atom graph is not distributed (`cp_atom_windows=false`, or a
+  `stop_after` that runs no diffusion). Two refusals it does not touch: the
+  atom adapter's own
   `local atom shard is not query-window aligned`, which still fires inside the
   `shard_map` body before any kernel is selected, and
   `trunk_atom_attention_backend`, because the trunk's atom-window transformer
