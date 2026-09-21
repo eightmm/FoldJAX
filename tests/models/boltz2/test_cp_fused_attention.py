@@ -545,11 +545,6 @@ _TOKEN_PLATFORM_PROBE = _TOKEN_PRELUDE + textwrap.dedent(
 
 _REFUSAL_PROBE = textwrap.dedent(
     r"""
-    import jax
-    import jax.numpy as jnp
-    import numpy as np
-    import pytest
-
     from foldjax.models import _cp_attention
     from foldjax.models._cp import context_parallel
     from foldjax.models._cp_attention import (
@@ -627,7 +622,6 @@ _REFUSAL_PROBE = textwrap.dedent(
 _ENTRY_REFUSAL_PROBE = textwrap.dedent(
     r"""
     import jax
-    import jax.numpy as jnp
 
     from foldjax.models._cp import context_parallel
     from foldjax.models._cp_attention import cp_fused_attention_scope
