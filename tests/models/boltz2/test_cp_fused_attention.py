@@ -658,9 +658,11 @@ _ENTRY_REFUSAL_PROBE = textwrap.dedent(
         # The token site exists only under the square grid.
         with cp_fused_attention_scope("token"):
             refused("only under the 2-D layout", atom_context_parallel=True)
-        # The atom site exists only where the atom graph is distributed.
+        # The atom site exists only where the diffusion atom graph is
+        # distributed: `cp_atom_windows=false`, or a `stop_after` short of the
+        # diffusion module, means the adapter that owns it never runs.
         with cp_fused_attention_scope("atom"):
-            refused("leaves it replicated", atom_context_parallel=False)
+            refused("not distributed in this run", atom_context_parallel=False)
     print("ENTRY_REFUSAL_OK")
     """
 )

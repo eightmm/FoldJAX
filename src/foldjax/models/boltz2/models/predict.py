@@ -180,32 +180,35 @@ def boltz2_predict(
     # `shard_map`. Each way of asking for a site nothing would honour is an
     # error here rather than a silent downgrade, because a run that reports a
     # fused arm it did not take is worse than a run that stops.
-    _fused_request = cp_fused_attention()
-    _fused_sites = cp_fused_attention_sites(_fused_request)
-    if _fused_sites:
+    fused_request = cp_fused_attention()
+    fused_sites = cp_fused_attention_sites(fused_request)
+    if fused_sites:
         if cp_mesh() is None:
             raise ValueError(
-                f"cp_fused_attention={_fused_request!r} names context-parallel "
+                f"cp_fused_attention={fused_request!r} names context-parallel "
                 "attention sites and needs an active mesh"
             )
         if not tokamax_available():
             raise ValueError(
-                f"cp_fused_attention={_fused_request!r} needs the tokamax "
+                f"cp_fused_attention={fused_request!r} needs the tokamax "
                 "package, which did not import in this process"
             )
-        if "token" in _fused_sites and cp_layout() != "2d":
+        if "token" in fused_sites and cp_layout() != "2d":
             raise ValueError(
-                f"cp_fused_attention={_fused_request!r} names the diffusion "
+                f"cp_fused_attention={fused_request!r} names the diffusion "
                 "token attention, which exists only under the 2-D layout "
                 f"(this mesh is {cp_layout()!r})"
             )
-        if "atom" in _fused_sites and not bool(
+        if "atom" in fused_sites and not bool(
             sample_kwargs.get("atom_context_parallel", False)
         ):
+            # `cp_atom_windows=false`, or a `stop_after` short of the
+            # diffusion module: either way the adapter that owns this site
+            # does not run, so the request would be silently dropped.
             raise ValueError(
-                f"cp_fused_attention={_fused_request!r} names the diffusion "
-                "atom attention, which runs only where the atom graph is "
-                "distributed; this run leaves it replicated"
+                f"cp_fused_attention={fused_request!r} names the diffusion "
+                "atom attention, which runs only where the diffusion atom "
+                "graph is distributed; it is not distributed in this run"
             )
     if trunk_atom_attention_backend == attention_backend:
         trunk_atom_attention_backend = None
