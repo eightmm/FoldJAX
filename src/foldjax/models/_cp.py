@@ -156,6 +156,48 @@ def cp_grid() -> tuple[int, int]:
     return (1, 1) if runtime is None else runtime.grid
 
 
+def manual_axes() -> tuple[str, ...]:
+    """Mesh axes the current trace holds manually, empty outside a shard.
+
+    Inside a :func:`jax.shard_map` body the axes it was given are *manual*:
+    every value is the device's own tile and carries which of those axes it
+    varies over.  A value built from a constant varies over none of them, so
+    anything that has to keep a shard's type -- a loop carry, most of all --
+    needs the list to say so with.
+    """
+
+    mesh = jax.sharding.get_abstract_mesh()
+    names = getattr(mesh, "axis_names", ()) or ()
+    types = getattr(mesh, "axis_types", ()) or ()
+    if len(names) != len(types):  # pragma: no cover - defensive
+        return ()
+    return tuple(
+        name
+        for name, kind in zip(names, types, strict=True)
+        if kind == jax.sharding.AxisType.Manual
+    )
+
+
+def blocks_are_local() -> bool:
+    """Whether a block of an array axis here is a block of one device's own data.
+
+    An operator that divides an axis into blocks has to know which kind of
+    axis it is holding.  Serially every axis is the whole thing.  Inside a
+    :func:`jax.shard_map` body every axis is the device's own tile.  Under a
+    mesh but outside such a body the array is still global: a block of a
+    sharded axis is a slice the partitioner can only serve by moving data,
+    and a *dynamic* index into it is worse than a static one, so callers keep
+    the static, whole-operand form there rather than rolling the block into a
+    loop.
+    """
+
+    if cp_mesh() is None:
+        return True
+    mesh = jax.sharding.get_abstract_mesh()
+    names = getattr(mesh, "axis_names", ()) or ()
+    return bool(names) and len(manual_axes()) == len(names)
+
+
 def cp_identity() -> tuple[str, int, tuple[int, int], tuple[str, ...]]:
     """Stable identity of the current topology.
 

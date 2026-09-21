@@ -986,6 +986,133 @@ def test_the_row_blocks_are_taken_inside_the_shard() -> None:
     assert "LOCAL_BLOCK_OK" in _run_grid_probe(_LOCAL_BLOCK_PROBE, 4)
 
 
+_ROLLED_TRANSITION_PROBE = textwrap.dedent(
+    r"""
+    # The pair transition's 64-row blocks are a `fori_loop` wherever the rows
+    # are the device's own, which under the grid means inside
+    # `_cp_pair_transition`'s `shard_map`. Every other fixture in this file is
+    # at most 13 tokens, so the local tile is never three blocks wide and that
+    # branch never fires in them; 400 tokens on a 2x2 grid is a 200-row tile,
+    # three blocks of 64 and a tail of 8. What it is here to catch is a
+    # `shard_map` body's own typing rule: a loop carry has to keep the manual
+    # axes its body's values vary over, and a constant destination varies over
+    # none -- which is why the rolled loop is handed the tile it is rewriting
+    # rather than a `jnp.zeros`.
+    import numpy as np
+    import jax
+    import jax.numpy as jnp
+
+    from foldjax.models._cp import context_parallel
+    from foldjax.models.esmfold2.models import trunk as T
+
+    DEVICES, C, N = 4, 8, 400
+    assert jax.device_count() == DEVICES, jax.devices()
+    rng = np.random.default_rng(0)
+
+
+    def arr(*shape):
+        return jnp.asarray(rng.normal(size=shape, scale=0.5), jnp.float32)
+
+
+    params = {}
+    for direction in ("tri_mul_out", "tri_mul_in"):
+        engine = "blocks.0." + direction + "._engine"
+        params[engine + ".norm_start.weight"] = arr(C) * 0.1 + 1.0
+        params[engine + ".norm_start.bias"] = arr(C) * 0.1
+        params[engine + ".proj_bundle.weight"] = arr(4 * C, C)
+        params[engine + ".proj_bundle.bias"] = arr(4 * C)
+        params[engine + ".norm_mix.weight"] = arr(C) * 0.1 + 1.0
+        params[engine + ".norm_mix.bias"] = arr(C) * 0.1
+        params[engine + ".proj_emit.weight"] = arr(C, C)
+        params[engine + ".proj_emit.bias"] = arr(C)
+        params[engine + ".proj_gate.weight"] = arr(C, C)
+        params[engine + ".proj_gate.bias"] = arr(C)
+    dot = "blocks.0.pair_transition"
+    params[dot + ".norm.weight"] = arr(C) * 0.1 + 1.0
+    params[dot + ".norm.bias"] = arr(C) * 0.1
+    params[dot + ".ffn.w12.weight"] = arr(4 * C, C)
+    params[dot + ".ffn.w3.weight"] = arr(C, 2 * C)
+
+    rows = np.arange(N, dtype=np.float32)[:, None]
+    cols = np.arange(N, dtype=np.float32)[None, :]
+    ramp = (0.03 * rows - 0.017 * cols + 0.004 * rows * cols / N)[..., None]
+    pair = jnp.asarray(
+        (ramp + rng.normal(size=(N, N, C), scale=0.5))[None].astype(np.float32)
+    )
+    token = (rng.random(N) > 0.15).astype(np.float32)
+    mask = jnp.asarray((token[:, None] * token[None, :])[None])
+
+
+    def program():
+        def run(p, m):
+            return T.pair_update_block(
+                p.astype(jnp.bfloat16), params, "blocks.0",
+                mask=m, native_autocast=True,
+            )
+
+        return run
+
+
+    widths = []
+    original = T._autocast_transition
+
+
+    def counted(x, *args, **kwargs):
+        widths.append(tuple(x.shape))
+        return original(x, *args, **kwargs)
+
+
+    T._autocast_transition = counted
+    try:
+        jax.clear_caches()
+        serial = np.asarray(
+            jax.device_get(jax.jit(program())(pair, mask)), np.float32
+        )
+        widths.clear()
+        jax.clear_caches()
+        with context_parallel(DEVICES, layout="2d"):
+            value = jax.jit(program())(pair, mask)
+            value.block_until_ready()
+            grid = np.asarray(jax.device_get(value), np.float32)
+            local = list(widths)
+            text = jax.jit(program()).lower(pair, mask).compile().as_text()
+    finally:
+        T._autocast_transition = original
+
+    # The transition ran on the tile, not on the global axis...
+    assert local and local[0][1] == N // 2, local
+    # ... and its blocks were a loop there.
+    assert "while" in text, "the local tile's transition did not roll"
+
+    scale = float(np.abs(serial).max())
+    ulp = 2.0 ** (np.floor(np.log2(scale)) - 7)
+    difference = float(np.abs(serial - grid).max())
+    # In this file's bfloat16 unit. The grid is a different summation from the
+    # serial program before any of this -- Cannon's schedule for the
+    # contraction -- and on the unmodified tree the same comparison at this
+    # size reads 24.0 units; rolled it reads 29.5. The bound is the larger of
+    # those with the same factor of two the file's other grid arms carry.
+    assert difference <= 48 * ulp, (difference, ulp)
+    print("CP_ROLLED_TRANSITION_OK")
+    """
+)
+
+
+def test_the_local_tile_transition_rolls_its_blocks_inside_the_shard() -> None:
+    """The one rolled block loop that runs under a mesh, at a size it fires at.
+
+    `_autocast_transition`'s blocks are a `fori_loop` wherever the rows are
+    the device's own, and under the grid that is inside
+    `_cp_pair_transition`'s `shard_map`. No other fixture here is wide enough
+    for the local tile to hold three blocks of 64, so without this the branch
+    would be traced nowhere -- and a `shard_map` body types its loop carries
+    by the manual axes they vary over, which is a rule a constant destination
+    breaks and the tile it is rewriting satisfies.
+    """
+
+    assert "CP_ROLLED_TRANSITION_OK" in _run_grid_probe(_ROLLED_TRANSITION_PROBE, 4)
+
+
 @pytest.mark.parametrize("devices", [4, 9])
 def test_a_mis_paired_ring_is_caught_only_by_a_side_of_three(devices: int) -> None:
     """The 3x3 grid is the gate; the 2x2 one is here to show it is not.

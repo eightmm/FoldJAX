@@ -316,7 +316,7 @@ def test_the_blocked_triangle_prologue_matches_the_whole_one(outgoing, tokens):
     assert float(np.abs(whole - blocked).max()) <= 8 * _ulp(whole)
 
 
-def _full_width_values(rows, tokens, channels, params, outgoing=True):
+def _full_width_values(rows, tokens, channels, params, outgoing=True, threaded=False):
     """Every pair-shaped `[b, N, N, *]` value one native triangle call emits.
 
     `_autocast_linear` and `_autocast_norm` hide their native arms inside a
@@ -330,9 +330,16 @@ def _full_width_values(rows, tokens, channels, params, outgoing=True):
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(trunk, "_AUTOCAST_ROWS", rows)
         jaxpr = jax.make_jaxpr(
-            lambda p, m: trunk.triangle_multiplicative(
-                p, params, "t", outgoing=outgoing, mask=m, native_autocast=True
-            )
+            lambda p, m: trunk._triangle_multiplicative(
+                p,
+                params,
+                "t",
+                outgoing=outgoing,
+                mask=m,
+                eps=1e-5,
+                native_autocast=True,
+                workspace=_workspace(p, params) if threaded else None,
+            )[0]
         )(pair, mask)
     found: collections.Counter = collections.Counter()
 
@@ -367,6 +374,13 @@ def test_the_streamed_triangle_leaves_two_full_width_values(outgoing):
     2,112 tokens and 256 channels the same census reads 11 bfloat16 values
     (23,958 MiB) and 10 float32 (43,560 MiB) before, 2 bfloat16
     (4,356 MiB) and no float32 after.
+
+    This is the arm with no buffer to write into, where both blocked stages
+    end in a `concatenate` and each full-width value is written once. The
+    rolled arm is `test_the_rolled_triangle_writes_into_the_two_it_was_lent`
+    below: the same two buffers, spelled six times, because a loop names its
+    destination as the value it starts from, the slice write its body
+    returns, and its own carry output.
     """
     tokens, channels = 12, 8
     params = _triangle_params(channels)
@@ -376,8 +390,9 @@ def test_the_streamed_triangle_leaves_two_full_width_values(outgoing):
     # Unblocked, the prologue's own widths are there to be removed.
     bf16 = jnp.dtype(jnp.bfloat16)
     assert {(bf16, 2 * channels), (bf16, 4 * channels)} <= set(whole)
-    # Streamed, two values of the pair's own width and nothing else at all --
-    # no float32 pair tensor, and nothing wider than the pair.
+    # Streamed, the pair's own width and nothing else at all -- no float32
+    # pair tensor, and nothing wider than the pair.
+    assert set(streamed) == {(bf16, channels)}, streamed
     assert streamed == {(bf16, channels): 2}, streamed
     assert sum(whole.values()) > sum(streamed.values())
 
@@ -669,3 +684,285 @@ def test_the_released_pair_trunk_never_reaches_the_blocked_swiglu(monkeypatch):
 
     trunk.transition(x, params, "t", residual=True, native_autocast=False)
     assert reached == ["autocast", "swiglu"]
+
+
+# --- the blocks are a loop, not thirty-three copies of the body -------------
+#
+# Every blocked stage above used to spell its blocks as a Python `for`, so
+# each was traced and compiled separately. At 2,096 tokens and 64 rows that is
+# 33 copies of the body per call site per layer: the released trunk program
+# reached 969,694 HLO lines and 62 minutes of GPU compile, against well under
+# 20 before the blocks were introduced. `trunk._assemble_row_blocks` runs them
+# as a `fori_loop` whose body is traced once, with the trailing block -- which
+# is shorter whenever the axis does not divide -- traced once more after it.
+#
+# It only does so for a stage that has a buffer to write into, because a
+# `while`'s initial value, loop parameter and result are one colocated
+# allocation XLA never lets another value reuse: a loop that allocates its own
+# destination keeps a full-width buffer for the whole program, and five of
+# those a layer is 10,730 MiB at 2,096 tokens against the 1,573 MiB a layer
+# the separate slices cost. The tests below pin both halves: the value is the
+# value the separate blocks produced, and the program grows with neither the
+# token count nor the layer count.
+
+
+def _workspace(pair, params):
+    """The two block-loop destinations `folding_trunk` threads, for one call.
+
+    Spelled here rather than called through `trunk._streamed_workspace`
+    because the arms below lend the same buffers to the rolled and to the
+    separate-slice program, and the trunk's helper declines to make them for
+    the second on purpose. That the two agree is asserted on its own in
+    `test_the_trunk_lends_exactly_the_two_buffers_the_loops_write`.
+    """
+    latent = params["t._engine.proj_bundle.weight"].shape[0] // 4
+    return (
+        jnp.zeros(pair.shape[:-1] + (latent,), jnp.bfloat16),
+        jnp.zeros(pair.shape, jnp.bfloat16),
+    )
+
+
+def test_the_trunk_lends_exactly_the_two_buffers_the_loops_write():
+    """`_streamed_workspace` makes the operand's and the update's, or none."""
+    params = _random_triangle_params(8, 254)
+    pair = jnp.zeros((1, 254, 254, 8), jnp.bfloat16)
+    made = trunk._streamed_workspace(pair, params, "t._engine")
+    assert made is not None
+    assert [(part.shape, part.dtype) for part in made] == [
+        (part.shape, part.dtype) for part in _workspace(pair, params)
+    ]
+    # Nothing to lend where there is nothing to roll: no native projection to
+    # read the operand width off, and no mesh-free local axis to roll on.
+    assert trunk._streamed_workspace(pair, {}, "t._engine") is None
+    with pytest.MonkeyPatch.context() as patch:
+        _unrolled(patch)
+        assert trunk._streamed_workspace(pair, params, "t._engine") is None
+
+
+def _unrolled(patch):
+    """The arm that keeps the separate static slices and the `concatenate`.
+
+    It is the shipped code's own other branch -- the one a globally sharded
+    blocked axis takes -- rather than a reimplementation beside it, so the
+    comparison is against the arrangement this change replaced and not
+    against a second copy of it that could drift from it.
+    """
+    patch.setattr(trunk, "blocks_are_local", lambda: False)
+
+
+def _bits(value):
+    array = np.asarray(jax.device_get(value))
+    return array.view(np.uint16) if array.dtype == jnp.bfloat16 else array
+
+
+def _arm(run, *args, unrolled=False):
+    jax.clear_caches()
+    with pytest.MonkeyPatch.context() as patch:
+        if unrolled:
+            _unrolled(patch)
+        return jax.jit(run)(*args)
+
+
+@pytest.mark.parametrize("tokens", [254, 499])
+def test_the_rolled_transition_is_bit_identical_to_the_separate_blocks(tokens):
+    """64-row transition blocks, rolled and unrolled, on an axis 64 does not
+    divide -- 254 is three blocks and 62, 499 is seven and 51.
+
+    Bitwise and not to a tolerance: the loop runs the same block sizes in the
+    same order over the same slices, and writing each block back over the rows
+    it was read from changes where the result lands, not what it is.
+    """
+    rng = np.random.default_rng(tokens)
+    x = jnp.asarray(rng.normal(size=(1, tokens, 12, 8), scale=0.5), jnp.bfloat16)
+    params = {
+        "t.norm.weight": jnp.asarray(rng.normal(size=8) * 0.1 + 1.0, jnp.float32),
+        "t.norm.bias": jnp.asarray(rng.normal(size=8) * 0.1, jnp.float32),
+        "t.ffn.w12.weight": jnp.asarray(rng.normal(size=(16, 8)), jnp.bfloat16),
+        "t.ffn.w3.weight": jnp.asarray(rng.normal(size=(8, 8)), jnp.bfloat16),
+    }
+
+    def run(value):
+        return trunk._autocast_transition(value, params, "t", True, 1e-5)
+
+    rolled = _arm(run, x)
+    separate = _arm(run, x, unrolled=True)
+    assert float(np.abs(np.asarray(separate, np.float32)).max()) > 0.0
+    np.testing.assert_array_equal(_bits(rolled), _bits(separate))
+
+
+@pytest.mark.parametrize("outgoing", [True, False])
+@pytest.mark.parametrize("tokens", [254, 499])
+def test_the_rolled_streamed_triangle_agrees_to_the_format(tokens, outgoing):
+    """One native block, rolled against the separate blocks, to the format.
+
+    Bitwise in the incoming direction at both sizes, and at most two `_ulp`
+    -- four bfloat16 steps at the magnitude of the output -- in the outgoing
+    one. The blocks, their sizes, their order and their operands are the
+    same; what differs is XLA:CPU's choice of whether to contract a multiply
+    and an add into an FMA, which it makes differently for straight-line code
+    and for a loop body. Measured on the smallest program that shows it,
+    `x * g + b` over one array with no blocking of any kind: 16,550 of 65,536
+    float32 elements move by one rounding of the multiply-add, and the loop's
+    answer is the closer of the two to the float64 value.
+
+    The tolerance is this file's own unit, and the reference for its size is
+    the port's existing sensitivity to the block itself: on the unmodified
+    tree, a two-layer native trunk at 254 tokens moves by 12 of these units
+    when `_AUTOCAST_ROWS` goes from 64 to 63, and by 9 between blocked and
+    unblocked. End to end it moves nothing measurable -- the 1UBQ CPU parity
+    residual reads 0.025820 A on both trees.
+    """
+    params = _random_triangle_params(8, tokens)
+    rng = np.random.default_rng(tokens + 1)
+    pair = jnp.asarray(rng.normal(size=(1, tokens, tokens, 8), scale=0.5), jnp.bfloat16)
+    keep = rng.random(tokens) > 0.15
+    mask = jnp.asarray((keep[:, None] & keep[None, :])[None].astype(np.float32))
+
+    def run(p, m):
+        return trunk._triangle_multiplicative(
+            p,
+            params,
+            "t",
+            outgoing=outgoing,
+            mask=m,
+            eps=1e-5,
+            native_autocast=True,
+            workspace=_workspace(p, params),
+        )[0]
+
+    rolled = np.asarray(_arm(run, pair, mask), np.float32)
+    separate = np.asarray(_arm(run, pair, mask, unrolled=True), np.float32)
+    assert float(np.abs(separate).max()) > 0.0
+    assert float(np.abs(rolled - separate).max()) <= 2 * _ulp(separate)
+
+
+@pytest.mark.parametrize("outgoing", [True, False])
+def test_the_rolled_triangle_writes_into_the_two_it_was_lent(outgoing):
+    """The rolled census: still two buffers, and still only the pair's width.
+
+    Six jaxpr values, two allocations. A loop names its destination three
+    times -- the value it starts from, the slice write its body returns, and
+    its own carry output -- and there are two loops: the whole operand's and
+    the pair update's. Both start from a buffer the caller lent rather than
+    from one they made, which is the whole point: a `while`'s allocation is
+    one no other value may reuse, so the trunk lends the same two to every
+    layer.
+
+    Asserted at two token counts because a census that grew with them would
+    be the unrolled program wearing the rolled program's name.
+    """
+    channels = 8
+    params = _triangle_params(channels)
+    bf16 = jnp.dtype(jnp.bfloat16)
+    small = _full_width_values(4, 12, channels, params, outgoing, threaded=True)
+    large = _full_width_values(4, 20, channels, params, outgoing, threaded=True)
+    assert small == large, (small, large)
+    assert set(small) == {(bf16, channels)}, small
+    assert small == {(bf16, channels): 6}, small
+
+
+@pytest.mark.parametrize("lend,rolled", [(True, True), (False, False)])
+def test_the_loop_is_taken_only_when_it_is_lent_somewhere_to_write(lend, rolled):
+    """The tripwire for every comparison above, and the memory contract.
+
+    A loop that allocates its own destination keeps that buffer for the whole
+    program, which is more than the separate slices cost rather than less, so
+    the blocks are a loop only where the caller lends a buffer they are done
+    with. Without it a rolled-versus-unrolled arm that took the
+    separate-slice branch on both sides would be the same program twice, and
+    would agree perfectly while proving nothing.
+    """
+    tokens = 254
+    params = _random_triangle_params(8, tokens)
+    pair = jax.ShapeDtypeStruct((1, tokens, tokens, 8), jnp.bfloat16)
+    mask = jax.ShapeDtypeStruct((1, tokens, tokens), jnp.float32)
+
+    def run(p, m):
+        return trunk._triangle_multiplicative(
+            p,
+            params,
+            "t",
+            outgoing=True,
+            mask=m,
+            eps=1e-5,
+            native_autocast=True,
+            workspace=_workspace(p, params) if lend else None,
+        )[0]
+
+    jax.clear_caches()
+    assert ("stablehlo.while" in jax.jit(run).lower(pair, mask).as_text()) is rolled
+    jax.clear_caches()
+    with pytest.MonkeyPatch.context() as patch:
+        _unrolled(patch)
+        assert "stablehlo.while" not in jax.jit(run).lower(pair, mask).as_text()
+
+
+def test_two_blocks_are_not_worth_a_loop():
+    """Below three blocks the separate slices *are* the rolled program.
+
+    127 tokens is one block of 64 and a tail of 63; a one-trip `fori_loop` is
+    the same body inside a `while` XLA has to prove runs once. The trunk's
+    own helper declines to make the buffers at that size for the same reason.
+    """
+    params = _random_triangle_params(8, 127)
+    pair = jnp.zeros((1, 127, 127, 8), jnp.bfloat16)
+    assert trunk._streamed_workspace(pair, params, "t._engine") is None
+
+
+def _trunk_params(channels):
+    """One `pair_update_block`'s weights, spelled the way the stack reads them."""
+    params = {}
+    for direction in ("tri_mul_out", "tri_mul_in"):
+        engine = f"blocks.0.{direction}._engine"
+        for name, value in _random_triangle_params(channels, 0).items():
+            params[engine + name[len("t._engine") :]] = value
+    dot = "blocks.0.pair_transition"
+    params[f"{dot}.norm.weight"] = jnp.ones((channels,))
+    params[f"{dot}.norm.bias"] = jnp.zeros((channels,))
+    params[f"{dot}.ffn.w12.weight"] = jnp.zeros((2 * channels, channels), jnp.bfloat16)
+    params[f"{dot}.ffn.w3.weight"] = jnp.zeros((channels, channels), jnp.bfloat16)
+    return params
+
+
+def _dots(tokens, channels=8, unrolled=False):
+    """`dot_general`s in the lowered native trunk at this token count."""
+    pair = jax.ShapeDtypeStruct((1, tokens, tokens, channels), jnp.bfloat16)
+    mask = jax.ShapeDtypeStruct((1, tokens, tokens), jnp.float32)
+    params = _trunk_params(channels)
+    jax.clear_caches()
+    with pytest.MonkeyPatch.context() as patch:
+        if unrolled:
+            _unrolled(patch)
+        text = (
+            jax.jit(
+                lambda p, m: trunk.folding_trunk(
+                    p, params, n_layers=1, mask=m, native_autocast=True
+                )
+            )
+            .lower(pair, mask)
+            .as_text()
+        )
+    return text.count("stablehlo.dot_general")
+
+
+def test_the_block_body_is_traced_once_however_many_blocks_there_are():
+    """The program does not grow with the token count any more.
+
+    Both sizes leave a trailing block -- 254 is three blocks of 64 and one of
+    62, 499 is seven and 51 -- so both carry the loop body and the tail body,
+    and the census is the same number. The unrolled arm is the tripwire: it
+    is the arrangement this replaced, and there the count grows with the
+    tokens, which is what a census that measured nothing would fail to show.
+    """
+    rolled = (_dots(254), _dots(499))
+    assert rolled[0] == rolled[1], rolled
+    # Two bodies per blocked stage rather than one per block: a constant, and
+    # a small one. The exact number is the program's, so it is bounded here
+    # rather than spelled, but it may not drift into the hundreds.
+    assert rolled[0] <= 40, rolled
+
+    separate = (_dots(254, unrolled=True), _dots(499, unrolled=True))
+    assert separate[1] > separate[0], separate
+    assert separate[0] > rolled[0], (separate, rolled)
+
+

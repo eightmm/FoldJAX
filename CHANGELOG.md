@@ -166,6 +166,47 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **ESMFold2's pair stack compiles in a fraction of the time again.** The
+  memory work that blocked the native pair stack spelled its blocks as Python
+  `for` loops, so every block was traced and compiled separately: at 2,096
+  tokens and 64 rows that is 33 copies of the body per call site per layer,
+  and the trunk program reached 969,694 HLO lines and 62 minutes of GPU
+  compile against well under 20 before the blocks existed. The blocks are now
+  a `fori_loop` whose body is traced once, with the trailing block -- shorter
+  whenever the rows do not divide -- traced once more after it, so the program
+  is two bodies per stage whatever the token count.
+
+  The blocking is unchanged and so is what is live: one block at a time, and
+  the one full-width operand the contraction reads whole. What changed is
+  where a block lands. A `while`'s initial value, loop parameter and result
+  are one colocated allocation, and XLA never lets another value reuse one, so
+  a loop that allocates its own destination keeps a full-width buffer for the
+  whole program -- five of those a layer is 10,730 MiB at 2,096 tokens against
+  the 1,573 MiB a layer the separate slices cost. Every rolled loop is
+  therefore handed a buffer the caller is finished with: the pair transition
+  writes into its own input, and the streamed contraction's whole operand and
+  pair update go into two buffers `folding_trunk` threads from one layer to
+  the next, so the whole stack shares two allocations rather than two per
+  call. The stages with neither -- the sharded prologue's three assembled
+  operands and the outer product's projection -- keep their separate slices.
+
+  At 2,096 tokens, on CPU with the weights as arguments, the 24-layer trunk
+  program falls from 442,494 StableHLO lines to 32,914 and from 95.9 s of
+  compile to 3.8 s, and its temporary arena from 71,209 MiB to 11,462 --
+  which no longer grows with the layer count at all, against 1,573 MiB a
+  layer before.
+
+  Arithmetic is unchanged: the same blocks, in the same sizes and the same
+  order, over the same slices, with every residual add where it was. 157 of
+  160 dumped outputs are bit-identical to the separate-slice form at 64, 127,
+  254, 320 and 499 tokens and at seven alignment depths, and the 1UBQ CPU
+  parity residual reads 0.025820 A on both trees. The three that are not are
+  a composed two-layer native trunk, where XLA:CPU contracts a multiply and
+  an add into an FMA differently in straight-line code and in a loop body: 6
+  to 15 bfloat16 units at the magnitude of the output, against 2 to 12 for
+  the same stack on the unmodified tree when only the block size moves from
+  64 rows to 63.
+
 - **Boltz-2 now refuses its fused attention and its fused GLU under a mesh at
   every entry, instead of raising from a kernel mid-run.** Two doors were
   open. `attention_backend=tokamax` with `cp_devices > 1` passed every check

@@ -32,7 +32,12 @@ import jax.numpy as jnp
 import numpy as np
 
 from foldjax.models import _capture
-from foldjax.models._cp import cp_mesh, shard_pair_rows
+from foldjax.models._cp import (
+    blocks_are_local,
+    cp_mesh,
+    manual_axes,
+    shard_pair_rows,
+)
 from foldjax.models._random import masked_prefix_draw
 from foldjax.models.esmfold2.models import diffusion
 from foldjax.models.esmfold2.models import trunk as trunk_ops
@@ -1078,29 +1083,69 @@ def _masked_one_hot_totals(
     masking happens later, on its own copy -- so every partial sum is a whole
     number no larger than the alignment depth, which float32 represents
     exactly. Exact integers add in any order to the same bits.
+
+    This is the one blocked stage here whose reduction runs *along* the
+    blocked axis, so the loop carries a running total rather than a
+    destination -- which is also why it may be a loop at all while the pair
+    stack's assembling stages may not. A `while`'s initial value, parameter
+    and result are one colocated allocation XLA never lets another value
+    reuse (`trunk._assemble_row_blocks`); here that allocation holds
+    `[B, N, 33]` float32, 277 KiB at 2,096 tokens and one of them in the
+    program, against the alignment's own one-hot at 33 times the alignment.
+
+    The rolled form starts the total at zero where the unrolled one started
+    it at the first block: the partial sums are sums of products of 0.0 and
+    1.0, so none of them is negative and none is a negative zero, and
+    `0.0 + x` is `x` bit for bit. The trailing block is added after the loop,
+    which is where the unrolled order had it, so the real rows are summed in
+    the order they were.
     """
     depth = msa.shape[1]
 
-    def block(start: int, stop: int) -> jnp.ndarray:
-        part = jax.nn.one_hot(
-            jax.lax.slice_in_dim(msa, start, stop, axis=1).astype(jnp.int32),
-            NUM_RES_TYPES,
-        )
+    def take(array, start, size: int) -> jnp.ndarray:
+        # A static `slice` where the start is a constant, so every route that
+        # keeps a Python start keeps the program it emitted before.
+        if isinstance(start, int):
+            return jax.lax.slice_in_dim(array, start, start + size, axis=1)
+        return jax.lax.dynamic_slice_in_dim(array, start, size, axis=1)
+
+    def block(start, size: int) -> jnp.ndarray:
+        part = jax.nn.one_hot(take(msa, start, size).astype(jnp.int32), NUM_RES_TYPES)
         if msa_mask is not None:
-            part = part * jax.lax.slice_in_dim(msa_mask, start, stop, axis=1)[
-                ..., None
-            ].astype(jnp.float32)
+            part = part * take(msa_mask, start, size)[..., None].astype(jnp.float32)
         return jnp.sum(part, axis=1)
 
     if rows is None or rows >= depth:
         return block(0, depth)
-    total = None
-    for start in range(0, depth, rows):
-        # `min` because a trailing block is shorter whenever the depth does not
-        # divide, and `slice_in_dim` rejects an overrun rather than clamping it.
-        part = block(start, min(start + rows, depth))
-        total = part if total is None else total + part
-    return total
+    n_full, tail = divmod(depth, rows)
+    if n_full == 1:
+        # Nothing to roll: one full block and at most a trailing one.
+        total = block(0, rows)
+        return total if not tail else total + block(rows, tail)
+    # A `fori_loop` and not a Python `for`: unrolled, a 13,280-row alignment
+    # traced and compiled one body per block, and the bodies are identical.
+    # Under a mesh the depth axis may be a sharded one, where a traced index
+    # into it is a slice the partitioner can only serve by moving data, so the
+    # loop is taken only where the rows are the device's own.
+    if not blocks_are_local():
+        total = None
+        for start in range(0, depth, rows):
+            part = block(start, min(start + rows, depth) - start)
+            total = part if total is None else total + part
+        return total
+    spec = jax.eval_shape(lambda: block(0, rows))
+    start_total = jnp.zeros(spec.shape, spec.dtype)
+    manual = manual_axes()
+    if manual:
+        # A loop carry has to keep the manual axes its body's values vary
+        # over; a constant zero varies over none. Unreachable today -- the
+        # profile is built before any shard -- and written so that moving it
+        # inside one is not a silent type error.
+        start_total = jax.lax.pcast(start_total, manual, to="varying")
+    total = jax.lax.fori_loop(
+        0, n_full, lambda index, carry: carry + block(index * rows, rows), start_total
+    )
+    return total if not tail else total + block(n_full * rows, tail)
 
 
 def predict(
