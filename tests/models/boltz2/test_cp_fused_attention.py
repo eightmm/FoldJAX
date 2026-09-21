@@ -74,7 +74,11 @@ rng = np.random.default_rng(20260921)
 DIM = COND = 8
 HEADS = 2
 W, HK = 32, 128
-BATCH, ATOMS = 1, 128
+# 256 rather than 128 so the 1-D mesh's four shards each keep two query
+# windows: `single_to_keys_local` needs at least the halo radius of
+# half-windows per shard, and the 2-D grid's two row shards are not the
+# binding case.
+BATCH, ATOMS = 1, 256
 WINDOWS = ATOMS // W
 
 
@@ -125,11 +129,12 @@ def transformer_layer(dim, cond):
 
 
 params = {"diffusion_transformer": {"layers": [transformer_layer(DIM, COND)]}}
-# Asymmetric on purpose: each atom shard is scaled differently, so a body that
-# read a neighbour's window, or a merge that mixed the shards up, cannot come
-# back equal by symmetry.
+# Asymmetric on purpose, in four blocks so that both the 2-D grid's two row
+# shards and the 1-D mesh's four differ: a body that read a neighbour's
+# window, or a shard that took another's bias, cannot come back equal by
+# symmetry.
 atom_scale = jnp.repeat(
-    jnp.asarray([1.0, 30.0], jnp.float32), ATOMS // 2
+    jnp.asarray([1.0, 10.0, 30.0, 60.0], jnp.float32), ATOMS // 4
 )[None, :, None]
 q = jnp.asarray(rng.normal(size=(BATCH, ATOMS, DIM)), jnp.float32) * atom_scale
 c = jnp.asarray(rng.normal(size=(BATCH, ATOMS, COND)), jnp.float32)
@@ -178,7 +183,7 @@ _ATOM_SITE_PROBE = _ATOM_PRELUDE + textwrap.dedent(
     r"""
     assert jax.device_count() == 4
 
-    with context_parallel(4, layout="2d"):
+    with context_parallel(4, layout=PROBE_LAYOUT):
         qd = place_atoms(q, atom_axis=1)
         cd = place_atoms(c, atom_axis=1)
         md = place_atoms(mask, atom_axis=1)
@@ -212,8 +217,8 @@ _ATOM_SITE_PROBE = _ATOM_PRELUDE + textwrap.dedent(
     assert "all-gather" not in on_hlo and "all_gather" not in on_hlo
     for name in ("collective-permute", "collective_permute"):
         assert on_hlo.count(name) == off_hlo.count(name), name
-    print("ATOM_SITE_MAXDIFF", float(np.abs(off - on).max()))
-    print("ATOM_SITE_OK")
+    print("ATOM_SITE_MAXDIFF", PROBE_LAYOUT, float(np.abs(off - on).max()))
+    print("ATOM_SITE_OK", PROBE_LAYOUT)
     """
 )
 
@@ -770,8 +775,18 @@ def test_the_option_off_compiles_the_program_it_compiled_before() -> None:
     assert "OFF_IDENTITY_OK" in _run(_OFF_IDENTITY_PROBE, devices=4)
 
 
-def test_the_atom_site_reaches_the_fused_kernel_and_nothing_else() -> None:
-    assert "ATOM_SITE_OK" in _run(_ATOM_SITE_PROBE, devices=4)
+@pytest.mark.parametrize("layout", ["1d", "2d"])
+def test_the_atom_site_reaches_the_fused_kernel_and_nothing_else(
+    layout: str,
+) -> None:
+    """Both layouts. The atom adapter shards its windows on whichever axis
+    `atom_axis_name` names, so the site exists on the 1-D mesh too and the
+    option surface accepts `atom` there; only `token` needs the square grid."""
+
+    assert f"ATOM_SITE_OK {layout}" in _run(
+        f"PROBE_LAYOUT = {layout!r}\n" + _ATOM_SITE_PROBE,
+        devices=4,
+    )
 
 
 def test_the_token_request_does_not_open_the_atom_site() -> None:
