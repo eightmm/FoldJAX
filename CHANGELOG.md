@@ -47,10 +47,14 @@ unless it says so here, in its own paragraph.
 
   Refused, never downgraded: a spelling outside the vocabulary, any site on
   `cp_devices=1`, `token` without the 2-D layout, a missing mesh, a missing
-  tokamax, and an `atom` request on a run that leaves the atom graph
-  replicated. The atom adapter's alignment refusal still fires first and
-  unchanged, so a misaligned target is refused rather than folded into a fused
-  arm.
+  tokamax, and an `atom` request on a run whose diffusion atom graph is not
+  distributed (`cp_atom_windows=false`, or a `stop_after` that runs no
+  diffusion). Two refusals it does not touch: the atom adapter's own
+  `local atom shard is not query-window aligned`, which still fires inside the
+  `shard_map` body before any kernel is selected, and
+  `trunk_atom_attention_backend`, because the trunk's atom-window transformer
+  never asks for the context-parallel adapter -- the `atom` site is the
+  diffusion encoder and decoder and nothing in the trunk.
 
 - **The two-dimensional triangle-attention ring can run a fused kernel on each
   ring tile**, opt-in and experimental, with

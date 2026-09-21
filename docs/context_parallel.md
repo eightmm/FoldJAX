@@ -336,10 +336,18 @@ have keys is the whole answer. A row with no valid key anywhere is zeros.
 Refused, never downgraded. `foldjax plan` refuses a spelling outside the
 vocabulary, any site on `cp_devices=1`, and `token` without the 2-D layout the
 site lives on. The model entry refuses a missing mesh, a missing tokamax, a
-1-D `token`, and an `atom` request on a run that leaves the atom graph
-replicated -- and the alignment refusal inside the atom adapter still fires
-first and unchanged, so a misaligned target is refused rather than folded into
-a fused arm. The option forks the compilation-cache namespace, and like the
+1-D `token`, and an `atom` request on a run whose diffusion atom graph is not
+distributed -- `cp_atom_windows=false`, or a `stop_after` that runs no
+diffusion. A *misaligned* target is a separate refusal and not this option's:
+unlike Protenix and OpenFold3, Boltz-2 has no replicated fallback to resolve
+to, and its atom adapter raises `local atom shard is not query-window aligned`
+inside the `shard_map` body before any kernel is selected. That refusal is
+untouched, so a misaligned target still stops there rather than being folded
+into a fused arm. Also untouched is `trunk_atom_attention_backend`: the trunk
+input embedder never asks for the context-parallel atom adapter
+(`trunk_blocks/input_embedder.py` passes no `atom_context_parallel`), so the
+`atom` site is the diffusion encoder and decoder and nothing in the trunk.
+The option forks the compilation-cache namespace, and like the
 ring kernel it travels in a `ContextVar` that no `jax.jit` cache key carries,
 so the retained in-process runner does not fork on it: one value per process.
 

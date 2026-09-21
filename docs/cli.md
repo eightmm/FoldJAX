@@ -1140,9 +1140,13 @@ raises. `docs/context_parallel.md` has the mechanism and the gate list.
 
 Refusals: a spelling outside `off|atom|token|atom+token`, any site with
 `--cp-devices 1`, `token` without `--cp-layout 2d`, a missing tokamax, and an
-`atom` request on a run that leaves the atom graph replicated
-(`--option cp_atom_windows=false`, or a target whose atoms do not align to the
-grid). Each accepted spelling is its own compilation namespace.
+`atom` request on a run whose diffusion atom graph is not distributed --
+`--option cp_atom_windows=false`, or `--stop-after trunk`, which runs no
+diffusion. A *misaligned* target is a different refusal with a different
+message and is not this option's: Boltz-2 has no replicated fallback for it,
+and the atom adapter already raises `local atom shard is not query-window
+aligned` before any kernel is selected. Each accepted spelling is its own
+compilation namespace.
 
 ### Distributed diffusion atom graph (`cp_atom_windows`, Protenix, OpenDDE and OpenFold3)
 
