@@ -1677,7 +1677,7 @@ from the released serial run (its rerun floor is 0.066 Å on Boltz-2):
 
 | snapshot | port | what changed | per device | pass wall | vs serial |
 | --- | --- | --- | ---: | ---: | --- |
-| `bef3922` | Boltz-2 | row-blocked ring | 16,642 MiB | 973 s | 0.013–0.112 Å, deposited identical |
+| `7bb0838` | Boltz-2 | row-blocked ring | 16,642 MiB | 973 s | 0.013–0.112 Å, deposited identical |
 | `d6ada16` | Boltz-2 | transition local rows, pair spec on both axes | 16,056 MiB | 971 s | 0.013–0.046 Å |
 | `e0a9c4d` | Boltz-2 | MSA transition keeps its row block | 15,111 MiB | 975 s | 0.013–0.039 Å |
 | `021b240` | Boltz-2 | MSA depth over the column axis | **8,296 MiB** | 943 s | 0.013–0.018 Å on four samples, 0.112 on the fifth |
