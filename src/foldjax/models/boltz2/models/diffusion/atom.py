@@ -743,17 +743,20 @@ def _atom_transformer_forward_cp(
     attention inside this body with the same fused kernel the *serial*
     released diffusion attention runs (`diffusion_attention_backend`), and
     nothing else changes. It is legal here and nowhere else under this mesh
-    because every attention below is window-local: a query window's
-    ``[B*W, 32, D]`` queries meet the ``[B*W, 128, D]`` keys
+    because every attention below is window-local: a window's
+    ``attn_window_queries`` queries meet the ``attn_window_keys`` keys
     :func:`single_to_keys_local` has already halo-exchanged into this shard,
     with the bias row and key mask that belong to them. The kernel therefore
     sees no operand a neighbour owns, and the collective that made that true
     ran before it.
 
-    What the option does *not* touch is how this shard came to exist. The
-    alignment refusal inside ``local`` still fires first and with the same
-    message, so a target the port leaves replicated is still refused here
-    rather than folded into a fused arm.
+    What the option does *not* touch is how this shard came to exist. Unlike
+    Protenix and OpenFold3 this port has no replicated fallback to resolve a
+    misaligned target to; ``local`` raises instead, and that raise still fires
+    before any kernel is selected and with the same message. The trunk is
+    equally untouched, because its atom-window transformer never asks for this
+    adapter (``trunk_blocks/input_embedder.py`` passes no
+    ``atom_context_parallel``): the site is the diffusion encoder and decoder.
     """
 
     mesh = cp_mesh()

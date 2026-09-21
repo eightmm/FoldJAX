@@ -841,10 +841,10 @@ def _fused_token_tile_2d(
 ) -> jax.Array:
     """One column tile through the fused kernel, merged over ``cp_col``.
 
-    The same distributed softmax as the checked body above, with the tile's
-    three statistics coming out of a kernel instead of out of a materialised
-    ``[B, heads, T, S]`` logit tensor. A device holds one key tile, not a
-    rotation of them, so the merge is the collective itself:
+    The same distributed softmax :func:`pair_bias_attention_2d` runs by hand,
+    with the tile's three statistics coming out of a kernel instead of out of
+    a materialised ``[B, heads, T, S]`` logit tensor. A device holds one key
+    tile, not a rotation of them, so the merge is the collective itself:
 
     * the kernel normalises its tile against the tile's own maximum;
     * ``pmax`` over ``cp_col`` gives the global row maximum;
