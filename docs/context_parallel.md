@@ -343,19 +343,21 @@ token site, because only its tile is pinned to a Pallas/Triton implementation.
 Saying it at the entry means a request that cannot run stops before the
 featurizer rather than inside a traced `shard_map`; leaving the atom site
 unpinned and unchecked is what lets a CPU gate execute its dispatch and its
-sharding contract at all. A *misaligned* target is a separate refusal and not
-this option's:
-unlike Protenix and OpenFold3, Boltz-2 has no replicated fallback to resolve
-to, and its atom adapter raises `local atom shard is not query-window aligned`
-inside the `shard_map` body before any kernel is selected. That refusal is
-untouched, so a misaligned target still stops there rather than being folded
-into a fused arm. Also untouched is `trunk_atom_attention_backend`: the trunk
-input embedder never asks for the context-parallel atom adapter
+sharding contract at all.
+
+A *misaligned* target is a separate refusal and not this option's: unlike
+Protenix and OpenFold3, Boltz-2 has no replicated fallback to resolve to, and
+its atom adapter raises `local atom shard is not query-window aligned` inside
+the `shard_map` body before any kernel is selected. That refusal is untouched,
+so a misaligned target still stops there rather than being folded into a fused
+arm. Also untouched is `trunk_atom_attention_backend`: the trunk input
+embedder never asks for the context-parallel atom adapter
 (`trunk_blocks/input_embedder.py` passes no `atom_context_parallel`), so the
 `atom` site is the diffusion encoder and decoder and nothing in the trunk.
-The option forks the compilation-cache namespace, and like the
-ring kernel it travels in a `ContextVar` that no `jax.jit` cache key carries,
-so the retained in-process runner does not fork on it: one value per process.
+
+The option forks the compilation-cache namespace, and like the ring kernel it
+travels in a `ContextVar` that no `jax.jit` cache key carries, so the retained
+in-process runner does not fork on it: one value per process.
 
 **Nothing is measured on a card yet.** What the CPU gates settle is the
 dispatch (the fused callable is reached at the site named, once per attention,
