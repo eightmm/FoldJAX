@@ -805,8 +805,9 @@ def test_the_token_site_reaches_the_fused_tile_and_nothing_else() -> None:
 
 @pytest.mark.parametrize("side", [2, 3])
 def test_the_token_site_is_the_same_attention_on_asymmetric_ranks(side: int) -> None:
-    """Both grid sides. A 2x2 cannot see a sign or ownership error that a 3x3
-    can: with two columns the two hops are each other's inverse."""
+    """Both grid sides. A 2x2 cannot see an ownership error a 3x3 can: on a
+    two-by-two grid the transpose is its own inverse, so a tile paired with
+    the wrong column's bias still lands somewhere self-consistent."""
 
     assert f"TOKEN_CONTRACT_OK {side}" in _run(
         f"PROBE_SIDE = {side}\n" + _TOKEN_CONTRACT_PROBE,
