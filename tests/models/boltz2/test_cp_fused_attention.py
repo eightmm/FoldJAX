@@ -212,6 +212,7 @@ _ATOM_SITE_PROBE = _ATOM_PRELUDE + textwrap.dedent(
     assert "all-gather" not in on_hlo and "all_gather" not in on_hlo
     for name in ("collective-permute", "collective_permute"):
         assert on_hlo.count(name) == off_hlo.count(name), name
+    print("ATOM_SITE_MAXDIFF", float(np.abs(off - on).max()))
     print("ATOM_SITE_OK")
     """
 )
@@ -327,11 +328,23 @@ _TOKEN_CONTRACT_PROBE = _TOKEN_PRELUDE + textwrap.dedent(
     assert jax.device_count() == devices, jax.devices()
 
     q, k, v, bias, mask, scale = case(side)
-    _cp_atom.tile_attention_tokamax = XLA_TILE
+
+    # A tripwire on the arm, not a label on it: at 3x3 the two arms agree to
+    # the last bit, and without this an arm that never selected the fused tile
+    # would read as a pass rather than as nothing measured.
+    fired = []
+
+    def counted(*tile, **keywords):
+        fired.append(len(fired))
+        return XLA_TILE(*tile, **keywords)
+
+    _cp_atom.tile_attention_tokamax = counted
     with context_parallel(devices, layout="2d"):
         assert cp_grid() == (side, side), cp_grid()
         off, off_fn = arm(q, k, v, bias, mask, scale, None)
+        assert not fired, fired
         on, on_fn = arm(q, k, v, bias, mask, scale, "token")
+        assert len(fired) == 1, fired
         off_hlo = off_fn.lower(q, k, v, bias, mask).compiler_ir(
             dialect="hlo"
         ).as_hlo_text().lower()
@@ -348,6 +361,7 @@ _TOKEN_CONTRACT_PROBE = _TOKEN_PRELUDE + textwrap.dedent(
         assert on_hlo.count(name) == off_hlo.count(name), (
             name, on_hlo.count(name), off_hlo.count(name)
         )
+    print("TOKEN_CONTRACT_MAXDIFF", side, float(np.abs(off - on).max()))
     print("TOKEN_CONTRACT_OK", side)
     """
 )
@@ -436,12 +450,24 @@ _TOKEN_EMPTY_PROBE = _TOKEN_PRELUDE + textwrap.dedent(
         "sparse": ([1.0] + [0.0] * (half - 1)) * side,
     }
 
-    _cp_atom.tile_attention_tokamax = XLA_TILE
+    # A tripwire, because every case below agrees with the checked arm
+    # exactly: without it an arm that silently never selected the fused tile
+    # would read as a pass rather than as nothing measured.
+    fired = []
+
+    def counted(*tile, **keywords):
+        fired.append(len(fired))
+        return XLA_TILE(*tile, **keywords)
+
+    _cp_atom.tile_attention_tokamax = counted
     for name, values in cases.items():
         q, k, v, bias, mask, scale = case(side, mask_values=values)
+        before = len(fired)
         with context_parallel(4, layout="2d"):
             off, _ = arm(q, k, v, bias, mask, scale, None)
+            assert len(fired) == before, (name, fired)
             on, _ = arm(q, k, v, bias, mask, scale, "token")
+        assert len(fired) == before + 1, (name, fired)
         assert np.isfinite(on).all(), (name, on)
         assert not np.isnan(on).any(), (name, on)
         if name == "all_empty":

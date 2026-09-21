@@ -12,6 +12,46 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **Boltz-2's two context-parallel diffusion attentions can run a fused
+  kernel**, opt-in and experimental, with `--option cp_fused_attention=atom`,
+  `=token` or `=atom+token`. Under a mesh this port refuses
+  `attention_kernel=tokamax` outright (it names every attention, including
+  ones no kernel can be partitioned across), and that refusal is part of the
+  2-D wall penalty. Two diffusion attentions are not in that position, because
+  their own `shard_map` has already made every operand local: the
+  halo-exchanged atom windows, where 32 queries per window meet the 128 keys
+  the halo exchange put in this shard, and the 2-D token tile, where one grid
+  transpose gives each column device a key tile and `pmax`/`psum` over
+  `cp_col` finish the softmax. The atom site runs the same
+  `tokamax.dot_product_attention` call the serial released
+  `diffusion_attention_backend` makes there; the token site replaces only the
+  local tile with the ring's residual-returning adapter and merges it onto the
+  collective maximum, leaving the transpose, the ownership and the collectives
+  unchanged.
+
+  Four values rather than a ladder (`off`, `atom`, `token`, `atom+token`)
+  because each site has to be promotable, and therefore measurable, on its
+  own. `off` is the released value and compiles the program a distributed run
+  compiled before -- identical HLO and identical `temp_size_in_bytes` on both
+  routes. Each other spelling is its own compilation namespace and travels in
+  a `ContextVar`, so the retained in-process runner does not fork on it: one
+  value per process. **Nothing is measured on a card yet.** The CPU gates
+  settle that the fused callable is reached at the site named and nowhere
+  else, that the option-on program matches the option-off one within 1e-5 on
+  deliberately asymmetric per-rank inputs at 2x2 and 3x3, that the token
+  merge's output is byte-identical on every column replica -- which is the
+  promise `check_vma=False` stops the partitioner verifying -- and that an
+  empty column tile contributes nothing in either order rather than outvoting
+  a tile that has keys. Which implementation a card selects, what it costs,
+  and what it does to a deposited structure are open.
+
+  Refused, never downgraded: a spelling outside the vocabulary, any site on
+  `cp_devices=1`, `token` without the 2-D layout, a missing mesh, a missing
+  tokamax, and an `atom` request on a run that leaves the atom graph
+  replicated. The atom adapter's alignment refusal still fires first and
+  unchanged, so a misaligned target is refused rather than folded into a fused
+  arm.
+
 - **The two-dimensional triangle-attention ring can run a fused kernel on each
   ring tile**, opt-in and experimental, with
   `--option triangle_attention_ring_kernel=tokamax` on Boltz-2 and Protenix.

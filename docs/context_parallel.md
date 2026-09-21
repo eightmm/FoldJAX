@@ -282,6 +282,77 @@ dispatch, compares the outputs, and only then times a full prediction pass.
 Until it has run, the option is an implementation with a CPU-proved merge and
 no measurement.
 
+## The two local diffusion attentions (experimental, GPU only, unmeasured)
+
+The section above recovers a fused kernel at the trunk's triangle attention.
+Boltz-2's *diffusion* module has two more attentions whose operands are
+already entirely local inside their own `shard_map`, and
+`--option cp_fused_attention=...` (Boltz-2 only) opens them. It takes `off`
+(the released value), `atom`, `token`, or `atom+token` -- four values rather
+than a ladder, because each site has to be promotable, and therefore
+measurable, on its own.
+
+**`atom`** is the halo-exchanged atom-window transformer
+(`models/boltz2/models/diffusion/atom.py`). Inside that `shard_map` every
+attention is window-local: a window's 32 queries meet the 128 keys
+`single_to_keys_local` has already exchanged into this shard, with the bias row
+and key mask that belong to them. The kernel therefore sees no operand a
+neighbour owns, and the collective that made that true ran before it. The site
+runs `tokamax.dot_product_attention` with tokamax's own implementation order --
+the call the *serial* released `diffusion_attention_backend` already makes
+there. It cannot use the scoped `triton` spelling, which requires bfloat16
+operands that the released float32 diffusion does not have. What this means
+for a report is that the backend label alone does not say which kernel ran: a
+census on the card does.
+
+**`token`** is the 2-D token attention (`_cp_atom.pair_bias_attention_2d`).
+That one is *not* a ring and shares none of the ring's rotation: a single grid
+transpose puts one key tile on each column device, and `pmax`/`psum` over
+`cp_col` finish the softmax. So the fused arm replaces only the local tile --
+the ring's own `normalize_output=False, return_residuals=True` adapter, which
+hands back the tile's unnormalised numerator with its maximum and denominator
+-- and the merge is the collective itself: `pmax` for the global row maximum,
+the same rescale `merge_softmax_statistics` uses to put this tile onto it,
+`psum` of the rescaled pair. The transpose, the ownership, the collectives and
+their order are unchanged. This tile is pinned to tokamax's Triton
+implementation for the reason the ring pins its own, so the token site is
+GPU-only: on a CPU tokamax raises rather than lowering to something else.
+
+Both sites pass `check_vma=False` on their own `shard_map`, and only where the
+fused kernel is selected. That is the same bookkeeping the ring's tile needs --
+a Pallas kernel declares outputs with no `manual_axis_type`, which the checked
+partitioner requires -- and it means the promise `out_specs` makes, that the
+result is replicated along the axis it does not name, is no longer verified.
+For the token site that promise holds exactly rather than approximately,
+because `psum` is an all-reduce and hands every participant the same bytes; a
+CPU gate reads the result on each column replica and asserts bit-equality.
+
+An empty column tile is not an empty global row. Tokamax masks with
+`finfo.min` rather than `-inf`, so a tile whose every key is masked away comes
+back with a finite maximum over absent keys; the tile adapter forces it to
+`(-inf, 0, 0)` so it contributes nothing and a neighbouring tile that *does*
+have keys is the whole answer. A row with no valid key anywhere is zeros.
+
+Refused, never downgraded. `foldjax plan` refuses a spelling outside the
+vocabulary, any site on `cp_devices=1`, and `token` without the 2-D layout the
+site lives on. The model entry refuses a missing mesh, a missing tokamax, a
+1-D `token`, and an `atom` request on a run that leaves the atom graph
+replicated -- and the alignment refusal inside the atom adapter still fires
+first and unchanged, so a misaligned target is refused rather than folded into
+a fused arm. The option forks the compilation-cache namespace, and like the
+ring kernel it travels in a `ContextVar` that no `jax.jit` cache key carries,
+so the retained in-process runner does not fork on it: one value per process.
+
+**Nothing is measured on a card yet.** What the CPU gates settle is the
+dispatch (the fused callable is reached at the site named, once per attention,
+and nowhere else), the sharding contract (option-on equals option-off within
+1e-5 on deliberately asymmetric per-rank inputs, on 2x2 and 3x3, with the
+kernel resolved to tokamax's portable implementation), the empty-tile
+semantics, and that `off` compiles the program it compiled before. What they
+cannot settle is which implementation a card selects, what it costs, and
+whether the two sites change a deposited structure. Until that has run, this
+is an implementation with proved wiring and no measurement.
+
 ## Boltz-2's MSA stack on the grid
 
 Everything above shards a quadratic `[N, N, C]` pair state. Boltz-2's MSA

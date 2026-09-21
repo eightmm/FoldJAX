@@ -1113,6 +1113,37 @@ omitted default resolves to `xla_jit` there). OpenDDE reaches the same two
 sites through Protenix's
 primitives but does not offer the value: it has not been measured there.
 
+### Fused attention under a mesh (`--option cp_fused_attention=...`, Boltz-2)
+
+Off by default, and refused rather than ignored without a mesh. Under context
+parallelism Boltz-2 refuses `attention_kernel=tokamax` outright, because that
+knob names every attention including the ones no kernel can be partitioned
+across. Two of its diffusion attentions are not in that position: the
+halo-exchanged atom windows and the grid-transposed 2-D token tile both run on
+operands their own `shard_map` already made local. `atom`, `token` and
+`atom+token` open those, one site at a time so each can be measured alone;
+`off` is what a released distributed run does and is byte-identical to omitting
+the option.
+
+**Experimental, GPU only, and unverified on a card.** The atom site runs the
+same `tokamax.dot_product_attention` call the serial released
+`diffusion_attention_backend` makes, so tokamax's own implementation order
+decides the kernel and the label does not say which one ran. The token site is
+pinned to tokamax's Triton implementation and raises off a GPU. Neither site's
+wall time, peak, or effect on a deposited structure has been measured;
+`--option triangle_attention_ring_kernel=tokamax` is the trunk-side sibling
+with the same status. What is proved is the wiring: the fused callable is
+reached at the named site and nowhere else, the option-on program matches the
+option-off program on asymmetric per-rank inputs at 2x2 and 3x3, an empty
+column tile contributes nothing in either order, and every unreachable request
+raises. `docs/context_parallel.md` has the mechanism and the gate list.
+
+Refusals: a spelling outside `off|atom|token|atom+token`, any site with
+`--cp-devices 1`, `token` without `--cp-layout 2d`, a missing tokamax, and an
+`atom` request on a run that leaves the atom graph replicated
+(`--option cp_atom_windows=false`, or a target whose atoms do not align to the
+grid). Each accepted spelling is its own compilation namespace.
+
 ### Distributed diffusion atom graph (`cp_atom_windows`, Protenix, OpenDDE and OpenFold3)
 
 On by default and inert without a mesh. With `--cp-devices N` greater than one
