@@ -187,7 +187,12 @@ unless it says so here, in its own paragraph.
   writes into its own input, and the streamed contraction's whole operand and
   pair update go into two buffers `folding_trunk` threads from one layer to
   the next, so the whole stack shares two allocations rather than two per
-  call. The stages with neither -- the sharded prologue's three assembled
+  call site. A chain begins at a `folding_trunk` call, and this model makes
+  four of them, so four pairs of buffers are held: measured at 512 tokens,
+  each added call costs two pair widths here and is flat in its layer count,
+  against three a layer before -- four two-layer calls read 378 MiB of arena
+  against 1,218, and four six-layer calls 381 against 2,755. The stages with
+  neither -- the sharded prologue's three assembled
   operands and the outer product's projection -- keep their separate slices.
 
   At 2,096 tokens, on CPU with the weights as arguments, the 24-layer trunk
