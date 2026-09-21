@@ -93,11 +93,11 @@ def ring_tile_kernel_scope(kernel: str | None) -> Iterator[str]:
 
 
 #: What ``cp_fused_attention`` may name. ``off`` is the released value and the
-#: only one every 2-D measurement in this repository describes. The other three
-#: are an opt-in, GPU-only experiment that runs a fused kernel at the two
-#: Boltz-2 diffusion attentions whose operands are already entirely local
-#: inside their ``shard_map``: the halo-exchanged atom windows, and the
-#: grid-transposed token tile.
+#: only one every distributed measurement in this repository describes. The
+#: other three are an opt-in experiment, meant for a card and unmeasured on
+#: one, that runs a fused kernel at the two Boltz-2 diffusion attentions whose
+#: operands are already entirely local inside their ``shard_map``: the
+#: halo-exchanged atom windows, and the grid-transposed token tile.
 #:
 #: Four values rather than the three a graded ladder would need, because the
 #: release policy this implements promotes sites individually -- a site's
