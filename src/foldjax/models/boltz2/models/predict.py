@@ -28,7 +28,12 @@ import jax
 import jax.numpy as jnp
 
 from foldjax.models import _capture
-from foldjax.models._cp import cp_mesh
+from foldjax.models._cp import cp_layout, cp_mesh
+from foldjax.models._cp_attention import (
+    cp_fused_attention,
+    cp_fused_attention_sites,
+)
+from foldjax.models._tokamax_attention import tokamax_available
 from foldjax.models.boltz2.models._compact_categories import (
     restore_compact_categories,
 )
@@ -168,6 +173,40 @@ def boltz2_predict(
             "context parallelism requires attention_backend='xla'; fused "
             "attention is not partitioned"
         )
+    # The opt-in counterpart of the refusal above: `attention_backend` stays
+    # refused under a mesh because it names *every* attention, including the
+    # ones a kernel cannot be partitioned across. `cp_fused_attention` names
+    # the two whose operands are already entirely local inside their own
+    # `shard_map`. Each way of asking for a site nothing would honour is an
+    # error here rather than a silent downgrade, because a run that reports a
+    # fused arm it did not take is worse than a run that stops.
+    _fused_request = cp_fused_attention()
+    _fused_sites = cp_fused_attention_sites(_fused_request)
+    if _fused_sites:
+        if cp_mesh() is None:
+            raise ValueError(
+                f"cp_fused_attention={_fused_request!r} names context-parallel "
+                "attention sites and needs an active mesh"
+            )
+        if not tokamax_available():
+            raise ValueError(
+                f"cp_fused_attention={_fused_request!r} needs the tokamax "
+                "package, which did not import in this process"
+            )
+        if "token" in _fused_sites and cp_layout() != "2d":
+            raise ValueError(
+                f"cp_fused_attention={_fused_request!r} names the diffusion "
+                "token attention, which exists only under the 2-D layout "
+                f"(this mesh is {cp_layout()!r})"
+            )
+        if "atom" in _fused_sites and not bool(
+            sample_kwargs.get("atom_context_parallel", False)
+        ):
+            raise ValueError(
+                f"cp_fused_attention={_fused_request!r} names the diffusion "
+                "atom attention, which runs only where the atom graph is "
+                "distributed; this run leaves it replicated"
+            )
     if trunk_atom_attention_backend == attention_backend:
         trunk_atom_attention_backend = None
     if trunk_atom_attention_backend not in (None, "tokamax", "triton", "xla"):

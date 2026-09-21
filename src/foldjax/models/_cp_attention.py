@@ -92,6 +92,137 @@ def ring_tile_kernel_scope(kernel: str | None) -> Iterator[str]:
         _TILE_KERNEL.reset(token)
 
 
+#: What ``cp_fused_attention`` may name. ``off`` is the released value and the
+#: only one every 2-D measurement in this repository describes. The other three
+#: are an opt-in, GPU-only experiment that runs a fused kernel at the two
+#: Boltz-2 diffusion attentions whose operands are already entirely local
+#: inside their ``shard_map``: the halo-exchanged atom windows, and the
+#: grid-transposed token tile.
+#:
+#: Four values rather than the three a graded ladder would need, because the
+#: release policy this implements promotes sites individually -- a site's
+#: accuracy and timing arm has to be measurable on its own, and ``token``
+#: alone is not expressible by a ladder.
+CP_FUSED_ATTENTION_REQUESTS: tuple[str, ...] = ("off", "atom", "token", "atom+token")
+
+#: The sites a request names. The name is the mesh-local attention, not a
+#: kernel: what each site runs is decided at the site, because the two do not
+#: reach tokamax the same way (:func:`resolve_cp_fused_attention`).
+CP_FUSED_ATTENTION_SITES: tuple[str, ...] = ("atom", "token")
+
+_CP_FUSED_ATTENTION: ContextVar[str] = ContextVar(
+    "foldjax_cp_fused_attention",
+    default="off",
+)
+
+
+def cp_fused_attention() -> str:
+    """The fused-attention sites the active scope opens under a mesh.
+
+    A scope rather than a keyword for the reason :func:`ring_tile_kernel`
+    gives: neither site is reachable from a signature a caller spells. The atom
+    one sits under ``atom_transformer_forward`` inside the diffusion module's
+    encoder and decoder, and the token one under every diffusion transformer
+    layer.
+    """
+
+    return _CP_FUSED_ATTENTION.get()
+
+
+def cp_fused_attention_sites(request: str | None = None) -> frozenset[str]:
+    """The site names ``request`` opens, validating its spelling.
+
+    ``None`` reads the active scope, so a site can ask this without knowing
+    whether its caller spelled the option.
+    """
+
+    name = cp_fused_attention() if request is None else str(request)
+    if name not in CP_FUSED_ATTENTION_REQUESTS:
+        raise ValueError(
+            f"cp_fused_attention must be one of {CP_FUSED_ATTENTION_REQUESTS}, "
+            f"got {name!r}"
+        )
+    if name == "off":
+        return frozenset()
+    return frozenset(name.split("+"))
+
+
+@contextmanager
+def cp_fused_attention_scope(request: str | None) -> Iterator[str]:
+    """Run the enclosed prediction with ``request``'s sites opened.
+
+    ``None`` is the default: the scope is still entered, so a caller need not
+    branch, and the value it publishes is the released ``off``.
+    """
+
+    name = "off" if request is None else str(request)
+    # Spelling is settled here rather than at the site, so a misspelling is an
+    # error before a featurizer runs.
+    cp_fused_attention_sites(name)
+    token = _CP_FUSED_ATTENTION.set(name)
+    try:
+        yield name
+    finally:
+        _CP_FUSED_ATTENTION.reset(token)
+
+
+def resolve_cp_fused_attention(site: str) -> bool:
+    """Whether ``site`` runs its fused kernel here; raise if it cannot.
+
+    Refused rather than downgraded, for the reason
+    :func:`resolve_ring_tile_kernel` states: a silent fallback would let two
+    machines run two different programs under one command.
+
+    There is deliberately no platform check, which is where this differs from
+    the ring's resolver. The ring pins tokamax's Triton implementation because
+    it needs the residual-returning entry point, so off a GPU it can only
+    raise. These two sites are not both in that position: the atom one goes
+    through ``tokamax.dot_product_attention`` with tokamax's own implementation
+    order -- the call the *serial* released diffusion attention already makes
+    -- and that order reaches a portable XLA implementation. So the dispatch,
+    the unchecked ``shard_map`` and the sharding contract are all executable by
+    a CPU gate. Which implementation a card selects is a census on the card,
+    and not a property this function could assert anyway.
+    """
+
+    if site not in CP_FUSED_ATTENTION_SITES:
+        raise ValueError(
+            f"cp_fused_attention site must be one of "
+            f"{CP_FUSED_ATTENTION_SITES}, got {site!r}"
+        )
+    request = cp_fused_attention()
+    if site not in cp_fused_attention_sites(request):
+        return False
+    if cp_mesh() is None:
+        raise RuntimeError(
+            f"cp_fused_attention={request!r} names context-parallel attention "
+            f"sites; the {site!r} site was reached with no mesh active"
+        )
+    if not tokamax_available():
+        raise RuntimeError(
+            f"cp_fused_attention={request!r} needs the tokamax package, "
+            "which did not import in this process"
+        )
+    return True
+
+
+def cp_fused_shard_map_options(fused: bool) -> dict[str, bool]:
+    """``shard_map`` keywords a fused site needs and a checked one does not.
+
+    The same bookkeeping :func:`_ring_shard_map_options` documents: a Pallas
+    kernel declares its outputs as :class:`jax.ShapeDtypeStruct` with no
+    ``manual_axis_type``, which ``check_vma=True`` requires of every output
+    produced inside a ``shard_map``, so the kernel raises out of the
+    partitioner before it computes anything.
+
+    An unfused site passes no keyword at all, so it calls ``shard_map`` the way
+    it called it before this option existed -- not ``check_vma=True``, which
+    would be a second spelling of one program.
+    """
+
+    return {"check_vma": False} if fused else {}
+
+
 def resolve_ring_tile_kernel(kernel: str | None) -> str:
     """Validate a tile-kernel request against what this process can run.
 
@@ -550,6 +681,7 @@ def tile_attention_tokamax(
     *,
     precision: jax.lax.Precision | None = None,
     implementation: str = RING_TOKAMAX_IMPLEMENTATION,
+    logits_scale: float = 1.0,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     """The same contract from tokamax's fused Triton attention.
 
@@ -578,6 +710,13 @@ def tile_attention_tokamax(
     tokamax's own XLA implementation. Both implementations go through
     `base.DotProductAttention.__call__`, so they share this contract; only the
     Triton one is a request the option can make.
+
+    ``logits_scale`` is `1.0` for the ring, whose callers divide the query by
+    ``sqrt(channels)`` in `project` before the tile ever sees it. The Boltz-2
+    diffusion token site (`_cp_atom.pair_bias_attention_2d`) does not: it
+    scales the logits, which is where tokamax applies this factor --
+    `softmax(logits_scale * q @ k.T + bias) @ v`, so the scaled product and
+    the bias meet in the same place the port's own einsum puts them.
     """
 
     if not tokamax_available():
@@ -615,9 +754,11 @@ def tile_attention_tokamax(
         value,
         bias=bias_b,
         mask=keys_valid,
-        # The ring's callers divide the query by sqrt(channels) in `project`,
-        # before the tile ever sees it. `AUTO` would apply it a second time.
-        logits_scale=1.0,
+        # Never `AUTO`, which would apply `1/sqrt(channels)` on top of whatever
+        # the caller already did: the ring's callers divide the query in
+        # `project` before the tile sees it, and the token site passes its own
+        # scale above.
+        logits_scale=logits_scale,
         logits_dtype=jnp.float32,
         precision=precision,
         normalize_output=False,

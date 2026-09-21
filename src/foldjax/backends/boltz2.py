@@ -124,6 +124,17 @@ def _ring_tile_kernel_scope(kernel: object):
     return ring_tile_kernel_scope(None if kernel is None else str(kernel))
 
 
+def _cp_fused_attention_scope(request: object):
+    """Enter the context-parallel fused-attention scope for one prediction.
+
+    Imported lazily for the same reason the ring scope above is.
+    """
+
+    from foldjax.models._cp_attention import cp_fused_attention_scope
+
+    return cp_fused_attention_scope(None if request is None else str(request))
+
+
 def _native_module():
     """Import the Boltz-2 port and resolve its lazy prediction entry point.
 
@@ -306,6 +317,11 @@ def _padding_shape_profile(metadata: object) -> dict[str, object] | None:
 #: spellings are the same tuple, so the copy cannot drift.
 _RING_TILE_KERNELS: tuple[str, ...] = ("xla", "tokamax")
 
+#: The context-parallel fused-attention sites a request may ask for, copied
+#: here for the reason above and pinned against the model tuple by the same
+#: test.
+_CP_FUSED_ATTENTION_REQUESTS: tuple[str, ...] = ("off", "atom", "token", "atom+token")
+
 
 _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "num_steps": 200,
@@ -348,6 +364,9 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     # The shipped 2-D ring body. Named here so an explicit `xla` shares the
     # namespace an omitted option selects, and only `tokamax` forks.
     "triangle_attention_ring_kernel": "xla",
+    # The same shape one level over: `off` is what a context-parallel run
+    # ships, so spelling it must select the namespace omitting it selects.
+    "cp_fused_attention": "off",
     "glu_backend": "tokamax",
     "deterministic": False,
     "msa_deletions": "released",
@@ -425,6 +444,10 @@ class Boltz2Backend(Backend):
             # confidence -- would otherwise grow an argument none of them
             # reads. It is popped below, before the native call.
             "triangle_attention_ring_kernel",
+            # The same: two context-parallel diffusion attentions, neither
+            # reachable from a signature, both entered through a scope that
+            # `predict` opens. Popped below, before the native call.
+            "cp_fused_attention",
             "trunk_atom_attention_backend",
             "use_msa_server",
             "write_fmt",
@@ -494,6 +517,12 @@ class Boltz2Backend(Backend):
         # lives in a ContextVar that no jit cache key carries -- one value per
         # process, which is how the experiment runs its arms.
         "triangle_attention_ring_kernel",
+        # Different kernels at two diffusion attentions, so different
+        # programs and different arithmetic. It forks the compilation-cache
+        # namespace for that reason; like the ring kernel above it lives in a
+        # ContextVar that no jit cache key carries, so the retained
+        # in-process runner does not fork on it -- one value per process.
+        "cp_fused_attention",
         "deterministic",
         # Two policies, two programs: it sets the `precision` attribute on
         # every float32 dot in the graph, the cuEquivariance triangle-
@@ -880,6 +909,29 @@ class Boltz2Backend(Backend):
                     "context-parallel triangle-attention ring; it needs "
                     "cp_layout=2d on a perfect-square cp_devices"
                 )
+        fused_attention = options.get("cp_fused_attention")
+        if fused_attention is not None:
+            if fused_attention not in _CP_FUSED_ATTENTION_REQUESTS:
+                raise ValueError(
+                    "cp_fused_attention must be one of "
+                    f"{_CP_FUSED_ATTENTION_REQUESTS}"
+                )
+            # Whether tokamax imports and what a card selects are trace-time
+            # questions (`_cp_attention.resolve_cp_fused_attention`); asking
+            # here would initialise a JAX backend inside `foldjax plan`. What
+            # is settled here is whether the sites exist at all.
+            layout = square_grid_cp_layout(options)
+            if fused_attention != "off" and layout is None:
+                raise ValueError(
+                    "cp_fused_attention names context-parallel diffusion "
+                    "attention sites; it needs cp_devices greater than 1"
+                )
+            if "token" in str(fused_attention).split("+") and layout != "2d":
+                raise ValueError(
+                    "cp_fused_attention=...token names the diffusion token "
+                    "attention, which exists only under the 2-D layout; it "
+                    "needs cp_layout=2d on a perfect-square cp_devices"
+                )
         if "attention_backend" in options and options["attention_backend"] not in {
             "tokamax",
             "xla",
@@ -1080,6 +1132,10 @@ class Boltz2Backend(Backend):
         # triangle-attention ring, and the only signature that could carry it
         # is the ring's own.
         ring_tile_kernel = options.pop("triangle_attention_ring_kernel", None)
+        # And one level over: these name two context-parallel diffusion
+        # attentions, and the signatures that could carry them are the atom
+        # adapter's and the token tile's.
+        fused_attention = options.pop("cp_fused_attention", None)
         mols = options.pop("mols", None) or _default_mols(request.weights)
         if mols is None:
             raise ValueError(
@@ -1129,7 +1185,11 @@ class Boltz2Backend(Backend):
         )
         if self._session_active:
             native_options["_runtime"] = self
-        with matmul_precision(), _ring_tile_kernel_scope(ring_tile_kernel):
+        with (
+            matmul_precision(),
+            _ring_tile_kernel_scope(ring_tile_kernel),
+            _cp_fused_attention_scope(fused_attention),
+        ):
             output = native.predict(**native_options)
         if request.stop_after in {"inputs", "trunk"}:
             # Nothing was folded, so there are no samples to describe.

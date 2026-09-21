@@ -43,6 +43,16 @@ from foldjax.models._cp import (
     permute,
     transpose_perm,
 )
+from foldjax.models._cp_attention import (
+    # The exact rescale `merge_softmax_statistics` folds a tile onto a running
+    # maximum with, imported rather than respelled: it is where the `-inf`
+    # empty-block and `+inf` block contracts live, and a second copy of those
+    # two `jnp.where`s is a second place for them to drift.
+    _softmax_rescale,
+    cp_fused_shard_map_options,
+    resolve_cp_fused_attention,
+    tile_attention_tokamax,
+)
 
 
 def atom_window_misalignment(
@@ -819,6 +829,81 @@ def gather_token_pairs_to_atom_windows_cp(
     )
 
 
+def _fused_token_tile_2d(
+    q_local: jax.Array,
+    k_local: jax.Array,
+    v_local: jax.Array,
+    bias_local: jax.Array,
+    mask_local: jax.Array,
+    *,
+    scale: float,
+    out_dtype: jnp.dtype,
+) -> jax.Array:
+    """One column tile through the fused kernel, merged over ``cp_col``.
+
+    The same distributed softmax as the checked body above, with the tile's
+    three statistics coming out of a kernel instead of out of a materialised
+    ``[B, heads, T, S]`` logit tensor. A device holds one key tile, not a
+    rotation of them, so the merge is the collective itself:
+
+    * the kernel normalises its tile against the tile's own maximum;
+    * ``pmax`` over ``cp_col`` gives the global row maximum;
+    * :func:`_softmax_rescale` puts this tile's numerator and denominator onto
+      that maximum -- the identical expression
+      ``merge_softmax_statistics`` uses, so the ``-inf`` empty-tile contract is
+      the ring's and not a second one;
+    * ``psum`` sums the rescaled pairs. An all-reduce gives every ``cp_col``
+      participant the same bytes, so the ``out_specs`` promise that the result
+      is replicated along that axis holds exactly -- which is what the
+      unchecked ``shard_map`` this runs inside no longer verifies.
+
+    Two differences from the checked body, both inherited from the tile
+    contract rather than chosen here:
+
+    * a tile whose every key is masked away contributes nothing, because
+      :func:`tile_attention_tokamax` forces it back to ``(-inf, 0, 0)``.
+      Tokamax masks with ``finfo.min``, so without that forcing an empty tile
+      would come back as a finite maximum over absent keys and outvote a
+      neighbouring tile that has keys;
+    * a ``+inf`` logit, which the checked body carries through an explicit
+      ``isposinf`` branch, is not part of this contract. Boltz-2's diffusion
+      pair bias is a projection output and finite.
+    """
+
+    # [B, T, H, D] -> the tile contract's [B, H, T, D].
+    q_tile = jnp.swapaxes(q_local, 1, 2)
+    k_tile = jnp.swapaxes(k_local, 1, 2)
+    v_tile = jnp.swapaxes(v_local, 1, 2)
+    # The tile takes an additive mask bias and reads `>= 0` as valid; the
+    # caller's mask is a 0/1 float over keys. `-inf` rather than a finite
+    # surrogate for the same reason the checked body gives.
+    key_valid = mask_local[:, None, None, :].astype(bool)
+    mask_bias = jnp.where(
+        key_valid,
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(-jnp.inf, dtype=jnp.float32),
+    )
+    block_output, block_maximum, block_normalizer = tile_attention_tokamax(
+        q_tile,
+        k_tile,
+        v_tile,
+        bias_local.astype(jnp.float32),
+        mask_bias,
+        logits_scale=float(scale),
+    )
+    maximum = jax.lax.pmax(block_maximum, CP_COL_AXIS)
+    rescale = _softmax_rescale(block_maximum, maximum)
+    denominator = jax.lax.psum(block_normalizer * rescale, CP_COL_AXIS)
+    numerator = jax.lax.psum(block_output * rescale, CP_COL_AXIS)
+    tiny = jnp.asarray(jnp.finfo(jnp.float32).tiny, dtype=jnp.float32)
+    out = jnp.where(
+        denominator > 0,
+        numerator / jnp.maximum(denominator, tiny),
+        jnp.zeros_like(numerator),
+    )
+    return jnp.swapaxes(out, 1, 2).astype(out_dtype)
+
+
 def pair_bias_attention_2d(
     query: jax.Array,
     key: jax.Array,
@@ -834,6 +919,10 @@ def pair_bias_attention_2d(
     Q stays on pair rows.  A grid transpose changes row-sharded K/V/mask into
     pair-column ownership, then fp32 max/sum reductions over ``cp_col`` perform
     the distributed softmax.
+
+    ``cp_fused_attention`` naming the ``token`` site replaces only the local
+    tile with a fused kernel (:func:`_fused_token_tile_2d`); the transpose, the
+    ownership, the collectives and their order are the same program.
     """
 
     if cp_layout() != "2d":
@@ -849,6 +938,8 @@ def pair_bias_attention_2d(
     if query.ndim != 4 or pair_bias.ndim != 4 or key_mask.ndim != 2:
         raise ValueError("expected Q/K/V [B,T,H,D], bias [B,H,T,T], mask [B,T]")
 
+    fused = resolve_cp_fused_attention("token")
+
     qkv_spec = atom_spec(4, atom_axis=1)
     mask_spec = atom_spec(2, atom_axis=1)
     bias_spec = PartitionSpec(None, None, CP_ROW_AXIS, CP_COL_AXIS)
@@ -858,6 +949,17 @@ def pair_bias_attention_2d(
         k_local = permute(k_local, transpose)
         v_local = permute(v_local, transpose)
         mask_local = permute(mask_local, transpose)
+
+        if fused:
+            return _fused_token_tile_2d(
+                q_local,
+                k_local,
+                v_local,
+                bias_local,
+                mask_local,
+                scale=scale,
+                out_dtype=value.dtype,
+            )
 
         logits = jnp.einsum(
             "bqhd,bkhd->bhqk",
@@ -907,4 +1009,5 @@ def pair_bias_attention_2d(
         mesh=mesh,
         in_specs=(qkv_spec, qkv_spec, qkv_spec, bias_spec, mask_spec),
         out_specs=qkv_spec,
+        **cp_fused_shard_map_options(fused),
     )(query, key, value, pair_bias, key_mask)

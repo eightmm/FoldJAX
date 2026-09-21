@@ -20,6 +20,10 @@ from foldjax.models._cp_atom import (
     single_to_keys_local,
     window_spec,
 )
+from foldjax.models._cp_attention import (
+    cp_fused_shard_map_options,
+    resolve_cp_fused_attention,
+)
 from foldjax.models._stacking import take_layers
 from foldjax.models.boltz2.data.ownership import (
     ATOM_TO_TOKEN_INDEX,
@@ -733,7 +737,24 @@ def _atom_transformer_forward_cp(
     eps: float,
     attention_backend: str,
 ) -> jnp.ndarray:
-    """Run each device's owned query windows with neighbour halo exchange."""
+    """Run each device's owned query windows with neighbour halo exchange.
+
+    ``cp_fused_attention`` naming the ``atom`` site runs the pair-bias
+    attention inside this body with the same fused kernel the *serial*
+    released diffusion attention runs (`diffusion_attention_backend`), and
+    nothing else changes. It is legal here and nowhere else under this mesh
+    because every attention below is window-local: a query window's
+    ``[B*W, 32, D]`` queries meet the ``[B*W, 128, D]`` keys
+    :func:`single_to_keys_local` has already halo-exchanged into this shard,
+    with the bias row and key mask that belong to them. The kernel therefore
+    sees no operand a neighbour owns, and the collective that made that true
+    ran before it.
+
+    What the option does *not* touch is how this shard came to exist. The
+    alignment refusal inside ``local`` still fires first and with the same
+    message, so a target the port leaves replicated is still refused here
+    rather than folded into a fused arm.
+    """
 
     mesh = cp_mesh()
     if mesh is None:
@@ -746,6 +767,14 @@ def _atom_transformer_forward_cp(
     h_keys = attn_window_keys
     axis_name = atom_axis_name()
     rows = cp_row_shards()
+    fused = resolve_cp_fused_attention("atom")
+    # `tokamax` and not `triton`: the scoped `triton` spelling requires
+    # bfloat16 q/k/v/bias, which the released float32 diffusion does not have,
+    # and `tokamax` is the call `diffusion_attention_backend` already makes at
+    # this site without a mesh. Under a mesh the base knob is refused at every
+    # entry (`models/predict.py`), so `attention_backend` here is `xla` and
+    # this is the only thing that selects a kernel.
+    site_backend = "tokamax" if fused else attention_backend
 
     def local(params_l, q_l, c_l, bias_l, mask_l):
         batch, local_atoms, dim = q_l.shape
@@ -787,7 +816,7 @@ def _atom_transformer_forward_cp(
             to_keys=to_keys_local,
             multiplicity=1,
             eps=eps,
-            attention_backend=attention_backend,
+            attention_backend=site_backend,
         )
         return out.reshape(batch, local_atoms, dim)
 
@@ -802,6 +831,7 @@ def _atom_transformer_forward_cp(
             atom_spec(2, atom_axis=1),
         ),
         out_specs=atom_spec(3, atom_axis=1),
+        **cp_fused_shard_map_options(fused),
     )(params, q, c, bias, mask)
 
 

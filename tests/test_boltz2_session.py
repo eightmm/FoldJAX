@@ -384,6 +384,15 @@ def test_cache_defaults_are_pinned_to_the_native_predict_signature() -> None:
 
     assert released.pop("triangle_attention_ring_kernel") == ring_tile_kernel()
     assert "triangle_attention_ring_kernel" not in signature.parameters
+    # `cp_fused_attention` is the third, and the same case again: it names two
+    # context-parallel diffusion attention *sites*, so the signatures that
+    # could carry it are the atom adapter's and the token tile's, and it
+    # travels in a ContextVar from `Boltz2Backend.predict`. Read from the
+    # scope, not restated.
+    from foldjax.models._cp_attention import cp_fused_attention
+
+    assert released.pop("cp_fused_attention") == cp_fused_attention()
+    assert "cp_fused_attention" not in signature.parameters
 
     actual = {name: signature.parameters[name].default for name in released}
 

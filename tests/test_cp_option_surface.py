@@ -204,3 +204,132 @@ def test_the_shipped_body_shares_the_namespace_omitting_it_selects(
 
     assert profile(triangle_attention_ring_kernel="xla") == profile()
     assert profile(triangle_attention_ring_kernel="tokamax") != profile()
+
+
+#: The one port whose backend declares `cp_fused_attention`. It names two
+#: *Boltz-2* diffusion attention sites -- the halo-exchanged atom windows and
+#: the grid-transposed token tile -- and the other square-grid ports reach
+#: neither through this port's adapters, so offering them the word would
+#: advertise a site no request could reach.
+FUSED_ATTENTION_MODELS = ("boltz2",)
+
+
+def _fused_request(model: str, job, value: str, **extra) -> PredictionRequest:
+    request = _request(model, job)
+    options = dict(request.options)
+    options["cp_fused_attention"] = value
+    options.update(extra)
+    return PredictionRequest(
+        model=model,
+        input=request.input,
+        weights=request.weights,
+        options=options,
+    )
+
+
+def test_the_fused_attention_vocabulary_is_the_model_s_own() -> None:
+    """Two copies of one tuple, compared rather than trusted.
+
+    The same invariant as the ring kernel's above and for the same reason: the
+    backend must stay import-time JAX-free, so it cannot import the module
+    that owns the vocabulary.
+    """
+
+    from foldjax.backends import boltz2
+    from foldjax.models._cp_attention import CP_FUSED_ATTENTION_REQUESTS
+
+    assert boltz2._CP_FUSED_ATTENTION_REQUESTS == CP_FUSED_ATTENTION_REQUESTS
+
+
+@pytest.mark.parametrize("model", FUSED_ATTENTION_MODELS)
+@pytest.mark.parametrize("value", ["off", "atom", "token", "atom+token"])
+def test_every_fused_attention_site_is_reachable_while_planning(
+    model: str,
+    value: str,
+    job,
+) -> None:
+    """Accepted while planning, on a 2-D request, without a GPU in sight.
+
+    Whether this machine has tokamax at all is a trace-time question and
+    deliberately not asked here; planning must not initialise a backend.
+    """
+
+    resolve_request(_fused_request(model, job, value))
+
+
+@pytest.mark.parametrize("model", FUSED_ATTENTION_MODELS)
+def test_a_fused_attention_site_outside_the_vocabulary_is_refused(
+    model: str,
+    job,
+) -> None:
+    with pytest.raises(ValueError, match="cp_fused_attention"):
+        resolve_request(_fused_request(model, job, "tokamax"))
+    with pytest.raises(ValueError, match="cp_fused_attention"):
+        resolve_request(_fused_request(model, job, "token+atom"))
+
+
+@pytest.mark.parametrize("model", FUSED_ATTENTION_MODELS)
+def test_the_fused_sites_are_refused_without_the_mesh_they_live_on(
+    model: str,
+    job,
+) -> None:
+    """A serial run has neither site; a 1-D one has no token tile.
+
+    Accepting either there would compile the shipped program under a name that
+    says a fused kernel ran.
+    """
+
+    with pytest.raises(ValueError, match="cp_devices greater than 1"):
+        resolve_request(
+            _fused_request(model, job, "atom", cp_devices=1, cp_layout="auto")
+        )
+    with pytest.raises(ValueError, match="cp_layout=2d"):
+        resolve_request(_fused_request(model, job, "token", cp_layout="1d"))
+    with pytest.raises(ValueError, match="cp_layout=2d"):
+        resolve_request(_fused_request(model, job, "atom+token", cp_layout="1d"))
+    # The atom windows do exist on the 1-D mesh, so that half is not refused
+    # for the layout.
+    resolve_request(_fused_request(model, job, "atom", cp_layout="1d"))
+
+
+@pytest.mark.parametrize(
+    "model",
+    [name for name in SQUARE_GRID_MODELS if name not in FUSED_ATTENTION_MODELS],
+)
+def test_a_port_without_the_fused_sites_refuses_the_option(model: str, job) -> None:
+    with pytest.raises(ValueError, match="cp_fused_attention"):
+        resolve_request(_fused_request(model, job, "atom"))
+
+
+@pytest.mark.parametrize("model", FUSED_ATTENTION_MODELS)
+def test_the_released_fused_value_shares_the_namespace_omitting_it_selects(
+    model: str,
+    job,
+    tmp_path,
+) -> None:
+    """`off` is what a context-parallel run ships, so spelling it must not fork
+    the cache. Each site is a different program, so each of the others must."""
+
+    backend = get_backend(model)
+
+    def profile(**options):
+        request = _request(model, job)
+        merged = {**request.options, **options}
+        return backend.cache_profile(
+            PredictionRequest(
+                model=model,
+                input=request.input,
+                weights=request.weights,
+                output_dir=tmp_path / "out",
+                options=merged,
+            )
+        )
+
+    assert profile(cp_fused_attention="off") == profile()
+    digests = {
+        value: profile(cp_fused_attention=value)
+        for value in ("atom", "token", "atom+token")
+    }
+    for value, digest in digests.items():
+        assert digest != profile(), value
+    assert len({str(sorted(d.items())) for d in digests.values()}) == 3
