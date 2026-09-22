@@ -1911,7 +1911,16 @@ latency: `resolve_ring_row_block` narrows the row block to 64 rows at
 one ring step runs 16 (67) small tiles and their merges where the card
 has tens of gigabytes to spare. The unblocked ring
 (`triangle_attention_q_chunk=0`, the one spelling that escapes the rule)
-is the next measurement; a budget-aware block is the fix.
+settled it the other way: 596.3 s / 8,631 MiB against the 64-row block's
+601.8 s / 7,731 — under one percent of wall for 900 MiB — so the ring is
+not launch-bound and the row block stays. The cost is the tile kernel on
+the local problem (215 ms for 1,048 rows against two 1,048-key blocks,
+where cuEquivariance's fused triangle attention does the whole
+2,096 × 2,096 problem in 39 ms on one card). The lever that follows is
+not a better ring but no ring: gather each row block's key tile along
+the column axis (64 × 2,096 × 128 bf16, 33 MiB) and run the fused
+triangle attention on the block with full keys — a design for the next
+round.
 
 **Boltz-2 at 6,568 tokens, the tile, and the default.** The fused-ring
 grid row (`b87731f`, the MSA module's ring now reading the option too)
