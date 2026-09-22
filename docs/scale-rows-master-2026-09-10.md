@@ -1880,8 +1880,16 @@ basin the grid's rounding tape reached on a chaotic target, not a fault
 the grid introduces at that size; `auto → 2d` stays, and ESMFold2's CP
 arms on 6ZTX are recorded across two seeds and two layouts.
 
-**Still open on the node**: Boltz-2 6,568 tokens on the grid, XLA and
-fused ring (rows 2099/2100, 10 h each) — the last unmeasured ceiling.
+**Boltz-2 at 6,568 tokens, completed.** The grid row on `10b3fd1`
+(MSA depth over the column axis and every Boltz-2 grid fix above)
+completed both passes: 17,930 s (4 h 59 min) / 50,904 MiB per device for
+five structures, where one card asks 130 GiB and the earlier attempt
+timed out at 4 h. With that, every port completes its largest case on
+the four-card node: Protenix 6,568 tokens (1-D, 44.4 GiB), OpenFold3
+6,568 (2-D, 42.2 GiB), Boltz-2 6,568 (2-D, 50.9 GiB), OpenDDE 3,012
+residues (2-D, 64.3 GiB), ESMFold2 4,100 tokens (2-D, 37.4 GiB). The
+fused-ring arm of the same row, and the per-family wall split at 2,096
+and 6,568 tokens that says where Boltz-2's five hours go, are queued.
 
 ### Boltz-2, 2,096 tokens (5DEI)
 
