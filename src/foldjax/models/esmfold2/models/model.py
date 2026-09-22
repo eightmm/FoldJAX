@@ -503,9 +503,28 @@ def _token_bonds_encoding(
 
 
 def _distogram_logits(z: jnp.ndarray, params: Params) -> jnp.ndarray:
-    """The native symmetric-pair distogram returned by the direct API."""
+    """The native symmetric-pair distogram returned by the direct API.
 
-    return linear(z + jnp.swapaxes(z, -2, -3), params, "distogram_head")
+    `z` arrives in the trunk's own dtype and both addends are widened here,
+    which is the same sum as widening `z` once: transposing and converting
+    commute exactly, so this is bit-identical to the float32 copy the caller
+    used to make. Two separate converts rather than one shared value, because
+    a value read twice is one XLA can decide to materialise -- and at full
+    pair width that is the float32 buffer this spelling exists to avoid.
+
+    Not blocked by rows. The sum is a `dot` operand, so a row block would
+    reach the projection at a different GEMM shape, and the tiling that comes
+    with it is not bit-identical. The result is a returned model output, and
+    the sum is a transient here rather than something the sampler or the
+    confidence loop carries, so the trade goes the other way than it does in
+    `diffusion.condition_pair`.
+    """
+
+    return linear(
+        z.astype(jnp.float32) + jnp.swapaxes(z, -2, -3).astype(jnp.float32),
+        params,
+        "distogram_head",
+    )
 
 
 def inputs_embedding(
@@ -1653,10 +1672,22 @@ def predict(
     # Upstream's `z = z.float()`, which closes the autocast region. Everything
     # after this -- the distogram head, the sampler, the confidence head -- is
     # float32, bar the two sub-regions that open their own bfloat16 block.
-    z = shard_pair_rows(z.astype(jnp.float32))
+    #
+    # The arithmetic is float32; the *storage* of the two quadratic tensors is
+    # not. Widening bfloat16 is exact, so a float32 tensor built here by
+    # `astype` holds only bfloat16-representable values: every consumer that
+    # widens before its own first float32 operation computes bit-identically
+    # from bfloat16 storage, and each one below does (`_distogram_logits`
+    # widens both addends, `diffusion._condition_pair_body` widens inside its
+    # row block, `heads.confidence_head` widens into its entry norm and its
+    # `_as`). Built here instead, the float32 copy is what the diffusion and
+    # confidence loops *carry*: the trunk pair and the relative position
+    # encoding were two full-width float32 buffers co-live at the measured
+    # 2,096-token peak, 4,290 MiB each there and 8.85 GB each at 3,012
+    # tokens. A float32 `trunk_dtype` leaves all three already wide, so this
+    # is the released bfloat16 path's saving and no other path's change.
+    z = shard_pair_rows(z)
     x_inputs = x_inputs.astype(jnp.float32)
-    rel_pos = rel_pos.astype(jnp.float32)
-    token_bonds_encoding = token_bonds_encoding.astype(jnp.float32)
 
     distogram_logits = _distogram_logits(z, params) if return_distogram_logits else None
 
@@ -1714,7 +1745,17 @@ def predict(
         )
 
     x_inputs = _capture.capture("single", x_inputs)
-    z = _capture.capture("pair", z)
+    # The exported pair keeps the float32 the boundary above used to give it:
+    # the tap and the representation are what a comparison harness reads, and
+    # a narrower dtype there would be a changed output rather than a changed
+    # buffer. Built only when one of the two asks for it, so the released
+    # program -- neither of which it runs -- keeps the bfloat16 storage.
+    exported_pair = (
+        z.astype(jnp.float32)
+        if "pair" in _capture.wanted() or "pair" in return_representations
+        else z
+    )
+    _capture.capture("pair", exported_pair)
 
     if stop_after_trunk:
         # The representations exist; the sampler and the confidence head are
@@ -1724,7 +1765,7 @@ def predict(
             for name, value in (
                 ("single_inputs", x_inputs),
                 ("single", x_inputs),
-                ("pair", z),
+                ("pair", exported_pair),
             )
             if name in return_representations
         }
@@ -1744,7 +1785,7 @@ def predict(
         for name, value in (
             ("single_inputs", x_inputs),
             ("single", x_inputs),
-            ("pair", z),
+            ("pair", exported_pair),
         )
         if name in return_representations
     }

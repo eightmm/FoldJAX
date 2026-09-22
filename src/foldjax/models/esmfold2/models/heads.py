@@ -144,8 +144,17 @@ def _scatter_sum(
 
 
 def _as(x: jnp.ndarray, narrow: bool) -> jnp.ndarray:
-    """`x` at the re-embedding's working width."""
-    return x.astype(jnp.bfloat16) if narrow else x
+    """`x` at the re-embedding's working width, whatever width it arrives at.
+
+    The wide arm converts rather than passing through: the two encodings reach
+    this head in the trunk's own dtype, which is bfloat16 on the released
+    path, and the accumulator they are added to is float32. Promotion would
+    give the same sum -- widening bfloat16 is exact -- but the width a term
+    computes at is stated here rather than inferred from the operand that
+    happens to be widest, which is the mistake this file's own comment about
+    the encodings records.
+    """
+    return x.astype(jnp.bfloat16 if narrow else jnp.float32)
 
 
 def confidence_head(
@@ -243,7 +252,20 @@ def confidence_head(
         params[f"{dot}s_inputs_norm.weight"],
         params[f"{dot}s_inputs_norm.bias"],
     )
-    pair = layer_norm(z, params[f"{dot}z_norm.weight"], params[f"{dot}z_norm.bias"])
+    # Widened into the norm, not before it: `z` reaches this head in the
+    # trunk's own dtype -- bfloat16 on the released path -- and `layer_norm`
+    # returns *its input's* dtype, so a bfloat16 `z` handed straight in would
+    # round the re-embedding's accumulator at its first term. The convert is
+    # the caller's old `z.astype(jnp.float32)` moved to the one consumer that
+    # needs a float32 `z`, and it is exact, so the norm reduces over the same
+    # values it always did. Nothing here is a wider buffer than before: this
+    # convert dies at the norm, while the copy it replaces was what the
+    # confidence sample loop carried across every trip.
+    pair = layer_norm(
+        z.astype(jnp.float32),
+        params[f"{dot}z_norm.weight"],
+        params[f"{dot}z_norm.bias"],
+    )
     if narrow:
         # The pair accumulator, AlphaFold 3's `pair_act.astype(dtype)`. Both
         # entry norms keep float32 statistics and float32 affine parameters --
@@ -296,6 +318,18 @@ def confidence_head(
     dist_bin_embed = _as(params[f"{dot}dist_bin_pairwise_embed.weight"], narrow)
     # Born sharded under context parallelism, before the head's own trunk:
     # `spread` just repeated it once per sample.
+    #
+    # Under the default this is a full-width float32 value that stays live
+    # across the whole of the head's own trunk, because it is both that
+    # trunk's input and the left operand of the residual below -- 4,290 MiB at
+    # 2,096 tokens, the largest single tenant of the measured peak. It is not
+    # narrowable to bfloat16 storage the way `z` above is: `folding_trunk`
+    # under `native_autocast` returns its input's width from every norm, so a
+    # bfloat16 pair carries a bfloat16 residual stream through every block,
+    # and the residual add below would then round its left operand too.
+    # Neither is bit-identical, which is what makes narrowing it an opt-in
+    # (`confidence_dtype="bfloat16"`, the `narrow` arm above) rather than a
+    # storage change like the boundary in `model.predict`.
     pair = shard_pair_rows(pair + dist_bin_embed[bins])
 
     pair_mask = mask[:, :, None] * mask[:, None, :]

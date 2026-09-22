@@ -348,6 +348,73 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **ESMFold2's trunk pair and relative position encoding stay bfloat16 across
+  the float32 boundary.** Upstream's `z = z.float()` closes the autocast
+  region before the distogram head, the sampler and the confidence head, and
+  this port realised it as a float32 copy of the whole pair. A GPU peak-live
+  attribution at 2,096 tokens found that copy and the relative position
+  encoding's as two of the three largest tenants of the peak -- 4,290 MiB
+  each, 8.85 GB each at 3,012 tokens -- because both are what the confidence
+  head's sequential sample loop *carries*, and a loop carry is a buffer no
+  fusion can shorten. The token-bond encoding is the third, and full width too
+  whenever `compact_token_bond_encoding` is off; the attributed run had it on,
+  where that term is `f32[256]`.
+
+  The arithmetic is unchanged; only the storage moved. Widening bfloat16 is
+  exact, so a float32 tensor built there by `astype` holds only
+  bfloat16-representable values, and each consumer now widens at the point
+  its own float32 arithmetic starts: `_distogram_logits` widens both addends
+  of `z + zᵀ` (two converts rather than one shared value, so neither is a
+  full-width float32 buffer with two readers), `diffusion.condition_pair`
+  already widened inside its row block and now receives the narrow tensor,
+  and the confidence head widens into its entry layer norm -- which returns
+  its *input's* width, so handing it bfloat16 directly would have rounded the
+  re-embedding's accumulator at its first term. The head's two encoding
+  addends go through `_as`, whose wide arm now converts rather than relying on
+  promotion.
+
+  Bit-identical, not merely close, and measured as such: every output of
+  `predict` -- coordinates, distogram logits, pLDDT/PAE/PDE/resolved logits
+  and their scores, pTM, ipTM and the per-chain matrix -- is byte-identical to
+  the previous spelling with the released checkpoint on CPU at 254 and 499
+  tokens, under both `confidence_dtype` values, with the `pair` representation
+  requested. Those two runs cut the schedule to fit CPU -- two trunk layers,
+  one LM-encoder layer, one recycle, two structures, three diffusion steps,
+  with the coda and the confidence trunk at their released depths -- so the
+  released 48-layer, 200-step, five-sample configuration is covered instead by
+  the stored 1UBQ tape replay in `tests/parity`, whose coordinate residual is
+  unchanged. The same comparison over a run that *does* round in that region
+  (`confidence_dtype="bfloat16"`) moves 14 of 19 outputs and up to 0.77 of
+  pLDDT, which is what makes the agreement a measurement.
+
+  Two places keep float32 on purpose. The `pair` representation and the pair
+  tap are outputs rather than buffers, so they are widened where the result
+  dictionary is built and only when one of them is asked for. And the
+  confidence head's own re-embedding still accumulates in a full-width float32
+  value that lives across its trunk: that trunk returns its input's width from
+  every norm, so a bfloat16 pair there carries a bfloat16 residual stream
+  through every block and the residual add would round its left operand too.
+  Neither is bit-identical, which is why narrowing it stays the opt-in
+  `confidence_dtype="bfloat16"` rather than joining this change.
+
+  `_distogram_logits` is deliberately not blocked by rows, unlike the pair
+  conditioning: its float32 sum is a `dot` operand, so a row block would
+  reach the projection at a different GEMM shape and the tiling that comes
+  with it is not bit-identical -- and the sum is a transient before the
+  sampler rather than something a loop carries.
+
+  Measured compile-only on CPU with the released layer counts and the
+  five-sample, 200-step, ten-recycle schedule, `temp_size_in_bytes` moves
+  +37.0 MiB at 254 tokens, 0 at 499 and -811.2 MiB (-5.0%) at 1,003; the
+  optimized entry computation's full-width float32 pair values go 17 to 16 at
+  499 and 1,003 tokens, and 17 to 18 at 254. The small-size rise is the
+  regime where
+  `condition_pair` is still unblocked -- below about 362 tokens its budget
+  leaves the rows whole -- so that consumer reads the pair at full width and
+  the CPU backend re-materialises one float32 copy for it while the bfloat16
+  one is also live. Above that threshold the conditioning slices its rows and
+  the copy has no second reader. Card numbers are not claimed here.
+
 - **ESMFold2's normalised pair operands are stored bfloat16 past the layer
   norm.** Native autocast leaves LayerNorm in float32, and three of this
   port's norms read a pair tensor: the triangle block's `norm_start` and
