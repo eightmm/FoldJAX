@@ -70,13 +70,16 @@ unless it says so here, in its own paragraph.
   the tiles are combined by a softmax-statistics merge that carries Neumaier
   compensation on both. The tile never materialises its score tensor.
 
-  This is a different program and different arithmetic from the default, not a
-  faster spelling of it: one rotation instead of two, each tile normalised
-  against its own maximum, and a query row with no valid key anywhere in the
-  ring coming out as zeros. `xla` remains the default and every recorded 2-D
-  measurement still describes it. **No wall time or peak has been measured
-  yet**; the option ships with its merge proved on CPU against a dense softmax
-  and with nothing measured on a card. It is GPU-only and refuses rather than
+  This is a different program and different arithmetic from the two-pass ring,
+  not a faster spelling of it: one rotation instead of two, each tile
+  normalised against its own maximum, and a query row with no valid key
+  anywhere in the ring coming out as zeros. `xla` remained the default on both
+  ports when this landed and every recorded 2-D measurement described it.
+  **No wall time or peak had been measured yet**; the option shipped with its
+  merge proved on CPU against a dense softmax and with nothing measured on a
+  card. The four-card rows arrived later in the same release and Boltz-2's
+  default moved with them; the Changed entry for the ring tile in this release
+  is that flip, and Protenix is still opt-in for the reason recorded there. It is GPU-only and refuses rather than
   falls back: without the GPU backend, without tokamax, or without a 2-D
   layout to be a body of, it raises. It forks the compilation-cache namespace;
   it does not fork the retained in-process runner, because the value travels
@@ -180,11 +183,12 @@ unless it says so here, in its own paragraph.
   platform refusals, and the unchecked `shard_map` the Pallas tile needs,
   reach both.
 
-  **The measured rows for this option predate the fix and therefore describe
-  94% of the ring**: Boltz-2 5DEI at 2,096 tokens on the 2x2 grid, 617.9 s
-  against the XLA grid's 943.4 s at the same peak and the same deposited
-  distances, was fused in the trunk only. What the MSA passes add is
-  unmeasured, and the option stays opt-in.
+  **The rows measured before this fix therefore describe 94% of the ring**:
+  Boltz-2 5DEI at 2,096 tokens on the 2x2 grid, 617.9 s against the XLA grid's
+  943.4 s at the same peak and the same deposited distances, was fused in the
+  trunk only. The whole ring was measured afterwards -- 601.8 s at 7,731 MiB
+  on the same target -- and that is what Boltz-2's default now rests on; see
+  the Changed entry for the ring tile in this release.
 
   With the option at its default `xla` nothing moves: both ring entries at
   both triangle directions, and the MSA stack in both of its layer spellings,
@@ -423,6 +427,67 @@ unless it says so here, in its own paragraph.
   `ModelConfig(msa_depth=...)`, since padding no longer chooses a depth.
 
 ### Changed
+
+- **Boltz-2's two-dimensional ring evaluates its tiles with the fused kernel
+  unless asked not to.** On a GPU that has tokamax, with the resolved layout
+  the square grid, an omitted `triangle_attention_ring_kernel` is now
+  `tokamax`; `--option triangle_attention_ring_kernel=xla` keeps the two-pass
+  ring. Serial and one-dimensional runs are untouched, because the tile is a
+  body of the 2-D ring and those have no ring; so are CPU runs and builds
+  without tokamax, which resolve to `xla` silently. Protenix keeps `xla`, and
+  the Added entry above -- which shipped this option opt-in on both ports with
+  nothing measured -- is superseded here for Boltz-2 only.
+
+  It is promoted on the rule this project uses for a released default:
+  accuracy equivalence against the deposited structure, with the rerun floor
+  as the control. On the four-card node (4 x RTX PRO 6000, 2x2) **5DEI at
+  2,096 tokens runs 601.8 s at 7,731 MiB per device against the XLA grid's
+  943.4 s at 8,296 -- 36% off the wall at the same peak** -- with the
+  deposited CA RMSD identical on all five samples (0.44 0.43 0.42 0.47 0.42)
+  and every sample 0.014-0.038 Å from the released serial run at the same
+  index, inside the 0.066 Å rerun floor that the XLA grid's own fifth sample
+  (0.112) sits outside. **6NYF x8 at 6,568 tokens runs 7,321.5 s at 38,912 MiB
+  against 17,930 s at 50,904 -- 59% off the wall and 24% off the peak** -- and
+  per chain against the deposited 6NYF chain the two arms are one band (XLA
+  4.96-6.88 Å, tile 5.54-6.02). Both rows are measured with the whole ring
+  fused; the earlier rows quoted under *Fixed* in this release covered 94%
+  of it.
+
+  **Protenix is the same saving and the opposite verdict**, which is why this
+  is one port's flip and not the option's. Its wall time falls 39% on the same
+  tile, and its samples land 0.11-0.25 Å from serial -- outside the same floor
+  -- because its triangle attention runs float32 on the XLA ring while the
+  tile is a bfloat16 kernel. An omitted option stays `xla` there.
+
+  Resolved on the host, before featurization
+  (`backends/boltz2._realised_ring_tile_kernel`), because the answer is part
+  of the run's identity: `predict` and `cache_profile` call the same resolver
+  on the same resolved options, so the body recorded and the body executed
+  cannot differ. Still refused rather than downgraded, and only an explicit
+  request can reach a refusal -- `tokamax` off the GPU backend, without the
+  package, or without a 2-D layout to be a body of, raises. An omitted option
+  never does: resolving it to `xla` is a default, not a silent fallback, and
+  refusing there would fail an ordinary CPU grid run on a word nobody typed.
+
+  **No compilation-cache namespace goes cold.** The identity records the
+  realised body rather than the spelling, and absence keeps the one meaning it
+  has always had -- the XLA tile -- on every serial, 1-D, CPU and tokamax-less
+  run and for an explicit `xla` anywhere. What moves is the omitted GPU-grid
+  run, onto the `tokamax` entry the opt-in already warmed; an explicit `xla`
+  on that grid keeps the entry an omitted option used to write. An omitted
+  option and an explicit `xla` are one namespace off the grid, where they are
+  one program, and two on it, where they are two.
+
+  Off a card nothing moved, and it is measured rather than argued: on a forced
+  four-device CPU mesh both of this port's ring entry points at both triangle
+  directions, and the MSA stack in both of its layer spellings, compile
+  byte-identical metadata-stripped HLO with identical `temp_size_in_bytes`
+  before and after the flip
+  (`tests/models/boltz2/scripts/cp_ring_tile_fingerprints.py`). That is the
+  model side; that the *backend* hands the ring scope the body it recorded is
+  a separate gate, read from inside the native call with the availability
+  probe pinned both ways, so neither arm can be a branch this runner would
+  have taken anyway.
 
 - **ESMFold2's trunk pair and relative position encoding stay bfloat16 across
   the float32 boundary.** Upstream's `z = z.float()` closes the autocast

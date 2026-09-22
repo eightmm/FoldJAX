@@ -378,8 +378,13 @@ def test_cache_defaults_are_pinned_to_the_native_predict_signature() -> None:
     # level down: it names a body of the 2-D triangle-attention ring, so the
     # only signature that could carry it is the ring's own, and it travels in
     # a ContextVar from `Boltz2Backend.predict`. Its authority is what the
-    # ring runs when nobody asks -- read from the ring rather than restated,
-    # so the backend's copy cannot drift from it.
+    # ring runs when nobody sets a scope at all -- read from the ring rather
+    # than restated, so the backend's copy cannot drift from it.
+    #
+    # That is no longer the same sentence as "the default": since the fused
+    # tile became what an omitted option realises on a GPU grid, this entry is
+    # the body every *other* run realises, and what decides between the two is
+    # `_realised_ring_tile_kernel`, pinned by its own table below.
     from foldjax.models._cp_attention import ring_tile_kernel
 
     assert released.pop("triangle_attention_ring_kernel") == ring_tile_kernel()
@@ -405,6 +410,97 @@ def test_cache_defaults_are_pinned_to_the_native_predict_signature() -> None:
     for cp_devices, expected in ((1, "1d"), (2, "1d"), (3, "1d"), (4, "2d"), (9, "2d")):
         assert native_api._resolve_cp_layout("auto", cp_devices) == expected
         assert native_api._resolve_cp_layout("1d", cp_devices) == "1d"
+
+
+@pytest.mark.parametrize("available", [False, True])
+def test_the_ring_body_an_omitted_option_realises_is_a_table(
+    available: bool, monkeypatch
+) -> None:
+    """Three inputs decide it, and every combination is written down here.
+
+    The layout, whether this process can run the fused tile, and whether the
+    caller spelled anything. Both values of the middle one are run, because a
+    resolver that ignored it would pass a one-armed table -- and on a CPU
+    runner the arm it would pass is the one that says nothing changed.
+    """
+
+    monkeypatch.setattr(
+        "foldjax.models._cp_attention.ring_tile_kernel_available",
+        lambda: available,
+    )
+    realised = backend_module._realised_ring_tile_kernel
+
+    # Omitted: the tile only where there is a grid and a process to run it on.
+    assert realised(None, grid=False) == "xla"
+    assert realised(None, grid=True) == ("tokamax" if available else "xla")
+    # Spelled: returned as written, on both sides of the grid. An explicit
+    # `tokamax` is not downgraded here even where it cannot run -- the refusal
+    # is `resolve_ring_tile_kernel`'s, so the caller who typed it hears about
+    # it instead of getting a different program without being told.
+    for grid in (False, True):
+        assert realised("xla", grid=grid) == "xla"
+        assert realised("tokamax", grid=grid) == "tokamax"
+
+
+def test_predict_hands_the_ring_scope_the_body_it_resolved(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The scope the native call runs under, read from inside that call.
+
+    `cache_profile` records a word; this is what makes the word true. Without
+    it the flip could be a profile-only change -- the identity saying
+    `tokamax` while every ring step still ran the shipped tile -- which is the
+    failure the option's refusals exist to prevent, one level up.
+    """
+
+    from foldjax.models._cp_attention import ring_tile_kernel
+
+    seen: list[str] = []
+
+    def fake_predict(**kwargs):
+        seen.append(ring_tile_kernel())
+        output_dir = Path(kwargs["out_dir"])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        structure = output_dir / "native.cif"
+        structure.write_text("data_job\n")
+        return {
+            "coords": np.zeros((1, 2, 3)),
+            "plddt": np.ones((1, 2)),
+            "iptm": np.asarray([0.5]),
+            "out_path": structure,
+        }
+
+    monkeypatch.setattr(
+        backend_module,
+        "import_module",
+        lambda name: SimpleNamespace(predict=fake_predict),
+    )
+
+    def run(available: bool, **options) -> str:
+        monkeypatch.setattr(
+            "foldjax.models._cp_attention.ring_tile_kernel_available",
+            lambda: available,
+        )
+        base = _request(tmp_path)
+        Boltz2Backend().predict(
+            dataclasses.replace(
+                base,
+                num_seeds=None,
+                options={**base.options, **options},
+            )
+        )
+        return seen.pop()
+
+    # The grid, with and without a process that can run the tile. Both arms,
+    # so neither is a branch this runner would have taken anyway.
+    assert run(True, cp_devices=4) == "tokamax"
+    assert run(False, cp_devices=4) == "xla"
+    # Spelled `xla` on the same grid keeps the shipped ring, which is what
+    # makes the two namespaces in `test_cp_option_surface.py` two programs.
+    assert run(True, cp_devices=4, triangle_attention_ring_kernel="xla") == "xla"
+    # And off the grid there is no ring to be a body of, card or no card.
+    assert run(True) == "xla"
+    assert run(True, cp_devices=4, cp_layout="1d") == "xla"
 
 
 def test_pair_residual_namespace_records_the_width_not_the_spelling(

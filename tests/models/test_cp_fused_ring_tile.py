@@ -33,6 +33,7 @@ from foldjax.models._cp_attention import (
     merge_softmax_statistics,
     resolve_ring_tile_kernel,
     ring_tile_kernel,
+    ring_tile_kernel_available,
     ring_tile_kernel_scope,
     tile_attention_tokamax,
     tile_attention_xla,
@@ -237,6 +238,28 @@ def test_the_fused_tile_is_refused_rather_than_downgraded_off_gpu() -> None:
         pytest.skip("the refusal under test is the non-GPU one")
     with pytest.raises(RuntimeError, match="GPU backend"):
         resolve_ring_tile_kernel("tokamax")
+
+
+def test_the_availability_probe_answers_the_refusals_two_halves() -> None:
+    """One boolean for the caller that decides, two messages for the one that
+    validates -- and they must be the same question on this host.
+
+    `backends/boltz2._realised_ring_tile_kernel` resolves an omitted option
+    against the probe; `resolve_ring_tile_kernel` refuses an explicit request
+    against the two halves. A probe that answered yes where the refusal fires
+    would let an omitted option resolve to a body the very next call rejects.
+    """
+
+    available = ring_tile_kernel_available()
+    assert available == (tokamax_available() and jax.default_backend() == "gpu")
+    if available:
+        assert resolve_ring_tile_kernel("tokamax") == "tokamax"
+    else:
+        with pytest.raises(RuntimeError):
+            resolve_ring_tile_kernel("tokamax")
+    # The portable body never consults it, on either host.
+    assert resolve_ring_tile_kernel(None) == "xla"
+    assert resolve_ring_tile_kernel("xla") == "xla"
 
 
 def test_the_scope_defaults_to_the_shipped_kernel() -> None:

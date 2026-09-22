@@ -28,6 +28,11 @@ SQUARE_GRID_MODELS = ("boltz2", "esmfold2", "opendde", "openfold3", "protenix")
 #: scope rather than dropping it (`models/openfold3/models/
 #: triangle_attention_cp.py`), so an unmeasured port cannot report a fused run
 #: it did not make.
+#:
+#: The two share the option and not its default: on a GPU grid Boltz-2 omits
+#: its way onto the fused tile and Protenix does not, which is a difference in
+#: what was measured rather than in what either can run. The cases below
+#: assert both halves of that.
 RING_KERNEL_MODELS = ("boltz2", "protenix")
 
 
@@ -176,34 +181,141 @@ def test_a_port_without_the_option_refuses_it_rather_than_ignoring_it(
         resolve_request(_ring_request(model, job, "tokamax"))
 
 
+def _ring_profile(model: str, job, tmp_path, **options):
+    request = _request(model, job)
+    return get_backend(model).cache_profile(
+        PredictionRequest(
+            model=model,
+            input=request.input,
+            weights=request.weights,
+            output_dir=tmp_path / "out",
+            options={**request.options, **options},
+        )
+    )
+
+
+def _pin_fused_tile(monkeypatch, available: bool) -> None:
+    """Answer "can this process run the fused tile" without owning a card.
+
+    Boltz-2 resolves an omitted `triangle_attention_ring_kernel` against this
+    question on the host, so a test that left it to the runner would assert
+    one thing on a CPU box and another on a GPU one. Every case below pins it
+    and every pinned value is asserted in both directions, so neither arm can
+    be a branch that never fires.
+    """
+
+    monkeypatch.setattr(
+        "foldjax.models._cp_attention.ring_tile_kernel_available",
+        lambda: available,
+    )
+
+
 @pytest.mark.parametrize("model", RING_KERNEL_MODELS)
 def test_the_shipped_body_shares_the_namespace_omitting_it_selects(
     model: str,
     job,
     tmp_path,
+    monkeypatch,
 ) -> None:
-    """`xla` is the released value, so spelling it must not fork the cache.
+    """`xla` is what an omitted option realises where the tile cannot run.
 
-    `tokamax` is a different ring body and different arithmetic, so it must.
+    Spelling it there must not fork the cache -- it is one program under two
+    names. `tokamax` is a different ring body and different arithmetic, so it
+    must fork. The arm where the tile *can* run is the next test.
     """
 
-    backend = get_backend(model)
+    _pin_fused_tile(monkeypatch, False)
 
     def profile(**options):
-        request = _request(model, job)
-        merged = {**request.options, **options}
-        return backend.cache_profile(
-            PredictionRequest(
-                model=model,
-                input=request.input,
-                weights=request.weights,
-                output_dir=tmp_path / "out",
-                options=merged,
-            )
-        )
+        return _ring_profile(model, job, tmp_path, **options)
 
     assert profile(triangle_attention_ring_kernel="xla") == profile()
     assert profile(triangle_attention_ring_kernel="tokamax") != profile()
+
+
+def test_boltz2_omitting_the_ring_kernel_is_the_fused_tile_on_a_gpu_grid(
+    job,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """The flip, read off the identity: omission means the tile, `xla` does not.
+
+    An omitted option and an explicit `xla` were one namespace on the grid and
+    are now two, because they are now two programs. The recorded word is the
+    body the run realises, so an omitted request lands in the namespace the
+    opt-in `tokamax` already warmed rather than in a third one, and an
+    explicit `xla` keeps the entry -- absence -- that an omitted option wrote
+    before the flip.
+    """
+
+    def profile(**options):
+        return _ring_profile("boltz2", job, tmp_path, **options)
+
+    _pin_fused_tile(monkeypatch, True)
+    fused = profile()
+    assert fused["triangle_attention_ring_kernel"] == "tokamax"
+    assert fused == profile(triangle_attention_ring_kernel="tokamax")
+    assert fused != profile(triangle_attention_ring_kernel="xla")
+    # The other half of the arm, so the pin above is not measuring a branch
+    # that would have been taken anyway: without the card, the same request is
+    # the XLA namespace and spelling `xla` is the same entry again.
+    _pin_fused_tile(monkeypatch, False)
+    assert "triangle_attention_ring_kernel" not in profile()
+    assert profile() == profile(triangle_attention_ring_kernel="xla")
+    assert profile() != fused
+
+
+@pytest.mark.parametrize(
+    ("options", "why"),
+    [
+        ({"cp_devices": 1, "cp_layout": "auto"}, "serial"),
+        ({"cp_layout": "1d"}, "one-dimensional"),
+    ],
+)
+def test_boltz2_keeps_the_xla_namespace_where_there_is_no_ring(
+    options: dict,
+    why: str,
+    job,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """The tile is a body of the 2-D ring, so off the grid the flip is inert.
+
+    Asserted with the card *present*, which is the only arm that can fail: the
+    resolver must read the layout, not just the machine.
+    """
+
+    _pin_fused_tile(monkeypatch, True)
+    profile = _ring_profile("boltz2", job, tmp_path, **options)
+    assert "triangle_attention_ring_kernel" not in profile, why
+    assert profile == _ring_profile(
+        "boltz2", job, tmp_path, triangle_attention_ring_kernel="xla", **options
+    )
+
+
+def test_protenix_keeps_the_xla_tile_when_the_card_could_run_the_fused_one(
+    job,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """The flip is Boltz-2's alone, and the reason is a measurement.
+
+    Protenix's triangle attention is float32 on the XLA ring and the tile is a
+    bfloat16 kernel, so on the same four cards its samples move 0.11-0.25 A
+    from the serial run against a 0.066 A rerun floor -- outside the band the
+    Boltz-2 rows sit inside. Until that is closed the option stays opt-in
+    there, and this is what says so.
+    """
+
+    _pin_fused_tile(monkeypatch, True)
+    profile = _ring_profile("protenix", job, tmp_path)
+    assert "triangle_attention_ring_kernel" not in profile
+    assert profile == _ring_profile(
+        "protenix", job, tmp_path, triangle_attention_ring_kernel="xla"
+    )
+    assert profile != _ring_profile(
+        "protenix", job, tmp_path, triangle_attention_ring_kernel="tokamax"
+    )
 
 
 #: The one port whose backend declares `cp_fused_attention`. It names two

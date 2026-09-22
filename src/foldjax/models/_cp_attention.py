@@ -34,12 +34,20 @@ from foldjax.models._cp import (
 )
 from foldjax.models._tokamax_attention import tokamax_available
 
-#: What a ring step may evaluate one local tile with. ``xla`` is the shipped
-#: program -- the two-pass global-maximum ring below -- and the default
-#: everywhere. ``tokamax`` is experimental and GPU-only: it runs the fused
-#: Triton attention per tile and merges the tiles by their softmax statistics,
-#: which is a different program and different arithmetic, not a faster
-#: spelling of the same one.
+#: What a ring step may evaluate one local tile with. ``xla`` is the two-pass
+#: global-maximum ring below. ``tokamax`` runs the fused Triton attention per
+#: tile and merges the tiles by their softmax statistics, which is a different
+#: program and different arithmetic, not a faster spelling of the same one; it
+#: is GPU-only, because the entry point it needs returns softmax residuals
+#: from a Pallas/Triton kernel.
+#:
+#: Which of the two an omitted option realises is a *backend* decision and not
+#: this module's: Boltz-2 resolves it on the host against the card and the
+#: layout (``backends/boltz2._realised_ring_tile_kernel``) and hands the scope
+#: the answer, Protenix still resolves it to ``xla``. What this module owns is
+#: the vocabulary, the refusals, and the body a bare model call runs when
+#: nobody set a scope at all -- which is ``xla`` below, deliberately: a model
+#: called outside an adapter must compile the portable program.
 RING_TILE_KERNELS: tuple[str, ...] = ("xla", "tokamax")
 
 #: Every tile kernel :func:`_ring_local_rows` will run, which is one more than
@@ -75,8 +83,12 @@ def ring_tile_kernel() -> str:
 def ring_tile_kernel_scope(kernel: str | None) -> Iterator[str]:
     """Run the enclosed prediction with ``kernel`` inside every 2-D ring step.
 
-    ``None`` is the default: the scope is still entered, so a caller need not
-    branch, and the value it publishes is the shipped ``xla``.
+    ``None`` publishes ``xla``: the scope is still entered, so a caller need
+    not branch. That is the path a caller with nothing to resolve takes --
+    Protenix's adapter, and a test. Boltz-2's adapter resolves an omitted
+    option on the host and passes the realised name, so what this publishes
+    for that port is a word somebody decided rather than a default reached by
+    omission twice.
     """
 
     name = "xla" if kernel is None else str(kernel)
@@ -223,15 +235,38 @@ def cp_fused_shard_map_options(fused: bool) -> dict[str, bool]:
     return {"check_vma": False} if fused else {}
 
 
+def ring_tile_kernel_available() -> bool:
+    """Whether this process could run the fused tile at all.
+
+    Both halves of :func:`resolve_ring_tile_kernel`'s refusals as one
+    question, for the one caller that has to *decide* rather than validate: a
+    backend resolving an omitted option needs the answer on the host, before
+    featurization, so the compilation-cache identity can record the body the
+    run will realise rather than the word the caller did not type.
+
+    Asking initialises a JAX backend, so it is for the resolution path only --
+    ``resolve_cache_dir`` reads ``runtime_profile()`` first, so the backend is
+    already up by the time a profile is built -- and never for request
+    validation, which ``foldjax plan`` runs device-free.
+    """
+
+    return tokamax_available() and jax.default_backend() == "gpu"
+
+
 def resolve_ring_tile_kernel(kernel: str | None) -> str:
     """Validate a tile-kernel request against what this process can run.
 
     Refused rather than downgraded. A silent fallback would make two machines
     run two different programs under one command, which is the rule
     ``foldjax.execution`` states for every kernel knob: a build that cannot
-    reach a fused path says so. The refusal happens here, at trace time,
-    because the backend it needs to ask about does not exist when a request is
-    validated -- ``validate_request`` must not initialise JAX.
+    reach a fused path says so. That refusal is what a backend's host-side
+    resolution leans on: an omitted option never resolves to ``tokamax`` off a
+    card, so a ``tokamax`` arriving here is an explicit request and the
+    refusal lands on the caller who typed it.
+
+    The two halves are asked separately rather than through
+    :func:`ring_tile_kernel_available`, because a refusal has to name which
+    half is missing and one boolean cannot.
     """
 
     name = "xla" if kernel is None else str(kernel)

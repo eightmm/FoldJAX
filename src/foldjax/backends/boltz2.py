@@ -361,8 +361,15 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     # not name two namespaces.
     "pair_residual_dtype": "auto",
     "triangle_backend": "cueq",
-    # The shipped 2-D ring body. Named here so an explicit `xla` shares the
-    # namespace an omitted option selects, and only `tokamax` forks.
+    # The ring body every run that is not a GPU grid realises, which is what
+    # an omitted option means everywhere except the one place the flip
+    # applies: serial and 1-D runs have no ring to be a body of, and a CPU or
+    # tokamax-less process cannot reach the fused tile. Named here so an
+    # explicit `xla` shares the namespace those runs select. On a 2-D grid
+    # with the card and the package, an omitted option realises `tokamax`
+    # instead and `cache_profile` writes that word -- see
+    # `_realised_ring_tile_kernel`, which is what decides, and note that this
+    # entry is no longer "the default" on its own.
     "triangle_attention_ring_kernel": "xla",
     # The same shape one level over: `off` is what a context-parallel run
     # ships, so spelling it must select the namespace omitting it selects.
@@ -371,6 +378,44 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "deterministic": False,
     "msa_deletions": "released",
 }
+
+
+def _realised_ring_tile_kernel(kernel: object, *, grid: bool) -> str:
+    """The 2-D ring body this run will actually evaluate its tiles with.
+
+    Resolved on the host rather than at the ring, because the answer is part
+    of the run's identity: `cache_profile` has to record the body that ran,
+    and a word decided inside a traced `shard_map` is a word no profile can
+    see. `predict` and `cache_profile` both call this on the same resolved
+    options, so the recorded namespace and the executed program cannot differ.
+
+    An explicit request is returned as written and never downgraded. A
+    `tokamax` this process cannot run is refused -- at trace time, by
+    `_cp_attention.resolve_ring_tile_kernel`, which is the only thing that can
+    still see it, since an omitted option is resolved here and never reaches
+    that refusal as `tokamax` off a card.
+
+    An omitted option is the fused tile on a 2-D grid this process can run it
+    on, and `xla` everywhere else:
+
+    * off the grid there is no ring, so there is nothing to resolve and no
+      reason to initialise a backend to ask -- serial and 1-D runs return
+      before the probe;
+    * on the grid without the GPU backend or without tokamax it is `xla`,
+      silently. This half is a *default*, not a request: refusing would make
+      an ordinary CPU grid run fail on a word its caller never typed.
+    """
+
+    if kernel is not None:
+        return str(kernel)
+    if not grid:
+        return "xla"
+    # Imported here, not at module scope: this module must stay import-time
+    # JAX-free so `foldjax plan` can validate a request without initialising a
+    # device, and `ring_tile_kernel_available` initialises one.
+    from foldjax.models._cp_attention import ring_tile_kernel_available
+
+    return "tokamax" if ring_tile_kernel_available() else "xla"
 
 
 def _resolved_diffusion_width(chunk: Any, multiplicity: Any) -> Any:
@@ -512,10 +557,13 @@ class Boltz2Backend(Backend):
         # record and absence keeps meaning "the rung decided".
         "triangle_attention_q_chunk",
         # A different ring body and different arithmetic, so a different
-        # program. The compilation cache keys on the name for that reason; the
-        # retained in-process runner does *not* fork on it, because the value
-        # lives in a ContextVar that no jit cache key carries -- one value per
-        # process, which is how the experiment runs its arms.
+        # program. The compilation cache keys on the *realised* body rather
+        # than on the spelling, because an omitted option is not one body any
+        # more: `cache_profile` writes what `_realised_ring_tile_kernel`
+        # decided. The retained in-process runner does *not* fork on it,
+        # because the value lives in a ContextVar that no jit cache key
+        # carries -- one value per process, which is how the experiment runs
+        # its arms.
         "triangle_attention_ring_kernel",
         # Different kernels at two diffusion attentions, so different
         # programs and different arithmetic. It forks the compilation-cache
@@ -609,6 +657,22 @@ class Boltz2Backend(Backend):
         # programs on a square one, so which of them was asked for cannot be
         # recovered once both are stripped.
         resolved_cp_layout = square_grid_cp_layout(profile)
+        # The ring body this run realises, never the word that asked for it --
+        # read against the layout above, because an omitted option is the
+        # fused tile only where there is a grid to be a body of. Fed through
+        # the strip below rather than spelled unconditionally: absence has
+        # meant "the XLA tile" since before this option existed and it still
+        # does, on every serial, 1-D, CPU and tokamax-less run and for an
+        # explicit `xla` anywhere. So nothing recorded before the flip changes
+        # meaning and no warm namespace goes cold; what moves is the omitted
+        # GPU-grid run, onto the `tokamax` entry the opt-in already warmed,
+        # and an explicit `xla` on that grid keeps the entry an omitted option
+        # used to write. Spelling `xla` instead would give one program two
+        # namespaces, which is the `auto` mistake with the arms swapped.
+        profile["triangle_attention_ring_kernel"] = _realised_ring_tile_kernel(
+            profile.get("triangle_attention_ring_kernel"),
+            grid=resolved_cp_layout == "2d",
+        )
         resolved_attention = profile.get(
             "attention_backend", _RELEASED_COMPILE_DEFAULTS["attention_backend"]
         )
@@ -897,12 +961,16 @@ class Boltz2Backend(Backend):
                     "triangle_attention_ring_kernel must be one of "
                     f"{_RING_TILE_KERNELS}"
                 )
-            # Whether the *card* can run the fused tile is settled at trace
-            # time (`_cp_attention.resolve_ring_tile_kernel`): asking here
-            # would initialise a JAX backend inside `foldjax plan`. What is
-            # settled here is whether there is a ring at all -- the option
-            # names a body of the 2-D ring, and a serial or 1-D run has none,
-            # so spelling it there is a request nothing would honour.
+            # Whether the *card* can run the fused tile is not settled here:
+            # asking would initialise a JAX backend inside `foldjax plan`. It
+            # is settled once the backend is up, either by
+            # `_realised_ring_tile_kernel` -- which is where an omitted option
+            # becomes a body -- or, for an explicit `tokamax` this process
+            # cannot run, by `_cp_attention.resolve_ring_tile_kernel`'s
+            # refusal at trace time. What *is* settled here is whether there
+            # is a ring at all -- the option names a body of the 2-D ring, and
+            # a serial or 1-D run has none, so spelling it there is a request
+            # nothing would honour.
             if ring_kernel != "xla" and square_grid_cp_layout(options) != "2d":
                 raise ValueError(
                     "triangle_attention_ring_kernel selects a body of the 2-D "
@@ -1130,8 +1198,14 @@ class Boltz2Backend(Backend):
         matmul_precision = self.matmul_precision(options)
         # The same, one level down: this one names a body of the 2-D
         # triangle-attention ring, and the only signature that could carry it
-        # is the ring's own.
-        ring_tile_kernel = options.pop("triangle_attention_ring_kernel", None)
+        # is the ring's own. Resolved rather than forwarded, on the same
+        # options `cache_profile` read, so the scope publishes the body the
+        # recorded namespace names -- an omitted option is the fused tile on a
+        # GPU grid and `xla` everywhere else.
+        ring_tile_kernel = _realised_ring_tile_kernel(
+            options.pop("triangle_attention_ring_kernel", None),
+            grid=square_grid_cp_layout(options) == "2d",
+        )
         # And one level over: these name two context-parallel diffusion
         # attentions, and the signatures that could carry them are the atom
         # adapter's and the token tile's.

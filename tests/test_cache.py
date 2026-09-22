@@ -717,6 +717,65 @@ def test_boltz2_profile_spells_the_triangle_query_block_only_when_asked(
     assert profile(triangle_attention_q_chunk=0) != profile()
 
 
+def test_boltz2_ring_namespace_records_the_body_not_the_spelling(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The flip, at the namespace rather than at the profile dict.
+
+    An omitted `triangle_attention_ring_kernel` is the fused tile on a 2-D
+    grid this process can run it on and the shipped tile everywhere else, so
+    the *directory* an omitted grid run writes has to move with the card --
+    otherwise a run that fused every ring step would be answered out of the
+    entry a two-pass run warmed, which is a wrong executable and not merely a
+    wrong label.
+
+    Absence keeps its one meaning throughout: `xla`. Nothing recorded before
+    the flip changes what it stands for, so no warm namespace goes cold; what
+    moves is the omitted GPU-grid run, onto the entry the opt-in already
+    warmed.
+    """
+
+    backend = Boltz2Backend()
+    grid = _request(tmp_path, cp_devices=4)
+    serial = _request(tmp_path)
+
+    def pin(available: bool) -> None:
+        monkeypatch.setattr(
+            "foldjax.models._cp_attention.ring_tile_kernel_available",
+            lambda: available,
+        )
+
+    pin(False)
+    shipped = resolve_cache_dir(grid, backend)
+    assert backend.cache_profile(grid) == backend.cache_profile(
+        _request(tmp_path, cp_devices=4, triangle_attention_ring_kernel="xla")
+    )
+
+    pin(True)
+    fused = resolve_cache_dir(grid, backend)
+    assert fused != shipped
+    # Onto the opt-in's entry, not a third one.
+    assert fused == resolve_cache_dir(
+        _request(tmp_path, cp_devices=4, triangle_attention_ring_kernel="tokamax"),
+        backend,
+    )
+    # And an explicit `xla` keeps the entry an omitted grid run used to write.
+    assert (
+        resolve_cache_dir(
+            _request(tmp_path, cp_devices=4, triangle_attention_ring_kernel="xla"),
+            backend,
+        )
+        == shipped
+    )
+    # The serial namespace is untouched in both arms: there is no ring there,
+    # so there is nothing for the card to decide.
+    pin(False)
+    assert resolve_cache_dir(serial, backend) == resolve_cache_dir(serial, backend)
+    one_card = resolve_cache_dir(serial, backend)
+    pin(True)
+    assert resolve_cache_dir(serial, backend) == one_card
+
+
 @pytest.mark.parametrize(
     ("request_fields", "options"),
     [
@@ -751,6 +810,14 @@ def test_boltz2_profile_spells_the_triangle_query_block_only_when_asked(
         # triangle-multiplication mode, a different Tokamax preset -- so the
         # parity arm must not be answered out of the shipped TF32 entry.
         ({}, {"matmul_precision": "highest"}),
+        # The 2-D ring's body. This request is serial, where an omitted option
+        # is the shipped tile on every machine, so what this pins is that the
+        # word is never dropped for equalling the table's entry: a spelled
+        # `tokamax` keeps its own namespace even where the run would be
+        # refused, rather than borrowing the one absence writes. The grid,
+        # where the two namespaces are the flip itself, has its own case
+        # above.
+        ({}, {"triangle_attention_ring_kernel": "tokamax"}),
     ],
 )
 def test_boltz2_nondefault_compile_options_keep_distinct_namespaces(

@@ -1113,6 +1113,47 @@ omitted default resolves to `xla_jit` there). OpenDDE reaches the same two
 sites through Protenix's
 primitives but does not offer the value: it has not been measured there.
 
+### The 2-D ring's tile kernel (`--option triangle_attention_ring_kernel`)
+
+Offered on Boltz-2 and Protenix, and it names the body each step of the
+two-dimensional triangle-attention ring evaluates its local tile with. `xla`
+is the two-pass global-maximum ring; `tokamax` is a fused Pallas/Triton
+attention per tile whose tiles are combined by a softmax-statistics merge, so
+the tile never materialises its score tensor. The two are a **different
+program and different arithmetic**, not two spellings of one -- one rotation
+instead of two, and each tile normalised against its own maximum.
+`docs/context_parallel.md` has the mechanism, the gates, and the measured
+rows.
+
+**On Boltz-2 an omitted option is `tokamax` when the run is on a GPU that has
+tokamax and the resolved layout is the 2-D grid**, and `xla` everywhere else:
+serial runs, `--cp-layout 1d`, a CPU, and a build without tokamax. Spell
+`--option triangle_attention_ring_kernel=xla` to keep the two-pass ring on the
+grid. The grid rows behind that default are 5DEI at 2,096 tokens (601.8 s /
+7,731 MiB per device against the XLA grid's 943.4 s / 8,296, deposited CA RMSD
+identical to two decimals and same-index 0.014-0.038 Å from the released
+serial run against a 0.066 Å rerun floor) and 6NYF x8 at 6,568 tokens
+(7,321.5 s / 38,912 MiB against 17,930 s / 50,904).
+
+**On Protenix it stays opt-in.** On the same four cards the tile takes 39% off
+the wall there too, but its samples land 0.11-0.25 Å from the serial run --
+outside the rerun floor -- because that port's triangle attention runs float32
+on the XLA ring and the tile is a bfloat16 kernel. An omitted option is `xla`
+there until that is closed.
+
+Refused rather than downgraded, and only an *explicit* request can reach these:
+a spelling outside `xla|tokamax`, `tokamax` without `--cp-layout 2d` on a
+perfect-square `--cp-devices` (there is no ring to be a body of), `tokamax`
+off the GPU backend, and `tokamax` without the package. An omitted option is
+resolved on the host instead, so an ordinary CPU or one-dimensional run never
+fails on a word nobody typed.
+
+The realised body -- not the spelling -- forks the compilation-cache
+namespace, so an omitted run on a GPU grid shares its entry with an explicit
+`tokamax` and an explicit `xla` there has its own. The value travels in a
+`ContextVar`, which no `jax.jit` cache key carries, so the retained
+in-process runner does **not** fork on it: one value per process.
+
 ### Fused attention under a mesh (`--option cp_fused_attention=...`, Boltz-2)
 
 Off by default, and refused rather than ignored without a mesh. Under context
@@ -1130,9 +1171,10 @@ same `tokamax.dot_product_attention` call the serial released
 `diffusion_attention_backend` makes, so tokamax's own implementation order
 decides the kernel and the label does not say which one ran. The token site is
 pinned to tokamax's Triton implementation and raises off a GPU. Neither site's
-wall time, peak, or effect on a deposited structure has been measured;
-`--option triangle_attention_ring_kernel=tokamax` is the trunk-side sibling
-with the same status. What is proved is the wiring: the fused callable is
+wall time, peak, or effect on a deposited structure has been measured. The
+trunk-side sibling, `triangle_attention_ring_kernel` above, no longer shares
+that status: it has its four-card rows and is what an omitted option realises
+on a Boltz-2 grid. What is proved here is the wiring: the fused callable is
 reached at the named site and nowhere else, the option-on program matches the
 option-off program on asymmetric per-rank inputs at 2x2 and 3x3, an empty
 column tile contributes nothing in either order, and every unreachable request

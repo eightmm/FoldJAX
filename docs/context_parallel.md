@@ -125,6 +125,13 @@ speed-first one, and the knobs that answer to that are resolved per port too:
 | Model | Knob | Omitted, serially | Omitted, `cp_devices > 1` |
 |---|---|---|---|
 | OpenFold3 | `diffusion_chunk_size` | unchunked at every released schedule (the width engages above five samples) | `1` |
+| Boltz-2 | `triangle_attention_ring_kernel` | `xla` (there is no ring) | `tokamax` under the 2-D layout on a GPU with tokamax; `xla` otherwise |
+
+**Why Boltz-2's ring tile is the one knob here that is not capacity-first.**
+It is speed-first and free of the usual trade: the fused tile is -36% wall at
+the same per-device peak on 5DEI and -59% wall at -24% peak on 6NYF x8,
+without moving the deposited structure past the rerun floor. Its own section
+below has the rows, the refusals, and what it does to the compile cache.
 
 **Why OpenFold3's rollout denoises one sample at a time under a mesh.** The
 sample axis is the one axis sharding does not touch, and the rollout's widest
@@ -239,16 +246,36 @@ further when one block's score tile would pass 8 GiB, floored at 8 rows. A
 non-positive value asks for one block, which is the unblocked ring and the
 program the ring lowered to before blocking existed.
 
-## The ring tile kernel (experimental, GPU only; measured 2026-09-21/22)
+## The ring tile kernel (GPU only; Boltz-2's grid default as of this commit)
 
-Measured on the node: Boltz-2 5DEI 2,096 tokens on the 2x2 grid 617.9 s /
-8,289 MiB per device with the tile against 943.4 s / 8,296 on XLA (-34%),
-deposited identical, same-index 0.013-0.030 Å from serial (rerun floor
-0.066); Protenix 339.4 s / 11,593 against 559.9 s / 11,572 (-39%), deposited
-in the same band but same-index 0.11-0.25 Å from serial (its triangle
-attention runs f32 on XLA; the tile is a bf16 kernel). Rows before `b87731f`
-ran the tile at 94% of ring call sites (the MSA module's ring did not read
-the option). Opt-in on both ports until a default is decided.
+**Boltz-2: what an omitted option realises on a GPU 2-D grid, as of this
+commit.** `xla` everywhere else -- serial, `1d`, CPU, no tokamax -- and an
+explicit `xla` keeps the two-pass ring on the grid. **Protenix: still
+opt-in.** Measured on the node, with the whole ring fused (`b87731f`; rows
+before it ran the tile at 94% of ring call sites, because the MSA module's
+ring did not read the option):
+
+| port | case | layout | tile | XLA |
+| --- | --- | --- | --- | --- |
+| Boltz-2 | 5DEI, 2,096 tokens | 2x2 | 601.8 s / 7,731 MiB | 943.4 s / 8,296 MiB |
+| Boltz-2 | 6NYF x8, 6,568 tokens | 2x2 | 7,321.5 s / 38,912 MiB | 17,930 s / 50,904 MiB |
+| Protenix | 5DEI, 2,096 tokens | 2x2 | 339.4 s / 11,593 MiB | 559.9 s / 11,572 MiB |
+
+Boltz-2 5DEI is -36% wall at the same peak, and the structure does not move:
+the deposited CA RMSD is identical on all five samples (0.44 0.43 0.42 0.47
+0.42), and same-index against the released serial run the five sit 0.014-0.038
+Å apart -- inside the 0.066 Å rerun floor, which the XLA grid's own fifth
+sample (0.112) is not. At 6,568 tokens the tile is -59% wall and -24% peak,
+and per chain against the deposited 6NYF chain both arms sit in one band (XLA
+4.96-6.88 Å, tile 5.54-6.02). That is the project's rule for promoting a
+released default -- accuracy equivalence against the deposited structure, with
+the rerun floor as the control -- met on two sizes.
+
+Protenix is the same 39% wall saving and a different verdict: its samples land
+0.11-0.25 Å from serial, outside that floor, because its triangle attention
+runs float32 on the XLA ring while the tile is a bfloat16 kernel. Promoting it
+there would be buying wall time with a structure that moved, so an omitted
+option stays `xla` on that port and the flip is Boltz-2's alone.
 
 Under a mesh every fused kernel in the trunk resolves to an XLA path, because
 a kernel that consumes the whole token axis cannot be partitioned, and that
@@ -267,7 +294,7 @@ also what the ring's two-pass body could not do, because a kernel normalises
 its tile before the ring gets to see it.
 
 It is a **different program and different arithmetic**, not a faster spelling
-of the default:
+of the two-pass body:
 
 - one rotation rather than two, with `V` travelling with `K` from the first
   step, because there is no global maximum to fix in advance;
@@ -277,7 +304,7 @@ of the default:
   denominator is carried across the merge;
 - a query row with no valid key anywhere in the ring comes out as zeros.
   Tokamax masks with `finfo.min` rather than `-inf`, so such a row is forced
-  back to `(-inf, 0, 0)` before the merge sees it. The default path instead
+  back to `(-inf, 0, 0)` before the merge sees it. The `xla` body instead
   leaves a row whose keys are all *mask-biased* (`-1e9`, not absent) reducing
   over those keys as the serial path does; only genuinely absent keys are
   `-inf` there. The two therefore differ on rows the model masks away
@@ -291,19 +318,46 @@ scope every Boltz-2 row measured with this option -- the grid rows in
 `docs/scale-rows-master-2026-09-10.md` -- ran the fused tile at 94% of the
 ring's calls and the shipped body in the MSA stack.
 
-`xla` is the default and remains the program every 2-D measurement in this
-repository describes. The option is refused rather than downgraded: off the
-GPU backend, without tokamax installed, or without a 2-D layout to be a body
-of, it raises. It also forks the compilation-cache namespace, because it is a
-different program -- but the value travels in a `ContextVar`, which no `jax.jit`
-cache key carries, so the retained in-process runner does **not** fork on it:
-one value per process.
+### Where the body is decided, and what it does to the cache
 
-No wall time or peak is recorded here yet. The experiment that would record it
-runs one layer's ring on four cards in both kernels, asserts the fused
-dispatch, compares the outputs, and only then times a full prediction pass.
-Until it has run, the option is an implementation with a CPU-proved merge and
-no measurement.
+Boltz-2 resolves an omitted option on the **host**, before featurization
+(`backends/boltz2._realised_ring_tile_kernel`), against three things: whether
+the caller spelled anything, whether the resolved layout is the grid, and
+whether this process has both the GPU backend and tokamax
+(`models/_cp_attention.ring_tile_kernel_available`). Host-side because the
+answer is part of the run's identity -- a word decided inside a traced
+`shard_map` is a word no cache profile can see -- and `predict` and
+`cache_profile` call the same resolver on the same resolved options, so the
+namespace recorded and the program executed cannot differ.
+
+Refused rather than downgraded, and only an **explicit** request can reach a
+refusal: off the GPU backend, without tokamax, or without a 2-D layout to be a
+body of, `tokamax` raises
+(`models/_cp_attention.resolve_ring_tile_kernel`, at trace time; the layout
+half is refused while planning). An *omitted* option never reaches those --
+resolving it to `xla` is a default, not a silent fallback, and refusing there
+would fail an ordinary CPU grid run on a word nobody typed.
+
+The compilation-cache namespace forks on the **realised** body, not the
+spelling. On a GPU grid an omitted option therefore shares its entry with an
+explicit `tokamax`, and an explicit `xla` there keeps the entry absence has
+always written. Absence still means the XLA tile everywhere -- serial, 1-D,
+CPU, tokamax-less, and explicit `xla` -- so nothing recorded before the flip
+changes meaning and no warm namespace goes cold; what moved is the omitted
+GPU-grid run, onto an entry the opt-in had already warmed. The value travels
+in a `ContextVar`, which no `jax.jit` cache key carries, so the retained
+in-process runner does **not** fork on it: one value per process.
+
+Off a card nothing moved. On a forced four-device CPU mesh both ring entry
+points at both triangle directions, and the MSA stack in both of its layer
+spellings, compile the same metadata-stripped HLO with the same
+`temp_size_in_bytes` before and after the flip
+(`tests/models/boltz2/scripts/cp_ring_tile_fingerprints.py`) -- because on
+CPU the resolver answers `xla`, which is what that fingerprint proves about
+the model side. That the *backend* hands the scope the body it recorded is a
+separate gate (`tests/test_boltz2_session.py::
+test_predict_hands_the_ring_scope_the_body_it_resolved`), read from inside the
+native call in both arms of the probe.
 
 ## The two local diffusion attentions (experimental, GPU only; measured neutral)
 
