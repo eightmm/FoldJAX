@@ -1793,6 +1793,97 @@ refit; the ESMFold2 same-seed serial / 1-D / 2-D comparison on 5DEI at
 6,568-token rows (OpenFold3 post-fix, 6 h; Boltz-2 grid, 9 h); one
 deposited bench row on the fused ring.
 
+### The node under a second account: the rows of 2026-09-21/22
+
+Slurm came back for a different Unix account (the lab account, capped at
+four cards and 128 GB of host memory per group, so rows ran one at a time);
+the snapshots of this wave are `x34` (`10b3fd1`), `x35` (`742d158`),
+`x36` (`7436f87`). The measured pass of every row below is warm and on
+the released schedule.
+
+**The fused ring tile, measured against the deposited structure.**
+Boltz-2 5DEI at 2,096 tokens on the 2×2 grid with
+`triangle_attention_ring_kernel=tokamax`: 617.9 s / 8,289 MiB per device
+against the XLA grid's 943.4 s / 8,296 — the wall falls by a third at the
+same peak, the deposited distances are identical (0.44 0.43 0.42 0.47
+0.42), and same-index the fused arm sits 0.013–0.030 Å from the released
+serial run on every sample, inside the 0.066 Å rerun floor where the XLA
+grid's fifth sample sits at 0.112. The two diffusion-attention sites the
+reviewer's spec put next — `cp_fused_attention=atom`, `token`, and both
+(`301301a`, opt-in) — fire on the card and change nothing: 964 / 989 /
+953 s against 943, and 611 s with the ring tile on top of both against
+618 for the ring tile alone. On Boltz-2 at this size the triangle-attention
+ring is where the grid's time was; the diffusion attention is not. The
+option stays opt-in and documented as measured-neutral. Protenix on the
+same grid with the fused tile: 339.4 s / 11,593 MiB per device against
+559.9 s / 11,572 on XLA (−39%), deposited 0.46 0.45 0.52 0.51 0.46 against
+serial's 0.46 0.52 0.44 0.49 0.47 — the same band — but same-index
+0.11–0.25 Å from serial where the XLA grid sits at 0.006–0.014: this
+port's triangle attention runs f32 on XLA and the tile is a bf16 kernel,
+so on Protenix the fused ring is equivalent by the deposited instrument
+only and stays opt-in; any default is Boltz-2's alone, and waits on its
+6,568-token grid rows.
+
+**OpenFold3 at 6,568 tokens, post-fix.** The grid row on `10b3fd1`
+(transition local rows, `diffusion_chunk_size=1`, `auto → 2d`) completed
+both passes without the first-invocation OOM the pre-fix row had, at
+10,554 s / 42,230 MiB per device — the same wall and peak as the pre-fix
+row (10,554 s / 42,209). The fixes are neutral at this size and are kept
+for the OOM they removed; the four-card ceiling number stands.
+
+**ESMFold2's compile.** The blocking commits of the previous wave
+unrolled every 64-row block into the trace: at 2,096 tokens the trunk
+program was 969,694 HLO lines, the GPU compile took 62 minutes and the
+measured pass 805 s against the released 451 s. `2f5d825` rolls each
+block loop into one traced body (`fori_loop` over the full blocks, the
+tail traced once, writing into a buffer the caller lends — a fresh
+destination inside a `while` is a colocated allocation XLA never reuses);
+the 2,096-token 24-layer trunk goes from 442,494 to 32,914 StableHLO lines
+and from 96 s to 3.8 s of CPU compile, and on the card the 2k serial row
+is 452.6 s again with compile in minutes. Its memory price was two lent
+full-width pairs per `folding_trunk` call — four calls, eight buffers —
+which `7436f87` threads as one workspace through the recycle scan, the
+coda and the confidence head (bitwise on the full program). Peak history
+at 2,096 tokens, like for like (`peak_bytes`): released 46,042 MiB →
+blocked 43,325 → streamed 34,702 → rolled 39,149 → threaded 39,290
+(neutral at 2k, bitwise). At 3,012 tokens the arena request went 82.45 → 74.87 → 70.72
+GiB across those steps; with ~13 GB of weights resident the pool needs
+the request near 70 GiB, and the next lever is the three f32 full-width
+pair values the attribution found at upstream's `z.float()` boundary
+(4,290 MiB each at 2k, in flight). `confidence_dtype=bfloat16` was
+re-measured at both sizes now that the peak sits in the confidence
+phase: −1,203 MiB on the unrolled program, nothing on the rolled one, and
+the identical 74.87 GiB request at 3k — it is not part of this story.
+
+**ESMFold2 under the mesh, and the 3,012-token flag.** On `742d158`,
+5DEI at 2,096 tokens: serial 452.6 s / 39,149 MiB; the grid 400.8 s /
+17,337 MiB per device; the row mesh 701.6 s / 17,337 — the same
+per-device peak under both layouts, because this port's CP peak is not
+the pair stack. The two CP arms are 0.026–0.042 Å from each other on all
+five samples and both sit 0.16–0.36 Å from serial on the three folded
+samples (chains permuted; `tmp/esm-cpu-cp/same_index_perm.py`), 22–24 Å
+on the two samples where every arm fails the homotetramer's assembly
+differently. 6ZTX at 3,012 tokens: the grid 770 s / 22,252 MiB, the row
+mesh 1,384 s / 23,071; deposited the grid read 4.11 30.15 4.00 4.19 3.88
+Å against the row mesh's 14.50 32.46 1.04 0.95 29.95 — the flag raised by
+the paper-artefact pass, reproduced to the hundredth across two
+snapshots. The CPU diagnosis found no defect: all four of the port's
+`shard_map` regions are clean at the 1,506-row tile (reference trunk
+3.1e-6 of scale, `condition_pair` bitwise, prologue rows 0 ULP, RNG
+bitwise; pinned by `106e8be` at the 2,096/3,012 geometries and
+mutation-tested against four planted faults), and the two layouts
+separate only in the language-model encoder's autocast stack, by 38–44
+bf16 ULP, flat from 2,048 to 3,072 tokens. What decided it was a second
+seed: at seed 202 the grid folds 6ZTX at 1.24 1.00 1.16 Å on three
+samples (pTM 0.93) where the row mesh at seed 101 had two. The 4 Å was a
+basin the grid's rounding tape reached on a chaotic target, not a fault
+the grid introduces at that size; `auto → 2d` stays, and ESMFold2's CP
+arms on 6ZTX are recorded across two seeds and two layouts.
+
+**Still open on the node**: Protenix 2k on the grid with the fused ring
+tile (row 2098); Boltz-2 6,568 tokens on the grid, XLA and fused ring
+(rows 2099/2100, 10 h each) — the last unmeasured ceiling.
+
 ### Boltz-2, 2,096 tokens (5DEI)
 
 | cell | wall s | vs released | peak MiB | same-index RMSD vs released |
