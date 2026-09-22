@@ -1880,9 +1880,8 @@ basin the grid's rounding tape reached on a chaotic target, not a fault
 the grid introduces at that size; `auto → 2d` stays, and ESMFold2's CP
 arms on 6ZTX are recorded across two seeds and two layouts.
 
-**Still open on the node**: Protenix 2k on the grid with the fused ring
-tile (row 2098); Boltz-2 6,568 tokens on the grid, XLA and fused ring
-(rows 2099/2100, 10 h each) — the last unmeasured ceiling.
+**Still open on the node**: Boltz-2 6,568 tokens on the grid, XLA and
+fused ring (rows 2099/2100, 10 h each) — the last unmeasured ceiling.
 
 ### Boltz-2, 2,096 tokens (5DEI)
 
