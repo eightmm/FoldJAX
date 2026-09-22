@@ -268,6 +268,14 @@ of the default:
   `-inf` there. The two therefore differ on rows the model masks away
   downstream, and nowhere else.
 
+Both of this port's ring entry points read the option: Boltz-2 reaches the
+ring through the trunk's context-parallel dispatcher *and* through the serial
+module's own branch, which is what the MSA stack's private
+`pairformer_no_seq_layer_forward` calls, and until the MSA entry read the
+scope every Boltz-2 row measured with this option -- the grid rows in
+`docs/scale-rows-master-2026-09-10.md` -- ran the fused tile at 94% of the
+ring's calls and the shipped body in the MSA stack.
+
 `xla` is the default and remains the program every 2-D measurement in this
 repository describes. The option is refused rather than downgraded: off the
 GPU backend, without tokamax installed, or without a 2-D layout to be a body

@@ -15,7 +15,11 @@ from foldjax.models._cp import (
     pair_row_spec,
     shard_pair_rows,
 )
-from foldjax.models._cp_attention import ring_triangle_attention_2d_from_pair
+from foldjax.models._cp_attention import (
+    resolve_ring_tile_kernel,
+    ring_tile_kernel,
+    ring_triangle_attention_2d_from_pair,
+)
 from foldjax.models.boltz2.models.primitives._common import (
     layer_norm as _shared_layer_norm,
 )
@@ -338,6 +342,16 @@ def _attention_ring_2d(
     The projections happen inside the ring's row block, which is why they are
     a closure here: one block of pair rows projects its own Q/K/V and gate,
     and nothing full-width stays live across the rotation but the output.
+
+    What one ring step evaluates its tile with comes from the scope rather
+    than from a signature
+    (:func:`~foldjax.models._cp_attention.ring_tile_kernel`), read here the
+    way the trunk's dispatcher reads it
+    (``triangle_attention_cp.triangle_attention_forward``). This port has two
+    entry points into the same ring -- that dispatcher for the Pairformer, and
+    this module's context-parallel branch for the MSA stack's own
+    ``pairformer_no_seq_layer_forward`` -- and a scope honoured at one of them
+    would report a fused prediction that was fused in the trunk only.
     """
 
     no_heads = tri_bias.shape[2]
@@ -379,6 +393,7 @@ def _attention_ring_2d(
         project=project,
         precision=precision,
         q_block=q_block,
+        tile_kernel=resolve_ring_tile_kernel(ring_tile_kernel()),
     )
     out = jnp.swapaxes(out, -2, -3)
     out = out.reshape(out.shape[:-2] + (c_hidden * no_heads,))

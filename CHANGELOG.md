@@ -166,6 +166,39 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **`triangle_attention_ring_kernel` now reaches Boltz-2's MSA stack and not
+  only its trunk.** This port enters the gather-free 2-D ring through two
+  modules: the trunk's Pairformer and pair-only Pairformer call the
+  context-parallel dispatcher (`triangle/triangle_attention_cp.py`), while the
+  MSA stack carries its own `pairformer_no_seq_layer_forward` and reaches the
+  same ring through the *serial* module's context-parallel branch
+  (`triangle/triangle_attention.py`). Only the first read the option's scope,
+  so `--option triangle_attention_ring_kernel=tokamax` ran the fused tile in
+  the trunk and the shipped two-pass body in every MSA pass -- a fused label
+  on a partly fused run, which is what the option's refusals exist to prevent.
+  Both entries now resolve the scope the same way, so the availability and
+  platform refusals, and the unchecked `shard_map` the Pallas tile needs,
+  reach both.
+
+  **The measured rows for this option predate the fix and therefore describe
+  94% of the ring**: Boltz-2 5DEI at 2,096 tokens on the 2x2 grid, 617.9 s
+  against the XLA grid's 943.4 s at the same peak and the same deposited
+  distances, was fused in the trunk only. What the MSA passes add is
+  unmeasured, and the option stays opt-in.
+
+  With the option at its default `xla` nothing moves: both ring entries at
+  both triangle directions, and the MSA stack in both of its layer spellings,
+  compile byte-identical metadata-stripped HLO with identical
+  `temp_size_in_bytes` on a 2x2 CPU mesh
+  (`tests/models/boltz2/scripts/cp_ring_tile_fingerprints.py`, run against
+  both source trees). With it on, a CPU census shows every MSA ring call site
+  asking the scope and the answer reaching the tile the ring evaluates, and
+  the ring with the tile resolved to tokamax's own portable implementation
+  matches the shipped ring to at most 2.4e-7 on values of order 1.7, on
+  rank-distinguishable inputs at 2x2 and 3x3 and in both triangle directions
+  -- outside the keyless rows, where the two bodies differ by documented
+  design and the gate asserts that difference rather than tolerating it.
+
 - **ESMFold2's pair stack compiles in a fraction of the time again.** The
   memory work that blocked the native pair stack spelled its blocks as Python
   `for` loops, so every block was traced and compiled separately: at 2,096
