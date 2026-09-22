@@ -103,7 +103,7 @@ def test_warn_proceeds_and_refuse_does_not() -> None:
     assert "Running anyway" in str(caught[0].message)
 
 
-@pytest.mark.parametrize("n_token", [1002, 2097])
+@pytest.mark.parametrize("n_token", [2095, 3013])
 def test_outside_the_domain_is_unknown(n_token: int) -> None:
     """3,012 tokens is censored, not fitted: the law reads 87.3 GiB there and
     the run's allocator asked 86 GiB before failing, but no completed run
