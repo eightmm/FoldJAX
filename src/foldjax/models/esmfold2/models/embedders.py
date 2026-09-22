@@ -22,6 +22,8 @@ import jax.numpy as jnp
 from foldjax.models._cp import shard_pair_rows
 from foldjax.models.esmfold2.models.primitives import layer_norm, linear
 from foldjax.models.esmfold2.models.trunk import (
+    LentBuffers,
+    _streamed_workspace,
     msa_pair_weighted_averaging,
     outer_product_mean,
     transition,
@@ -130,12 +132,22 @@ def msa_encoder_block(
     pair_mask: jnp.ndarray,
     is_final: bool,
     native_opm_params: Params | None = None,
+    workspace: LentBuffers | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """One `MSAEncoderBlock`.
 
     The final block has no MSA-side update at all -- upstream omits both
     submodules, so their keys are *absent* from the checkpoint rather than
     present and unused, and asking for them would raise.
+
+    `workspace` is the `trunk.LentBuffers` slot the folding trunk's block
+    loops write into. This block's two triangle updates are the same streamed
+    contraction, so handing them the same two destinations is what keeps the
+    MSA encoder from assembling its own: without one, `_assemble_row_blocks`
+    falls back to separate slices and a `concatenate`, which its own
+    measurement puts at 3.88 full-width arrays against 1.00 threaded. The
+    blocks are the same blocks either way -- only where they are written
+    changes -- so nothing here rounds differently.
     """
     dot = f"{prefix}." if prefix else ""
     # This block updates the pair outside `pair_update_block`, so it carries
@@ -171,6 +183,7 @@ def msa_encoder_block(
         outgoing=True,
         mask=pair_mask,
         native_autocast=native_opm_params is not None,
+        workspace=workspace,
     )
     pair = pair + triangle_multiplicative(
         pair,
@@ -179,6 +192,7 @@ def msa_encoder_block(
         outgoing=False,
         mask=pair_mask,
         native_autocast=native_opm_params is not None,
+        workspace=workspace,
     )
     pair = shard_pair_rows(
         pair
@@ -207,12 +221,26 @@ def msa_encoder(
     *,
     n_layers: int,
     native_opm_params: Params | None = None,
+    workspace: LentBuffers | None = None,
 ) -> jnp.ndarray:
     """`MSAEncoder`, returning the pair representation and discarding the MSA.
 
     Both embeddings are bias-free, so padded rows must already be zeroed by
     the caller -- upstream zeroes `msa_one_hot` against the mask before the
     call and relies on that here.
+
+    `workspace` is the same `trunk.LentBuffers` slot the four `folding_trunk`
+    calls thread between them. This stack's eight triangle updates are the
+    fifth site that runs the streamed contraction on a pair of this model's
+    own width, and it was the one call the slot never reached: without a
+    buffer to write into, each of its block loops stays a set of separate
+    slices and a `concatenate`, which is what put 33 live row blocks plus
+    their assembled result in the GPU peak set beside the trunk's own two
+    buffers. Lent the trunk's, the whole stack writes into those two.
+
+    Without a slot this is the function it was, instruction for instruction:
+    the rolled loop is not an improvement a caller gets for free, because a
+    destination it had to allocate costs more than the slices it replaces.
     """
     dot = f"{prefix}." if prefix else ""
     features = jnp.concatenate(
@@ -230,6 +258,34 @@ def msa_encoder(
     token_mask = msa_mask[:, :, 0].astype(bool)
     pair_mask = (token_mask[:, :, None] & token_mask[:, None, :]).astype(pair.dtype)
 
+    # One pair of destinations for the whole stack, allocated here rather than
+    # at the first block's loop: a `while`'s initial value, loop parameter and
+    # result are one colocated allocation XLA never lets another value reuse,
+    # and starting from the caller's -- dead by the time this runs -- is what
+    # merges this stack's chain into the trunk's instead of beginning another
+    # (`trunk._assemble_row_blocks`, `trunk._streamed_workspace`).
+    #
+    # Only when a slot was lent. `folding_trunk` makes its own pair whether or
+    # not it was given one, because it is the stack the buffers were sized for
+    # and every one of its layers writes into them; this stack is four blocks
+    # with an outer product and a weighted average between them, and a pair it
+    # allocated for itself measured *worse* than the separate slices -- 898.8
+    # MiB of arena against 806.4 on two blocks at 254 tokens, a loop's
+    # destination being an allocation nothing may reuse. Lent the trunk's
+    # there is no allocation to pay for, so the threading is the caller's
+    # decision and a caller without one gets the program this always had.
+    lent = (
+        None
+        if workspace is None or native_opm_params is None
+        else LentBuffers(
+            _streamed_workspace(
+                pair,
+                native_opm_params,
+                f"{dot}blocks.0.tri_mul_out._engine",
+                workspace.buffers,
+            )
+        )
+    )
     for index in range(n_layers):
         msa, pair = msa_encoder_block(
             msa,
@@ -240,7 +296,10 @@ def msa_encoder(
             pair_mask=pair_mask,
             is_final=index == n_layers - 1,
             native_opm_params=native_opm_params,
+            workspace=lent,
         )
+    if lent is not None and lent.buffers is not None:
+        workspace.buffers = lent.buffers
     return pair
 
 

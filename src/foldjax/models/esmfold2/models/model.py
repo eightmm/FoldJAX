@@ -996,6 +996,12 @@ def run_loops(
                 "msa_encoder",
                 n_layers=settings.msa_n_layers,
                 native_opm_params=msa_opm_params,
+                # The same slot the two `folding_trunk` calls either side of
+                # this one thread: the MSA stack's triangle updates are the
+                # same streamed contraction at the same pair width, and its
+                # block loops were the one set still assembling their own
+                # destinations.
+                workspace=lent_here,
             ).astype(injected.dtype)
             if settings.msa_encoder_overwrite:
                 injected = msa_pair

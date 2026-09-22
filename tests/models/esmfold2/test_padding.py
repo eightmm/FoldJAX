@@ -309,8 +309,9 @@ def test_deep_msa_tape_matches_default_loop_subsampling(
         *,
         n_layers,
         native_opm_params=None,
+        workspace=None,
     ):
-        del n_layers
+        del n_layers, workspace
         assert native_opm_params is None
         per_token = jnp.sum(deletion_value, axis=-1)
         return per_token[:, :, None, None] + per_token[:, None, :, None]

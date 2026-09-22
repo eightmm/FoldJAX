@@ -277,6 +277,49 @@ unless it says so here, in its own paragraph.
   the same stack on the unmodified tree when only the block size moves from
   64 rows to 63.
 
+- **ESMFold2's MSA encoder writes its triangle blocks into the trunk's two
+  buffers instead of concatenating its own.** The MSA stack is the fifth site
+  that runs the streamed contraction on a pair of this model's own width --
+  four blocks, two directions each -- and it was the one call
+  `trunk.LentBuffers` never reached. Without a buffer to lend it,
+  `_assemble_row_blocks` keeps the separate slices and the `concatenate`, and
+  a GPU peak-live attribution at 2,096 tokens found exactly that under
+  `embedders.py:167`: 33 live `bf16[1, 64, 2096, 256]` row blocks at 65.5 MiB
+  apiece beside the `bf16[1, 256, 2096, 2096]` result they are concatenated
+  into, 7,876 MiB of the 37,119 MiB peak in 89 buffers -- 3.67 pair widths,
+  against the 3.88 the separate-slice arrangement is measured at.
+
+  `msa_encoder` now takes the same slot `predict` threads through the four
+  `folding_trunk` calls, seeds it from the buffers the call before it is
+  finished with, and hands it down to every block. The blocks are the same
+  blocks in the same sizes and the same order; only where they are written
+  changes. Compiled by the GPU probe's own recipe on CPU, on the shipped
+  program with real weights and the released schedule,
+  `memory_analysis().temp_size_in_bytes` reads 4,634,957,824 ->
+  4,036,853,696 bytes at 254 tokens (-570.4 MiB) and 107,319,837,680 ->
+  101,398,769,456 at 2,096 (-5,647.0 MiB, which is 2.63 of that size's
+  2,145.1 MiB pair widths). The lowered program is 10% shorter and carries
+  fewer straight-line dots, so this buys compile time rather than spending it.
+
+  **Only when a slot is lent.** `folding_trunk` makes its own pair whether or
+  not it was given one; this stack does not, because a destination it
+  allocated for itself is an allocation nothing may reuse and measured
+  *worse* than the slices it replaces -- 898.8 MiB of arena against 806.4 on
+  two blocks at 254 tokens. So `msa_encoder` without a slot is the function
+  it was, instruction for instruction, and `predict` at 76 tokens lowers to
+  byte-identical StableHLO because nothing rolls below 128 tokens at all.
+
+  **Not bitwise**, and it is the same divergence rolling the trunk's own
+  loops already carried: XLA:CPU contracts a multiply and an add into an FMA
+  differently in straight-line code and in a loop body. On the released
+  four-block stack with real weights the rolled and separate forms differ by
+  1.25 bfloat16 units at 254 tokens and 2.00 at 499, against 1.00 for the
+  same stack on the same tree when only the block size moves from 64 rows to
+  63. The ESMFold2 CPU parity case is 1UBQ at 76 tokens, where the program is
+  byte-identical, so that gate is unchanged at 0.025820 A and is *not*
+  evidence about this change; what a card deposits at a size where the loops
+  do roll is unmeasured.
+
 - **Boltz-2 now refuses its fused attention and its fused GLU under a mesh at
   every entry, instead of raising from a kernel mid-run.** Two doors were
   open. `attention_backend=tokamax` with `cp_devices > 1` passed every check

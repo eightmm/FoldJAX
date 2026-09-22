@@ -1104,6 +1104,11 @@ def _released_predict_text(tokens: int, rows: int) -> str:
     two call sites would make them separate buffers for a reason this test is
     not about. Layer counts are cut to one apiece because the census counts
     call sites and not layers, and the released 48 would only make it slow.
+
+    The MSA stack is on. It is the fifth call site that runs the streamed
+    contraction at the pair's own width, and it is reached only when the
+    features carry an alignment, so a fixture without one would leave it out
+    of the count it is here to be in.
     """
     import dataclasses
 
@@ -1121,7 +1126,7 @@ def _released_predict_text(tokens: int, rows: int) -> str:
         lm_encoder_n_layers=1,
         coda_n_layers=1,
         confidence_n_layers=1,
-        msa_n_layers=None,
+        msa_n_layers=1,
         num_recycles=1,
         # Above one so the confidence head takes its sequential sample loop,
         # which is the fourth call site and the only one inside a second scan.
@@ -1151,6 +1156,10 @@ def _released_predict_text(tokens: int, rows: int) -> str:
         "atom_attention_mask": np.ones((1, atoms), dtype=np.float32),
         "atom_to_token": (np.arange(atoms, dtype=np.int64) // 3)[None],
         "distogram_atom_idx": (np.arange(tokens, dtype=np.int64) * 3)[None],
+        "msa": rng.integers(0, 20, (1, 3, tokens)).astype(np.int64),
+        "msa_attention_mask": np.ones((1, 3, tokens), dtype=np.float32),
+        "has_deletion": np.zeros((1, 3, tokens), dtype=np.float32),
+        "deletion_value": np.zeros((1, 3, tokens), dtype=np.float32),
     }
     hidden = np.zeros((1, tokens, 81, 2560), dtype=np.float32)
 
@@ -1174,12 +1183,14 @@ def _released_predict_text(tokens: int, rows: int) -> str:
 def test_the_released_forward_fills_two_pair_buffers_and_not_eight():
     """The count on the model itself, at every site the threading has to reach.
 
-    Four `folding_trunk` calls -- the LM encoder and the trunk inside the
+    Five call sites -- the LM encoder, the MSA stack and the trunk inside the
     recycle scan's body, the parcae coda in the entry function, the confidence
     head inside the sequential sample loop -- and one pair of buffers between
     them. Eight is what this read before `predict` threaded a
-    `trunk.LentBuffers` through all four, and it is what it reads again if any
-    one call stops being handed the previous one's.
+    `trunk.LentBuffers` through the four `folding_trunk` calls, and it is what
+    it reads again if any one call stops being handed the previous one's; four
+    is what the MSA stack makes it if it allocates its own rather than reusing
+    the ones the slot already holds.
 
     The three loops matter as much as the four calls: buffers a scan body
     allocates are that body's own, so the pair is made before the recycle scan
@@ -1214,3 +1225,108 @@ def test_a_lent_pair_is_reused_only_where_it_is_the_shape_the_loops_write():
         trunk._streamed_workspace(spread, params, "t._engine")
     )
     assert trunk.buffer_spec(fresh) != trunk.buffer_spec(made)
+
+
+# --- the fifth call site: the MSA encoder's own triangle updates -----------
+#
+# `embedders.msa_encoder_block` runs the same streamed contraction on the same
+# `[1, N, N, 256]` pair the folding trunk does, and it was the one stack the
+# `trunk.LentBuffers` slot never reached. Without a buffer to write into,
+# `_assemble_row_blocks` keeps the separate slices and the `concatenate`, so
+# every block held its row blocks and their assembled result live at once --
+# at 2,096 tokens that is what put 33 live `bf16[1, 64, 2096, 256]` blocks
+# (65.5 MiB each) beside a `bf16[1, 256, 2096, 2096]` concatenate result in
+# the GPU peak-live set, under `embedders.py:167`.
+#
+# Lent the slot the trunk already carries, the stack writes into those two
+# buffers instead. Measured on the shipped program, compiled by the GPU
+# probe's own recipe on CPU: `memory_analysis().temp_size_in_bytes` reads
+# 4,634,957,824 -> 4,036,853,696 bytes at 254 tokens and
+# 107,319,837,680 -> 101,398,769,456 at 2,096, the latter 5,647.0 MiB, which
+# is 2.63 of that size's 2,145.1 MiB pair widths.
+
+
+def _msa_stack(tokens: int, layers: int, separate: bool) -> dict[str, int]:
+    """The released MSA stack, lowered, with its block loops rolled or not.
+
+    Real weights for the same reason `_released_predict_text` uses them: the
+    lent buffers take their width from the checkpoint's own `proj_bundle`.
+    One block, which is `is_final` and so has no MSA-side submodules; the
+    census is about the pair-side block loops and not about how many of them
+    there are.
+    """
+    from foldjax.models.esmfold2.bridge import checkpoint
+    from foldjax.models.esmfold2.models import embedders
+    from foldjax.paths import weights_dir
+
+    directory = weights_dir("esmfold2")
+    if not (directory / checkpoint.WEIGHTS_NAME).exists():
+        pytest.skip("esmfold2 weights are not in the store")
+    params = {
+        name: value
+        for name, value in checkpoint.load_parameters(directory).items()
+        if name.startswith("msa_encoder.")
+    }
+    depth = 4
+    pair = jax.ShapeDtypeStruct((1, tokens, tokens, 256), jnp.bfloat16)
+
+    def run(p):
+        return embedders.msa_encoder(
+            p,
+            jnp.zeros((1, tokens, 451), jnp.bfloat16),
+            jnp.zeros((1, tokens, depth, 33), jnp.bfloat16),
+            jnp.zeros((1, tokens, depth), jnp.bfloat16),
+            jnp.zeros((1, tokens, depth), jnp.bfloat16),
+            jnp.ones((1, tokens, depth), jnp.float32),
+            params,
+            "msa_encoder",
+            n_layers=layers,
+            native_opm_params=params,
+            workspace=trunk.LentBuffers(),
+        )
+
+    jax.clear_caches()
+    with pytest.MonkeyPatch.context() as patch:
+        if separate:
+            _unrolled(patch)
+        text = jax.jit(run).lower(pair).as_text()
+    return {
+        "while": text.count("stablehlo.while"),
+        "concatenate": text.count("stablehlo.concatenate"),
+        "dot_general": text.count("stablehlo.dot_general"),
+    }
+
+
+@pytest.mark.slow
+def test_the_msa_stack_writes_into_the_buffers_instead_of_concatenating():
+    """The census at two token counts, with the arrangement it replaced beside it.
+
+    Rolled, the stack carries four `while`s -- the whole operand's loop and
+    the update's loop, in each of the block's two directions -- and its
+    `concatenate` count does not move between 254 and 499 tokens, because the
+    body is traced once whatever the block count is. Separate, there is no
+    `while` at all and the count grows with the tokens, which is the
+    arrangement whose live row blocks the GPU peak-live set named.
+
+    The separate arm is the tripwire and it is the shipped code's own other
+    branch -- the one a globally sharded blocked axis takes -- rather than a
+    reimplementation, so a census that measured nothing would show it by
+    reading the same number twice.
+    """
+    rolled = (_msa_stack(254, 1, False), _msa_stack(499, 1, False))
+    separate = (_msa_stack(254, 1, True), _msa_stack(499, 1, True))
+
+    assert rolled[0]["while"] == rolled[1]["while"] > 0, rolled
+    assert rolled[0]["concatenate"] == rolled[1]["concatenate"], rolled
+
+    assert separate[0]["while"] == separate[1]["while"] == 0, separate
+    assert separate[1]["concatenate"] > separate[0]["concatenate"], separate
+    for size in (0, 1):
+        assert rolled[size]["concatenate"] < separate[size]["concatenate"], (
+            rolled,
+            separate,
+        )
+        assert rolled[size]["dot_general"] < separate[size]["dot_general"], (
+            rolled,
+            separate,
+        )

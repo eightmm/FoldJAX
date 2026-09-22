@@ -883,15 +883,24 @@ def triangle_multiplicative(
     mask: jnp.ndarray | None = None,
     eps: float = 1e-5,
     native_autocast: bool = False,
+    workspace: LentBuffers | None = None,
 ) -> jnp.ndarray:
     """`TriangleMultiplicativeBlock`, reference path.
 
     The trunk's own stack calls `_triangle_multiplicative` instead, which is
-    this with the streamed route's two block-loop destinations threaded
-    through it; everything else is the same function, and a caller without
-    buffers to lend gets the separate-slice program this always had.
+    this with the streamed route's two block-loop destinations returned beside
+    the update rather than kept in a slot; everything else is the same
+    function, and a caller without buffers to lend gets the separate-slice
+    program this always had.
+
+    `workspace` is a `LentBuffers` for callers that are a stack rather than a
+    trunk -- the MSA encoder is the one in this model -- so that they can
+    thread the same two destinations through their own blocks without the
+    tuple return the trunk threads. The slot is read for what to lend and
+    written with what this call is finished with, exactly as `folding_trunk`
+    does with its own.
     """
-    return _triangle_multiplicative(
+    update, buffers = _triangle_multiplicative(
         pair,
         params,
         prefix,
@@ -899,8 +908,14 @@ def triangle_multiplicative(
         mask=mask,
         eps=eps,
         native_autocast=native_autocast,
-        workspace=None,
-    )[0]
+        workspace=None if workspace is None else workspace.buffers,
+    )
+    # Only what this call actually wrote: a call with nothing to roll never
+    # touched the lent pair, which is therefore still the dead one the next
+    # call should start from.
+    if workspace is not None and buffers is not None:
+        workspace.buffers = buffers
+    return update
 
 
 def _triangle_multiplicative(
