@@ -219,14 +219,18 @@ OPENDDE_FP32_POINTS = (
 #: row is quoted to). The true repeat is 0.5 MiB: the `confidence_dtype` arm
 #: read 46,042.3 against the control's 46,041.8 at the same size.
 ESMFOLD2_POINTS = (
-    (1003, None, 14733.3),
-    (2096, None, 46041.8),
+    # Refitted 2026-09-23 on the rolled block-loop program (main 30ce707):
+    # 5DEI at 2,096 (measured pass) and 6ZTX at 3,012 (measured pass, pool
+    # preallocated). The released program's 14,733.3 / 46,041.8 at
+    # 1,003 / 2,096 are superseded; 1,003 is not re-measured on this code.
+    (2096, None, 35023.9),
+    (3012, None, 69350.8),
 )
 
 #: The released 32-sample row at 2,096 tokens. A completed run, so the
 #: allowance has to admit it, but not a fit point: it is a different sample
 #: count, and the point of quoting it is that the peak barely noticed.
-ESMFOLD2_VALIDATION = ((2096, None, 46284.8),)
+ESMFOLD2_VALIDATION = ((2096, None, 35023.9 + (46284.8 - 46041.8)),)
 
 
 def _design(terms, points):
@@ -364,14 +368,13 @@ def fit_all() -> dict[str, dict]:
             (1902, 7876),
             repeat_spread=43_090.0 - 42_291.2,
         ),
-        # Fitted at 5 samples over 1,003-2,096 tokens; 3,012 is censored and
-        # outside. The law reads 89,364 MiB = 87.3 GiB there, and the 3,012
-        # row's allocator asked for 86 GiB before failing on this 95.6 GiB
-        # card -- consistent, and not fitted to.
+        # Fitted at 5 samples over 2,096-3,012 tokens on the rolled program
+        # (2026-09-23); the 32-sample validation row keeps the released
+        # program's 243.0 MiB sample spread on top of the new 2,096 point.
         "esmfold2": _calibrate(
             (("whole run", ("1", "n2")),),
             (ESMFOLD2_POINTS,),
-            (1003, 2096),
+            (2096, 3012),
             repeat_spread=(46_284.8 - 46_041.8) + 51.2,
         ),
     }

@@ -250,6 +250,7 @@ OPENFOLD3_UNCHUNKED_PEAK = PeakLaw(
 
 #: Measured later than the four laws above, so they carry their own date.
 _CALIBRATION_STRUCTURAL = "2026-09-16"
+_CALIBRATION_ESMFOLD2 = "2026-09-23"
 
 #: OpenDDE under the released bfloat16 trunk. **Keyed on the structural token
 #: count, not the residue count**: this port folds in structural-token space,
@@ -319,31 +320,35 @@ OPENDDE_FP32_PEAK = PeakLaw(
     calibration_id=f"opendde-fp32-{_CALIBRATION_STRUCTURAL}",
 )
 
-#: ESMFold2, whose peak is one arena: 14,733.3 MiB at 1,003 tokens and
-#: 46,041.8 at 2,096, both from the control arm of the rows transcribed at
-#: `models/esmfold2/models/model.py`'s ``confidence_dtype`` note.
+#: ESMFold2, refitted 2026-09-23 on the rolled block-loop program (main
+#: ``30ce707``): 35,023.9 MiB at 2,096 tokens (5DEI, measured pass) and
+#: 69,350.8 at 3,012 (6ZTX, measured pass with the pool preallocated). The
+#: released program read 14,733.3 / 46,041.8 at 1,003 / 2,096 and could not
+#: run 3,012 on one card; the blocked, rolled and lent-buffer trunk of
+#: `models/esmfold2/models/trunk.py` completes it, so the domain moves up to
+#: the two sizes that were measured on this code. 1,003 tokens is below the
+#: domain now and reads through the fit as an extrapolation.
 #:
 #: **There is no sample term, and that is measured rather than assumed.**
-#: Three places in this repository still describe this peak as
-#: ``num_samples * L^2 * 4*c_z``; that is the confidence head's own term, and
-#: `confidence_sample_sequential` -- on by default -- divides it away. What
-#: remains is the folding trunk, which has no sample axis at all: at 2,096
-#: tokens the peak is 46,041.8 MiB at 5 samples and 46,284.8 at 32, the
-#: released count, a 0.53% move. So the law is fitted at 5, declared valid to
-#: 32 through :func:`off_profile_reason`'s ``samples_validated``, and its
-#: allowance covers the 32-sample row.
+#: The confidence head's own ``num_samples * L^2 * 4*c_z`` is divided away
+#: by `confidence_sample_sequential` (on by default); what remains is the
+#: folding trunk, which has no sample axis: on the released program the
+#: 2,096-token peak moved 0.53% between 5 and 32 samples. The law is fitted
+#: at 5, declared valid to 32 through :func:`off_profile_reason`'s
+#: ``samples_validated``, and the allowance covers that row.
 #:
-#: The domain stops at 2,096 because that is the largest size this port has
-#: completed. 3,012 is censored and outside: the law reads 87.3 GiB there and
-#: the run's allocator asked for 86 GiB before failing on a 95.6 GiB card --
-#: consistent, and not fitted to.
+#: The 3,012-token point needs ``XLA_PYTHON_CLIENT_PREALLOCATE`` at its JAX
+#: default (true): with the pool grown on demand the same program fails on
+#: allocator fragmentation asking a 66.5 GiB contiguous arena while less
+#: than a tenth of the pool is in use. The law describes the program, not
+#: the allocator; the CLI leaves the JAX default in place.
 ESMFOLD2_PEAK = PeakLaw(
     model="esmfold2",
     profile="released schedule, 5-32 samples, sequential confidence head",
-    coeffs=(("whole run", (("1", 5434.59674), ("n2", 0.00924316111))),),
-    domain_tokens=(1003, 2096),
+    coeffs=(("whole run", (("1", 2793.12271), ("n2", 0.00733648819))),),
+    domain_tokens=(2096, 3012),
     allowance_bytes=295 * _MIB,
-    calibration_id=f"esmfold2-{_CALIBRATION_STRUCTURAL}",
+    calibration_id=f"esmfold2-{_CALIBRATION_ESMFOLD2}",
 )
 
 #: The sample count every law above was fitted at.

@@ -900,7 +900,7 @@ def test_every_law_names_the_sample_count_it_was_fitted_at() -> None:
         OPENFOLD3_UNCHUNKED_PEAK: ("5 samples", "2026-09-15"),
         OPENDDE_BF16_PEAK: ("5 samples", "2026-09-16"),
         OPENDDE_FP32_PEAK: ("5 samples", "2026-09-16"),
-        ESMFOLD2_PEAK: ("5-32 samples", "2026-09-16"),
+        ESMFOLD2_PEAK: ("5-32 samples", "2026-09-23"),
     }
     for law, (samples, date) in expected.items():
         assert samples in law.profile, law.calibration_id
@@ -931,8 +931,8 @@ def _exact_budget(law, n_token: int) -> int:
         (OPENDDE_BF16_PEAK, 1902),
         (OPENDDE_BF16_PEAK, 4034),
         (OPENDDE_FP32_PEAK, 1902),
-        (ESMFOLD2_PEAK, 1003),
         (ESMFOLD2_PEAK, 2096),
+        (ESMFOLD2_PEAK, 3012),
     ],
     ids=lambda value: str(value),
 )
@@ -1061,7 +1061,7 @@ def test_the_esmfold2_law_carries_no_sample_term_and_binds_at_32_samples() -> No
     that says the sample axis is not in this peak is what the widening rests
     on, and a count *below* five is still off profile.
     """
-    assert ESMFOLD2_PEAK.domain_tokens == (1003, 2096)
+    assert ESMFOLD2_PEAK.domain_tokens == (2096, 3012)
     assert memory_policy.off_profile_reason(num_samples=32) != ()
     assert memory_policy.off_profile_reason(num_samples=32, samples_validated=32) == ()
     assert memory_policy.off_profile_reason(num_samples=5, samples_validated=32) == ()
@@ -1104,9 +1104,9 @@ def test_an_over_budget_esmfold2_run_refuses_and_warn_runs_it_anyway() -> None:
         )
     assert decision.state == "over_budget"
     assert "Running anyway" in str(caught[0].message)
-    # 1,003 tokens fits the same budget, so the refusal above is about the
-    # size and not about the port.
-    assert _decide(ESMFOLD2_PEAK, 1003, 32 * _GIB).state == "fits"
+    # 2,096 tokens fits a 40 GiB budget, so the refusal above is about the
+    # budget and not about the port.
+    assert _decide(ESMFOLD2_PEAK, 2096, 40 * _GIB).state == "fits"
 
 
 def test_an_explicit_budget_is_what_the_new_ports_are_admitted_against() -> None:
@@ -1118,24 +1118,24 @@ def test_an_explicit_budget_is_what_the_new_ports_are_admitted_against() -> None
     else's budget.
     """
     budget = resolve_budget(
-        pool_bytes=90 * _GIB, card_bytes=96 * _GIB, override_gib=24
+        pool_bytes=90 * _GIB, card_bytes=96 * _GIB, override_gib=40
     )
     assert budget.source == "override"
-    assert budget.budget_bytes == 24 * _GIB
+    assert budget.budget_bytes == 40 * _GIB
     decision = memory_policy.admit(
         model="esmfold2",
-        n_token=1003,
+        n_token=2096,
         msa_rows=None,
         candidates=(("released", ESMFOLD2_PEAK),),
         budget=budget,
         mode="warn",
     )
     assert decision.state == "fits"
-    assert decision.threshold == int(24 * _GIB * memory_policy.ADMISSION_FRACTION)
+    assert decision.threshold == int(40 * _GIB * memory_policy.ADMISSION_FRACTION)
     record = memory_policy.recorded()
     assert record is not None
     assert record["budget_source"] == "override"
-    assert record["budget_bytes"] == 24 * _GIB
+    assert record["budget_bytes"] == 40 * _GIB
     assert record["pool_bytes"] == 90 * _GIB
     assert record["calibration_id"] == ESMFOLD2_PEAK.calibration_id
     # An override above the pool would admit a job the allocator refuses.
