@@ -986,6 +986,326 @@ def test_the_row_blocks_are_taken_inside_the_shard() -> None:
     assert "LOCAL_BLOCK_OK" in _run_grid_probe(_LOCAL_BLOCK_PROBE, 4)
 
 
+_DEPLOYMENT_GEOMETRY_PROBE = _FIXTURE + textwrap.dedent(
+    r"""
+    # The token counts the four-card node actually runs, rather than the
+    # handful of tokens the fixtures above can afford.
+    #
+    # Everything else in this file is at most 13 tokens on 2x2, where a
+    # device's tile is four rows: `_AUTOCAST_ROWS` divides nothing, the
+    # prologue's row block drops itself, and the pair transition's block
+    # loop never reaches its rolled form. The shapes that decide this port's
+    # deployment are 2,096 tokens -- a 1,048-row tile, sixteen blocks of 64
+    # and a tail of 24 -- and 3,012 -- a 1,506-row tile, twenty-three blocks
+    # and a tail of 34. This probe is the only place the grid is compared
+    # with the unsharded program at those sizes, and it exists because a
+    # 3,012-token four-card run folded about 4 A away from the row mesh's
+    # answer and nothing smaller reproduced it: the arms below agree to
+    # 6.3e-6 of the output's own scale, so whatever moved those coordinates
+    # is not the pair stack's arithmetic at this geometry.
+    #
+    # Two exact multiples ride along, 2,048 and 3,072, because a tail
+    # handled wrongly and a length handled wrongly are different faults and
+    # only the pair distinguishes them.
+    #
+    # Float32 and the reference pair stack deliberately: that is the trunk
+    # the mesh runs (`models/model.predict` gates native autocast on
+    # `cp_mesh() is None`), the row mesh is bit-identical to serial on it
+    # wherever the shard divides evenly, and a float32 residual has a floor
+    # small enough to be an assertion. The bfloat16 native stack's own
+    # spread at these sizes is tens of its format's units on *both* layouts
+    # and has no principled tolerance here.
+    import contextlib
+
+    from foldjax.models.esmfold2.models import trunk as trunk_module
+
+
+    @contextlib.contextmanager
+    def no_grid_path():
+        names = ("_cannon_contract", "_cp_pair_transition")
+        originals = {name: getattr(trunk_module, name) for name in names}
+
+        def refuse(*args, **kwargs):
+            raise AssertionError("the grid's schedule was reached without a grid")
+
+        for name in names:
+            setattr(trunk_module, name, refuse)
+        try:
+            yield
+        finally:
+            for name, value in originals.items():
+                setattr(trunk_module, name, value)
+
+
+    assert SIDE == 2, SIDE
+    # Local tiles: 1,506 = 23 x 64 + 34; 1,048 = 16 x 64 + 24; 1,536 and
+    # 1,024, which the block divides exactly.
+    for n in (3012, 2096, 3072, 2048):
+        pair, pair_mask, _, _ = inputs(n)
+        jax.clear_caches()
+        with no_grid_path():
+            reference = np.asarray(
+                jax.device_get(jax.jit(trunk_program())(pair, pair_mask))
+            )
+        scale = float(np.abs(reference).max())
+        assert scale > 0.0, scale
+
+        measured = {}
+        for layout in ("1d", "2d"):
+            jax.clear_caches()
+            guard = no_grid_path() if layout == "1d" else contextlib.nullcontext()
+            with guard, context_parallel(DEVICES, layout=layout):
+                value = jax.jit(trunk_program())(pair, pair_mask)
+                value.block_until_ready()
+                local = local_shape(value)
+                got = np.asarray(jax.device_get(value))
+            # The tile is what says the arm ran the program it is named for;
+            # a replicated answer would agree with the reference perfectly
+            # and assert nothing.
+            expected = (
+                (1, n // SIDE, n // SIDE, C)
+                if layout == "2d"
+                else (1, n // DEVICES, n, C)
+            )
+            assert local == expected, (n, layout, local, expected)
+            assert got.dtype == reference.dtype, (n, layout, got.dtype)
+            measured[layout] = float(np.abs(reference - got).max()) / scale
+
+        # Float32 reassociation, which is what a differently ordered sum of
+        # the same products costs. A schedule fault -- a tile routed to the
+        # wrong grid coordinate, a tail dropped, a mask read at a global
+        # index -- moves values by their own magnitude, which is four orders
+        # of magnitude above this. Measured 3.1e-6 (2-D) and 6.3e-6 (1-D) at
+        # 3,012 tokens; the 1-D arm is bit-identical at 2,048, 2,096 and
+        # 3,072, where its 4-way shard divides more evenly than 753 does.
+        for layout, relative in measured.items():
+            assert relative <= 1e-4, (n, layout, relative, scale)
+        print("n=%d relative=%s" % (n, measured))
+
+    # The native-autocast stack, which under a mesh is the language-model
+    # encoder alone -- `models/model.predict` gates the pair trunk's autocast
+    # on `cp_mesh() is None`, and it is the only caller that reaches
+    # `_triangle_prologue_blocked`, whose 64-row block is taken on a 1,506-row
+    # tile at 3,012 tokens and a 753-row shard on the row mesh.
+    #
+    # Here the two layouts genuinely differ, by tens of the output's own
+    # bfloat16 units, because they round differently: the grid sums over `k`
+    # in two 1,506-long accumulations and adds them with a compensating
+    # term, where the row mesh sums the whole 3,012 in one einsum chunked at
+    # 64 rows of the *global* output axis. There is no principled tolerance for
+    # that separation and this does not assert one. What it asserts is that
+    # the separation does not *step* with the token count -- it is the same
+    # at 2,096, where a 2,096-token four-card run agrees between layouts to
+    # four decimals of every confidence score, as at 3,012, where the same
+    # two arms fold about 4 A apart. A size-dependent branch introduced into
+    # the grid's native path is exactly what would break that, and it is the
+    # thing this geometry was opened to look for.
+    def native_stack():
+        def run(pair_in, mask_in):
+            return folding_trunk(
+                pair_in.astype(jnp.bfloat16),
+                TRUNK,
+                n_layers=LAYERS,
+                mask=mask_in,
+                native_autocast=True,
+            )
+
+        return run
+
+
+    separation = {}
+    for n in (3012, 2096):
+        pair, pair_mask, _, _ = inputs(n)
+        arms = {}
+        for layout in ("1d", "2d"):
+            jax.clear_caches()
+            with context_parallel(DEVICES, layout=layout):
+                value = jax.jit(native_stack())(pair, pair_mask)
+                value.block_until_ready()
+                local = local_shape(value)
+                arms[layout] = np.asarray(jax.device_get(value), np.float32)
+            expected = (
+                (1, n // SIDE, n // SIDE, C)
+                if layout == "2d"
+                else (1, n // DEVICES, n, C)
+            )
+            assert local == expected, (n, layout, local, expected)
+        scale = float(np.abs(arms["1d"]).max())
+        ulp = 2.0 ** (np.floor(np.log2(scale)) - 7)
+        separation[n] = float(np.abs(arms["1d"] - arms["2d"]).max()) / ulp
+        print("native n=%d separation=%.2f ulp" % (n, separation[n]))
+
+    # Measured 44.00 units at 3,012 and 38.75 at 2,096, a ratio of 1.14. The
+    # bound is loose because the quantity is a maximum over a bfloat16 stack
+    # and both arms are rounding, not because 1.14 is uncertain: what is
+    # being refused is a jump, and a schedule that started reading a tail or
+    # a bias wrongly at the larger tile would not land at 2x.
+    ratio = separation[3012] / separation[2096]
+    assert 0.5 <= ratio <= 2.0, (separation, ratio)
+
+    # That bound is a weak statement about a strong difference, so the
+    # prologue's own block -- the part of the native stack the grid's tile
+    # actually changes -- is checked directly, on the tile it is cut from
+    # rather than through two layers of a trunk. `_triangle_prologue_rows`
+    # is elementwise in the two token axes and contracts only over channels,
+    # so a block of rows *is* the whole computation for its own rows: a tail
+    # read at the wrong offset, or dropped, is a wrong answer and not a
+    # reordering, and the unblocked call on the same tile is its exact
+    # reference. 1,506 rows is the grid's tile at 3,012 tokens (23 blocks of
+    # 64 and a tail of 34) and 753 is the row mesh's shard there.
+    for rows_in_tile in (1506, 753, 1048):
+        tile, tile_mask, _, _ = inputs(rows_in_tile)
+        engine = "blocks.0.tri_mul_out._engine"
+        whole = trunk_module._triangle_prologue(
+            tile.astype(jnp.bfloat16), TRUNK, engine, tile_mask, 1e-5
+        )
+        blocked = trunk_module._triangle_prologue_rows(
+            tile.astype(jnp.bfloat16),
+            TRUNK,
+            engine,
+            tile_mask,
+            1e-5,
+            rows=trunk_module._AUTOCAST_ROWS,
+        )
+        for index, (a, b) in enumerate(zip(whole, blocked, strict=True)):
+            a, b = np.asarray(a, np.float32), np.asarray(b, np.float32)
+            scale = float(np.abs(a).max())
+            assert scale > 0.0, (rows_in_tile, index)
+            ulp = 2.0 ** (np.floor(np.log2(scale)) - 7)
+            difference = float(np.abs(a - b).max()) / ulp
+            # Measured 0.00 on every operand at every tile here: the block
+            # changes the `proj_bundle` GEMM's shape and nothing else, and
+            # at these widths that does not move a bfloat16 result. The
+            # bound is 1 unit rather than 0 because bit equality is not what
+            # the blocking promises.
+            assert difference <= 1.0, (rows_in_tile, index, difference, ulp)
+        print("prologue tile=%d blocked==whole" % rows_in_tile)
+
+    # The fourth `shard_map` this port enters, and the one every diffusion
+    # sample reads: the pair conditioning. Its row block is chosen from a
+    # byte budget rather than a fixed count, so the number of blocks is a
+    # function of the token count and of the layout -- at the released
+    # widths, 86 rows, which is 36 blocks serially, 9 on a 753-row row-mesh
+    # shard and 18 on a 1,506-row grid tile. The budget is lowered here so
+    # that C=8 reproduces those counts; the arms come out *bitwise* equal
+    # anyway, which is a stronger statement than the stage's own docstring
+    # claims and is the point of running it at this size.
+    from foldjax.models._cp import shard_pair_rows
+    from foldjax.models.esmfold2.models import diffusion as diffusion_module
+
+    rng = np.random.default_rng(11)
+    CONDITION = {
+        "c.z_input_norm.weight": arr(rng, 2 * C) * 0.1 + 1.0,
+        "c.z_input_norm.bias": arr(rng, 2 * C) * 0.1,
+        "c.z_proj.weight": arr(rng, C, 2 * C),
+    }
+    for index in range(2):
+        dot = "c.z_transitions.%d" % index
+        CONDITION[dot + ".norm.weight"] = arr(rng, C) * 0.1 + 1.0
+        CONDITION[dot + ".norm.bias"] = arr(rng, C) * 0.1
+        CONDITION[dot + ".a_proj.weight"] = arr(rng, 2 * C, C)
+        CONDITION[dot + ".b_proj.weight"] = arr(rng, 2 * C, C)
+        CONDITION[dot + ".out_proj.weight"] = arr(rng, C, 2 * C)
+
+
+    def conditioning():
+        def run(pair_in, encoding_in):
+            return shard_pair_rows(
+                diffusion_module.condition_pair(
+                    shard_pair_rows(pair_in),
+                    shard_pair_rows(encoding_in),
+                    CONDITION,
+                    "c",
+                    trunk_dtype=jnp.bfloat16,
+                )
+            )
+
+        return run
+
+
+    original_budget = diffusion_module._CONDITION_PAIR_BUDGET_BYTES
+    try:
+        for n in (3012, 2096):
+            pair, _, _, _ = inputs(n)
+            encoding = jnp.flip(pair, axis=2)
+            # Whatever budget gives this token count the released widths'
+            # own block: `4 * C` float32 columns of it, 86 rows at 3,012.
+            diffusion_module._CONDITION_PAIR_BUDGET_BYTES = 86 * n * 4 * C * 4
+            jax.clear_caches()
+            reference = np.asarray(
+                jax.device_get(jax.jit(conditioning())(pair, encoding))
+            )
+            for layout in ("1d", "2d"):
+                jax.clear_caches()
+                with context_parallel(DEVICES, layout=layout):
+                    value = jax.jit(conditioning())(pair, encoding)
+                    value.block_until_ready()
+                    local = local_shape(value)
+                    got = np.asarray(jax.device_get(value))
+                expected = (
+                    (1, n // SIDE, n // SIDE, C)
+                    if layout == "2d"
+                    else (1, n // DEVICES, n, C)
+                )
+                assert local == expected, (n, layout, local, expected)
+                assert np.array_equal(reference, got), (
+                    n,
+                    layout,
+                    float(np.abs(reference - got).max()),
+                )
+            print("conditioning n=%d bitwise" % n)
+    finally:
+        diffusion_module._CONDITION_PAIR_BUDGET_BYTES = original_budget
+
+    print("DEPLOYMENT_GEOMETRY_OK")
+    """
+)
+
+
+def test_the_grid_matches_the_unsharded_trunk_at_deployed_token_counts() -> None:
+    """2,096 and 3,012 tokens, where the row blocks are not a no-op.
+
+    The rest of this file runs at 8 and 13 tokens, which is every size a
+    mesh fixture can afford, and at those the local tile is smaller than the
+    64-row block: the prologue's block and the transition's rolled loop both
+    drop themselves, so the grid program the deployment runs is not the one
+    they check. This is the arm at the two token counts the four-card node
+    has numbers for, plus the exact multiples beside them, and it covers
+    every `shard_map` this port enters: the Cannon contraction and the pair
+    transition through the reference trunk -- which is what a mesh runs for
+    the 48-layer folding trunk -- the triangle prologue's local rows through
+    the native stack, and the diffusion pair conditioning on its own.
+
+    A couple of minutes, and it earns them: a 3,012-token four-card run
+    folded about 4 A away from the row mesh's answer, nothing smaller
+    reproduced it, and this is what rules out a length threshold and a
+    mishandled tail at that geometry rather than assuming 13 tokens speak
+    for 3,012.
+
+    Run against four deliberately broken copies of the pair stack, each of
+    which it must and does refuse:
+
+    ===============================  ==========================  ===========
+    fault                            caught by                   margin
+    ===============================  ==========================  ===========
+    a Cannon ring step dropped       reference trunk, 3,012      0.204 vs 1e-4
+    the transition's shard reading   reference trunk, 3,012      0.163 vs 1e-4
+    its columns as its rows
+    the prologue's mask sliced at a  prologue rows, 1,506 tile   126.5 vs 1 unit
+    global index, not the block's
+    the conditioning's encoding      conditioning, 3,012         27.8 vs bitwise
+    read at a global index
+    ===============================  ==========================  ===========
+
+    The third is why the prologue's block is checked directly rather than
+    through the trunk: that fault moves the native stack's two layouts from
+    44.00 units apart to 50.00, which the ratio bound above does not refuse.
+    """
+
+    output = _run_grid_probe(_DEPLOYMENT_GEOMETRY_PROBE, 4)
+    assert "DEPLOYMENT_GEOMETRY_OK" in output, output
+
+
 _ROLLED_TRANSITION_PROBE = textwrap.dedent(
     r"""
     # The pair transition's 64-row blocks are a `fori_loop` wherever the rows
