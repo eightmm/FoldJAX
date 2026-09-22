@@ -65,11 +65,15 @@ def _admit(n_token: int, *, budget, mode="refuse", num_samples=32, **kwargs):
 
 
 def test_a_measured_row_fits_the_card_it_was_measured_on() -> None:
-    """Both fitted rows ran inside a 95.6 GiB pool, so both must be admitted."""
+    """Both fitted rows ran on a 95.6 GiB card, so both must be admitted.
+
+    The 3,012-token row completed with the pool at 0.95 of the card; the law
+    describes the program, and at the CLI's 0.9 it still fits.
+    """
     budget = _budget(int(0.9 * 95.6 * _GIB))
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        for n_token in (1003, 2096):
+        for n_token in (2096, 3012):
             assert _admit(n_token, budget=budget).state == "fits"
 
 
