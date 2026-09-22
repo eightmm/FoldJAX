@@ -1891,6 +1891,64 @@ residues (2-D, 64.3 GiB), ESMFold2 4,100 tokens (2-D, 37.4 GiB). The
 fused-ring arm of the same row, and the per-family wall split at 2,096
 and 6,568 tokens that says where Boltz-2's five hours go, are queued.
 
+### Where Boltz-2's hours go, and ESMFold2 on one card at 3,012 tokens (2026-09-22/23)
+
+**The wall split.** A per-family timing harness (`foldjax-bench/wall-split/`,
+frozen real-shaped inputs, warm and synchronised, median of seven, times
+each repeated module once and multiplies by its call count from the
+checkpoint's layer stacks: 64 pairformer blocks × 11 trunk passes, 4 MSA
+blocks, 8 confidence layers × 5 samples, 24 token-transformer layers ×
+200 steps) reproduces Boltz-2's measured wall at 2,096 tokens to within 1%
+(2-D XLA: 951.9 s predicted against 943.4 measured; fused tile: 627.6
+against 618.0). On the 2×2 grid the two triangle attentions are 642 s of
+the 943 (68%) on XLA and 336 of 618 (54%) with the tile; the Cannon
+triangle multiplication 130 s; the diffusion token transformer 32 s; the
+MSA module 73 s. Per call the ring costs 433/479 ms on XLA against 154 ms
+for the serial XLA program on one card and 39–41 ms for cuEquivariance's
+fused attention — a quarter of the work per device, three times the
+latency: `resolve_ring_row_block` narrows the row block to 64 rows at
+2,096 tokens and 49 at 6,568 (a rule sized on OpenDDE's 12-head carry), so
+one ring step runs 16 (67) small tiles and their merges where the card
+has tens of gigabytes to spare. The unblocked ring
+(`triangle_attention_q_chunk=0`, the one spelling that escapes the rule)
+is the next measurement; a budget-aware block is the fix.
+
+**Boltz-2 at 6,568 tokens, the tile, and the default.** The fused-ring
+grid row (`b87731f`, the MSA module's ring now reading the option too)
+completed both passes at 7,321.5 s / 38,912 MiB per device against the
+XLA grid's 17,930 s / 50,904 (−59% wall, −24% peak); per chain against the
+deposited 6NYF chain both arms sit in the same band (XLA 4.96–6.88 Å,
+tile 5.54–6.02 — the eight-copy target is one neither folds well), and
+same-index they differ by 0.5–9.4 Å per chain, the large-size
+reduction-order divergence no serial control can arbitrate. At 2,096
+tokens the full-coverage row reads 601.8 s / 7,731 MiB, deposited
+identical, 0.014–0.038 Å from serial. On that evidence `239ecb8` makes the
+tile Boltz-2's default on a GPU 2×2 grid when tokamax is available
+(host-side resolution; explicit `xla` keeps the XLA tile; serial and 1-D
+untouched; the realised value is what the cache identity records).
+Protenix keeps `xla`: −39% wall but 0.11–0.25 Å from serial.
+
+**ESMFold2 completes 3,012 tokens on one card.** After the MSA stack was
+lent the trunk's block-loop buffers (`30ce707`; the attribution had shown
+33 separate 64-row slices co-live with their concatenation, 3.67 pair
+widths in the MSA-encoder phase), the 2,096-token serial row reads
+422.8 s / 35,024 MiB — against the released 451 s / 46,042, −6% wall and
+−24% peak, deposited identical — and 3,012 tokens completes at 870.8 s /
+69,351 MiB with the pool preallocated (`XLA_PYTHON_CLIENT_PREALLOCATE` at
+its JAX default). With the pool grown on demand, the setting every bench
+row uses to read peaks, the same program fails asking a 66.5 GiB
+contiguous arena while under a tenth of the pool is in use: allocator
+fragmentation, not capacity. The single-card ceiling moves from 2,096 to
+3,012 tokens; the admission law is refitted on the rolled program
+(`fb8a6ef`: 2,793 + 7.34e-3·N² MiB over 2,096–3,012). The 2,096-token
+series, like for like: released 46,042 → blocked 43,325 → streamed 34,702
+(unrolled, 805 s and a 62-minute compile) → rolled 39,149 → threaded
+39,290 → bf16 boundary 37,913 → MSA lend 35,024, at 423 s. A gate note:
+the port's CPU parity case is 76 tokens, below the 128-token floor at
+which the rolled loops engage, so "parity unchanged" on those commits
+was structural rather than measured; the accuracy gate for them is the
+deposited row.
+
 ### Boltz-2, 2,096 tokens (5DEI)
 
 | cell | wall s | vs released | peak MiB | same-index RMSD vs released |
