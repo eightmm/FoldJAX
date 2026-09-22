@@ -73,10 +73,11 @@ operand all-gather -- `f32[1, 128, N, N]` twelve times over, 20.6 GiB at 6.5k
 -- which the Cannon path replaces with half-width tiles. Because the other
 arms do not run, there is no serial-versus-1-D-versus-2-D parity arm at this
 size for this port: what is answered here is the per-device ceiling (item 2 of
-the deployment list below), not item 1. **The grid is also the slower layout
-for OpenFold3 and its wall time at ordinary sizes is unmeasured** -- there is
-no 2,096-token row yet -- and it is chosen for the memory ceiling per the
-project rule, the same trade the other two ports take.
+the deployment list below), not item 1. At 2,096 tokens the grid is measured too: 602.8 s / 6,955 MiB per device on
+the pre-fix program and 606.6 s / 7,250 after the transition and
+diffusion-chunk fixes, against 442.7 s / 11,489 for 1-D and 230.4 s / 13,990
+serial -- slower than 1-D, half its peak -- and it is chosen for the memory
+ceiling per the project rule, the same trade the other two ports take.
 
 **ESMFold2's grid is the only arm that finishes, and it is not slower.** Both
 pair axes go on the mesh, the triangle contraction runs the same Cannon
@@ -87,10 +88,15 @@ single one -- a folding-trunk pair tensor, quadratic in the token count and
 with no sample axis in it -- and a serial run exhausts 96 GiB at 3,012 tokens.
 On the four-card node at that size the grid completed both benchmark passes in
 30 minutes: 772 s and 23,430 MiB per device for five structures. The 1-D layout
-on the same four cards did not finish a single pass in one to two hours, at
-3,012 tokens or at 4,100, so **the comparison here is not a peak against a
-peak, it is a completion against a wall clock that ran out** -- there is no 1-D
-number to quote at either size. The mechanism is this trunk's own: the
+on the unrolled program of that day did not finish a pass in one to two hours;
+once the block loops were rolled (`2f5d825`) it does: 1,384 s / 23,071 MiB at
+3,012 tokens and 701.6 s / 17,337 at 2,096 (the grid: 770 s / 22,252 and
+400.8 s / 17,337), so **the grid is the faster layout on this port at both
+sizes and the per-device peak is the same under both** -- the peak is not the
+pair stack here. On 6ZTX at 3,012 tokens the two layouts reach different
+trunk basins at seed 101 (grid 4 Å on every chain, row mesh 1 Å on two
+samples) and the grid folds it at 1.0-1.2 Å at seed 202; the CPU probes pinned
+by `106e8be` find no defect at that geometry. The mechanism is this trunk's own: the
 language-model encoder's pair stack keeps a dense einsum and an all-reduce
 under the row mesh, which the Cannon schedule replaces with half-width tiles.
 Alongside the card, the arithmetic and the partitioning are checked on forced
@@ -233,7 +239,16 @@ further when one block's score tile would pass 8 GiB, floored at 8 rows. A
 non-positive value asks for one block, which is the unblocked ring and the
 program the ring lowered to before blocking existed.
 
-## The ring tile kernel (experimental, GPU only, unmeasured)
+## The ring tile kernel (experimental, GPU only; measured 2026-09-21/22)
+
+Measured on the node: Boltz-2 5DEI 2,096 tokens on the 2x2 grid 617.9 s /
+8,289 MiB per device with the tile against 943.4 s / 8,296 on XLA (-34%),
+deposited identical, same-index 0.013-0.030 Å from serial (rerun floor
+0.066); Protenix 339.4 s / 11,593 against 559.9 s / 11,572 (-39%), deposited
+in the same band but same-index 0.11-0.25 Å from serial (its triangle
+attention runs f32 on XLA; the tile is a bf16 kernel). Rows before `b87731f`
+ran the tile at 94% of ring call sites (the MSA module's ring did not read
+the option). Opt-in on both ports until a default is decided.
 
 Under a mesh every fused kernel in the trunk resolves to an XLA path, because
 a kernel that consumes the whole token axis cannot be partitioned, and that
@@ -290,7 +305,12 @@ dispatch, compares the outputs, and only then times a full prediction pass.
 Until it has run, the option is an implementation with a CPU-proved merge and
 no measurement.
 
-## The two local diffusion attentions (experimental, GPU only, unmeasured)
+## The two local diffusion attentions (experimental, GPU only; measured neutral)
+
+Measured on the node (Boltz-2 5DEI 2,096 tokens, 2x2 grid): `atom` 964 s,
+`token` 989 s, `atom+token` 953 s against 943 s on XLA, and 611 s with the
+ring tile on top against 618 s for the ring tile alone; deposited identical.
+The diffusion attention is not where the grid's time goes on this port.
 
 The section above recovers a fused kernel at the trunk's triangle attention.
 Boltz-2's *diffusion* module has two more attentions whose operands are
