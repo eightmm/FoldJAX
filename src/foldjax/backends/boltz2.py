@@ -124,6 +124,17 @@ def _ring_tile_kernel_scope(kernel: object):
     return ring_tile_kernel_scope(None if kernel is None else str(kernel))
 
 
+def _triangle_attention_grid_scope(grid: object):
+    """Enter the 2-D triangle-attention algorithm's scope for one prediction.
+
+    Imported lazily for the same reason the ring scope above is.
+    """
+
+    from foldjax.models._cp_attention import triangle_attention_grid_scope
+
+    return triangle_attention_grid_scope(None if grid is None else str(grid))
+
+
 def _cp_fused_attention_scope(request: object):
     """Enter the context-parallel fused-attention scope for one prediction.
 
@@ -317,6 +328,10 @@ def _padding_shape_profile(metadata: object) -> dict[str, object] | None:
 #: spellings are the same tuple, so the copy cannot drift.
 _RING_TILE_KERNELS: tuple[str, ...] = ("xla", "tokamax")
 
+#: The 2-D triangle-attention algorithms, copied for the same reason and
+#: pinned against `_cp_attention.TRIANGLE_ATTENTION_GRIDS` by the same test.
+_TRIANGLE_ATTENTION_GRIDS: tuple[str, ...] = ("ring", "gather")
+
 #: The context-parallel fused-attention sites a request may ask for, copied
 #: here for the reason above and pinned against the model tuple by the same
 #: test.
@@ -371,6 +386,9 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     # `_realised_ring_tile_kernel`, which is what decides, and note that this
     # entry is no longer "the default" on its own.
     "triangle_attention_ring_kernel": "xla",
+    # The released 2-D triangle attention. `gather` is opt-in and names its
+    # own namespace; spelling `ring` must select the one omitting it selects.
+    "triangle_attention_grid": "ring",
     # The same shape one level over: `off` is what a context-parallel run
     # ships, so spelling it must select the namespace omitting it selects.
     "cp_fused_attention": "off",
@@ -416,6 +434,21 @@ def _realised_ring_tile_kernel(kernel: object, *, grid: bool) -> str:
     from foldjax.models._cp_attention import ring_tile_kernel_available
 
     return "tokamax" if ring_tile_kernel_available() else "xla"
+
+
+def _realised_triangle_attention_grid(grid: object) -> str:
+    """The 2-D triangle-attention algorithm this run realises.
+
+    `ring` unless `gather` was asked for. There is no host probe here, unlike
+    `_realised_ring_tile_kernel`: an omitted option is the ring everywhere,
+    and request validation already refused `gather` off a 2-D grid. What
+    `gather` then runs locally -- cuEquivariance on a GPU, the XLA reference
+    elsewhere -- is `_cp_attention.resolve_gather_attention_body`'s decision,
+    which `predict` asks on the host before featurization so a GPU process
+    without cuEquivariance is refused before any work, not downgraded.
+    """
+
+    return "ring" if grid is None else str(grid)
 
 
 def _resolved_diffusion_width(chunk: Any, multiplicity: Any) -> Any:
@@ -489,6 +522,9 @@ class Boltz2Backend(Backend):
             # confidence -- would otherwise grow an argument none of them
             # reads. It is popped below, before the native call.
             "triangle_attention_ring_kernel",
+            # The same, one level up: which 2-D algorithm the triangle
+            # attentions run. Popped below, before the native call.
+            "triangle_attention_grid",
             # The same: two context-parallel diffusion attentions, neither
             # reachable from a signature, both entered through a scope that
             # `predict` opens. Popped below, before the native call.
@@ -565,6 +601,14 @@ class Boltz2Backend(Backend):
         # carries -- one value per process, which is how the experiment runs
         # its arms.
         "triangle_attention_ring_kernel",
+        # A different data movement and a different local body -- the
+        # streamed gather with cuEquivariance's kernel on a GPU, its XLA
+        # reference elsewhere -- so a different program. Which body `gather`
+        # realises is a function of the platform the runtime identity already
+        # records, so the algorithm is the whole of what the profile adds.
+        # Like the ring kernel it lives in a ContextVar no jit cache key
+        # carries: one value per process.
+        "triangle_attention_grid",
         # Different kernels at two diffusion attentions, so different
         # programs and different arithmetic. It forks the compilation-cache
         # namespace for that reason; like the ring kernel above it lives in a
@@ -669,9 +713,17 @@ class Boltz2Backend(Backend):
         # and an explicit `xla` on that grid keeps the entry an omitted option
         # used to write. Spelling `xla` instead would give one program two
         # namespaces, which is the `auto` mistake with the arms swapped.
+        #
+        # Under `gather` there is no ring, so there is no body to realise: an
+        # omitted kernel is `xla` -- stripped below, as on every ring-less run
+        # -- and never the fused tile a GPU grid would otherwise record.
+        grid_algorithm = _realised_triangle_attention_grid(
+            profile.get("triangle_attention_grid")
+        )
+        profile["triangle_attention_grid"] = grid_algorithm
         profile["triangle_attention_ring_kernel"] = _realised_ring_tile_kernel(
             profile.get("triangle_attention_ring_kernel"),
-            grid=resolved_cp_layout == "2d",
+            grid=resolved_cp_layout == "2d" and grid_algorithm == "ring",
         )
         resolved_attention = profile.get(
             "attention_backend", _RELEASED_COMPILE_DEFAULTS["attention_backend"]
@@ -977,6 +1029,28 @@ class Boltz2Backend(Backend):
                     "context-parallel triangle-attention ring; it needs "
                     "cp_layout=2d on a perfect-square cp_devices"
                 )
+        grid_algorithm = options.get("triangle_attention_grid")
+        if grid_algorithm is not None:
+            if grid_algorithm not in _TRIANGLE_ATTENTION_GRIDS:
+                raise ValueError(
+                    "triangle_attention_grid must be one of "
+                    f"{_TRIANGLE_ATTENTION_GRIDS}"
+                )
+            # The same two questions the ring kernel's check asks: whether a
+            # 2-D triangle attention exists at all, and -- new here -- whether
+            # the request also names a ring body the gather would not run.
+            if grid_algorithm != "ring" and square_grid_cp_layout(options) != "2d":
+                raise ValueError(
+                    "triangle_attention_grid selects the 2-D context-parallel "
+                    "triangle-attention algorithm; it needs cp_layout=2d on a "
+                    "perfect-square cp_devices"
+                )
+            if grid_algorithm == "gather" and ring_kernel not in (None, "xla"):
+                raise ValueError(
+                    "triangle_attention_ring_kernel selects a body of the "
+                    "ring, and triangle_attention_grid=gather runs no ring; "
+                    "drop one of the two"
+                )
         fused_attention = options.get("cp_fused_attention")
         if fused_attention is not None:
             if fused_attention not in _CP_FUSED_ATTENTION_REQUESTS:
@@ -1202,10 +1276,20 @@ class Boltz2Backend(Backend):
         # options `cache_profile` read, so the scope publishes the body the
         # recorded namespace names -- an omitted option is the fused tile on a
         # GPU grid and `xla` everywhere else.
+        grid_algorithm = _realised_triangle_attention_grid(
+            options.pop("triangle_attention_grid", None)
+        )
         ring_tile_kernel = _realised_ring_tile_kernel(
             options.pop("triangle_attention_ring_kernel", None),
-            grid=square_grid_cp_layout(options) == "2d",
+            grid=square_grid_cp_layout(options) == "2d" and grid_algorithm == "ring",
         )
+        if grid_algorithm == "gather":
+            # Refused here, before featurization, rather than at the first
+            # trace: a GPU process without cuEquivariance cannot run the body
+            # `gather` names there, and must not run the reference under it.
+            from foldjax.models._cp_attention import resolve_gather_attention_body
+
+            resolve_gather_attention_body()
         # And one level over: these name two context-parallel diffusion
         # attentions, and the signatures that could carry them are the atom
         # adapter's and the token tile's.
@@ -1262,6 +1346,7 @@ class Boltz2Backend(Backend):
         with (
             matmul_precision(),
             _ring_tile_kernel_scope(ring_tile_kernel),
+            _triangle_attention_grid_scope(grid_algorithm),
             _cp_fused_attention_scope(fused_attention),
         ):
             output = native.predict(**native_options)

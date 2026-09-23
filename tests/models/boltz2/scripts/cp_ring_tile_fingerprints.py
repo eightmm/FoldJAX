@@ -17,6 +17,13 @@ every line must be identical across the two.
     XLA_FLAGS=--xla_force_host_platform_device_count=4 \
     PYTHONPATH=<tree>/src python <this file>
 
+`--grid ring` runs every arm inside `triangle_attention_grid_scope("ring")`
+and must print the lines the omitted option prints; `--grid gather` prints the
+gather programs, which are expected to differ. The serial arms (no mesh, both
+entries, both directions) follow the six mesh arms, so a change that moved the
+serial program would show up here too; a tree without the scope can still run
+the default, which is how the lines are compared against the parent commit.
+
 The hash is over the HLO text with source metadata stripped, the way
 `cp_fused_attention_fingerprints.py` does it: `metadata={...}` and
 `stack_frame_id=N` carry file paths and line numbers, so a comment added above
@@ -28,6 +35,8 @@ drift.
 
 from __future__ import annotations
 
+import argparse
+import contextlib
 import hashlib
 import re
 
@@ -80,7 +89,24 @@ def _arrays(rng):
     return arr, norm, weight
 
 
-def main() -> int:
+def _grid_scope(grid: str | None):
+    if grid is None:
+        return contextlib.nullcontext()
+    from foldjax.models._cp_attention import triangle_attention_grid_scope
+
+    return triangle_attention_grid_scope(grid)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--grid",
+        choices=("ring", "gather"),
+        default=None,
+        help="enter triangle_attention_grid_scope with this value (default: "
+        "no scope, the omitted option)",
+    )
+    args = parser.parse_args(argv)
     rng = np.random.default_rng(20260922)
     arr, norm, weight = _arrays(rng)
 
@@ -178,7 +204,7 @@ def main() -> int:
     }
 
     assert jax.device_count() == DEVICES, jax.devices()
-    with context_parallel(DEVICES, layout="2d"):
+    with context_parallel(DEVICES, layout="2d"), _grid_scope(args.grid):
         # The two ring entries, at both triangle directions. A fresh closure
         # per arm: `jax.jit` keys its cache on the callable, so a reused one
         # would replay the first arm's program.
@@ -222,6 +248,25 @@ def main() -> int:
                 emb,
                 feats,
             )
+
+    # The serial program both entries run with no mesh: what a change to the
+    # 2-D dispatch must not touch.
+    with _grid_scope(args.grid):
+        for name, entry in (
+            ("msa_serial", serial_triangle.triangle_attention_forward),
+            ("trunk_serial", trunk_triangle.triangle_attention_forward),
+        ):
+            for direction in (True, False):
+                def one(params, x, mask, entry=entry, direction=direction):
+                    return entry(params, x, mask, starting=direction)
+
+                _report(
+                    f"{name}_{'start' if direction else 'end'}",
+                    jax.jit(one),
+                    attention,
+                    z,
+                    pair_mask,
+                )
     return 0
 
 

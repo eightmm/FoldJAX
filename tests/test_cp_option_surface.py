@@ -445,3 +445,80 @@ def test_the_released_fused_value_shares_the_namespace_omitting_it_selects(
     for value, digest in digests.items():
         assert digest != profile(), value
     assert len({str(sorted(d.items())) for d in digests.values()}) == 3
+
+
+# --- triangle_attention_grid (Boltz-2 only) ----------------------------------
+
+
+def test_the_grid_algorithm_vocabulary_is_the_model_s_own() -> None:
+    from foldjax.backends import boltz2
+    from foldjax.models._cp_attention import TRIANGLE_ATTENTION_GRIDS
+
+    assert boltz2._TRIANGLE_ATTENTION_GRIDS == TRIANGLE_ATTENTION_GRIDS
+
+
+def test_the_gather_grid_is_reachable_on_a_2d_request(job) -> None:
+    resolve_request(
+        _ring_request("boltz2", job, "xla", triangle_attention_grid="gather")
+    )
+
+
+def test_the_gather_grid_is_refused_where_it_cannot_be_honoured(job) -> None:
+    """Off the grid, misspelled, or beside a ring body it would not run."""
+
+    with pytest.raises(ValueError, match="triangle_attention_grid"):
+        resolve_request(
+            _ring_request("boltz2", job, "xla", triangle_attention_grid="rotate")
+        )
+    for serial in ({"cp_devices": 1, "cp_layout": "auto"}, {"cp_layout": "1d"}):
+        with pytest.raises(ValueError, match="cp_layout=2d"):
+            resolve_request(
+                _ring_request(
+                    "boltz2", job, "xla", triangle_attention_grid="gather", **serial
+                )
+            )
+    with pytest.raises(ValueError, match="runs no ring"):
+        resolve_request(
+            _ring_request("boltz2", job, "tokamax", triangle_attention_grid="gather")
+        )
+
+
+@pytest.mark.parametrize("model", ["protenix", "openfold3"])
+def test_a_port_without_the_grid_option_refuses_it(model: str, job) -> None:
+    request = _request(model, job)
+    with pytest.raises(ValueError, match="triangle_attention_grid"):
+        resolve_request(
+            PredictionRequest(
+                model=model,
+                input=request.input,
+                weights=request.weights,
+                options={**request.options, "triangle_attention_grid": "gather"},
+            )
+        )
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_boltz2_gather_forks_the_namespace_and_drops_the_ring_body(
+    available: bool, job, tmp_path, monkeypatch
+) -> None:
+    """`ring` spelled is omission; `gather` is its own program.
+
+    Under `gather` there is no ring, so an omitted ring kernel must not
+    record the fused tile even on a GPU grid (the ``available=True`` arm,
+    which is the one that can fail).
+    """
+
+    _pin_fused_tile(monkeypatch, available)
+
+    def profile(**options):
+        return _ring_profile("boltz2", job, tmp_path, **options)
+
+    assert "triangle_attention_grid" not in profile()
+    assert profile(triangle_attention_grid="ring") == profile()
+    gather = profile(triangle_attention_grid="gather")
+    assert gather["triangle_attention_grid"] == "gather"
+    assert "triangle_attention_ring_kernel" not in gather
+    assert gather != profile()
+    assert gather == profile(
+        triangle_attention_grid="gather", triangle_attention_ring_kernel="xla"
+    )

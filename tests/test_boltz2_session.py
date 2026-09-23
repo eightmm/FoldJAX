@@ -398,6 +398,14 @@ def test_cache_defaults_are_pinned_to_the_native_predict_signature() -> None:
 
     assert released.pop("cp_fused_attention") == cp_fused_attention()
     assert "cp_fused_attention" not in signature.parameters
+    # `triangle_attention_grid` is the fourth: it names the 2-D triangle
+    # attention's algorithm, which no signature between the adapter and the
+    # two 2-D entries carries, and it travels in a ContextVar from
+    # `Boltz2Backend.predict`. Read from the scope, not restated.
+    from foldjax.models._cp_attention import triangle_attention_grid
+
+    assert released.pop("triangle_attention_grid") == triangle_attention_grid()
+    assert "triangle_attention_grid" not in signature.parameters
 
     actual = {name: signature.parameters[name].default for name in released}
 
@@ -501,6 +509,70 @@ def test_predict_hands_the_ring_scope_the_body_it_resolved(
     # And off the grid there is no ring to be a body of, card or no card.
     assert run(True) == "xla"
     assert run(True, cp_devices=4, cp_layout="1d") == "xla"
+
+
+def test_predict_hands_the_grid_scope_the_algorithm_it_resolved(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`triangle_attention_grid`, read from inside the native call.
+
+    Under `gather` the ring scope must publish the portable `xla` even where
+    the card could run the fused tile: no ring runs, so a `tokamax` there
+    would be a word describing nothing. And the host-side body resolution
+    runs before the native call, so a GPU process without cuEquivariance is
+    refused before featurization.
+    """
+
+    from foldjax.models import _cp_attention
+    from foldjax.models._cp_attention import (
+        ring_tile_kernel,
+        triangle_attention_grid,
+    )
+
+    seen: list[tuple[str, str]] = []
+
+    def fake_predict(**kwargs):
+        seen.append((triangle_attention_grid(), ring_tile_kernel()))
+        output_dir = Path(kwargs["out_dir"])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        structure = output_dir / "native.cif"
+        structure.write_text("data_job\n")
+        return {
+            "coords": np.zeros((1, 2, 3)),
+            "plddt": np.ones((1, 2)),
+            "iptm": np.asarray([0.5]),
+            "out_path": structure,
+        }
+
+    monkeypatch.setattr(
+        backend_module,
+        "import_module",
+        lambda name: SimpleNamespace(predict=fake_predict),
+    )
+    monkeypatch.setattr(
+        "foldjax.models._cp_attention.ring_tile_kernel_available", lambda: True
+    )
+
+    def run(**options) -> tuple[str, str]:
+        base = _request(tmp_path)
+        Boltz2Backend().predict(
+            dataclasses.replace(
+                base, num_seeds=None, options={**base.options, **options}
+            )
+        )
+        return seen.pop()
+
+    assert run(cp_devices=4) == ("ring", "tokamax")
+    assert run(cp_devices=4, triangle_attention_grid="ring") == ("ring", "tokamax")
+    assert run(cp_devices=4, triangle_attention_grid="gather") == ("gather", "xla")
+
+    def refused() -> str:
+        raise RuntimeError("triangle_attention_grid='gather' needs cuEquivariance")
+
+    monkeypatch.setattr(_cp_attention, "resolve_gather_attention_body", refused)
+    with pytest.raises(RuntimeError, match="gather"):
+        run(cp_devices=4, triangle_attention_grid="gather")
+    assert not seen
 
 
 def test_pair_residual_namespace_records_the_width_not_the_spelling(
