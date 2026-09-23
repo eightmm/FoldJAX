@@ -17,6 +17,7 @@ from foldjax.models._cp import (
     shard_pair_rows,
     shard_single,
 )
+from foldjax.models._cp_attention import triangle_attention_grid
 from foldjax.models.openfold3 import inference as inf
 from foldjax.models.openfold3.data.featurize import (
     _COMPACT_MSA_INDICES,
@@ -272,6 +273,7 @@ def compile_streamed_predict(
                 cache_scope=scope,
                 augmentation_taped=augmentation is not None,
                 deterministic=deterministic,
+                triangle_attention_grid=triangle_attention_grid(),
             )
             bounded = inf._persistent_cache_is_bounded(scope)
             token = inf.inspect_cache_scope(scope, repair_atime=bounded)

@@ -41,6 +41,7 @@ from foldjax.models._cp import (
 from foldjax.models._cp import (
     cp_shards as _active_cp_shards,
 )
+from foldjax.models._cp_attention import triangle_attention_grid
 from foldjax.models._glu import GLU_BACKENDS
 from foldjax.models.openfold3.data.compact_categories import (
     COMPACT_REF_ATOM_CATEGORIES_MARKER,
@@ -1774,6 +1775,14 @@ class _PredictGraphIdentity:
     #: handed the program compiled without it. See
     #: ``foldjax.models._compile_policy``.
     deterministic: bool = False
+    #: The 2-D triangle-attention algorithm the trace ran under -- read from
+    #: its scope (:func:`foldjax.models._cp_attention.triangle_attention_grid`)
+    #: while tracing, the way ``triangle_kernel`` is. A choice no argument
+    #: carries, so it partitions the pool: a ``gather`` run must never be
+    #: handed the ring program a previous call in this process compiled.
+    #: ``ring`` by default, so every identity built before it existed is
+    #: unchanged.
+    triangle_attention_grid: str = "ring"
 
 
 def _validated_representative_atoms(
@@ -2274,6 +2283,7 @@ def compile_predict(
                 cache_scope=scope,
                 augmentation_taped=augmentation_tape is not None,
                 deterministic=deterministic,
+                triangle_attention_grid=triangle_attention_grid(),
             )
             bounded_cache = _persistent_cache_is_bounded(scope)
             cache_token = inspect_cache_scope(scope, repair_atime=bounded_cache)

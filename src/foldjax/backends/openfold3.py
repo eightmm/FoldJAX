@@ -76,6 +76,11 @@ _COMPILE_OPTIONS = (
     # atom-graph programs must not share one cache namespace.
     "cp_atom_windows",
     "triangle_kernel",
+    # The 2-D triangle-attention algorithm: the streamed gather is a different
+    # data movement and a different local body -- cuEquivariance's kernel on a
+    # GPU, its XLA reference elsewhere -- so a different program. Recorded
+    # only when it departs from the released `ring`.
+    "triangle_attention_grid",
     "glu_backend",
     "all_arrays",
     # Two runs that differ only in reduction policy compile different
@@ -150,6 +155,31 @@ _GLU_BACKENDS = GLU_BACKENDS
 #: a literal there, flipping this default would silently alias the *other*
 #: backend into the omitted option's namespace.
 _DEFAULT_GLU_BACKEND = "xla"
+
+#: The 2-D triangle-attention algorithms, copied rather than imported from
+#: `models/_cp_attention.py`, which imports JAX, for the reason
+#: `_GLU_BACKENDS` gives; `tests/test_cp_option_surface.py` pins the copy.
+#: `ring` is the released program.
+_TRIANGLE_ATTENTION_GRIDS: tuple[str, ...] = ("ring", "gather")
+
+
+def _cp_grid_layout(options: dict[str, Any]) -> str | None:
+    """The layout this request's mesh is built with, or ``None`` serially.
+
+    This port's ``auto`` is the square grid on a perfect-square count
+    (`models/openfold3/inference.resolve_cp_layout`), the rule `cache_profile`
+    below records; a count that is not a number is left to the config to
+    refuse, and reads as serial here.
+    """
+
+    try:
+        shards = int(options.get("cp_devices", 1))
+    except (TypeError, ValueError):
+        return None
+    if shards <= 1:
+        return None
+    layout = str(options.get("cp_layout", "auto"))
+    return square_grid_auto_layout(shards) if layout == "auto" else layout
 
 #: ``released_config`` values whose explicit spellings are identical to leaving
 #: the public request unset.  Keep these lightweight copies beside the backend
@@ -276,6 +306,18 @@ def _resolved_diffusion_chunk_size(
         return requested
 
 
+def _triangle_attention_grid_scope(grid: str):
+    """Enter the 2-D triangle-attention algorithm's scope for one prediction.
+
+    Imported lazily: `models/_cp_attention.py` imports JAX, and resolving a
+    cache directory must not.
+    """
+
+    from foldjax.models._cp_attention import triangle_attention_grid_scope
+
+    return triangle_attention_grid_scope(grid)
+
+
 def _compile_enabled(options: dict[str, Any]) -> bool:
     """Consume ``no_compile`` without applying Python's truthiness coercion."""
     return not _strict_boolean(options.pop("no_compile", False), name="no_compile")
@@ -300,6 +342,10 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             "cp_layout",
             "glu_backend",
             "no_compile",
+            # Which 2-D triangle-attention algorithm runs; carried to both 2-D
+            # entries by a scope `predict` enters, since no signature between
+            # here and them has a use for it.
+            "triangle_attention_grid",
             "pair_chunk_size",
             # Admission against this card's own ceiling. Neither is a compile
             # option: they decide whether the run starts, never what it
@@ -474,6 +520,16 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         profile["triangle_kernel"] = resolve_triangle_kernel(
             options.get("triangle_kernel"), cp_shards=cp_shards
         )
+        # `ring` is what an omitted option runs, so spelling it names the
+        # namespace omitting it names; `gather` is its own program. What
+        # `gather` realises locally is a function of the platform the runtime
+        # identity already records.
+        if str(options.get("triangle_attention_grid") or "ring") == "ring":
+            profile.pop("triangle_attention_grid", None)
+        else:
+            profile["triangle_attention_grid"] = str(
+                options["triangle_attention_grid"]
+            )
         # The rollout width, recorded as the value the run resolves to and
         # never stripped -- the same rule the two dtypes above follow, and for
         # the same reason. An omitted option resolved to the unchunked rollout
@@ -554,6 +610,22 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
                 raise ValueError(
                     f"glu_backend must be one of {_GLU_BACKENDS}; got {backend!r}"
                 )
+        grid_algorithm = options.get("triangle_attention_grid")
+        if grid_algorithm is not None:
+            if grid_algorithm not in _TRIANGLE_ATTENTION_GRIDS:
+                raise ValueError(
+                    "triangle_attention_grid must be one of "
+                    f"{_TRIANGLE_ATTENTION_GRIDS}"
+                )
+            # Whether a 2-D triangle attention exists at all. There is no
+            # ring-body option on this port to conflict with, and which body
+            # `gather` runs locally is a host question `predict` asks.
+            if grid_algorithm != "ring" and _cp_grid_layout(options) != "2d":
+                raise ValueError(
+                    "triangle_attention_grid selects the 2-D context-parallel "
+                    "triangle-attention algorithm; it needs cp_layout=2d (or "
+                    "auto) on a perfect-square cp_devices"
+                )
 
     def apply_sampling(self, request: PredictionRequest) -> dict[str, Any]:
         """Translate neutral semantics that differ from OpenFold3's literals."""
@@ -614,6 +686,17 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         # anyway would report a deterministic run that was not one.
         compile_it = _compile_enabled(options)
         deterministic = bool(options.pop("deterministic", False))
+        # Out before the leftover-option check: carried by a scope. The
+        # vocabulary and the grid were checked by `validate_native_options`;
+        # what planning cannot know is asked here, on the host: a GPU process
+        # without cuEquivariance cannot run the body `gather` names there and
+        # must not run the reference under it, so it is refused before
+        # featurization rather than at the first trace.
+        grid_algorithm = str(options.pop("triangle_attention_grid", None) or "ring")
+        if grid_algorithm == "gather":
+            from foldjax.models._cp_attention import resolve_gather_attention_body
+
+            resolve_gather_attention_body()
         if deterministic and not compile_it:
             raise ValueError(
                 "deterministic reductions are carried by the compiled graph; "
@@ -936,7 +1019,12 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         # `_default_backend()` reads this environment variable per call. Keep
         # it set through tracing/execution so it reaches the template stack and
         # confidence head as well as the trunk, then restore the host value.
-        with matmul_precision(), _triangle_backend(kernel), compile_cache:
+        with (
+            matmul_precision(),
+            _triangle_backend(kernel),
+            _triangle_attention_grid_scope(grid_algorithm),
+            compile_cache,
+        ):
             if padding_plan is not None:
                 from foldjax.models.openfold3.streaming import compile_streamed_predict
 

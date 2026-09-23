@@ -533,6 +533,69 @@ def test_an_ordinary_request_runs_the_runner_rather_than_the_parser(
     )
 
 
+def test_protenix_predict_hands_the_grid_scope_the_algorithm_it_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`triangle_attention_grid`, read from inside the native call.
+
+    Carried by a scope rather than a flag, so the configuration and the argv
+    are the ones an omitted option builds; the body `gather` needs is resolved
+    on the host before the runner (featurization included) is reached, so a
+    GPU process without cuEquivariance is refused before any work.
+    """
+
+    from foldjax.models import _cp_attention
+    from foldjax.models._cp_attention import triangle_attention_grid
+
+    seen: list[str] = []
+
+    def run_prediction(config: Any, **_keywords: Any) -> list[Path]:
+        seen.append(triangle_attention_grid())
+        return []
+
+    double = SimpleNamespace(
+        PREPARED_PARAMS_LOADER_API=True,
+        _load_prepared_params=lambda path, dtype: None,
+        main=lambda argv, **_keywords: [],
+        run_prediction=run_prediction,
+        PredictionConfig=PROTENIX.runner.PredictionConfig,
+    )
+    monkeypatch.setattr(
+        "foldjax.backends.protenix.import_module", lambda _name: double
+    )
+    grid = {"cp_devices": 4, "cp_layout": "2d"}
+
+    def run(**options: Any) -> str:
+        ProtenixBackend().predict(_request(tmp_path, PROTENIX, options=options))
+        return seen.pop()
+
+    assert run(**grid) == "ring"
+    assert run(**grid, triangle_attention_grid="ring") == "ring"
+    assert run(**grid, triangle_attention_grid="gather") == "gather"
+    omitted = ProtenixBackend()._native_invocation(
+        _request(tmp_path, PROTENIX, options=grid)
+    )
+    gathered = ProtenixBackend()._native_invocation(
+        _request(
+            tmp_path, PROTENIX, options={**grid, "triangle_attention_grid": "gather"}
+        )
+    )
+    assert gathered.argv == omitted.argv
+    assert gathered.config_fields == omitted.config_fields
+    assert (omitted.triangle_attention_grid, gathered.triangle_attention_grid) == (
+        "ring",
+        "gather",
+    )
+
+    def refused() -> str:
+        raise RuntimeError("triangle_attention_grid='gather' needs cuEquivariance")
+
+    monkeypatch.setattr(_cp_attention, "resolve_gather_attention_body", refused)
+    with pytest.raises(RuntimeError, match="gather"):
+        run(**grid, triangle_attention_grid="gather")
+    assert not seen
+
+
 def test_protenix_extra_native_argv_keeps_going_through_the_parser(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

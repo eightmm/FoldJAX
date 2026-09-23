@@ -447,54 +447,154 @@ def test_the_released_fused_value_shares_the_namespace_omitting_it_selects(
     assert len({str(sorted(d.items())) for d in digests.values()}) == 3
 
 
-# --- triangle_attention_grid (Boltz-2 only) ----------------------------------
+# --- triangle_attention_grid (Boltz-2, Protenix, OpenFold3) ------------------
+
+#: The ports whose backend declares `triangle_attention_grid`: the three whose
+#: 2-D entries dispatch on the gather scope. OpenDDE's trunk is Protenix's
+#: Pairformer and reads the scope too, but its adapter offers no option naming
+#: it, so its model entry refuses the scope; ESMFold2 has no triangle
+#: attention at all and refuses it the same way
+#: (`_cp_attention.refuse_triangle_attention_grid`).
+GRID_MODELS = ("boltz2", "protenix", "openfold3")
 
 
-def test_the_grid_algorithm_vocabulary_is_the_model_s_own() -> None:
-    from foldjax.backends import boltz2
-    from foldjax.models._cp_attention import TRIANGLE_ATTENTION_GRIDS
-
-    assert boltz2._TRIANGLE_ATTENTION_GRIDS == TRIANGLE_ATTENTION_GRIDS
-
-
-def test_the_gather_grid_is_reachable_on_a_2d_request(job) -> None:
-    resolve_request(
-        _ring_request("boltz2", job, "xla", triangle_attention_grid="gather")
+def _grid_request(model: str, job, grid: str, **extra) -> PredictionRequest:
+    request = _request(model, job)
+    return PredictionRequest(
+        model=model,
+        input=request.input,
+        weights=request.weights,
+        options={**request.options, "triangle_attention_grid": grid, **extra},
     )
 
 
-def test_the_gather_grid_is_refused_where_it_cannot_be_honoured(job) -> None:
-    """Off the grid, misspelled, or beside a ring body it would not run."""
+@pytest.mark.parametrize("model", GRID_MODELS)
+def test_the_grid_algorithm_vocabulary_is_the_model_s_own(model: str) -> None:
+    """One tuple per JAX-free backend, compared rather than trusted."""
+
+    from importlib import import_module
+
+    from foldjax.models._cp_attention import TRIANGLE_ATTENTION_GRIDS
+
+    backend = import_module(f"foldjax.backends.{model}")
+    assert backend._TRIANGLE_ATTENTION_GRIDS == TRIANGLE_ATTENTION_GRIDS
+
+
+@pytest.mark.parametrize("model", GRID_MODELS)
+@pytest.mark.parametrize("grid", ["ring", "gather"])
+def test_the_grid_is_reachable_on_a_2d_request(model: str, grid: str, job) -> None:
+    resolve_request(_grid_request(model, job, grid))
+
+
+@pytest.mark.parametrize("model", GRID_MODELS)
+def test_the_gather_grid_is_refused_where_it_cannot_be_honoured(
+    model: str, job
+) -> None:
+    """Misspelled, or off the grid: a serial run and a 1-D mesh have no ring."""
 
     with pytest.raises(ValueError, match="triangle_attention_grid"):
-        resolve_request(
-            _ring_request("boltz2", job, "xla", triangle_attention_grid="rotate")
-        )
+        resolve_request(_grid_request(model, job, "rotate"))
     for serial in ({"cp_devices": 1, "cp_layout": "auto"}, {"cp_layout": "1d"}):
         with pytest.raises(ValueError, match="cp_layout=2d"):
-            resolve_request(
-                _ring_request(
-                    "boltz2", job, "xla", triangle_attention_grid="gather", **serial
-                )
-            )
+            resolve_request(_grid_request(model, job, "gather", **serial))
+
+
+@pytest.mark.parametrize("model", RING_KERNEL_MODELS)
+def test_the_gather_grid_is_refused_beside_a_ring_body(model: str, job) -> None:
+    """`gather` runs no ring, so a ring body named beside it describes nothing."""
+
     with pytest.raises(ValueError, match="runs no ring"):
         resolve_request(
-            _ring_request("boltz2", job, "tokamax", triangle_attention_grid="gather")
+            _ring_request(model, job, "tokamax", triangle_attention_grid="gather")
         )
+    resolve_request(_ring_request(model, job, "xla", triangle_attention_grid="gather"))
 
 
-@pytest.mark.parametrize("model", ["protenix", "openfold3"])
-def test_a_port_without_the_grid_option_refuses_it(model: str, job) -> None:
-    request = _request(model, job)
-    with pytest.raises(ValueError, match="triangle_attention_grid"):
+def test_protenix_s_omitted_layout_is_not_the_grid(job) -> None:
+    """Protenix's `auto` is the 1-D mesh on every count, four devices included.
+
+    So an omitted layout builds no ring, and both ring options are refused
+    there rather than recorded for a program that never reads them. (The
+    shared `square_grid_cp_layout` reads `auto` as the grid on a square count,
+    which is the other three ports' rule; asking it here accepted the fused
+    tile on `cp_devices=4` and ran the 1-D program under the tile's name.)
+    OpenFold3 and Boltz-2 do build the grid there, and accept it.
+    """
+
+    for extra in (
+        {"triangle_attention_ring_kernel": "tokamax"},
+        {"triangle_attention_grid": "gather"},
+    ):
+        request = _request("protenix", job)
+        with pytest.raises(ValueError, match="cp_layout=2d"):
+            resolve_request(
+                PredictionRequest(
+                    model="protenix",
+                    input=request.input,
+                    weights=request.weights,
+                    options={"cp_devices": 4, **extra},
+                )
+            )
+    for model in ("boltz2", "openfold3"):
+        request = _request(model, job)
         resolve_request(
             PredictionRequest(
                 model=model,
                 input=request.input,
                 weights=request.weights,
-                options={**request.options, "triangle_attention_grid": "gather"},
+                options={"cp_devices": 4, "triangle_attention_grid": "gather"},
             )
         )
+
+
+@pytest.mark.parametrize(
+    "model",
+    [name for name in SQUARE_GRID_MODELS if name not in GRID_MODELS],
+)
+def test_a_port_without_the_grid_option_refuses_it(model: str, job) -> None:
+    with pytest.raises(ValueError, match="triangle_attention_grid"):
+        resolve_request(_grid_request(model, job, "gather"))
+
+
+@pytest.mark.parametrize("model", ["opendde", "esmfold2"])
+def test_a_port_without_the_grid_option_refuses_the_model_scope(model: str) -> None:
+    """The model-level scope a harness enters is refused, not run or ignored.
+
+    OpenDDE's trunk is Protenix's Pairformer, so without this the scope would
+    run the gather under a namespace that never names it; ESMFold2 has no
+    triangle attention, so it would report a gather that never happened.
+    Asserted on the helper both entries call, and on the entries themselves.
+    """
+
+    import inspect
+
+    from foldjax.models import _cp_attention
+    from foldjax.models._cp_attention import (
+        refuse_triangle_attention_grid,
+        triangle_attention_grid_scope,
+    )
+
+    refuse_triangle_attention_grid(model)
+    with triangle_attention_grid_scope("ring"):
+        refuse_triangle_attention_grid(model)
+    with triangle_attention_grid_scope("gather"), pytest.raises(
+        ValueError, match="no triangle_attention_grid option"
+    ):
+        refuse_triangle_attention_grid(model)
+
+    if model == "opendde":
+        from foldjax.models.opendde.models import model as entry
+
+        callers = (entry.opendde_infer_static, entry.opendde_infer_compiled)
+    else:
+        from foldjax.models.esmfold2 import inference as entry
+
+        callers = (entry.predict,)
+    assert entry.refuse_triangle_attention_grid is (
+        _cp_attention.refuse_triangle_attention_grid
+    )
+    for caller in callers:
+        assert "refuse_triangle_attention_grid(" in inspect.getsource(caller)
 
 
 @pytest.mark.parametrize("available", [True, False])
@@ -522,3 +622,30 @@ def test_boltz2_gather_forks_the_namespace_and_drops_the_ring_body(
     assert gather == profile(
         triangle_attention_grid="gather", triangle_attention_ring_kernel="xla"
     )
+
+
+@pytest.mark.parametrize("model", ["protenix", "openfold3"])
+def test_gather_forks_the_namespace_and_ring_is_omission(
+    model: str, job, tmp_path, monkeypatch
+) -> None:
+    """The same two halves on the two ports that gained the option.
+
+    Pinned with the fused tile available, the arm in which a ring body could
+    leak into the record; Protenix's omitted ring body is `xla` regardless.
+    """
+
+    _pin_fused_tile(monkeypatch, True)
+
+    def profile(**options):
+        return _ring_profile(model, job, tmp_path, **options)
+
+    assert "triangle_attention_grid" not in profile()
+    assert profile(triangle_attention_grid="ring") == profile()
+    gather = profile(triangle_attention_grid="gather")
+    assert gather["triangle_attention_grid"] == "gather"
+    assert "triangle_attention_ring_kernel" not in gather
+    assert gather != profile()
+    if model in RING_KERNEL_MODELS:
+        assert gather == profile(
+            triangle_attention_grid="gather", triangle_attention_ring_kernel="xla"
+        )

@@ -68,9 +68,20 @@ def test_cache_defaults_track_native_parser_model_policy_and_cp_resolver(
     # field carries it, and what an omitted option runs is what the ring runs
     # when nobody asks. Read from the ring rather than restated here, so the
     # backend's copy cannot drift from it.
-    from foldjax.models._cp_attention import ring_tile_kernel
+    #
+    # `triangle_attention_grid` is the third, one level up: it names the 2-D
+    # triangle attention's algorithm and travels the same way. Read from the
+    # scope, not restated.
+    from foldjax.models._cp_attention import (
+        ring_tile_kernel,
+        triangle_attention_grid,
+    )
 
-    not_a_parser_flag = {"matmul_precision", "triangle_attention_ring_kernel"}
+    not_a_parser_flag = {
+        "matmul_precision",
+        "triangle_attention_ring_kernel",
+        "triangle_attention_grid",
+    }
     assert not_a_parser_flag <= set(backend_impl._RELEASED_COMPILE_DEFAULTS)
     assert not not_a_parser_flag & set(captured)
     assert backend_impl._RELEASED_COMPILE_DEFAULTS["matmul_precision"] == (
@@ -81,6 +92,10 @@ def test_cache_defaults_track_native_parser_model_policy_and_cp_resolver(
     assert (
         backend_impl._RELEASED_COMPILE_DEFAULTS["triangle_attention_ring_kernel"]
         == ring_tile_kernel()
+    )
+    assert (
+        backend_impl._RELEASED_COMPILE_DEFAULTS["triangle_attention_grid"]
+        == triangle_attention_grid()
     )
 
     actual = {

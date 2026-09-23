@@ -277,7 +277,15 @@ _RENDERED_OUTSIDE_THE_FLAG_LOOP = {
     # `ProtenixBackend.predict` enters. It is popped in `_native_invocation`
     # before the leftover-option check, so a misspelling is still an error --
     # which is the property this invariant is protecting.
-    "protenix": {"output_format", "cli_args", "triangle_attention_ring_kernel"},
+    # `triangle_attention_grid` is the fourth, for the same reason one level
+    # up: it selects the 2-D triangle-attention algorithm through a second
+    # ContextVar `predict` enters, popped beside the ring kernel.
+    "protenix": {
+        "output_format",
+        "cli_args",
+        "triangle_attention_ring_kernel",
+        "triangle_attention_grid",
+    },
 }
 
 
@@ -747,6 +755,10 @@ _WHY_NO_STRIP_ENTRY = {
         "confidence_dtype": "neutralised in the cache_profile override",
         "dtype": "neutralised in the cache_profile override",
         "glu_backend": "neutralised in the cache_profile override",
+        # Popped by the override when it resolves to the released `ring`
+        # (an omitted option and an explicit `ring` alike); `gather` is kept.
+        # Asserted by `tests/test_cp_option_surface.py`.
+        "triangle_attention_grid": "neutralised in the cache_profile override",
         # Popped at :380 against `backends/openfold3.py:_MATMUL_PRECISION`,
         # the copy of the value this port pins for itself at
         # `models/openfold3/inference.py:549`. It is outside the strip table

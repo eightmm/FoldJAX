@@ -16,7 +16,6 @@ from foldjax.backends.base import (
     MATMUL_PRECISION_OPTION,
     SAMPLING_OPTIONS,
     Backend,
-    square_grid_cp_layout,
     validate_memory_policy_options,
 )
 from foldjax.execution import DETERMINISTIC_ARGV_OPTION
@@ -229,6 +228,9 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     # The shipped 2-D ring body. Named here so an explicit `xla` stays in the
     # namespace an omitted option selects, and only `tokamax` forks.
     "triangle_attention_ring_kernel": "xla",
+    # The released 2-D triangle attention. `gather` is opt-in and names its
+    # own namespace; spelling `ring` must select the one omitting it selects.
+    "triangle_attention_grid": "ring",
     "chunk_policy": "auto",
     "cp_atom_windows": True,
     "cp_devices": 1,
@@ -418,6 +420,29 @@ def _negated_switch_option(key: str, value: Any) -> bool:
 #: checked in `validate_native_options` instead.
 _RING_TILE_KERNELS: tuple[str, ...] = ("xla", "tokamax")
 
+#: The 2-D triangle-attention algorithms, copied for the same reason and
+#: pinned against `_cp_attention.TRIANGLE_ATTENTION_GRIDS` by the same test.
+#: Not an `_OPTION_SPECS` entry either, for the reason above.
+_TRIANGLE_ATTENTION_GRIDS: tuple[str, ...] = ("ring", "gather")
+
+
+def _builds_the_grid(options: Mapping[str, Any]) -> bool:
+    """Whether this request builds Protenix's 2-D mesh, where the ring lives.
+
+    Only an explicit ``cp_layout=2d`` does: this port's ``auto`` is the 1-D
+    layout on every device count (`models/protenix/models/model.py`,
+    `protenix_infer_compiled`), unlike the three ports
+    `base.square_grid_cp_layout` describes, whose ``auto`` picks the grid on a
+    perfect-square count. Asking that helper here would accept a ring option
+    on ``cp_devices=4`` with the layout omitted, and the run would then build
+    the 1-D mesh and never read it -- one program under two names.
+    """
+
+    return (
+        _strict_cp_devices(options.get("cp_devices", 1)) > 1
+        and str(options.get("cp_layout", "auto")) == "2d"
+    )
+
 
 _OPTION_SPECS: dict[str, tuple[Callable[[str, Any], Any], tuple[str, ...] | None]] = {
     "amp_policy": (_text_option, ("auto", "upstream", "fp32", "bf16")),
@@ -469,6 +494,14 @@ def _ring_tile_kernel_scope(kernel: str | None):
     from foldjax.models._cp_attention import ring_tile_kernel_scope
 
     return ring_tile_kernel_scope(kernel)
+
+
+def _triangle_attention_grid_scope(grid: str):
+    """Enter the 2-D triangle-attention algorithm's scope for one prediction."""
+
+    from foldjax.models._cp_attention import triangle_attention_grid_scope
+
+    return triangle_attention_grid_scope(grid)
 
 
 def _option_field(key: str, value: Any) -> Any:
@@ -581,6 +614,10 @@ class _NativeInvocation(NamedTuple):
     #: and no native flag carries it: like `matmul_precision`, it travels in a
     #: scope. `None` is the shipped body.
     ring_tile_kernel: str | None
+    #: Which 2-D triangle-attention algorithm this run realises -- `ring`
+    #: unless `gather` was asked for -- carried the same way and for the same
+    #: reason.
+    triangle_attention_grid: str
 
 
 class ProtenixBackend(ManagedCcdSession, Backend):
@@ -595,7 +632,12 @@ class ProtenixBackend(ManagedCcdSession, Backend):
     )
     native_options = frozenset(
         _CLI_OPTIONS
-        | {"cli_args", "output_format", "triangle_attention_ring_kernel"}
+        | {
+            "cli_args",
+            "output_format",
+            "triangle_attention_ring_kernel",
+            "triangle_attention_grid",
+        }
     )
     sampling_options = SAMPLING_OPTIONS
     # Protenix spells both the names and the values its own way: `bf16` for the
@@ -640,6 +682,13 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         # program. Not a parser flag: it reaches the ring through a scope, for
         # the reason the field on `_NativeInvocation` records.
         "triangle_attention_ring_kernel",
+        # A different data movement and a different local body -- the
+        # streamed gather with cuEquivariance's kernel on a GPU, its XLA
+        # reference elsewhere -- so a different program. Which body `gather`
+        # realises is a function of the platform the runtime identity already
+        # records. Carried by a scope, like the ring kernel: one value per
+        # process, because no `jax.jit` cache key reads it.
+        "triangle_attention_grid",
         "single_att_q_chunk_size",
         "token_q_chunk_size",
         "opm_chunk_size",
@@ -740,11 +789,34 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             # time (`_cp_attention.resolve_ring_tile_kernel`); asking here
             # would initialise a JAX backend inside `foldjax plan`. What is
             # settled here is that there is a ring to pick a body of at all.
-            if ring_kernel != "xla" and square_grid_cp_layout(options) != "2d":
+            if ring_kernel != "xla" and not _builds_the_grid(options):
                 raise ValueError(
                     "triangle_attention_ring_kernel selects a body of the 2-D "
                     "context-parallel triangle-attention ring; it needs "
                     "cp_layout=2d on a perfect-square cp_devices"
+                )
+        grid_algorithm = options.get("triangle_attention_grid")
+        if grid_algorithm is not None:
+            if grid_algorithm not in _TRIANGLE_ATTENTION_GRIDS:
+                raise ValueError(
+                    "triangle_attention_grid must be one of "
+                    f"{_TRIANGLE_ATTENTION_GRIDS}"
+                )
+            # The two questions Boltz-2's check asks: whether a 2-D triangle
+            # attention exists at all, and whether the request also names a
+            # ring body the gather would not run. Which body `gather` runs
+            # locally is a host question `predict` asks, not planning.
+            if grid_algorithm != "ring" and not _builds_the_grid(options):
+                raise ValueError(
+                    "triangle_attention_grid selects the 2-D context-parallel "
+                    "triangle-attention algorithm; it needs cp_layout=2d on a "
+                    "perfect-square cp_devices"
+                )
+            if grid_algorithm == "gather" and ring_kernel not in (None, "xla"):
+                raise ValueError(
+                    "triangle_attention_ring_kernel selects a body of the "
+                    "ring, and triangle_attention_grid=gather runs no ring; "
+                    "drop one of the two"
                 )
         glu_backend = options.get("glu_backend", "xla")
         if glu_backend not in _GLU_BACKENDS:
@@ -887,6 +959,9 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         ring_tile_kernel = options.pop("triangle_attention_ring_kernel", None)
         if ring_tile_kernel is not None:
             ring_tile_kernel = str(ring_tile_kernel)
+        # The same, one level up. `validate_native_options` has already
+        # refused a spelling outside the vocabulary and `gather` off the grid.
+        grid_algorithm = str(options.pop("triangle_attention_grid", None) or "ring")
         argv = [
             "--input-json",
             str(request.input),
@@ -990,6 +1065,7 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             representations=wanted,
             matmul_precision=matmul_precision,
             ring_tile_kernel=ring_tile_kernel,
+            triangle_attention_grid=grid_algorithm,
         )
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
@@ -1038,10 +1114,18 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             keywords["on_padding_plan"] = on_padding_plan
         if use_session_loader:
             keywords["_prepared_params_loader"] = session_params_loader
+        if invocation.triangle_attention_grid == "gather":
+            # Refused here, before featurization, rather than at the first
+            # trace: a GPU process without cuEquivariance cannot run the body
+            # `gather` names there, and must not run the reference under it.
+            from foldjax.models._cp_attention import resolve_gather_attention_body
+
+            resolve_gather_attention_body()
         with (
             invocation.matmul_precision(),
             self._ccd_memory_scope(),
             _ring_tile_kernel_scope(invocation.ring_tile_kernel),
+            _triangle_attention_grid_scope(invocation.triangle_attention_grid),
         ):
             if invocation.cli_args:
                 written = module.main(argv, **keywords)
