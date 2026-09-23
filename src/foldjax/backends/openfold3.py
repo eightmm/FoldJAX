@@ -686,6 +686,11 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         # anyway would report a deterministic run that was not one.
         compile_it = _compile_enabled(options)
         deterministic = bool(options.pop("deterministic", False))
+        if deterministic and not compile_it:
+            raise ValueError(
+                "deterministic reductions are carried by the compiled graph; "
+                "drop no_compile or deterministic"
+            )
         # Out before the leftover-option check: carried by a scope. The
         # vocabulary and the grid were checked by `validate_native_options`;
         # what planning cannot know is asked here, on the host: a GPU process
@@ -697,11 +702,6 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             from foldjax.models._cp_attention import resolve_gather_attention_body
 
             resolve_gather_attention_body()
-        if deterministic and not compile_it:
-            raise ValueError(
-                "deterministic reductions are carried by the compiled graph; "
-                "drop no_compile or deterministic"
-            )
         # The port is vendored, so these are ordinary in-package imports. They
         # stay inside `predict` only to keep `import foldjax` off JAX's import
         # cost, which is the same reason the other vendored backends do it.
