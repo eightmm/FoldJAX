@@ -1540,6 +1540,9 @@ def opendde_infer_compiled(
     orders. It is a property of the executable rather than an argument to it,
     so it never reaches the traced program.
     """
+    # Before anything else: the pool can hit without tracing the static
+    # entry, whose own refusal would then never run.
+    refuse_triangle_attention_grid("OpenDDE")
     # Do value-level private-provenance validation while feature leaves are
     # concrete.  Dense public arrays take precedence and remove stale private
     # keys before they can affect the JIT input tree/cache identity.
@@ -1576,7 +1579,6 @@ def opendde_infer_compiled(
         compact_requested and can_compact_confidence_distance_embedding(distance_params)
     )
     param_arrays, treedef, flags = split_static_flags(params)
-    refuse_triangle_attention_grid("OpenDDE")
     cp = int(kwargs.pop("cp_shards", 1))
     layout = _resolve_cp_layout(str(kwargs.pop("cp_layout", "auto")), cp)
     # The capture set has to be live while the program is *traced*, not

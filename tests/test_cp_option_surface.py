@@ -563,38 +563,32 @@ def test_a_port_without_the_grid_option_refuses_the_model_scope(model: str) -> N
     OpenDDE's trunk is Protenix's Pairformer, so without this the scope would
     run the gather under a namespace that never names it; ESMFold2 has no
     triangle attention, so it would report a gather that never happened.
-    Asserted on the helper both entries call, and on the entries themselves.
+    Asserted on each port's host entry, which refuses before reading a single
+    argument -- the placeholders below would fail anything else first -- and
+    lets the same call through to that failure under `ring`.
     """
 
-    import inspect
+    from foldjax.models._cp_attention import triangle_attention_grid_scope
 
-    from foldjax.models import _cp_attention
-    from foldjax.models._cp_attention import (
-        refuse_triangle_attention_grid,
-        triangle_attention_grid_scope,
-    )
+    if model == "opendde":
+        from foldjax.models.opendde.models.model import opendde_infer_compiled
 
-    refuse_triangle_attention_grid(model)
-    with triangle_attention_grid_scope("ring"):
-        refuse_triangle_attention_grid(model)
+        def entry():
+            return opendde_infer_compiled({}, None, None)
+    else:
+        from foldjax.models.esmfold2.inference import predict
+
+        def entry():
+            return predict(None, {}, None)
+
     with triangle_attention_grid_scope("gather"), pytest.raises(
         ValueError, match="no triangle_attention_grid option"
     ):
-        refuse_triangle_attention_grid(model)
-
-    if model == "opendde":
-        from foldjax.models.opendde.models import model as entry
-
-        callers = (entry.opendde_infer_static, entry.opendde_infer_compiled)
-    else:
-        from foldjax.models.esmfold2 import inference as entry
-
-        callers = (entry.predict,)
-    assert entry.refuse_triangle_attention_grid is (
-        _cp_attention.refuse_triangle_attention_grid
-    )
-    for caller in callers:
-        assert "refuse_triangle_attention_grid(" in inspect.getsource(caller)
+        entry()
+    for grid in (None, "ring"):
+        with triangle_attention_grid_scope(grid), pytest.raises(Exception) as error:
+            entry()
+        assert "triangle_attention_grid" not in str(error.value)
 
 
 @pytest.mark.parametrize("available", [True, False])

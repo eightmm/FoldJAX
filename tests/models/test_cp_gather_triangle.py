@@ -437,6 +437,218 @@ def test_boltz2_gather_entries_match_serial(
     print(out.strip())
 
 
+# --- gate: arithmetic, through Protenix's and OpenFold3's projections ---------
+
+_PORTS = textwrap.dedent(
+    r"""
+    import os
+    import sys
+
+    CUEQ = os.environ["FOLDJAX_CP_PROBE_BODY"] == "cueq"
+    if CUEQ:
+        # Test-only: hide the CUDA ops package so the frontend keeps its
+        # platform-independent reference lowering (see the module docstring).
+        sys.modules["cuequivariance_ops_jax"] = None
+
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    from foldjax.models._cp import context_parallel
+    from foldjax.models._cp_attention import triangle_attention_grid_scope
+
+    PORT = os.environ["FOLDJAX_CP_PROBE_PORT"]
+    DEVICES = int(os.environ["FOLDJAX_CP_PROBE_DEVICES"])
+    N = int(os.environ["FOLDJAX_CP_PROBE_TOKENS"])
+    CZ, H = 12, 3
+    rng = np.random.default_rng(20260925 + N + DEVICES)
+
+    def arr(*shape, scale=0.5):
+        return jnp.asarray(rng.normal(size=shape, scale=scale), dtype=jnp.float32)
+
+    # Every kernel call is recorded, so a `cueq` arm cannot quietly compare
+    # the XLA path with itself (Protenix's serial path takes the kernel only
+    # above 16 columns).
+    calls = []
+    if CUEQ:
+        from foldjax.models._cueq import load_cueq
+
+        cuex = load_cueq()
+        real = cuex.triangle_attention
+
+        def recording(**kwargs):
+            calls.append(tuple(kwargs["q"].shape) + tuple(kwargs["k"].shape[-2:]))
+            return real(**kwargs)
+
+        cuex.triangle_attention = recording
+
+    token = np.ones(N, dtype=bool)
+    token[-1] = False  # an absent token: a genuinely fully masked pair row
+    pair_mask = token[:, None] & token[None, :]
+    pair_mask &= rng.random((N, N)) > 0.1  # interior holes
+    pair_mask[np.arange(N), np.arange(N)] = token
+
+    if PORT == "protenix":
+        from foldjax.models.protenix.models.primitives.attention import (
+            AttentionParams,
+        )
+        from foldjax.models.protenix.models.primitives.primitives import (
+            LayerNormParams,
+            LinearParams,
+        )
+        from foldjax.models.protenix.models.triangle import (
+            triangle as serial_module,
+        )
+        from foldjax.models.protenix.models.triangle import (
+            triangle_attention_cp as cp_module,
+        )
+        from foldjax.models.protenix.models.triangle.triangle import (
+            TriangleAttentionParams,
+        )
+
+        def linear(o, i, scale=1.0):
+            return LinearParams(weight=arr(o, i, scale=scale / np.sqrt(i)), bias=None)
+
+        params = TriangleAttentionParams(
+            layer_norm=LayerNormParams(weight=arr(CZ) * 0.1 + 1.0, bias=arr(CZ) * 0.1),
+            linear=linear(H, CZ, 3.0),
+            attention=AttentionParams(
+                linear_q=linear(CZ, CZ), linear_k=linear(CZ, CZ),
+                linear_v=linear(CZ, CZ), linear_o=linear(CZ, CZ),
+                linear_g=linear(CZ, CZ),
+            ),
+        )
+        # Unbatched, as this port's trunk hands it over.
+        x = arr(N, N, CZ, scale=1.0)
+        mask = jnp.asarray(pair_mask.astype(np.float32))
+        arms = (("start", {"starting": True}), ("end", {"starting": False}))
+
+        def serial(kw):
+            return jax.jit(lambda z, m, p: serial_module.triangle_attention(
+                z, m, p, num_heads=H, attention_backend="cueq" if CUEQ else "xla",
+                **kw,
+            ))(x, mask, params)
+
+        def sharded(entry, kw):
+            return jax.jit(lambda z, m, p: entry.triangle_attention(
+                z, m, p, num_heads=H, q_chunk_size=2, **kw,
+            ))(x, mask, params)
+    else:
+        from foldjax.models.openfold3.models import (
+            triangle_attention as serial_module,
+        )
+        from foldjax.models.openfold3.models import (
+            triangle_attention_cp as cp_module,
+        )
+        from foldjax.models.openfold3.models.attention import AttentionParams
+        from foldjax.models.openfold3.models.primitives import (
+            LayerNormParams,
+            LinearParams,
+        )
+        from foldjax.models.openfold3.models.triangle_attention import (
+            TriangleAttentionParams,
+        )
+
+        def linear(o, i, scale=1.0):
+            return LinearParams(weight=arr(o, i, scale=scale / np.sqrt(i)), bias=None)
+
+        params = TriangleAttentionParams(
+            layer_norm=LayerNormParams(weight=arr(CZ) * 0.1 + 1.0, bias=arr(CZ) * 0.1),
+            linear_z=linear(H, CZ, 3.0),
+            mha=AttentionParams(
+                linear_q=linear(CZ, CZ), linear_k=linear(CZ, CZ),
+                linear_v=linear(CZ, CZ), linear_o=linear(CZ, CZ),
+                linear_g=linear(CZ, CZ),
+            ),
+        )
+        # Batched (B=2, the second member masked differently), as the
+        # template stack and the confidence head hand it over.
+        x = arr(2, N, N, CZ, scale=1.0)
+        second = pair_mask & (rng.random((N, N)) > 0.2)
+        mask = jnp.asarray(np.stack([pair_mask, second]).astype(np.float32))
+        # PairBlock runs `starting=True` twice and transposes the pair itself,
+        # with the corrected bias orientation on the second; `starting=False`
+        # is the standalone module's ending node.
+        arms = (
+            ("start", {"starting": True}),
+            ("end", {"starting": False}),
+            ("start_transposed_bias", {"starting": True, "transpose_bias": True}),
+        )
+
+        def serial(kw):
+            return jax.jit(lambda z, m, p: serial_module.triangle_attention(
+                z, p, no_heads=H, mask=m, backend="cueq" if CUEQ else "xla", **kw,
+            ))(x, mask, params)
+
+        def sharded(entry, kw):
+            return jax.jit(lambda z, m, p: entry.triangle_attention(
+                z, p, no_heads=H, mask=m, chunk_size=2, **kw,
+            ))(x, mask, params)
+
+    if CUEQ:
+        # The GPU body, on this host through NVIDIA's reference lowering.
+        cp_module.resolve_gather_attention_body = lambda: "cueq"
+        serial_module.resolve_gather_attention_body = lambda: "cueq"
+
+    report = []
+    for arm, kw in arms:
+        calls.clear()
+        reference = np.asarray(serial(kw))
+        assert len(calls) == (1 if CUEQ else 0), (arm, calls)
+        for name, entry in (("cp", cp_module), ("serial_module", serial_module)):
+            calls.clear()
+            with context_parallel(DEVICES, layout="2d"), (
+                triangle_attention_grid_scope("gather")
+            ):
+                got = np.asarray(sharded(entry, kw))
+            if CUEQ:
+                # Rectangular: local query columns against all N keys.
+                assert calls and all(c[-2] == N and c[-3] < N for c in calls), calls
+            else:
+                assert not calls, calls
+            assert np.all(np.isfinite(got)), (name, arm)
+            np.testing.assert_allclose(got, reference, atol=1e-5, rtol=1e-5)
+            abs_err = float(np.max(np.abs(got - reference)))
+            big = np.abs(reference) >= 1e-3
+            rel_err = float(np.max(
+                np.abs(got - reference)[big] / np.abs(reference)[big]
+            ))
+            report.append(
+                f"{name}_{arm} max_abs={abs_err:.3e} "
+                f"max_rel(|ref|>=1e-3)={rel_err:.3e}"
+            )
+    head = f"PORT_GATHER_OK port={PORT} body={'cueq' if CUEQ else 'xla'} "
+    print(head + f"devices={DEVICES} N={N} " + "; ".join(report))
+    """
+)
+
+
+@pytest.mark.parametrize(("devices", "tokens"), [(4, 17), (4, 20), (9, 19)])
+@pytest.mark.parametrize("body", ["xla", "cueq"])
+@pytest.mark.parametrize("port", ["protenix", "openfold3"])
+def test_port_gather_entries_match_serial(
+    port: str, body: str, devices: int, tokens: int
+) -> None:
+    """Protenix's and OpenFold3's two 2-D entries under ``gather``, vs serial.
+
+    Through each port's own layer norm, bias projection, Q/K/V/gate
+    projections and output projection, both directions (and OpenFold3's
+    transposed-bias orientation), against the port's serial path with the
+    same body: ``xla`` against serial XLA, ``cueq`` -- through NVIDIA's
+    reference lowering -- against the port's serial cuEquivariance call. That
+    pins each port's scale placement (in the kernel, on an unscaled query),
+    its precision (the policy: ``precision=None`` on both sides) and its
+    mask/bias conventions. Every token count exceeds 16, because Protenix's
+    serial path takes the kernel only above that; the probe counts kernel
+    calls so neither side can be the XLA path under a ``cueq`` label. 17 and
+    19 pad the grid, 20 does not, and the two-row block leaves a tail.
+    """
+
+    out = _run(_PORTS, devices=devices, tokens=str(tokens), body=body, port=port)
+    assert "PORT_GATHER_OK" in out, out
+    print(out.strip())
+
+
 # --- gate: padding invariance -------------------------------------------------
 
 _PADDING = textwrap.dedent(
@@ -578,6 +790,104 @@ def test_unused_projection_halves_are_dead_code() -> None:
 
     out = _run(_DOTS, devices=4)
     assert "DOTS_OK" in out, out
+
+
+_PORT_DOTS = textwrap.dedent(
+    r"""
+    import collections
+    import os
+    import re
+
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    from foldjax.models._cp import context_parallel
+    from foldjax.models._cp_attention import triangle_attention_grid_scope
+
+    PORT = os.environ["FOLDJAX_CP_PROBE_PORT"]
+    N, CZ, H = 8, 8, 2
+    rng = np.random.default_rng(3)
+    w = lambda o, i: jnp.asarray(rng.normal(size=(o, i)), jnp.float32)  # noqa: E731
+    if PORT == "protenix":
+        from foldjax.models.protenix.models.primitives.attention import (
+            AttentionParams,
+        )
+        from foldjax.models.protenix.models.primitives.primitives import (
+            LayerNormParams,
+            LinearParams,
+        )
+        from foldjax.models.protenix.models.triangle import (
+            triangle_attention_cp as entry,
+        )
+        from foldjax.models.protenix.models.triangle.triangle import (
+            TriangleAttentionParams,
+        )
+
+        lin = lambda o, i: LinearParams(weight=w(o, i), bias=None)  # noqa: E731
+        params = TriangleAttentionParams(
+            layer_norm=LayerNormParams(weight=jnp.ones(CZ), bias=jnp.zeros(CZ)),
+            linear=lin(H, CZ),
+            attention=AttentionParams(
+                linear_q=lin(CZ, CZ), linear_k=lin(CZ, CZ), linear_v=lin(CZ, CZ),
+                linear_o=lin(CZ, CZ), linear_g=lin(CZ, CZ),
+            ),
+        )
+        x = jnp.asarray(rng.normal(size=(N, N, CZ)), jnp.float32)
+        call = lambda p, z: entry.triangle_attention(  # noqa: E731
+            z, None, p, num_heads=H, q_chunk_size=0
+        )
+    else:
+        from foldjax.models.openfold3.models import triangle_attention_cp as entry
+        from foldjax.models.openfold3.models.attention import AttentionParams
+        from foldjax.models.openfold3.models.primitives import (
+            LayerNormParams,
+            LinearParams,
+        )
+        from foldjax.models.openfold3.models.triangle_attention import (
+            TriangleAttentionParams,
+        )
+
+        lin = lambda o, i: LinearParams(weight=w(o, i), bias=None)  # noqa: E731
+        params = TriangleAttentionParams(
+            layer_norm=LayerNormParams(weight=jnp.ones(CZ), bias=jnp.zeros(CZ)),
+            linear_z=lin(H, CZ),
+            mha=AttentionParams(
+                linear_q=lin(CZ, CZ), linear_k=lin(CZ, CZ), linear_v=lin(CZ, CZ),
+                linear_o=lin(CZ, CZ), linear_g=lin(CZ, CZ),
+            ),
+        )
+        x = jnp.asarray(rng.normal(size=(1, N, N, CZ)), jnp.float32)
+        call = lambda p, z: entry.triangle_attention(  # noqa: E731
+            z, p, no_heads=H, chunk_size=0
+        )
+    with context_parallel(4, layout="2d"), triangle_attention_grid_scope("gather"):
+        lowered = jax.jit(call).lower(params, x)
+    text = lowered.compile().as_text()
+    dots = [line for line in text.splitlines() if " dot(" in line]
+    # Neither port fuses q|g or k|v into one linear, so: bias, q, gate (local),
+    # k, v (full width), scores, probabilities @ v, output = 8. A surviving
+    # full-width q/gate or local k/v would add up to four more.
+    assert len(dots) == 8, "\n".join(dots)
+    hlo = lowered.compiler_ir(dialect="hlo").as_hlo_text()
+    census = collections.Counter(re.findall(
+        r"\b(all-gather|all-reduce|collective-permute|all-to-all|reduce-scatter)"
+        r"(?:-start)?\(",
+        hlo,
+    ))
+    assert census == {"all-gather": 3, "collective-permute": 1}, census
+    print(f"PORT_DOTS_OK port={PORT} dots={len(dots)} census={dict(census)}")
+    """
+)
+
+
+@pytest.mark.parametrize("port", ["protenix", "openfold3"])
+def test_port_unused_projection_halves_are_dead_code(port: str) -> None:
+    """The same dot and collective census through each port's ``project``."""
+
+    out = _run(_PORT_DOTS, devices=4, port=port)
+    assert "PORT_DOTS_OK" in out, out
+    print(out.strip())
 
 
 # --- gate: mask polarity at the cuEq boundary ---------------------------------
