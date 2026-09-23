@@ -1154,6 +1154,27 @@ namespace, so an omitted run on a GPU grid shares its entry with an explicit
 `ContextVar`, which no `jax.jit` cache key carries, so the retained
 in-process runner does **not** fork on it: one value per process.
 
+### The 2-D triangle-attention algorithm (`--option triangle_attention_grid`, Boltz-2)
+
+`ring` (the default) is the released rotation described above.
+`gather` replaces it: for each block of local pair rows, every device gathers
+those rows at full width along its grid row, and one normalising attention
+runs on them. On a GPU that attention is cuEquivariance's triangle-attention
+kernel, and on any other platform it is an XLA reference body with the same
+data movement. **Opt-in and unmeasured on a card.**
+`docs/context_parallel.md` ("The gather path") has the mechanism, the kernel
+contract, per-device buffer sizes and the CPU gates.
+
+Refused rather than downgraded: a spelling outside `ring|gather`, `gather`
+without `--cp-layout 2d` on a perfect-square `--cp-devices`, `gather` beside
+an explicit `triangle_attention_ring_kernel=tokamax` (no ring would run that
+body), and `gather` in a GPU process that cannot import cuEquivariance. The
+last one is checked on the host before featurization. Under `gather` the ring
+kernel option is not read. `gather` forks the compilation-cache namespace and
+`ring` shares the namespace of an omitted option. Like the ring kernel, the
+value travels in a `ContextVar` and applies to the whole process. Protenix and
+OpenFold3 do not offer it.
+
 ### Fused attention under a mesh (`--option cp_fused_attention=...`, Boltz-2)
 
 Off by default, and refused rather than ignored without a mesh. Under context

@@ -359,6 +359,177 @@ separate gate (`tests/test_boltz2_session.py::
 test_predict_hands_the_ring_scope_the_body_it_resolved`), read from inside the
 native call in both arms of the probe.
 
+## The gather path (`triangle_attention_grid=gather`; Boltz-2, opt-in, unmeasured on a card)
+
+The wall split behind the ring-tile rows puts the two triangle attentions at
+336 s of the tile grid's 618 s pass at 2,096 tokens: 214.5 / 262.4 ms per call
+against the released serial cuEquivariance kernel's 39.5 / 40.5 ms for the
+whole problem. Unblocking the ring's row block moved the wall by -0.9%, so the
+ring is not launch-bound: the cost is the per-step tile and its merge.
+`--option triangle_attention_grid=gather` removes the ring instead of speeding
+it up. `ring` is the default and compiles the released programs byte for byte.
+
+**What moves.** Device `(r, c)` holds pair rows `I_r` x columns `I_c` and
+writes that tile of the output. For its rows it needs every key, and it needs
+the bias rows `b[I_c, :]`, which no device on its grid row holds
+(`models/_cp_attention.gather_triangle_attention_2d_from_pair`):
+
+- **bias rows, once per call, above the row loop.** Rank `(c, r)` holds
+  `b[I_c, I_r]`. One `collective_permute` (`_cp.transpose_perm`, diagonal
+  ranks mapped to themselves explicitly) moves it to `(r, c)`, then an
+  `all_gather` along `cp_row` concatenates the key axis in mesh order. That
+  changes which device owns the tile. It does not transpose the tensor's two
+  axes. They are built from the projected bias tiles the ring already takes,
+  with no pass over full-width pair rows. Permuting before gathering sends a
+  `1/side` message through the exchange that crosses the grid.
+- **per row block of `R` local pair rows**: those rows at full width and their
+  additive key mask, each `all_gather`ed along `cp_col` on the key axis. Raw
+  pair rows travel, not projected K/V: for Boltz-2, `C = 128` channels against
+  `2 x H x D = 256`. `project` runs twice per block, on the local rows for Q
+  and the gate and on the gathered rows for K and V. The unused half of each
+  call is removed by XLA, which a CPU gate checks by counting dots.
+
+The lowered program has exactly three `all-gather`s and one
+`collective-permute` per call, with no ring hop and no softmax reduction
+(`tests/models/test_cp_gather_triangle.py::
+test_unused_projection_halves_are_dead_code`. XLA's CPU combiner later merges
+the two `cp_col` gathers). Then one attention per block runs on `q [B, R, H,
+L, D]`, `k/v [B, R, H, N, D]`, `bias [B, 1, H, L, N]` and `mask [B, R, 1, 1,
+N]`, where `L = P / side` is the local query width and `N` is the unpadded key
+count. There is no rotation and no statistics merge. The ending node is the
+caller's existing transposed problem. The path adds no second exchange.
+
+**The local body.** On a GPU it is cuEquivariance's `triangle_attention`, in
+an unchecked `shard_map` (the kernel's FFI outputs carry no varying-mesh-axis
+type). On every other platform it is an XLA reference body with the same data
+movement, indexing, padding and loop, and the serial XLA path's arithmetic.
+The platform decides (`resolve_gather_attention_body`): an explicit `gather` in
+a GPU process without cuEquivariance is refused before featurization and is
+never handed the reference body under the gather label. The kernel's contract
+is read from the installed `cuequivariance_jax 0.11.1` /
+`cuequivariance_ops_jax_cu13 0.11.1`:
+
+- q `[B, N, H, S_qo, D]`, k/v `[B, N, H, S_kv, D]`, bias `[B, 1, H, S_qo,
+  S_kv]`, mask `[B, N, 1, 1, S_kv]` of dtype bool, **"True means valid"**. The
+  ops layer asserts only `k.shape[3] == v.shape[3]`, so a query extent
+  different from the key extent is the documented interface: `S_qo = L`,
+  `S_kv = N`. No square fallback is needed.
+- The additive mask becomes that boolean exactly once, in
+  `_cueq.cueq_attention_arguments` (`mask_bias == 0`), the conversion the
+  serial fused path already uses. The kernel **replaces** a masked logit with
+  `-1e9`, where the XLA body **adds** `-1e9`.
+- q, k and v must share a dtype. The bias is cast inside the wrapper to f32 or
+  to the q/k/v dtype according to `needs_fp32_bias_fwd(dtype, D, S_kv)`. The
+  ops source says "Both SM100f and SM120f consume triangle bias in the Q/K/V
+  dtype", so on this card's CC 12.0 an f32 bias probably reaches a bf16 kernel
+  as bf16, as it does on the serial path.
+- `precision` must be a `jax.lax.Precision` and only sets `use_tf32` for f32
+  operands (`HIGHEST` gives no TF32). Boltz-2 passes the precision its serial
+  fused call passes.
+- The sm100f kernel (CC 10.0/10.3) needs `S_kv % 8 == 0`, `D % 8 == 0` and
+  `D <= 256`. No such constraint is documented for sm120f. The gather hands
+  the kernel the key extent serial hands it, `N`.
+- The query scale is applied inside the kernel (`scale = D ** -0.5` on an
+  unscaled query), as the serial fused call applies it. The ring's `project`
+  divides a bf16 query first. The gather does not, so it avoids that extra
+  rounding.
+
+**Padding.** Grid padding is the ring's: both token axes are widened to
+`P = side x ceil(N / side)` before sharding. Padded query columns and pair rows
+are computed on zeros and sliced off before the declared out spec. Padded keys
+are **dropped** from the gathered key axis (`[:N]`), not masked. That keeps a
+genuinely fully-masked row on the serial contract with both bodies. The kernel
+would otherwise take its uniform `-1e9` average over `P` keys instead of the
+`N` keys serial averages over. A CPU gate shows the difference: with the slice
+removed, only the cuEq-through-NVIDIA's-reference arms on padded grids fail.
+The row loop runs `ceil(L / R)` blocks of one width. The ragged tail is
+peeled, zero-padded explicitly and sliced back. It is never read through a
+clamped `dynamic_slice`, and the whole local tile is never padded (that copy
+would be 2.6 GiB per device at 6,568 tokens). The row block is the ring's rule
+at the local width (64 at 2,096 tokens, 49 at 6,568), and
+`triangle_attention_q_chunk` sets it the same way.
+
+**Per-device buffers**, `B = 1`, bf16 activations, f32 bias, 2x2 grid
+(the reviewer's accounting, arithmetic only):
+
+| buffer, MiB | 2,096 tokens, `R = 64` | 6,568 tokens, `R = 49` |
+| --- | ---: | ---: |
+| resident local pair tile | 268.1 | 2,633.0 |
+| full-width raw row block (gathered) | 32.8 | 78.6 |
+| full-width K plus V block | 65.5 | 157.1 |
+| each local Q, gate or output block | 16.4 | 39.3 |
+| full-width bias rows `b[I_c, :]`, f32 | 33.5 | 329.1 |
+| complete local attention output | 268.1 | 2,633.0 |
+
+A full-width pair materialised for *all* local rows would be about 5.14 GiB at
+6,568 tokens. The row block exists to prevent that, and whether compiled
+liveness actually does is a GPU measurement. The XLA reference body forms an
+`[R, H, L, N]` f32 score tile, `side` times the ring's. That buffer is part of
+the reference body only. The kernel forms none.
+
+**What is measured, CPU only** (`tests/models/test_cp_gather_triangle.py`, 2x2
+and 3x3 forced-device meshes):
+
+- per-rank ownership, bitwise: Q/K/V/gate/bias rows/mask on every rank before
+  attention. The fixtures cover off-diagonal ranks, non-divisible `N`, row
+  tails, `B = 2`, non-prefix masks, and the pair both as given and transposed;
+- the XLA body against serial XLA triangle attention within `atol = rtol =
+  1e-5`: max abs error <= 4.8e-7 on pre-projected operands, <= 6.0e-7 through
+  Boltz-2's projections, gate and output projection at both entries and both
+  directions;
+- the cuEq body through NVIDIA's own reference lowering (the frontend's
+  `platform=None` lowering, reachable on a CPU when the CUDA ops package is
+  hidden) against the serial `triangle_backend=cueq` path through the same
+  lowering: max abs error <= 4.8e-7, fully-masked rows on padded grids
+  included;
+- padding invariance (9 valid tokens padded to 13 give the 9-token answer to
+  2.4e-7), the mask-polarity sentinel on both bodies and on the wheel's entry,
+  and the ring and serial programs byte-identical with the option omitted or
+  `ring` (`tests/models/boltz2/scripts/cp_ring_tile_fingerprints.py`, ten
+  programs).
+
+**What is not measured.** Nothing has run on a card yet:
+
+- the kernel's dispatch at `S_qo != S_kv` on CC 12.0, and its compiled
+  precision;
+- per-device peak and compiled liveness at 2,096 and 6,568 tokens;
+- the wall split (`trunk_tri_att_start/end`, including the gathers and the
+  bias redistribution);
+- the kernel census on the card;
+- the same-index distance from the released serial run on 5DEI. The proposed
+  promotion target is <= 0.066 Å, the rerun floor. After that come 6ZTX and
+  6NYF x8 against the tile arm.
+
+The estimates behind the design (roughly 50-70 ms per call and roughly 350 s
+per 2,096-token pass) are targets, not results.
+
+**Where it is read.** Both Boltz-2 2-D entries dispatch on the scope: the
+trunk's context-parallel dispatcher
+(`models/boltz2/models/triangle/triangle_attention_cp.py`) and the serial
+module's `_attention_ring_2d`, which the MSA stack reaches. The fingerprints
+confirm both: `gather` moves all six mesh programs, including the MSA stack in
+both layer spellings, and none of the four serial ones. Protenix
+(`models/protenix/models/triangle/triangle_attention_cp.py` and
+`triangle.py`'s 2-D branch) and OpenFold3 do not read it: their backends
+refuse the option, and a bare model call under the scope still runs their
+ring.
+
+For a GPU harness outside the repository, the scope is the handle:
+
+```python
+from foldjax.models._cp import context_parallel
+from foldjax.models._cp_attention import triangle_attention_grid_scope
+
+with context_parallel(4, layout="2d"), triangle_attention_grid_scope("gather"):
+    out = boltz2_model_call(...)
+```
+
+The cache namespace forks on the realised algorithm: `ring` spelled shares
+omission's entry, and `gather` has its own. Under `gather` no ring body is
+recorded, even on a GPU grid where an omitted ring kernel would otherwise
+realise `tokamax`. An explicit `triangle_attention_ring_kernel=tokamax`
+beside `gather` is refused, because no ring would run it.
+
 ## The two local diffusion attentions (experimental, GPU only; measured neutral)
 
 Measured on the node (Boltz-2 5DEI 2,096 tokens, 2x2 grid): `atom` 964 s,

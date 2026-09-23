@@ -12,6 +12,38 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **Boltz-2's 2-D triangle attention can gather instead of rotating**, opt-in
+  with `--option triangle_attention_grid=gather`. `ring` stays the default and
+  compiles the released programs byte for byte. Ten programs were checked
+  against the parent commit: both ring entries at both directions, the MSA
+  stack in both layer spellings, and both serial entries.
+
+  Under `gather`, each device receives the bias rows it needs once per call.
+  They come from the existing projected bias tiles through a transpose-partner
+  `collective_permute` and an `all_gather` along `cp_row`. Then, for each block
+  of local pair rows, the device gathers those rows and their mask at full
+  width along `cp_col` and runs one normalising attention. There is no rotation
+  and no softmax merge. On a GPU that attention is cuEquivariance's kernel,
+  with a rectangular query/key extent, which the installed 0.11.1 wrapper
+  documents. The mask converts once to the kernel's "True means valid", and
+  the query scale is applied in the kernel as the serial fused call applies
+  it. On any other platform an XLA reference body with the same data movement
+  runs instead. A GPU process without cuEquivariance is refused before
+  featurization and is not downgraded. Padded keys are dropped from the
+  gathered axis, not masked, so a fully-masked row stays on the serial contract
+  under the kernel's replace-with-`-1e9` masking.
+
+  **Nothing is measured on a card.** The CPU gates cover per-rank ownership,
+  bitwise, on 2x2 and 3x3 meshes, and agreement with serial XLA within 1e-5
+  (max abs error <= 6.0e-7 through Boltz-2's projections at both entries and
+  both directions). The cuEq argument construction runs through NVIDIA's own
+  reference lowering against the serial cuEq path (<= 4.8e-7). The gates also
+  cover padding invariance, the mask-polarity sentinel, and a dot and
+  collective census. Wall, peak, compiled liveness, and the same-index distance
+  from serial on 5DEI are the GPU work that remains. For a harness outside the
+  repository, the scope is `foldjax.models._cp_attention.
+  triangle_attention_grid_scope`. Protenix and OpenFold3 do not read it.
+
 - **Boltz-2's two context-parallel diffusion attentions can run a fused
   kernel**, opt-in and experimental, with `--option cp_fused_attention=atom`,
   `=token` or `=atom+token`. Under a mesh this port refuses
