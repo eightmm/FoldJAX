@@ -557,10 +557,12 @@ than Boltz-2's:
 - The XLA reference body is Boltz-2's arithmetic (f32 scores, f32 softmax, the
   value product rounded to the value dtype). Protenix's serial XLA block forms
   its logits in the operand dtype and rounds the probabilities before the
-  value product, and OpenFold3's keeps that product in f32, so on a bf16
-  trunk the CPU reference differs from those serial XLA paths by rounding.
-  It is a CPU reference: on a GPU the body is the kernel, which is also both
-  ports' released serial default.
+  value product. OpenFold3's `dot_product_attention` never casts: scores,
+  softmax and value product stay in the operand dtype unless a float32 bias
+  promotes them. So on a bf16 trunk the CPU reference and those serial XLA
+  paths may round differently; the gates above use f32 fixtures and do not
+  measure that. It is a CPU reference only: on a GPU the body is the kernel,
+  which is also both ports' released serial default.
 
 Protenix's omitted `cp_layout` is the 1-D mesh on every device count, so on
 that port both ring options need an explicit `cp_layout=2d`. OpenFold3's
