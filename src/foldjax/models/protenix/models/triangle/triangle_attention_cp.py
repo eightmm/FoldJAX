@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import functools
+
 import jax
 import jax.numpy as jnp
 
 from foldjax.models._cp import cp_layout, shard_pair_rows
 from foldjax.models._cp_attention import (
+    gather_triangle_attention_2d_from_pair,
+    resolve_gather_attention_body,
     resolve_ring_tile_kernel,
     ring_tile_kernel,
     ring_triangle_attention_2d_from_pair,
+    triangle_attention_grid,
 )
 from foldjax.models.protenix.models.primitives.primitives import (
     layer_norm,
@@ -61,6 +66,18 @@ def triangle_attention(
     ``attention_backend`` remains the serial kernel choice -- a fused
     attention over the global token axis, which no mesh can partition -- and
     is still refused for anything but ``xla`` here.
+
+    ``triangle_attention_grid`` -- another scope
+    (:func:`~foldjax.models._cp_attention.triangle_attention_grid`) --
+    replaces the ring with the streamed gather
+    (:func:`~foldjax.models._cp_attention.gather_triangle_attention_2d_from_pair`),
+    whose local body is cuEquivariance's kernel on a GPU and the XLA reference
+    elsewhere. The query then leaves ``project`` unscaled and the body applies
+    ``hidden ** -0.5``, where this port's serial cuEquivariance call applies
+    it (``triangle._triangle_attention_dense``); the ring's tile kernel is not
+    read, because there is no ring to be a body of. The serial module's own
+    2-D branch (``triangle._triangle_attention_ring_2d``) dispatches the same
+    way.
     """
 
     if cp_layout() != "2d":
@@ -86,7 +103,14 @@ def triangle_attention(
             "cannot be partitioned. To run a fused kernel on each ring tile "
             "instead, pass triangle_attention_ring_kernel=tokamax."
         )
-    tile_kernel = resolve_ring_tile_kernel(ring_tile_kernel())
+    gather_body = (
+        resolve_gather_attention_body()
+        if triangle_attention_grid() == "gather"
+        else None
+    )
+    tile_kernel = (
+        resolve_ring_tile_kernel(ring_tile_kernel()) if gather_body is None else None
+    )
     if x.ndim != 3:
         raise ValueError(
             "Protenix 2-D triangle attention expects [N, N, C], "
@@ -110,28 +134,41 @@ def triangle_attention(
     hidden = params.attention.linear_k.weight.shape[0] // num_heads
     scale = jnp.asarray(hidden**-0.5, dtype=x.dtype)
 
-    def project(attention, rows):
+    def project(attention, rows, *, scaled=True):
         gate = None
         if attention.linear_g is not None:
             gate = sigmoid(linear(rows, attention.linear_g))
             gate = gate.reshape(gate.shape[:-1] + (num_heads, -1))
             gate = jnp.swapaxes(gate, -2, -3)
+        query = _project_heads(rows, attention.linear_q, num_heads)
         return (
-            _project_heads(rows, attention.linear_q, num_heads) * scale,
+            query * scale if scaled else query,
             _project_heads(rows, attention.linear_k, num_heads),
             _project_heads(rows, attention.linear_v, num_heads),
             gate,
         )
 
-    out = ring_triangle_attention_2d_from_pair(
-        x,
-        triangle_bias,
-        mask_bias,
-        params.attention,
-        project=project,
-        q_block=q_chunk_size,
-        tile_kernel=tile_kernel,
-    )
+    if gather_body is not None:
+        out = gather_triangle_attention_2d_from_pair(
+            x,
+            triangle_bias,
+            mask_bias,
+            params.attention,
+            project=functools.partial(project, scaled=False),
+            scale=float(hidden**-0.5),
+            q_block=q_chunk_size,
+            body=gather_body,
+        )
+    else:
+        out = ring_triangle_attention_2d_from_pair(
+            x,
+            triangle_bias,
+            mask_bias,
+            params.attention,
+            project=project,
+            q_block=q_chunk_size,
+            tile_kernel=tile_kernel,
+        )
     out = jnp.swapaxes(out, -2, -3)
     out = out.reshape(out.shape[:-2] + (-1,))
     out = linear(out, params.attention.linear_o)

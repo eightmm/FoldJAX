@@ -9,6 +9,7 @@ faithfulness to the standalone module rather than for the Pairformer path.
 
 from __future__ import annotations
 
+import functools
 import os
 from typing import NamedTuple
 
@@ -23,7 +24,13 @@ from foldjax.models._cp import (
     pair_row_spec,
     shard_pair_rows,
 )
-from foldjax.models._cp_attention import ring_triangle_attention_2d_from_pair
+from foldjax.models._cp_attention import (
+    gather_triangle_attention_2d_from_pair,
+    resolve_gather_attention_body,
+    ring_tile_kernel,
+    ring_triangle_attention_2d_from_pair,
+    triangle_attention_grid,
+)
 from foldjax.models.openfold3.models.attention import (
     AttentionParams,
     attention,
@@ -101,6 +108,26 @@ def _project_triangle_bias(
     projected = linear(x, params.linear_z)
     permutation = (2, 1, 0) if transpose_bias else (2, 0, 1)
     return permute_final_dims(projected, permutation)
+
+
+def _refuse_ring_tile_scope() -> None:
+    """Refuse a ring tile-kernel scope this port offers no option for.
+
+    Nothing about the fused tile is port-specific -- the ring is the same
+    object -- so what is missing is only that no OpenFold3 backend option
+    reaches the scope and no OpenFold3 run has measured it. A scope an
+    adapter silently dropped would make a spelled request and an omitted one
+    compile the same program under two names. Both 2-D entries call this.
+    """
+
+    requested_tile_kernel = ring_tile_kernel()
+    if requested_tile_kernel != "xla":
+        raise ValueError(
+            "OpenFold3 has no triangle_attention_ring_kernel option, so "
+            f"{requested_tile_kernel!r} cannot have been asked for through "
+            "this port; the scope is refused rather than ignored because "
+            "ignoring it would report a fused run that did not happen"
+        )
 
 
 def triangle_attention(
@@ -337,14 +364,32 @@ def _ring_attention(
     ``q_block`` is the local pair rows one ring block runs, the axis the
     chunked serial path also blocks; the projections happen inside the block,
     which is why they are a closure here.
+
+    Reached only by a direct call of this module's :func:`triangle_attention`
+    under a 2-D mesh: ``PairBlock`` imports
+    ``triangle_attention_cp.triangle_attention``, which handles the grid
+    itself before it would delegate here. It reads the same scopes that entry
+    reads -- refusing a ring tile kernel, dispatching on
+    ``triangle_attention_grid`` -- so a direct caller cannot run a different
+    program under the same scope.
     """
 
-    def project(mha, rows):
+    _refuse_ring_tile_scope()
+    gather_body = (
+        resolve_gather_attention_body()
+        if triangle_attention_grid() == "gather"
+        else None
+    )
+
+    def project(mha, rows, *, scaled=True):
         def heads(array: jnp.ndarray) -> jnp.ndarray:
             return jnp.swapaxes(split_heads(array, no_heads), -2, -3)
 
         query = heads(linear(rows, mha.linear_q))
-        query = query / jnp.sqrt(jnp.asarray(query.shape[-1], dtype=query.dtype))
+        if scaled:
+            query = query / jnp.sqrt(
+                jnp.asarray(query.shape[-1], dtype=query.dtype)
+            )
         gate = None
         if mha.linear_g is not None:
             gate = heads(jax_sigmoid(linear(rows, mha.linear_g)))
@@ -355,14 +400,29 @@ def _ring_attention(
             gate,
         )
 
-    out = ring_triangle_attention_2d_from_pair(
-        x,
-        triangle_bias,
-        mask_bias,
-        params,
-        project=project,
-        q_block=q_block,
-    )
+    if gather_body is not None:
+        # Unscaled query, scale inside the body: where `_cueq_attention`
+        # applies it.
+        head_dim = params.linear_q.weight.shape[0] // no_heads
+        out = gather_triangle_attention_2d_from_pair(
+            x,
+            triangle_bias,
+            mask_bias,
+            params,
+            project=functools.partial(project, scaled=False),
+            scale=float(head_dim) ** -0.5,
+            q_block=q_block,
+            body=gather_body,
+        )
+    else:
+        out = ring_triangle_attention_2d_from_pair(
+            x,
+            triangle_bias,
+            mask_bias,
+            params,
+            project=project,
+            q_block=q_block,
+        )
     out = jnp.swapaxes(out, -2, -3)
     return linear(flatten_heads(out), params.linear_o)
 

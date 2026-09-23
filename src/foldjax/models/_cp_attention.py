@@ -176,6 +176,29 @@ def triangle_attention_grid_scope(grid: str | None) -> Iterator[str]:
         _TRIANGLE_ATTENTION_GRID.reset(token)
 
 
+def refuse_triangle_attention_grid(port: str) -> None:
+    """Refuse a ``gather`` scope around a port that does not offer it.
+
+    Boltz-2, Protenix and OpenFold3 read :func:`triangle_attention_grid` at
+    every 2-D triangle attention and their backends record it. A port without
+    that option must not run under the scope anyway: OpenDDE's trunk is
+    Protenix's Pairformer, so it would run the gather under a cache namespace
+    that never names it, and ESMFold2 has no triangle attention at all, so a
+    harness would report a gather that never happened. Either way one
+    namespace would hold two programs, or one program two names -- the rule
+    :func:`resolve_ring_tile_kernel` states. Called on the host, before any
+    work, by each such port's model entry.
+    """
+
+    grid = triangle_attention_grid()
+    if grid != "ring":
+        raise ValueError(
+            f"{port} has no triangle_attention_grid option, so "
+            f"triangle_attention_grid={grid!r} cannot have been asked for "
+            "through this port; the scope is refused rather than ignored"
+        )
+
+
 def resolve_gather_attention_body() -> str:
     """The local attention body the gather path runs on this host.
 

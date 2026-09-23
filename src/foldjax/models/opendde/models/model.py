@@ -25,6 +25,7 @@ from foldjax.models._cp import (
     cp_shards as _active_cp_shards,
 )
 from foldjax.models._cp_atom import resolve_atom_windows
+from foldjax.models._cp_attention import refuse_triangle_attention_grid
 from foldjax.models._graph import (
     merge_static_flags,
     split_static_flags,
@@ -905,6 +906,10 @@ def opendde_infer_static(
         raise RuntimeError(
             f"cp_layout={cp_layout!r} but the active mesh is {_active_cp_layout()!r}"
         )
+    # The trunk is Protenix's Pairformer, which reads the gather scope; this
+    # port has no option naming it, so it is refused here -- and again in
+    # `opendde_infer_compiled`, whose pool can hit without tracing this.
+    refuse_triangle_attention_grid("OpenDDE")
     if cp_shards != _active_cp_shards():
         raise RuntimeError(
             f"cp_shards={cp_shards} but the active context-parallel mesh has "
@@ -1571,6 +1576,7 @@ def opendde_infer_compiled(
         compact_requested and can_compact_confidence_distance_embedding(distance_params)
     )
     param_arrays, treedef, flags = split_static_flags(params)
+    refuse_triangle_attention_grid("OpenDDE")
     cp = int(kwargs.pop("cp_shards", 1))
     layout = _resolve_cp_layout(str(kwargs.pop("cp_layout", "auto")), cp)
     # The capture set has to be live while the program is *traced*, not

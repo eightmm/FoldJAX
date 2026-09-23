@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import warnings
 from collections.abc import Callable
@@ -27,7 +28,14 @@ from foldjax.models._cp import (
     shard_pair_rows,
     transpose_perm,
 )
-from foldjax.models._cp_attention import ring_triangle_attention_2d_from_pair
+from foldjax.models._cp_attention import (
+    gather_triangle_attention_2d_from_pair,
+    resolve_gather_attention_body,
+    resolve_ring_tile_kernel,
+    ring_tile_kernel,
+    ring_triangle_attention_2d_from_pair,
+    triangle_attention_grid,
+)
 from foldjax.models._cueq import fused_multiplication_fits
 from foldjax.models.protenix.models.primitives.attention import AttentionParams
 from foldjax.models.protenix.models.primitives.primitives import (
@@ -677,13 +685,27 @@ def _triangle_attention_ring_2d(
     triangle_bias: jnp.ndarray,
     q_block: int | None = None,
 ) -> jnp.ndarray:
-    """Two-dimensional Protenix attention without a full-column gather."""
+    """Two-dimensional Protenix attention without a full-column gather.
+
+    Reached only by a direct call of this module's :func:`triangle_attention`
+    under a 2-D mesh: every Pairformer imports
+    ``triangle_attention_cp.triangle_attention``, which handles the grid
+    itself before it would delegate here. It reads the same two scopes that
+    entry reads -- the ring's tile kernel and ``triangle_attention_grid`` -- so
+    a direct caller cannot run a different program under the same scope.
+    """
 
     scale = float(params.attention.linear_k.weight.shape[0] // num_heads) ** -0.5
+    gather_body = (
+        resolve_gather_attention_body()
+        if triangle_attention_grid() == "gather"
+        else None
+    )
 
-    def project(attention, rows):
+    def project(attention, rows, *, scaled=True):
         q = _project_heads(rows, attention.linear_q, num_heads)
-        q = q * jnp.asarray(scale, dtype=q.dtype)
+        if scaled:
+            q = q * jnp.asarray(scale, dtype=q.dtype)
         gate = None
         if attention.linear_g is not None:
             gate = sigmoid(linear(rows, attention.linear_g))
@@ -696,14 +718,29 @@ def _triangle_attention_ring_2d(
             gate,
         )
 
-    out = ring_triangle_attention_2d_from_pair(
-        x,
-        triangle_bias,
-        mask_bias,
-        params.attention,
-        project=project,
-        q_block=q_block,
-    )
+    if gather_body is not None:
+        # Unscaled query, scale inside the body: where the serial cuEq call
+        # below (`_triangle_attention_dense`) applies it.
+        out = gather_triangle_attention_2d_from_pair(
+            x,
+            triangle_bias,
+            mask_bias,
+            params.attention,
+            project=functools.partial(project, scaled=False),
+            scale=scale,
+            q_block=q_block,
+            body=gather_body,
+        )
+    else:
+        out = ring_triangle_attention_2d_from_pair(
+            x,
+            triangle_bias,
+            mask_bias,
+            params.attention,
+            project=project,
+            q_block=q_block,
+            tile_kernel=resolve_ring_tile_kernel(ring_tile_kernel()),
+        )
     out = jnp.swapaxes(out, -2, -3)
     out = out.reshape(out.shape[:-2] + (-1,))
     return linear(out, params.attention.linear_o)

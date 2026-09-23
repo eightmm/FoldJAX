@@ -43,6 +43,7 @@ from foldjax.models._cp import (
 from foldjax.models._cp import (
     cp_shards as _active_cp_shards,
 )
+from foldjax.models._cp_attention import refuse_triangle_attention_grid
 from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models._glu import GLU_BACKENDS
 from foldjax.models._jit_pool import BoundedJitPool
@@ -625,6 +626,10 @@ def predict(
     if glu_backend is not None and glu_backend not in GLU_BACKENDS:
         msg = f"glu backend must be one of {GLU_BACKENDS}; got {glu_backend!r}"
         raise ValueError(msg)
+    # This port has no triangle attention -- its 2-D ring is Cannon's, for the
+    # triangle multiplication -- so a gather scope around it describes nothing
+    # that runs, and is refused rather than reported.
+    refuse_triangle_attention_grid("ESMFold2")
     if confidence_dtype is not None and confidence_dtype not in CONFIDENCE_DTYPES:
         msg = (
             f"confidence dtype must be one of {CONFIDENCE_DTYPES}; "
