@@ -1154,7 +1154,7 @@ namespace, so an omitted run on a GPU grid shares its entry with an explicit
 `ContextVar`, which no `jax.jit` cache key carries, so the retained
 in-process runner does **not** fork on it: one value per process.
 
-### The 2-D triangle-attention algorithm (`--option triangle_attention_grid`, Boltz-2)
+### The 2-D triangle-attention algorithm (`--option triangle_attention_grid`, Boltz-2, Protenix, OpenFold3)
 
 `ring` (the default) is the released rotation described above.
 `gather` replaces it: for each block of local pair rows, every device gathers
@@ -1165,15 +1165,35 @@ data movement. **Opt-in and unmeasured on a card.**
 `docs/context_parallel.md` ("The gather path") has the mechanism, the kernel
 contract, per-device buffer sizes and the CPU gates.
 
+Offered on three ports, each dispatching at every 2-D triangle attention it
+has and applying the query scale in the kernel where its own serial
+cuEquivariance call applies it:
+
+| port | the grid it needs | notes |
+| --- | --- | --- |
+| Boltz-2 | `--cp-layout 2d`, or `auto` on a perfect-square count | refused beside `triangle_attention_ring_kernel=tokamax` |
+| Protenix | an explicit `--cp-layout 2d` (this port's `auto` is 1-D on every count) | refused beside `triangle_attention_ring_kernel=tokamax` |
+| OpenFold3 | `--cp-layout 2d`, or `auto` on a perfect-square count | no ring-kernel option; the algorithm is part of the in-process pool key |
+
+OpenDDE and ESMFold2 do not offer it: their adapters refuse the option, and
+their model entries refuse the scope as well (OpenDDE's trunk is Protenix's
+Pairformer and would otherwise run the gather unnamed; ESMFold2 has no
+triangle attention).
+
 Refused rather than downgraded: a spelling outside `ring|gather`, `gather`
-without `--cp-layout 2d` on a perfect-square `--cp-devices`, `gather` beside
-an explicit `triangle_attention_ring_kernel=tokamax` (no ring would run that
-body), and `gather` in a GPU process that cannot import cuEquivariance. The
-last one is checked on the host before featurization. Under `gather` the ring
-kernel option is not read. `gather` forks the compilation-cache namespace and
-`ring` shares the namespace of an omitted option. Like the ring kernel, the
-value travels in a `ContextVar` and applies to the whole process. Protenix and
-OpenFold3 do not offer it.
+off the grid the table names, `gather` beside an explicit
+`triangle_attention_ring_kernel=tokamax` (no ring would run that body), and
+`gather` in a GPU process that cannot import cuEquivariance. The last one is
+checked on the host before featurization. Under `gather` the ring kernel
+option is not read. `gather` forks the compilation-cache namespace and `ring`
+shares the namespace of an omitted option. Like the ring kernel, the value
+travels in a `ContextVar`; on Boltz-2 and Protenix it applies to the whole
+process, and OpenFold3's retained runner partitions on it.
+
+That same explicit-layout rule now also applies to Protenix's
+`triangle_attention_ring_kernel=tokamax`: with `--cp-layout` omitted that
+port builds the 1-D mesh, which has no ring, so the request is refused instead
+of being recorded for a program that never reads it.
 
 ### Fused attention under a mesh (`--option cp_fused_attention=...`, Boltz-2)
 

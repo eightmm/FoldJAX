@@ -12,6 +12,27 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **Protenix and OpenFold3 can gather their 2-D triangle attention too**, with
+  the same opt-in `--option triangle_attention_grid=gather` (default `ring`).
+  Both ports read the scope at every 2-D triangle attention they have: the
+  dispatcher the model reaches and the serial module's own 2-D branch, which
+  only a direct call reaches. The query scale is applied in the kernel where
+  each port's serial cuEquivariance call applies it, and like that call no
+  explicit precision is passed. The refusals are Boltz-2's, and on Protenix
+  `gather` needs an explicit `cp_layout=2d`, because that port's `auto` builds
+  the 1-D mesh. OpenFold3's in-process pool key records the algorithm.
+  OpenDDE, whose trunk is Protenix's Pairformer, and ESMFold2, which has no
+  triangle attention, now refuse a `gather` scope at their model entries. They
+  would otherwise run or report a gather that no namespace names.
+
+  CPU gates: each port's eight ring and serial programs are byte-identical to
+  the parent commit with the option omitted or `ring`. Both entries in both
+  directions match the port's serial path on 2x2 and 3x3 meshes, with a fully
+  masked row. XLA body against serial XLA: max abs error <= 7.2e-7 (Protenix)
+  and <= 8.3e-7 (OpenFold3). cuEq body through NVIDIA's reference lowering
+  against the serial cuEquivariance call: <= 7.2e-7 and <= 7.7e-7. The dot and
+  collective census also passes. Nothing is measured on a card.
+
 - **Boltz-2's 2-D triangle attention can gather instead of rotating**, opt-in
   with `--option triangle_attention_grid=gather`. `ring` stays the default and
   compiles the released programs byte for byte. Ten programs were checked
@@ -42,7 +63,7 @@ unless it says so here, in its own paragraph.
   collective census. Wall, peak, compiled liveness, and the same-index distance
   from serial on 5DEI are the GPU work that remains. For a harness outside the
   repository, the scope is `foldjax.models._cp_attention.
-  triangle_attention_grid_scope`. Protenix and OpenFold3 do not read it.
+  triangle_attention_grid_scope`.
 
 - **Boltz-2's two context-parallel diffusion attentions can run a fused
   kernel**, opt-in and experimental, with `--option cp_fused_attention=atom`,
@@ -200,6 +221,13 @@ unless it says so here, in its own paragraph.
   the grid and every distributed run records the mesh it resolved.
 
 ### Fixed
+
+- **Protenix no longer accepts `triangle_attention_ring_kernel=tokamax` on a
+  1-D run.** The check used the shared square-grid helper, which reads an
+  omitted `cp_layout` as the grid on a perfect-square count. Protenix's
+  omitted layout is 1-D on every count, so `cp_devices=4` with no layout
+  recorded a fused-tile namespace for a program that has no ring. An explicit
+  `cp_layout=2d` is now required, as the error message already said.
 
 - **`triangle_attention_ring_kernel` now reaches Boltz-2's MSA stack and not
   only its trunk.** This port enters the gather-free 2-D ring through two

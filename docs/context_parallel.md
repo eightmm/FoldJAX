@@ -359,7 +359,7 @@ separate gate (`tests/test_boltz2_session.py::
 test_predict_hands_the_ring_scope_the_body_it_resolved`), read from inside the
 native call in both arms of the probe.
 
-## The gather path (`triangle_attention_grid=gather`; Boltz-2, opt-in, unmeasured on a card)
+## The gather path (`triangle_attention_grid=gather`; Boltz-2, Protenix, OpenFold3; opt-in, unmeasured on a card)
 
 The wall split behind the ring-tile rows puts the two triangle attentions at
 336 s of the tile grid's 618 s pass at 2,096 tokens: 214.5 / 262.4 ms per call
@@ -486,7 +486,25 @@ and 3x3 forced-device meshes):
   2.4e-7), the mask-polarity sentinel on both bodies and on the wheel's entry,
   and the ring and serial programs byte-identical with the option omitted or
   `ring` (`tests/models/boltz2/scripts/cp_ring_tile_fingerprints.py`, ten
-  programs).
+  programs);
+- Protenix and OpenFold3, both of each port's 2-D entries, both directions
+  (OpenFold3 also in the `transpose_bias` orientation `PairBlock` uses), on
+  2x2 (17 and 20 tokens) and 3x3 (19 tokens), with a fully masked row, against
+  the port's serial path with the same body
+  (`test_port_gather_entries_match_serial`). XLA body against serial XLA:
+  max abs error <= 7.2e-7 (Protenix) and <= 8.3e-7 (OpenFold3). cuEq body
+  through NVIDIA's reference lowering against the port's serial
+  cuEquivariance call: <= 7.2e-7 and <= 7.7e-7. Every token count exceeds 16,
+  because Protenix's serial path takes the kernel only above that, and the
+  probe counts kernel calls, so neither side is the XLA path under a `cueq`
+  label. A wrong scale (1.0 for 0.5) moves the Protenix output by 1.65
+  against a 1e-5 gate. The same dot and collective census holds through each
+  port's `project` (8 dots: neither port fuses q with the gate or k with v);
+- each port's eight programs (two entries x two directions on a 2x2 mesh, and
+  serial) byte-identical to the parent commit with the option omitted and
+  with `ring`; `gather` moves the four mesh programs and no serial one
+  (`tests/models/protenix/scripts/cp_ring_fingerprints.py`,
+  `tests/models/openfold3/scripts/cp_ring_fingerprints.py`).
 
 **What is not measured.** Nothing has run on a card yet:
 
@@ -503,16 +521,57 @@ and 3x3 forced-device meshes):
 The estimates behind the design (roughly 50-70 ms per call and roughly 350 s
 per 2,096-token pass) are targets, not results.
 
-**Where it is read.** Both Boltz-2 2-D entries dispatch on the scope: the
-trunk's context-parallel dispatcher
-(`models/boltz2/models/triangle/triangle_attention_cp.py`) and the serial
-module's `_attention_ring_2d`, which the MSA stack reaches. The fingerprints
-confirm both: `gather` moves all six mesh programs, including the MSA stack in
-both layer spellings, and none of the four serial ones. Protenix
-(`models/protenix/models/triangle/triangle_attention_cp.py` and
-`triangle.py`'s 2-D branch) and OpenFold3 do not read it: their backends
-refuse the option, and a bare model call under the scope still runs their
-ring.
+**Where it is read.** Every 2-D triangle attention in the three ports that
+offer the option dispatches on the scope:
+
+| port | entry the model reaches | second 2-D entry |
+| --- | --- | --- |
+| Boltz-2 | `triangle/triangle_attention_cp.py` (trunk) | `triangle/triangle_attention.py::_attention_ring_2d` (MSA stack) |
+| Protenix | `triangle/triangle_attention_cp.py` (every Pairformer) | `triangle/triangle.py::_triangle_attention_ring_2d` |
+| OpenFold3 | `models/triangle_attention_cp.py` (`PairBlock`) | `models/triangle_attention.py::_ring_attention` |
+
+For Protenix and OpenFold3 the second entry is not reached by a prediction:
+the model imports the dispatcher, which handles the grid before it would
+delegate to the serial module, so that branch runs only when the serial
+module's `triangle_attention` is called directly under a 2-D mesh. Both still
+read the same scopes as their dispatcher, so a direct caller cannot get a
+different program under the same scope: Protenix's now reads the ring
+tile-kernel scope as well (it had omitted it), and OpenFold3's refuses a tile
+scope as its dispatcher does.
+
+Per port, the gather matches the port's serial cuEquivariance call rather
+than Boltz-2's:
+
+- **Protenix**: `project` leaves the query unscaled and the body applies
+  `hidden ** -0.5` with `hidden = linear_k.out / heads`, as
+  `_triangle_attention_dense` passes it to `cueq_attention_core`. No
+  `precision=`: both sides derive the kernel's precision from the active
+  policy. The mask bias is `inf * (mask.astype(f32) - 1)`, the triangle bias
+  is the bias linear in the trunk dtype, and the gate is reshaped to the
+  head-major layout the ring already used. The input is unbatched
+  `[N, N, C]`, the first gather caller without a leading batch axis.
+- **OpenFold3**: the body applies `D ** -0.5` with `D = linear_q.out / heads`,
+  as `_cueq_attention` does, with no `precision=` either side; the triangle
+  bias carries the `transpose_bias` orientation `_project_triangle_bias`
+  gives it, and the leading template or sample axes stay unsharded.
+- The XLA reference body is Boltz-2's arithmetic (f32 scores, f32 softmax, the
+  value product rounded to the value dtype). Protenix's serial XLA block forms
+  its logits in the operand dtype and rounds the probabilities before the
+  value product, and OpenFold3's keeps that product in f32, so on a bf16
+  trunk the CPU reference differs from those serial XLA paths by rounding.
+  It is a CPU reference: on a GPU the body is the kernel, which is also both
+  ports' released serial default.
+
+Protenix's omitted `cp_layout` is the 1-D mesh on every device count, so on
+that port both ring options need an explicit `cp_layout=2d`. OpenFold3's
+`auto` builds the grid on a perfect-square count and accepts the option there.
+
+OpenDDE's trunk is Protenix's Pairformer, so it would run the gather under a
+scope. Its adapter offers no option naming it, so its model entries refuse
+the scope, and ESMFold2's entry refuses it too, since ESMFold2 has no triangle
+attention and its 2-D ring is Cannon's triangle multiplication
+(`_cp_attention.refuse_triangle_attention_grid`). The cache namespace would
+otherwise hold a program it never names, or name one that never ran.
 
 For a GPU harness outside the repository, the scope is the handle:
 
@@ -528,7 +587,22 @@ The cache namespace forks on the realised algorithm: `ring` spelled shares
 omission's entry, and `gather` has its own. Under `gather` no ring body is
 recorded, even on a GPU grid where an omitted ring kernel would otherwise
 realise `tokamax`. An explicit `triangle_attention_ring_kernel=tokamax`
-beside `gather` is refused, because no ring would run it.
+beside `gather` is refused (Boltz-2, Protenix), because no ring would run it.
+OpenFold3's in-process pool key, `_PredictGraphIdentity`, also records the
+algorithm (read from the scope while tracing), so one process never hands a
+`gather` call the ring program an earlier call compiled. On Boltz-2 and
+Protenix the value is one per process, as the ring kernel's is: their
+retained runners key on nothing that carries it.
+
+What the card still has to establish, per port: for Boltz-2, the items above.
+For Protenix and OpenFold3, the same kernel dispatch at `S_qo != S_kv` with
+their own head count and head width (four heads in both released trunks),
+the per-device peak and wall at 2,096 tokens, and the same-index
+distance on 5DEI against each port's own serial run and rerun floor. For
+Protenix that means under an explicit `cp_layout=2d`, whose grid measured
+worse than the 1-D layout on memory at 2,096 tokens. OpenFold3's template
+stack and confidence head reach the same entries with leading axes that the
+Boltz-2 and Protenix calls do not have.
 
 ## The two local diffusion attentions (experimental, GPU only; measured neutral)
 
