@@ -7,6 +7,7 @@ ring from :mod:`foldjax.models._cp_attention`.
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Mapping
 
 import jax
@@ -14,9 +15,12 @@ import jax.numpy as jnp
 
 from foldjax.models._cp import cp_layout, shard_pair_rows
 from foldjax.models._cp_attention import (
+    gather_triangle_attention_2d_from_pair,
+    resolve_gather_attention_body,
     resolve_ring_tile_kernel,
     ring_tile_kernel,
     ring_triangle_attention_2d_from_pair,
+    triangle_attention_grid,
 )
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives._common import sigmoid as _sigmoid
@@ -80,6 +84,15 @@ def triangle_attention_forward(
     selects a whole fused attention over the global token axis, which is not
     partitionable, where the ring's option selects a kernel for one local
     tile.
+
+    ``triangle_attention_grid`` -- another scope
+    (:func:`~foldjax.models._cp_attention.triangle_attention_grid`) -- replaces
+    the ring with the streamed gather
+    (:func:`~foldjax.models._cp_attention.gather_triangle_attention_2d_from_pair`),
+    whose local body is cuEquivariance's kernel on a GPU and the XLA
+    reference elsewhere. The ring's tile kernel is then not read: there is no
+    ring to be a body of. ``_attention_ring_2d`` in the serial module, the MSA
+    stack's entry, dispatches the same way.
     """
 
     if cp_layout() != "2d":
@@ -103,7 +116,14 @@ def triangle_attention_forward(
             "axis cannot be partitioned. To run a fused kernel on each ring "
             "tile instead, pass triangle_attention_ring_kernel=tokamax."
         )
-    tile_kernel = resolve_ring_tile_kernel(ring_tile_kernel())
+    gather_body = (
+        resolve_gather_attention_body()
+        if triangle_attention_grid() == "gather"
+        else None
+    )
+    tile_kernel = (
+        resolve_ring_tile_kernel(ring_tile_kernel()) if gather_body is None else None
+    )
     if x.ndim != 4:
         raise ValueError(
             "Boltz 2-D triangle attention expects [B, N, N, C], "
@@ -136,7 +156,7 @@ def triangle_attention_forward(
         array = array.reshape(array.shape[:-1] + (no_heads, hidden))
         return jnp.swapaxes(array, -2, -3)
 
-    def project(mha, rows):
+    def project(mha, rows, *, scaled=True):
         qg = _linear(
             rows,
             jnp.concatenate(
@@ -156,7 +176,8 @@ def triangle_attention_forward(
         )
         key, value = jnp.split(kv, 2, axis=-1)
         query = split_heads(query)
-        query = query / jnp.sqrt(jnp.asarray(hidden, dtype=query.dtype))
+        if scaled:
+            query = query / jnp.sqrt(jnp.asarray(hidden, dtype=query.dtype))
         return (
             query,
             split_heads(key),
@@ -164,16 +185,32 @@ def triangle_attention_forward(
             split_heads(_sigmoid(gate)),
         )
 
-    out = ring_triangle_attention_2d_from_pair(
-        x,
-        triangle_bias,
-        mask_bias,
-        params["mha"],
-        project=project,
-        precision=precision,
-        q_block=q_chunk_size,
-        tile_kernel=tile_kernel,
-    )
+    if gather_body is not None:
+        # The query leaves `project` unscaled and the body scales it: the
+        # kernel then applies `hidden ** -0.5` where the serial fused call
+        # applies it, with no extra rounding of a pre-divided bf16 query.
+        out = gather_triangle_attention_2d_from_pair(
+            x,
+            triangle_bias,
+            mask_bias,
+            params["mha"],
+            project=functools.partial(project, scaled=False),
+            scale=float(hidden**-0.5),
+            precision=precision,
+            q_block=q_chunk_size,
+            body=gather_body,
+        )
+    else:
+        out = ring_triangle_attention_2d_from_pair(
+            x,
+            triangle_bias,
+            mask_bias,
+            params["mha"],
+            project=project,
+            precision=precision,
+            q_block=q_chunk_size,
+            tile_kernel=tile_kernel,
+        )
     out = jnp.swapaxes(out, -2, -3)
     out = out.reshape(out.shape[:-2] + (no_heads * hidden,))
     out = _linear(out, params["mha"]["linear_o"]["kernel"], precision)

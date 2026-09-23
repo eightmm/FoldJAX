@@ -115,6 +115,51 @@ def triangle_attention_precision():
     return modes[policy]
 
 
+def cueq_attention_arguments(
+    q: jnp.ndarray,
+    k: jnp.ndarray,
+    v: jnp.ndarray,
+    triangle_bias: jnp.ndarray,
+    mask_bias: jnp.ndarray,
+) -> tuple[tuple[int, ...], dict[str, jnp.ndarray]]:
+    """The five arrays :func:`cueq_attention_core` hands the kernel, and the lead.
+
+    Split out so the one mask-polarity conversion in this repository -- the
+    additive ``0``/``-1e9`` bias becomes the kernel's boolean, whose installed
+    contract (``cuequivariance_jax 0.11.1``, ``triangle_attention``) reads
+    "boolean, True means valid" -- can be checked without the kernel: a CPU
+    host cannot load ``libcue_ops.so``. Nothing here imports cuEquivariance.
+
+    The query extent and the key extent are independent, as the wheel's
+    ``[B, N, H, S_qo, D]`` / ``[B, N, H, S_kv, D]`` contract allows: the
+    2-D grid's gather path calls it with the local query columns against every
+    key (``_cp_attention.gather_triangle_attention_2d_from_pair``).
+    """
+
+    # Everything before the (N_row, H, N_col, D) suffix is batch. The three
+    # operands carry it in different amounts (the bias has a 1 where q has rows),
+    # so broadcast the leads to a common shape before folding them together.
+    lead = jnp.broadcast_shapes(
+        q.shape[:-4], triangle_bias.shape[:-4], mask_bias.shape[:-4]
+    )
+    q, k, v = (
+        jnp.broadcast_to(t, (*lead, *t.shape[-4:])) for t in (q, k, v)
+    )
+    triangle_bias = jnp.broadcast_to(
+        triangle_bias, (*lead, *triangle_bias.shape[-4:])
+    )
+    mask_bias = jnp.broadcast_to(mask_bias, (*lead, *mask_bias.shape[-4:]))
+
+    flat = lambda t: t.reshape((-1, *t.shape[-4:]))  # noqa: E731
+    return lead, {
+        "q": flat(q),
+        "k": flat(k),
+        "v": flat(v),
+        "bias": flat(triangle_bias),
+        "mask": flat(mask_bias) == 0,
+    }
+
+
 def cueq_attention_core(
     q: jnp.ndarray,
     k: jnp.ndarray,
@@ -159,27 +204,9 @@ def cueq_attention_core(
     if precision is None:
         precision = triangle_attention_precision()
     cuex = load_cueq()
-    # Everything before the (N_row, H, N_col, D) suffix is batch. The three
-    # operands carry it in different amounts (the bias has a 1 where q has rows),
-    # so broadcast the leads to a common shape before folding them together.
-    lead = jnp.broadcast_shapes(
-        q.shape[:-4], triangle_bias.shape[:-4], mask_bias.shape[:-4]
-    )
-    q, k, v = (
-        jnp.broadcast_to(t, (*lead, *t.shape[-4:])) for t in (q, k, v)
-    )
-    triangle_bias = jnp.broadcast_to(
-        triangle_bias, (*lead, *triangle_bias.shape[-4:])
-    )
-    mask_bias = jnp.broadcast_to(mask_bias, (*lead, *mask_bias.shape[-4:]))
-
-    flat = lambda t: t.reshape((-1, *t.shape[-4:]))  # noqa: E731
+    lead, arguments = cueq_attention_arguments(q, k, v, triangle_bias, mask_bias)
     output, _, _ = cuex.triangle_attention(
-        q=flat(q),
-        k=flat(k),
-        v=flat(v),
-        bias=flat(triangle_bias),
-        mask=flat(mask_bias) == 0,
+        **arguments,
         scale=scale,
         precision=precision,
     )

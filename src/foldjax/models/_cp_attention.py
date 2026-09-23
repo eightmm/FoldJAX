@@ -11,6 +11,12 @@ needs nothing but its own rows of ``q``/``k``/``v`` -- which
 :func:`ring_triangle_attention_2d_from_pair` projects inside the block -- and
 its score tile and accumulators are the block's width, not the tile's. See
 :func:`resolve_ring_row_block`.
+
+:func:`gather_triangle_attention_2d_from_pair` is the ring's opt-in sibling
+under the same sharding contract: per row block it gathers the block's
+full-width pair rows along ``cp_col`` instead of rotating tiles, so one
+normalising attention call -- cuEquivariance's on a GPU -- replaces the ring's
+rotation and merge. See :data:`TRIANGLE_ATTENTION_GRIDS`.
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ from foldjax.models._cp import (
     cp_layout,
     cp_mesh,
     permute,
+    transpose_perm,
 )
 from foldjax.models._tokamax_attention import tokamax_available
 
@@ -102,6 +109,100 @@ def ring_tile_kernel_scope(kernel: str | None) -> Iterator[str]:
         yield name
     finally:
         _TILE_KERNEL.reset(token)
+
+
+#: How 2-D context-parallel triangle attention reaches the keys outside a
+#: device's pair tile. ``ring`` is the released program: K/V/mask/bias tiles
+#: rotate around the grid and the tiles' softmax terms are combined
+#: (:func:`ring_triangle_attention_2d_from_pair`). ``gather`` streams each row
+#: block's full-width pair rows to the device instead and runs one normalising
+#: attention on them (:func:`gather_triangle_attention_2d_from_pair`) --
+#: cuEquivariance's triangle-attention kernel on a GPU, the XLA reference
+#: body :data:`GATHER_ATTENTION_BODIES` names everywhere else. Opt-in and
+#: unmeasured on a card; see ``docs/context_parallel.md``.
+TRIANGLE_ATTENTION_GRIDS: tuple[str, ...] = ("ring", "gather")
+
+#: What one gathered row block is attended with. Not a request anybody spells:
+#: the platform decides (:func:`resolve_gather_attention_body`), because the
+#: two are the same data movement with different arithmetic in the middle, and
+#: which one a host can run is not a preference.
+GATHER_ATTENTION_BODIES: tuple[str, ...] = ("xla", "cueq")
+
+_TRIANGLE_ATTENTION_GRID: ContextVar[str] = ContextVar(
+    "foldjax_triangle_attention_grid",
+    default="ring",
+)
+
+
+def triangle_attention_grid() -> str:
+    """The 2-D triangle-attention algorithm the active scope selects.
+
+    A scope for the reason :func:`ring_tile_kernel` gives: no trunk, MSA,
+    template or confidence signature between an adapter and the 2-D entry
+    points carries it.
+    """
+
+    return _TRIANGLE_ATTENTION_GRID.get()
+
+
+@contextmanager
+def triangle_attention_grid_scope(grid: str | None) -> Iterator[str]:
+    """Run the enclosed model call with ``grid`` at every 2-D triangle attention.
+
+    This is the handle a GPU harness outside the repository uses to activate
+    the gather path around a bare model call::
+
+        with context_parallel(4, layout="2d"), triangle_attention_grid_scope(
+            "gather"
+        ):
+            out = model_forward(...)
+
+    ``None`` publishes ``ring``, the released program, so a caller need not
+    branch. What ``gather`` runs is decided when a triangle attention is
+    traced (:func:`resolve_gather_attention_body`), and an explicit ``gather``
+    the host cannot honour is refused there rather than downgraded.
+    """
+
+    name = "ring" if grid is None else str(grid)
+    if name not in TRIANGLE_ATTENTION_GRIDS:
+        raise ValueError(
+            f"triangle_attention_grid must be one of "
+            f"{TRIANGLE_ATTENTION_GRIDS}, got {name!r}"
+        )
+    token = _TRIANGLE_ATTENTION_GRID.set(name)
+    try:
+        yield name
+    finally:
+        _TRIANGLE_ATTENTION_GRID.reset(token)
+
+
+def resolve_gather_attention_body() -> str:
+    """The local attention body the gather path runs on this host.
+
+    ``cueq`` on the GPU backend, where it is the only body: a GPU process that
+    cannot import cuEquivariance is refused, never handed the XLA reference
+    under the gather label -- that would be two programs under one command,
+    the rule :func:`resolve_ring_tile_kernel` states. ``xla`` everywhere else,
+    which is not a downgrade: off a GPU the reference body *is* what ``gather``
+    means, so that its data movement is executed by the CPU gates.
+
+    Asking initialises a JAX backend, so a backend calls this on the host
+    after the backend is up, never while validating a request.
+    """
+
+    platform = jax.default_backend()
+    if platform != "gpu":
+        return "xla"
+    from foldjax.models._cueq import load_cueq
+
+    try:
+        load_cueq()
+    except RuntimeError as error:
+        raise RuntimeError(
+            "triangle_attention_grid='gather' runs cuEquivariance's triangle "
+            "attention on a GPU, which did not import in this process"
+        ) from error
+    return "cueq"
 
 
 #: What ``cp_fused_attention`` may name. ``off`` is the released value and the
@@ -1480,6 +1581,447 @@ def ring_triangle_attention_2d_from_pair(
         in_specs=(pair_specs, bias_spec, mask_spec, PartitionSpec()),
         out_specs=out_spec,
         **_ring_shard_map_options(tile_kernel),
+    )(pair, triangle_bias, mask_bias, params)
+    return _unpad_ring_output(
+        out,
+        mesh=mesh,
+        spec=out_spec,
+        rows=rows,
+        tokens=tokens,
+        pad_rows=pad_rows,
+        pad_tokens=pad_tokens,
+    )
+
+
+# --- the gather path ---------------------------------------------------------
+#
+# Device (r, c) holds pair rows ``I_r`` x columns ``I_c`` and writes that tile
+# of the output. Starting-node attention reads, for its pair row ``i`` and
+# query column ``j``, every key ``k``:
+#
+#     out[i, j] = sum_k softmax_k(q[i, j] . k[i, k] + b[j, k] + m[i, k]) v[i, k]
+#
+# so what the device needs beyond its own tile is ``k``/``v``/``m`` over the
+# FULL key axis for its own rows -- the row block's pair rows gathered along
+# ``cp_col`` -- and the bias rows ``b[I_c, :]``, which no device on grid row r
+# holds. The ring moved the same information a tile at a time; here each
+# device receives it once and the attention is one normalising call.
+
+
+def gather_triangle_bias_rows(bias_l: jax.Array, side: int) -> jax.Array:
+    """Inside ``shard_map``: the local ``b[I_r, I_c]`` becomes ``b[I_c, :]``.
+
+    A redistribution of ownership, not a transpose of the tensor's axes:
+    the transpose partner ``(c, r)`` holds ``b[I_c, I_r]`` in the same axis
+    order, so one ``collective_permute`` ``(c, r) -> (r, c)`` hands it over
+    (:func:`~foldjax.models._cp.transpose_perm`, whose diagonal pairs
+    ``(r, r) -> (r, r)`` are listed explicitly), and the ``all_gather`` along
+    ``cp_row`` concatenates the key axis in mesh order ``I_0, ..., I_{s-1}``.
+
+    Permute first and gather second, rather than the other way round, sends a
+    ``1/side`` message through the transpose, which is the exchange that
+    crosses the grid; it runs once per call, above the row loop.
+    """
+
+    exchanged = permute(bias_l, transpose_perm(side))
+    return jax.lax.all_gather(
+        exchanged,
+        CP_ROW_AXIS,
+        axis=exchanged.ndim - 1,
+        tiled=True,
+    )
+
+
+def _row_block(
+    array: jax.Array,
+    start: int | jax.Array | None,
+    size: int,
+    axis: int,
+    rows: int,
+) -> jax.Array:
+    """Local rows ``[start, start + size)``, zero-padded explicitly past ``rows``.
+
+    A tail block is padded rather than read through ``dynamic_slice``, which
+    clamps an out-of-range start and would silently hand the tail the rows
+    of the block before it. Only the tail is padded, never the whole local
+    tile: that copy is the size of the pair tile (2.6 GiB per device at 6,568
+    tokens on 2x2). ``None`` is the single-block case and takes no slice.
+    """
+
+    if start is None:
+        return array
+    axis = _resolve_axis(axis, array.ndim, name="row axis")
+    if isinstance(start, int) and start + size > rows:
+        piece = jax.lax.slice_in_dim(array, start, rows, axis=axis)
+        return _widen(piece, ((axis, start + size - rows),))
+    return jax.lax.dynamic_slice_in_dim(array, start, size, axis=axis)
+
+
+def _gather_keys(array: jax.Array, axis: int, tokens: int) -> jax.Array:
+    """All-gather the key axis along ``cp_col`` and drop the grid padding.
+
+    The padding sits at the global end, because the pair was widened before
+    it was sharded, so ``[:tokens]`` removes exactly the keys ``k >= N``:
+    they are absent from the attention rather than masked in it. That keeps a
+    genuinely fully-masked row on the serial contract with either body -- the
+    XLA body adds ``-1e9`` to every key and the kernel replaces every logit
+    with ``-1e9``, and both then average over the ``N`` keys serial averages
+    over, not over the padded extent -- and it hands the kernel the key
+    extent the serial call hands it.
+    """
+
+    axis = _resolve_axis(axis, array.ndim, name="key axis")
+    gathered = jax.lax.all_gather(array, CP_COL_AXIS, axis=axis, tiled=True)
+    if gathered.shape[axis] == tokens:
+        return gathered
+    return jax.lax.slice_in_dim(gathered, 0, tokens, axis=axis)
+
+
+def _projected(projected: Sequence[Any]) -> Sequence[Any]:
+    if len(projected) != 4:
+        raise ValueError(
+            "project must return (query, key, value, gate); got "
+            f"{len(projected)} values"
+        )
+    return projected
+
+
+def gather_triangle_block_operands(
+    pair_l: Any,
+    mask_l: jax.Array,
+    params_l: Any,
+    start: int | jax.Array | None,
+    *,
+    size: int,
+    rows: int,
+    tokens: int,
+    project: Callable[[Any, Any], Sequence[Any]],
+) -> tuple[jax.Array, jax.Array, jax.Array, Any, jax.Array]:
+    """Inside ``shard_map``: one row block's ``q, k, v, gate, mask``.
+
+    ``q`` and the gate are projected from the local tile, ``[..., R, H, L, D]``;
+    ``k`` and ``v`` from the block's pair rows gathered to full width along
+    ``cp_col``, ``[..., R, H, N, D]``; the additive key mask likewise,
+    ``[..., R, 1, 1, N]``. ``project`` is called twice, and each call's unused
+    half -- the full-width Q/gate, the local K/V -- is dead code XLA removes,
+    which the gather gate checks by counting dots rather than assuming.
+
+    Raw pair rows travel rather than projected K/V: ``C`` channels against
+    ``2 * H * D``, twice the bytes for Boltz-2's ``C = H * D = 128``.
+    """
+
+    rows_l = jax.tree.map(
+        lambda leaf: _row_block(leaf, start, size, leaf.ndim - 3, rows),
+        pair_l,
+    )
+    query, _, _, gate = _projected(project(params_l, rows_l))
+    wide = jax.tree.map(
+        lambda leaf: _gather_keys(leaf, leaf.ndim - 2, tokens),
+        rows_l,
+    )
+    _, key, value, _ = _projected(project(params_l, wide))
+    mask_b = _row_block(mask_l, start, size, mask_l.ndim - 4, rows)
+    mask_b = _gather_keys(mask_b, mask_b.ndim - 1, tokens)
+    return query, key, value, gate, mask_b
+
+
+def gather_attention_xla(
+    query: jax.Array,
+    key: jax.Array,
+    value: jax.Array,
+    bias: jax.Array,
+    mask: jax.Array,
+    *,
+    scale: float | None,
+    precision: jax.lax.Precision | None = None,
+) -> jax.Array:
+    """The gather path's reference body: serial XLA triangle attention's arithmetic.
+
+    The same order as Boltz-2's serial ``_attention_block`` -- f32 scores, the
+    additive mask, then the bias, one softmax, the value product rounded to
+    the value dtype -- on a rectangular ``[L queries, N keys]`` problem.
+    ``scale`` multiplies the f32 query when the caller's ``project`` left it
+    unscaled; ``None`` means ``project`` already divided it, the ring's
+    contract.
+    """
+
+    q32 = query.astype(jnp.float32)
+    if scale is not None:
+        q32 = q32 * jnp.asarray(scale, dtype=jnp.float32)
+    scores = jnp.matmul(
+        q32,
+        jnp.swapaxes(key.astype(jnp.float32), -1, -2),
+        precision=precision,
+    )
+    scores = scores + mask.astype(jnp.float32) + bias.astype(jnp.float32)
+    probabilities = jax.nn.softmax(scores, axis=-1)
+    return jnp.matmul(
+        probabilities,
+        value.astype(jnp.float32),
+        precision=precision,
+    ).astype(value.dtype)
+
+
+def gather_attention_cueq(
+    query: jax.Array,
+    key: jax.Array,
+    value: jax.Array,
+    bias: jax.Array,
+    mask: jax.Array,
+    *,
+    scale: float | None,
+    precision: jax.lax.Precision | None = None,
+) -> jax.Array:
+    """The gather path's GPU body: one cuEquivariance triangle attention.
+
+    Rectangular: ``S_qo = L`` local query columns against ``S_kv = N`` keys,
+    which the installed wrapper's ``[B, N, H, S_qo, D]`` / ``[B, N, H, S_kv,
+    D]`` / bias ``[B, 1, H, S_qo, S_kv]`` contract permits. The additive mask
+    is converted to the kernel's boolean (``True`` = valid) exactly once, in
+    :func:`foldjax.models._cueq.cueq_attention_arguments`, the conversion the
+    serial fused path already goes through. ``scale`` is applied inside the
+    kernel, as the serial fused path applies it, so a caller that wants the
+    released rounding passes an unscaled query and its scale here.
+    """
+
+    from foldjax.models._cueq import cueq_attention_core
+
+    return cueq_attention_core(
+        query,
+        key,
+        value,
+        bias,
+        mask,
+        scale=1.0 if scale is None else float(scale),
+        precision=precision,
+    ).astype(value.dtype)
+
+
+def _resolve_gather_attention(body: str) -> Callable[..., jax.Array]:
+    if body not in GATHER_ATTENTION_BODIES:
+        raise ValueError(
+            f"gather attention body must be one of {GATHER_ATTENTION_BODIES}, "
+            f"got {body!r}"
+        )
+    return gather_attention_cueq if body == "cueq" else gather_attention_xla
+
+
+def _gather_local_rows(
+    block_body: Callable[[int | jax.Array | None, int], jax.Array],
+    *,
+    rows: int,
+    block: int,
+) -> jax.Array:
+    """Run ``block_body`` over the local pair rows, a block at a time.
+
+    ``ceil(rows / block)`` calls of one width. The ragged tail, where there is
+    one, is peeled ahead of the scan, padded explicitly inside
+    :func:`_row_block` and sliced back to its real rows before it is written;
+    every scanned block starts in range, so no ``dynamic_slice`` or
+    ``dynamic_update_slice`` is ever clamped. The peel is also what the ring's
+    loop peels for (:func:`_ring_local_rows`): a checked ``shard_map`` scan
+    refuses a freshly zeroed carry, and a carry that depends on a real block
+    retires that block before the loop.
+    """
+
+    if block >= rows:
+        return block_body(None, rows)
+    full_blocks, remainder = divmod(rows, block)
+    if remainder:
+        peel_start = full_blocks * block
+        peeled = block_body(peel_start, block)
+        peeled = jax.lax.slice_in_dim(peeled, 0, remainder, axis=peeled.ndim - 4)
+        scan_starts = jnp.arange(full_blocks, dtype=jnp.int32) * block
+    else:
+        peel_start = 0
+        peeled = block_body(0, block)
+        scan_starts = jnp.arange(1, full_blocks, dtype=jnp.int32) * block
+    destination = jnp.zeros(
+        peeled.shape[:-4] + (rows,) + peeled.shape[-3:],
+        dtype=peeled.dtype,
+    )
+    destination = jax.lax.dynamic_update_slice_in_dim(
+        destination,
+        peeled,
+        peel_start,
+        axis=destination.ndim - 4,
+    )
+
+    def write_block(current: jax.Array, start: jax.Array):
+        return (
+            jax.lax.dynamic_update_slice_in_dim(
+                current,
+                block_body(start, block),
+                start,
+                axis=current.ndim - 4,
+            ),
+            None,
+        )
+
+    destination, _ = jax.lax.scan(write_block, destination, scan_starts)
+    return destination
+
+
+def gather_triangle_attention_2d_from_pair(
+    pair: Any,
+    triangle_bias: jax.Array,
+    mask_bias: jax.Array,
+    params: Any,
+    *,
+    project: Callable[[Any, Any], Sequence[Any]],
+    scale: float | None = None,
+    precision: jax.lax.Precision | None = None,
+    q_block: int | None = None,
+    body: str = "xla",
+) -> jax.Array:
+    """Triangle attention on the square grid by a streamed full-width gather.
+
+    The external contract is :func:`ring_triangle_attention_2d_from_pair`'s:
+    ``pair`` ``[..., rows, keys, C]`` sharded ``(-3 -> cp_row, -2 -> cp_col)``,
+    ``triangle_bias`` ``[..., 1, H, tokens, tokens]`` ``(-2 -> cp_row, -1 ->
+    cp_col)``, ``mask_bias`` ``[..., rows, 1, 1, tokens]`` additive ``(-4 ->
+    cp_row, -1 -> cp_col)``, the output ``[..., rows, H, tokens, D]`` ``(-4 ->
+    cp_row, -2 -> cp_col)``, and the same ``project(params, rows)``. Two
+    differences: ``project`` may leave the query unscaled and pass ``scale``
+    here instead, so the kernel scales it as the serial fused call does; and
+    the row block bounds different buffers (below). The ending node is the
+    caller's transposed problem, as for the ring.
+
+    What moves, per call and device ``(r, c)``:
+
+    * the bias rows ``b[I_c, :]`` once, above the row loop
+      (:func:`gather_triangle_bias_rows`);
+    * per row block of ``R`` local pair rows, those rows at full width and
+      their mask, along ``cp_col`` (:func:`gather_triangle_block_operands`).
+
+    Then one attention per block on ``q [.., R, H, L, D]``, ``k/v [.., R, H,
+    N, D]``, ``bias [.., 1, H, L, N]``, ``mask [.., R, 1, 1, N]``, with
+    ``L = P / side`` the local query columns and ``N`` the unpadded key count;
+    no rotation, no statistics merge. ``body`` is ``xla``
+    (:func:`gather_attention_xla`, the reference any host can run) or
+    ``cueq`` (:func:`gather_attention_cueq`, GPU); only the ``cueq`` body's
+    ``shard_map`` is unchecked, because the kernel's FFI outputs carry no
+    varying-mesh-axis type (:func:`_ring_shard_map_options`).
+
+    Grid padding is the ring's: both token axes are widened to ``P =
+    side * ceil(N / side)`` before sharding, padded query columns and pair
+    rows are computed on zeros and sliced off after, and padded keys are
+    dropped from the gathered key axis (:func:`_gather_keys`).
+
+    The row block is :func:`resolve_ring_row_block`'s with the local query
+    width, so ``q_block`` means what it means to the ring. What it bounds is
+    the gathered rows and K/V -- ``R x N`` per block -- and, for the XLA body
+    only, an ``[R, H, L, N]`` score tile ``side`` times the ring's; the
+    kernel forms none.
+    """
+
+    side = _check_ring_mesh()
+    mesh = cp_mesh()
+    attend = _resolve_gather_attention(body)
+
+    leaves = jax.tree.leaves(pair)
+    if not leaves:
+        raise ValueError("pair representation has no arrays")
+    ndim = leaves[0].ndim
+    if ndim < 3:
+        raise ValueError(
+            "pair representation expects [..., rows, keys, channels], "
+            f"got shape {leaves[0].shape}"
+        )
+    rows = leaves[0].shape[-3]
+    tokens = leaves[0].shape[-2]
+    for leaf in leaves[1:]:
+        if leaf.ndim != ndim or leaf.shape[-3:-1] != (rows, tokens):
+            raise ValueError(
+                "pair operands must share the row and key axes; got "
+                f"{leaf.shape} against {leaves[0].shape}"
+            )
+    heads = _check_ring_biases(
+        triangle_bias,
+        mask_bias,
+        rows=rows,
+        tokens=tokens,
+        ndim=ndim + 1,
+    )
+
+    pad_rows = fold_cp_pad_width(rows)
+    pad_tokens = fold_cp_pad_width(tokens)
+    if pad_rows or pad_tokens:
+        pair = jax.tree.map(
+            lambda leaf: _widen(leaf, ((-3, pad_rows), (-2, pad_tokens))),
+            pair,
+        )
+        triangle_bias, mask_bias = _pad_ring_biases(
+            triangle_bias,
+            mask_bias,
+            pad_rows=pad_rows,
+            pad_tokens=pad_tokens,
+        )
+
+    pair_specs = jax.tree.map(
+        lambda leaf: _two_axis_spec(leaf.ndim, -3, -2),
+        pair,
+    )
+    bias_spec = _two_axis_spec(triangle_bias.ndim, -2, -1)
+    mask_spec = _two_axis_spec(mask_bias.ndim, -4, -1)
+    out_spec = _two_axis_spec(ndim + 1, -4, -2)
+
+    local_rows = (rows + pad_rows) // side
+    local_cols = (tokens + pad_tokens) // side
+    block = resolve_ring_row_block(
+        local_rows,
+        heads=heads,
+        local_keys=local_cols,
+        requested=q_block,
+    )
+
+    def local_gather(pair_l, bias_l, mask_l, params_l):
+        bias_rows = gather_triangle_bias_rows(bias_l, side)
+        if bias_rows.shape[-1] != tokens:
+            bias_rows = jax.lax.slice_in_dim(
+                bias_rows, 0, tokens, axis=bias_rows.ndim - 1
+            )
+
+        def block_body(start, size):
+            query, key, value, gate, mask_b = gather_triangle_block_operands(
+                pair_l,
+                mask_l,
+                params_l,
+                start,
+                size=size,
+                rows=local_rows,
+                tokens=tokens,
+                project=project,
+            )
+            if query.shape[-3] != heads or query.shape[-4] != size:
+                raise ValueError(
+                    "gather row block expects [..., rows, heads, keys, "
+                    f"channels]; got {query.shape} for {size} rows and "
+                    f"{heads} heads"
+                )
+            out = attend(
+                query,
+                key,
+                value,
+                bias_rows,
+                mask_b,
+                scale=scale,
+                precision=precision,
+            )
+            if gate is not None:
+                # The serial order: the attention rounded to the value dtype,
+                # then gated.
+                out = out * gate
+            return out
+
+        return _gather_local_rows(block_body, rows=local_rows, block=block)
+
+    out = jax.shard_map(
+        local_gather,
+        mesh=mesh,
+        in_specs=(pair_specs, bias_spec, mask_spec, PartitionSpec()),
+        out_specs=out_spec,
+        **cp_fused_shard_map_options(body == "cueq"),
     )(pair, triangle_bias, mask_bias, params)
     return _unpad_ring_output(
         out,

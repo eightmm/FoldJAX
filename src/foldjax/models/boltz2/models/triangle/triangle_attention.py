@@ -16,9 +16,12 @@ from foldjax.models._cp import (
     shard_pair_rows,
 )
 from foldjax.models._cp_attention import (
+    gather_triangle_attention_2d_from_pair,
+    resolve_gather_attention_body,
     resolve_ring_tile_kernel,
     ring_tile_kernel,
     ring_triangle_attention_2d_from_pair,
+    triangle_attention_grid,
 )
 from foldjax.models.boltz2.models.primitives._common import (
     layer_norm as _shared_layer_norm,
@@ -352,6 +355,10 @@ def _attention_ring_2d(
     this module's context-parallel branch for the MSA stack's own
     ``pairformer_no_seq_layer_forward`` -- and a scope honoured at one of them
     would report a fused prediction that was fused in the trunk only.
+
+    ``triangle_attention_grid`` is read here for the same reason: under
+    ``gather`` this entry runs the streamed gather, never the ring, so an MSA
+    pass cannot quietly keep the released program while the trunk changes.
     """
 
     no_heads = tri_bias.shape[2]
@@ -361,7 +368,7 @@ def _attention_ring_2d(
         array = array.reshape(array.shape[:-1] + (no_heads, c_hidden))
         return jnp.swapaxes(array, -2, -3)
 
-    def project(mha, rows):
+    def project(mha, rows, *, scaled=True):
         q_rows, kv_rows = rows
         qg = _linear(
             q_rows,
@@ -382,19 +389,47 @@ def _attention_ring_2d(
         )
         k, v = jnp.split(kv, 2, axis=-1)
         q = split_heads(q)
-        q = q / jnp.sqrt(jnp.asarray(c_hidden, dtype=q.dtype))
+        if scaled:
+            q = q / jnp.sqrt(jnp.asarray(c_hidden, dtype=q.dtype))
         return q, split_heads(k), split_heads(v), split_heads(_sigmoid(gate))
 
-    out = ring_triangle_attention_2d_from_pair(
-        (q_x, kv_x),
-        tri_bias,
-        mask_bias,
-        params,
-        project=project,
-        precision=precision,
-        q_block=q_block,
-        tile_kernel=resolve_ring_tile_kernel(ring_tile_kernel()),
-    )
+    if triangle_attention_grid() == "gather":
+        # One operand when the two are one array -- the only way this module
+        # calls it -- so the gather sends the pair rows once, not once per
+        # role. The query is scaled by the body, as the serial fused call
+        # scales it (`triangle_attention_cp.triangle_attention_forward`).
+        if q_x is kv_x:
+            pair = q_x
+
+            def gather_project(mha, rows):
+                return project(mha, (rows, rows), scaled=False)
+        else:
+            pair = (q_x, kv_x)
+
+            def gather_project(mha, rows):
+                return project(mha, rows, scaled=False)
+        out = gather_triangle_attention_2d_from_pair(
+            pair,
+            tri_bias,
+            mask_bias,
+            params,
+            project=gather_project,
+            scale=float(c_hidden**-0.5),
+            precision=precision,
+            q_block=q_block,
+            body=resolve_gather_attention_body(),
+        )
+    else:
+        out = ring_triangle_attention_2d_from_pair(
+            (q_x, kv_x),
+            tri_bias,
+            mask_bias,
+            params,
+            project=project,
+            precision=precision,
+            q_block=q_block,
+            tile_kernel=resolve_ring_tile_kernel(ring_tile_kernel()),
+        )
     out = jnp.swapaxes(out, -2, -3)
     out = out.reshape(out.shape[:-2] + (c_hidden * no_heads,))
     return _linear(out, params["linear_o"]["kernel"], precision)
