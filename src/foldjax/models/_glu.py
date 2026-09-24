@@ -47,6 +47,18 @@ def _fused(
     weights: jnp.ndarray,
     activation: Callable[[jax.Array], jax.Array],
 ) -> jnp.ndarray:
+    if jax.default_backend() != "gpu":
+        # tokamax skips its Triton implementation off a GPU and then raises an
+        # ExceptionGroup over an empty list, which says nothing; say what the
+        # pinned kernel needs and which spelling runs here instead.
+        msg = (
+            "glu_backend='tokamax' runs a Triton kernel that needs a CUDA GPU, "
+            f"and this process's default JAX backend is {jax.default_backend()!r}; "
+            "pass the option glu_backend=xla (CLI: --option glu_backend=xla) "
+            "to run the XLA unit here, which rounds low-precision activations "
+            "differently from the fused kernel"
+        )
+        raise ValueError(msg)
     import tokamax
     from absl import flags
 
