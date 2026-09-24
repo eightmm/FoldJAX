@@ -190,20 +190,23 @@ def test_an_unsupported_width_falls_back_even_when_cueq_is_available(
     assert output is not sentinel
 
 
-def test_cueq_attention_maps_torch_mask_and_scale(monkeypatch) -> None:
-    captured = {}
-    kernel_output = jnp.ones((1, 2, 1, 17, 4), dtype=jnp.bfloat16)
-    q = kernel_output[0]
+@pytest.mark.parametrize("on_cuda", [False, True])
+def test_cueq_attention_maps_torch_mask_and_scale(monkeypatch, on_cuda) -> None:
+    import foldjax.models._cueq as cueq_module
+
+    calls = []
+    q = jnp.ones((2, 1, 17, 4), dtype=jnp.bfloat16)
 
     def fake_triangle_attention(**kwargs):
-        captured.update(kwargs)
-        return kernel_output, jnp.zeros(1), jnp.zeros(1)
+        calls.append(kwargs)
+        return jnp.ones_like(kwargs["q"]), jnp.zeros(1), jnp.zeros(1)
 
     monkeypatch.setitem(
         sys.modules,
         "cuequivariance_jax",
         SimpleNamespace(triangle_attention=fake_triangle_attention),
     )
+    monkeypatch.setattr(cueq_module, "pads_attention_extents", lambda: on_cuda)
     mask_bias = jnp.zeros((2, 1, 1, 17), dtype=jnp.float32)
 
     output = cueq_attention_core(
@@ -215,16 +218,18 @@ def test_cueq_attention_maps_torch_mask_and_scale(monkeypatch) -> None:
         scale=0.5,
     )
 
-    # bf16 operands reach the kernel with the attended extents padded from 17
-    # to 24; the padded keys are invalid and the padded query rows are dropped.
+    # On CUDA the kernel gets bf16 extents padded from 17 to 24 with the
+    # padded keys invalid; elsewhere the arrays as they are. Either way the
+    # output comes back at 17.
+    (call,) = calls
+    extent = 24 if on_cuda else 17
     assert output.shape == q.shape
-    assert captured["q"].shape == (1, 2, 1, 24, 4)
-    assert captured["k"].shape == captured["v"].shape == (1, 2, 1, 24, 4)
-    assert captured["bias"].shape == (1, 1, 1, 24, 24)
-    assert captured["scale"] == 0.5
-    assert captured["precision"] == lax.Precision.DEFAULT
-    assert jnp.array_equal(captured["mask"][..., :17], (mask_bias == 0)[None])
-    assert not captured["mask"][..., 17:].any()
+    assert call["q"].shape == call["k"].shape == call["v"].shape == (1, 2, 1, extent, 4)
+    assert call["bias"].shape == (1, 1, 1, extent, extent)
+    assert jnp.array_equal(call["mask"][..., :17], (mask_bias == 0)[None])
+    assert not call["mask"][..., 17:].any()
+    assert call["scale"] == 0.5
+    assert call["precision"] == lax.Precision.DEFAULT
 
 
 @pytest.mark.parametrize(
@@ -257,10 +262,13 @@ def test_attention_extents_are_aligned_for_half_precision_only(
 def test_aligned_attention_keeps_every_valid_row_on_the_reference_kernel() -> None:
     """On a host without the CUDA kernel the wheel runs its reference body.
 
-    Padding adds keys the mask excludes, so every row with a valid key comes
-    out bit for bit; the fully masked row is the kernel's own convention and
-    is not compared here (the GPU paths differ on it anyway).
+    The padded arguments the CUDA branch builds, run through that body, give
+    every row with a valid key bit for bit; the fully masked row is the
+    kernel's own convention and is not compared (the GPU paths differ on it
+    anyway).
     """
+
+    import foldjax.models._cueq as cueq_module
 
     rng = np.random.default_rng(0)
     n = 21
@@ -271,26 +279,27 @@ def test_aligned_attention_keeps_every_valid_row_on_the_reference_kernel() -> No
     valid = rng.random((1, 5, 1, 1, n)) > 0.2
     valid[0, 0] = False
     mask = jnp.where(jnp.asarray(valid), 0.0, -1e9).astype(jnp.float32)
-    padded = jax.jit(
-        lambda *a: cueq_attention_core(*a, scale=0.35, precision=lax.Precision.HIGHEST)
-    )(q, k, v, bias, mask)
-
-    import foldjax.models._cueq as cueq_module
-
-    unpadded = jax.jit(
-        lambda *a: _unaligned_core(cueq_module, *a)
-    )(q, k, v, bias, mask)
+    plain = jax.jit(lambda *a: _reference_core(cueq_module, *a, align=False))(
+        q, k, v, bias, mask
+    )
+    aligned = jax.jit(lambda *a: _reference_core(cueq_module, *a, align=True))(
+        q, k, v, bias, mask
+    )
     rows = valid[0, :, 0, 0].any(-1)
-    assert padded.shape == q.shape
-    assert np.array_equal(np.asarray(padded)[0][rows], np.asarray(unpadded)[0][rows])
+    assert aligned.shape == plain.shape == q.shape
+    assert np.array_equal(np.asarray(aligned)[0][rows], np.asarray(plain)[0][rows])
 
 
-def _unaligned_core(module, q, k, v, bias, mask):
+def _reference_core(module, q, k, v, bias, mask, *, align):
     cuex = module.load_cueq()
     lead, arguments = module.cueq_attention_arguments(q, k, v, bias, mask)
+    queries = arguments["q"].shape[-2]
+    if align:
+        arguments = module.align_attention_arguments(arguments)
     output, _, _ = cuex.triangle_attention(
         **arguments, scale=0.35, precision=lax.Precision.HIGHEST
     )
+    output = output[..., :queries, :]
     return output.reshape((*lead, *output.shape[-4:]))
 
 

@@ -206,7 +206,8 @@ def cueq_attention_core(
     cuex = load_cueq()
     lead, arguments = cueq_attention_arguments(q, k, v, triangle_bias, mask_bias)
     queries = arguments["q"].shape[-2]
-    arguments = align_attention_arguments(arguments)
+    if pads_attention_extents():
+        arguments = align_attention_arguments(arguments)
     output, _, _ = cuex.triangle_attention(
         **arguments,
         scale=scale,
@@ -226,6 +227,19 @@ def cueq_attention_core(
 ATTENTION_ALIGNMENT = 8
 
 
+def pads_attention_extents() -> bool:
+    """Whether this process's triangle attention runs the CUDA kernel.
+
+    Only that kernel has the slow unaligned path. On any other backend the
+    wheel runs its reference body, where padding buys nothing and a longer key
+    reduction would only move the CPU parity replays. Decided at trace time
+    from the default backend -- a ``lax.platform_dependent`` would trace the
+    kernel call twice, doubling what a dispatch census counts.
+    """
+
+    return jax.default_backend() == "gpu"
+
+
 def align_attention_arguments(
     arguments: dict[str, jnp.ndarray],
 ) -> dict[str, jnp.ndarray]:
@@ -242,7 +256,8 @@ def align_attention_arguments(
     the unaligned path), and on the wheel's reference body, which has one
     path, they are bit for bit the unpadded result. A row with no valid key
     follows the kernel's own convention on either path and is not preserved
-    across them.
+    across them. :func:`cueq_attention_core` applies it on CUDA only
+    (:func:`pads_attention_extents`).
     """
 
     if jnp.dtype(arguments["q"].dtype) not in (

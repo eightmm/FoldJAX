@@ -112,19 +112,25 @@ def test_cuda13_extra_installs_cueq_runtime() -> None:
     assert "cuequivariance-ops-jax-cu13==0.11.1" in cuda13
 
 
-def test_cueq_attention_maps_mask_and_returns_primary_output(monkeypatch) -> None:
-    captured = {}
+@pytest.mark.parametrize("on_cuda", [False, True])
+def test_cueq_attention_maps_mask_and_returns_primary_output(
+    monkeypatch, on_cuda
+) -> None:
+    import foldjax.models._cueq as cueq_module
+
+    calls = []
     expected = jnp.ones((1, 2, 1, 3, 4), dtype=jnp.bfloat16)
 
     def fake_triangle_attention(**kwargs):
-        captured.update(kwargs)
-        return expected, jnp.zeros(1), jnp.zeros(1)
+        calls.append(kwargs)
+        return jnp.ones_like(kwargs["q"]), jnp.zeros(1), jnp.zeros(1)
 
     monkeypatch.setitem(
         sys.modules,
         "cuequivariance_jax",
         SimpleNamespace(triangle_attention=fake_triangle_attention),
     )
+    monkeypatch.setattr(cueq_module, "pads_attention_extents", lambda: on_cuda)
     q = jnp.ones_like(expected)
     mask_bias = jnp.array([[[[[0.0, -1e9, 0.0]]], [[[0.0, 0.0, -1e9]]]]])
 
@@ -138,12 +144,13 @@ def test_cueq_attention_maps_mask_and_returns_primary_output(monkeypatch) -> Non
         precision=None,
     )
 
-    # The bf16 extent of 3 is padded to 8 on the way in (the padded keys
-    # invalid) and the primary output is sliced back to it.
+    # On CUDA the bf16 extent of 3 is padded to 8 (the padded keys invalid)
+    # and the primary output is sliced back to it.
+    (call,) = calls
     assert jnp.array_equal(output, expected)
     assert output.shape == expected.shape
-    assert captured["scale"] == 0.5
-    assert captured["mask"].dtype == jnp.bool_
-    assert captured["q"].shape[-2] == captured["mask"].shape[-1] == 8
-    assert jnp.array_equal(captured["mask"][..., :3], mask_bias == 0)
-    assert not captured["mask"][..., 3:].any()
+    assert call["scale"] == 0.5
+    assert call["mask"].dtype == jnp.bool_
+    assert call["q"].shape[-2] == call["mask"].shape[-1] == (8 if on_cuda else 3)
+    assert jnp.array_equal(call["mask"][..., :3], mask_bias == 0)
+    assert not call["mask"][..., 3:].any()

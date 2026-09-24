@@ -1014,14 +1014,13 @@ _WHEEL_SENTINEL = textwrap.dedent(
             jnp.zeros((B, 1, H, N, N), jnp.float32),
             jnp.zeros((B, N, 1, 1, N), jnp.float32),
         )
-    # P = 12, L = 6, R = 2: every block call is S_qo = 6 against S_kv = 11,
-    # which the bf16 alignment in `_cueq` hands the wheel as 8 against 16.
+    # P = 12, L = 6, R = 2: every block call is S_qo = 6 against S_kv = 11.
     assert seen, "the gather body never reached the kernel"
     for call in seen:
-        assert call["q"] == ((B, 2, H, 8, D), jnp.bfloat16), call
-        assert call["k"] == ((B, 2, H, 16, D), jnp.bfloat16), call
-        assert call["bias"] == ((B, 1, H, 8, 16), jnp.float32), call
-        assert call["mask"] == ((B, 2, 1, 1, 16), jnp.bool_), call
+        assert call["q"] == ((B, 2, H, 6, D), jnp.bfloat16), call
+        assert call["k"] == ((B, 2, H, N, D), jnp.bfloat16), call
+        assert call["bias"] == ((B, 1, H, 6, N), jnp.float32), call
+        assert call["mask"] == ((B, 2, 1, 1, N), jnp.bool_), call
         assert call["precision"] == jax.lax.Precision.HIGHEST, call
         assert abs(call["scale"] - D ** -0.5) < 1e-12, call
     print(f"WHEEL_SENTINEL_OK calls={len(seen)}")
