@@ -143,10 +143,19 @@ def _cuda_layer_norm_shared(x, scale, bias, *, eps, out_dtype):
 #: covers ``_NORM_BLOCK_ELEMENTS // width`` of them (a power of two, at most the
 #: row count rounded up). The per-row instruction sequence does not depend on
 #: it; see `_cuda_layer_norm_body`.
-_NORM_BLOCK_ELEMENTS = 4096
+#:
+#: Chosen from the RTX PRO 6000 sweep (job 2384, 64,516 and 1,006,009 rows):
+#: 1024 elements beat or matched one row per program at every width with a
+#: float32 output (width 256: 1.18 -> 0.80 ms and 5.78 -> 2.63 ms), and
+#: larger blocks collapse (width 256 at 4096: up to 16x slower). A bfloat16
+#: output at width 256 -- ESMFold2's pair norms -- gained nothing at any
+#: block (4 rows: +2-4%), so it keeps one row per program.
+_NORM_BLOCK_ELEMENTS = 1024
 
 
-def _norm_row_block(rows: int, width: int) -> int:
+def _norm_row_block(rows: int, width: int, out_dtype=jnp.float32) -> int:
+    if width == 256 and jnp.dtype(out_dtype) != jnp.dtype(jnp.float32):
+        return 1
     block = max(1, _NORM_BLOCK_ELEMENTS // width)
     return min(block, 1 << max(0, rows - 1).bit_length())
 
@@ -157,10 +166,11 @@ def _cuda_layer_norm_body(x, scale, bias, eps, out_dtype, block=None):
     Every instruction is element-wise inline PTX (``pack=1``) and the Welford
     combine tree runs along the row's own lanes, so adding a leading row axis
     gives each row exactly the instruction sequence the one-row program ran:
-    the same operands, in the same order, to the same single rounding. Rows
-    past the end of the last block are loaded as zeros and never stored, which
-    changes no stored row. One row per program ran at ~10% of HBM bandwidth
-    (ESMFold2 at 1,003 tokens: 25% of all kernel time).
+    the same operands, in the same order, to the same single rounding. When
+    the rows do not fill the last block, rows past the end are loaded as
+    zeros under a mask and never stored, which changes no stored row; when
+    they do, no mask is emitted. One row per program ran at ~10% of HBM
+    bandwidth (ESMFold2 at 1,003 tokens: 25% of all kernel time).
     """
     from jax.experimental import pallas as pl
     from jax.experimental.pallas import triton as pt
@@ -169,7 +179,8 @@ def _cuda_layer_norm_body(x, scale, bias, eps, out_dtype, block=None):
     shape = x.shape
     rows = math.prod(shape[:-1])
     if block is None:
-        block = _norm_row_block(rows, width)
+        block = _norm_row_block(rows, width, out_dtype)
+    tail = rows % block != 0
 
     def kernel(x_ref, scale_ref, bias_ref, eps_ref, out_ref, mean_ref, rstd_ref):
         def op(instruction, *args):
@@ -183,11 +194,13 @@ def _cuda_layer_norm_body(x, scale, bias, eps, out_dtype, block=None):
                 result_shape_dtypes=[jax.ShapeDtypeStruct(args[0].shape, jnp.float32)],
             )[0]
 
-        row = pl.program_id(0) * block + jnp.arange(block, dtype=jnp.int32)
-        valid = (row < rows)[:, None]
-        values = pt.load(
-            x_ref, mask=jnp.broadcast_to(valid, (block, width)), other=0.0
-        )
+        if tail:
+            row = pl.program_id(0) * block + jnp.arange(block, dtype=jnp.int32)
+            valid = (row < rows)[:, None]
+            wide = jnp.broadcast_to(valid, (block, width))
+            values = pt.load(x_ref, mask=wide, other=0.0)
+        else:
+            values = x_ref[...]
         vectors = values.reshape(block, width // 4, 4)
         mean = jnp.zeros((block, width // 4), jnp.float32)
         variance = jnp.zeros_like(mean)
@@ -232,9 +245,12 @@ def _cuda_layer_norm_body(x, scale, bias, eps, out_dtype, block=None):
         )
         normed = op("mul.rn.f32", rstd, op("sub.rn.f32", values, mean))
         out = op("fma.rn.f32", scale_ref[:], normed, bias_ref[:]).astype(out_dtype)
-        pt.store(out_ref, out, mask=jnp.broadcast_to(valid, (block, width)))
-        pt.store(mean_ref, mean, mask=valid)
-        pt.store(rstd_ref, rstd, mask=valid)
+        if tail:
+            pt.store(out_ref, out, mask=wide)
+            pt.store(mean_ref, mean, mask=valid)
+            pt.store(rstd_ref, rstd, mask=valid)
+        else:
+            out_ref[...], mean_ref[...], rstd_ref[...] = out, mean, rstd
 
     result = pl.pallas_call(
         kernel,
