@@ -1494,9 +1494,10 @@ Each exclusion rests on a measurement:
   kernel (job 2424). It stays on the row-chunked tokamax path, which never
   forms that buffer. With it there, the MSA layer's live-at-peak set is
   identical to released (x48 buffer-assignment dump, job 2440).
-- Boltz-2's MSA-module pair transition added +2,206 MiB of temp at 3,012
-  tokens, where the MSA module sets the prediction's peak (job 2444). It
-  stays on tokamax too; the Pairformer's pair transitions take the kernel.
+- Boltz-2's MSA-module pair transition added +2,206 MiB of temp in the MSA
+  module's layers at 3,012 tokens, where that module sets the prediction's
+  peak (job 2444). It stays on tokamax too; the Pairformer's pair
+  transitions take the kernel.
 
 ESMFold2 has no site the value would reach and refuses it. OpenDDE has no
 `glu_backend` option; at its c_z 384 the fused transition loses to XLA

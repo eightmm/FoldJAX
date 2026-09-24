@@ -33,7 +33,8 @@ unless it says so here, in its own paragraph.
     Those sites were measured slower, or heavier in memory, under a Pallas
     kernel. Protenix's float32 diffusion GLU ran at 7x tokamax (job 2395).
     Boltz-2's MSA transition added +1,138 MiB temp in its layer (job 2424),
-    and its MSA-module pair transition +2,206 MiB at 3,012 tokens (job 2444).
+    and its MSA-module pair transition +2,206 MiB in the MSA module's layers
+    at 3,012 tokens (job 2444).
     The released row-chunked tokamax path never forms that buffer, and with it
     kept the MSA layer's live-at-peak set matches released (job 2440). The
     Protenix and OpenFold3 MSA transitions do take the kernel.
