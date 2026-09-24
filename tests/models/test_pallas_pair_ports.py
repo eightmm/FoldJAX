@@ -426,3 +426,33 @@ def test_boltz2_msa_transition_stays_on_tokamax_under_pallas(monkeypatch):
         glu_backend="pallas",
     )
     assert seen == {"msa": "tokamax", "pair": "pallas"}
+
+
+@pytest.mark.parametrize("asked, runs", [("pallas", "tokamax"), ("xla", "xla")])
+def test_boltz2_msa_module_pair_transition_stays_on_tokamax_under_pallas(
+    monkeypatch, asked, runs
+):
+    """The MSA module sets the prediction's peak at 3k, where the fused kernel's
+    operand is one more pair tensor; its pair transition keeps tokamax."""
+    from foldjax.models.boltz2.models.trunk_blocks import msa
+
+    seen = []
+    z = jnp.ones((1, 3, 3, 4), jnp.bfloat16)
+    zero = lambda *a, **k: jnp.zeros_like(z)  # noqa: E731
+    monkeypatch.setattr(msa, "triangle_multiplication_forward", zero)
+    monkeypatch.setattr(msa, "triangle_attention_forward", zero)
+
+    def transition(params, value, **kwargs):
+        seen.append(kwargs["glu_backend"])
+        return jnp.zeros_like(value)
+
+    monkeypatch.setattr(msa, "transition_forward", transition)
+    params = {
+        name: {}
+        for name in ("tri_mul_out", "tri_mul_in", "tri_att_start", "tri_att_end")
+    }
+    params["transition_z"] = {"fc1": {"kernel": jnp.zeros((4, 4), jnp.bfloat16)}}
+    msa.pairformer_no_seq_layer_forward(
+        params, z, jnp.ones((1, 3, 3)), glu_backend=asked
+    )
+    assert seen == [runs]

@@ -1524,6 +1524,12 @@ def pairformer_no_seq_layer_forward(
         ),
         pair_residual_dtype,
     )
+    # `pallas` leaves this pair transition on the released tokamax row-chunked
+    # GLU as well. Here the MSA module sets the program's peak, and the fused
+    # kernel's operand is one more whole pair tensor live at it: +2,206 MiB
+    # temp in the MSA layer at 3,012 tokens (foldjax-bench job 2444), +903 MiB
+    # at the prediction's peak (x49 job 2442). The Pairformer's own pair
+    # transitions keep the kernel; their peak is the triangle attention.
     z = _residual_cast(
         z
         + transition_forward(
@@ -1532,7 +1538,7 @@ def pairformer_no_seq_layer_forward(
             chunk_size=transition_hidden_chunk,
             eps=eps,
             row_chunk_size=chunk_size,
-            glu_backend=glu_backend,
+            glu_backend="tokamax" if glu_backend == "pallas" else glu_backend,
             native_amp_norm=(
                 params["transition_z"]["fc1"]["kernel"].dtype == jnp.bfloat16
             ),
