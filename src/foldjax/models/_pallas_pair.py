@@ -519,6 +519,15 @@ def _transition(x, ln_w, ln_b, w1, w2, w3, *, eps, store_dtype, update_dtype=Non
         ],
         out_specs=pl.BlockSpec((rows, w3.shape[1]), lambda i: (i, 0)),
         out_shape=jax.ShapeDtypeStruct((total, w3.shape[1]), store_dtype),
+        # In residual mode the result overwrites ``x`` when their dtypes agree:
+        # XLA reuses the residual's buffer when it is dead after the call and
+        # copies it first when it is not, so this never costs more than a
+        # fresh output.
+        input_output_aliases=(
+            {0: 0}
+            if update_dtype is not None and jnp.dtype(store_dtype) == x.dtype
+            else {}
+        ),
     )(flat, ln_w, ln_b, w1, w2, w3)
     return out.reshape(*x.shape[:-1], w3.shape[1])
 
@@ -548,9 +557,8 @@ def transition(
     update is a whole buffer of its own beside the residual and the sum:
     +1,138 MiB temp in Boltz-2's MSA layer at 1,003 tokens x 8,808 rows
     (``foldjax-bench/kernel-shootout-20260924``, job 2424), where the released
-    row-chunked path never materialises it. The result is a fresh buffer:
-    aliasing it to ``x`` made XLA copy the residual first, +3,885 MiB in the
-    same layer (job 2435).
+    row-chunked path never materialises it. The caller must not read ``x``
+    afterwards if it wants the buffer reused.
     """
 
     if norm[0] is None or norm[1] is None:
