@@ -143,6 +143,17 @@ class PeakLaw:
 # below were calibrated 2026-09-15; OpenDDE's two and ESMFold2's came later
 # (2026-09-16) off ledger rows measured 2026-08-23 and 2026-09-10, so each
 # law carries its own date in `calibration_id` rather than sharing one.
+#
+# Boltz-2, Protenix and OpenFold3 were measured on the released pair kernels.
+# Since 2026-09-25 a GPU run of those three defaults to the Pallas triangle
+# multiplication and pair transitions (`models/_pallas_pair.default_backend`),
+# and the laws were deliberately not refitted: against a same-base control
+# the Pallas peak is Boltz-2 -975 to +7 MiB, Protenix -286 to +41 MiB and
+# OpenFold3 -2,302 to 0 MiB (foldjax-bench/x51-pallas-validate-20260925,
+# x52-pallas-msa-pair-scope-20260925). Both increases sit inside their
+# allowances (Protenix +41 of 1,018 MiB, Boltz-2 +7 of 829). Those rows stop
+# at about 3,000 tokens; above that, to the 4,888 the Boltz-2 and OpenFold3
+# domains reach, the Pallas peak has not been measured against these laws.
 # ---------------------------------------------------------------------------
 
 _CALIBRATION = "2026-09-15"

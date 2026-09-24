@@ -61,6 +61,35 @@ SAMPLING_OPTIONS: dict[str, str] = {
 GLU_BACKENDS: tuple[str, ...] = ("xla", "tokamax", "pallas")
 
 
+def realised_glu_backend(value: Any, *, released: str, serial: bool) -> Any:
+    """The `glu_backend` a run realises, for `value` spelled or omitted.
+
+    An explicit value is returned as written and never rewritten, so every
+    refusal downstream still sees what was asked for. An omitted one is
+    `pallas` on a serial GPU process (Boltz-2, Protenix and OpenFold3 call
+    this; the measurements are at `foldjax.models._pallas_pair.default_backend`)
+    and the port's `released` value everywhere else: off a GPU the kernel
+    cannot run, and a context-parallel run partitions no fused GLU, so its
+    omitted option keeps the released resolution each port already has.
+
+    `cache_profile` and `predict` call this on the same options, the way
+    Boltz-2's `_realised_ring_tile_kernel` is called, so the namespace names
+    the program that ran: a GPU run with the option omitted records `pallas`
+    and shares the entry an explicit `pallas` already warmed, while an explicit
+    released value still strips to the absence every earlier run recorded.
+    `serial` is the adapter's own reading of its shard count. The probe
+    imports JAX, so it is imported here rather than at module scope.
+    """
+
+    if value is not None:
+        return value
+    if not serial:
+        return released
+    from foldjax.models._pallas_pair import default_backend
+
+    return default_backend(released)
+
+
 def validate_memory_policy_options(options: Mapping[str, Any]) -> None:
     """Reject a malformed memory-policy option while planning.
 

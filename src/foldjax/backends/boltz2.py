@@ -17,6 +17,7 @@ from foldjax.backends.base import (
     MATMUL_PRECISION_OPTION,
     SAMPLING_OPTIONS,
     Backend,
+    realised_glu_backend,
     square_grid_cp_layout,
     validate_memory_policy_options,
 )
@@ -392,6 +393,10 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     # The same shape one level over: `off` is what a context-parallel run
     # ships, so spelling it must select the namespace omitting it selects.
     "cp_fused_attention": "off",
+    # The released GLU, and what an omitted option still realises off a GPU
+    # and under a mesh. On a serial GPU process an omitted option realises
+    # `pallas` instead and `cache_profile` writes that word, so this entry is
+    # no longer "the default" on its own -- see `_realised_glu_backend`.
     "glu_backend": "tokamax",
     "deterministic": False,
     "msa_deletions": "released",
@@ -434,6 +439,23 @@ def _realised_ring_tile_kernel(kernel: object, *, grid: bool) -> str:
     from foldjax.models._cp_attention import ring_tile_kernel_available
 
     return "tokamax" if ring_tile_kernel_available() else "xla"
+
+
+def _realised_glu_backend(value: object, options: Mapping[str, Any]) -> object:
+    """The GLU backend this run realises, for `value` spelled or omitted.
+
+    `base.realised_glu_backend` with this port's released value and its own
+    reading of the shard count -- the one `validate_native_options` refuses a
+    named fused GLU on. Under a mesh an omitted option stays `tokamax`, which
+    the native API resolves to `xla` (`api.py`, at `"glu_backend"`).
+    """
+
+    devices = options.get("cp_devices", 1)
+    return realised_glu_backend(
+        value,
+        released=str(_RELEASED_COMPILE_DEFAULTS["glu_backend"]),
+        serial=not (type(devices) is int and devices > 1),
+    )
 
 
 def _realised_triangle_attention_grid(grid: object) -> str:
@@ -794,6 +816,14 @@ class Boltz2Backend(Backend):
                 "affinity_num_samples",
                 _RELEASED_COMPILE_DEFAULTS["affinity_num_samples"],
             ),
+        )
+        # The GLU the run realises, fed through the strip below for the reason
+        # the ring body is: an explicit `tokamax` and an omitted option off a
+        # GPU or under a mesh still strip to the absence every earlier run
+        # recorded, and an omitted option on a serial GPU process lands on the
+        # `pallas` entry the opt-in already warmed.
+        profile["glu_backend"] = _realised_glu_backend(
+            profile.get("glu_backend"), profile
         )
         # The matmul scope, for the third time and the same reason. This port
         # shipped `highest` until 2026-09-11 and `matmul_precision` was not in
@@ -1294,6 +1324,12 @@ class Boltz2Backend(Backend):
         # attentions, and the signatures that could carry them are the atom
         # adapter's and the token tile's.
         fused_attention = options.pop("cp_fused_attention", None)
+        # Resolved on the options `cache_profile` read, so the native call
+        # runs the GLU the recorded namespace names. Validation has already
+        # seen the request as spelled.
+        options["glu_backend"] = _realised_glu_backend(
+            options.get("glu_backend"), options
+        )
         mols = options.pop("mols", None) or _default_mols(request.weights)
         if mols is None:
             raise ValueError(

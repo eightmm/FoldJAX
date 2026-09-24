@@ -497,9 +497,13 @@ def _runtime_identity(
 ) -> tuple[Any, ...]:
     """Complete identity of values captured while tracing one model graph."""
 
-    triangle_multiplication_backend = os.environ.get(
-        "BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND", "cueq"
+    from foldjax.models.boltz2.models.triangle.triangle import (
+        triangle_multiplication_backend as realised_multiplication_backend,
     )
+
+    # The realised kernel, not the spelling: an unset variable is `pallas` on
+    # a GPU and `cueq` elsewhere, and those are two programs.
+    triangle_multiplication_backend = realised_multiplication_backend()
     if triangle_multiplication_backend not in {"cueq", "xla", "pallas"}:
         raise ValueError(
             "BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND must be 'cueq', 'xla' "
@@ -683,6 +687,9 @@ def predict(
     # inside each case's own sample spread (median 0.012 / max 0.238 A at
     # 1,003 against a 1.0-2.9 A spread). Passing "xla" restores the previous
     # arithmetic exactly; see `foldjax.models._glu` for how the two round.
+    # This is the released value, and the signature keeps it: the `foldjax`
+    # adapter is what passes "pallas" for an omitted option on a serial GPU
+    # process (`backends/base.realised_glu_backend`).
     glu_backend: str = "tokamax",
     #: Query block for the diffusion token transformer's pair-bias attention.
     #: `None` takes the rung policy in `resolve_long_sequence_chunks`, which

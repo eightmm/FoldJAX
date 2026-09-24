@@ -186,8 +186,34 @@ def test_neither_protenix_resolver_has_an_auto_mode(monkeypatch) -> None:
     assert triangle._triangle_attention_backend() == "cueq_jit"
 
     source = inspect.getsource(triangle.triangle_multiplication)
-    assert '"PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", "cueq"' in source
     assert '"auto"' not in source
+
+
+@pytest.mark.parametrize("gpu, expected", [(False, "cueq"), (True, "pallas")])
+def test_protenix_multiplication_default_follows_the_platform_only(
+    monkeypatch, gpu, expected
+) -> None:
+    """The unset multiplication is the platform's default, never a fallback.
+
+    Pallas on a GPU process and the released `cueq` elsewhere -- a platform the
+    cache namespace already records (`cache.runtime_profile`), not a probe of
+    what imports. So a missing cuEquivariance wheel must not move the answer:
+    asserted by making the wheel unimportable and resolving again. An explicit
+    value still wins on either platform.
+    """
+    import sys
+
+    from foldjax.models import _pallas_pair
+    from foldjax.models.protenix.models.triangle import triangle
+
+    monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: gpu)
+    monkeypatch.delenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", raising=False)
+    assert triangle.triangle_multiplication_backend() == expected
+    monkeypatch.setitem(sys.modules, "cuequivariance_jax", None)
+    assert triangle.triangle_multiplication_backend() == expected
+    for spelled in ("xla", "cueq", "pallas"):
+        monkeypatch.setenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", spelled)
+        assert triangle.triangle_multiplication_backend() == spelled
 
 
 def test_explicit_environment_still_wins(monkeypatch) -> None:

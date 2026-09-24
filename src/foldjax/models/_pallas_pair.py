@@ -1,8 +1,9 @@
 """Pallas-Triton kernels for the pair stack: triangle multiplication and transitions.
 
 Two kernel families replace cuEquivariance's fused triangle multiplication and
-the tokamax/XLA SwiGLU transition when a port is asked for the ``pallas``
-backend. Both are opt-in; nothing here is a default.
+the tokamax/XLA SwiGLU transition when a port runs the ``pallas`` backend. On a
+GPU process that is the default of Boltz-2, Protenix and OpenFold3; everywhere
+else the default stays the released backend (:func:`default_backend`).
 
 Triangle multiplication is split the way FlashPairformer splits it. ``K1``
 normalises the pair, applies the sigmoid-gated input projections and the mask,
@@ -69,8 +70,36 @@ _WIDE = 128
 TRANSITION_MAX_WIDTH = 128
 
 
+def gpu_process() -> bool:
+    """Whether this process's default JAX backend is a GPU.
+
+    The one probe both the refusal below and :func:`default_backend` read, so
+    a default can never resolve to a kernel the refusal then rejects. Decided
+    from the default backend, as ``_cueq.pads_attention_extents`` decides.
+    """
+
+    return jax.default_backend() == "gpu"
+
+
+def default_backend(released: str) -> str:
+    """What an omitted pair-kernel backend realises in this process.
+
+    ``"pallas"`` on a GPU, where the kernels were measured against the
+    released paths as whole predictions -- Boltz-2, Protenix and OpenFold3 at
+    250-3,000 tokens and mixed 1k/2k/3k complexes, warm wall 8.9-15.2 %
+    lower, peak -2,302 to +41 MiB, median deposited CA RMSD equal within
+    0.041 A (``foldjax-bench/x51-pallas-validate-20260925``,
+    ``x52-pallas-msa-pair-scope-20260925``). ``released`` everywhere else: the
+    kernels refuse to run off a GPU, and CPU parity, the test suite and CPU
+    users keep the program they ran before. There is no fallback on a GPU: a
+    kernel that cannot run there fails rather than quietly switching.
+    """
+
+    return "pallas" if gpu_process() else released
+
+
 def _require_gpu(what: str, instead: str) -> None:
-    if INTERPRET or jax.default_backend() == "gpu":
+    if INTERPRET or gpu_process():
         return
     msg = (
         f"{what} runs a Pallas-Triton kernel that needs a CUDA GPU, and this "

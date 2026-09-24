@@ -12,9 +12,9 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
-- **Opt-in Pallas-Triton kernels for the triangle multiplication and the pair
-  transitions** (`foldjax.models._pallas_pair`). No default changes. They run
-  only where they are asked for:
+- **Pallas-Triton kernels for the triangle multiplication and the pair
+  transitions** (`foldjax.models._pallas_pair`). Added opt-in; they are now
+  the GPU default (see Changed). The explicit settings are:
   - **Triangle multiplication**, through
     `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=pallas`,
     `PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=pallas` (OpenDDE reads the same
@@ -28,11 +28,12 @@ unless it says so here, in its own paragraph.
     keeps the port's released backend:
     - the single transitions;
     - the diffusion conditioned transitions;
-    - Boltz-2's MSA transition.
+    - Boltz-2's MSA transition and its MSA-module pair transition.
 
     Those sites were measured slower, or heavier in memory, under a Pallas
     kernel. Protenix's float32 diffusion GLU ran at 7x tokamax (job 2395).
-    Boltz-2's MSA transition added +1,138 MiB temp in its layer (job 2424).
+    Boltz-2's MSA transition added +1,138 MiB temp in its layer (job 2424),
+    and its MSA-module pair transition +2,206 MiB at 3,012 tokens (job 2444).
     The released row-chunked tokamax path never forms that buffer, and with it
     kept the MSA layer's live-at-peak set matches released (job 2440). The
     Protenix and OpenFold3 MSA transitions do take the kernel.
@@ -61,7 +62,7 @@ unless it says so here, in its own paragraph.
   | port | case | wall | peak | job |
   |---|---|---|---|---|
   | Boltz-2 | L1000_3og2 | 61.48 -> 53.63 s (-12.8%) | 8,454 -> 8,458 MiB | 2441 |
-  | Boltz-2 | L3000_6ztx | 473.66 -> 413.28 s (-12.7%) | 30,667 -> 31,570 MiB (+903, open) | 2442 |
+  | Boltz-2 | L3000_6ztx | 473.66 -> 413.28 s (-12.7%) | 30,667 -> 31,570 MiB (+903; -0.4 with the MSA-module pair transition on tokamax, x52) | 2442 |
   | Protenix | L1000_3og2 | 56.58 -> 49.18 s (-13.1%) | +42 MiB | 2429 |
   | Protenix | L3000_6ztx | 423.24 -> 370.30 s (-12.5%) | +39 MiB | 2433 |
   | OpenFold3 | L1000_3og2 | 63.80 -> 56.45 s (-11.5%) | flat | 2427 |
@@ -547,6 +548,54 @@ unless it says so here, in its own paragraph.
   `ModelConfig(msa_depth=...)`, since padding no longer chooses a depth.
 
 ### Changed
+
+- **On a GPU, Boltz-2, Protenix and OpenFold3 run the Pallas pair kernels by
+  default.** An omitted setting now realises the Pallas-Triton triangle
+  multiplication and pair transitions from the Added entry below:
+  - Boltz-2: multiplication `pallas` (was `cueq`), `glu_backend=pallas` (was
+    `tokamax`);
+  - Protenix: multiplication `pallas` (was `cueq`), `glu_backend=pallas` (was
+    `xla`);
+  - OpenFold3: `triangle_kernel` `cueq-pallas` (was `cueq-full`),
+    `glu_backend=pallas` (was `xla`).
+
+  The released path stays one setting away:
+  `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=cueq`,
+  `PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=cueq`,
+  `--option triangle_kernel=cueq-full` (or `OPENFOLD3_TRIANGLE_BACKEND=cueq-full`),
+  and `--option glu_backend=tokamax` (Boltz-2) or `xla` (Protenix, OpenFold3).
+
+  **Nothing changes off a GPU.** A CPU or TPU process, the test suite and
+  `pytest tests/parity --run-cpu-parity` keep the released backends, because
+  the kernels do not run there; the platform is JAX's default backend, which
+  the cache namespace already records. Context-parallel runs, OpenDDE (which
+  reads the Protenix variable but sets its own default first, since at c_z 384
+  the multiplication only ties cuEquivariance) and ESMFold2 are unchanged.
+
+  The multiplication default is decided in the model, so the native APIs and
+  port CLIs get it too. The `glu_backend` default is decided in the `foldjax`
+  adapters; the native signatures and Protenix's port CLI keep their released
+  values.
+
+  The compile-cache namespace records the realised `glu_backend` and
+  OpenFold3's realised `triangle_kernel`, and Boltz-2's retained-runner
+  identity records the realised multiplication. An omitted GPU run therefore
+  shares the namespace an explicit `pallas` already wrote, and an explicit
+  released value keeps the namespace every earlier run wrote.
+
+  Against a same-base control, both switches on
+  (`foldjax-bench/x51-pallas-validate-20260925` for Protenix and OpenFold3 at
+  250, 500, 1,350 and 2,000 tokens and mixed 1k/2k/3k complexes,
+  `x52-pallas-msa-pair-scope-20260925` for Boltz-2 at 250-3,000 and the mixed
+  complexes):
+  - warm wall 8.9-15.2% lower in every row;
+  - peak Boltz-2 -975 to +7 MiB, Protenix -286 to +41 MiB, OpenFold3 -2,302
+    to 0 MiB;
+  - median deposited CA RMSD per row equal within 0.041 A.
+
+  The memory admission laws were fitted on the released path and are not
+  refitted; both increases are inside their allowances (Protenix +41 of
+  1,018 MiB, Boltz-2 +7 of 829).
 
 - **Boltz-2's two-dimensional ring evaluates its tiles with the fused kernel
   unless asked not to.** On a GPU that has tokamax, with the resolved layout

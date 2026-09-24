@@ -111,6 +111,33 @@ class TriangleAttentionParams(NamedTuple):
     attention: AttentionParams
 
 
+TRIANGLE_MULTIPLICATION_ENV = "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND"
+
+
+def triangle_multiplication_backend() -> str:
+    """The multiplication kernel this process runs where the fused one fits.
+
+    The environment variable when it is set, lower-cased. Unset is
+    ``"pallas"`` on a GPU process and the released ``"cueq"`` elsewhere
+    (:func:`foldjax.models._pallas_pair.default_backend`), so CPU parity keeps
+    the backend its captures were calibrated on. That is a platform, not an
+    availability probe: a GPU process never falls back to another kernel.
+    ``cueq`` or ``xla`` restores a released path.
+
+    OpenDDE runs these modules but never reaches the unset branch: its model
+    entry writes its own default into the variable first
+    (``opendde/models/model.py``, ``_with_cueq_triangle_defaults``), and at
+    its c_z 384 the Pallas multiplication only ties cuEquivariance.
+    """
+
+    value = os.environ.get(TRIANGLE_MULTIPLICATION_ENV)
+    if value is not None:
+        return value.lower()
+    from foldjax.models._pallas_pair import default_backend
+
+    return default_backend("cueq")
+
+
 def triangle_multiplication(
     z: jnp.ndarray,
     mask: jnp.ndarray | None,
@@ -145,7 +172,7 @@ def triangle_multiplication(
         )
     if mask is None:
         mask = jnp.ones(z.shape[:-1], dtype=z.dtype)
-    backend = os.environ.get("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", "cueq").lower()
+    backend = triangle_multiplication_backend()
     # Upstream carries the same guard and falls back the same way: the kernel
     # requires the hidden width to equal the pair width (Protenix says so at
     # triangular.py:491). The template stack has c_z=64, c_hidden=128, so both
@@ -171,7 +198,7 @@ def triangle_multiplication(
             cueq_triangle_multiplication,
         )
 
-        # `pallas` (opt-in) runs where cueq runs, on the same packed
+        # `pallas` (the GPU default) runs where cueq runs, on the same packed
         # parameters: foldjax-bench/kernel-shootout-20260924.
         return cueq_triangle_multiplication(z, mask, params, direction, kernel=backend)
     if backend not in {"cueq", "xla", "pallas"}:

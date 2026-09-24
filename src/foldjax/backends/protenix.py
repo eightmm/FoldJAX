@@ -16,6 +16,7 @@ from foldjax.backends.base import (
     MATMUL_PRECISION_OPTION,
     SAMPLING_OPTIONS,
     Backend,
+    realised_glu_backend,
     validate_memory_policy_options,
 )
 from foldjax.execution import DETERMINISTIC_ARGV_OPTION
@@ -148,6 +149,22 @@ def _strict_cp_devices(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 1
+
+
+def _realised_glu_backend(value: Any, options: Mapping[str, Any]) -> Any:
+    """The GLU backend this run realises, for `value` spelled or omitted.
+
+    `base.realised_glu_backend` with this port's released `xla` and the shard
+    count `validate_native_options` reads. The native parser keeps `xla` as
+    its own default, so the port's CLI run directly is unchanged; this adapter
+    is what turns an omitted option into `pallas` on a serial GPU process.
+    """
+
+    return realised_glu_backend(
+        value,
+        released=str(_RELEASED_COMPILE_DEFAULTS["glu_backend"]),
+        serial=_strict_cp_devices(options.get("cp_devices", 1)) <= 1,
+    )
 
 
 def _render_switch(key: str, value: Any) -> list[str]:
@@ -889,6 +906,13 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         profile = super().cache_profile(request)
         options = self.apply_sampling(request)
         self.validate_native_options(options)
+        # The GLU the run realises, before the strip: an explicit `xla` and an
+        # omitted option off a GPU or under a mesh still strip to absence, and
+        # an omitted option on a serial GPU process records `pallas`, the entry
+        # an explicit `pallas` names.
+        profile["glu_backend"] = _realised_glu_backend(
+            profile.get("glu_backend"), options
+        )
         self._strip_released_defaults(profile, _RELEASED_COMPILE_DEFAULTS)
 
         model_name = options.get("model_name")
@@ -962,6 +986,13 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         # The same, one level up. `validate_native_options` has already
         # refused a spelling outside the vocabulary and `gather` off the grid.
         grid_algorithm = str(options.pop("triangle_attention_grid", None) or "ring")
+        # An omitted GLU is rendered only where it realises something other
+        # than the parser's own default, so a CPU run's argv is the one it
+        # always was; `cache_profile` records the same resolution.
+        if "glu_backend" not in options:
+            realised = _realised_glu_backend(None, options)
+            if realised != _RELEASED_COMPILE_DEFAULTS["glu_backend"]:
+                options["glu_backend"] = realised
         argv = [
             "--input-json",
             str(request.input),

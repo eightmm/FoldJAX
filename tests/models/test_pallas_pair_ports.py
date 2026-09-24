@@ -66,6 +66,18 @@ def _affine(rng, width):
 # --------------------------------------------------------------------------- #
 
 
+def _boltz2_multiplication_params(rng):
+    norm = lambda: dict(zip(("scale", "bias"), _affine(rng, C), strict=True))  # noqa: E731
+    return {
+        "norm_in": norm(),
+        "norm_out": norm(),
+        "p_in": {"kernel": _w(rng, C, 2 * C)},
+        "g_in": {"kernel": _w(rng, C, 2 * C)},
+        "p_out": {"kernel": _w(rng, C, C)},
+        "g_out": {"kernel": _w(rng, C, C)},
+    }
+
+
 @pytest.mark.parametrize("direction", ["outgoing", "incoming"])
 def test_boltz2_triangle_multiplication_pallas(calls, monkeypatch, direction):
     from foldjax.models.boltz2.models.triangle.triangle import (
@@ -74,15 +86,7 @@ def test_boltz2_triangle_multiplication_pallas(calls, monkeypatch, direction):
 
     rng = np.random.default_rng(0)
     x, mask = _pair(rng)
-    norm = lambda: dict(zip(("scale", "bias"), _affine(rng, C), strict=True))  # noqa: E731
-    params = {
-        "norm_in": norm(),
-        "norm_out": norm(),
-        "p_in": {"kernel": _w(rng, C, 2 * C)},
-        "g_in": {"kernel": _w(rng, C, 2 * C)},
-        "p_out": {"kernel": _w(rng, C, C)},
-        "g_out": {"kernel": _w(rng, C, C)},
-    }
+    params = _boltz2_multiplication_params(rng)
     monkeypatch.setenv("BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND", "pallas")
     out = triangle_multiplication_forward(params, x, mask, direction, native_amp=True)
     assert calls["triangle_multiplication"] == 1
@@ -123,17 +127,13 @@ def _torch_linear(rng, fan_in, fan_out):
     return LinearParams(weight=_w(rng, fan_in, fan_out).T, bias=None)
 
 
-@pytest.mark.parametrize("direction", ["outgoing", "incoming"])
-def test_protenix_triangle_multiplication_pallas(calls, monkeypatch, direction):
+def _protenix_multiplication_params(rng):
     from foldjax.models.protenix.models.primitives.primitives import LayerNormParams
     from foldjax.models.protenix.models.triangle.triangle import (
         TriangleMultiplicationParams,
-        triangle_multiplication,
     )
 
-    rng = np.random.default_rng(2)
-    x, mask = _pair(rng)
-    params = TriangleMultiplicationParams(
+    return TriangleMultiplicationParams(
         layer_norm_in=LayerNormParams(*_affine(rng, C)),
         layer_norm_out=LayerNormParams(*_affine(rng, C)),
         **{
@@ -148,6 +148,17 @@ def test_protenix_triangle_multiplication_pallas(calls, monkeypatch, direction):
             )
         },
     )
+
+
+@pytest.mark.parametrize("direction", ["outgoing", "incoming"])
+def test_protenix_triangle_multiplication_pallas(calls, monkeypatch, direction):
+    from foldjax.models.protenix.models.triangle.triangle import (
+        triangle_multiplication,
+    )
+
+    rng = np.random.default_rng(2)
+    x, mask = _pair(rng)
+    params = _protenix_multiplication_params(rng)
     monkeypatch.setenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", "pallas")
     out = triangle_multiplication(x[0], mask[0], params, direction)
     assert calls["triangle_multiplication"] == 1
@@ -190,17 +201,11 @@ def _of3_linear(rng, fan_in, fan_out):
     return LinearParams(weight=_w(rng, fan_in, fan_out).T, bias=None)
 
 
-@pytest.mark.parametrize("outgoing", [True, False])
-def test_openfold3_cueq_pallas_multiplication(calls, monkeypatch, outgoing):
+def _of3_multiplication_params(rng):
     from foldjax.models.openfold3.models.primitives import LayerNormParams
-    from foldjax.models.openfold3.models.triangle import (
-        TriangleMultiplicationParams,
-        triangle_multiplication,
-    )
+    from foldjax.models.openfold3.models.triangle import TriangleMultiplicationParams
 
-    rng = np.random.default_rng(4)
-    x, mask = _pair(rng)
-    params = TriangleMultiplicationParams(
+    return TriangleMultiplicationParams(
         layer_norm_in=LayerNormParams(*_affine(rng, C)),
         layer_norm_out=LayerNormParams(*_affine(rng, C)),
         **{
@@ -215,6 +220,15 @@ def test_openfold3_cueq_pallas_multiplication(calls, monkeypatch, outgoing):
             )
         },
     )
+
+
+@pytest.mark.parametrize("outgoing", [True, False])
+def test_openfold3_cueq_pallas_multiplication(calls, monkeypatch, outgoing):
+    from foldjax.models.openfold3.models.triangle import triangle_multiplication
+
+    rng = np.random.default_rng(4)
+    x, mask = _pair(rng)
+    params = _of3_multiplication_params(rng)
     monkeypatch.setenv("OPENFOLD3_TRIANGLE_BACKEND", "cueq-pallas")
     out = triangle_multiplication(x, params, outgoing=outgoing, mask=mask)
     assert calls["triangle_multiplication"] == 1
@@ -456,3 +470,139 @@ def test_boltz2_msa_module_pair_transition_stays_on_tokamax_under_pallas(
         params, z, jnp.ones((1, 3, 3)), glu_backend=asked
     )
     assert seen == [runs]
+
+
+# --------------------------------------------------------------------------- #
+# The GPU default: an unset switch runs Pallas on a GPU and the released
+# kernel everywhere else. `gpu_process` is the one probe both the default and
+# the refusal read, so patching it moves the platform for this purpose alone;
+# `jax.default_backend` is left alone because JAX itself calls it.
+# --------------------------------------------------------------------------- #
+
+
+def _released_spy(monkeypatch, module, name):
+    """Replace the released fused call in `module` with a recorder."""
+    seen = []
+
+    def spy(x, *args, **kwargs):
+        seen.append(name)
+        return jnp.zeros_like(x)
+
+    monkeypatch.setattr(module, name, spy)
+    return seen
+
+
+def test_default_backend_and_the_refusal_read_one_probe(monkeypatch):
+    for gpu, expected in ((True, "pallas"), (False, "tokamax")):
+        monkeypatch.setattr(_pallas_pair, "gpu_process", lambda gpu=gpu: gpu)
+        assert _pallas_pair.default_backend("tokamax") == expected
+    monkeypatch.setattr(_pallas_pair, "INTERPRET", False)
+    monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: True)
+    _pallas_pair._require_gpu("x", "y")
+    monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: False)
+    with pytest.raises(ValueError, match="needs a CUDA GPU"):
+        _pallas_pair._require_gpu("x", "y")
+
+
+@pytest.mark.parametrize("gpu", [True, False], ids=["gpu", "cpu"])
+def test_boltz2_unset_multiplication_runs_the_platform_default(calls, monkeypatch, gpu):
+    from foldjax.models.boltz2.models.triangle import triangle_cueq
+    from foldjax.models.boltz2.models.triangle.triangle import (
+        triangle_multiplication_forward,
+    )
+
+    monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: gpu)
+    monkeypatch.delenv("BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND", raising=False)
+    released = []
+    monkeypatch.setattr(
+        triangle_cueq,
+        "cueq_triangle_multiplication_forward",
+        lambda params, x, *a, **k: released.append("cueq") or jnp.zeros_like(x),
+    )
+    rng = np.random.default_rng(11)
+    x, mask = _pair(rng)
+    triangle_multiplication_forward(
+        _boltz2_multiplication_params(rng), x, mask, "outgoing", native_amp=True
+    )
+    assert (calls["triangle_multiplication"], released) == (
+        (1, []) if gpu else (0, ["cueq"])
+    )
+
+
+@pytest.mark.parametrize("gpu", [True, False], ids=["gpu", "cpu"])
+def test_protenix_unset_multiplication_runs_the_platform_default(
+    calls, monkeypatch, gpu
+):
+    from foldjax.models.protenix.models.triangle import triangle_cueq
+    from foldjax.models.protenix.models.triangle.triangle import (
+        triangle_multiplication,
+    )
+
+    monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: gpu)
+    monkeypatch.delenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", raising=False)
+    released = _released_spy(
+        monkeypatch, triangle_cueq, "fused_triangle_multiplication"
+    )
+    rng = np.random.default_rng(12)
+    x, mask = _pair(rng)
+    triangle_multiplication(
+        x[0], mask[0], _protenix_multiplication_params(rng), "outgoing"
+    )
+    assert (calls["triangle_multiplication"], released) == (
+        (1, []) if gpu else (0, ["fused_triangle_multiplication"])
+    )
+
+
+@pytest.mark.parametrize("gpu", [True, False], ids=["gpu", "cpu"])
+def test_openfold3_unset_multiplication_runs_the_platform_default(
+    calls, monkeypatch, gpu
+):
+    from foldjax.models import _cueq
+    from foldjax.models.openfold3.models.triangle import triangle_multiplication
+
+    monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: gpu)
+    monkeypatch.delenv("OPENFOLD3_TRIANGLE_BACKEND", raising=False)
+    released = _released_spy(monkeypatch, _cueq, "fused_triangle_multiplication")
+    rng = np.random.default_rng(13)
+    x, mask = _pair(rng)
+    triangle_multiplication(
+        x, _of3_multiplication_params(rng), outgoing=True, mask=mask
+    )
+    assert (calls["triangle_multiplication"], released) == (
+        (1, []) if gpu else (0, ["fused_triangle_multiplication"])
+    )
+
+
+@pytest.mark.parametrize("trunk_dtype", [jnp.bfloat16, None], ids=["bf16", "fp32"])
+def test_opendde_keeps_its_own_multiplication_on_a_gpu(calls, monkeypatch, trunk_dtype):
+    """OpenDDE runs Protenix's modules but not Protenix's GPU default.
+
+    At its c_z 384 the Pallas multiplication only ties cuEquivariance, so the
+    model entry writes OpenDDE's own default into the shared variable before
+    Protenix's resolver can see it unset: the blocked XLA product on a narrow
+    trunk, the fused cuEquivariance one on float32.
+    """
+    from foldjax.models.opendde.models import model
+    from foldjax.models.protenix.models.triangle import triangle, triangle_cueq
+
+    monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: True)
+    monkeypatch.delenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", raising=False)
+    released = _released_spy(
+        monkeypatch, triangle_cueq, "fused_triangle_multiplication"
+    )
+    rng = np.random.default_rng(14)
+    x, mask = _pair(rng)
+    params = _protenix_multiplication_params(rng)
+    seen = []
+
+    @model._with_cueq_triangle_defaults
+    def entry(**_kwargs):
+        seen.append(triangle.triangle_multiplication_backend())
+        triangle.triangle_multiplication(x[0], mask[0], params, "outgoing")
+
+    entry(trunk_dtype=trunk_dtype)
+    assert calls["triangle_multiplication"] == 0
+    if trunk_dtype is None:
+        assert (seen, released) == (["cueq"], ["fused_triangle_multiplication"])
+    else:
+        assert (seen, released) == (["xla"], [])

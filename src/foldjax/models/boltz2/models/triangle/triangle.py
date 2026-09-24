@@ -31,6 +31,28 @@ from foldjax.models.boltz2.models.primitives.glu_backend import gated_linear_uni
 TriangleDirection = Literal["outgoing", "incoming"]
 TriangleMultiplicationParams = Mapping[str, Mapping[str, jnp.ndarray]]
 
+TRIANGLE_MULTIPLICATION_ENV = "BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND"
+
+
+def triangle_multiplication_backend() -> str:
+    """The multiplication kernel this process runs outside a mesh.
+
+    The environment variable when it is set, as written. Unset is
+    ``"pallas"`` on a GPU process and the released ``"cueq"`` elsewhere
+    (:func:`foldjax.models._pallas_pair.default_backend`), so CPU parity keeps
+    the backend its captures were calibrated on. The model and the retained
+    runner's identity (``api._runtime_identity``) both read this function, so
+    the identity names the kernel the trace ran rather than the spelling.
+    ``cueq`` or ``xla`` restores a released path.
+    """
+
+    value = os.getenv(TRIANGLE_MULTIPLICATION_ENV)
+    if value is not None:
+        return value
+    from foldjax.models._pallas_pair import default_backend
+
+    return default_backend("cueq")
+
 
 def resolve_native_amp(
     x: jnp.ndarray,
@@ -95,13 +117,13 @@ def triangle_multiplication_forward(
             )
             raise ValueError(msg)
 
-    backend = os.getenv("BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND", "cueq")
+    backend = triangle_multiplication_backend()
     if backend == "pallas" and not cp_active:
-        # Opt-in: the Pallas-Triton K1 -> cuBLAS -> K2 split, ~2x cuEq's
-        # speed at c_z 128 (foldjax-bench/kernel-shootout-20260924). Same
-        # calling convention as the fused cuEq call below, so the parameters
-        # take the same transposes. Under a mesh it resolves to the XLA einsum,
-        # as cueq does.
+        # The GPU default: the Pallas-Triton K1 -> cuBLAS -> K2 split, ~2x
+        # cuEq's speed at c_z 128 (foldjax-bench/kernel-shootout-20260924).
+        # Same calling convention as the fused cuEq call below, so the
+        # parameters take the same transposes. Under a mesh it resolves to the
+        # XLA einsum, as cueq does.
         from foldjax.models._pallas_pair import triangle_multiplication
 
         return triangle_multiplication(

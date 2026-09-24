@@ -1879,9 +1879,11 @@ def test_openfold3_all_arrays_requires_a_real_boolean(value) -> None:
     ],
     ids=["managed-default", "all-arrays", "trunk-default", "trunk-all-arrays"],
 )
+@pytest.mark.parametrize("gpu", [False, True], ids=["cpu", "gpu"])
 def test_openfold3_backend_passes_normalized_static_chain_count(
     tmp_path: Path,
     monkeypatch,
+    gpu: bool,
     eager: bool,
     num_samples: int,
     all_arrays: bool,
@@ -1949,6 +1951,7 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
         return features, output_metadata
 
     def fake_released_config(**kwargs):
+        seen["config_glu_backend"] = kwargs.get("glu_backend")
         seen["has_atomized_tokens"] = kwargs["has_atomized_tokens"]
         seen["config_array_budget"] = kwargs["max_array_bytes"]
         seen["config_num_samples"] = kwargs.get("num_samples", 5)
@@ -2038,6 +2041,9 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
     monkeypatch.setattr(
         "foldjax.backends.openfold3.import_module", lambda name: modules[name]
     )
+    # The omitted `glu_backend` is `pallas` on a GPU process and the config's
+    # own released `xla` elsewhere (`base.realised_glu_backend`).
+    monkeypatch.setattr("foldjax.models._pallas_pair.gpu_process", lambda: gpu)
     native_options = {}
     if eager:
         native_options["no_compile"] = True
@@ -2075,6 +2081,7 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
     assert seen["config_num_samples"] == num_samples
     assert seen["config_per_sample_token_cutoff"] is None
     assert seen["config_per_sample_token_cutoff_present"] is False
+    assert seen["config_glu_backend"] == ("pallas" if gpu else None)
     if stop_after == "full":
         assert seen["writer_array_budget"] == expected_array_budget
         assert seen["output_metadata"] is output_metadata

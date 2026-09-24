@@ -22,9 +22,10 @@ TRIANGLE_BACKEND_ENV = "OPENFOLD3_TRIANGLE_BACKEND"
 
 #: Triangle kernels that run cuEquivariance attention *and* a fused triangle
 #: multiplication: ``cueq-full`` fuses it with cuEquivariance, ``cueq-pallas``
-#: (opt-in, reachable through ``OPENFOLD3_TRIANGLE_BACKEND`` only) with the
-#: Pallas-Triton kernels of ``foldjax.models._pallas_pair``
-#: (foldjax-bench/kernel-shootout-20260924).
+#: with the Pallas-Triton kernels of ``foldjax.models._pallas_pair``
+#: (foldjax-bench/kernel-shootout-20260924). ``cueq-pallas`` is what an omitted
+#: choice realises on a GPU process (:func:`resolve_triangle_kernel`); spelled
+#: out it is reachable through ``OPENFOLD3_TRIANGLE_BACKEND`` only.
 FUSED_MULTIPLICATION_KERNELS = ("cueq-full", "cueq-pallas")
 _TRIANGLE_BACKEND_LOCK = threading.RLock()
 _CACHE_SCOPE_LIMIT = 128
@@ -67,6 +68,12 @@ def resolve_triangle_kernel(value: str | None, *, cp_shards: int) -> str:
     default names the kernel a released run gets while a narrow-width trace
     keeps working.
 
+    That is the default off a GPU. On a GPU process an omitted choice is
+    ``cueq-pallas`` instead, the same attention with the Pallas-Triton
+    multiplication (:func:`_serial_default_kernel`), and the value returned --
+    which `cache_profile` and the graph identity record -- is that realised
+    kernel, never ``None``.
+
     Context parallelism instead defaults to XLA because its distributed
     triangle-attention path cannot assume the fused extension is available.
     """
@@ -79,8 +86,28 @@ def resolve_triangle_kernel(value: str | None, *, cp_shards: int) -> str:
         if selected is None:
             selected = os.environ.get(TRIANGLE_BACKEND_ENV)
         if selected is None:
-            return "xla" if cp_shards > 1 else "cueq-full"
+            return "xla" if cp_shards > 1 else _serial_default_kernel()
         return str(selected).lower()
+
+
+def _serial_default_kernel() -> str:
+    """The serial kernel an omitted choice realises in this process.
+
+    ``cueq-pallas`` on a GPU: cuEquivariance triangle attention with the
+    Pallas-Triton multiplication (``foldjax.models._pallas_pair.default_backend``
+    has the measurements). ``cueq-full`` everywhere else, which is the kernel a
+    CPU process ran before and what CPU parity is calibrated on.
+    ``triangle_kernel=cueq-full`` (or the variable) restores the released path
+    on a GPU.
+
+    Imported here rather than at module scope, because this module stays
+    JAX-free at import; every caller of an omitted choice is about to trace or
+    to name a cache namespace, and both already initialise a backend.
+    """
+
+    from foldjax.models._pallas_pair import gpu_process
+
+    return "cueq-pallas" if gpu_process() else "cueq-full"
 
 
 def _cache_scope_key(scope: str) -> str:

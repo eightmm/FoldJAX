@@ -37,6 +37,7 @@ from foldjax.backends.base import (
     MATMUL_PRECISION_OPTION,
     SAMPLING_OPTIONS,
     Backend,
+    realised_glu_backend,
     validate_memory_policy_options,
 )
 from foldjax.cache import compilation_cache_scope
@@ -154,6 +155,11 @@ _GLU_BACKENDS = GLU_BACKENDS
 #: option runs, so it has to read the default rather than repeat it. Spelled as
 #: a literal there, flipping this default would silently alias the *other*
 #: backend into the omitted option's namespace.
+#:
+#: The default did flip, on a serial GPU process only, and the strip was kept
+#: honest by resolving first: an omitted option there realises `pallas`
+#: (`base.realised_glu_backend`), which is recorded, and this value is what an
+#: omitted option still realises off a GPU and under a mesh.
 _DEFAULT_GLU_BACKEND = "xla"
 
 #: The 2-D triangle-attention algorithms, copied rather than imported from
@@ -546,14 +552,23 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             ),
             cp_shards=cp_shards,
         )
-        # The released SwiGLU is the unfused one, so a request that spells
-        # that default out must name the namespace an omitted option names.
-        # The fused value is a different program and keeps its own.
-        if (
-            str(profile.get("glu_backend", _DEFAULT_GLU_BACKEND))
-            == _DEFAULT_GLU_BACKEND
-        ):
+        # The SwiGLU the run realises, then the strip. The released SwiGLU is
+        # the unfused one, so a request that spells it out names the namespace
+        # an omitted option names off a GPU and under a mesh. An omitted
+        # option on a serial GPU process realises `pallas` and records it,
+        # sharing the entry an explicit `pallas` names; the fused values are
+        # different programs and keep their own.
+        glu_backend = str(
+            realised_glu_backend(
+                profile.get("glu_backend"),
+                released=_DEFAULT_GLU_BACKEND,
+                serial=cp_shards <= 1,
+            )
+        )
+        if glu_backend == _DEFAULT_GLU_BACKEND:
             profile.pop("glu_backend", None)
+        else:
+            profile["glu_backend"] = glu_backend
         profile["representations"] = _representations.resolve(
             request.representations, _representations.specs_for("openfold3")
         )
@@ -822,8 +837,16 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             overrides["cp_atom_windows"] = _strict_boolean(
                 atom_windows, name="cp_atom_windows"
             )
-        glu_backend = options.pop("glu_backend", None)
-        if glu_backend is not None:
+        # Resolved on the shard count `cache_profile` read, so the config runs
+        # the GLU the recorded namespace names; the config's own default is
+        # the released `xla`, which is all an omitted option realises off a
+        # GPU or under a mesh.
+        glu_backend = realised_glu_backend(
+            options.pop("glu_backend", None),
+            released=_DEFAULT_GLU_BACKEND,
+            serial=int(overrides.get("cp_shards", 1)) <= 1,
+        )
+        if glu_backend != _DEFAULT_GLU_BACKEND:
             overrides["glu_backend"] = str(glu_backend)
         dtype = str(options.pop("dtype", _DEFAULT_DTYPE))
         overrides["dtype"] = dtype

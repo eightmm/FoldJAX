@@ -234,7 +234,9 @@ class InferenceConfig(NamedTuple):
     #: fused Triton kernel, which never writes the widened gate and value
     #: tensors out; it needs a GPU and is a numerics change, so it is
     #: opt-in. Part of the config, so the two never share a compiled
-    #: program. See :mod:`foldjax.models._glu`.
+    #: program. See :mod:`foldjax.models._glu`. The `foldjax` adapter sets
+    #: ``"pallas"`` for an omitted option on a serial GPU process
+    #: (``backends/base.realised_glu_backend``); this default stays released.
     glu_backend: str = "xla"
     #: Element type of the token/pair representation track: ``"bfloat16"``,
     #: the shipped profile, or ``"float32"``, upstream's own inference

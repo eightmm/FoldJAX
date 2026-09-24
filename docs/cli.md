@@ -1407,16 +1407,59 @@ silent no-op -- because a kernel is offered on the port whose numbers were
 measured. OpenDDE is the natural next port to measure: the arena that
 motivated the blocking in the first place is OpenDDE's.
 
-### Pallas pair kernels (opt-in, Boltz-2, Protenix, OpenFold3)
+### Pallas pair kernels (GPU default, Boltz-2, Protenix, OpenFold3)
 
 Two Pallas-Triton kernels in `foldjax.models._pallas_pair` replace
 cuEquivariance's fused triangle multiplication and the tokamax or XLA pair
-transition. Both are opt-in, and no default changes:
+transition. On a GPU process they are the default of Boltz-2, Protenix and
+OpenFold3. Everywhere else -- a CPU process, which is what the test suite and
+`pytest tests/parity --run-cpu-parity` run, a TPU, a CPU user -- the default is
+the released backend it always was, because the kernels do not run off a GPU.
+The platform is JAX's default backend, which the cache namespace already
+records.
 
-| what | Boltz-2 | Protenix | OpenFold3 |
-| --- | --- | --- | --- |
-| triangle multiplication | `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=pallas` | `PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=pallas` | `OPENFOLD3_TRIANGLE_BACKEND=cueq-pallas` |
-| pair transitions | `--option glu_backend=pallas` | `--option glu_backend=pallas` (`--glu-backend pallas` in the port CLI) | `--option glu_backend=pallas` |
+What an omitted setting runs, and how to name either side:
+
+| what | port | omitted, GPU | omitted, elsewhere | released path on a GPU |
+| --- | --- | --- | --- | --- |
+| triangle multiplication | Boltz-2 | `pallas` | `cueq` | `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=cueq` (or `xla`) |
+| triangle multiplication | Protenix | `pallas` | `cueq` | `PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=cueq` (or `xla`) |
+| triangle kernel | OpenFold3 | `cueq-pallas` | `cueq-full` | `--option triangle_kernel=cueq-full` or `OPENFOLD3_TRIANGLE_BACKEND=cueq-full` |
+| pair transitions | Boltz-2 | `glu_backend=pallas` | `tokamax` | `--option glu_backend=tokamax` (or `xla`) |
+| pair transitions | Protenix | `glu_backend=pallas` | `xla` | `--option glu_backend=xla` |
+| pair transitions | OpenFold3 | `glu_backend=pallas` | `xla` | `--option glu_backend=xla` |
+
+`BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=pallas`,
+`PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=pallas`,
+`OPENFOLD3_TRIANGLE_BACKEND=cueq-pallas` and `--option glu_backend=pallas`
+still name the kernels explicitly; off a GPU they refuse to run.
+
+Where each default is decided:
+
+- **Triangle multiplication:** in the model, when it reads the unset
+  variable, so every entry point gets it -- the `foldjax` CLI and API, the
+  native `predict` functions and the port CLIs.
+- **`glu_backend`:** in the `foldjax` adapter, from an omitted option. The
+  native signatures and Protenix's port CLI (`--glu-backend`, default `xla`)
+  keep their released defaults, so a script that calls a port directly gets
+  the Pallas multiplication on a GPU but the released transitions unless it
+  passes `glu_backend="pallas"`.
+- **Context parallelism:** unchanged. An omitted `glu_backend` stays on the
+  released value, which each port already resolves to `xla` under a mesh, and
+  the multiplication resolves to the XLA einsum there, as `cueq` does.
+- **OpenDDE:** unchanged. It reads the Protenix variable, but its model entry
+  writes its own default into it first (the blocked `xla` product on the
+  bfloat16 trunk, `cueq` on float32), because at its c_z 384 the Pallas
+  multiplication only ties cuEquivariance.
+- **ESMFold2:** unchanged; it refuses `glu_backend=pallas`.
+
+What gets recorded is what ran. The compile-cache namespace writes the
+realised `glu_backend` and OpenFold3's realised `triangle_kernel`, and
+Boltz-2's retained-runner identity writes the realised multiplication. An
+omitted option on a GPU therefore shares the namespace of an explicit
+`pallas`, which the opt-in runs already warmed. An explicit released value
+(`glu_backend=tokamax` on Boltz-2, `xla` on the other two) keeps the namespace
+every run before this change wrote.
 
 The multiplication is split in two parts. One kernel applies the LayerNorm,
 projections, gate and mask. cuBLAS does the triangle contraction, and a second
@@ -1440,7 +1483,8 @@ value. That covers:
 - the single transitions;
 - the diffusion conditioned transitions;
 - Boltz-2's triangle-multiplication gate;
-- Boltz-2's MSA transition.
+- Boltz-2's MSA transition;
+- Boltz-2's MSA-module pair transition.
 
 Each exclusion rests on a measurement:
 
@@ -1450,6 +1494,9 @@ Each exclusion rests on a measurement:
   kernel (job 2424). It stays on the row-chunked tokamax path, which never
   forms that buffer. With it there, the MSA layer's live-at-peak set is
   identical to released (x48 buffer-assignment dump, job 2440).
+- Boltz-2's MSA-module pair transition added +2,206 MiB of temp at 3,012
+  tokens, where the MSA module sets the prediction's peak (job 2444). It
+  stays on tokamax too; the Pairformer's pair transitions take the kernel.
 
 ESMFold2 has no site the value would reach and refuses it. OpenDDE has no
 `glu_backend` option; at its c_z 384 the fused transition loses to XLA
@@ -1480,9 +1527,9 @@ from the same base (`foldjax-bench/x44-pallas-scoped-20260924`, jobs
 | OpenFold3 | L1000_3og2 | 63.80 -> 56.45 (-11.5%) | 4,317 -> 4,317 | 2427 |
 | OpenFold3 | L3000_6ztx | 473.88 -> 413.69 (-12.7%) | 24,821 -> 24,000 | 2431 |
 
-- **Boltz-2 at 3,012 tokens:** the +903 MiB is on the pair side and has not
-  been attributed yet. The multiplication switch on its own is flat at 1,003
-  tokens (+3.8 MiB, job 2411).
+- **Boltz-2 at 3,012 tokens:** the +903 MiB above was the MSA-module pair
+  transition. With it kept on tokamax the row is 30,666.8 -> 30,666.4 MiB
+  (`foldjax-bench/x52-pallas-msa-pair-scope-20260925`).
 - **Protenix without cuEquivariance:** add
   `--option trunk_triangle_attention_backend=tokamax` and
   `--option confidence_triangle_attention_backend=tokamax`. The row was run
@@ -1505,15 +1552,35 @@ from the same base (`foldjax-bench/x44-pallas-scoped-20260924`, jobs
 Rows and their `compare.py` are in `foldjax-bench/x45-pallas-outdtype-20260924`
 and `x49-pallas-fallback-20260924`.
 
+The rows the default rests on add 250, 500, 1,350 and 2,000 tokens and mixed
+1k/2k/3k complexes for Protenix and OpenFold3
+(`foldjax-bench/x51-pallas-validate-20260925`), and every size from 250 to
+3,000 plus the mixed complexes for Boltz-2 on the final scoping
+(`x52-pallas-msa-pair-scope-20260925`), both switches on against a same-base
+control:
+
+- warm wall 8.9-15.2% lower in every row;
+- peak: Protenix -286 to +41 MiB, Boltz-2 -975 to +7 MiB, OpenFold3 -2,302
+  to 0 MiB;
+- median deposited CA RMSD per row equal within 0.041 A.
+
+The memory admission laws (`foldjax.memory_policy`) were fitted on the
+released path and are not refitted. Every Pallas increase above is inside the
+matching law's allowance: Protenix +41 of 1,018 MiB, Boltz-2 +7 of 829 MiB.
+Above about 3,000 tokens the Pallas peak has not been measured against the
+laws.
+
 Limits:
 
-- **No fallback.** Off a GPU both values refuse to run, and the error says
-  what to pass instead. The CPU tests use Pallas interpret mode.
+- **No fallback.** The default is chosen by platform, never by what
+  imports: a GPU process whose kernel fails does not switch to another one.
+  Off a GPU, an explicit `pallas` refuses to run, and the error says what to
+  pass instead. The CPU tests use Pallas interpret mode.
 - **Context parallelism.** Under a mesh, the multiplication resolves to the
   XLA einsum, as `cueq` does. `glu_backend=pallas` is refused under context
   parallelism, because a fused kernel cannot be partitioned.
-- **Compile cache.** The GLU value is part of the compile-cache identity, so a
-  `pallas` run never receives an executable built without it.
+- **Compile cache.** The realised GLU value is part of the compile-cache
+  identity, so a `pallas` run never receives an executable built without it.
 
 ### `--option deterministic=on`
 

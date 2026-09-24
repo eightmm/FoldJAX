@@ -24,8 +24,11 @@ There is no fallback. ``implementation`` is pinned to Triton so a card that
 cannot run the kernel says so, instead of running XLA under a name that claims
 otherwise and producing a measurement that compares XLA with XLA.
 
-``pallas`` is the third value (opt-in), and it names a set of sites rather
-than a kernel for every GLU. It reaches the plain transitions (LayerNorm, the
+``pallas`` is the third value, and it names a set of sites rather than a
+kernel for every GLU. It is what an omitted ``glu_backend`` realises on a
+serial GPU process for Boltz-2, Protenix and OpenFold3
+(``foldjax.backends.base.realised_glu_backend``); the native signatures keep
+their released defaults. It reaches the plain transitions (LayerNorm, the
 unit, a bias-free output projection) no wider than
 :data:`~foldjax.models._pallas_pair.TRANSITION_MAX_WIDTH` -- the pair
 transitions of the c_z-128 ports and the MSA and template-pair transitions --
