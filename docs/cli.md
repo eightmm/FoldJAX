@@ -1489,11 +1489,18 @@ from the same base (`foldjax-bench/x44-pallas-scoped-20260924`, jobs
   with cuEquivariance made unimportable, and it was -12.7% at 1,003 tokens
   and -11.9% at 3,012, with peaks within 67 MiB of the control (jobs 2428
   and 2432).
-- **Structures:** the deposited CA RMSD and TM of every sample stay at the
-  level of the released reference rows (x42). For example, OpenFold3
-  L3000_6ztx lands at 0.63-0.65 A against the reference's 0.62-0.88 A.
-  Same-index distances to the control reach 1.6 A there; that is sample
-  spread, not a change in accuracy.
+- **Structures:** coordinates move, because the kernels round differently
+  from the paths they replace. The same-index distance to the control is at
+  most:
+  - Boltz-2: 0.40 A;
+  - Protenix: 0.07 A, or 0.32 A without cuEquivariance;
+  - OpenFold3: 1.3 A at L1000_3og2 and 1.6 A at L3000_6ztx.
+
+  OpenFold3's recorded 3k rerun floor is about 0.03 A, so its shift is a real
+  change of rounding route. Accuracy against the deposited structure does not
+  change: every sample's CA RMSD and TM stay at the level of the released
+  reference rows (x42). For example, OpenFold3 L3000_6ztx lands at
+  0.63-0.65 A against the reference's 0.62-0.88 A.
 
 Rows and their `compare.py` are in `foldjax-bench/x45-pallas-outdtype-20260924`
 and `x49-pallas-fallback-20260924`.

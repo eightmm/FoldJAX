@@ -47,12 +47,15 @@ unless it says so here, in its own paragraph.
     0.25-0.34x the XLA transition.
 
   Whole predictions, warm, with both switches on, against a same-base control
-  row (`foldjax-bench/x44-pallas-scoped-20260924`, jobs 2408-2421). The
-  deposited CA RMSD and TM of every sample stay at the level of the released
-  reference rows (x42), for example 0.63-0.65 A against 0.62-0.88 A on
-  OpenFold3 L3000_6ztx. Same-index
-  distances to the control reach 1.6 A there, but that is sample spread, not a
-  change in accuracy. Rows are in `foldjax-bench/x45-pallas-outdtype-20260924`
+  row (`foldjax-bench/x44-pallas-scoped-20260924`, jobs 2408-2421).
+  Coordinates move. The same-index distance to the control is at most:
+  - Boltz-2: 0.40 A;
+  - Protenix: 0.07 A, or 0.32 A without cuEquivariance;
+  - OpenFold3: 1.3 A at L1000 and 1.6 A at L3000.
+
+  The deposited CA RMSD and TM of every sample stay at the level of the
+  released reference rows (x42). For example, OpenFold3 L3000_6ztx gives
+  0.63-0.65 A against 0.62-0.88 A. Rows are in `foldjax-bench/x45-pallas-outdtype-20260924`
   and `x49-pallas-fallback-20260924`, next to `compare.py`.
 
   | port | case | wall | peak | job |
