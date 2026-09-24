@@ -6,7 +6,10 @@
 #   =pallas and glu_backend=pallas (cuEq triangle attention kept);
 # * its tripwire: cuEq multiplication forbidden, the Pallas kernels counted;
 # * 1,003 tokens mapped to L1000_3og2 with its alignment depth (8,808 rows);
-# * WALL_SPLIT_COMPILE_ONLY=1: records each family's `memory_analysis`, skips timing.
+# * WALL_SPLIT_COMPILE_ONLY=1: records each family's `memory_analysis`, skips timing;
+# * arm `trimul`: the released arm with only the Pallas triangle multiplication
+#   (glu_backend stays tokamax), the multiplication's share of a pallas row;
+# * 3,012 tokens mapped to L3000_6ztx with its alignment depth (8,192 rows), x50.
 #
 # Each family's argument, output and temp bytes are compared across the arms.
 # The family that grows is the family that moved the peak x43 measured
@@ -154,13 +157,20 @@ REPO = Path(os.environ.get("WALL_SPLIT_REPO", "/home/jaemin/non-project/optimizi
 #: `bench/spec.py` resolves a case's length from `FOLDJAX_BENCH_DATA`; both
 #: numbers below are that length, which is also the token count Boltz-2's
 #: tokenizer produces for these protein-only jobs.
-CASES = {1003: "L1000_3og2", 2096: "L2000_5dei", 6568: "L6500_6nyf8"}
+CASES = {
+    1003: "L1000_3og2",
+    2096: "L2000_5dei",
+    3012: "L3000_6ztx",
+    6568: "L6500_6nyf8",
+}
 
 #: MSA alignment depth per case, as the featurizer hands it to the MSA module.
 #: 5DEI's alignment is 8,192 rows; the 6,568-token case has 377.  Neither is
 #: capped: `boltz predict` does not subsample (`models/predict.py`'s
-#: `subsample_msa=False`) and `const.max_msa_seqs` is 16,384.
-CASE_MSA_DEPTH = {1003: 8808, 2096: 8192, 6568: 377}
+#: `subsample_msa=False`) and `const.max_msa_seqs` is 16,384.  6ZTX's a3m has
+#: 17,542 rows; the port's featurizer hands the MSA module 8,192 of them
+#: (`featurize_yaml` on the L3000_6ztx job, msa (1, 8192, 3012)).
+CASE_MSA_DEPTH = {1003: 8808, 2096: 8192, 3012: 8192, 6568: 377}
 
 #: The released schedule every wall above was measured under
 #: (`bench/spec.py:SCHEDULE`).
@@ -1376,6 +1386,13 @@ ARMS = {
         "diffusion_attention_backend": "tokamax",
         "tri_mul_env": "pallas",
     },
+    "trimul": {
+        "triangle_backend": "cueq",
+        "glu_backend": "tokamax",
+        "attention_backend": "xla",
+        "diffusion_attention_backend": "tokamax",
+        "tri_mul_env": "pallas",
+    },
 }
 
 #: Which tripwire labels must have fired, and which must not, for each arm.
@@ -1406,6 +1423,15 @@ EXPECTED = {
         "fused_labels": (
             "fused:tri_mul_pallas",
             "fused:transition_pallas",
+            "fused:tri_att_cueq",
+            "fused:glu_tokamax",
+            "fused:attention_tokamax",
+        ),
+    },
+    "trimul": {
+        "forbidden": ("fused:tri_mul_cueq", "fused:transition_pallas"),
+        "fused_labels": (
+            "fused:tri_mul_pallas",
             "fused:tri_att_cueq",
             "fused:glu_tokamax",
             "fused:attention_tokamax",
@@ -1599,7 +1625,7 @@ def check_tripwire(
         for label in spec["fused_labels"]
         if fired.get(label, 0)
     }
-    if arm in ("released", "pallas") and not hit:
+    if arm in ("released", "pallas", "trimul") and not hit:
         return "no fused dispatch point reached (family has no fused path)"
     if arm == "xla":
         return "no fused dispatch point reached, as required"
@@ -1809,7 +1835,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--kernels",
         default="released,xla",
-        help="serial arms: released, xla, or both",
+        help="serial arms, comma-separated: released, xla, pallas, trimul",
     )
     parser.add_argument(
         "--ring-kernels",
