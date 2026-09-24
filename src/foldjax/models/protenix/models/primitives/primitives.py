@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 
 from foldjax.models._cp import cp_identity, cp_mesh
-from foldjax.models._glu import gated_linear_unit
+from foldjax.models._glu import gated_linear_unit, site_backend
 
 
 class LinearParams(NamedTuple):
@@ -276,6 +276,7 @@ def _transition_block(
     *,
     glu_backend: str = "xla",
 ) -> jnp.ndarray:
+    glu_backend = site_backend(glu_backend, released="xla", width=x.shape[-1])
     if glu_backend == "pallas":
         return _pallas_transition_block(x, params)
     y = layer_norm(x, params.layer_norm)
@@ -415,6 +416,9 @@ def _transition_for_runtime(
 ) -> jnp.ndarray:
     """Apply one transition using the proven execution route for this runtime."""
 
+    # `pallas` reaches the pair and MSA transitions; a wider one (the single
+    # transition, OpenDDE's pair) keeps the released XLA path and its blocking.
+    glu_backend = site_backend(glu_backend, released="xla", width=x.shape[-1])
     if glu_backend != "xla":
         # Before the block resolution below, not after: the fused kernel is
         # the reason there is no widened intermediate to block. The blocked

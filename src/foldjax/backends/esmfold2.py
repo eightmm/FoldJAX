@@ -137,6 +137,13 @@ def _checked_glu_backend(value: object) -> str:
         raise ValueError(
             f"glu_backend must be one of {', '.join(_GLU_BACKENDS)}; got {value!r}"
         )
+    if value == "pallas":
+        # `pallas` names the pair-stack transitions, and this port has none: an
+        # accepted value that changes nothing would report a program it is not.
+        raise ValueError(
+            "glu_backend='pallas' reaches pair-stack transitions only, and "
+            "ESMFold2 has none; use xla or tokamax"
+        )
     return str(value)
 
 

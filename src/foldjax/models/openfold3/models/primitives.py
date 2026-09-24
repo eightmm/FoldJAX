@@ -16,7 +16,7 @@ import jax
 import jax.numpy as jnp
 
 from foldjax.models._cp import cp_mesh
-from foldjax.models._glu import gated_linear_unit
+from foldjax.models._glu import gated_linear_unit, site_backend
 
 
 class LinearParams(NamedTuple):
@@ -176,6 +176,7 @@ def swiglu(
     port's :func:`silu`; treat the switch as a numerics change and read it
     against the port's rerun floor. See :mod:`foldjax.models._glu`.
     """
+    glu_backend = _resolve_unit(glu_backend)
     if glu_backend != "xla":
         if cp_mesh() is not None:
             raise ValueError(
@@ -197,6 +198,11 @@ def swiglu(
             backend=glu_backend,
         )
     return silu(linear(x, params.linear_a)) * linear(x, params.linear_b)
+
+
+def _resolve_unit(glu_backend: str) -> str:
+    """A bare SwiGLU is not a plain transition: `pallas` leaves it on XLA."""
+    return site_backend(glu_backend, released="xla", width=None)
 
 
 def adaln(
@@ -222,6 +228,7 @@ def swiglu_transition(
     ``mask`` is ``[..., N]``; upstream expands it to ``[..., N, 1]`` and
     multiplies the output. A missing mask means all-ones, matching upstream.
     """
+    glu_backend = site_backend(glu_backend, released="xla", width=x.shape[-1])
     if glu_backend == "pallas":
         y = _pallas_swiglu_transition(x, params, eps=eps)
     else:

@@ -7,7 +7,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from foldjax.models._glu import gated_linear_unit
+from foldjax.models._glu import gated_linear_unit, site_backend
 from foldjax.models._stacking import stacked_or_stack
 from foldjax.models.protenix.models.primitives.attention import (
     AttentionPairBiasParams,
@@ -65,6 +65,8 @@ def conditioned_transition_block(
     """
 
     a = adaptive_layer_norm(a, s, params.adaln)
+    # Not a plain transition: `pallas` leaves it on XLA.
+    glu_backend = site_backend(glu_backend, released="xla", width=None)
     if glu_backend != "xla":
         reject_fused_glu_under_cp(glu_backend)
         hidden = gated_linear_unit(

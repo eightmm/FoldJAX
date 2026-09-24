@@ -40,7 +40,7 @@ from foldjax.models._cp import (
     pair_spec,
     shard_pair_rows,
 )
-from foldjax.models._glu import gated_linear_unit_packed
+from foldjax.models._glu import gated_linear_unit_packed, site_backend
 from foldjax.models._random import masked_prefix_draw
 from foldjax.models.esmfold2.models.atom import (
     FLOAT32_EPS,
@@ -236,6 +236,8 @@ def conditioned_transition_block(
             params[f"{dot}pre_norm.bias"],
             eps=eps,
         )
+    # Not reached by `pallas`, which runs the pair-stack transitions only.
+    glu_backend = site_backend(glu_backend, released="xla", width=None)
     if glu_backend != "xla":
         if f"{dot}lin_swish.bias" in params:
             # Upstream builds this projection `bias=False` and the released

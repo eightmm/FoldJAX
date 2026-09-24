@@ -23,6 +23,7 @@ from foldjax.models._cp import (
     shard_pair_rows,
     transpose_perm,
 )
+from foldjax.models._glu import site_backend
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives._common import sigmoid as _sigmoid
 from foldjax.models.boltz2.models.primitives.glu_backend import gated_linear_unit
@@ -138,7 +139,8 @@ def triangle_multiplication_forward(
         params["g_in"]["kernel"],
         params["p_in"]["kernel"],
         jax.nn.sigmoid,
-        backend=glu_backend,
+        # A projection gate is not a transition: `pallas` leaves it on tokamax.
+        backend=site_backend(glu_backend, released="tokamax", width=None),
     )
     projected = projected * mask[..., None]
     # Coordinate sampling amplifies the small reduction-order differences of a

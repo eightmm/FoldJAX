@@ -25,7 +25,7 @@ N = 11
 def calls(monkeypatch):
     """Interpret mode, and a count of every entry into the shared kernels."""
     monkeypatch.setattr(_pallas_pair, "INTERPRET", True)
-    counts = {"triangle_multiplication": 0, "transition": 0, "gated_linear_unit": 0}
+    counts = {"triangle_multiplication": 0, "transition": 0}
     for name in counts:
         original = getattr(_pallas_pair, name)
 
@@ -276,22 +276,110 @@ def test_openfold3_transition_pallas(calls):
 
 
 # --------------------------------------------------------------------------- #
-# The GLU-only form, through the shared vocabulary
+# Which sites `pallas` reaches
 # --------------------------------------------------------------------------- #
 
 
-def test_the_shared_glu_routes_pallas_to_the_unit_kernel(calls):
+def test_site_backend_names_the_sites():
+    from foldjax.models._glu import site_backend
+
+    assert site_backend("pallas", released="tokamax", width=128) == "pallas"
+    assert site_backend("pallas", released="tokamax", width=64) == "pallas"
+    assert site_backend("pallas", released="tokamax", width=384) == "tokamax"
+    assert site_backend("pallas", released="xla", width=None) == "xla"
+    for value in ("xla", "tokamax"):
+        assert site_backend(value, released="xla", width=128) == value
+    with pytest.raises(ValueError, match="must be one of"):
+        site_backend("triton", released="xla", width=128)
+
+
+def test_an_unresolved_glu_site_refuses_pallas():
     from foldjax.models._glu import gated_linear_unit, gated_linear_unit_packed
 
-    rng = np.random.default_rng(7)
-    x = jnp.asarray(rng.normal(size=(5, 23, C)), jnp.bfloat16)
-    wg, wv = _w(rng, C, 2 * C), _w(rng, C, 2 * C)
-    out = gated_linear_unit(x, wg, wv, jax.nn.sigmoid, backend="pallas")
-    expected = gated_linear_unit(x, wg, wv, jax.nn.sigmoid, backend="xla")
-    assert out.shape == expected.shape and out.dtype == expected.dtype
-    assert _rel(out, expected) < 3e-2
-    packed = jnp.concatenate([wg, wv], axis=-1)
-    out = gated_linear_unit_packed(x, packed, jax.nn.silu, backend="pallas")
-    expected = gated_linear_unit_packed(x, packed, jax.nn.silu, backend="xla")
-    assert _rel(out, expected) < 3e-2
-    assert calls["gated_linear_unit"] == 2
+    x = jnp.ones((3, C), jnp.bfloat16)
+    w = jnp.ones((C, C), jnp.bfloat16)
+    with pytest.raises(ValueError, match="site_backend"):
+        gated_linear_unit(x, w, w, jax.nn.silu, backend="pallas")
+    with pytest.raises(ValueError, match="site_backend"):
+        gated_linear_unit_packed(
+            x, jnp.ones((C, 2 * C), jnp.bfloat16), jax.nn.silu, backend="pallas"
+        )
+
+
+def test_protenix_wide_and_conditioned_transitions_stay_on_xla(calls):
+    """A 256-wide transition and a conditioned one run their XLA arithmetic."""
+    from foldjax.models.protenix.models.primitives.primitives import (
+        LayerNormParams,
+        TransitionParams,
+        _transition_block,
+        _transition_for_runtime,
+    )
+
+    rng = np.random.default_rng(8)
+    wide = 256
+    x = jnp.asarray(rng.normal(size=(1, N, N, wide)), jnp.bfloat16)
+    params = TransitionParams(
+        layer_norm=LayerNormParams(*_affine(rng, wide)),
+        linear_a=_torch_linear(rng, wide, 2 * wide),
+        linear_b=_torch_linear(rng, wide, 2 * wide),
+        linear_out=_torch_linear(rng, 2 * wide, wide),
+    )
+    identity = ("serial", 1, (1, 1), ())
+    out = _transition_for_runtime(
+        x, params, chunk_size=None, runtime_identity=identity, glu_backend="pallas"
+    )
+    expected = _transition_for_runtime(
+        x, params, chunk_size=None, runtime_identity=identity, glu_backend="xla"
+    )
+    np.testing.assert_array_equal(np.asarray(out), np.asarray(expected))
+    np.testing.assert_array_equal(
+        np.asarray(_transition_block(x, params, glu_backend="pallas")),
+        np.asarray(_transition_block(x, params, glu_backend="xla")),
+    )
+    assert calls["transition"] == 0
+
+
+def test_openfold3_bare_swiglu_stays_on_xla(calls):
+    from foldjax.models.openfold3.models.primitives import SwiGLUParams, swiglu
+
+    rng = np.random.default_rng(9)
+    x = jnp.asarray(rng.normal(size=(5, C)), jnp.bfloat16)
+    params = SwiGLUParams(_of3_linear(rng, C, 2 * C), _of3_linear(rng, C, 2 * C))
+    np.testing.assert_array_equal(
+        np.asarray(swiglu(x, params, glu_backend="pallas")),
+        np.asarray(swiglu(x, params, glu_backend="xla")),
+    )
+    assert calls["transition"] == 0
+
+
+def test_boltz2_single_transition_keeps_tokamax(monkeypatch):
+    """384 wide under `pallas`: the released tokamax GLU, not the fused kernel."""
+    from foldjax.models.boltz2.models.primitives import transition as module
+
+    seen = []
+    monkeypatch.setattr(
+        module,
+        "gated_linear_unit",
+        lambda x, w1, w2, act, backend: (
+            seen.append(backend) or jnp.zeros(x.shape[:-1] + (w1.shape[-1],), x.dtype)
+        ),
+    )
+    rng = np.random.default_rng(10)
+    wide = 384
+    params = {
+        "norm": dict(zip(("scale", "bias"), _affine(rng, wide), strict=True)),
+        "fc1": {"kernel": _w(rng, wide, 2 * wide)},
+        "fc2": {"kernel": _w(rng, wide, 2 * wide)},
+        "fc3": {"kernel": _w(rng, 2 * wide, wide)},
+    }
+    x = jnp.asarray(rng.normal(size=(1, N, wide)), jnp.bfloat16)
+    module.transition_forward(params, x, glu_backend="pallas")
+    assert seen == ["tokamax"]
+
+
+def test_esmfold2_refuses_pallas_it_has_no_pair_stack():
+    from foldjax.backends.esmfold2 import _checked_glu_backend
+
+    with pytest.raises(ValueError, match="ESMFold2 has none"):
+        _checked_glu_backend("pallas")
+    assert _checked_glu_backend("tokamax") == "tokamax"

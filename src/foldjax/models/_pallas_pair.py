@@ -14,9 +14,13 @@ projection nor the gate is ever written in pixel-major form.
 
 The transition is one kernel. LayerNorm, ``silu(x W1) * (x W2)`` and ``W3`` run
 over one block of rows, with the hidden width processed in slices, so the
-widened ``[rows, F]`` form never reaches memory. GLUs that are not a plain
-transition (conditioned transitions, a projection gate) run the same slice loop
-without the norm and the output projection.
+widened ``[rows, F]`` form never reaches memory. It is used only where it was
+measured to win: plain transitions no wider than :data:`TRANSITION_MAX_WIDTH`,
+which are the pair and MSA transitions (see :func:`foldjax.models._glu.site_backend`).
+A unit-only form for the other GLU sites lost on the card -- 7x tokamax on
+Protenix's float32 diffusion GLU, 1.1-1.2x at the 384-wide single transition
+(``foldjax-bench/kernel-shootout-20260924/out/slurm-2395.out``) -- and was
+removed.
 
 Measured on one RTX PRO 6000 Blackwell (sm_120) against the released paths at
 c_z 128, bf16 (``foldjax-bench/kernel-shootout-20260924``, job 2386). Triangle
@@ -40,7 +44,6 @@ is not a supported execution path.
 from __future__ import annotations
 
 import functools
-from collections.abc import Callable
 
 import jax
 import jax.numpy as jnp
@@ -59,6 +62,11 @@ INTERPRET = False
 _MUL_ROWS, _MUL_WARPS = 32, 4
 _TRANSITION_ROWS, _TRANSITION_SLICE, _TRANSITION_WARPS = 64, 64, 4
 _WIDE = 128
+
+#: The widest transition the fused kernel runs. Measured faster at c_z 128
+#: (pair) and c_m 64 (MSA); slower than XLA at 384 (OpenDDE's pair, every
+#: port's single transition).
+TRANSITION_MAX_WIDTH = 128
 
 
 def _require_gpu(what: str, instead: str) -> None:
@@ -460,22 +468,6 @@ def _transition_kernel(
         )
 
 
-def _glu_kernel(
-    x_ref, w1_ref, w2_ref, o_ref, *, total, rows, fc, kc, activation, precision
-):
-    from jax.experimental import pallas as pl
-    from jax.experimental.pallas import triton as plt
-
-    valid = (pl.program_id(0) * rows + jnp.arange(rows)) < total
-    dt = w1_ref.dtype
-    xs = [s.astype(dt) for s in _load_slices(x_ref, valid, x_ref.shape[-1], kc)]
-    for f0 in range(0, w1_ref.shape[1], fc):
-        g = _glu_slices(xs, w1_ref, w2_ref, f0, fc, kc, activation, dt, precision)
-        plt.store(
-            o_ref.at[:, pl.ds(f0, fc)], g.astype(o_ref.dtype), mask=valid[:, None]
-        )
-
-
 def _row_config(width: int) -> tuple[int, int]:
     """Rows per program and warps: wider operands take fewer rows, more warps."""
     if width <= _WIDE:
@@ -550,58 +542,3 @@ def transition(
         x, f32(norm[0]), f32(norm[1]), w_gate, w_value, w_out, eps=float(eps)
     )
     return out if out_dtype is None else out.astype(out_dtype)
-
-
-@functools.partial(jax.jit, static_argnames=("activation",))
-def _glu(x, w1, w2, *, activation):
-    from jax.experimental import pallas as pl
-
-    k = x.shape[-1]
-    flat = x.reshape(-1, k)
-    total = flat.shape[0]
-    f = w1.shape[1]
-    kc = _slice_width(k, dtype=w1.dtype)
-    fc = min(_TRANSITION_SLICE, _slice_width(f, dtype=w1.dtype))
-    rows, warps = _row_config(k)
-    out = _pallas_call(
-        functools.partial(
-            _glu_kernel,
-            total=total,
-            rows=rows,
-            fc=fc,
-            kc=kc,
-            activation=activation,
-            precision=_precision(w1.dtype),
-        ),
-        num_warps=warps,
-        grid=(pl.cdiv(total, rows),),
-        in_specs=[
-            pl.BlockSpec((rows, k), lambda i: (i, 0)),
-            _full(w1.shape),
-            _full(w2.shape),
-        ],
-        out_specs=pl.BlockSpec((rows, f), lambda i: (i, 0)),
-        out_shape=jax.ShapeDtypeStruct((total, f), x.dtype),
-    )(flat, w1, w2)
-    return out.reshape(*x.shape[:-1], f)
-
-
-def gated_linear_unit(
-    x: jnp.ndarray,
-    w_gate: jnp.ndarray,
-    w_value: jnp.ndarray,
-    activation: Callable[[jax.Array], jax.Array],
-) -> jnp.ndarray:
-    """``activation(x W_gate) * (x W_value)`` without writing either branch.
-
-    The GLU-only form, for call sites that are not a plain transition. The caller
-    narrows ``x`` to the weights' dtype, as :mod:`foldjax.models._glu` does for
-    every backend.
-    """
-
-    _require_gpu(
-        "glu_backend='pallas'",
-        "pass the option glu_backend=xla (CLI: --option glu_backend=xla) to run "
-        "the XLA unit here",
-    )
-    return _glu(x, w_gate, w_value, activation=activation)

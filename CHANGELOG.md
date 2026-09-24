@@ -19,10 +19,15 @@ unless it says so here, in its own paragraph.
     `PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=pallas` (also OpenDDE, which runs
     Protenix's modules) or `OPENFOLD3_TRIANGLE_BACKEND=cueq-pallas`, where
     cuEquivariance attention is kept;
-  - the transitions through a third `glu_backend` value, `pallas`, on every port
-    that has the option. A plain transition (LayerNorm, SwiGLU, bias-free output
-    projection) runs as one kernel, and a GLU that is not one runs the same
-    kernel's unit-only form.
+  - the pair-stack transitions through a third `glu_backend` value, `pallas`
+    (Boltz-2, Protenix, OpenDDE, OpenFold3). It reaches the plain transitions
+    (LayerNorm, SwiGLU, bias-free output projection) no wider than 128 channels:
+    the pair transitions at c_z 128, the MSA transitions and the template pair
+    transitions. Each runs as one kernel. Every other GLU keeps the port's
+    released backend: the single transitions, the diffusion conditioned
+    transitions and OpenDDE's 384-wide pair. Those sites measured slower under a
+    Pallas kernel, 7x tokamax on Protenix's float32 diffusion GLU. ESMFold2 has
+    no site the value reaches, so it refuses the value.
 
   Nothing changes unless asked. Measured per call on one RTX PRO 6000 Blackwell
   at c_z 128, bf16, 1,003-4,888 tokens (`foldjax-bench/kernel-shootout-20260924`):
@@ -31,8 +36,11 @@ unless it says so here, in its own paragraph.
     the XLA transition;
   - both at the same max-abs error against a float32 reference and a lower peak.
 
-  At OpenDDE's c_z 384 the multiplication only ties cuEquivariance and the
-  transition is slower than XLA. Whole predictions have not been measured yet.
+  At OpenDDE's c_z 384 the multiplication only ties cuEquivariance. Whole
+  predictions (x43, before the transition value was scoped):
+  - Boltz-2 at 1,003 tokens: 73.8 -> 54.2 s, with deposited structures
+    equivalent, but peak 8,454 -> 11,165 MiB (the cause is not yet known);
+  - OpenFold3 at 1,003 tokens: 75.1 -> 69.8 s.
   Off a GPU both values refuse to run and say what to pass instead.
 
 - **Protenix and OpenFold3 can gather their 2-D triangle attention too**, with

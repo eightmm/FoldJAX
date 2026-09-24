@@ -9,6 +9,7 @@ import jax.numpy as jnp
 from jax.sharding import PartitionSpec
 
 from foldjax.models._cp import cp_grid, cp_mesh, pair_spec, shard_pair_rows
+from foldjax.models._glu import site_backend
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives.glu_backend import (
     gated_linear_unit,
@@ -92,6 +93,9 @@ def transition_forward(
         jnp.float16,
     ):
         compute_dtype = params["fc1"]["kernel"].dtype
+    # `pallas` reaches the pair and MSA transitions only; the single transition
+    # keeps the released tokamax GLU (`foldjax.models._glu.site_backend`).
+    glu_backend = site_backend(glu_backend, released="tokamax", width=x.shape[-1])
     mesh = cp_mesh()
     if mesh is not None and cp_pair and x.ndim == 4:
         return _cp_pair_transition(

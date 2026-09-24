@@ -131,24 +131,6 @@ def test_transition_matches_float32(interpret, c, hidden):
     assert _rel(out, expected) < 2e-2
 
 
-@pytest.mark.parametrize("activation", [jax.nn.silu, jax.nn.sigmoid])
-@pytest.mark.parametrize(
-    "dtype, k",
-    # float32 weights contract in 64-wide slices; 768 is a diffusion GLU's width
-    [(jnp.bfloat16, 64), (jnp.float32, 768)],
-)
-def test_gated_linear_unit_matches_float32(interpret, activation, dtype, k):
-    rng = np.random.default_rng(3)
-    x = jnp.asarray(rng.normal(size=(77, k)), dtype)
-    w1 = jnp.asarray(rng.normal(size=(k, 96)) / np.sqrt(k), dtype)
-    w2 = jnp.asarray(rng.normal(size=(k, 96)) / np.sqrt(k), dtype)
-    out = _pallas_pair.gated_linear_unit(x, w1, w2, activation)
-    f = lambda t: jnp.asarray(t, jnp.float32)  # noqa: E731
-    expected = activation(f(x) @ f(w1)) * (f(x) @ f(w2))
-    assert out.shape == (77, 96) and out.dtype == x.dtype
-    assert _rel(out, expected) < 2e-2
-
-
 @pytest.mark.skipif(jax.default_backend() == "gpu", reason="checks the off-GPU refusal")
 def test_off_a_gpu_the_kernels_refuse_and_name_the_alternative():
     x = jnp.ones((1, 4, 4, 32), jnp.bfloat16)
@@ -156,8 +138,6 @@ def test_off_a_gpu_the_kernels_refuse_and_name_the_alternative():
     norm = (jnp.ones(32), jnp.zeros(32))
     with pytest.raises(ValueError, match="glu_backend=xla"):
         _pallas_pair.transition(x, norm, w, w, w, eps=1e-5)
-    with pytest.raises(ValueError, match="glu_backend=xla"):
-        _pallas_pair.gated_linear_unit(x, w, w, jax.nn.silu)
     p = _weights(np.random.default_rng(0), 32, 32)
     with pytest.raises(ValueError, match="'cueq' or 'xla'"):
         _pallas_pair.triangle_multiplication(
