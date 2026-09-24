@@ -27,9 +27,13 @@ explicitly instead of silently crossing into a PyTorch runtime.
 
 from __future__ import annotations
 
+import os
 import pickle
+import struct
 import zipfile
+import zlib
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from operator import index
 from pathlib import Path
 from typing import Any
@@ -81,6 +85,9 @@ class _Storage:
 
     def __init__(self, array: np.ndarray) -> None:
         self.array = array
+        # Whether a tensor already owns ``array`` itself (see
+        # `_rebuild_tensor_v2`); every later view of it is copied.
+        self.handed_out = False
 
 
 def _checkpoint_int(value: Any, *, field: str, minimum: int = 0) -> int:
@@ -123,7 +130,8 @@ def _rebuild_tensor_v2(
     """``torch._utils._rebuild_tensor_v2``, on a NumPy buffer.
 
     The stride walk is copied out immediately so the result owns its memory
-    rather than aliasing the archive read.
+    rather than aliasing the archive read -- except for the first tensor that
+    is exactly its whole, writable storage, which takes the buffer itself.
     """
     if not isinstance(storage, _Storage):
         raise pickle.UnpicklingError("tensor references an invalid storage object")
@@ -156,6 +164,18 @@ def _rebuild_tensor_v2(
                 f"storage_size={storage_size}"
             )
 
+    if (
+        not storage.handed_out
+        and storage.array.flags.writeable
+        and offset == 0
+        and storage_size == int(np.prod(shape, dtype=np.int64))
+        and strides == _contiguous_strides(shape)
+    ):
+        # The one tensor that is its whole storage, in order: the prefetched
+        # buffer already is the owning copy the stride walk would make, and no
+        # other tensor will be handed the same memory.
+        storage.handed_out = True
+        return storage.array.reshape(shape)
     base = storage.array[offset:]
     itemsize = base.dtype.itemsize
     strided = np.lib.stride_tricks.as_strided(
@@ -165,6 +185,14 @@ def _rebuild_tensor_v2(
         writeable=False,
     )
     return np.array(strided)
+
+
+def _contiguous_strides(shape: tuple[int, ...]) -> tuple[int, ...]:
+    strides, step = [], 1
+    for dimension in reversed(shape):
+        strides.append(step)
+        step *= dimension
+    return tuple(reversed(strides))
 
 
 def _rebuild_parameter(data: np.ndarray, requires_grad: bool = False, *rest: Any):
@@ -181,10 +209,17 @@ _CONSTRUCTORS: dict[tuple[str, str], Any] = {
 
 
 class _Unpickler(pickle.Unpickler):
-    def __init__(self, file: Any, archive: zipfile.ZipFile, prefix: str) -> None:
+    def __init__(
+        self,
+        file: Any,
+        archive: zipfile.ZipFile,
+        prefix: str,
+        prefetched: dict[str, np.ndarray] | None = None,
+    ) -> None:
         super().__init__(file)
         self._archive = archive
         self._prefix = prefix
+        self._prefetched = {} if prefetched is None else prefetched
         # torch.save writes multiple tensor views against one storage record.
         # Re-reading a large storage for every view causes extreme allocator
         # churn (ESM-2 references each ~150 MiB layer storage 16 times).  Keep
@@ -250,7 +285,9 @@ class _Unpickler(pickle.Unpickler):
                     "inconsistent dtype or size"
                 )
             return storage
-        raw = self._archive.read(member)
+        raw = self._prefetched.pop(member, None)
+        if raw is None:
+            raw = self._archive.read(member)
         array = np.frombuffer(raw, dtype=dtype, count=numel)
         storage = _Storage(array)
         self._storage_cache[member] = (dtype, numel, storage)
@@ -271,5 +308,78 @@ def load(path: str | Path) -> Any:
                 f"{path} has multiple data.pkl records: {pickles}"
             )
         prefix = pickles[0].rsplit("/", 1)[0]
+        prefetched = _prefetch_stored_members(path, archive, f"{prefix}/data/")
         with archive.open(pickles[0]) as handle:
-            return _Unpickler(handle, archive, prefix).load()
+            return _Unpickler(handle, archive, prefix, prefetched).load()
+
+
+#: Members read by one thread before the pickle needs them.
+_PREFETCH_MAX_WORKERS = 16
+_LOCAL_HEADER = struct.Struct("<4s2B4HL2L2H")
+
+
+def _prefetch_stored_members(
+    path: Path, archive: zipfile.ZipFile, directory: str
+) -> dict[str, np.ndarray]:
+    """Read every uncompressed tensor buffer at once, CRC-checked, in parallel.
+
+    ``ZipFile.read`` copies each member through its buffered reader and then
+    checks its CRC, one member at a time: 2.6 s of OpenFold3's 4.2 s archive
+    load. The same bytes are read here with positioned reads into owned,
+    writable arrays and checked against the same central-directory CRC, the
+    way ``zipfile`` would -- a mismatch raises ``BadZipFile``. A member this
+    cannot locate exactly (compressed, encrypted, or a local header that does
+    not name it) is left to ``ZipFile.read``.
+    """
+    size = path.stat().st_size
+    wanted = []
+    for info in archive.infolist():
+        if (
+            info.filename.startswith(directory)
+            and info.compress_type == zipfile.ZIP_STORED
+            and not info.flag_bits & 0x1
+            and info.compress_size == info.file_size
+        ):
+            wanted.append(info)
+    if not wanted:
+        return {}
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        located = []
+        for info in wanted:
+            header = os.pread(fd, _LOCAL_HEADER.size, info.header_offset)
+            if len(header) != _LOCAL_HEADER.size:
+                continue
+            fields = _LOCAL_HEADER.unpack(header)
+            name_length, extra_length = fields[10], fields[11]
+            if fields[0] != zipfile.stringFileHeader:
+                continue
+            encoding = "utf-8" if info.flag_bits & 0x800 else "cp437"
+            name = info.orig_filename.encode(encoding)
+            name_at = info.header_offset + _LOCAL_HEADER.size
+            if os.pread(fd, name_length, name_at) != name:
+                continue
+            start = name_at + name_length + extra_length
+            if start + info.file_size > size:
+                continue
+            located.append((info, start))
+
+        def read(item: tuple[zipfile.ZipInfo, int]) -> tuple[str, np.ndarray]:
+            info, start = item
+            buffer = np.empty(info.file_size, np.uint8)
+            view, done = memoryview(buffer), 0
+            while done < info.file_size:
+                count = os.preadv(fd, [view[done:]], start + done)
+                if count <= 0:
+                    raise zipfile.BadZipFile(f"truncated member {info.filename!r}")
+                done += count
+            if zlib.crc32(buffer) != info.CRC:
+                raise zipfile.BadZipFile(f"Bad CRC-32 for file {info.filename!r}")
+            return info.filename, buffer
+
+        located.sort(key=lambda item: -item[0].file_size)
+        workers = max(1, min(len(os.sched_getaffinity(0)), _PREFETCH_MAX_WORKERS))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            return dict(pool.map(read, located))
+    finally:
+        os.close(fd)
