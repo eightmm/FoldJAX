@@ -205,12 +205,67 @@ def cueq_attention_core(
         precision = triangle_attention_precision()
     cuex = load_cueq()
     lead, arguments = cueq_attention_arguments(q, k, v, triangle_bias, mask_bias)
+    queries = arguments["q"].shape[-2]
+    arguments = align_attention_arguments(arguments)
     output, _, _ = cuex.triangle_attention(
         **arguments,
         scale=scale,
         precision=precision,
     )
+    output = output[..., :queries, :]
     return output.reshape((*lead, *output.shape[-4:]))
+
+
+#: The attended extents cuEquivariance's half-precision triangle attention is
+#: fast at. Measured on the installed wheel (``cuequivariance_jax 0.11.1``, RTX
+#: PRO 6000 Blackwell, bf16, 4 heads x 32): an extent that is not a multiple of
+#: 8 takes a path 1.7x slower at 2,100, 2.2x at 3,012 and 6-8x at 4,100 than
+#: its aligned neighbours, while 16- and 32-alignment buy nothing over 8
+#: (``foldjax-bench/align-20260924``). Float32 operands are not affected and
+#: are left alone.
+ATTENTION_ALIGNMENT = 8
+
+
+def align_attention_arguments(
+    arguments: dict[str, jnp.ndarray],
+) -> dict[str, jnp.ndarray]:
+    """Pad the query and key extents of half-precision operands to the alignment.
+
+    Padded keys are masked invalid, so they never enter a softmax; padded query
+    rows are computed and dropped by the caller, which slices the output back
+    to the original query extent. The aligned kernel is the one an aligned
+    input already runs -- 2,096 or 4,096 tokens take it unpadded -- so this
+    changes which of the wheel's two paths an unaligned input takes, not the
+    arithmetic contract. Measured at 1,003-4,100 with DEFAULT, HIGH and
+    HIGHEST: valid rows land as far from an f32 reference as an aligned
+    input's do (0.031-0.040 on outputs of magnitude ~3, against 0.008-0.016 on
+    the unaligned path), and on the wheel's reference body, which has one
+    path, they are bit for bit the unpadded result. A row with no valid key
+    follows the kernel's own convention on either path and is not preserved
+    across them.
+    """
+
+    if jnp.dtype(arguments["q"].dtype) not in (
+        jnp.dtype(jnp.bfloat16),
+        jnp.dtype(jnp.float16),
+    ):
+        return arguments
+
+    def pad(array: jnp.ndarray, axes: tuple[int, ...], value) -> jnp.ndarray:
+        widths = [(0, 0)] * array.ndim
+        for axis in axes:
+            widths[axis] = (0, -array.shape[axis] % ATTENTION_ALIGNMENT)
+        if not any(extra for _, extra in widths):
+            return array
+        return jnp.pad(array, widths, constant_values=value)
+
+    return {
+        "q": pad(arguments["q"], (-2,), 0),
+        "k": pad(arguments["k"], (-2,), 0),
+        "v": pad(arguments["v"], (-2,), 0),
+        "bias": pad(arguments["bias"], (-2, -1), 0),
+        "mask": pad(arguments["mask"], (-1,), False),
+    }
 
 
 #: Why the fused triangle multiplication cannot always run, in one place.

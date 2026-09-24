@@ -138,7 +138,12 @@ def test_cueq_attention_maps_mask_and_returns_primary_output(monkeypatch) -> Non
         precision=None,
     )
 
-    assert output is expected
+    # The bf16 extent of 3 is padded to 8 on the way in (the padded keys
+    # invalid) and the primary output is sliced back to it.
+    assert jnp.array_equal(output, expected)
+    assert output.shape == expected.shape
     assert captured["scale"] == 0.5
     assert captured["mask"].dtype == jnp.bool_
-    assert jnp.array_equal(captured["mask"], mask_bias == 0)
+    assert captured["q"].shape[-2] == captured["mask"].shape[-1] == 8
+    assert jnp.array_equal(captured["mask"][..., :3], mask_bias == 0)
+    assert not captured["mask"][..., 3:].any()
