@@ -420,7 +420,7 @@ def msa_layer_forward(
     # two call sites below are unchanged.
     transition = _msa_transition_grid if _on_msa_grid() else transition_forward
     if transition_dtype is not None:
-        m = transition(
+        m = m + transition(
             params["msa_transition"],
             m,
             eps=eps,
@@ -437,17 +437,14 @@ def msa_layer_forward(
             # `bf16[8585216, 64]` x8, 8.4 GiB, half the per-device peak of the
             # 2,096-token 2-D program before the depth axis was split.
             cp_msa=True,
-            # `m + transition(m)`, formed inside the kernel under `pallas`.
-            residual=True,
         )
     else:
-        m = transition(
+        m = m + transition(
             params["msa_transition"],
             m,
             eps=eps,
             glu_backend=glu_backend,
             cp_msa=True,
-            residual=True,
         )
     # Above 384 tokens OuterProductMean returns FP32 (it adds the original
     # FP32 bias outside its AMP matmuls), so this add is the one promoter on
@@ -1523,7 +1520,8 @@ def pairformer_no_seq_layer_forward(
         pair_residual_dtype,
     )
     z = _residual_cast(
-        transition_forward(
+        z
+        + transition_forward(
             params["transition_z"],
             z,
             chunk_size=transition_hidden_chunk,
@@ -1536,8 +1534,6 @@ def pairformer_no_seq_layer_forward(
             # `z` is the pair tensor the active layout shards, so the row
             # block above is taken inside the shard instead of being dropped.
             cp_pair=True,
-            # `z + transition(z)`, formed inside the kernel under `pallas`.
-            residual=True,
         ),
         pair_residual_dtype,
     )

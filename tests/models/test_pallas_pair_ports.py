@@ -383,32 +383,3 @@ def test_esmfold2_refuses_pallas_it_has_no_pair_stack():
     with pytest.raises(ValueError, match="ESMFold2 has none"):
         _checked_glu_backend("pallas")
     assert _checked_glu_backend("tokamax") == "tokamax"
-
-
-@pytest.mark.parametrize("x_dtype", [jnp.float32, jnp.bfloat16])
-def test_boltz2_residual_transition_is_the_unfused_add(calls, x_dtype):
-    """`residual=True` under `pallas` runs one kernel and equals `x + update` bit
-    for bit: the float32 MSA with a bfloat16 update, and the bfloat16 pair."""
-    from foldjax.models.boltz2.models.primitives.transition import transition_forward
-
-    rng = np.random.default_rng(12)
-    x = jnp.asarray(rng.normal(size=(1, N, N, C)), x_dtype)
-    params = {
-        "norm": dict(zip(("scale", "bias"), _affine(rng, C), strict=True)),
-        "fc1": {"kernel": _w(rng, C, 4 * C)},
-        "fc2": {"kernel": _w(rng, C, 4 * C)},
-        "fc3": {"kernel": _w(rng, 4 * C, C)},
-    }
-    kwargs = dict(glu_backend="pallas", native_amp_norm=True, cp_msa=True)
-    fused = transition_forward(params, x, residual=True, **kwargs)
-    assert calls["transition"] == 1
-    unfused = x + transition_forward(params, x, **kwargs)
-    assert fused.dtype == unfused.dtype
-    np.testing.assert_array_equal(
-        np.asarray(fused, np.float32), np.asarray(unfused, np.float32)
-    )
-    xla = transition_forward(params, x, residual=True, glu_backend="xla")
-    np.testing.assert_array_equal(
-        np.asarray(xla, np.float32),
-        np.asarray(x + transition_forward(params, x, glu_backend="xla"), np.float32),
-    )

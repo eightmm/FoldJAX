@@ -53,17 +53,8 @@ def transition_forward(
     native_amp_norm: bool = False,
     cp_pair: bool = False,
     cp_msa: bool = False,
-    residual: bool = False,
 ) -> jnp.ndarray:
     """Run a Boltz Transition block using mapped PyTorch parameters.
-
-    ``residual=True`` returns ``x + transition(x)``, the form every caller
-    adds, so the Pallas kernel can write the sum itself. Its output is a
-    custom call's and cannot fuse into the add, so returned alone it is a
-    whole buffer beside the residual and the sum; the released row-chunked
-    path never forms it (+1,138 MiB temp in the MSA layer at 1,003 tokens x
-    8,808 rows, job 2424). Every other backend returns the unfused
-    ``x + transition(x)`` it always did.
 
     ``chunk_size`` chunks the hidden (SwiGLU) dimension; the fc2 accumulation
     keeps it bit-exact. ``row_chunk_size`` is an orthogonal outer-row chunk for
@@ -105,31 +96,6 @@ def transition_forward(
     # `pallas` reaches the pair and MSA transitions only; the single transition
     # keeps the released tokamax GLU (`foldjax.models._glu.site_backend`).
     glu_backend = site_backend(glu_backend, released="tokamax", width=x.shape[-1])
-    if residual:
-        if glu_backend == "pallas" and cp_mesh() is None:
-            return _transition_rows(
-                params,
-                x,
-                chunk_size=chunk_size,
-                eps=eps,
-                row_chunk_size=0,
-                glu_backend=glu_backend,
-                compute_dtype=compute_dtype,
-                native_amp_norm=native_amp_norm,
-                residual=True,
-            )
-        return x + transition_forward(
-            params,
-            x,
-            chunk_size=chunk_size,
-            eps=eps,
-            row_chunk_size=row_chunk_size,
-            glu_backend=glu_backend,
-            compute_dtype=compute_dtype,
-            native_amp_norm=native_amp_norm,
-            cp_pair=cp_pair,
-            cp_msa=cp_msa,
-        )
     mesh = cp_mesh()
     if mesh is not None and cp_pair and x.ndim == 4:
         return _cp_pair_transition(
@@ -275,12 +241,8 @@ def _transition_rows(
     glu_backend: str,
     compute_dtype: jnp.dtype | None,
     native_amp_norm: bool,
-    residual: bool = False,
 ) -> jnp.ndarray:
     """The transition itself, over whatever rows of axis 1 it is handed.
-
-    ``residual`` is honoured on the Pallas branch only; ``transition_forward``
-    never passes it anywhere else.
 
     ``compute_dtype`` and ``row_chunk_size`` are already resolved, and nothing
     here reads the sharding: the caller decides whether the row block runs on
@@ -328,7 +290,6 @@ def _transition_rows(
             *kernels,
             eps=eps,
             out_dtype=compute_dtype if compute_dtype is not None else x.dtype,
-            residual=residual,
         )
     if compute_dtype is not None:
         # CUDA autocast keeps LayerNorm (including affine) in FP32, then
