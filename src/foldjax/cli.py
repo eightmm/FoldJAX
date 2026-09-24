@@ -1155,6 +1155,29 @@ def _apply_mem_fraction(requested: float | None) -> None:
         oom.set_mem_fraction(oom.PREDICT_MEM_FRACTION)
 
 
+#: Collector thresholds for a process that owns one prediction run.
+PREDICT_GC_THRESHOLD = (100_000, 50, 100)
+
+
+def _apply_gc_threshold() -> None:
+    """Collect cycles rarely in a prediction process, and only there.
+
+    CPython's default (700, 10, 10) runs a full collection every 70,000 net
+    allocations, and tracing a model graph allocates millions of short-lived
+    objects while tens of millions of long-lived ones (jaxprs, MLIR, the
+    parameter trees) sit in the oldest generation: each full pass walked
+    them for ~0.3 s, 10-11 times per warm 254-token process -- 3.3-4.3 s on
+    Boltz-2, Protenix and OpenFold3 (fixed-cost job 2333). These thresholds
+    still collect cycles, only rarely, and left peak RSS where it was.
+
+    Same restriction as `_apply_mem_fraction`: the collector is process-wide,
+    so a library that retuned it on import would be deciding for its host.
+    """
+    import gc
+
+    gc.set_threshold(*PREDICT_GC_THRESHOLD)
+
+
 def _requested_cp_devices(args: argparse.Namespace) -> int:
     """How many devices this invocation asked context parallelism for.
 
@@ -1262,6 +1285,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         _apply_mem_fraction(args.mem_fraction)
         _apply_rendezvous_timeout(args)
+        _apply_gc_threshold()
     elif args.command == "plan":
         _validate_mem_fraction(args.mem_fraction)
     if args.command == "models":

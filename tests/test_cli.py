@@ -1251,3 +1251,30 @@ def test_discovery_commands_do_not_bound_anything(monkeypatch, capsys) -> None:
     assert main(["models"]) == 0
     capsys.readouterr()
     assert os.environ["XLA_FLAGS"] == ""
+
+
+@pytest.fixture
+def gc_threshold():
+    import gc
+
+    previous = gc.get_threshold()
+    gc.set_threshold(700, 10, 10)
+    yield gc
+    gc.set_threshold(*previous)
+
+
+def test_predict_raises_the_collector_thresholds(
+    tmp_path: Path, monkeypatch, capsys, gc_threshold
+) -> None:
+    from foldjax import cli
+
+    _reached_predict(tmp_path, monkeypatch)
+    capsys.readouterr()
+    assert gc_threshold.get_threshold() == cli.PREDICT_GC_THRESHOLD
+    assert gc_threshold.isenabled()
+
+
+def test_discovery_commands_leave_the_collector_alone(capsys, gc_threshold) -> None:
+    assert main(["models"]) == 0
+    capsys.readouterr()
+    assert gc_threshold.get_threshold() == (700, 10, 10)
