@@ -30,13 +30,18 @@ def test_private_cuda_norm_promotes_affine_before_final_fma(affine_dtype):
     affine = [
         e for e in kernel.eqns if e.params.get("asm") == "fma.rn.f32 $0, $1, $2, $3;"
     ][-1]
-    assert all(v.aval.shape == (256,) for v in affine.invars)
+    # One row per program block here: (rows_per_program, width).
+    assert all(v.aval.shape == (1, 256) for v in affine.invars)
     assert all(v.aval.dtype == jnp.float32 for v in affine.invars)
     assert affine.outvars[0].aval.dtype == jnp.float32
     if affine_dtype != jnp.float32:
         producers = {v: e for e in kernel.eqns for v in e.outvars}
         for operand in (affine.invars[0], affine.invars[2]):
             convert = producers[operand]
+            # The (width,) affine is broadcast over the program's rows after
+            # it is widened.
+            if convert.primitive.name == "broadcast_in_dim":
+                convert = producers[convert.invars[0]]
             assert convert.primitive.name == "convert_element_type"
             assert convert.invars[0].aval.dtype == affine_dtype
             assert convert.params["new_dtype"] == jnp.float32

@@ -139,22 +139,41 @@ def _cuda_layer_norm_shared(x, scale, bias, *, eps, out_dtype):
     return _cuda_layer_norm_body(x, scale, bias, eps, out_dtype)
 
 
-def _cuda_layer_norm_body(x, scale, bias, eps, out_dtype):
+#: Elements one kernel program normalises: rows are blocked so each program
+#: covers ``_NORM_BLOCK_ELEMENTS // width`` of them (a power of two, at most the
+#: row count rounded up). The per-row instruction sequence does not depend on
+#: it; see `_cuda_layer_norm_body`.
+_NORM_BLOCK_ELEMENTS = 4096
+
+
+def _norm_row_block(rows: int, width: int) -> int:
+    block = max(1, _NORM_BLOCK_ELEMENTS // width)
+    return min(block, 1 << max(0, rows - 1).bit_length())
+
+
+def _cuda_layer_norm_body(x, scale, bias, eps, out_dtype, block=None):
+    """One ``pallas_call`` normalising ``block`` rows per program.
+
+    Every instruction is element-wise inline PTX (``pack=1``) and the Welford
+    combine tree runs along the row's own lanes, so adding a leading row axis
+    gives each row exactly the instruction sequence the one-row program ran:
+    the same operands, in the same order, to the same single rounding. Rows
+    past the end of the last block are loaded as zeros and never stored, which
+    changes no stored row. One row per program ran at ~10% of HBM bandwidth
+    (ESMFold2 at 1,003 tokens: 25% of all kernel time).
+    """
     from jax.experimental import pallas as pl
     from jax.experimental.pallas import triton as pt
 
     width = x.shape[-1]
     shape = x.shape
     rows = math.prod(shape[:-1])
+    if block is None:
+        block = _norm_row_block(rows, width)
 
     def kernel(x_ref, scale_ref, bias_ref, eps_ref, out_ref, mean_ref, rstd_ref):
         def op(instruction, *args):
             args = jnp.broadcast_arrays(*[jnp.asarray(a, jnp.float32) for a in args])
-            result_shape = args[0].shape
-            if not result_shape:
-                # Pallas Triton's inline-asm lowering needs IR values; a
-                # scalar literal is otherwise forwarded as a Python scalar.
-                args = [jnp.broadcast_to(a, (1,)) for a in args]
             registers = ", ".join(f"${i}" for i in range(len(args) + 1))
             return pt.elementwise_inline_asm(
                 f"{instruction} {registers};",
@@ -162,15 +181,19 @@ def _cuda_layer_norm_body(x, scale, bias, eps, out_dtype):
                 constraints="=f" + ",f" * len(args),
                 pack=1,
                 result_shape_dtypes=[jax.ShapeDtypeStruct(args[0].shape, jnp.float32)],
-            )[0].reshape(result_shape)
+            )[0]
 
-        values = x_ref[0, :]
-        vectors = values.reshape(width // 4, 4)
-        mean = jnp.zeros((width // 4,), jnp.float32)
+        row = pl.program_id(0) * block + jnp.arange(block, dtype=jnp.int32)
+        valid = (row < rows)[:, None]
+        values = pt.load(
+            x_ref, mask=jnp.broadcast_to(valid, (block, width)), other=0.0
+        )
+        vectors = values.reshape(block, width // 4, 4)
+        mean = jnp.zeros((block, width // 4), jnp.float32)
         variance = jnp.zeros_like(mean)
-        components = jax.lax.split(vectors, (1, 1, 1, 1), axis=1)
+        components = jax.lax.split(vectors, (1, 1, 1, 1), axis=2)
         for index, component in enumerate(components):
-            value = component.reshape(width // 4)
+            value = component.reshape(block, width // 4)
             delta = op("sub.rn.f32", value, mean)
             updated = op("fma.rn.f32", delta, 1.0 / (index + 1), mean)
             variance = op(
@@ -189,28 +212,29 @@ def _cuda_layer_norm_body(x, scale, bias, eps, out_dtype):
 
         warps = 2 if width == 256 else 1
         lanes = min(32, width // 4)
-        mean, variance = mean.reshape(warps, lanes), variance.reshape(warps, lanes)
+        mean = mean.reshape(block, warps, lanes)
+        variance = variance.reshape(block, warps, lanes)
         while lanes > 1:
             offset = lanes // 2
-            ma, mb = jax.lax.split(mean, (offset, offset), axis=1)
-            va, vb = jax.lax.split(variance, (offset, offset), axis=1)
+            ma, mb = jax.lax.split(mean, (offset, offset), axis=2)
+            va, vb = jax.lax.split(variance, (offset, offset), axis=2)
             mean, variance = combine(ma, va, mb, vb, count)
             count *= 2
             lanes = offset
         if warps == 2:
-            ma, mb = jax.lax.split(mean, (1, 1), axis=0)
-            va, vb = jax.lax.split(variance, (1, 1), axis=0)
+            ma, mb = jax.lax.split(mean, (1, 1), axis=1)
+            va, vb = jax.lax.split(variance, (1, 1), axis=1)
             mean, variance = combine(ma, va, mb, vb, count)
-        mean, variance = mean.reshape(()), variance.reshape(())
+        mean, variance = mean.reshape(block, 1), variance.reshape(block, 1)
         rstd = op(
             "rsqrt.approx.ftz.f32",
             op("add.rn.f32", op("mul.rn.f32", variance, 1.0 / width), eps_ref[0]),
         )
         normed = op("mul.rn.f32", rstd, op("sub.rn.f32", values, mean))
-        out_ref[0, :] = op("fma.rn.f32", scale_ref[:], normed, bias_ref[:]).astype(
-            out_dtype
-        )
-        mean_ref[0, 0], rstd_ref[0, 0] = mean, rstd
+        out = op("fma.rn.f32", scale_ref[:], normed, bias_ref[:]).astype(out_dtype)
+        pt.store(out_ref, out, mask=jnp.broadcast_to(valid, (block, width)))
+        pt.store(mean_ref, mean, mask=valid)
+        pt.store(rstd_ref, rstd, mask=valid)
 
     result = pl.pallas_call(
         kernel,
@@ -219,17 +243,17 @@ def _cuda_layer_norm_body(x, scale, bias, eps, out_dtype):
             jax.ShapeDtypeStruct((rows, 1), jnp.float32),
             jax.ShapeDtypeStruct((rows, 1), jnp.float32),
         ),
-        grid=(rows,),
+        grid=(pl.cdiv(rows, block),),
         in_specs=(
-            pl.BlockSpec((1, width), lambda i: (i, 0)),
+            pl.BlockSpec((block, width), lambda i: (i, 0)),
             pl.BlockSpec((width,), lambda i: (0,)),
             pl.BlockSpec((width,), lambda i: (0,)),
             pl.BlockSpec((1,), lambda i: (0,)),
         ),
         out_specs=(
-            pl.BlockSpec((1, width), lambda i: (i, 0)),
-            pl.BlockSpec((1, 1), lambda i: (i, 0)),
-            pl.BlockSpec((1, 1), lambda i: (i, 0)),
+            pl.BlockSpec((block, width), lambda i: (i, 0)),
+            pl.BlockSpec((block, 1), lambda i: (i, 0)),
+            pl.BlockSpec((block, 1), lambda i: (i, 0)),
         ),
         compiler_params=pt.CompilerParams(num_warps=4),
     )(x.reshape(rows, width), scale, bias, jnp.asarray(eps, jnp.float32).reshape(1))
