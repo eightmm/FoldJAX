@@ -447,6 +447,7 @@ def _transition_kernel(
     eps,
     kc,
     precision,
+    update_dtype=None,
 ):
     from jax.experimental import pallas as pl
     from jax.experimental.pallas import triton as plt
@@ -463,9 +464,19 @@ def _transition_kernel(
         for j, c0 in enumerate(range(0, c_out, kc)):
             acc[j] = acc[j] + _mm(g, w3_ref[pl.ds(f0, fc), pl.ds(c0, kc)], precision)
     for j, c0 in enumerate(range(0, c_out, kc)):
-        plt.store(
-            o_ref.at[:, pl.ds(c0, kc)], acc[j].astype(o_ref.dtype), mask=valid[:, None]
-        )
+        if update_dtype is None:
+            value = acc[j].astype(o_ref.dtype)
+        else:
+            # Residual mode: ``x + update`` as the unfused add computes it -- the
+            # update rounded to its own dtype, both widened to float32, added
+            # once and rounded once to the result. ``x`` is reloaded rather than
+            # kept from the norm, so no extra slice stays live across the loop.
+            rows_x = plt.load(
+                x_ref.at[:, pl.ds(c0, kc)], mask=valid[:, None], other=0.0
+            ).astype(jnp.float32)
+            update = acc[j].astype(update_dtype).astype(jnp.float32)
+            value = (rows_x + update).astype(o_ref.dtype)
+        plt.store(o_ref.at[:, pl.ds(c0, kc)], value, mask=valid[:, None])
 
 
 def _row_config(width: int) -> tuple[int, int]:
@@ -475,8 +486,8 @@ def _row_config(width: int) -> tuple[int, int]:
     return _TRANSITION_ROWS // 2, 2 * _TRANSITION_WARPS
 
 
-@functools.partial(jax.jit, static_argnames=("eps", "store_dtype"))
-def _transition(x, ln_w, ln_b, w1, w2, w3, *, eps, store_dtype):
+@functools.partial(jax.jit, static_argnames=("eps", "store_dtype", "update_dtype"))
+def _transition(x, ln_w, ln_b, w1, w2, w3, *, eps, store_dtype, update_dtype=None):
     from jax.experimental import pallas as pl
 
     c = x.shape[-1]
@@ -494,6 +505,7 @@ def _transition(x, ln_w, ln_b, w1, w2, w3, *, eps, store_dtype):
             eps=eps,
             kc=kc,
             precision=_precision(w1.dtype),
+            update_dtype=update_dtype,
         ),
         num_warps=warps,
         grid=(pl.cdiv(total, rows),),
@@ -507,6 +519,15 @@ def _transition(x, ln_w, ln_b, w1, w2, w3, *, eps, store_dtype):
         ],
         out_specs=pl.BlockSpec((rows, w3.shape[1]), lambda i: (i, 0)),
         out_shape=jax.ShapeDtypeStruct((total, w3.shape[1]), store_dtype),
+        # In residual mode the result overwrites ``x`` when their dtypes agree:
+        # XLA reuses the residual's buffer when it is dead after the call and
+        # copies it first when it is not, so this never costs more than a
+        # fresh output.
+        input_output_aliases=(
+            {0: 0}
+            if update_dtype is not None and jnp.dtype(store_dtype) == x.dtype
+            else {}
+        ),
     )(flat, ln_w, ln_b, w1, w2, w3)
     return out.reshape(*x.shape[:-1], w3.shape[1])
 
@@ -520,6 +541,7 @@ def transition(
     *,
     eps: float,
     out_dtype=None,
+    residual: bool = False,
 ) -> jnp.ndarray:
     """``(silu(LN(x) W_gate) * (LN(x) W_value)) W_out`` as one kernel.
 
@@ -528,6 +550,15 @@ def transition(
     ``x``'s dtype by default. The norm must be affine and the projections
     bias-free; the caller checks the latter, since only it knows its parameter
     type.
+
+    ``residual=True`` returns ``x + transition(x)`` instead, bit for bit what the
+    unfused add computes, in ``result_type(x, out_dtype)``. A custom call's
+    output cannot fuse into the add that consumes it, so without this the
+    update is a whole buffer of its own beside the residual and the sum:
+    +1,138 MiB temp in Boltz-2's MSA layer at 1,003 tokens x 8,808 rows
+    (``foldjax-bench/kernel-shootout-20260924``, job 2424), where the released
+    row-chunked path never materialises it. The caller must not read ``x``
+    afterwards if it wants the buffer reused.
     """
 
     if norm[0] is None or norm[1] is None:
@@ -545,6 +576,22 @@ def transition(
     # of the whole output only to narrow it (+2.1 GiB at 1,003 x 8,808,
     # foldjax-bench/kernel-shootout-20260924 job 2407).
     one_rounding = x.dtype == out_dtype or x.dtype == jnp.float32
+    update_dtype = out_dtype if one_rounding else x.dtype
+    if residual:
+        if w_out.shape[-1] != x.shape[-1]:
+            msg = "a residual transition must return x's width"
+            raise ValueError(msg)
+        return _transition(
+            x,
+            f32(norm[0]),
+            f32(norm[1]),
+            w_gate,
+            w_value,
+            w_out,
+            eps=float(eps),
+            store_dtype=jnp.result_type(x.dtype, out_dtype),
+            update_dtype=update_dtype,
+        )
     out = _transition(
         x,
         f32(norm[0]),
@@ -553,6 +600,6 @@ def transition(
         w_value,
         w_out,
         eps=float(eps),
-        store_dtype=out_dtype if one_rounding else x.dtype,
+        store_dtype=update_dtype,
     )
     return out.astype(out_dtype)

@@ -213,8 +213,7 @@ def pairformer_layer_forward(
         pair_residual_dtype,
     )
     z = _residual_cast(
-        z
-        + transition_forward(
+        transition_forward(
             params["transition_z"],
             z,
             chunk_size=transition_hidden_chunk,
@@ -227,6 +226,8 @@ def pairformer_layer_forward(
             # `z` is the pair tensor the active layout shards, so the row
             # block above is taken inside the shard instead of being dropped.
             cp_pair=True,
+            # `z + transition(z)`, formed inside the kernel under `pallas`.
+            residual=True,
         ),
         pair_residual_dtype,
     )

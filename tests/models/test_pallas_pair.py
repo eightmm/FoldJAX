@@ -171,3 +171,34 @@ def test_off_a_gpu_the_kernels_refuse_and_name_the_alternative():
         _pallas_pair.triangle_multiplication(
             x, direction="outgoing", mask=jnp.ones((1, 4, 4)), eps=1e-5, **p
         )
+
+
+@pytest.mark.parametrize(
+    "x_dtype, out_dtype",
+    # float32 MSA + bfloat16 update (Boltz-2's MSA transition), bfloat16 pair +
+    # bfloat16 update (its pair transitions), and float32 throughout
+    [
+        (jnp.float32, jnp.bfloat16),
+        (jnp.bfloat16, jnp.bfloat16),
+        (jnp.float32, jnp.float32),
+    ],
+)
+def test_residual_mode_is_the_unfused_add_bit_for_bit(interpret, x_dtype, out_dtype):
+    rng = np.random.default_rng(11)
+    c, hidden = 64, 256
+    x = jnp.asarray(rng.normal(size=(1, 13, 11, c)), x_dtype)
+    w = lambda i, o: jnp.asarray(rng.normal(size=(i, o)) / np.sqrt(i), jnp.bfloat16)  # noqa: E731
+    norm = (
+        jnp.asarray(1 + 0.1 * rng.normal(size=c), jnp.float32),
+        jnp.asarray(0.1 * rng.normal(size=c), jnp.float32),
+    )
+    w1, w2, w3 = w(c, hidden), w(c, hidden), w(hidden, c)
+    update = _pallas_pair.transition(x, norm, w1, w2, w3, eps=1e-5, out_dtype=out_dtype)
+    expected = x + update
+    fused = _pallas_pair.transition(
+        x, norm, w1, w2, w3, eps=1e-5, out_dtype=out_dtype, residual=True
+    )
+    assert fused.dtype == expected.dtype
+    np.testing.assert_array_equal(
+        np.asarray(fused, np.float32), np.asarray(expected, np.float32)
+    )

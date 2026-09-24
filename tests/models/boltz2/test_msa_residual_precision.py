@@ -20,7 +20,9 @@ def test_eval_msa_add_preserves_native_fp32_dropout_promotion(
 
     def transition(params, value, **kwargs):
         seen.append(value.dtype)
-        return update
+        # The call site asks for the residual form, `value + update`.
+        assert kwargs.get("residual") is True
+        return value + update
 
     def opm(params, value, *args, **kwargs):
         seen.append(value.dtype)
