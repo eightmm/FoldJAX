@@ -518,9 +518,9 @@ def test_below_the_validated_domain_the_program_is_the_one_it_always_was() -> No
         assert config.pair_chunk_size is None, n_token
     # And a size the domain does cover is blocked at the measured width, so the
     # assertions above are a boundary rather than the whole function. 1,003
-    # tokens blocked estimates 4.2 GiB + 0.8 allowance, which an 8 GiB card
+    # tokens blocked estimates 4.5 GiB + 3.0 allowance, which a 12 GiB card
     # admits, so the width arrives with no warning either.
-    small = _budget(6 * _GIB, card=8 * _GIB)
+    small = _budget(9 * _GIB, card=12 * _GIB)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         assert inference.resolve_pair_chunk_size(low, budget=small) == 128
@@ -894,9 +894,9 @@ def test_every_law_names_the_sample_count_it_was_fitted_at() -> None:
     """
     assert memory_policy.CALIBRATED_NUM_SAMPLES == 5
     expected = {
-        BOLTZ2_PEAK: ("5 samples", "2026-09-15"),
-        PROTENIX_PEAK: ("5 samples", "2026-09-15"),
-        OPENFOLD3_CHUNKED_PEAK: ("5 samples", "2026-09-15"),
+        BOLTZ2_PEAK: ("5 samples", "2026-09-24"),
+        PROTENIX_PEAK: ("5 samples", "2026-09-24"),
+        OPENFOLD3_CHUNKED_PEAK: ("5 samples", "2026-09-24"),
         OPENFOLD3_UNCHUNKED_PEAK: ("5 samples", "2026-09-15"),
         OPENDDE_BF16_PEAK: ("5 samples", "2026-09-16"),
         OPENDDE_FP32_PEAK: ("5 samples", "2026-09-16"),

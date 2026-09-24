@@ -146,8 +146,12 @@ class PeakLaw:
 # ---------------------------------------------------------------------------
 
 _CALIBRATION = "2026-09-15"
+#: Boltz-2, Protenix and blocked OpenFold3, refitted after bf16 cuEq triangle
+#: attention started padding unaligned extents to 8 (rows re-measured on that
+#: program; the aligned sizes 2,096 and 4,888 kept their points).
+_CALIBRATION_ALIGNED = "2026-09-24"
 
-#: Boltz-2 at 1003/2096/3012/4100/4888 tokens: 8453/18511/29416/51712/77312 MiB.
+#: Boltz-2 at 1003/2096/3012/4100/4888 tokens: 8454/18511/30667/55057/77312 MiB.
 #: `a + b*n + d*n^3` rather than a quadratic: the local exponent of those five
 #: points rises from 1.06 to 2.29, so one square term cannot hold both ends --
 #: fitted as `a + c*n^2` the same points come out 12% high at 1,003 tokens and
@@ -157,11 +161,11 @@ BOLTZ2_PEAK = PeakLaw(
     model="boltz2",
     profile="bf16 trunk, fp32 diffusion, 5 samples, released schedule",
     coeffs=(
-        ("whole run", (("1", 3910.46116), ("n", 4.58444714), ("n3", 4.32837689e-07))),
+        ("whole run", (("1", 1548.02163), ("n", 6.38897827), ("n3", 3.84294776e-07))),
     ),
     domain_tokens=(1003, 4888),
-    allowance_bytes=1006 * _MIB,
-    calibration_id=f"boltz2-{_CALIBRATION}",
+    allowance_bytes=829 * _MIB,
+    calibration_id=f"boltz2-{_CALIBRATION_ALIGNED}",
 )
 
 #: Protenix, in two phases, because the measurements separate them. Lowering
@@ -186,16 +190,16 @@ PROTENIX_PEAK = PeakLaw(
     model="protenix",
     profile="bf16 trunk, fp32 diffusion, 5 samples, released schedule",
     coeffs=(
-        ("pair", (("1", 1235.27502), ("n2", 0.00284648535))),
-        ("msa", (("mn", 0.000732138253),)),
+        ("pair", (("1", 1229.45362), ("n2", 0.00284781044))),
+        ("msa", (("mn", 0.000732141627),)),
     ),
     domain_tokens=(1003, 3012),
     allowance_bytes=1018 * _MIB,
-    calibration_id=f"protenix-{_CALIBRATION}",
+    calibration_id=f"protenix-{_CALIBRATION_ALIGNED}",
 )
 
 #: OpenFold3 with the pair-stack row loop blocked at the resolved 128 rows:
-#: 4316.7/13882/23774/42468.6/59214.8 MiB at 1003/2096/3012/4100/4888 tokens.
+#: 4316.7/13882/24820.8/47598.6/59214.8 MiB at 1003/2096/3012/4100/4888 tokens.
 #: The linear term earns its place: fitted as `a + c*n^2` the same five points
 #: read 14% high at 1,003 tokens -- where the whole peak is 4.3 GiB -- and the
 #: allowance comes out larger rather than smaller.
@@ -210,12 +214,12 @@ OPENFOLD3_CHUNKED_PEAK = PeakLaw(
     coeffs=(
         (
             "chunked",
-            (("1", 1460.38733), ("n", 0.875427017), ("n2", 0.002231781)),
+            (("1", 0.0), ("n", 2.5409112), ("n2", 0.00202727988)),
         ),
     ),
     domain_tokens=(1003, 4888),
-    allowance_bytes=783 * _MIB,
-    calibration_id=f"openfold3-chunked-{_CALIBRATION}",
+    allowance_bytes=3103 * _MIB,
+    calibration_id=f"openfold3-chunked-{_CALIBRATION_ALIGNED}",
 )
 
 #: OpenFold3 with the row loop unblocked: 6194.6/22967/45363 MiB at

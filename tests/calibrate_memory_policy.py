@@ -63,10 +63,10 @@ _TERMS = {
 #: Boltz-2, bf16 trunk, fp32 diffusion, 5 samples, released schedule.
 BOLTZ2_POINTS = (
     # (n_token, processed msa rows, peak MiB)
-    (1003, None, 8453),
+    (1003, None, 8454.4),
     (2096, None, 18511),
-    (3012, None, 29416),
-    (4100, None, 51712),
+    (3012, None, 30666.8),
+    (4100, None, 55057.0),
     (4888, None, 77312),
 )
 
@@ -77,8 +77,8 @@ BOLTZ2_POINTS = (
 OF3_CHUNKED_POINTS = (
     (1003, None, 4316.7),
     (2096, None, 13882.0),
-    (3012, None, 23774.0),
-    (4100, None, 42468.6),
+    (3012, None, 24820.8),
+    (4100, None, 47598.6),
     (4888, None, 59214.8),
 )
 
@@ -108,7 +108,7 @@ OF3_UNCHUNKED_POINTS = (
 PROTENIX_PAIR = (
     (2096, 4096, 13754),
     (2096, 2048, 13727),
-    (3012, 4096, 27059),
+    (3012, 4096, 27065.2),
 )
 
 #: Protenix's MSA phase: runs where the peak does move with the row count.
@@ -122,10 +122,10 @@ PROTENIX_PAIR = (
 #: taken on a different snapshot, and a law fitted across two configurations
 #: describes neither.
 PROTENIX_MSA = (
-    (1003, 8808, 6404),
+    (1003, 8808, 6375.6),
     (2096, 8192, 14730),
     (2096, 13267, 21225),
-    (3012, 17542, 37537),
+    (3012, 17542, 37542.0),
 )
 
 
