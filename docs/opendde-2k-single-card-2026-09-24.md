@@ -100,3 +100,21 @@ program through the API with the recorder in place of `model._infer_pool`
 (set `PROBE_MEM_FRACTION`, default 0.9 in `probe.sbatch`) and reports the
 arena, the distinct-buffer occupancy with its separated maxima (the
 replacement ladder), and each tenant's source line and stage.
+
+## Admission after the rebase onto the aligned-attention main (2026-09-24)
+
+Peaks of the shipped command on main 77e89e9 + this change (cold/warm, 0.9 pool,
+released defaults, one 95.6 GiB card): 489 st 3,003-3,007 MiB; 945 st 6,027;
+1,902 st 19,208-19,210; 2,620 st (L1350_3lxu) 34,811-34,815; 4,040 st (two jobs)
+78,588-78,616. The 4,040-token runs complete with `--memory-check=warn`.
+
+A refit of `OPENDDE_BF16_PEAK` on these points does not admit 4,040 under the
+repository's allowance rule with any basis tried (`1+n2` over by 478 MiB,
+`1+n+n2` by 74 MiB): the allowance is the largest in-sample underestimate over
+all sizes (196 MiB, at 2,620) and the measured 4,040 peak sits only 159 MiB
+under the 78,775 MiB threshold. Shipping that refit would break
+`test_no_measured_completed_run_is_refused`, so the law was left as it was
+(fitted on the earlier program; it overestimates this one at 1,902 by about
+2.3 GiB and refuses 4,040 as before). Admitting 2,096 residues at released
+defaults needs a policy change -- a per-size allowance for measured sizes, or a
+further memory lever such as the row-blocked attention above -- not a refit.
