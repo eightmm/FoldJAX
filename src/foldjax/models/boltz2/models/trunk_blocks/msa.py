@@ -419,12 +419,17 @@ def msa_layer_forward(
     # is that one `shard_map`; off the grid this is the same callable, and the
     # two call sites below are unchanged.
     transition = _msa_transition_grid if _on_msa_grid() else transition_forward
+    # `pallas` leaves this site on the released tokamax row-chunked GLU. The
+    # fused kernel's custom-call output measured +1,138 MiB temp in the MSA
+    # layer at 1,003 tokens x 8,808 rows (foldjax-bench job 2424), which the
+    # chunked path never forms, and the residual-fused form measured worse.
+    msa_glu_backend = "tokamax" if glu_backend == "pallas" else glu_backend
     if transition_dtype is not None:
         m = m + transition(
             params["msa_transition"],
             m,
             eps=eps,
-            glu_backend=glu_backend,
+            glu_backend=msa_glu_backend,
             compute_dtype=transition_dtype,
             native_amp_norm=transition_dtype == jnp.bfloat16,
             chunk_size=32 if z.shape[1] > _NATIVE_CHUNK_THRESHOLD else None,
@@ -443,7 +448,7 @@ def msa_layer_forward(
             params["msa_transition"],
             m,
             eps=eps,
-            glu_backend=glu_backend,
+            glu_backend=msa_glu_backend,
             cp_msa=True,
         )
     # Above 384 tokens OuterProductMean returns FP32 (it adds the original

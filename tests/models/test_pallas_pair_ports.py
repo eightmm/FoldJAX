@@ -383,3 +383,46 @@ def test_esmfold2_refuses_pallas_it_has_no_pair_stack():
     with pytest.raises(ValueError, match="ESMFold2 has none"):
         _checked_glu_backend("pallas")
     assert _checked_glu_backend("tokamax") == "tokamax"
+
+
+def test_boltz2_msa_transition_stays_on_tokamax_under_pallas(monkeypatch):
+    """The MSA transition keeps the released row-chunked tokamax GLU under
+    `pallas`; the pair transitions of the MSA layer still take `pallas`."""
+    from foldjax.models.boltz2.models.trunk_blocks import msa
+
+    seen = {}
+    m = jnp.ones((1, 2, 3, 4), jnp.bfloat16)
+    monkeypatch.setattr(
+        msa, "pair_weighted_averaging_forward", lambda *a, **k: jnp.zeros_like(m)
+    )
+
+    def transition(params, value, **kwargs):
+        seen["msa"] = kwargs["glu_backend"]
+        return jnp.zeros_like(value)
+
+    def noseq(params, z, *args, **kwargs):
+        seen["pair"] = kwargs["glu_backend"]
+        return z
+
+    monkeypatch.setattr(msa, "transition_forward", transition)
+    monkeypatch.setattr(
+        msa,
+        "outer_product_mean_forward",
+        lambda *a, **k: jnp.zeros((1, 3, 3, 2), jnp.float32),
+    )
+    monkeypatch.setattr(msa, "pairformer_no_seq_layer_forward", noseq)
+    params = {
+        "pair_weighted_averaging": {},
+        "msa_transition": {"fc1": {"kernel": jnp.zeros((4, 4), jnp.bfloat16)}},
+        "outer_product_mean": {},
+        "pairformer_layer": {},
+    }
+    msa.msa_layer_forward(
+        params,
+        jnp.zeros((1, 3, 3, 2)),
+        m,
+        jnp.ones((1, 3, 3)),
+        jnp.ones((1, 2, 3)),
+        glu_backend="pallas",
+    )
+    assert seen == {"msa": "tokamax", "pair": "pallas"}
