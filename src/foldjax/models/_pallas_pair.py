@@ -475,8 +475,8 @@ def _row_config(width: int) -> tuple[int, int]:
     return _TRANSITION_ROWS // 2, 2 * _TRANSITION_WARPS
 
 
-@functools.partial(jax.jit, static_argnames=("eps",))
-def _transition(x, ln_w, ln_b, w1, w2, w3, *, eps):
+@functools.partial(jax.jit, static_argnames=("eps", "store_dtype"))
+def _transition(x, ln_w, ln_b, w1, w2, w3, *, eps, store_dtype):
     from jax.experimental import pallas as pl
 
     c = x.shape[-1]
@@ -506,7 +506,7 @@ def _transition(x, ln_w, ln_b, w1, w2, w3, *, eps):
             _full(w3.shape),
         ],
         out_specs=pl.BlockSpec((rows, w3.shape[1]), lambda i: (i, 0)),
-        out_shape=jax.ShapeDtypeStruct((total, w3.shape[1]), x.dtype),
+        out_shape=jax.ShapeDtypeStruct((total, w3.shape[1]), store_dtype),
     )(flat, ln_w, ln_b, w1, w2, w3)
     return out.reshape(*x.shape[:-1], w3.shape[1])
 
@@ -538,7 +538,21 @@ def transition(
         "the XLA unit here",
     )
     f32 = lambda t: t.astype(jnp.float32)  # noqa: E731
+    out_dtype = x.dtype if out_dtype is None else jnp.dtype(out_dtype)
+    # The kernel rounds its float32 accumulator to ``x``'s dtype, then the
+    # caller's. When ``x`` is float32 that is one rounding, so the kernel stores
+    # ``out_dtype`` itself: a float32 MSA would otherwise stage a float32 copy
+    # of the whole output only to narrow it (+2.1 GiB at 1,003 x 8,808,
+    # foldjax-bench/kernel-shootout-20260924 job 2407).
+    one_rounding = x.dtype == out_dtype or x.dtype == jnp.float32
     out = _transition(
-        x, f32(norm[0]), f32(norm[1]), w_gate, w_value, w_out, eps=float(eps)
+        x,
+        f32(norm[0]),
+        f32(norm[1]),
+        w_gate,
+        w_value,
+        w_out,
+        eps=float(eps),
+        store_dtype=out_dtype if one_rounding else x.dtype,
     )
-    return out if out_dtype is None else out.astype(out_dtype)
+    return out.astype(out_dtype)

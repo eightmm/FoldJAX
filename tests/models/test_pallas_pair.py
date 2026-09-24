@@ -131,6 +131,34 @@ def test_transition_matches_float32(interpret, c, hidden):
     assert _rel(out, expected) < 2e-2
 
 
+@pytest.mark.parametrize(
+    "x_dtype, out_dtype",
+    [(jnp.float32, jnp.bfloat16), (jnp.bfloat16, jnp.float32), (jnp.bfloat16, None)],
+)
+def test_transition_rounds_through_the_input_dtype_then_the_callers(
+    interpret, x_dtype, out_dtype
+):
+    # Storing the caller's dtype directly must not change a bit: the result is
+    # the float32 accumulator rounded to x's dtype, then to out_dtype.
+    rng = np.random.default_rng(7)
+    c, hidden = 32, 128
+    x = jnp.asarray(rng.normal(size=(1, 13, 11, c)), x_dtype)
+    w = lambda i, o: jnp.asarray(rng.normal(size=(i, o)) / np.sqrt(i), jnp.bfloat16)  # noqa: E731
+    norm = (
+        jnp.asarray(1 + 0.1 * rng.normal(size=c), jnp.float32),
+        jnp.asarray(0.1 * rng.normal(size=c), jnp.float32),
+    )
+    w1, w2, w3 = w(c, hidden), w(c, hidden), w(hidden, c)
+    out = _pallas_pair.transition(x, norm, w1, w2, w3, eps=1e-5, out_dtype=out_dtype)
+    staged = _pallas_pair._transition(
+        x, *norm, w1, w2, w3, eps=1e-5, store_dtype=x.dtype
+    ).astype(out_dtype or x_dtype)
+    assert out.dtype == staged.dtype
+    np.testing.assert_array_equal(
+        np.asarray(out, np.float32), np.asarray(staged, np.float32)
+    )
+
+
 @pytest.mark.skipif(jax.default_backend() == "gpu", reason="checks the off-GPU refusal")
 def test_off_a_gpu_the_kernels_refuse_and_name_the_alternative():
     x = jnp.ones((1, 4, 4, 32), jnp.bfloat16)
