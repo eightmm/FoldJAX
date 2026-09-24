@@ -65,14 +65,19 @@ def _reference_multiplication(x, mask, p, direction):
 
 
 @pytest.mark.parametrize("direction", ["outgoing", "incoming"])
-@pytest.mark.parametrize("c", [32, 256])
-def test_triangle_multiplication_matches_float32(interpret, direction, c):
-    rng = np.random.default_rng(c)
+@pytest.mark.parametrize(
+    "c, hidden",
+    # (64, 128) is a template stack's shape: OPENFOLD3_TRIANGLE_BACKEND set in
+    # the environment forces the fused path whatever the widths.
+    [(32, 32), (256, 256), (64, 128)],
+)
+def test_triangle_multiplication_matches_float32(interpret, direction, c, hidden):
+    rng = np.random.default_rng(c + hidden)
     n = 21  # 441 pixels: no 32-pixel block divides it
     x = jnp.asarray(rng.normal(size=(1, n, n, c)), jnp.bfloat16)
     valid = np.arange(n) < n - 2  # a padded tail: prefix keys, fully masked rows
     mask = jnp.asarray((valid[:, None] & valid[None, :])[None], jnp.float32)
-    p = _weights(rng, c, c)
+    p = _weights(rng, c, hidden)
     out = _pallas_pair.triangle_multiplication(
         x, direction=direction, mask=mask, eps=1e-5, **p
     )
@@ -127,11 +132,16 @@ def test_transition_matches_float32(interpret, c, hidden):
 
 
 @pytest.mark.parametrize("activation", [jax.nn.silu, jax.nn.sigmoid])
-def test_gated_linear_unit_matches_float32(interpret, activation):
+@pytest.mark.parametrize(
+    "dtype, k",
+    # float32 weights contract in 64-wide slices; 768 is a diffusion GLU's width
+    [(jnp.bfloat16, 64), (jnp.float32, 768)],
+)
+def test_gated_linear_unit_matches_float32(interpret, activation, dtype, k):
     rng = np.random.default_rng(3)
-    x = jnp.asarray(rng.normal(size=(77, 64)), jnp.bfloat16)
-    w1 = jnp.asarray(rng.normal(size=(64, 96)) / 8, jnp.bfloat16)
-    w2 = jnp.asarray(rng.normal(size=(64, 96)) / 8, jnp.bfloat16)
+    x = jnp.asarray(rng.normal(size=(77, k)), dtype)
+    w1 = jnp.asarray(rng.normal(size=(k, 96)) / np.sqrt(k), dtype)
+    w2 = jnp.asarray(rng.normal(size=(k, 96)) / np.sqrt(k), dtype)
     out = _pallas_pair.gated_linear_unit(x, w1, w2, activation)
     f = lambda t: jnp.asarray(t, jnp.float32)  # noqa: E731
     expected = activation(f(x) @ f(w1)) * (f(x) @ f(w2))

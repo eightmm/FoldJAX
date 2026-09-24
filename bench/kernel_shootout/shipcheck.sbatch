@@ -31,5 +31,7 @@ SHOOTOUT_PROFILE=af3 "$PY" shootout.py drive --out "$OUT" --family mul --sizes 1
 SHOOTOUT_PROFILE=af3 "$PY" shootout.py drive --out "$OUT" --family trans --sizes 1003,2096,3012 \
   --bias-dtype bfloat16 --arms boltz2_tokamax_rc,boltz2_xla_full,fj_fused_64w4_fc64,pallas_pair
 SHOOTOUT_PROFILE=af3 "$PY" shootout.py report --out "$OUT" > "$OUT/report.txt" 2>&1
+# the other call sites `glu_backend=pallas` reaches (diffusion, single, MSA)
+"$PY" glucheck.py "$OUT"
 nvidia-smi --query-gpu=temperature.gpu,clocks.sm,power.draw,clocks_throttle_reasons.active --format=csv,noheader
 echo "done $(date -Is)"

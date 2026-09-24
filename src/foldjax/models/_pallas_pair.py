@@ -84,16 +84,20 @@ def _pallas_call(kernel, *, num_warps: int, **kwargs):
     )
 
 
-def _slice_width(*widths: int) -> int:
-    """The largest power-of-two slice (<= 128) that divides every width.
+def _slice_width(*widths: int, dtype=jnp.bfloat16) -> int:
+    """The largest power-of-two slice that divides every width.
 
     Triton tensors must have power-of-two extents. A row is normalised whole
     but contracted in slices of this width, so every width must divide into
-    them.
+    them. The cap is 128 for half-precision weights, which is what the
+    shootout measured. It is 64 for float32 weights: each dot stages both
+    operand tiles in shared memory for two pipeline stages, and at 128 a
+    float32 32-row slice needs 96 KB of this card's 99 KB.
     """
 
+    cap = 128 if jnp.dtype(dtype).itemsize <= 2 else 64
     for size in (128, 64, 32, 16):
-        if all(w % size == 0 for w in widths):
+        if size <= cap and all(w % size == 0 for w in widths):
             return size
     msg = f"the Pallas pair kernels need widths divisible by 16; got {widths}"
     raise ValueError(msg)
@@ -275,7 +279,7 @@ def _triangle_multiplication(
         batch *= size
     hidden = w_p.shape[1] // 2
     d_out = w_po.shape[1]
-    kc = _slice_width(c, hidden, d_out)
+    kc = _slice_width(c, hidden, d_out, dtype=w_p.dtype)
     precision = _precision(w_p.dtype)
     pixels = batch * n * n
     flat = x.reshape(pixels, c)
@@ -486,8 +490,8 @@ def _transition(x, ln_w, ln_b, w1, w2, w3, *, eps):
     c = x.shape[-1]
     flat = x.reshape(-1, c)
     total = flat.shape[0]
-    kc = _slice_width(c, w3.shape[1])
-    fc = min(_TRANSITION_SLICE, _slice_width(w1.shape[1]))
+    kc = _slice_width(c, w3.shape[1], dtype=w1.dtype)
+    fc = min(_TRANSITION_SLICE, _slice_width(w1.shape[1], dtype=w1.dtype))
     rows, warps = _row_config(c)
     out = _pallas_call(
         functools.partial(
@@ -556,8 +560,8 @@ def _glu(x, w1, w2, *, activation):
     flat = x.reshape(-1, k)
     total = flat.shape[0]
     f = w1.shape[1]
-    kc = _slice_width(k)
-    fc = min(_TRANSITION_SLICE, _slice_width(f))
+    kc = _slice_width(k, dtype=w1.dtype)
+    fc = min(_TRANSITION_SLICE, _slice_width(f, dtype=w1.dtype))
     rows, warps = _row_config(k)
     out = _pallas_call(
         functools.partial(
