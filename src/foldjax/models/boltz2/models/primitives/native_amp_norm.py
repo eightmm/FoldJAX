@@ -182,9 +182,19 @@ def _cuda_layer_norm_body(x, scale, bias, eps, out_dtype, block=None):
         block = _norm_row_block(rows, width, out_dtype)
     tail = rows % block != 0
 
+    # One row per program is d57e1bb's kernel as it was written, with no row
+    # axis at all; a block adds a leading row axis to every operand.
+    lead = () if block == 1 else (block,)
+    axis = len(lead)
+
     def kernel(x_ref, scale_ref, bias_ref, eps_ref, out_ref, mean_ref, rstd_ref):
         def op(instruction, *args):
             args = jnp.broadcast_arrays(*[jnp.asarray(a, jnp.float32) for a in args])
+            result_shape = args[0].shape
+            if not result_shape:
+                # Pallas Triton's inline-asm lowering needs IR values; a
+                # scalar literal is otherwise forwarded as a Python scalar.
+                args = [jnp.broadcast_to(a, (1,)) for a in args]
             registers = ", ".join(f"${i}" for i in range(len(args) + 1))
             return pt.elementwise_inline_asm(
                 f"{instruction} {registers};",
@@ -192,21 +202,23 @@ def _cuda_layer_norm_body(x, scale, bias, eps, out_dtype, block=None):
                 constraints="=f" + ",f" * len(args),
                 pack=1,
                 result_shape_dtypes=[jax.ShapeDtypeStruct(args[0].shape, jnp.float32)],
-            )[0]
+            )[0].reshape(result_shape)
 
-        if tail:
+        if not lead:
+            values = x_ref[0, :]
+        elif tail:
             row = pl.program_id(0) * block + jnp.arange(block, dtype=jnp.int32)
             valid = (row < rows)[:, None]
             wide = jnp.broadcast_to(valid, (block, width))
             values = pt.load(x_ref, mask=wide, other=0.0)
         else:
             values = x_ref[...]
-        vectors = values.reshape(block, width // 4, 4)
-        mean = jnp.zeros((block, width // 4), jnp.float32)
+        vectors = values.reshape(*lead, width // 4, 4)
+        mean = jnp.zeros((*lead, width // 4), jnp.float32)
         variance = jnp.zeros_like(mean)
-        components = jax.lax.split(vectors, (1, 1, 1, 1), axis=2)
+        components = jax.lax.split(vectors, (1, 1, 1, 1), axis=axis + 1)
         for index, component in enumerate(components):
-            value = component.reshape(block, width // 4)
+            value = component.reshape(*lead, width // 4)
             delta = op("sub.rn.f32", value, mean)
             updated = op("fma.rn.f32", delta, 1.0 / (index + 1), mean)
             variance = op(
@@ -225,27 +237,31 @@ def _cuda_layer_norm_body(x, scale, bias, eps, out_dtype, block=None):
 
         warps = 2 if width == 256 else 1
         lanes = min(32, width // 4)
-        mean = mean.reshape(block, warps, lanes)
-        variance = variance.reshape(block, warps, lanes)
+        mean = mean.reshape(*lead, warps, lanes)
+        variance = variance.reshape(*lead, warps, lanes)
         while lanes > 1:
             offset = lanes // 2
-            ma, mb = jax.lax.split(mean, (offset, offset), axis=2)
-            va, vb = jax.lax.split(variance, (offset, offset), axis=2)
+            ma, mb = jax.lax.split(mean, (offset, offset), axis=axis + 1)
+            va, vb = jax.lax.split(variance, (offset, offset), axis=axis + 1)
             mean, variance = combine(ma, va, mb, vb, count)
             count *= 2
             lanes = offset
         if warps == 2:
-            ma, mb = jax.lax.split(mean, (1, 1), axis=1)
-            va, vb = jax.lax.split(variance, (1, 1), axis=1)
+            ma, mb = jax.lax.split(mean, (1, 1), axis=axis)
+            va, vb = jax.lax.split(variance, (1, 1), axis=axis)
             mean, variance = combine(ma, va, mb, vb, count)
-        mean, variance = mean.reshape(block, 1), variance.reshape(block, 1)
+        stat = (*lead, 1) if lead else ()
+        mean, variance = mean.reshape(stat), variance.reshape(stat)
         rstd = op(
             "rsqrt.approx.ftz.f32",
             op("add.rn.f32", op("mul.rn.f32", variance, 1.0 / width), eps_ref[0]),
         )
         normed = op("mul.rn.f32", rstd, op("sub.rn.f32", values, mean))
         out = op("fma.rn.f32", scale_ref[:], normed, bias_ref[:]).astype(out_dtype)
-        if tail:
+        if not lead:
+            out_ref[0, :] = out
+            mean_ref[0, 0], rstd_ref[0, 0] = mean, rstd
+        elif tail:
             pt.store(out_ref, out, mask=wide)
             pt.store(mean_ref, mean, mask=valid)
             pt.store(rstd_ref, rstd, mask=valid)

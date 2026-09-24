@@ -30,8 +30,8 @@ def test_private_cuda_norm_promotes_affine_before_final_fma(affine_dtype):
     affine = [
         e for e in kernel.eqns if e.params.get("asm") == "fma.rn.f32 $0, $1, $2, $3;"
     ][-1]
-    # One row per program block here: (rows_per_program, width).
-    assert all(v.aval.shape == (1, 256) for v in affine.invars)
+    # One row: the one-row-per-program kernel, which has no row axis.
+    assert all(v.aval.shape == (256,) for v in affine.invars)
     assert all(v.aval.dtype == jnp.float32 for v in affine.invars)
     assert affine.outvars[0].aval.dtype == jnp.float32
     if affine_dtype != jnp.float32:
@@ -351,3 +351,26 @@ def test_cuda_norm_call_sites_share_one_kernel_trace():
     kernels = [id(e.params["jaxpr"]) for e in calls]
     assert len(set(kernels[:3])) == 1
     assert len(set(kernels)) == 3
+
+
+@pytest.mark.parametrize("width", [16, 64, 128, 256])
+def test_blocked_rows_run_the_one_row_instruction_sequence(width):
+    """A row block adds a leading axis and nothing else to the kernel's asm."""
+
+    def sequence(block, rows):
+        traced = jax.make_jaxpr(
+            lambda x, s, b: native_amp_norm._cuda_layer_norm_body(
+                x, s, b, 1e-5, jnp.dtype(jnp.float32), block
+            )
+        )(
+            jnp.zeros((rows, width), jnp.float32),
+            jnp.ones(width, jnp.float32),
+            jnp.zeros(width, jnp.float32),
+        )
+        call = next(e for e in traced.jaxpr.eqns if e.primitive.name == "pallas_call")
+        kernel = getattr(call.params["jaxpr"], "jaxpr", call.params["jaxpr"])
+        return [e.params["asm"] for e in kernel.eqns if "asm" in e.params]
+
+    one_row = sequence(1, 37)
+    assert sequence(8, 37) == one_row  # partial last block
+    assert sequence(8, 40) == one_row  # no tail
