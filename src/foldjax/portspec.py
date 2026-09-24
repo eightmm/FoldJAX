@@ -176,6 +176,12 @@ PORTS: Mapping[str, PortSpec] = {
             # options: old outputs can contain TF32 attention or zero BF16
             # triangle updates.
             SourceSpec("models/_cueq.py"),
+            # The Pallas pair kernels and the site rule that routes to them.
+            # Since 2026-09-25 they are what an omitted option runs on a GPU,
+            # so their bytes change predictions with the options unchanged,
+            # and a result from before the default flipped must not resume.
+            SourceSpec("models/_pallas_pair.py"),
+            SourceSpec("models/_glu.py"),
         ),
         manifest_weight_assets="foldjax.manifest:_boltz2_weight_assets",
         input_dialect="foldjax.input:_boltz",
@@ -261,6 +267,12 @@ PORTS: Mapping[str, PortSpec] = {
             SourceSpec("models/openfold3/models/augmentation.py"),
             SourceSpec("models/openfold3/models/sampler.py"),
             SourceSpec("models/_cueq.py"),
+            # The Pallas pair kernels and the site rule that routes to them.
+            # Since 2026-09-25 they are what an omitted option runs on a GPU,
+            # so their bytes change predictions with the options unchanged,
+            # and a result from before the default flipped must not resume.
+            SourceSpec("models/_pallas_pair.py"),
+            SourceSpec("models/_glu.py"),
         ),
         manifest_ccd_assets="foldjax.manifest:_openfold3_ccd_assets",
         input_dialect="foldjax.input:_openfold3",
@@ -298,6 +310,12 @@ PORTS: Mapping[str, PortSpec] = {
             SourceSpec("models/protenix/models/trunk_blocks/trunk.py"),
             SourceSpec("models/protenix/models/heads/head.py"),
             SourceSpec("models/_cueq.py"),
+            # The Pallas pair kernels and the site rule that routes to them.
+            # Since 2026-09-25 they are what an omitted option runs on a GPU,
+            # so their bytes change predictions with the options unchanged,
+            # and a result from before the default flipped must not resume.
+            SourceSpec("models/_pallas_pair.py"),
+            SourceSpec("models/_glu.py"),
         ),
         manifest_weight_assets="foldjax.manifest:_protenix_weight_assets",
         manifest_ccd_assets="foldjax.manifest:_ccd_chemistry_assets",

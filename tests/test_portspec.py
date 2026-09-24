@@ -124,6 +124,8 @@ def test_boltz2_tracks_its_whole_model_tree_by_glob() -> None:
         package / "models/boltz2/compile_policy.py",
         *sorted((package / "models/boltz2/models").rglob("*.py")),
         package / "models/_cueq.py",
+        package / "models/_pallas_pair.py",
+        package / "models/_glu.py",
     ]
     assert list(tracked) == expected
     assert len(expected) > 40

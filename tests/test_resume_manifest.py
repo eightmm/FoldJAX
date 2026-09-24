@@ -327,6 +327,32 @@ def test_legacy_ffi_precision_result_is_not_reused(tmp_path: Path, model: str):
     assert resumed.skipped == ()
 
 
+@pytest.mark.parametrize("model", ["boltz2", "protenix", "openfold3"])
+@pytest.mark.parametrize("source", ["/models/_pallas_pair.py", "/models/_glu.py"])
+def test_result_from_before_the_pallas_default_is_not_reused(
+    tmp_path: Path, model: str, source: str
+):
+    """An omitted option now runs the Pallas kernels on a GPU; a result that
+    predates them names the same options and must still rerun."""
+    calls = []
+    request = _request(tmp_path, model=model)
+    with _backends(calls):
+        foldjax.predict(request)
+        assert foldjax.predict_batch(
+            dataclasses.replace(request, resume=True)
+        ).skipped == (request.output_dir,)
+        path = request.output_dir / MANIFEST_NAME
+        document = json.loads(path.read_text())
+        artifacts = document["input_dependencies"]["artifacts"]
+        legacy = [a for a in artifacts if not a["path"].endswith(source)]
+        assert len(legacy) == len(artifacts) - 1
+        document["input_dependencies"]["artifacts"] = legacy
+        path.write_text(json.dumps(document))
+        resumed = foldjax.predict_batch(dataclasses.replace(request, resume=True))
+    assert len(calls) == 2
+    assert resumed.skipped == ()
+
+
 @pytest.mark.parametrize(
     "model,source",
     [

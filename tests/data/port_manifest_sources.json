@@ -1,12 +1,14 @@
 {
-  "comment": "Frozen from FoldJAX at 4dd01e0, before manifest.py's per-port source ladder became foldjax.portspec's manifest_sources. These paths are recorded in every run manifest and compared on resume, so changing the set changes which finished runs can be reused: a difference here is a decision, never a refactor.",
+  "comment": "Frozen from FoldJAX at 4dd01e0, before manifest.py's per-port source ladder became foldjax.portspec's manifest_sources. These paths are recorded in every run manifest and compared on resume, so changing the set changes which finished runs can be reused: a difference here is a decision, never a refactor. Extended 2026-09-25 for boltz2, openfold3 and protenix with models/_pallas_pair.py and models/_glu.py, when the Pallas pair kernels became their GPU default.",
   "spec_tokens": {
     "alphafold3": [],
     "boltz2": [
       "models/boltz2/api.py",
       "models/boltz2/compile_policy.py",
       "models/boltz2/models/**/*.py",
-      "models/_cueq.py"
+      "models/_cueq.py",
+      "models/_pallas_pair.py",
+      "models/_glu.py"
     ],
     "esmfold2": [
       "models/esmfold2/inference.py",
@@ -32,7 +34,9 @@
       "models/openfold3/inference.py",
       "models/openfold3/models/augmentation.py",
       "models/openfold3/models/sampler.py",
-      "models/_cueq.py"
+      "models/_cueq.py",
+      "models/_pallas_pair.py",
+      "models/_glu.py"
     ],
     "protenix": [
       "models/protenix/models/heads/confidence.py",
@@ -41,7 +45,9 @@
       "models/protenix/models/diffusion/diffusion.py",
       "models/protenix/models/trunk_blocks/trunk.py",
       "models/protenix/models/heads/head.py",
-      "models/_cueq.py"
+      "models/_cueq.py",
+      "models/_pallas_pair.py",
+      "models/_glu.py"
     ]
   },
   "tracked_files": {
@@ -68,12 +74,16 @@
     ],
     "openfold3": [
       "models/_cueq.py",
+      "models/_glu.py",
+      "models/_pallas_pair.py",
       "models/openfold3/inference.py",
       "models/openfold3/models/augmentation.py",
       "models/openfold3/models/sampler.py"
     ],
     "protenix": [
       "models/_cueq.py",
+      "models/_glu.py",
+      "models/_pallas_pair.py",
       "models/protenix/models/diffusion/diffusion.py",
       "models/protenix/models/heads/confidence.py",
       "models/protenix/models/heads/head.py",
