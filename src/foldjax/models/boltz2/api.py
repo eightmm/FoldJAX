@@ -32,6 +32,7 @@ from typing import Any
 import numpy as np
 
 from foldjax import memory_policy
+from foldjax.cache import PERSISTENT_CACHE_MIN_COMPILE_SECS
 from foldjax.execution import auto_diffusion_chunk_size
 from foldjax.models import _capture, _representations
 from foldjax.models._feature_storage import compact_msa_storage
@@ -927,7 +928,10 @@ def predict(
         cache = Path(compile_cache).expanduser().resolve()
         cache.mkdir(parents=True, exist_ok=True)
         jax.config.update("jax_compilation_cache_dir", str(cache))
-        jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
+        jax.config.update(
+            "jax_persistent_cache_min_compile_time_secs",
+            PERSISTENT_CACHE_MIN_COMPILE_SECS,
+        )
 
     if compute_dtype not in COMPUTE_DTYPES:
         raise ValueError(

@@ -13,6 +13,7 @@ from foldjax.backends.esmfold2 import ESMFold2Backend
 from foldjax.backends.opendde import OpenDDEBackend
 from foldjax.backends.openfold3 import OpenFold3Backend
 from foldjax.cache import (
+    PERSISTENT_CACHE_MIN_COMPILE_SECS,
     CacheSnapshot,
     cache_namespace,
     cache_snapshot,
@@ -1196,7 +1197,11 @@ def test_compilation_cache_scope_disables_and_restores_host_config(
 
         with compilation_cache_scope(request):
             assert jax.config.jax_compilation_cache_dir == str(request)
-            assert jax.config.jax_persistent_cache_min_compile_time_secs == 1.0
+            assert (
+                jax.config.jax_persistent_cache_min_compile_time_secs
+                == PERSISTENT_CACHE_MIN_COMPILE_SECS
+                == 0.0
+            )
             assert request.is_dir()
         assert {name: getattr(jax.config, name) for name in names} == configured
         assert len(resets) == 4

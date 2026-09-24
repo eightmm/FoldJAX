@@ -24,6 +24,16 @@ from typing import Any
 _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 _CONFIG_LOCK = RLock()
 
+#: ``jax_persistent_cache_min_compile_time_secs`` wherever a prediction opens
+#: its compilation cache: every executable is written, not only the ones that
+#: took a second. A 254-token warm process compiled 46-175 small programs
+#: afresh every time (L250_3dha, fixed-cost job 2329: 1.4 s OpenFold3, 1.6 s
+#: Protenix, 2.7 s OpenDDE, 3.0 s ESMFold2, 11-34 ms each), while reading a
+#: small entry back cost ~3 ms (ESMFold2's six sub-second-retrieval hits:
+#: 20 ms together). Loading an entry returns the executable the first
+#: process compiled for the same key, so what runs is what ran.
+PERSISTENT_CACHE_MIN_COMPILE_SECS = 0.0
+
 
 @dataclass(frozen=True, slots=True)
 class CacheSnapshot:
@@ -231,7 +241,10 @@ def compilation_cache_scope(
             else:
                 Path(directory).mkdir(parents=True, exist_ok=True)
                 jax.config.update("jax_compilation_cache_dir", str(directory))
-                jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
+                jax.config.update(
+                    "jax_persistent_cache_min_compile_time_secs",
+                    PERSISTENT_CACHE_MIN_COMPILE_SECS,
+                )
                 if min_entry_size_bytes is not None:
                     jax.config.update(
                         "jax_persistent_cache_min_entry_size_bytes",

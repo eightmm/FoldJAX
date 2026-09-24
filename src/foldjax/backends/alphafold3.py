@@ -38,6 +38,7 @@ from foldjax.backends.base import (
     Backend,
     validate_memory_policy_options,
 )
+from foldjax.cache import PERSISTENT_CACHE_MIN_COMPILE_SECS
 from foldjax.execution import DETERMINISTIC_API_OPTION
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
@@ -1137,7 +1138,10 @@ class AlphaFold3Backend(Backend):
             if request.cache_dir is not None:
                 request.cache_dir.mkdir(parents=True, exist_ok=True)
                 jax.config.update("jax_compilation_cache_dir", str(request.cache_dir))
-                jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
+                jax.config.update(
+                    "jax_persistent_cache_min_compile_time_secs",
+                    PERSISTENT_CACHE_MIN_COMPILE_SECS,
+                )
             # Selecting from the default backend keeps a CPU-only host usable
             # for smoke runs while still resolving the GPU on an accelerator.
             platform = options.pop("platform", None)

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from foldjax import memory_policy
+from foldjax.cache import PERSISTENT_CACHE_MIN_COMPILE_SECS
 from foldjax.models import _representations
 from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models.opendde.data.compact_categories import (
@@ -588,7 +589,10 @@ def run_prediction(
         cache = config.compile_cache.expanduser().resolve()
         cache.mkdir(parents=True, exist_ok=True)
         jax.config.update("jax_compilation_cache_dir", str(cache))
-        jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
+        jax.config.update(
+            "jax_persistent_cache_min_compile_time_secs",
+            PERSISTENT_CACHE_MIN_COMPILE_SECS,
+        )
 
     # Returned so a caller knows which files *this* run produced. FoldJAX used
     # to recover them by globbing the output tree, which cannot tell a
