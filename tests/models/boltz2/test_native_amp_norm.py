@@ -315,3 +315,34 @@ def test_native_width_multi_layer_lazy_eager_projection_parity(width):
 
     lazy, eager = run(x, params)
     np.testing.assert_array_equal(lazy, eager)
+
+
+def test_cuda_norm_call_sites_share_one_kernel_trace():
+    """Equal avals, ``eps`` and ``out_dtype`` reuse one kernel jaxpr.
+
+    Pallas keeps no trace cache, so without the shared trace each call site
+    re-traced the inline-asm body and the lowering cache could not recognise
+    the copies (ESMFold2 traces 899 sites of 11 distinct kinds). The
+    ``pallas_call`` equations must stay in the caller's jaxpr -- the shared
+    function is inlined -- so the lowered module keeps its old shape.
+    """
+
+    norm = native_amp_norm._cuda_layer_norm
+
+    def f(x, y, s, b):
+        outs = [norm(x, s, b)[0] for _ in range(3)]
+        outs.append(norm(x, s, b, out_dtype=jnp.bfloat16)[0])
+        outs.append(norm(y, s, b)[0])
+        return outs
+
+    traced = jax.make_jaxpr(f)(
+        jnp.zeros((2, 3, 256), jnp.float32),
+        jnp.zeros((4, 256), jnp.float32),
+        jnp.ones(256, jnp.float32),
+        jnp.zeros(256, jnp.float32),
+    )
+    calls = [e for e in traced.jaxpr.eqns if e.primitive.name == "pallas_call"]
+    assert len(calls) == 5
+    kernels = [id(e.params["jaxpr"]) for e in calls]
+    assert len(set(kernels[:3])) == 1
+    assert len(set(kernels)) == 3

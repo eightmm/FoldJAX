@@ -9,6 +9,7 @@ its captured first norm is bitwise exact, but full-block parity remains open.
 
 from __future__ import annotations
 
+import functools
 import math
 
 import jax
@@ -111,13 +112,38 @@ def _cuda_layer_norm(x, scale, bias, eps=1e-5, out_dtype=jnp.float32):
     The default keeps every existing caller's result: Boltz-2 and OpenFold3
     ask for FP32 here, and ESMFold2 asks for BF16 at the three pair norms
     whose only consumer rounds to BF16 itself.
+
+    Every call with the same shapes, ``eps`` and ``out_dtype`` shares one
+    trace. Pallas keeps no trace cache and the kernel is a fresh closure per
+    call, so each call site used to re-trace the ~100 inline-asm body and
+    re-lower it to Triton (ESMFold2: ~25 s per warm process). The shared
+    function is a ``jit`` inlined back into the caller at trace time, so the
+    caller's program holds the same ``pallas_call`` equations as before, now
+    with one kernel jaxpr that the lowering cache lowers once.
     """
+    width = x.shape[-1]
+    if width not in (16, 64, 128, 256) or x.dtype != jnp.float32:
+        raise ValueError("native CUDA norm requires FP32 and width 16, 64, 128 or 256")
+    try:
+        hash(eps)
+    except TypeError:
+        # A traced or array ``eps`` cannot key a trace; build it in place.
+        return _cuda_layer_norm_body(x, scale, bias, eps, out_dtype)
+    return _cuda_layer_norm_shared(
+        x, scale, bias, eps=eps, out_dtype=jnp.dtype(out_dtype)
+    )
+
+
+@functools.partial(jax.jit, static_argnames=("eps", "out_dtype"), inline=True)
+def _cuda_layer_norm_shared(x, scale, bias, *, eps, out_dtype):
+    return _cuda_layer_norm_body(x, scale, bias, eps, out_dtype)
+
+
+def _cuda_layer_norm_body(x, scale, bias, eps, out_dtype):
     from jax.experimental import pallas as pl
     from jax.experimental.pallas import triton as pt
 
     width = x.shape[-1]
-    if width not in (16, 64, 128, 256) or x.dtype != jnp.float32:
-        raise ValueError("native CUDA norm requires FP32 and width 16, 64, 128 or 256")
     shape = x.shape
     rows = math.prod(shape[:-1])
 
