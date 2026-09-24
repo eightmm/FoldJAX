@@ -6,9 +6,12 @@ formal charges, bonds and three conformers.  FoldJAX downloads it with a pinned
 size and SHA-256 before this reader sees it; arbitrary job files never choose a
 pickle path.
 
-The store is lazy because loading roughly fifty thousand components takes a
-few seconds and protein-only jobs retain the historical in-package chemistry
-path without touching the CCD at all.
+The store is lazy twice over. The file is opened only when a job first asks for
+chemistry, and even then no molecule is built until a component is looked up:
+every entry of the publisher pickle is ``Mol(blob)`` followed by
+``__setstate__(({},))``, so the load records those arguments and replays the
+same two calls for the handful of components a job names. Building all
+~50,000 molecules took ~3.6 s and freeing them another ~1.3 s per process.
 """
 
 from __future__ import annotations
@@ -36,12 +39,99 @@ _CCD_CACHE_LOCK = RLock()
 _CACHED_STORE_REF: weakref.ReferenceType[Any] | None = None
 
 
+class _DeferredMolecule:
+    """The constructor arguments and state pickle would give one ``Mol``."""
+
+    __slots__ = ("args", "state")
+
+    def __init__(self, *args: Any) -> None:
+        self.args = args
+        self.state: Any = _NO_STATE
+
+    def __setstate__(self, state: Any) -> None:
+        self.state = state
+
+
+_NO_STATE = object()
+
+
+class _DeferringUnpickler(pickle.Unpickler):
+    """Admit only RDKit's ``Mol`` global, and defer building it.
+
+    This is narrower than the plain ``pickle.load`` it replaces, which would
+    resolve any global the verified file named.
+    """
+
+    def find_class(self, module: str, name: str) -> Any:
+        if (module, name) == ("rdkit.Chem.rdchem", "Mol"):
+            return _DeferredMolecule
+        raise pickle.UnpicklingError(
+            f"ESMFold2 ccd.pkl names an unexpected global {module}.{name}"
+        )
+
+
+class _DeferredMolecules:
+    """Component name -> source ``Mol``, built on first lookup and kept.
+
+    Building replays what the unpickler would have done with the same bytes:
+    ``REDUCE`` calls ``Mol(*args)`` and ``BUILD`` calls ``__setstate__``.
+    """
+
+    def __init__(self, entries: dict[str, _DeferredMolecule]) -> None:
+        self._entries = entries
+        # Keyed by record, not by name: a memo-shared value is one object in
+        # the pickle and stays one object here.
+        self._built: dict[int, Any] = {}
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def __contains__(self, component: object) -> bool:
+        return component in self._entries
+
+    def get(self, component: str, default: Any = None) -> Any:
+        entry = self._entries.get(component)
+        if entry is None:
+            return default
+        with _CCD_CACHE_LOCK:  # two threads must not build two objects
+            try:
+                return self._built[id(entry)]
+            except KeyError:
+                pass
+            from rdkit.Chem import rdchem
+
+            molecule = rdchem.Mol(*entry.args)
+            molecule.__setstate__(entry.state)
+            self._built[id(entry)] = molecule
+            return molecule
+
+
+def _read_deferred(handle: Any, path: Path) -> _DeferredMolecules:
+    value = _DeferringUnpickler(handle).load()
+    if not isinstance(value, dict):
+        raise ValueError(f"ESMFold2 CCD is not a component dictionary: {path}")
+    for component, entry in value.items():
+        # The registered file has exactly this shape; anything else is a
+        # format this replay was not proven against.
+        if (
+            not isinstance(component, str)
+            or not isinstance(entry, _DeferredMolecule)
+            or len(entry.args) != 1
+            or not isinstance(entry.args[0], bytes)
+            or entry.state is _NO_STATE
+        ):
+            raise ValueError(
+                f"ESMFold2 CCD entry {component!r} is not a pickled RDKit Mol: {path}"
+            )
+    return _DeferredMolecules(value)
+
+
 class CCDStore:
     """Lazy, path-bound view of Biohub's verified RDKit molecule dictionary."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
-        self._molecules: dict[str, Any] | None = None
+        self._molecules: _DeferredMolecules | dict[str, Any] | None = None
         self._molecule_cache: OrderedDict[str, Any] = OrderedDict()
         self._conformer_cache: OrderedDict[str, Any] = OrderedDict()
         self._atom_cache: OrderedDict[str, Any] = OrderedDict()
@@ -69,11 +159,11 @@ class CCDStore:
             cache.popitem(last=False)
         return value
 
-    def _load(self) -> dict[str, Any]:
+    def _load(self) -> _DeferredMolecules | dict[str, Any]:
         with _CCD_CACHE_LOCK:
             return self._load_locked()
 
-    def _load_locked(self) -> dict[str, Any]:
+    def _load_locked(self) -> _DeferredMolecules | dict[str, Any]:
         if self._molecules is not None:
             return self._molecules
         if not self.path.is_file():
@@ -103,9 +193,7 @@ class CCDStore:
                 f"(SHA-256 mismatch): {self.path}"
             )
         with self.path.open("rb") as handle:
-            value = pickle.load(handle)  # noqa: S301
-        if not isinstance(value, dict):
-            raise ValueError(f"ESMFold2 CCD is not a component dictionary: {self.path}")
+            value = _read_deferred(handle, self.path)
         self._molecules = value
         return value
 

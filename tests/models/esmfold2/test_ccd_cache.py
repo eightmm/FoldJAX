@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import gc
+import io
+import os
+import pickle
 import weakref
+
+import pytest
 
 from foldjax.models.esmfold2.data import ccd
 
@@ -64,3 +69,67 @@ def test_release_helper_reports_only_a_loaded_cached_dictionary(tmp_path) -> Non
         assert current_unloaded._molecules is None  # noqa: SLF001
     finally:
         ccd._cached_store.cache_clear()
+
+
+def _read(payload: bytes, tmp_path):
+    return ccd._read_deferred(io.BytesIO(payload), tmp_path / "ccd.pkl")
+
+
+def test_deferred_molecules_replay_exactly_what_pickle_builds(tmp_path) -> None:
+    chem = pytest.importorskip("rdkit.Chem")
+    from rdkit.Chem import AllChem
+
+    serine = chem.AddHs(chem.MolFromSmiles("N[C@@H](CO)C(=O)O"))
+    for atom in serine.GetAtoms():
+        atom.SetProp("name", f"A{atom.GetIdx()}")
+        atom.SetProp("leaving_atom", "1" if atom.GetIdx() == 6 else "0")
+    AllChem.EmbedMolecule(serine, randomSeed=7)
+    serine.GetConformer().SetProp("name", "Ideal")
+    shared = chem.MolFromSmiles("CCO")
+    # Biohub's file carries atom and conformer names; RDKit pickles them only
+    # when asked to.
+    previous = chem.GetDefaultPickleProperties()
+    chem.SetDefaultPickleProperties(chem.PropertyPickleOptions.AllProps)
+    try:
+        payload = pickle.dumps({"SER": serine, "EOH": shared, "ALIAS": shared})
+    finally:
+        chem.SetDefaultPickleProperties(previous)
+
+    eager = pickle.loads(payload)  # noqa: S301 - a payload this test built
+    deferred = _read(payload, tmp_path)
+
+    assert len(deferred) == 3
+    assert "SER" in deferred and "NOPE" not in deferred
+    assert deferred.get("NOPE") is None
+    options = (
+        chem.PropertyPickleOptions.AllProps
+        | chem.PropertyPickleOptions.CoordsAsDouble
+    )
+    for component, molecule in eager.items():
+        replayed = deferred.get(component)
+        assert type(replayed) is type(molecule)
+        assert replayed.ToBinary(options) == molecule.ToBinary(options)
+        assert deferred.get(component) is replayed
+    # One pickled object stays one object, as `pickle.loads` keeps it.
+    assert eager["EOH"] is eager["ALIAS"]
+    assert deferred.get("EOH") is deferred.get("ALIAS")
+
+    store = ccd.CCDStore(tmp_path / "unused.pkl")
+    store._molecules = deferred  # noqa: SLF001 - the loaded state
+    reference = ccd.CCDStore(tmp_path / "unused.pkl")
+    reference._molecules = eager  # noqa: SLF001
+    assert store.atoms("SER") == reference.atoms("SER")
+    assert store.bonds("SER") == reference.bonds("SER")
+    assert store.leaving_atoms("SER") == reference.leaving_atoms("SER") == {"A6"}
+    replayed_conformer = store.conformer("SER")
+    for name, position in reference.conformer("SER").items():
+        assert replayed_conformer[name].tobytes() == position.tobytes()
+
+
+def test_deferred_reader_admits_only_rdkit_molecules(tmp_path) -> None:
+    with pytest.raises(pickle.UnpicklingError, match="unexpected global"):
+        _read(pickle.dumps({"X": os.getcwd}), tmp_path)
+    with pytest.raises(ValueError, match="not a pickled RDKit Mol"):
+        _read(pickle.dumps({"X": 1}), tmp_path)
+    with pytest.raises(ValueError, match="not a component dictionary"):
+        _read(pickle.dumps([]), tmp_path)
