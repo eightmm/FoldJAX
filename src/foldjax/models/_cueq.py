@@ -62,7 +62,55 @@ def load_cueq():
             "cuda13 extra or select the XLA triangle-attention backend"
         )
         raise RuntimeError(msg) from error
+    _memoize_dual_gemm_kernel()
     return cuex
+
+
+#: The wheel whose ``_get_autotuned_kernel`` was read for the memoization below.
+_DUAL_GEMM_MEMOIZED_VERSION = "0.11.1"
+
+
+def _memoize_dual_gemm_kernel() -> None:
+    """Skip the dual-GEMM kernel lookup's per-lowering config rebuild.
+
+    ``cuequivariance_jax 0.11.1``'s ``_get_autotuned_kernel(is_forward)``
+    builds a 1,572,864-entry ``input_configs`` list (about a second on the
+    campaign host) *before* it checks its module globals
+    ``_autotuned_forward``/``_autotuned_backward``, and every lowering of the
+    fused triangle multiplication calls it. Once a global is set the function
+    returns that same object and the list is garbage, so answering from the
+    global first is the function's own result without the rebuild -- the
+    kernel object, and so the lowered module, cannot differ. The first call per
+    direction still goes through the original, which is where the wheel's
+    ``CUEQ_TRITON_TUNING`` handling lives.
+
+    Pinned to the version it was read from and a no-op when the names it
+    relies on are missing, so a wheel that reshapes this code is left alone.
+    """
+    try:
+        from importlib.metadata import version
+
+        if version("cuequivariance_jax") != _DUAL_GEMM_MEMOIZED_VERSION:
+            return
+        from cuequivariance_jax.triangle import _sigmoid_gated_dual_gemm as gemm
+    except Exception:  # noqa: BLE001 -- an optimisation never blocks the kernel
+        return
+    original = getattr(gemm, "_get_autotuned_kernel", None)
+    if (
+        original is None
+        or getattr(original, "_foldjax_memoized", False)
+        or not hasattr(gemm, "_autotuned_forward")
+        or not hasattr(gemm, "_autotuned_backward")
+    ):
+        return
+
+    def _get_autotuned_kernel(is_forward: bool):
+        kernel = gemm._autotuned_forward if is_forward else gemm._autotuned_backward
+        return original(is_forward) if kernel is None else kernel
+
+    _get_autotuned_kernel._foldjax_memoized = True  # type: ignore[attr-defined]
+    _get_autotuned_kernel.__wrapped__ = original  # type: ignore[attr-defined]
+    gemm._get_autotuned_kernel = _get_autotuned_kernel
 
 
 def triangle_multiplication_precision(cuex, *, dtype):
