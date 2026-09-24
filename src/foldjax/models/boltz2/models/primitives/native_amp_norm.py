@@ -148,14 +148,15 @@ def _cuda_layer_norm_shared(x, scale, bias, *, eps, out_dtype):
 #: 1024 elements beat or matched one row per program at every width with a
 #: float32 output (width 256: 1.18 -> 0.80 ms and 5.78 -> 2.63 ms), and
 #: larger blocks collapse (width 256 at 4096: up to 16x slower). A bfloat16
-#: output at width 256 -- ESMFold2's pair norms -- gained nothing at any
-#: block (4 rows: +2-4%), so it keeps one row per program.
+#: output at width 256 -- ESMFold2's pair norms -- takes two rows per program:
+#: the job 2391 sweep put 2 rows at 1.33-2.09x the one-row kernel at 16,256 to
+#: 1,006,009 rows, while the 1024-element block (4 rows) was 0.95-1.02x.
 _NORM_BLOCK_ELEMENTS = 1024
 
 
 def _norm_row_block(rows: int, width: int, out_dtype=jnp.float32) -> int:
     if width == 256 and jnp.dtype(out_dtype) != jnp.dtype(jnp.float32):
-        return 1
+        return min(2, 1 << max(0, rows - 1).bit_length())
     block = max(1, _NORM_BLOCK_ELEMENTS // width)
     return min(block, 1 << max(0, rows - 1).bit_length())
 
