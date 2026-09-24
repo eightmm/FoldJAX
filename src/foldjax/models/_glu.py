@@ -47,7 +47,20 @@ def _fused(
     weights: jnp.ndarray,
     activation: Callable[[jax.Array], jax.Array],
 ) -> jnp.ndarray:
-    if jax.default_backend() != "gpu":
+    import tokamax
+    from absl import flags
+
+    # tokamax reads absl flags for its autotuning policy and raises if the
+    # process never parsed any. A library caller has no argv to give it.
+    if not flags.FLAGS.is_parsed():
+        flags.FLAGS(["foldjax.models"], known_only=True)
+    try:
+        return tokamax.gated_linear_unit(
+            x=x, weights=weights, activation=activation, implementation="triton"
+        )
+    except (ValueError, ExceptionGroup) as error:
+        if jax.default_backend() == "gpu":
+            raise
         # tokamax skips its Triton implementation off a GPU and then raises an
         # ExceptionGroup over an empty list, which says nothing; say what the
         # pinned kernel needs and which spelling runs here instead.
@@ -58,17 +71,7 @@ def _fused(
             "to run the XLA unit here, which rounds low-precision activations "
             "differently from the fused kernel"
         )
-        raise ValueError(msg)
-    import tokamax
-    from absl import flags
-
-    # tokamax reads absl flags for its autotuning policy and raises if the
-    # process never parsed any. A library caller has no argv to give it.
-    if not flags.FLAGS.is_parsed():
-        flags.FLAGS(["foldjax.models"], known_only=True)
-    return tokamax.gated_linear_unit(
-        x=x, weights=weights, activation=activation, implementation="triton"
-    )
+        raise ValueError(msg) from error
 
 
 def gated_linear_unit(
