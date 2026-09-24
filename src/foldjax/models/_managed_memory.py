@@ -26,6 +26,22 @@ class _LeaseState:
 
 _REGISTRY_LOCK = RLock()
 _LEASES: dict[Hashable, _LeaseState] = {}
+_RECLAIM_AT_RELEASE = True
+
+
+def set_reclaim_at_release(enabled: bool) -> None:
+    """Choose whether releasing a loaded cache also collects and trims.
+
+    The cache is dropped either way, so its memory goes back to the allocator
+    for whatever the process does next. Only the full ``gc.collect()`` and
+    ``malloc_trim`` -- which hand pages back to the operating system, ~0.5 s
+    in a warm ESMFold2 prediction -- are skipped. That is for a process that
+    owns its lifetime, such as the CLI; a library would be deciding for its
+    host, so the default reclaims.
+    """
+
+    global _RECLAIM_AT_RELEASE
+    _RECLAIM_AT_RELEASE = bool(enabled)
 
 
 def _malloc_trim() -> None:
@@ -52,7 +68,7 @@ def _cleanup(state: _LeaseState) -> None:
         loaded = bool(state.release_cache())
     except BaseException:
         pass
-    if not loaded:
+    if not loaded or not _RECLAIM_AT_RELEASE:
         return
     try:
         gc.collect()
@@ -96,4 +112,4 @@ def lease(
                     _cleanup(state)
 
 
-__all__ = ["lease"]
+__all__ = ["lease", "set_reclaim_at_release"]

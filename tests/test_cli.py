@@ -1278,3 +1278,18 @@ def test_discovery_commands_leave_the_collector_alone(capsys, gc_threshold) -> N
     assert main(["models"]) == 0
     capsys.readouterr()
     assert gc_threshold.get_threshold() == (700, 10, 10)
+
+
+def test_only_predict_skips_the_release_reclaim(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from foldjax.models import _managed_memory
+
+    monkeypatch.setattr(_managed_memory, "_RECLAIM_AT_RELEASE", True)
+    assert main(["models"]) == 0
+    capsys.readouterr()
+    assert _managed_memory._RECLAIM_AT_RELEASE is True
+
+    _reached_predict(tmp_path, monkeypatch)
+    capsys.readouterr()
+    assert _managed_memory._RECLAIM_AT_RELEASE is False

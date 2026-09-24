@@ -1178,6 +1178,21 @@ def _apply_gc_threshold() -> None:
     gc.set_threshold(*PREDICT_GC_THRESHOLD)
 
 
+def _skip_release_reclaim() -> None:
+    """Drop chemistry caches at a session end without the collect and trim.
+
+    The library follows each release of a loaded cache with a full
+    ``gc.collect()`` and ``malloc_trim``, handing the pages back to the
+    operating system. A prediction process exits after its batch, or reuses
+    that freed memory for the next model in it, so the pass is pure cost here:
+    0.33 s of full collection in a warm 254-token ESMFold2 process (fixed-cost
+    job 2391). Same restriction as `_apply_gc_threshold`.
+    """
+    from foldjax.models import _managed_memory
+
+    _managed_memory.set_reclaim_at_release(False)
+
+
 def _requested_cp_devices(args: argparse.Namespace) -> int:
     """How many devices this invocation asked context parallelism for.
 
@@ -1286,6 +1301,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _apply_mem_fraction(args.mem_fraction)
         _apply_rendezvous_timeout(args)
         _apply_gc_threshold()
+        _skip_release_reclaim()
     elif args.command == "plan":
         _validate_mem_fraction(args.mem_fraction)
     if args.command == "models":

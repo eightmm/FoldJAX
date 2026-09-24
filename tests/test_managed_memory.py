@@ -50,6 +50,29 @@ def test_an_unloaded_cache_skips_collection_and_trim(
     assert events == ["clear"]
 
 
+def test_a_process_that_owns_its_lifetime_releases_without_reclaiming(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(
+        _managed_memory.gc, "collect", lambda: events.append("collect") or 0
+    )
+    monkeypatch.setattr(
+        _managed_memory, "_malloc_trim", lambda: events.append("trim")
+    )
+    monkeypatch.setattr(_managed_memory, "_RECLAIM_AT_RELEASE", True)
+
+    _managed_memory.set_reclaim_at_release(False)
+    with _managed_memory.lease("owned", lambda: events.append("clear") or True):
+        pass
+    assert events == ["clear"]
+
+    _managed_memory.set_reclaim_at_release(True)
+    with _managed_memory.lease("owned", lambda: events.append("clear") or True):
+        pass
+    assert events == ["clear", "clear", "collect", "trim"]
+
+
 def test_cleanup_failures_never_replace_the_prediction_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

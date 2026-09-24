@@ -67,6 +67,18 @@ def _isolate_native_asset_environment() -> Iterator[None]:
                 os.environ[name] = value
 
 
+@pytest.fixture(autouse=True)
+def _restore_release_reclaim() -> Iterator[None]:
+    """`foldjax predict` turns the reclaim off for its process; undo that here."""
+    from foldjax.models import _managed_memory
+
+    saved = _managed_memory._RECLAIM_AT_RELEASE
+    try:
+        yield
+    finally:
+        _managed_memory._RECLAIM_AT_RELEASE = saved
+
+
 @pytest.fixture
 def ccd_components() -> Path:
     """The released ``components.cif``, or skip the test.
