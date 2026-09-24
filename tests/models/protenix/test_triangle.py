@@ -359,14 +359,16 @@ def test_blocked_triangle_destination_width_does_not_change_the_result(
     real = triangle_mod._triangle_contract
     seen: dict[str, object] = {}
 
-    def spy(project_a, z_norm, mask_arg, b, direction, chunk_size, out_dtype):
-        narrow = real(project_a, z_norm, mask_arg, b, direction, chunk_size, out_dtype)
+    def spy(project_a, z_norm, mask_arg, b, direction, chunk_size, out_dtype, **kw):
+        narrow = real(
+            project_a, z_norm, mask_arg, b, direction, chunk_size, out_dtype, **kw
+        )
         seen["chunk_size"] = chunk_size
         seen["out_dtype"] = out_dtype
         seen["narrow"] = narrow
         # The pre-change code, exactly: a float32 destination the caller casts.
         seen["wide"] = real(
-            project_a, z_norm, mask_arg, b, direction, chunk_size, jnp.float32
+            project_a, z_norm, mask_arg, b, direction, chunk_size, jnp.float32, **kw
         )
         return narrow
 
@@ -404,6 +406,132 @@ def test_blocked_triangle_matches_the_unblocked_contraction(monkeypatch) -> None
         blocked = triangle_multiplication(z, mask, params, direction, chunk_size=2)
         np.testing.assert_allclose(
             np.asarray(blocked), np.asarray(whole), rtol=1e-6, atol=1e-6
+        )
+
+
+def test_overlapping_tail_contracts_every_row_as_the_padded_form_does() -> None:
+    """The overlapping tail rewrites rows with the values they already hold.
+
+    Contraction only, from a fixed normalised input, so what is compared is
+    the claim the overlap rests on: every row comes out of a chunk-shaped
+    block, and a row's result does not depend on which rows share its block.
+    Bit for bit, both directions, at a ragged and at an even row count.
+    """
+    from foldjax.models.protenix.models.triangle import triangle as triangle_mod
+
+    rng = np.random.default_rng(17)
+    for n, chunk in ((45, 8), (40, 8)):
+        z_norm = jnp.asarray(rng.normal(size=(n, n, 6)), jnp.bfloat16)
+        mask = jnp.asarray(rng.integers(0, 2, size=(n, n, 1)), jnp.bfloat16)
+        b = jnp.asarray(rng.normal(size=(n, n, 5)), jnp.bfloat16)
+        weight = jnp.asarray(rng.normal(size=(6, 5)), jnp.bfloat16)
+
+        def project_a(rows, mask_rows, weight=weight):
+            return mask_rows * (rows @ weight)
+
+        for direction in ("outgoing", "incoming"):
+            padded, overlapped = (
+                np.asarray(
+                    triangle_mod._triangle_contract(
+                        project_a,
+                        z_norm,
+                        mask,
+                        b,
+                        direction,
+                        chunk,
+                        jnp.bfloat16,
+                        ragged_tail=tail,
+                    ).astype(jnp.float32)
+                )
+                for tail in ("pad", "overlap")
+            )
+            assert not np.all(padded == 0.0)
+            np.testing.assert_array_equal(overlapped, padded)
+
+
+def test_overlapping_tail_matches_the_padded_multiplication(monkeypatch) -> None:
+    """Same function end to end, to float32 rounding (fusions may differ)."""
+    monkeypatch.setenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", "xla")
+    rng = np.random.default_rng(19)
+    z = jnp.asarray(rng.normal(size=(9, 9, 4)).astype(np.float32))
+    mask = jnp.asarray(rng.integers(0, 2, size=(9, 9)).astype(np.float32))
+    params = map_triangle_multiplication_state_dict(
+        _triangle_state(rng, c_z=4, c_hidden=5), "tri"
+    )
+    for direction in ("outgoing", "incoming"):
+        padded = triangle_multiplication(z, mask, params, direction, chunk_size=4)
+        overlapped = triangle_multiplication(
+            z, mask, params, direction, chunk_size=4, ragged_tail="overlap"
+        )
+        np.testing.assert_allclose(
+            np.asarray(overlapped), np.asarray(padded), rtol=1e-6, atol=1e-6
+        )
+
+
+def test_overlapping_tail_holds_neither_the_padded_copy_nor_a_shared_init(
+    monkeypatch,
+) -> None:
+    """What the option is for, read off the compiled program's temp bytes.
+
+    Two blocked multiplications in sequence, as a Pairformer block runs them.
+    The padded form holds `pad(z_norm)` in each loop and, because the two zero
+    destinations are one merged constant, keeps the second loop's init live
+    across the first. How much of that the CPU backend's arena shows depends
+    on its packing: 1.2 bf16 [N, N, c] tensors at this shape, 3.6 at
+    (64, 32, 12) (measured 2026-09-24). One tensor is asserted -- the padded
+    copy, which every shape shows. The GPU compile this exists for dropped
+    both, 11.7 GiB each, and that is checked on the card, not here.
+    """
+    import jax
+
+    monkeypatch.setenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", "xla")
+    rng = np.random.default_rng(23)
+    n, c, chunk = 45, 32, 8
+    params = map_triangle_multiplication_state_dict(
+        _triangle_state(rng, c_z=c, c_hidden=c), "tri"
+    )
+    params = jax.tree.map(lambda leaf: jnp.asarray(leaf, jnp.bfloat16), params)
+    z = jax.ShapeDtypeStruct((n, n, c), jnp.bfloat16)
+    mask = jax.ShapeDtypeStruct((n, n), jnp.bfloat16)
+
+    def block(tail):
+        def run(z, mask):
+            z = z + triangle_multiplication(
+                z, mask, params, "outgoing", chunk_size=chunk, ragged_tail=tail
+            )
+            return z + triangle_multiplication(
+                z, mask, params, "incoming", chunk_size=chunk, ragged_tail=tail
+            )
+
+        return run
+
+    temp = {
+        tail: jax.jit(block(tail))
+        .lower(z, mask)
+        .compile()
+        .memory_analysis()
+        .temp_size_in_bytes
+        for tail in ("pad", "overlap")
+    }
+    pair_bytes = n * n * c * 2
+    assert temp["pad"] - temp["overlap"] >= pair_bytes, temp
+
+
+def test_overlapping_tail_refuses_a_mesh(monkeypatch) -> None:
+    from foldjax.models.protenix.models.triangle import triangle as triangle_mod
+
+    monkeypatch.setattr(triangle_mod, "cp_mesh", lambda: object())
+    z_norm = jnp.zeros((9, 9, 2))
+    with pytest.raises(RuntimeError, match="serial-only"):
+        triangle_mod._triangle_contract(
+            lambda rows, mask_rows: rows,
+            z_norm,
+            jnp.ones((9, 9, 1)),
+            z_norm,
+            "outgoing",
+            4,
+            jnp.float32,
+            ragged_tail="overlap",
         )
 
 

@@ -82,6 +82,13 @@ def _triangle_attention_backend() -> str:
 
 TriangleDirection = Literal["outgoing", "incoming"]
 
+#: How the blocked multiplication handles a row count that is not a whole
+#: number of blocks. ``"pad"`` is Protenix's and the default: pad the rows and
+#: slice back. ``"overlap"`` starts the last block early instead and keeps a
+#: per-call destination init; see `_triangle_contract_overlapping`. The two
+#: compute the same function but are different programs, so a port opts in.
+RaggedTail = Literal["pad", "overlap"]
+
 
 class TriangleMultiplicationParams(NamedTuple):
     """Parameters for ``TriangleMultiplicativeUpdate``."""
@@ -112,6 +119,7 @@ def triangle_multiplication(
     *,
     chunk_size: int | None = None,
     use_jit: bool = False,
+    ragged_tail: RaggedTail = "pad",
 ) -> jnp.ndarray:
     """Apply Protenix triangle multiplication without eval in-place mutation."""
 
@@ -133,6 +141,7 @@ def triangle_multiplication(
             direction,
             chunk_size=chunk_size,
             use_jit=False,
+            ragged_tail=ragged_tail,
         )
     if mask is None:
         mask = jnp.ones(z.shape[:-1], dtype=z.dtype)
@@ -241,6 +250,7 @@ def triangle_multiplication(
         contract_direction,
         chunk_size,
         z.dtype,
+        ragged_tail=ragged_tail,
     )
     # Pin the contraction result to the pair layout before the epilogue; the
     # partitioner otherwise sometimes materialises it replicated.
@@ -253,7 +263,7 @@ def triangle_multiplication(
 
 _compiled_triangle_multiplication = jax.jit(
     triangle_multiplication,
-    static_argnames=("direction", "chunk_size", "use_jit"),
+    static_argnames=("direction", "chunk_size", "use_jit", "ragged_tail"),
 )
 
 
@@ -358,6 +368,8 @@ def _triangle_contract(
     direction: TriangleDirection,
     chunk_size: int | None,
     out_dtype: jnp.dtype,
+    *,
+    ragged_tail: RaggedTail = "pad",
 ) -> jnp.ndarray:
     """Contract ``a`` against ``b``, building ``a`` whole or one block at a time.
 
@@ -413,6 +425,12 @@ def _triangle_contract(
     # construction. The row axis is padded to a whole number of blocks (mask
     # is zero-padded, so the padded rows project to zeros) and the result is
     # sliced back.
+    if ragged_tail == "overlap":
+        return _triangle_contract_overlapping(
+            project_a, z_norm, mask, b, direction, chunk_size, out_dtype
+        )
+    if ragged_tail != "pad":
+        raise ValueError(f"unsupported ragged_tail: {ragged_tail!r}")
     pad = (-n) % chunk_size
     z_blocked = z_norm
     mask_blocked = mask
@@ -443,6 +461,75 @@ def _triangle_contract(
     )
     if pad:
         out = jax.lax.slice_in_dim(out, 0, n, axis=-3)
+    return out
+
+
+def _triangle_contract_overlapping(
+    project_a: Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray],
+    z_norm: jnp.ndarray,
+    mask: jnp.ndarray,
+    b: jnp.ndarray,
+    direction: TriangleDirection,
+    chunk_size: int,
+    out_dtype: jnp.dtype,
+) -> jnp.ndarray:
+    """The blocked contraction without a padded copy or a shared destination.
+
+    Two [N, N, c] buffers the padded form holds at the peak of every blocked
+    multiplication, both read off OpenDDE's GPU compile at 4,040 structural
+    tokens (`foldjax-bench/opendde-2k-20260924`, job 2332):
+
+    * ``pad(z_norm)``, a full copy of the normalised pair representation, live
+      for the whole loop next to the ``b`` projection it was built beside.
+      Here a ragged last block starts at ``n - chunk_size`` instead, so it
+      overlaps the block before it and rewrites those rows. Every block has
+      the same shape, and an output row depends only on its own row of ``a``
+      and on the whole of ``b``, so the rewritten rows get the values they
+      already held.
+    * the zero destination. A constant broadcast is common to the outgoing and
+      incoming calls, XLA merged the two into one buffer, and the first loop
+      then ran on a copy while the original stayed live across it as the
+      second loop's init. An init computed from this call's own input is not
+      common to the two calls. Its values (NaN where ``z_norm`` is not finite)
+      are overwritten before anything reads them: the blocks cover every row.
+
+    Same function as the padded form, not the same program: moving the tail
+    and the init changes which fusions XLA forms around ``z_norm``, and on the
+    CPU backend that moved Protenix's replay parity by a last-bit amount. So
+    it is opt-in (``ragged_tail="overlap"``), and serial only: under a mesh
+    the caller passes no chunk size, and this refuses rather than trusting
+    that, because a chain of updates on a sharded axis -- which this loop with
+    its overlapping tail would be -- is a pattern XLA SPMD has miscompiled in
+    this codebase before (rows at shard boundaries corrupted).
+    """
+    if cp_mesh() is not None:
+        raise RuntimeError(
+            "the overlapping blocked triangle contraction is serial-only; under "
+            "context parallelism the contraction must run whole"
+        )
+    n = z_norm.shape[-3]
+    axis = -3 if direction == "outgoing" else -2
+    last = n - chunk_size
+    starts = jnp.asarray([*range(0, last, chunk_size), last], dtype=jnp.int32)
+
+    def body(out: jnp.ndarray, start: jnp.ndarray):
+        a_block = project_a(
+            jax.lax.dynamic_slice_in_dim(z_norm, start, chunk_size, axis=axis),
+            jax.lax.dynamic_slice_in_dim(mask, start, chunk_size, axis=axis),
+        )
+        block = _triangle_contract_block(a_block, b, direction).astype(out_dtype)
+        return (
+            jax.lax.dynamic_update_slice_in_dim(out, block, start, axis=-3),
+            None,
+        )
+
+    shape = list(z_norm.shape)
+    shape[-1] = b.shape[-1]
+    # Multiplying by zero rather than selecting keeps it one elementwise fusion.
+    anchor = jax.lax.slice_in_dim(
+        jax.lax.slice_in_dim(z_norm, 0, 1, axis=-3), 0, 1, axis=-2
+    )[..., :1].astype(out_dtype)
+    out, _ = jax.lax.scan(body, jnp.zeros(shape, dtype=out_dtype) * anchor, starts)
     return out
 
 

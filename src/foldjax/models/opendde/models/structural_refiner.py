@@ -67,6 +67,11 @@ def structural_refiner_block(
         triangle_mul_chunk_size=triangle_mul_chunk_size,
         triangle_att_q_chunk_size=triangle_att_q_chunk_size,
         triangle_attention_backend=triangle_attention_backend,
+        # At 4,040 structural tokens this branch's blocked multiplication held
+        # a padded copy of the normalised pair tensor and a merged zero
+        # destination, 11.7 GiB each, at its peak; the overlapping tail drops
+        # both. See `triangle._triangle_contract_overlapping`.
+        triangle_mul_ragged_tail="overlap",
     )
     if params.attention_pair_bias is None or params.single_transition is None:
         raise ValueError("structural refiner requires the Pairformer single path")

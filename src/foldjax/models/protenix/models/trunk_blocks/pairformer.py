@@ -19,6 +19,7 @@ from foldjax.models.protenix.models.primitives.primitives import (
     transition,
 )
 from foldjax.models.protenix.models.triangle.triangle import (
+    RaggedTail,
     TriangleAttentionParams,
     TriangleMultiplicationParams,
     triangle_multiplication,
@@ -58,10 +59,13 @@ def pairformer_block(
     single_attention_backend: str = "xla",
     triangle_attention_backend: str | None = None,
     glu_backend: str = "xla",
+    triangle_mul_ragged_tail: RaggedTail = "pad",
 ) -> tuple[jnp.ndarray | None, jnp.ndarray]:
     """Apply one inference-mode Protenix Pairformer block.
 
     Dropout is omitted because this port targets inference/eval only.
+    ``triangle_mul_ragged_tail`` is `triangle.RaggedTail`; Protenix keeps the
+    default and OpenDDE's structural refiner opts in to ``"overlap"``.
     """
 
     # Under context parallelism the pair representation is sharded along its
@@ -96,6 +100,7 @@ def pairformer_block(
         "outgoing",
         chunk_size=triangle_mul_chunk_size,
         use_jit=(triangle_attention_backend or "").endswith("_jit"),
+        ragged_tail=triangle_mul_ragged_tail,
     )
     if pair_gate is not None:
         z = z * pair_gate
@@ -106,6 +111,7 @@ def pairformer_block(
         "incoming",
         chunk_size=triangle_mul_chunk_size,
         use_jit=(triangle_attention_backend or "").endswith("_jit"),
+        ragged_tail=triangle_mul_ragged_tail,
     )
     if pair_gate is not None:
         z = z * pair_gate
