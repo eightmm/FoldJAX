@@ -1,6 +1,6 @@
 #!/bin/bash
 # Submit the x43 GPU work as the Slurm account (see the lab-server notes): the
-# shipped-module per-call check, then the model-level rows, cheapest first so an
+# compile-only peak probe, then the model-level rows, cheapest first so an
 # environment fault shows on a short row. Records job ids in submitted.txt.
 #
 #   bash submit.sh [ROW_GLOB]      # default: every rows/*.sbatch
@@ -12,8 +12,8 @@ SB="sudo -n -u sjm0775 sbatch --parsable"
 mkdir -p "$HERE/logs"
 if [ -z "${1:-}" ]; then
   id=$($SB --export=ALL,CODE="$CODE" \
-    /home/jaemin/non-project/optimizing/foldjax-bench/kernel-shootout-20260924/shipcheck.sbatch)
-  echo "shipcheck $id" | tee -a "$HERE/submitted.txt"
+    /home/jaemin/non-project/optimizing/foldjax-bench/kernel-shootout-20260924/peakprobe.sbatch)
+  echo "peakprobe $id" | tee -a "$HERE/submitted.txt"
 fi
 for row in $(ls "$HERE"/rows/${1:-*}.sbatch | sort -t- -k1,1 -k4,4); do
   name=$(basename "$row" .sbatch)

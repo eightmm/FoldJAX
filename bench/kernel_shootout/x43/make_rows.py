@@ -17,6 +17,8 @@ a suffix naming the arm:
              measures what dropping the wheel costs.
 * `-ctl`     the same snapshot with no option: the released path on this code,
              so a difference against x42 can be split into code drift and arm.
+* `-trimul` / `-glu`  Boltz-2 at 1k with only one of the two switches, to
+             attribute the `-pallas` peak.
 
     python make_rows.py SHA            # writes rows/*.sbatch for code-SHA
     python compare.py ROW [ROW ...]    # against x42 (and the -ctl row if any)
@@ -64,10 +66,14 @@ ARMS = {
         "--option confidence_triangle_attention_backend=tokamax",
     ),
     "ctl": lambda model: ("", ""),
+    # Boltz-2's 1k peak rose 2.7 GiB under `-pallas` (x43 round 1); these two
+    # split it between the multiplication kernels and the transition kernel.
+    "trimul": lambda model: (ENV[model], ""),
+    "glu": lambda model: ("", "--option glu_backend=pallas"),
 }
-PLAN = [(m, c, "pallas") for m, cases in BASE.items() for c in cases]
+PLAN = [(m, c, arm) for m, cases in BASE.items() for c in cases for arm in ("pallas", "ctl")]
 PLAN += [("protenix", "L3000_6ztx", "nocueq"), ("protenix", "L1000_3og2", "nocueq")]
-PLAN += [(m, "L3000_6ztx", "ctl") for m in BASE]
+PLAN += [("boltz2", "L1000_3og2", "trimul"), ("boltz2", "L1000_3og2", "glu")]
 
 matrix = {r["row_id"]: r for r in csv.DictReader(open(J / "matrix.csv"))}
 (HERE / "rows").mkdir(exist_ok=True)
