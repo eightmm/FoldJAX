@@ -16,6 +16,7 @@ import jax
 import jax.numpy as jnp
 
 from foldjax._openfold3_compile import (
+    FUSED_MULTIPLICATION_KERNELS,
     TRIANGLE_BACKEND_ENV,
     resolve_triangle_kernel,
 )
@@ -123,13 +124,15 @@ def triangle_multiplication(
     rather than raising is what lets the fused path be the default at all.
     """
     if _fused_multiplication_selected(z, params):
+        kernel = resolve_triangle_kernel(None, cp_shards=1)
         if cp_mesh() is not None:
             raise ValueError(
-                "cueq-full triangle multiplication does not support context "
+                f"{kernel} triangle multiplication does not support context "
                 "parallelism; select cueq or xla"
             )
         return _cueq_triangle_multiplication(
-            z, params, outgoing=outgoing, mask=mask, eps=eps
+            z, params, outgoing=outgoing, mask=mask, eps=eps,
+            pallas=kernel == "cueq-pallas",
         )
     z = layer_norm(z, params.layer_norm_in, eps=eps)
     gate_mask = 1.0 if mask is None else mask[..., None]
@@ -196,7 +199,7 @@ def _fused_multiplication_selected(
     so its presence *is* the record that someone chose.
     """
 
-    if resolve_triangle_kernel(None, cp_shards=1) != "cueq-full":
+    if resolve_triangle_kernel(None, cp_shards=1) not in FUSED_MULTIPLICATION_KERNELS:
         return False
     if os.environ.get(TRIANGLE_BACKEND_ENV) is not None:
         return True
@@ -210,8 +213,14 @@ def _cueq_triangle_multiplication(
     outgoing: bool,
     mask: jnp.ndarray | None,
     eps: float,
+    pallas: bool = False,
 ) -> jnp.ndarray:
     """Run the fused cuEquivariance update with upstream's parameter packing.
+
+    ``pallas`` hands the same packing to
+    :func:`foldjax.models._pallas_pair.triangle_multiplication`, which takes
+    cuEquivariance's calling convention and refuses the linear biases this
+    packing can carry.
 
     Upstream's ``_cueq_triangle_mult`` concatenates the ``a``/``b`` gate and
     projection weights along the output axis; the kernel then computes the
@@ -219,7 +228,12 @@ def _cueq_triangle_multiplication(
     in one pass and returns the update without the residual. Leading axes
     beyond ``[N, N, C]`` fold into the kernel's batch axis.
     """
-    from foldjax.models._cueq import fused_triangle_multiplication
+    if pallas:
+        from foldjax.models._pallas_pair import (
+            triangle_multiplication as fused_triangle_multiplication,
+        )
+    else:
+        from foldjax.models._cueq import fused_triangle_multiplication
 
     required = {
         "layer_norm_in.weight": params.layer_norm_in.weight,

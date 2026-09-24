@@ -17,6 +17,7 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import PartitionSpec
 
+from foldjax._openfold3_compile import FUSED_MULTIPLICATION_KERNELS
 from foldjax.models._cp import (
     cp_layout,
     cp_mesh,
@@ -176,9 +177,9 @@ def triangle_attention(
             backend = "xla"
         elif backend is None:
             backend = _default_backend()
-        if backend == "cueq-full":
+        if backend in FUSED_MULTIPLICATION_KERNELS:
             raise ValueError(
-                "cueq-full does not support context parallelism; select cueq or xla"
+                f"{backend} does not support context parallelism; select cueq or xla"
             )
         if backend not in {"xla", "cueq"}:
             raise ValueError(
@@ -199,7 +200,7 @@ def triangle_attention(
         )
     if backend is None:
         backend = _default_backend()
-    if backend == "cueq-full":
+    if backend in FUSED_MULTIPLICATION_KERNELS:
         # The suffix selects the fused multiplication as well; attention itself
         # is the same cuEquivariance kernel either way.
         backend = "cueq"

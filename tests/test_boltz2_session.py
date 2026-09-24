@@ -1259,8 +1259,13 @@ def test_runtime_identity_splits_dtype_and_ambient_triangle_modes(
         jax, cp_devices=1, cp_layout="1d", compile_cache=None
     )
     assert xla_identity != cueq_identity
+    monkeypatch.setenv("BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND", "pallas")
+    pallas_identity = native_api._runtime_identity(
+        jax, cp_devices=1, cp_layout="1d", compile_cache=None
+    )
+    assert pallas_identity not in (xla_identity, cueq_identity)
     monkeypatch.setenv("BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND", "invalid")
-    with pytest.raises(ValueError, match="must be 'cueq' or 'xla'"):
+    with pytest.raises(ValueError, match="must be 'cueq', 'xla' or 'pallas'"):
         native_api._runtime_identity(
             jax, cp_devices=1, cp_layout="1d", compile_cache=None
         )

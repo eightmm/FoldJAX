@@ -114,6 +114,10 @@ def transition_forward(
         # -- and it says so with ``cp_msa``, because a rank-4 shape alone
         # cannot tell the two apart.
         row_chunk_size = 0
+    if glu_backend == "pallas":
+        # The fused kernel never forms the widened hidden state the row block
+        # exists to bound, so there is nothing to block.
+        row_chunk_size = 0
     if row_chunk_size is None:
         row_chunk_size = _auto_row_chunk(x, params)
     return _transition_rows(
@@ -266,6 +270,23 @@ def _transition_rows(
             )
         return jnp.concatenate(blocks, axis=1)
 
+    if glu_backend == "pallas":
+        # One Pallas kernel for LayerNorm, the SwiGLU and fc3. Its norm is a
+        # plain float32 two-pass LayerNorm rather than `amp_layer_norm`'s pinned
+        # CUDA Welford panel; the projections round where autocast rounds them.
+        reject_fused_glu_under_cp(glu_backend)
+        from foldjax.models._pallas_pair import transition
+
+        kernels = [params[name]["kernel"] for name in ("fc1", "fc2", "fc3")]
+        if compute_dtype is not None:
+            kernels = [kernel.astype(compute_dtype) for kernel in kernels]
+        return transition(
+            x,
+            (params["norm"]["scale"], params["norm"]["bias"]),
+            *kernels,
+            eps=eps,
+            out_dtype=compute_dtype if compute_dtype is not None else x.dtype,
+        )
     if compute_dtype is not None:
         # CUDA autocast keeps LayerNorm (including affine) in FP32, then
         # narrows inputs/weights at each Linear boundary.

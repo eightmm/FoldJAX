@@ -446,4 +446,4 @@ def test_the_fused_glu_is_offered_on_protenix_only(
     assert spec is not None, f"{port} no longer declares --glu-backend"
     assert spec["dest"] == "glu_backend"
     assert spec["default"] == "xla"
-    assert spec["choices"] == ("xla", "tokamax")
+    assert spec["choices"] == ("xla", "tokamax", "pallas")

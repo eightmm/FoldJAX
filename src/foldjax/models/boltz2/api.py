@@ -500,10 +500,10 @@ def _runtime_identity(
     triangle_multiplication_backend = os.environ.get(
         "BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND", "cueq"
     )
-    if triangle_multiplication_backend not in {"cueq", "xla"}:
+    if triangle_multiplication_backend not in {"cueq", "xla", "pallas"}:
         raise ValueError(
-            "BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND must be 'cueq' or "
-            f"'xla'; got {triangle_multiplication_backend!r}"
+            "BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND must be 'cueq', 'xla' "
+            f"or 'pallas'; got {triangle_multiplication_backend!r}"
         )
     if cp_devices > 1:
         triangle_multiplication_backend = "xla"

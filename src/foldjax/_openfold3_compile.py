@@ -19,6 +19,13 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 TRIANGLE_BACKEND_ENV = "OPENFOLD3_TRIANGLE_BACKEND"
+
+#: Triangle kernels that run cuEquivariance attention *and* a fused triangle
+#: multiplication: ``cueq-full`` fuses it with cuEquivariance, ``cueq-pallas``
+#: (opt-in, reachable through ``OPENFOLD3_TRIANGLE_BACKEND`` only) with the
+#: Pallas-Triton kernels of ``foldjax.models._pallas_pair``
+#: (foldjax-bench/kernel-shootout-20260924).
+FUSED_MULTIPLICATION_KERNELS = ("cueq-full", "cueq-pallas")
 _TRIANGLE_BACKEND_LOCK = threading.RLock()
 _CACHE_SCOPE_LIMIT = 128
 _CACHE_SCOPE_SNAPSHOTS: OrderedDict[str, tuple[Any, ...]] = OrderedDict()

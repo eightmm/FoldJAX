@@ -158,7 +158,7 @@ def triangle_multiplication(
         has_affine=params.layer_norm_in.weight is not None
         and params.layer_norm_out.weight is not None,
     )
-    if backend == "cueq" and cueq_supported and not cp_active:
+    if backend in {"cueq", "pallas"} and cueq_supported and not cp_active:
         if chunk_size is not None and 0 < chunk_size < z.shape[-3]:
             _warn_unchunkable_multiplication(
                 chunk_size,
@@ -171,8 +171,12 @@ def triangle_multiplication(
             cueq_triangle_multiplication,
         )
 
-        return cueq_triangle_multiplication(z, mask, params, direction)
-    if backend not in {"cueq", "xla"}:
+        # `pallas` (opt-in) runs where cueq runs, on the same packed
+        # parameters: foldjax-bench/kernel-shootout-20260924.
+        return cueq_triangle_multiplication(
+            z, mask, params, direction, kernel=backend
+        )
+    if backend not in {"cueq", "xla", "pallas"}:
         raise ValueError(f"unsupported triangle multiplication backend: {backend!r}")
     mask = mask.astype(z.dtype)[..., None]
     # Same reasoning as the attention: the block belongs to the tensor, not to

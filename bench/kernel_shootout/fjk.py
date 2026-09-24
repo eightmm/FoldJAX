@@ -21,6 +21,8 @@ loaded with one.
 ``INTERPRET = True`` runs every kernel in Pallas interpret mode (CPU checks).
 """
 
+# ruff: noqa: E501, N806 -- bench tooling: long table f-strings, A/B array names
+
 from __future__ import annotations
 
 import functools
@@ -48,7 +50,10 @@ def _pallas_call(kernel, *, num_warps: int, num_stages: int, **kwargs):
 def _mm(a, b):
     """[m, k] @ [k, n] with f32 accumulation (bf16 tensor cores for bf16 inputs)."""
     return lax.dot_general(
-        a, b, (((1,), (0,)), ((), ())), precision=_DEFAULT,
+        a,
+        b,
+        (((1,), (0,)), ((), ())),
+        precision=_DEFAULT,
         preferred_element_type=jnp.float32,
     )
 
@@ -56,7 +61,10 @@ def _mm(a, b):
 def _mm_nt(a, b):
     """[m, k] @ [n, k]^T with f32 accumulation."""
     return lax.dot_general(
-        a, b, (((1,), (1,)), ((), ())), precision=_DEFAULT,
+        a,
+        b,
+        (((1,), (1,)), ((), ())),
+        precision=_DEFAULT,
         preferred_element_type=jnp.float32,
     )
 
@@ -66,8 +74,9 @@ def _mm_nt(a, b):
 # --------------------------------------------------------------------------- #
 
 
-def _flash_kernel(q_ref, k_ref, v_ref, b_ref, m_ref, o_ref, *, n, rows, rb, bq, bk,
-                  scale):
+def _flash_kernel(
+    q_ref, k_ref, v_ref, b_ref, m_ref, o_ref, *, n, rows, rb, bq, bk, scale
+):
     """``rb`` pair rows per program share one load of each bias tile.
 
     The triangle bias is the same for every row, and at f32 it is the largest
@@ -96,9 +105,14 @@ def _flash_kernel(q_ref, k_ref, v_ref, b_ref, m_ref, o_ref, *, n, rows, rb, bq, 
             kmask = kvalid[:, None] & rvalid[i]
             k = plt.load(k_ref.at[jnp.int32(i), ks, :], mask=kmask, other=0.0)
             s = _mm_nt(qs[i], k) * scale + bias
-            s = s + plt.load(
-                m_ref.at[jnp.int32(i), ks], mask=kvalid & rvalid[i], other=float("-inf")
-            )[None, :]
+            s = (
+                s
+                + plt.load(
+                    m_ref.at[jnp.int32(i), ks],
+                    mask=kvalid & rvalid[i],
+                    other=float("-inf"),
+                )[None, :]
+            )
             m_new = jnp.maximum(m_i, jnp.max(s, axis=1))
             p = jnp.exp(s - m_new[:, None])
             alpha = jnp.exp(m_i - m_new)
@@ -120,7 +134,11 @@ def _flash_kernel(q_ref, k_ref, v_ref, b_ref, m_ref, o_ref, *, n, rows, rb, bq, 
     for i in range(rb):
         _, l_i, acc = final[i]
         out = acc / l_i[:, None]
-        plt.store(o_ref.at[jnp.int32(i)], out.astype(o_ref.dtype), mask=qvalid[:, None] & rvalid[i])
+        plt.store(
+            o_ref.at[jnp.int32(i)],
+            out.astype(o_ref.dtype),
+            mask=qvalid[:, None] & rvalid[i],
+        )
 
 
 @functools.partial(
@@ -168,7 +186,9 @@ def _load_chunks(ref, valid, width, kc):
     whole but contracted in K chunks is kept as a list of chunks from the start.
     """
     return [
-        plt.load(ref.at[:, pl.ds(k0, kc)], mask=valid[:, None], other=0.0).astype(jnp.float32)
+        plt.load(ref.at[:, pl.ds(k0, kc)], mask=valid[:, None], other=0.0).astype(
+            jnp.float32
+        )
         for k0 in range(0, width, kc)
     ]
 
@@ -180,8 +200,10 @@ def _ln_chunks(chunks, w_ref, b_ref, eps, kc, dtype):
     var = sum(jnp.sum((c - mean[:, None]) ** 2, axis=1) for c in chunks) / width
     rstd = lax.rsqrt(var + eps)
     return [
-        ((c - mean[:, None]) * rstd[:, None] * w_ref[pl.ds(i * kc, kc)][None, :]
-         + b_ref[pl.ds(i * kc, kc)][None, :]).astype(dtype)
+        (
+            (c - mean[:, None]) * rstd[:, None] * w_ref[pl.ds(i * kc, kc)][None, :]
+            + b_ref[pl.ds(i * kc, kc)][None, :]
+        ).astype(dtype)
         for i, c in enumerate(chunks)
     ]
 
@@ -195,20 +217,39 @@ def _mm_chunks(xs, w_ref, col0, ncol, kc):
     return acc
 
 
-def _k1_kernel(x_ref, m_ref, lw_ref, lb_ref, wp_ref, wg_ref, a_ref, b_ref, *,
-               p_total, bm, hid, eps, kc):
+def _k1_kernel(
+    x_ref,
+    m_ref,
+    lw_ref,
+    lb_ref,
+    wp_ref,
+    wg_ref,
+    a_ref,
+    b_ref,
+    *,
+    p_total,
+    bm,
+    hid,
+    eps,
+    kc,
+):
     i = pl.program_id(0)
     valid = (i * bm + jnp.arange(bm)) < p_total
     c = x_ref.shape[-1]
-    xn = _ln_chunks(_load_chunks(x_ref, valid, c, kc), lw_ref, lb_ref, eps, kc, wp_ref.dtype)
+    xn = _ln_chunks(
+        _load_chunks(x_ref, valid, c, kc), lw_ref, lb_ref, eps, kc, wp_ref.dtype
+    )
     msk = plt.load(m_ref, mask=valid, other=0.0).astype(jnp.float32)
     for half, out_ref in ((0, a_ref), (1, b_ref)):
         for c0 in range(0, hid, kc):
             proj = _mm_chunks(xn, wp_ref, half * hid + c0, kc, kc)
             gate = _mm_chunks(xn, wg_ref, half * hid + c0, kc, kc)
             val = jax.nn.sigmoid(gate) * proj * msk[:, None]
-            plt.store(out_ref.at[pl.ds(c0, kc), :], val.astype(out_ref.dtype).T,
-                      mask=valid[None, :])
+            plt.store(
+                out_ref.at[pl.ds(c0, kc), :],
+                val.astype(out_ref.dtype).T,
+                mask=valid[None, :],
+            )
 
 
 @functools.partial(jax.jit, static_argnames=("eps", "bm", "num_warps", "num_stages"))
@@ -218,8 +259,9 @@ def trimul_k1(x, mask, ln_w, ln_b, w_p, w_g, *, eps, bm=64, num_warps=4, num_sta
     Returns ``a_t, b_t`` channel-major ``[H, P]``."""
     p_total, c = x.shape
     hid = w_p.shape[1] // 2
-    kernel = functools.partial(_k1_kernel, p_total=p_total, bm=bm, hid=hid, eps=eps,
-                               kc=min(c, 128))
+    kernel = functools.partial(
+        _k1_kernel, p_total=p_total, bm=bm, hid=hid, eps=eps, kc=min(c, 128)
+    )
     full = lambda shape: pl.BlockSpec(shape, lambda i: (0,) * len(shape))  # noqa: E731
     out = jax.ShapeDtypeStruct((hid, p_total), w_p.dtype)
     return _pallas_call(
@@ -243,36 +285,74 @@ def trimul_k1(x, mask, ln_w, ln_b, w_p, w_g, *, eps, bm=64, num_warps=4, num_sta
     )(x, mask, ln_w, ln_b, w_p, w_g)
 
 
-def _k2_kernel(e_ref, x_ref, liw_ref, lib_ref, low_ref, lob_ref, wpo_ref, wgo_ref,
-               o_ref, *, p_total, bm, eps, kc):
+def _k2_kernel(
+    e_ref,
+    x_ref,
+    liw_ref,
+    lib_ref,
+    low_ref,
+    lob_ref,
+    wpo_ref,
+    wgo_ref,
+    o_ref,
+    *,
+    p_total,
+    bm,
+    eps,
+    kc,
+):
     i = pl.program_id(0)
     valid = (i * bm + jnp.arange(bm)) < p_total
     hid = e_ref.shape[0]
     e = [
         plt.load(e_ref.at[pl.ds(k0, kc), :], mask=valid[None, :], other=0.0)
-        .astype(jnp.float32).T
+        .astype(jnp.float32)
+        .T
         for k0 in range(0, hid, kc)
     ]
     en = _ln_chunks(e, low_ref, lob_ref, eps, kc, wpo_ref.dtype)
-    xn = _ln_chunks(_load_chunks(x_ref, valid, x_ref.shape[-1], kc), liw_ref, lib_ref, eps,
-                    kc, wgo_ref.dtype)
+    xn = _ln_chunks(
+        _load_chunks(x_ref, valid, x_ref.shape[-1], kc),
+        liw_ref,
+        lib_ref,
+        eps,
+        kc,
+        wgo_ref.dtype,
+    )
     for d0 in range(0, o_ref.shape[-1], kc):
         out = _mm_chunks(en, wpo_ref, d0, kc, kc) * jax.nn.sigmoid(
-            _mm_chunks(xn, wgo_ref, d0, kc, kc))
-        plt.store(o_ref.at[:, pl.ds(d0, kc)], out.astype(o_ref.dtype), mask=valid[:, None])
+            _mm_chunks(xn, wgo_ref, d0, kc, kc)
+        )
+        plt.store(
+            o_ref.at[:, pl.ds(d0, kc)], out.astype(o_ref.dtype), mask=valid[:, None]
+        )
 
 
 @functools.partial(jax.jit, static_argnames=("eps", "bm", "num_warps", "num_stages"))
-def trimul_k2(e_t, x, ln_in_w, ln_in_b, ln_out_w, ln_out_b, w_po, w_go, *, eps,
-              bm=64, num_warps=4, num_stages=2):
+def trimul_k2(
+    e_t,
+    x,
+    ln_in_w,
+    ln_in_b,
+    ln_out_w,
+    ln_out_b,
+    w_po,
+    w_go,
+    *,
+    eps,
+    bm=64,
+    num_warps=4,
+    num_stages=2,
+):
     """e_t ``[H, P]`` (the contraction, channel-major), x ``[P, C]``.
 
     Returns ``[P, D]`` in ``x``'s dtype."""
     hid, p_total = e_t.shape
     c = x.shape[1]
     d = w_po.shape[1]
-    kernel = functools.partial(_k2_kernel, p_total=p_total, bm=bm, eps=eps,
-                               kc=min(c, hid, d, 128))
+    kernel = functools.partial(
+        _k2_kernel, p_total=p_total, bm=bm, eps=eps, kc=min(c, hid, d, 128)
+    )
     full = lambda shape: pl.BlockSpec(shape, lambda i: (0,) * len(shape))  # noqa: E731
     return _pallas_call(
         kernel,
@@ -294,8 +374,9 @@ def trimul_k2(e_t, x, ln_in_w, ln_in_b, ln_out_w, ln_out_b, w_po, w_go, *, eps,
     )(e_t, x, ln_in_w, ln_in_b, ln_out_w, ln_out_b, w_po, w_go)
 
 
-def triangle_multiplication_k1k2(x, mask, params, *, direction, eps, bm1=64, bm2=64,
-                                 warps1=4, warps2=4, stages=2):
+def triangle_multiplication_k1k2(
+    x, mask, params, *, direction, eps, bm1=64, bm2=64, warps1=4, warps2=4, stages=2
+):
     """x ``[N, N, C]`` bf16, mask ``[N, N]``; params in Boltz-2's ``[in, out]``
     layout (``p_in``/``g_in`` ``[C, 2H]``, ``p_out`` ``[H, D]``, ``g_out``
     ``[C, D]``, norms ``scale``/``bias``).  Returns ``[N, N, D]``."""
@@ -303,11 +384,16 @@ def triangle_multiplication_k1k2(x, mask, params, *, direction, eps, bm1=64, bm2
     c = x.shape[-1]
     flat = x.reshape(n * n, c)
     a_t, b_t = trimul_k1(
-        flat, mask.reshape(n * n).astype(jnp.float32),
+        flat,
+        mask.reshape(n * n).astype(jnp.float32),
         params["norm_in"]["scale"].astype(jnp.float32),
         params["norm_in"]["bias"].astype(jnp.float32),
-        params["p_in"]["kernel"], params["g_in"]["kernel"],
-        eps=eps, bm=bm1, num_warps=warps1, num_stages=stages,
+        params["p_in"]["kernel"],
+        params["g_in"]["kernel"],
+        eps=eps,
+        bm=bm1,
+        num_warps=warps1,
+        num_stages=stages,
     )
     hid = a_t.shape[0]
     a_t = a_t.reshape(hid, n, n)
@@ -318,13 +404,18 @@ def triangle_multiplication_k1k2(x, mask, params, *, direction, eps, bm1=64, bm2
         dims = (((1,), (1,)), ((0,), (0,)))  # e[c,i,j] = sum_k a[c,k,i] b[c,k,j]
     e_t = lax.dot_general(a_t, b_t, dims, precision=_DEFAULT)
     out = trimul_k2(
-        e_t.reshape(hid, n * n), flat,
+        e_t.reshape(hid, n * n),
+        flat,
         params["norm_in"]["scale"].astype(jnp.float32),
         params["norm_in"]["bias"].astype(jnp.float32),
         params["norm_out"]["scale"].astype(jnp.float32),
         params["norm_out"]["bias"].astype(jnp.float32),
-        params["p_out"]["kernel"], params["g_out"]["kernel"],
-        eps=eps, bm=bm2, num_warps=warps2, num_stages=stages,
+        params["p_out"]["kernel"],
+        params["g_out"]["kernel"],
+        eps=eps,
+        bm=bm2,
+        num_warps=warps2,
+        num_stages=stages,
     )
     return out.reshape(n, n, -1)
 
@@ -334,13 +425,15 @@ def triangle_multiplication_k1k2(x, mask, params, *, direction, eps, bm1=64, bm2
 # --------------------------------------------------------------------------- #
 
 
-def _transition_kernel(x_ref, lw_ref, lb_ref, w1_ref, w2_ref, w3_ref, o_ref, *,
-                       p_total, bm, fc, eps, kc):
+def _transition_kernel(
+    x_ref, lw_ref, lb_ref, w1_ref, w2_ref, w3_ref, o_ref, *, p_total, bm, fc, eps, kc
+):
     i = pl.program_id(0)
     valid = (i * bm + jnp.arange(bm)) < p_total
     dt = w1_ref.dtype
-    xn = _ln_chunks(_load_chunks(x_ref, valid, x_ref.shape[-1], kc), lw_ref, lb_ref, eps,
-                    kc, dt)
+    xn = _ln_chunks(
+        _load_chunks(x_ref, valid, x_ref.shape[-1], kc), lw_ref, lb_ref, eps, kc, dt
+    )
     c_out = o_ref.shape[-1]
     acc = [jnp.zeros((bm, kc), jnp.float32) for _ in range(0, c_out, kc)]
     for f0 in range(0, w1_ref.shape[1], fc):
@@ -350,20 +443,31 @@ def _transition_kernel(x_ref, lw_ref, lb_ref, w1_ref, w2_ref, w3_ref, o_ref, *,
         for j, c0 in enumerate(range(0, c_out, kc)):
             acc[j] = acc[j] + _mm(g, w3_ref[pl.ds(f0, fc), pl.ds(c0, kc)])
     for j, c0 in enumerate(range(0, c_out, kc)):
-        plt.store(o_ref.at[:, pl.ds(c0, kc)], acc[j].astype(o_ref.dtype), mask=valid[:, None])
+        plt.store(
+            o_ref.at[:, pl.ds(c0, kc)], acc[j].astype(o_ref.dtype), mask=valid[:, None]
+        )
 
 
-@functools.partial(jax.jit, static_argnames=("eps", "bm", "fc", "num_warps", "num_stages"))
-def fused_transition(x, ln_w, ln_b, w1, w2, w3, *, eps, bm=64, fc=128, num_warps=4,
-                     num_stages=2):
+@functools.partial(
+    jax.jit, static_argnames=("eps", "bm", "fc", "num_warps", "num_stages")
+)
+def fused_transition(
+    x, ln_w, ln_b, w1, w2, w3, *, eps, bm=64, fc=128, num_warps=4, num_stages=2
+):
     """x ``[P, C]``; w1/w2 ``[C, F]``, w3 ``[F, C_out]`` (Boltz-2's fc1/fc2/fc3).
 
     ``silu(LN(x) W1) * (LN(x) W2) @ W3`` with the operand rounding of the
     autocast path: each projection rounded to the weight dtype, the activation
     evaluated in f32 and rounded, the product rounded before ``W3``."""
     p_total, c = x.shape
-    kernel = functools.partial(_transition_kernel, p_total=p_total, bm=bm, fc=fc, eps=eps,
-                               kc=min(c, w3.shape[1], 128))
+    kernel = functools.partial(
+        _transition_kernel,
+        p_total=p_total,
+        bm=bm,
+        fc=fc,
+        eps=eps,
+        kc=min(c, w3.shape[1], 128),
+    )
     full = lambda shape: pl.BlockSpec(shape, lambda i: (0,) * len(shape))  # noqa: E731
     return _pallas_call(
         kernel,

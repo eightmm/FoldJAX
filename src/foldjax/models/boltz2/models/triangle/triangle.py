@@ -95,6 +95,26 @@ def triangle_multiplication_forward(
             raise ValueError(msg)
 
     backend = os.getenv("BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND", "cueq")
+    if backend == "pallas" and not cp_active:
+        # Opt-in: the Pallas-Triton K1 -> cuBLAS -> K2 split, ~2x cuEq's
+        # speed at c_z 128 (foldjax-bench/kernel-shootout-20260924). Same
+        # calling convention as the fused cuEq call below, so the parameters
+        # take the same transposes. Under a mesh it resolves to the XLA einsum,
+        # as cueq does.
+        from foldjax.models._pallas_pair import triangle_multiplication
+
+        return triangle_multiplication(
+            x,
+            direction=direction,
+            mask=mask,
+            norm_in=(params["norm_in"]["scale"], params["norm_in"]["bias"]),
+            p_in=(params["p_in"]["kernel"].T, None),
+            g_in=(params["g_in"]["kernel"].T, None),
+            norm_out=(params["norm_out"]["scale"], params["norm_out"]["bias"]),
+            p_out=(params["p_out"]["kernel"].T, None),
+            g_out=(params["g_out"]["kernel"].T, None),
+            eps=eps,
+        )
     if backend == "cueq" and not cp_active:
         from foldjax.models.boltz2.models.triangle.triangle_cueq import (
             cueq_triangle_multiplication_forward,
@@ -103,7 +123,7 @@ def triangle_multiplication_forward(
         return cueq_triangle_multiplication_forward(
             params, x, mask, direction, eps=eps, native_amp=native_amp
         )
-    if backend not in ("xla", "cueq"):
+    if backend not in ("xla", "cueq", "pallas"):
         msg = f"Unsupported triangle multiplication backend: {backend!r}"
         raise ValueError(msg)
 

@@ -9,6 +9,8 @@
     JAX_PLATFORMS=cpu CUDA_VISIBLE_DEVICES= python check_cpu.py
 """
 
+# ruff: noqa: E501, N806 -- bench tooling: long table f-strings, A/B array names
+
 from __future__ import annotations
 
 import sys
@@ -32,7 +34,11 @@ def ln(x, w, b, eps):
 
 def ref_attention(q, k, v, bias, key_mask, scale):
     q, k, v = (t.astype(jnp.float32) for t in (q, k, v))
-    s = jnp.einsum("rqhd,rkhd->rhqk", q, k) * scale + bias[None] + key_mask[:, None, None, :]
+    s = (
+        jnp.einsum("rqhd,rkhd->rhqk", q, k) * scale
+        + bias[None]
+        + key_mask[:, None, None, :]
+    )
     p = jax.nn.softmax(s, axis=-1)
     return jnp.einsum("rhqk,rkhd->rqhd", p, v)
 
@@ -50,7 +56,9 @@ def ref_trimul(x, mask, prm, direction, eps):
     else:
         e = jnp.einsum("kic,kjc->ijc", a, b)
     en = ln(e, f(prm["norm_out"]["scale"]), f(prm["norm_out"]["bias"]), eps)
-    return (en @ f(prm["p_out"]["kernel"])) * jax.nn.sigmoid(xn @ f(prm["g_out"]["kernel"]))
+    return (en @ f(prm["p_out"]["kernel"])) * jax.nn.sigmoid(
+        xn @ f(prm["g_out"]["kernel"])
+    )
 
 
 def ref_transition(x, w, b, w1, w2, w3, eps):
@@ -76,12 +84,14 @@ def interpret_checks() -> list[str]:
     q, k, v = (jnp.asarray(rng.normal(size=(r, n, h, d)), bf) for _ in range(3))
     bias = jnp.asarray(rng.normal(size=(h, n, n)) * 2, jnp.float32)
     km = np.zeros((r, n), np.float32)
-    km[:, n - 3:] = -1e9
+    km[:, n - 3 :] = -1e9
     km[1, 5] = -1e9
     km = jnp.asarray(km)
     expect = ref_attention(q, k, v, bias, km, d**-0.5)
     for rb in (1, 2, 3):
-        out = fjk.flash_triangle_attention(q, k, v, bias, km, scale=d**-0.5, rb=rb, bq=16, bk=16)
+        out = fjk.flash_triangle_attention(
+            q, k, v, bias, km, scale=d**-0.5, rb=rb, bq=16, bk=16
+        )
         err = rel(out, expect)
         print(f"attention rb={rb} interpret rel err {err:.2e}")
         if not err < 2e-2:
@@ -100,20 +110,28 @@ def _pair_checks(rng, c) -> list[str]:
     n, hid = 21, c
     x = jnp.asarray(rng.normal(size=(n, n, c)), bf)
     mask = np.ones((n, n), np.float32)
-    mask[n - 2:, :] = 0
-    mask[:, n - 2:] = 0
+    mask[n - 2 :, :] = 0
+    mask[:, n - 2 :] = 0
     mask = jnp.asarray(mask)
     w = lambda *s: jnp.asarray(rng.normal(size=s) / np.sqrt(s[0]), bf)  # noqa: E731
     prm = {
-        "norm_in": {"scale": jnp.asarray(1 + 0.1 * rng.normal(size=c), jnp.float32),
-                    "bias": jnp.asarray(0.1 * rng.normal(size=c), jnp.float32)},
-        "norm_out": {"scale": jnp.asarray(1 + 0.1 * rng.normal(size=hid), jnp.float32),
-                     "bias": jnp.asarray(0.1 * rng.normal(size=hid), jnp.float32)},
-        "p_in": {"kernel": w(c, 2 * hid)}, "g_in": {"kernel": w(c, 2 * hid)},
-        "p_out": {"kernel": w(hid, c)}, "g_out": {"kernel": w(c, c)},
+        "norm_in": {
+            "scale": jnp.asarray(1 + 0.1 * rng.normal(size=c), jnp.float32),
+            "bias": jnp.asarray(0.1 * rng.normal(size=c), jnp.float32),
+        },
+        "norm_out": {
+            "scale": jnp.asarray(1 + 0.1 * rng.normal(size=hid), jnp.float32),
+            "bias": jnp.asarray(0.1 * rng.normal(size=hid), jnp.float32),
+        },
+        "p_in": {"kernel": w(c, 2 * hid)},
+        "g_in": {"kernel": w(c, 2 * hid)},
+        "p_out": {"kernel": w(hid, c)},
+        "g_out": {"kernel": w(c, c)},
     }
     for direction in ("outgoing", "incoming"):
-        out = fjk.triangle_multiplication_k1k2(x, mask, prm, direction=direction, eps=1e-5)
+        out = fjk.triangle_multiplication_k1k2(
+            x, mask, prm, direction=direction, eps=1e-5
+        )
         err = rel(out, ref_trimul(x, mask, prm, direction, 1e-5))
         print(f"trimul c={c} {direction} interpret rel err {err:.2e}")
         if not err < 3e-2:
@@ -145,49 +163,96 @@ def lowering_checks() -> list[str]:
     n = 100
     cases = {
         "attention": (
-            lambda q, k, v, b, m: fjk.flash_triangle_attention(q, k, v, b, m, scale=0.17, rb=2, bq=64, bk=64),
-            (S((8, n, 4, 32), bf),) * 3 + (S((4, n, n), jnp.float32), S((8, n), jnp.float32)),
+            lambda q, k, v, b, m: fjk.flash_triangle_attention(
+                q, k, v, b, m, scale=0.17, rb=2, bq=64, bk=64
+            ),
+            (S((8, n, 4, 32), bf),) * 3
+            + (S((4, n, n), jnp.float32), S((8, n), jnp.float32)),
         ),
         "trimul_k1": (
-            lambda x, m, w, b, wp, wg: fjk.trimul_k1(x, m, w, b, wp, wg, eps=1e-5, bm=64),
-            (S((n * n, 128), bf), S((n * n,), jnp.float32), S((128,), jnp.float32),
-             S((128,), jnp.float32), S((128, 256), bf), S((128, 256), bf)),
+            lambda x, m, w, b, wp, wg: fjk.trimul_k1(
+                x, m, w, b, wp, wg, eps=1e-5, bm=64
+            ),
+            (
+                S((n * n, 128), bf),
+                S((n * n,), jnp.float32),
+                S((128,), jnp.float32),
+                S((128,), jnp.float32),
+                S((128, 256), bf),
+                S((128, 256), bf),
+            ),
         ),
         "trimul_k2": (
-            lambda e, x, a, b, c, d, wp, wg: fjk.trimul_k2(e, x, a, b, c, d, wp, wg, eps=1e-5, bm=64),
-            (S((128, n * n), bf), S((n * n, 128), bf)) + (S((128,), jnp.float32),) * 4
+            lambda e, x, a, b, c, d, wp, wg: fjk.trimul_k2(
+                e, x, a, b, c, d, wp, wg, eps=1e-5, bm=64
+            ),
+            (S((128, n * n), bf), S((n * n, 128), bf))
+            + (S((128,), jnp.float32),) * 4
             + (S((128, 128), bf), S((128, 128), bf)),
         ),
         "transition": (
-            lambda x, w, b, w1, w2, w3: fjk.fused_transition(x, w, b, w1, w2, w3, eps=1e-5, bm=64, fc=128),
-            (S((n * n, 128), bf), S((128,), jnp.float32), S((128,), jnp.float32),
-             S((128, 512), bf), S((128, 512), bf), S((512, 128), bf)),
+            lambda x, w, b, w1, w2, w3: fjk.fused_transition(
+                x, w, b, w1, w2, w3, eps=1e-5, bm=64, fc=128
+            ),
+            (
+                S((n * n, 128), bf),
+                S((128,), jnp.float32),
+                S((128,), jnp.float32),
+                S((128, 512), bf),
+                S((128, 512), bf),
+                S((512, 128), bf),
+            ),
         ),
         "attention_h12": (
-            lambda q, k, v, b, m: fjk.flash_triangle_attention(q, k, v, b, m, scale=0.17, rb=2, bq=64, bk=64),
+            lambda q, k, v, b, m: fjk.flash_triangle_attention(
+                q, k, v, b, m, scale=0.17, rb=2, bq=64, bk=64
+            ),
             (S((8, n, 12, 32), bf),) * 3 + (S((12, n, n), bf), S((8, n), jnp.float32)),
         ),
         "trimul_k1_c384": (
-            lambda x, m, w, b, wp, wg: fjk.trimul_k1(x, m, w, b, wp, wg, eps=1e-5, bm=32),
-            (S((n * n, 384), bf), S((n * n,), jnp.float32), S((384,), jnp.float32),
-             S((384,), jnp.float32), S((384, 768), bf), S((384, 768), bf)),
+            lambda x, m, w, b, wp, wg: fjk.trimul_k1(
+                x, m, w, b, wp, wg, eps=1e-5, bm=32
+            ),
+            (
+                S((n * n, 384), bf),
+                S((n * n,), jnp.float32),
+                S((384,), jnp.float32),
+                S((384,), jnp.float32),
+                S((384, 768), bf),
+                S((384, 768), bf),
+            ),
         ),
         "trimul_k2_c384": (
-            lambda e, x, a, b, c, d, wp, wg: fjk.trimul_k2(e, x, a, b, c, d, wp, wg, eps=1e-5, bm=32),
-            (S((384, n * n), bf), S((n * n, 384), bf)) + (S((384,), jnp.float32),) * 4
+            lambda e, x, a, b, c, d, wp, wg: fjk.trimul_k2(
+                e, x, a, b, c, d, wp, wg, eps=1e-5, bm=32
+            ),
+            (S((384, n * n), bf), S((n * n, 384), bf))
+            + (S((384,), jnp.float32),) * 4
             + (S((384, 384), bf), S((384, 384), bf)),
         ),
         "transition_c384": (
-            lambda x, w, b, w1, w2, w3: fjk.fused_transition(x, w, b, w1, w2, w3, eps=1e-5, bm=32, fc=128),
-            (S((n * n, 384), bf), S((384,), jnp.float32), S((384,), jnp.float32),
-             S((384, 1536), bf), S((384, 1536), bf), S((1536, 384), bf)),
+            lambda x, w, b, w1, w2, w3: fjk.fused_transition(
+                x, w, b, w1, w2, w3, eps=1e-5, bm=32, fc=128
+            ),
+            (
+                S((n * n, 384), bf),
+                S((384,), jnp.float32),
+                S((384,), jnp.float32),
+                S((384, 1536), bf),
+                S((384, 1536), bf),
+                S((1536, 384), bf),
+            ),
         ),
     }
     for name, (fn, args) in cases.items():
         try:
-            text = jax.jit(fn).trace(*args).lower(lowering_platforms=("cuda",)).as_text()
+            text = (
+                jax.jit(fn).trace(*args).lower(lowering_platforms=("cuda",)).as_text()
+            )
             ok = "triton" in text.lower()
-            print(f"lowering {name}: ok ({len(text)} chars, triton call {'found' if ok else 'MISSING'})")
+            print(
+                f"lowering {name}: ok ({len(text)} chars, triton call {'found' if ok else 'MISSING'})"
+            )
             if not ok:
                 failures.append(f"lowering {name}: no triton call")
         except Exception as error:  # noqa: BLE001

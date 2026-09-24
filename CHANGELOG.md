@@ -12,6 +12,29 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **Opt-in Pallas-Triton kernels for the triangle multiplication and the
+  transitions** (`foldjax.models._pallas_pair`). They run where they are asked
+  for:
+  - the multiplication through `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=pallas`,
+    `PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=pallas` (also OpenDDE, which runs
+    Protenix's modules) or `OPENFOLD3_TRIANGLE_BACKEND=cueq-pallas`, where
+    cuEquivariance attention is kept;
+  - the transitions through a third `glu_backend` value, `pallas`, on every port
+    that has the option. A plain transition (LayerNorm, SwiGLU, bias-free output
+    projection) runs as one kernel, and a GLU that is not one runs the same
+    kernel's unit-only form.
+
+  Nothing changes unless asked. Measured per call on one RTX PRO 6000 Blackwell
+  at c_z 128, bf16, 1,003-4,888 tokens (`foldjax-bench/kernel-shootout-20260924`):
+  - multiplication: 0.47-0.65x cuEquivariance's fused update;
+  - pair transition: 0.34-0.49x Boltz-2's row-chunked tokamax GLU and 0.25-0.34x
+    the XLA transition;
+  - both at the same max-abs error against a float32 reference and a lower peak.
+
+  At OpenDDE's c_z 384 the multiplication only ties cuEquivariance and the
+  transition is slower than XLA. Whole predictions have not been measured yet.
+  Off a GPU both values refuse to run and say what to pass instead.
+
 - **Protenix and OpenFold3 can gather their 2-D triangle attention too**, with
   the same opt-in `--option triangle_attention_grid=gather` (default `ring`).
   Both ports read the scope at every 2-D triangle attention they have: the

@@ -276,6 +276,8 @@ def _transition_block(
     *,
     glu_backend: str = "xla",
 ) -> jnp.ndarray:
+    if glu_backend == "pallas":
+        return _pallas_transition_block(x, params)
     y = layer_norm(x, params.layer_norm)
     if glu_backend != "xla":
         reject_fused_glu_under_cp(glu_backend)
@@ -293,6 +295,37 @@ def _transition_block(
     a = linear(y, params.linear_a)
     b = linear(y, params.linear_b)
     return linear(silu(a) * b, params.linear_out)
+
+
+def _pallas_transition_block(x: jnp.ndarray, params: TransitionParams) -> jnp.ndarray:
+    """The whole transition as one Pallas kernel (``glu_backend="pallas"``).
+
+    Norm, SwiGLU and output projection in one pass, so the widened hidden
+    state never reaches memory (:mod:`foldjax.models._pallas_pair`). The three
+    projections pass the same admission as the fused GLU's
+    (:func:`_gate_kernel`). A BF16 activation takes the norm's affine at BF16
+    width, as :func:`layer_norm` does. The result has the dtype
+    ``linear(hidden, linear_out)`` would give it.
+    """
+
+    from foldjax.models._pallas_pair import transition
+
+    reject_fused_glu_under_cp("pallas")
+    w_a = _gate_kernel(params.linear_a, "linear_a")
+    w_b = _gate_kernel(params.linear_b, "linear_b")
+    w_out = _gate_kernel(params.linear_out, "linear_out")
+    norm = params.layer_norm
+    if norm.weight is None or norm.bias is None:
+        raise ValueError("the Pallas transition needs an affine layer norm")
+    if x.dtype == jnp.bfloat16:
+        norm = LayerNormParams(
+            *(jnp.asarray(value, x.dtype).astype(jnp.float32) for value in norm)
+        )
+    hidden = jax.ShapeDtypeStruct((*x.shape[:-1], w_a.shape[-1]), w_a.dtype)
+    out_dtype = jax.eval_shape(lambda h: linear(h, params.linear_out), hidden).dtype
+    return transition(
+        x, (norm.weight, norm.bias), w_a, w_b, w_out, eps=1e-5, out_dtype=out_dtype
+    )
 
 
 def _transition_runtime_identity() -> tuple[
@@ -341,7 +374,7 @@ def _concatenated_transition(
 _WARNED_FUSED_UNCHUNKABLE = False
 
 
-def _warn_fused_unchunkable(chunk_size: int) -> None:
+def _warn_fused_unchunkable(chunk_size: int, glu_backend: str = "tokamax") -> None:
     """Say once that a requested block size is not used, and why nothing is lost.
 
     The two techniques are alternatives, not complements. Blocking bounds the
@@ -363,7 +396,7 @@ def _warn_fused_unchunkable(chunk_size: int) -> None:
         return
     _WARNED_FUSED_UNCHUNKABLE = True
     warnings.warn(
-        f"transition chunk_size={chunk_size} is not used by the 'tokamax' GLU "
+        f"transition chunk_size={chunk_size} is not used by the {glu_backend!r} GLU "
         "backend, which never forms the widened intermediate the chunk size "
         "exists to bound. Nothing is lost; pass glu_backend='xla' for the "
         "blocked path that honours it.",
@@ -388,7 +421,7 @@ def _transition_for_runtime(
         # helpers are therefore only ever reached on the "xla" backend, which
         # is why they carry no backend of their own.
         if chunk_size is not None and 0 < chunk_size < x.shape[0]:
-            _warn_fused_unchunkable(chunk_size)
+            _warn_fused_unchunkable(chunk_size, glu_backend)
         return _transition_block(x, params, glu_backend=glu_backend)
 
     if chunk_size is None:

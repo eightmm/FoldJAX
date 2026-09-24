@@ -21,13 +21,25 @@ def cueq_triangle_multiplication(
     direction: TriangleDirection,
     *,
     eps: float = 1e-5,
+    kernel: str = "cueq",
 ) -> jnp.ndarray:
-    """Apply the same fused parameterization used by upstream Protenix Torch."""
+    """Apply the same fused parameterization used by upstream Protenix Torch.
 
+    ``kernel="pallas"`` hands the same packed parameters to
+    :func:`foldjax.models._pallas_pair.triangle_multiplication`, which takes
+    the cuEq calling convention.
+    """
+
+    if kernel == "pallas":
+        from foldjax.models._pallas_pair import triangle_multiplication as fused
+    elif kernel == "cueq":
+        fused = fused_triangle_multiplication
+    else:
+        raise ValueError(f"unsupported fused multiplication kernel: {kernel!r}")
     unbatched = z.ndim == 3
     kernel_z = z[None] if unbatched else z
     kernel_mask = mask[None] if unbatched else mask
-    output = fused_triangle_multiplication(
+    output = fused(
         kernel_z,
         direction=direction,
         mask=kernel_mask,

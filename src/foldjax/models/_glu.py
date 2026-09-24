@@ -23,6 +23,15 @@ against the port's own rerun floor.
 There is no fallback. ``implementation`` is pinned to Triton so a card that
 cannot run the kernel says so, instead of running XLA under a name that claims
 otherwise and producing a measurement that compares XLA with XLA.
+
+``pallas`` is the third value (opt-in). At a plain transition (LayerNorm, the
+unit, a bias-free output projection) the ports run the whole block as one
+kernel, :func:`foldjax.models._pallas_pair.transition`. Here, at a GLU that is
+not one, it runs the same kernel's unit-only form. It follows the ``xla`` path's
+rounding: each branch is rounded to the operand width and the activation is
+evaluated in float32. It is tuned for c_z-128 pair stacks. Wider operands run,
+but at OpenDDE's widths it measured slower than XLA
+(``foldjax-bench/kernel-shootout-20260924``).
 """
 
 from __future__ import annotations
@@ -33,7 +42,7 @@ import jax
 import jax.numpy as jnp
 
 #: Values every port's ``glu_backend`` option accepts.
-GLU_BACKENDS = ("xla", "tokamax")
+GLU_BACKENDS = ("xla", "tokamax", "pallas")
 
 
 def _check(backend: str) -> None:
@@ -94,6 +103,10 @@ def gated_linear_unit(
         x = x.astype(w_gate.dtype)
     if backend == "tokamax":
         return _fused(x, jnp.stack([w_gate, w_value], axis=1), activation)
+    if backend == "pallas":
+        from foldjax.models._pallas_pair import gated_linear_unit as pallas_glu
+
+        return pallas_glu(x, w_gate, w_value, activation)
     gate = x @ w_gate
     if gate.dtype in (jnp.bfloat16, jnp.float16):
         activated = activation(gate.astype(jnp.float32)).astype(gate.dtype)
@@ -128,6 +141,10 @@ def gated_linear_unit_packed(
     if backend == "tokamax":
         weights = w_packed.reshape(w_packed.shape[:-1] + (2, half))
         return _fused(x, weights, activation)
+    if backend == "pallas":
+        from foldjax.models._pallas_pair import gated_linear_unit as pallas_glu
+
+        return pallas_glu(x, w_packed[..., :half], w_packed[..., half:], activation)
     packed = x @ w_packed
     gate, value = packed[..., :half], packed[..., half:]
     if gate.dtype in (jnp.bfloat16, jnp.float16):

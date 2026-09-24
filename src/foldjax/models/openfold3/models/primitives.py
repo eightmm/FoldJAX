@@ -222,12 +222,48 @@ def swiglu_transition(
     ``mask`` is ``[..., N]``; upstream expands it to ``[..., N, 1]`` and
     multiplies the output. A missing mask means all-ones, matching upstream.
     """
-    y = layer_norm(x, params.layer_norm, eps=eps)
-    y = swiglu(y, params.swiglu, glu_backend=glu_backend)
-    y = linear(y, params.linear_out)
+    if glu_backend == "pallas":
+        y = _pallas_swiglu_transition(x, params, eps=eps)
+    else:
+        y = layer_norm(x, params.layer_norm, eps=eps)
+        y = swiglu(y, params.swiglu, glu_backend=glu_backend)
+        y = linear(y, params.linear_out)
     if mask is not None:
         y = y * mask[..., None]
     return y
+
+
+def _pallas_swiglu_transition(
+    x: jnp.ndarray, params: SwiGLUTransitionParams, *, eps: float
+) -> jnp.ndarray:
+    """Norm, SwiGLU and output projection as one Pallas kernel.
+
+    ``glu_backend="pallas"`` (:mod:`foldjax.models._pallas_pair`). The kernel's
+    norm is float32 with a float32 affine, as :func:`layer_norm` is here. Its
+    projections contract at the weights' width, and the result is returned in
+    the dtype the unfused path produces.
+    """
+    from foldjax.models._pallas_pair import transition
+
+    if cp_mesh() is not None:
+        raise ValueError(
+            "context parallelism requires glu_backend='xla'; a fused GLU "
+            "cannot be partitioned"
+        )
+    linears = (params.swiglu.linear_a, params.swiglu.linear_b, params.linear_out)
+    if any(p.bias is not None for p in linears):
+        raise ValueError("the Pallas transition takes bias-free projections")
+    norm = params.layer_norm
+    out_dtype = jax.eval_shape(
+        lambda t: swiglu_transition(t, params, eps=eps, glu_backend="xla"), x
+    ).dtype
+    return transition(
+        x,
+        (norm.weight, norm.bias),
+        *(jnp.swapaxes(p.weight, -1, -2) for p in linears),
+        eps=eps,
+        out_dtype=out_dtype,
+    )
 
 
 class ConditionedTransitionBlockParams(NamedTuple):

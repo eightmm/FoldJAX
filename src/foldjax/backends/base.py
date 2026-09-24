@@ -58,7 +58,7 @@ SAMPLING_OPTIONS: dict[str, str] = {
 #: copies of native defaults at all. One copy rather than three: each port
 #: still names it, keeps its own check and its own message, and pins this
 #: tuple to `_glu`'s in its own drift test.
-GLU_BACKENDS: tuple[str, ...] = ("xla", "tokamax")
+GLU_BACKENDS: tuple[str, ...] = ("xla", "tokamax", "pallas")
 
 
 def validate_memory_policy_options(options: Mapping[str, Any]) -> None:

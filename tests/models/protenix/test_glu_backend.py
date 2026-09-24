@@ -322,7 +322,9 @@ def test_an_autocast_projection_is_fusable_and_an_fp32_one_is_refused(monkeypatc
 def test_the_wrapper_refuses_an_unknown_value_and_names_the_allowed_ones():
     from foldjax.models.protenix.models.predict import protenix_predict_static
 
-    with pytest.raises(ValueError, match=r"must be one of \('xla', 'tokamax'\)"):
+    with pytest.raises(
+        ValueError, match=r"must be one of \('xla', 'tokamax', 'pallas'\)"
+    ):
         protenix_predict_static(None, {}, None, glu_backend="triton")
 
 
@@ -361,7 +363,9 @@ def test_the_adapter_refuses_an_unknown_value_and_the_cp_combination(tmp_path):
     from foldjax.backends.protenix import ProtenixBackend
 
     backend = ProtenixBackend()
-    with pytest.raises(ValueError, match=r"must be one of \('xla', 'tokamax'\)"):
+    with pytest.raises(
+        ValueError, match=r"must be one of \('xla', 'tokamax', 'pallas'\)"
+    ):
         backend.validate_native_options({"glu_backend": "triton"})
     with pytest.raises(ValueError, match="cannot be partitioned"):
         backend.validate_native_options({"glu_backend": "tokamax", "cp_devices": 2})
