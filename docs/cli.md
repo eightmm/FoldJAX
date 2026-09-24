@@ -1407,6 +1407,107 @@ silent no-op -- because a kernel is offered on the port whose numbers were
 measured. OpenDDE is the natural next port to measure: the arena that
 motivated the blocking in the first place is OpenDDE's.
 
+### Pallas pair kernels (opt-in, Boltz-2, Protenix, OpenFold3)
+
+Two Pallas-Triton kernels in `foldjax.models._pallas_pair` replace
+cuEquivariance's fused triangle multiplication and the tokamax or XLA pair
+transition. Both are opt-in, and no default changes:
+
+| what | Boltz-2 | Protenix | OpenFold3 |
+| --- | --- | --- | --- |
+| triangle multiplication | `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=pallas` | `PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=pallas` | `OPENFOLD3_TRIANGLE_BACKEND=cueq-pallas` |
+| pair transitions | `--option glu_backend=pallas` | `--option glu_backend=pallas` (`--glu-backend pallas` in the port CLI) | `--option glu_backend=pallas` |
+
+The multiplication is split in two parts. One kernel applies the LayerNorm,
+projections, gate and mask. cuBLAS does the triangle contraction, and a second
+kernel applies the output norm, projection and gate. Its calling convention is
+the same as the cuEquivariance call's, and triangle attention stays on
+cuEquivariance (`cueq-pallas` spells exactly that on OpenFold3). OpenDDE runs
+Protenix's triangle modules, so it reads the Protenix variable as well.
+
+`pallas` for `glu_backend` is scoped by site, not applied everywhere. It
+reaches a transition only if two things hold. The transition must be plain:
+LayerNorm, SwiGLU and a bias-free output projection. It must also be no wider
+than 128 channels. In practice that means:
+
+- the pair transitions at c_z 128;
+- the template pair transitions;
+- the MSA transitions of Protenix and OpenFold3.
+
+Every other GLU in the model keeps the port's released backend under the same
+value. That covers:
+
+- the single transitions;
+- the diffusion conditioned transitions;
+- Boltz-2's triangle-multiplication gate;
+- Boltz-2's MSA transition.
+
+Each exclusion rests on a measurement:
+
+- Protenix's float32 diffusion GLU ran at 7x tokamax under the kernel
+  (`foldjax-bench/kernel-shootout-20260924`, job 2395).
+- Boltz-2's MSA transition gave +1,138 MiB of temp in its layer under the
+  kernel (job 2424). It stays on the row-chunked tokamax path, which never
+  forms that buffer. With it there, the MSA layer's live-at-peak set is
+  identical to released (x48 buffer-assignment dump, job 2440).
+
+ESMFold2 has no site the value would reach and refuses it. OpenDDE has no
+`glu_backend` option; at its c_z 384 the fused transition loses to XLA
+(best 1.38x).
+
+Per call, measured on one RTX PRO 6000 Blackwell (sm_120) at c_z 128 in
+bfloat16 across 1,003-4,888 tokens (jobs 2386 and 2395), each kernel had the
+same max-abs error against a float32 reference as the path it replaces, and
+less temp:
+
+- the multiplication ran at 0.47-0.65x cuEquivariance's fused update;
+- the transition ran at 0.34-0.49x Boltz-2's row-chunked tokamax GLU and
+  0.25-0.34x the XLA transition.
+
+At OpenDDE's c_z 384 the multiplication only ties cuEquivariance
+(0.92-1.01x).
+
+Whole predictions, warm, with both switches on, against a control row built
+from the same base (`foldjax-bench/x44-pallas-scoped-20260924`, jobs
+2408-2421):
+
+| port | case | wall (s) | peak (MiB) | job |
+| --- | --- | --- | --- | --- |
+| Boltz-2 | L1000_3og2 | 61.48 -> 53.63 (-12.8%) | 8,454 -> 8,458 | 2441 |
+| Boltz-2 | L3000_6ztx | 473.66 -> 413.28 (-12.7%) | 30,667 -> 31,570 | 2442 |
+| Protenix | L1000_3og2 | 56.58 -> 49.18 (-13.1%) | +42 | 2429 |
+| Protenix | L3000_6ztx | 423.24 -> 370.30 (-12.5%) | +39 | 2433 |
+| OpenFold3 | L1000_3og2 | 63.80 -> 56.45 (-11.5%) | 4,317 -> 4,317 | 2427 |
+| OpenFold3 | L3000_6ztx | 473.88 -> 413.69 (-12.7%) | 24,821 -> 24,000 | 2431 |
+
+- **Boltz-2 at 3,012 tokens:** the +903 MiB is on the pair side and has not
+  been attributed yet. The multiplication switch on its own is flat at 1,003
+  tokens (+3.8 MiB, job 2411).
+- **Protenix without cuEquivariance:** add
+  `--option trunk_triangle_attention_backend=tokamax` and
+  `--option confidence_triangle_attention_backend=tokamax`. The row was run
+  with cuEquivariance made unimportable, and it was -12.7% at 1,003 tokens
+  and -11.9% at 3,012, with peaks within 67 MiB of the control (jobs 2428
+  and 2432).
+- **Structures:** the deposited CA RMSD and TM of every sample stay at the
+  level of the released reference rows (x42). For example, OpenFold3
+  L3000_6ztx lands at 0.63-0.65 A against the reference's 0.62-0.88 A.
+  Same-index distances to the control reach 1.6 A there; that is sample
+  spread, not a change in accuracy.
+
+Rows and their `compare.py` are in `foldjax-bench/x45-pallas-outdtype-20260924`
+and `x49-pallas-fallback-20260924`.
+
+Limits:
+
+- **No fallback.** Off a GPU both values refuse to run, and the error says
+  what to pass instead. The CPU tests use Pallas interpret mode.
+- **Context parallelism.** Under a mesh, the multiplication resolves to the
+  XLA einsum, as `cueq` does. `glu_backend=pallas` is refused under context
+  parallelism, because a fused kernel cannot be partitioned.
+- **Compile cache.** The GLU value is part of the compile-cache identity, so a
+  `pallas` run never receives an executable built without it.
+
 ### `--option deterministic=on`
 
 Compiles this run's executables for reduction orders that repeat, so two
