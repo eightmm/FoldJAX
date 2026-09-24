@@ -131,7 +131,11 @@ def triangle_multiplication(
                 "parallelism; select cueq or xla"
             )
         return _cueq_triangle_multiplication(
-            z, params, outgoing=outgoing, mask=mask, eps=eps,
+            z,
+            params,
+            outgoing=outgoing,
+            mask=mask,
+            eps=eps,
             pallas=kernel == "cueq-pallas",
         )
     z = layer_norm(z, params.layer_norm_in, eps=eps)

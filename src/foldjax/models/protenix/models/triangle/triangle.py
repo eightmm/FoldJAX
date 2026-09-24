@@ -173,9 +173,7 @@ def triangle_multiplication(
 
         # `pallas` (opt-in) runs where cueq runs, on the same packed
         # parameters: foldjax-bench/kernel-shootout-20260924.
-        return cueq_triangle_multiplication(
-            z, mask, params, direction, kernel=backend
-        )
+        return cueq_triangle_multiplication(z, mask, params, direction, kernel=backend)
     if backend not in {"cueq", "xla", "pallas"}:
         raise ValueError(f"unsupported triangle multiplication backend: {backend!r}")
     mask = mask.astype(z.dtype)[..., None]
