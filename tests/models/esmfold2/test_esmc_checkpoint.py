@@ -131,3 +131,47 @@ def test_the_settings_come_from_the_checkpoints_config(checkpoint) -> None:
 def test_a_directory_without_a_checkpoint_says_so(tmp_path) -> None:
     with pytest.raises(FileNotFoundError, match="no safetensors"):
         esmc.shard_paths(tmp_path)
+
+
+def test_parallel_narrowing_is_the_per_tensor_cast(tmp_path, monkeypatch) -> None:
+    """Chunked, batched, threaded narrowing returns ``get_tensor().astype()``.
+
+    Tiny chunk and batch sizes force a tensor across several reads and the
+    batch to flush mid-shard; a float16 tensor between float32 ones takes
+    the per-tensor route and must keep its place in the key order. The
+    values include rounding ties, subnormals, infinities and NaN payloads.
+    """
+    from safetensors import safe_open
+
+    bits = np.array(
+        [0x3F808000, 0x3F818000, 0x00000001, 0x7F7FFFFF, 0x7F800000,
+         0xFF800000, 0x7FC00001, 0xFFA00000, 0x80000000, 0x3F7FFFFF],
+        dtype=np.uint32,
+    )
+    rng = np.random.default_rng(0)
+    tensors = {
+        "esmc.embed.weight": np.concatenate(
+            [bits.view(np.float32), rng.standard_normal(53).astype(np.float32)]
+        ).reshape(7, 9),
+        "esmc.transformer.blocks.0.half": rng.standard_normal(5).astype(np.float16),
+        "esmc.transformer.blocks.0.w": rng.standard_normal((3, 11)).astype(
+            np.float32
+        ),
+        "esmc.transformer.norm.weight": rng.standard_normal(4).astype(np.float32),
+    }
+    save_file(tensors, tmp_path / "model.safetensors")
+    monkeypatch.setattr(esmc, "_CAST_CHUNK_ELEMENTS", 8)
+    monkeypatch.setattr(esmc, "_CAST_BATCH_BYTES", 100)
+
+    parameters = esmc.load_parameters(tmp_path, dtype="bfloat16", to_device=False)
+
+    bfloat16 = jax.numpy.bfloat16
+    with safe_open(tmp_path / "model.safetensors", framework="numpy") as handle:
+        expected = {
+            name.removeprefix("esmc."): handle.get_tensor(name).astype(bfloat16)
+            for name in handle.keys()  # noqa: SIM118
+        }
+    assert list(parameters) == list(expected)
+    for key, value in expected.items():
+        assert parameters[key].dtype == value.dtype
+        assert parameters[key].tobytes() == value.tobytes(), key
