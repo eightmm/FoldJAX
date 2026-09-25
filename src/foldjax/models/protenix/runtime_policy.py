@@ -42,6 +42,19 @@ MODEL_INFERENCE_DEFAULTS = {
     "protenix_tiny_default_v0.5.0": _SMALL_INFERENCE_DEFAULTS,
 }
 
+#: Which Pallas pair kernels an omitted setting realises on a GPU process:
+#: ``"trimul"`` for the triangle multiplication
+#: (``PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND``), ``"glu"`` for the pair
+#: transitions (``glu_backend``). Boltz-2 and OpenFold3 default to both on a
+#: GPU; Protenix defaults to neither. At 4,100 tokens (1GTE) one of five
+#: samples moved 1.222/1.224 A -> 1.636/1.642 A from the deposited structure
+#: under both kernels, across two reruns of each arm
+#: (``foldjax-bench/x53-pallas-4k-20260925``), which fails the pre-registered
+#: rule. Flipping a component is adding its name here; the explicit spellings
+#: work either way. Read at call time, and JAX-free so the adapter can read it
+#: while it plans a cache namespace.
+PALLAS_DEFAULT: frozenset[str] = frozenset()
+
 
 def infer_model_name_from_path(path: str | Path | None) -> str | None:
     """Infer a known Protenix model name from a native weight path."""

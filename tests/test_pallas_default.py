@@ -1,10 +1,13 @@
 """The Pallas pair kernels are the GPU default; what omission means now.
 
-Boltz-2, Protenix and OpenFold3 run the Pallas-Triton triangle multiplication
-and pair transitions when nothing is asked for on a GPU process, and their
-released backends everywhere else. That turns an omitted option into two
-programs, one per platform, so each surface that records a backend must record
-the one that ran:
+Boltz-2 and OpenFold3 run the Pallas-Triton triangle multiplication and pair
+transitions when nothing is asked for on a GPU process, and their released
+backends everywhere else. Protenix keeps its released backends on every
+platform until a component joins `protenix.runtime_policy.PALLAS_DEFAULT`;
+the tests here pin both that and that the constant is the whole switch.
+
+Flipping a default turns an omitted option into two programs, one per
+platform, so each surface that records a backend must record the one that ran:
 
 * the cache namespace (`cache_profile`) writes the realised `glu_backend` and
   OpenFold3's realised `triangle_kernel`, fed through the released-default
@@ -123,22 +126,27 @@ def test_boltz2_runner_identity_names_the_realised_multiplication(
 
 
 @pytest.mark.parametrize(
-    "backend, released",
-    [(Boltz2Backend, "tokamax"), (ProtenixBackend, "xla"), (OpenFold3Backend, "xla")],
+    "backend, released, flips",
+    [
+        (Boltz2Backend, "tokamax", True),
+        (ProtenixBackend, "xla", False),
+        (OpenFold3Backend, "xla", True),
+    ],
     ids=["boltz2", "protenix", "openfold3"],
 )
 def test_cache_profile_records_the_realised_glu(
-    tmp_path: Path, gpu, backend, released
+    tmp_path: Path, gpu, backend, released, flips
 ) -> None:
     adapter = backend()
 
     def profile(**options):
         return adapter.cache_profile(_request(tmp_path, backend.name, **options))
 
+    realised = "pallas" if gpu and flips else released
     omitted = profile()
-    assert omitted.get("glu_backend") == ("pallas" if gpu else None)
+    assert omitted.get("glu_backend") == (None if realised == released else realised)
     # The realised value spelled out names the omitted run's namespace.
-    assert profile(glu_backend="pallas" if gpu else released) == omitted
+    assert profile(glu_backend=realised) == omitted
     # The released value spelled out still strips to absence on either
     # platform: the namespace every run recorded before the flip.
     assert "glu_backend" not in profile(glu_backend=released)
@@ -225,12 +233,14 @@ def test_boltz2_adapter_hands_the_native_call_the_realised_glu(
 @pytest.mark.parametrize(
     "options, on_gpu, on_cpu",
     [
-        ({}, "pallas", "xla"),
+        # Protenix keeps its released GLU on a GPU: `PALLAS_DEFAULT` is empty.
+        ({}, "xla", "xla"),
+        ({"glu_backend": "pallas"}, "pallas", "pallas"),
         ({"glu_backend": "xla"}, "xla", "xla"),
         ({"glu_backend": "tokamax"}, "tokamax", "tokamax"),
         ({"cp_devices": 2}, "xla", "xla"),
     ],
-    ids=["omitted", "xla", "tokamax", "mesh"],
+    ids=["omitted", "pallas", "xla", "tokamax", "mesh"],
 )
 def test_protenix_adapter_hands_the_native_run_the_realised_glu(
     tmp_path: Path, gpu, options, on_gpu, on_cpu
@@ -244,6 +254,52 @@ def test_protenix_adapter_hands_the_native_run_the_realised_glu(
     # parser's own default, so a CPU run renders the argv it always did.
     rendered = "--glu-backend" in invocation.argv
     assert rendered is ("glu_backend" in options or expected != "xla")
+
+
+@pytest.mark.parametrize(
+    "members",
+    [
+        frozenset(),
+        frozenset({"trimul"}),
+        frozenset({"glu"}),
+        frozenset({"trimul", "glu"}),
+    ],
+    ids=["neither", "trimul", "glu", "both"],
+)
+def test_protenix_pallas_default_is_one_constant(
+    tmp_path: Path, monkeypatch, gpu, members
+) -> None:
+    """Each member of `PALLAS_DEFAULT` flips exactly its own component.
+
+    The shipped value is empty (4,100-token gate, `runtime_policy`), and the
+    rest of this module pins that. This proves the constant is the whole
+    switch: adding a name flips that component's omitted setting on a GPU --
+    in the model's resolver, the cache namespace and the native run alike --
+    and nothing off a GPU.
+    """
+
+    from foldjax.models.protenix import runtime_policy
+    from foldjax.models.protenix.models.triangle import triangle
+
+    assert runtime_policy.PALLAS_DEFAULT == frozenset()
+    monkeypatch.setattr(runtime_policy, "PALLAS_DEFAULT", members)
+    trimul = "pallas" if gpu and "trimul" in members else "cueq"
+    glu = "pallas" if gpu and "glu" in members else "xla"
+    assert triangle.triangle_multiplication_backend() == trimul
+    request = _request(tmp_path, "protenix")
+    invocation = ProtenixBackend()._native_invocation(request)
+    assert invocation.config_fields["glu_backend"] == glu
+    assert ProtenixBackend().cache_profile(request).get("glu_backend") == (
+        None if glu == "xla" else glu
+    )
+    # The explicit spellings are untouched by the switch.
+    monkeypatch.setenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", "pallas")
+    assert triangle.triangle_multiplication_backend() == "pallas"
+    spelled = _request(tmp_path, "protenix", glu_backend="pallas")
+    assert (
+        ProtenixBackend()._native_invocation(spelled).config_fields["glu_backend"]
+        == "pallas"
+    )
 
 
 # --------------------------------------------------------------------------- #

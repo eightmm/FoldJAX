@@ -530,9 +530,14 @@ def test_boltz2_unset_multiplication_runs_the_platform_default(calls, monkeypatc
 
 
 @pytest.mark.parametrize("gpu", [True, False], ids=["gpu", "cpu"])
-def test_protenix_unset_multiplication_runs_the_platform_default(
+def test_protenix_unset_multiplication_runs_the_released_kernel(
     calls, monkeypatch, gpu
 ):
+    """Protenix's default did not flip: cuEquivariance on a GPU too.
+
+    `runtime_policy.PALLAS_DEFAULT` is empty (the 4,100-token gate); the
+    explicit `pallas` arm is `test_protenix_triangle_multiplication_pallas`.
+    """
     from foldjax.models.protenix.models.triangle import triangle_cueq
     from foldjax.models.protenix.models.triangle.triangle import (
         triangle_multiplication,
@@ -549,7 +554,8 @@ def test_protenix_unset_multiplication_runs_the_platform_default(
         x[0], mask[0], _protenix_multiplication_params(rng), "outgoing"
     )
     assert (calls["triangle_multiplication"], released) == (
-        (1, []) if gpu else (0, ["fused_triangle_multiplication"])
+        0,
+        ["fused_triangle_multiplication"],
     )
 
 
@@ -580,12 +586,16 @@ def test_opendde_keeps_its_own_multiplication_on_a_gpu(calls, monkeypatch, trunk
     At its c_z 384 the Pallas multiplication only ties cuEquivariance, so the
     model entry writes OpenDDE's own default into the shared variable before
     Protenix's resolver can see it unset: the blocked XLA product on a narrow
-    trunk, the fused cuEquivariance one on float32.
+    trunk, the fused cuEquivariance one on float32. Asserted with Protenix's
+    `PALLAS_DEFAULT` fully on, so a later Protenix flip cannot leak here.
     """
     from foldjax.models.opendde.models import model
+    from foldjax.models.protenix import runtime_policy
     from foldjax.models.protenix.models.triangle import triangle, triangle_cueq
 
     monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: True)
+    # Even with Protenix's own switch on, the shared variable is OpenDDE's.
+    monkeypatch.setattr(runtime_policy, "PALLAS_DEFAULT", frozenset({"trimul", "glu"}))
     monkeypatch.delenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", raising=False)
     released = _released_spy(
         monkeypatch, triangle_cueq, "fused_triangle_multiplication"

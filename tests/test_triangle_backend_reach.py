@@ -189,13 +189,22 @@ def test_neither_protenix_resolver_has_an_auto_mode(monkeypatch) -> None:
     assert '"auto"' not in source
 
 
-@pytest.mark.parametrize("gpu, expected", [(False, "cueq"), (True, "pallas")])
+@pytest.mark.parametrize(
+    "gpu, flipped, expected",
+    [
+        (False, False, "cueq"),
+        (True, False, "cueq"),
+        (False, True, "cueq"),
+        (True, True, "pallas"),
+    ],
+)
 def test_protenix_multiplication_default_follows_the_platform_only(
-    monkeypatch, gpu, expected
+    monkeypatch, gpu, flipped, expected
 ) -> None:
-    """The unset multiplication is the platform's default, never a fallback.
+    """The unset multiplication is a policy and a platform, never a fallback.
 
-    Pallas on a GPU process and the released `cueq` elsewhere -- a platform the
+    Released `cueq` everywhere while `trimul` is not in Protenix's
+    `PALLAS_DEFAULT`; with it there, Pallas on a GPU process -- a platform the
     cache namespace already records (`cache.runtime_profile`), not a probe of
     what imports. So a missing cuEquivariance wheel must not move the answer:
     asserted by making the wheel unimportable and resolving again. An explicit
@@ -204,9 +213,12 @@ def test_protenix_multiplication_default_follows_the_platform_only(
     import sys
 
     from foldjax.models import _pallas_pair
+    from foldjax.models.protenix import runtime_policy
     from foldjax.models.protenix.models.triangle import triangle
 
     monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: gpu)
+    if flipped:
+        monkeypatch.setattr(runtime_policy, "PALLAS_DEFAULT", frozenset({"trimul"}))
     monkeypatch.delenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", raising=False)
     assert triangle.triangle_multiplication_backend() == expected
     monkeypatch.setitem(sys.modules, "cuequivariance_jax", None)

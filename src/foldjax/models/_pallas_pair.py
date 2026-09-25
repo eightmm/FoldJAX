@@ -2,8 +2,9 @@
 
 Two kernel families replace cuEquivariance's fused triangle multiplication and
 the tokamax/XLA SwiGLU transition when a port runs the ``pallas`` backend. On a
-GPU process that is the default of Boltz-2, Protenix and OpenFold3; everywhere
-else the default stays the released backend (:func:`default_backend`).
+GPU process that is the default of Boltz-2 and OpenFold3; everywhere else, and
+on Protenix (``protenix.runtime_policy.PALLAS_DEFAULT``), the default stays the
+released backend (:func:`default_backend`).
 
 Triangle multiplication is split the way FlashPairformer splits it. ``K1``
 normalises the pair, applies the sigmoid-gated input projections and the mask,
@@ -89,7 +90,11 @@ def default_backend(released: str) -> str:
     250-3,000 tokens and mixed 1k/2k/3k complexes, warm wall 8.9-15.2 %
     lower, peak -2,302 to +41 MiB, median deposited CA RMSD equal within
     0.041 A (``foldjax-bench/x51-pallas-validate-20260925``,
-    ``x52-pallas-msa-pair-scope-20260925``). ``released`` everywhere else: the
+    ``x52-pallas-msa-pair-scope-20260925``), and Boltz-2 and OpenFold3 again
+    at 4,100 tokens against their rerun floors
+    (``x53-pallas-4k-20260925``). Protenix failed that 4,100-token gate and
+    asks this only for the components its ``PALLAS_DEFAULT`` names.
+    ``released`` everywhere else: the
     kernels refuse to run off a GPU, and CPU parity, the test suite and CPU
     users keep the program they ran before. There is no fallback on a GPU: a
     kernel that cannot run there fails rather than quietly switching.

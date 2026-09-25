@@ -95,9 +95,7 @@ def protenix_predict_static(
     confidence_triangle_attention_backend: str | None = None,
     #: Which gated-linear-unit implementation every transition runs. ``"xla"``
     #: is the released arithmetic and the only value a context-parallel run
-    #: accepts; see :mod:`foldjax.models._glu`. The `foldjax` adapter passes
-    #: ``"pallas"`` for an omitted option on a serial GPU process
-    #: (``backends/base.realised_glu_backend``); this default stays released.
+    #: accepts; see :mod:`foldjax.models._glu`.
     glu_backend: str = "xla",
     use_confidence_embedding: bool = True,
     run_confidence: bool = True,

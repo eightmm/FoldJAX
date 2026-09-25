@@ -22,6 +22,7 @@ from foldjax.backends.base import (
 from foldjax.execution import DETERMINISTIC_ARGV_OPTION
 from foldjax.models import _representations
 from foldjax.models._managed_memory import lease as managed_memory_lease
+from foldjax.models.protenix import runtime_policy
 from foldjax.models.protenix.runtime_policy import MODEL_INFERENCE_DEFAULTS
 from foldjax.schema import (
     InputRequirement,
@@ -154,15 +155,20 @@ def _strict_cp_devices(value: Any) -> int:
 def _realised_glu_backend(value: Any, options: Mapping[str, Any]) -> Any:
     """The GLU backend this run realises, for `value` spelled or omitted.
 
-    `base.realised_glu_backend` with this port's released `xla` and the shard
-    count `validate_native_options` reads. The native parser keeps `xla` as
-    its own default, so the port's CLI run directly is unchanged; this adapter
-    is what turns an omitted option into `pallas` on a serial GPU process.
+    The released `xla` for an omitted option while `"glu"` is not in
+    `runtime_policy.PALLAS_DEFAULT`, which it is not today (the reason is at
+    the constant). With it there, `base.realised_glu_backend` with the shard
+    count `validate_native_options` reads: `pallas` on a serial GPU process.
+    The native parser keeps `xla` either way, so the port's CLI run directly
+    never changes.
     """
 
+    released = str(_RELEASED_COMPILE_DEFAULTS["glu_backend"])
+    if value is None and "glu" not in runtime_policy.PALLAS_DEFAULT:
+        return released
     return realised_glu_backend(
         value,
-        released=str(_RELEASED_COMPILE_DEFAULTS["glu_backend"]),
+        released=released,
         serial=_strict_cp_devices(options.get("cp_devices", 1)) <= 1,
     )
 
@@ -907,9 +913,9 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         options = self.apply_sampling(request)
         self.validate_native_options(options)
         # The GLU the run realises, before the strip: an explicit `xla` and an
-        # omitted option off a GPU or under a mesh still strip to absence, and
-        # an omitted option on a serial GPU process records `pallas`, the entry
-        # an explicit `pallas` names.
+        # omitted option strip to absence while this port's default is the
+        # released one; if `glu` joins `PALLAS_DEFAULT`, an omitted option on
+        # a serial GPU process records `pallas`, the entry `pallas` names.
         profile["glu_backend"] = _realised_glu_backend(
             profile.get("glu_backend"), options
         )

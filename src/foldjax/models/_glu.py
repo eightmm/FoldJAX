@@ -26,10 +26,10 @@ otherwise and producing a measurement that compares XLA with XLA.
 
 ``pallas`` is the third value, and it names a set of sites rather than a
 kernel for every GLU. It is what an omitted ``glu_backend`` realises on a
-serial GPU process for Boltz-2, Protenix and OpenFold3
-(``foldjax.backends.base.realised_glu_backend``); the native signatures keep
-their released defaults. It reaches the plain transitions (LayerNorm, the
-unit, a bias-free output projection) no wider than
+serial GPU process for Boltz-2 and OpenFold3
+(``foldjax.backends.base.realised_glu_backend``); Protenix keeps its released
+default, and the native signatures keep theirs. It reaches the plain
+transitions (LayerNorm, the unit, a bias-free output projection) no wider than
 :data:`~foldjax.models._pallas_pair.TRANSITION_MAX_WIDTH` -- the pair
 transitions of the c_z-128 ports and the MSA and template-pair transitions --
 and runs each as one fused kernel, :func:`foldjax.models._pallas_pair.transition`.
