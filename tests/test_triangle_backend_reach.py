@@ -217,8 +217,9 @@ def test_protenix_multiplication_default_follows_the_platform_only(
     from foldjax.models.protenix.models.triangle import triangle
 
     monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: gpu)
-    if flipped:
-        monkeypatch.setattr(runtime_policy, "PALLAS_DEFAULT", frozenset({"trimul"}))
+    monkeypatch.setattr(
+        runtime_policy, "PALLAS_DEFAULT", frozenset({"trimul"} if flipped else ())
+    )
     monkeypatch.delenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", raising=False)
     assert triangle.triangle_multiplication_backend() == expected
     monkeypatch.setitem(sys.modules, "cuequivariance_jax", None)

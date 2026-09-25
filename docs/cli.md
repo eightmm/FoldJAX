@@ -1407,35 +1407,45 @@ silent no-op -- because a kernel is offered on the port whose numbers were
 measured. OpenDDE is the natural next port to measure: the arena that
 motivated the blocking in the first place is OpenDDE's.
 
-### Pallas pair kernels (GPU default on Boltz-2 and OpenFold3, opt-in on Protenix)
+### Pallas pair kernels (GPU default: Boltz-2 and OpenFold3 both, Protenix the multiplication)
 
 Two Pallas-Triton kernels in `foldjax.models._pallas_pair` replace
 cuEquivariance's fused triangle multiplication and the tokamax or XLA pair
-transition. On a GPU process they are the default of Boltz-2 and OpenFold3.
+transition. On a GPU process both are the default of Boltz-2 and OpenFold3,
+and the multiplication is the default of Protenix.
 Everywhere else -- a CPU process, which is what the test suite and
 `pytest tests/parity --run-cpu-parity` run, a TPU, a CPU user -- the default is
 the released backend it always was, because the kernels do not run off a GPU.
 The platform is JAX's default backend, which the cache namespace already
 records.
 
-Protenix stays opt-in on every platform. At 4,100 tokens (1GTE) one of its
-five samples lands 0.41 A further from the deposited structure under the
-Pallas kernels (1.222/1.224 A -> 1.636/1.642 A over two runs of each arm, TM
-0.9945 -> 0.9887), where its rerun floor is 0.002 A
-(`foldjax-bench/x53-pallas-4k-20260925`). That fails the rule set before the
-row was run. Which components Protenix defaults to is one constant,
-`foldjax.models.protenix.runtime_policy.PALLAS_DEFAULT` (`"trimul"`, `"glu"`),
-empty today.
+Protenix's pair transitions stay released on a GPU, and
+`--option glu_backend=pallas` stays opt-in there. At 4,100 tokens (1GTE,
+`foldjax-bench/x53-pallas-4k-20260925`), where Protenix's rerun floor is
+0.002 A, sample 2's deposited CA RMSD was:
+
+| arm | jobs | sample 2 (A) | warm (s) | peak (MiB) |
+| --- | --- | --- | --- | --- |
+| released, twice | 2500, 2505 | 1.222 / 1.224 | 823 | 57,916 |
+| multiplication only | 2513 | 1.222 | 762 | 57,940 |
+| transitions only | 2514 | 1.222 | 783 | -- |
+| both, twice | 2501, 2506 | 1.636 / 1.642 (TM 0.9945 -> 0.9887) | 723 | -- |
+
+Every other sample stayed within 0.02 A in every arm. Only the combination
+moves the structure, so the multiplication alone is the default: 7.4% of the
+wall for +24 MiB. Which components Protenix defaults to is one constant,
+`foldjax.models.protenix.runtime_policy.PALLAS_DEFAULT`, which is
+`{"trimul"}`; adding `"glu"` would flip the transitions too.
 
 What an omitted setting runs, and how to name either side:
 
 | what | port | omitted, GPU | omitted, elsewhere | released path on a GPU |
 | --- | --- | --- | --- | --- |
 | triangle multiplication | Boltz-2 | `pallas` | `cueq` | `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=cueq` (or `xla`) |
-| triangle multiplication | Protenix | `cueq` | `cueq` | (released already; `=pallas` opts in) |
+| triangle multiplication | Protenix | `pallas` | `cueq` | `PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=cueq` (or `xla`) |
 | triangle kernel | OpenFold3 | `cueq-pallas` | `cueq-full` | `--option triangle_kernel=cueq-full` or `OPENFOLD3_TRIANGLE_BACKEND=cueq-full` |
 | pair transitions | Boltz-2 | `glu_backend=pallas` | `tokamax` | `--option glu_backend=tokamax` (or `xla`) |
-| pair transitions | Protenix | `xla` | `xla` | (released already; `--option glu_backend=pallas` opts in) |
+| pair transitions | Protenix | `xla` (released) | `xla` | released already; `--option glu_backend=pallas` opts in |
 | pair transitions | OpenFold3 | `glu_backend=pallas` | `xla` | `--option glu_backend=xla` |
 
 `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=pallas`,
@@ -1449,13 +1459,14 @@ Where each default is decided:
   variable, so every entry point gets it -- the `foldjax` CLI and API, the
   native `predict` functions and the port CLIs.
 - **`glu_backend`:** in the `foldjax` adapter, from an omitted option. The
-  native signatures keep their released defaults, so a script that calls
-  Boltz-2 or OpenFold3 directly gets the Pallas multiplication on a GPU but
-  the released transitions unless it passes `glu_backend="pallas"`.
+  native signatures and Protenix's port CLI (`--glu-backend`, default `xla`)
+  keep their released defaults, so a script that calls Boltz-2 or OpenFold3
+  directly gets the Pallas multiplication on a GPU but the released
+  transitions unless it passes `glu_backend="pallas"`.
 - **Context parallelism:** unchanged. An omitted `glu_backend` stays on the
   released value, which each port already resolves to `xla` under a mesh, and
   the multiplication resolves to the XLA einsum there, as `cueq` does.
-- **OpenDDE:** unchanged, and it stays so if Protenix flips later. It reads
+- **OpenDDE:** unchanged, whatever Protenix defaults to. It reads
   the Protenix variable, but its model entry writes its own default into it
   first (the blocked `xla` product on the bfloat16 trunk, `cueq` on float32),
   because at its c_z 384 the Pallas multiplication only ties cuEquivariance.
@@ -1467,9 +1478,13 @@ Boltz-2's retained-runner identity writes the realised multiplication. An
 omitted option on a GPU therefore shares the namespace of an explicit
 `pallas`, which the opt-in runs already warmed. An explicit released value
 (`glu_backend=tokamax` on Boltz-2, `xla` on OpenFold3) keeps the namespace
-every run before this change wrote. The run manifests of Boltz-2 and
-OpenFold3 record `models/_pallas_pair.py` and `models/_glu.py` as
+every run before this change wrote. Protenix's multiplication is recorded in
+no cache key, as it never was; JAX keys the executables on the program itself.
+The run manifests record `models/_pallas_pair.py` (all three ports) and
+`models/_glu.py` (Boltz-2 and OpenFold3, whose GLU default changed) as
 implementation sources, so a result from before the flip does not resume.
+`foldjax_run.json` records the options as spelled, not the realised backends;
+there is no field for them yet.
 
 The multiplication is split in two parts. One kernel applies the LayerNorm,
 projections, gate and mask. cuBLAS does the triangle contraction, and a second
@@ -1582,16 +1597,17 @@ each control's own rerun:
 | --- | --- | --- | --- |
 | Boltz-2 | 977.65 -> 872.84 (-10.7%) | 55,057.0 -> 55,041.1 | 1.708 -> 1.718 |
 | OpenFold3 | 917.93 -> 819.88 (-10.7%) | 44,772.7 -> 43,540.4 | 15.665 -> 15.682 |
-| Protenix | 823.21 -> 722.58 (-12.2%) | 57,915.6 -> 58,031.5 | 1.234 -> 1.257 |
+| Protenix, both kernels | 823.21 -> 722.58 (-12.2%) | 57,915.6 -> 58,031.5 | 1.234 -> 1.257 |
 
 Boltz-2's sample 4 moves 0.997 -> 1.641 A, but the control's own rerun moves
 it the same way, so the difference is inside the control's spread. Protenix's
-sample 2 is the one described above.
+sample 2 is the one described above; its default is the multiplication-only
+arm.
 
 The memory admission laws (`foldjax.memory_policy`) were fitted on the
-released path and are not refitted. Every Pallas increase on the defaulted
-ports is inside the matching law's allowance (Boltz-2 +7 of 829 MiB), and
-Protenix's +41 MiB in the opt-in rows is inside its 1,018. Between 4,100 and
+released path and are not refitted. Every Pallas increase is inside the
+matching law's allowance: Boltz-2 +7 of 829 MiB, Protenix +41 of 1,018 MiB
+(both kernels; +24 with the multiplication alone at 4,100). Between 4,100 and
 4,888 tokens the Pallas peak has not been measured against the laws.
 
 Limits:

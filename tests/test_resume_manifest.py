@@ -327,8 +327,17 @@ def test_legacy_ffi_precision_result_is_not_reused(tmp_path: Path, model: str):
     assert resumed.skipped == ()
 
 
-@pytest.mark.parametrize("model", ["boltz2", "openfold3"])
-@pytest.mark.parametrize("source", ["/models/_pallas_pair.py", "/models/_glu.py"])
+@pytest.mark.parametrize(
+    "model, source",
+    [
+        ("boltz2", "/models/_pallas_pair.py"),
+        ("boltz2", "/models/_glu.py"),
+        ("openfold3", "/models/_pallas_pair.py"),
+        ("openfold3", "/models/_glu.py"),
+        # Protenix defaults to the Pallas multiplication only.
+        ("protenix", "/models/_pallas_pair.py"),
+    ],
+)
 def test_result_from_before_the_pallas_default_is_not_reused(
     tmp_path: Path, model: str, source: str
 ):

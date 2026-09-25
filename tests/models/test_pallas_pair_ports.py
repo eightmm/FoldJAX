@@ -530,13 +530,14 @@ def test_boltz2_unset_multiplication_runs_the_platform_default(calls, monkeypatc
 
 
 @pytest.mark.parametrize("gpu", [True, False], ids=["gpu", "cpu"])
-def test_protenix_unset_multiplication_runs_the_released_kernel(
+def test_protenix_unset_multiplication_runs_the_platform_default(
     calls, monkeypatch, gpu
 ):
-    """Protenix's default did not flip: cuEquivariance on a GPU too.
+    """`trimul` is in Protenix's `PALLAS_DEFAULT`: Pallas on a GPU.
 
-    `runtime_policy.PALLAS_DEFAULT` is empty (the 4,100-token gate); the
-    explicit `pallas` arm is `test_protenix_triangle_multiplication_pallas`.
+    Its GLU stays released; that half is
+    `tests/test_pallas_default.py::test_protenix_gpu_default_runs_pallas_multiplication_and_released_glu`.
+    The explicit arm is `test_protenix_triangle_multiplication_pallas`.
     """
     from foldjax.models.protenix.models.triangle import triangle_cueq
     from foldjax.models.protenix.models.triangle.triangle import (
@@ -554,8 +555,7 @@ def test_protenix_unset_multiplication_runs_the_released_kernel(
         x[0], mask[0], _protenix_multiplication_params(rng), "outgoing"
     )
     assert (calls["triangle_multiplication"], released) == (
-        0,
-        ["fused_triangle_multiplication"],
+        (1, []) if gpu else (0, ["fused_triangle_multiplication"])
     )
 
 

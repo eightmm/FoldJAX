@@ -28,7 +28,8 @@ otherwise and producing a measurement that compares XLA with XLA.
 kernel for every GLU. It is what an omitted ``glu_backend`` realises on a
 serial GPU process for Boltz-2 and OpenFold3
 (``foldjax.backends.base.realised_glu_backend``); Protenix keeps its released
-default, and the native signatures keep theirs. It reaches the plain
+GLU (only its multiplication defaults to Pallas), and the native signatures
+keep theirs. It reaches the plain
 transitions (LayerNorm, the unit, a bias-free output projection) no wider than
 :data:`~foldjax.models._pallas_pair.TRANSITION_MAX_WIDTH` -- the pair
 transitions of the c_z-128 ports and the MSA and template-pair transitions --

@@ -46,14 +46,22 @@ MODEL_INFERENCE_DEFAULTS = {
 #: ``"trimul"`` for the triangle multiplication
 #: (``PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND``), ``"glu"`` for the pair
 #: transitions (``glu_backend``). Boltz-2 and OpenFold3 default to both on a
-#: GPU; Protenix defaults to neither. At 4,100 tokens (1GTE) one of five
-#: samples moved 1.222/1.224 A -> 1.636/1.642 A from the deposited structure
-#: under both kernels, across two reruns of each arm
-#: (``foldjax-bench/x53-pallas-4k-20260925``), which fails the pre-registered
-#: rule. Flipping a component is adding its name here; the explicit spellings
-#: work either way. Read at call time, and JAX-free so the adapter can read it
+#: GPU; Protenix defaults to the multiplication only.
+#:
+#: At 4,100 tokens (1GTE, ``foldjax-bench/x53-pallas-4k-20260925``) sample 2's
+#: deposited CA RMSD was 1.222/1.224 A released (jobs 2500/2505), 1.222 with
+#: the multiplication alone (2513), 1.222 with the transitions alone (2514),
+#: and 1.636/1.642 with both (2501/2506), against a 0.002 A rerun floor; every
+#: other sample stayed within 0.02 A in every arm. Only the combination moves
+#: the structure, and the multiplication alone takes most of the time: warm
+#: 823 -> 762 s (-7.4%) at 57,916 -> 57,940 MiB, where the transitions alone
+#: gave 783 s and both 723 s. So ``"glu"`` stays out and ``glu_backend=pallas``
+#: stays opt-in.
+#:
+#: Flipping a component is adding its name here; the explicit spellings work
+#: either way. Read at call time, and JAX-free so the adapter can read it
 #: while it plans a cache namespace.
-PALLAS_DEFAULT: frozenset[str] = frozenset()
+PALLAS_DEFAULT: frozenset[str] = frozenset({"trimul"})
 
 
 def infer_model_name_from_path(path: str | Path | None) -> str | None:

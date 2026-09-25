@@ -117,13 +117,13 @@ TRIANGLE_MULTIPLICATION_ENV = "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND"
 def triangle_multiplication_backend() -> str:
     """The multiplication kernel this process runs where the fused one fits.
 
-    The environment variable when it is set, lower-cased. Unset is the
-    released ``"cueq"``, unless ``"trimul"`` is in
-    :data:`~foldjax.models.protenix.runtime_policy.PALLAS_DEFAULT` -- it is
-    not today -- in which case it is ``"pallas"`` on a GPU process and
-    ``"cueq"`` elsewhere (:func:`foldjax.models._pallas_pair.default_backend`).
-    That is a platform, not an availability probe: a GPU process never falls
-    back to another kernel. ``pallas`` spelled out is the opt-in.
+    The environment variable when it is set, lower-cased. Unset is
+    ``"pallas"`` on a GPU process and the released ``"cueq"`` elsewhere
+    (:func:`foldjax.models._pallas_pair.default_backend`), because ``"trimul"``
+    is in :data:`~foldjax.models.protenix.runtime_policy.PALLAS_DEFAULT`;
+    without it, unset is ``"cueq"`` everywhere. That is a platform, not an
+    availability probe: a GPU process never falls back to another kernel.
+    ``cueq`` or ``xla`` restores a released path.
 
     OpenDDE runs these modules but never reaches the unset branch: its model
     entry writes its own default into the variable first
@@ -203,7 +203,7 @@ def triangle_multiplication(
             cueq_triangle_multiplication,
         )
 
-        # `pallas` (opt-in) runs where cueq runs, on the same packed
+        # `pallas` (the GPU default) runs where cueq runs, on the same packed
         # parameters: foldjax-bench/kernel-shootout-20260924.
         return cueq_triangle_multiplication(z, mask, params, direction, kernel=backend)
     if backend not in {"cueq", "xla", "pallas"}:

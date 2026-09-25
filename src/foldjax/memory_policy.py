@@ -147,9 +147,9 @@ class PeakLaw:
 # Boltz-2, Protenix and OpenFold3 were measured on the released pair kernels.
 # Since 2026-09-25 a GPU run of Boltz-2 and OpenFold3 defaults to the Pallas
 # triangle multiplication and pair transitions
-# (`models/_pallas_pair.default_backend`; Protenix keeps the released kernels
-# and reaches Pallas only when asked), and the laws were deliberately not
-# refitted: against a same-base control
+# (`models/_pallas_pair.default_backend`; Protenix defaults to the Pallas
+# multiplication only, +24 MiB at 4,100 tokens in x53 job 2513), and the laws
+# were deliberately not refitted: against a same-base control
 # the Pallas peak is Boltz-2 -975 to +7 MiB, Protenix -286 to +41 MiB and
 # OpenFold3 -2,302 to 0 MiB (foldjax-bench/x51-pallas-validate-20260925,
 # x52-pallas-msa-pair-scope-20260925), and at 4,100 tokens Boltz-2 -16 and

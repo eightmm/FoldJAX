@@ -156,8 +156,9 @@ def _realised_glu_backend(value: Any, options: Mapping[str, Any]) -> Any:
     """The GLU backend this run realises, for `value` spelled or omitted.
 
     The released `xla` for an omitted option while `"glu"` is not in
-    `runtime_policy.PALLAS_DEFAULT`, which it is not today (the reason is at
-    the constant). With it there, `base.realised_glu_backend` with the shard
+    `runtime_policy.PALLAS_DEFAULT`, which it is not: this port defaults to
+    the Pallas multiplication only (the reason is at the constant). With it
+    there, `base.realised_glu_backend` with the shard
     count `validate_native_options` reads: `pallas` on a serial GPU process.
     The native parser keeps `xla` either way, so the port's CLI run directly
     never changes.

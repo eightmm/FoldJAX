@@ -14,8 +14,8 @@ unless it says so here, in its own paragraph.
 
 - **Pallas-Triton kernels for the triangle multiplication and the pair
   transitions** (`foldjax.models._pallas_pair`). Added opt-in; they are now
-  the GPU default of Boltz-2 and OpenFold3 and stay opt-in on Protenix (see
-  Changed). The explicit settings are:
+  the GPU default of Boltz-2 and OpenFold3, and the multiplication is
+  Protenix's (see Changed). The explicit settings are:
   - **Triangle multiplication**, through
     `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=pallas`,
     `PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=pallas` (OpenDDE reads the same
@@ -551,27 +551,30 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
-- **On a GPU, Boltz-2 and OpenFold3 run the Pallas pair kernels by
-  default.** An omitted setting now realises the Pallas-Triton triangle
-  multiplication and pair transitions from the Added entry below:
+- **On a GPU, Boltz-2 and OpenFold3 run the Pallas pair kernels by default,
+  and Protenix runs the Pallas triangle multiplication.** An omitted setting
+  now realises the Pallas-Triton kernels from the Added entry below:
   - Boltz-2: multiplication `pallas` (was `cueq`), `glu_backend=pallas` (was
     `tokamax`);
   - OpenFold3: `triangle_kernel` `cueq-pallas` (was `cueq-full`),
-    `glu_backend=pallas` (was `xla`).
+    `glu_backend=pallas` (was `xla`);
+  - Protenix: multiplication `pallas` (was `cueq`); `glu_backend` stays `xla`.
 
   The released path stays one setting away:
   `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=cueq`,
+  `PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=cueq`,
   `--option triangle_kernel=cueq-full` (or `OPENFOLD3_TRIANGLE_BACKEND=cueq-full`),
   and `--option glu_backend=tokamax` (Boltz-2) or `xla` (OpenFold3).
 
-  **Protenix stays opt-in.** At 4,100 tokens (1GTE) one of its five samples
-  reproducibly lands 0.41 A further from the deposited structure under the
-  Pallas kernels -- 1.222/1.224 A -> 1.636/1.642 A over two runs of each arm,
-  TM 0.9945 -> 0.9887 -- against a rerun floor of 0.002 A
-  (`foldjax-bench/x53-pallas-4k-20260925`), which fails the rule fixed before
-  the row ran. Its explicit spellings work as before. Which components it
-  defaults to is one constant, `protenix.runtime_policy.PALLAS_DEFAULT`
-  (`"trimul"`, `"glu"`), empty today.
+  **Protenix's `glu_backend=pallas` stays opt-in.** At 4,100 tokens (1GTE,
+  `foldjax-bench/x53-pallas-4k-20260925`), against a 0.002 A rerun floor,
+  sample 2's deposited CA RMSD was 1.222/1.224 A released (jobs 2500, 2505),
+  1.222 with the multiplication alone (2513), 1.222 with the transitions
+  alone (2514), and 1.636/1.642 with both (2501, 2506; TM 0.9945 -> 0.9887).
+  Every other sample stayed within 0.02 A in every arm. Only the combination
+  moves the structure, and the multiplication alone takes 823 -> 762 s warm
+  (-7.4%) at +24 MiB. Which components Protenix defaults to is one constant,
+  `protenix.runtime_policy.PALLAS_DEFAULT`, now `{"trimul"}`.
 
   **Nothing changes off a GPU.** A CPU or TPU process, the test suite and
   `pytest tests/parity --run-cpu-parity` keep the released backends, because
@@ -580,34 +583,37 @@ unless it says so here, in its own paragraph.
   reads the Protenix variable but sets its own default first, since at c_z 384
   the multiplication only ties cuEquivariance) and ESMFold2 are unchanged.
 
-  The multiplication default is decided in the model, so the native APIs get
-  it too. The `glu_backend` default is decided in the `foldjax` adapters; the
-  native signatures keep their released values.
+  The multiplication default is decided in the model, so the native APIs and
+  Protenix's port CLI get it too. The `glu_backend` default is decided in the
+  `foldjax` adapters; the native signatures keep their released values.
 
   The compile-cache namespace records the realised `glu_backend` and
   OpenFold3's realised `triangle_kernel`, and Boltz-2's retained-runner
   identity records the realised multiplication. An omitted GPU run therefore
   shares the namespace an explicit `pallas` already wrote, and an explicit
-  released value keeps the namespace every earlier run wrote. Boltz-2 and
-  OpenFold3 run manifests now record `models/_pallas_pair.py` and
-  `models/_glu.py`, so a result from before the flip does not resume.
+  released value keeps the namespace every earlier run wrote. Run manifests
+  now record `models/_pallas_pair.py` (all three ports) and `models/_glu.py`
+  (Boltz-2, OpenFold3), so a result from before the flip does not resume.
+  `foldjax_run.json` still records options as spelled, not realised backends.
 
   Against a same-base control, both switches on
-  (`foldjax-bench/x51-pallas-validate-20260925` for OpenFold3 at 250, 500,
-  1,350 and 2,000 tokens and mixed 1k/2k/3k complexes,
+  (`foldjax-bench/x51-pallas-validate-20260925` for Protenix and OpenFold3 at
+  250, 500, 1,350 and 2,000 tokens and mixed 1k/2k/3k complexes,
   `x52-pallas-msa-pair-scope-20260925` for Boltz-2 at 250-3,000 and the mixed
   complexes):
   - warm wall 8.9-15.2% lower in every row;
-  - peak Boltz-2 -975 to +7 MiB, OpenFold3 -2,302 to 0 MiB;
+  - peak Boltz-2 -975 to +7 MiB, Protenix -286 to +41 MiB, OpenFold3 -2,302
+    to 0 MiB;
   - median deposited CA RMSD per row equal within 0.041 A.
 
-  At 4,100 tokens (x53) both are 10.7% faster warm, peak -16 MiB (Boltz-2) and
-  -1,232 MiB (OpenFold3), with median deposited CA RMSD 1.708 -> 1.718 A and
+  At 4,100 tokens (x53) Boltz-2 and OpenFold3 are both 10.7% faster warm, peak
+  -16 MiB and -1,232 MiB, with median deposited CA RMSD 1.708 -> 1.718 A and
   15.665 -> 15.682 A. Boltz-2's one moved sample moves the same way in the
   control's own rerun.
 
   The memory admission laws were fitted on the released path and are not
-  refitted; Boltz-2's +7 MiB is inside its 829 MiB allowance.
+  refitted; the increases are inside their allowances (Boltz-2 +7 of 829 MiB,
+  Protenix +41 of 1,018).
 
 - **Boltz-2's two-dimensional ring evaluates its tiles with the fused kernel
   unless asked not to.** On a GPU that has tokamax, with the resolved layout

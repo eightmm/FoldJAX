@@ -67,7 +67,7 @@ def realised_glu_backend(value: Any, *, released: str, serial: bool) -> Any:
     An explicit value is returned as written and never rewritten, so every
     refusal downstream still sees what was asked for. An omitted one is
     `pallas` on a serial GPU process (Boltz-2 and OpenFold3 call this, and
-    Protenix once `glu` is in its `runtime_policy.PALLAS_DEFAULT`; the
+    Protenix would once `glu` is in its `runtime_policy.PALLAS_DEFAULT`; the
     measurements are at `foldjax.models._pallas_pair.default_backend`)
     and the port's `released` value everywhere else: off a GPU the kernel
     cannot run, and a context-parallel run partitions no fused GLU, so its

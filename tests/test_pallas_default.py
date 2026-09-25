@@ -2,8 +2,8 @@
 
 Boltz-2 and OpenFold3 run the Pallas-Triton triangle multiplication and pair
 transitions when nothing is asked for on a GPU process, and their released
-backends everywhere else. Protenix keeps its released backends on every
-platform until a component joins `protenix.runtime_policy.PALLAS_DEFAULT`;
+backends everywhere else. Protenix defaults to the Pallas multiplication only
+and keeps its released transitions (`protenix.runtime_policy.PALLAS_DEFAULT`);
 the tests here pin both that and that the constant is the whole switch.
 
 Flipping a default turns an omitted option into two programs, one per
@@ -233,7 +233,8 @@ def test_boltz2_adapter_hands_the_native_call_the_realised_glu(
 @pytest.mark.parametrize(
     "options, on_gpu, on_cpu",
     [
-        # Protenix keeps its released GLU on a GPU: `PALLAS_DEFAULT` is empty.
+        # Protenix keeps its released GLU on a GPU: `glu` is not in
+        # `PALLAS_DEFAULT`.
         ({}, "xla", "xla"),
         ({"glu_backend": "pallas"}, "pallas", "pallas"),
         ({"glu_backend": "xla"}, "xla", "xla"),
@@ -271,8 +272,8 @@ def test_protenix_pallas_default_is_one_constant(
 ) -> None:
     """Each member of `PALLAS_DEFAULT` flips exactly its own component.
 
-    The shipped value is empty (4,100-token gate, `runtime_policy`), and the
-    rest of this module pins that. This proves the constant is the whole
+    The shipped value is `{"trimul"}` (4,100-token gate, `runtime_policy`),
+    and the rest of this module pins that. This proves the constant is the whole
     switch: adding a name flips that component's omitted setting on a GPU --
     in the model's resolver, the cache namespace and the native run alike --
     and nothing off a GPU.
@@ -281,7 +282,7 @@ def test_protenix_pallas_default_is_one_constant(
     from foldjax.models.protenix import runtime_policy
     from foldjax.models.protenix.models.triangle import triangle
 
-    assert runtime_policy.PALLAS_DEFAULT == frozenset()
+    assert runtime_policy.PALLAS_DEFAULT == frozenset({"trimul"})
     monkeypatch.setattr(runtime_policy, "PALLAS_DEFAULT", members)
     trimul = "pallas" if gpu and "trimul" in members else "cueq"
     glu = "pallas" if gpu and "glu" in members else "xla"
@@ -300,6 +301,67 @@ def test_protenix_pallas_default_is_one_constant(
         ProtenixBackend()._native_invocation(spelled).config_fields["glu_backend"]
         == "pallas"
     )
+
+
+def test_protenix_gpu_default_runs_pallas_multiplication_and_released_glu(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A Protenix run with nothing asked for, on a GPU: which kernels run.
+
+    The multiplication reaches the Pallas kernel. The transition is handed the
+    GLU the adapter realises for the native run, and runs its released XLA
+    body rather than the Pallas transition. Counted at the shared kernel
+    entry points in interpret mode, as the wiring tests in
+    `tests/models/test_pallas_pair_ports.py` count them.
+    """
+
+    from foldjax.models.protenix.models.primitives.primitives import (
+        LayerNormParams,
+        TransitionParams,
+        _transition_block,
+    )
+    from foldjax.models.protenix.models.triangle.triangle import (
+        triangle_multiplication,
+    )
+    from tests.models.test_pallas_pair_ports import (
+        C,
+        _affine,
+        _pair,
+        _protenix_multiplication_params,
+        _torch_linear,
+    )
+
+    monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: True)
+    monkeypatch.setattr(_pallas_pair, "INTERPRET", True)
+    monkeypatch.delenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", raising=False)
+    counts = {"triangle_multiplication": 0, "transition": 0}
+    for name in counts:
+        original = getattr(_pallas_pair, name)
+
+        def counted(*args, _name=name, _original=original, **kwargs):
+            counts[_name] += 1
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(_pallas_pair, name, counted)
+
+    glu = (
+        ProtenixBackend()
+        ._native_invocation(_request(tmp_path, "protenix"))
+        .config_fields["glu_backend"]
+    )
+    rng = np.random.default_rng(21)
+    x, mask = _pair(rng)
+    triangle_multiplication(
+        x[0], mask[0], _protenix_multiplication_params(rng), "outgoing"
+    )
+    params = TransitionParams(
+        layer_norm=LayerNormParams(*_affine(rng, C)),
+        linear_a=_torch_linear(rng, C, 4 * C),
+        linear_b=_torch_linear(rng, C, 4 * C),
+        linear_out=_torch_linear(rng, 4 * C, C),
+    )
+    _transition_block(x, params, glu_backend=glu)
+    assert (glu, counts) == ("xla", {"triangle_multiplication": 1, "transition": 0})
 
 
 # --------------------------------------------------------------------------- #
