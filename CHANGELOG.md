@@ -592,8 +592,8 @@ unless it says so here, in its own paragraph.
   identity records the realised multiplication. An omitted GPU run therefore
   shares the namespace an explicit `pallas` already wrote, and an explicit
   released value keeps the namespace every earlier run wrote. Run manifests
-  now record `models/_pallas_pair.py` (all three ports) and `models/_glu.py`
-  (Boltz-2, OpenFold3), so a result from before the flip does not resume.
+  now record `models/_pallas_pair.py` and `models/_glu.py` for all three
+  ports, so a result from before the flip does not resume.
   `foldjax_run.json` still records options as spelled, not realised backends.
 
   Against a same-base control, both switches on

@@ -311,9 +311,11 @@ PORTS: Mapping[str, PortSpec] = {
             SourceSpec("models/protenix/models/heads/head.py"),
             SourceSpec("models/_cueq.py"),
             # The Pallas multiplication is what an omitted option runs on a
-            # GPU since 2026-09-25. Only the kernel file: this port's GLU
-            # default did not change, so `_glu.py` is not bound here.
+            # GPU since 2026-09-25. The GLU default did not change, but the
+            # released `xla` transition still runs through `_glu.py`
+            # (`gated_linear_unit`, `site_backend`), so its bytes are bound too.
             SourceSpec("models/_pallas_pair.py"),
+            SourceSpec("models/_glu.py"),
         ),
         manifest_weight_assets="foldjax.manifest:_protenix_weight_assets",
         manifest_ccd_assets="foldjax.manifest:_ccd_chemistry_assets",

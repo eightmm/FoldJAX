@@ -1480,9 +1480,9 @@ omitted option on a GPU therefore shares the namespace of an explicit
 (`glu_backend=tokamax` on Boltz-2, `xla` on OpenFold3) keeps the namespace
 every run before this change wrote. Protenix's multiplication is recorded in
 no cache key, as it never was; JAX keys the executables on the program itself.
-The run manifests record `models/_pallas_pair.py` (all three ports) and
-`models/_glu.py` (Boltz-2 and OpenFold3, whose GLU default changed) as
-implementation sources, so a result from before the flip does not resume.
+The run manifests of all three ports record `models/_pallas_pair.py` and
+`models/_glu.py` as implementation sources (Protenix's released transition
+runs through the latter), so a result from before the flip does not resume.
 `foldjax_run.json` records the options as spelled, not the realised backends;
 there is no field for them yet.
 
