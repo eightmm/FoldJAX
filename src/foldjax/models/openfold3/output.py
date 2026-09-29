@@ -421,6 +421,11 @@ def confidence_summary(
     atom_mask = None
     if features is not None and "atom_mask" in features:
         atom_mask = _first(features["atom_mask"], 1) > 0
+        if atom_mask.shape[-1] != plddt.shape[-1]:
+            raise ValueError(
+                "OpenFold3 pLDDT and atom_mask disagree: "
+                f"{plddt.shape[-1]} versus {atom_mask.shape[-1]} atoms"
+            )
 
     ptm = np.asarray(prediction.ptm, dtype=np.float64).reshape(-1)
     iptm = (
@@ -446,7 +451,7 @@ def confidence_summary(
     samples = []
     for index in range(plddt.shape[0]):
         row = plddt[index]
-        if atom_mask is not None and atom_mask.shape[-1] == row.shape[-1]:
+        if atom_mask is not None:
             row = row[atom_mask]
         entry: dict[str, Any] = {
             "sample": index,
@@ -976,6 +981,11 @@ def write_prediction_outputs(
     plddt = _plddt_percent(prediction.plddt)
     if plddt.ndim == 1:
         plddt = plddt[None, :]
+    if plddt.shape[-1] != metadata.keep.size:
+        raise ValueError(
+            "OpenFold3 pLDDT and atom_mask disagree: "
+            f"{plddt.shape[-1]} versus {metadata.keep.size} atoms"
+        )
 
     root = Path(directory)
     root.mkdir(parents=True, exist_ok=True)
@@ -984,14 +994,13 @@ def write_prediction_outputs(
         # Predictions cover padded atoms too; only the real ones are written.
         sample_coordinates = coordinates[index][metadata.keep]
         row = plddt[min(index, plddt.shape[0] - 1)]
-        usable = row.size == metadata.keep.size
         structures.append(
             write_structure(
                 sample_coordinates,
                 metadata,
                 _output_path(root, f"{name}_sample_{index}.cif"),
                 name=f"{name}_sample_{index}",
-                b_factors=row[metadata.keep] if usable else None,
+                b_factors=row[metadata.keep],
             )
         )
 

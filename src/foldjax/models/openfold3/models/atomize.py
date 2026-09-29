@@ -112,7 +112,17 @@ def max_atom_per_token_masked_select(
     order = jnp.argsort(~valid, axis=-1, stable=True)
     gathered = jnp.take_along_axis(atom_feat, order[..., None], axis=-2)
     kept = jnp.take_along_axis(valid, order, axis=-1)
-    return jnp.where(kept[..., :n_atom, None], gathered[..., :n_atom, :], 0.0)
+    selected = jnp.where(kept[..., :n_atom, None], gathered[..., :n_atom, :], 0.0)
+    # A serving atom bucket can exceed N_token * max_atoms_per_token (1003
+    # tokens padded to 1024 give 23552 slots; 7749 atoms pad to 24576). The
+    # slice above then stops short, and the rows must still reach n_atom so
+    # they line up with the atom mask and the coordinates.
+    short = n_atom - selected.shape[-2]
+    if short > 0:
+        selected = jnp.pad(
+            selected, [(0, 0)] * (selected.ndim - 2) + [(0, short), (0, 0)]
+        )
+    return selected
 
 
 def aggregate_atom_feat_to_tokens(

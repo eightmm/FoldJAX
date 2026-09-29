@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from foldjax.backends.openfold3 import _padding_plan, _sampler_noise_mask
+from foldjax.models.openfold3.bridge.torch_mapping import map_atom_logit_head
 from foldjax.models.openfold3.data import (
     collapse_identical_templates,
     compact_zero_template_pair_features,
@@ -18,11 +19,13 @@ from foldjax.models.openfold3.data.featurize import _ZERO_TEMPLATE_PAIR_MARKER
 from foldjax.models.openfold3.data.validation import validate_features
 from foldjax.models.openfold3.inference import Prediction
 from foldjax.models.openfold3.models import template_module
+from foldjax.models.openfold3.models.confidence import compute_plddt
+from foldjax.models.openfold3.models.heads import atom_logit_head
 from foldjax.models.openfold3.models.sampler import (
     padded_noise_tape,
     sample_diffusion,
 )
-from foldjax.models.openfold3.output import crop_prediction
+from foldjax.models.openfold3.output import confidence_summary, crop_prediction
 from foldjax.schema import PaddingConfig
 from tests.models.openfold3.feature_fixture import minimal_features
 
@@ -399,3 +402,107 @@ def test_native_template_capacity_does_not_truncate_archive() -> None:
             minimal_features(tokens=4, atoms=7, msa_rows=2, templates=5),
             PaddingConfig(),
         )
+
+
+def _head_prediction(features, s, head, coordinates) -> Prediction:
+    n_atom = features["atom_mask"].shape[-1]
+    logits = atom_logit_head(
+        s,
+        head,
+        jnp.asarray(features["max_atom_per_token_mask"]),
+        max_atoms_per_token=23,
+        c_out=50,
+        n_atom=n_atom,
+    )
+    stored = np.zeros((coordinates.shape[0], n_atom, 3), dtype=np.float32)
+    stored[:, : coordinates.shape[1]] = coordinates
+    return Prediction(
+        coordinates=stored,
+        plddt=np.asarray(compute_plddt(logits)),
+        ptm=np.full(coordinates.shape[0], 0.7, dtype=np.float32),
+        iptm=np.zeros(coordinates.shape[0], dtype=np.float32),
+        chain_pair_iptm=None,
+        pae_logits=None,
+        pde_logits=None,
+        distogram_logits=None,
+    )
+
+
+def _past_the_token_slots():
+    """Exact and served predictions whose atom bucket exceeds tokens * 23."""
+    rng = np.random.default_rng(0)
+    exact = minimal_features(tokens=4, atoms=7)
+    padded = pad_features(exact, n_token=8, n_atom=8 * 23 + 16, n_msa=2)
+    head = map_atom_logit_head(
+        {
+            "layer_norm.weight": rng.normal(size=8).astype(np.float32),
+            "layer_norm.bias": rng.normal(size=8).astype(np.float32),
+            "linear.weight": rng.normal(size=(23 * 50, 8)).astype(np.float32),
+        }
+    )
+    s = rng.normal(size=(2, 8, 8)).astype(np.float32)
+    coordinates = rng.normal(size=(2, 7, 3)).astype(np.float32) * 10.0
+
+    reference = _head_prediction(exact, jnp.asarray(s[:, :4]), head, coordinates)
+    served = _head_prediction(padded, jnp.asarray(s), head, coordinates)
+    return exact, reference, padded, served
+
+
+def test_atom_bucket_past_the_token_slots_keeps_the_public_plddt() -> None:
+    """Serving may pad atoms past tokens * 23: 3OG2 pads 1003 tokens to 1024
+    (23552 slots) but 7749 atoms to 24576. The per-atom heads must still return
+    every padded atom row, so the atom mask applies and the public mean pLDDT is
+    the unpadded one rather than one diluted by padding rows at exactly 50."""
+    exact, reference, padded, served = _past_the_token_slots()
+
+    assert served.plddt.shape == (2, 8 * 23 + 16)
+    np.testing.assert_allclose(served.plddt[:, :7], reference.plddt, rtol=1e-6)
+    expected = [
+        entry["mean_plddt"]
+        for entry in confidence_summary(reference, exact)["samples"]
+    ]
+    actual = [
+        entry["mean_plddt"]
+        for entry in confidence_summary(served, padded)["samples"]
+    ]
+    np.testing.assert_allclose(actual, expected, rtol=1e-6)
+    assert 1.0 < min(expected) and max(expected) <= 100.0
+
+
+def test_atom_bucket_past_the_token_slots_keeps_the_b_factors(tmp_path) -> None:
+    """The padded run's CIF B-factors were all 0: the writer dropped them."""
+    gemmi = pytest.importorskip("gemmi")
+    from foldjax.models.openfold3.output import write_prediction_outputs
+
+    _, reference, padded, served = _past_the_token_slots()
+    with pytest.warns(RuntimeWarning, match="no exact output metadata"):
+        written = write_prediction_outputs(served, padded, tmp_path, name="pad")
+    for index, path in enumerate(written["structures"]):
+        structure = gemmi.read_structure(str(path))
+        b_factors = [
+            atom.b_iso
+            for model in structure
+            for chain in model
+            for residue in chain
+            for atom in residue
+        ]
+        np.testing.assert_allclose(
+            b_factors, reference.plddt[index] * 100.0, atol=1e-2
+        )
+
+
+def test_summary_refuses_plddt_the_atom_mask_cannot_cover() -> None:
+    """A length mismatch used to skip the mask and average the padding in."""
+    features = pad_features(minimal_features(tokens=4, atoms=7), n_token=8, n_atom=13)
+    prediction = Prediction(
+        coordinates=np.zeros((1, 13, 3), dtype=np.float32),
+        plddt=np.full((1, 12), 0.9, dtype=np.float32),
+        ptm=np.zeros(1, dtype=np.float32),
+        iptm=None,
+        chain_pair_iptm=None,
+        pae_logits=None,
+        pde_logits=None,
+        distogram_logits=None,
+    )
+    with pytest.raises(ValueError, match="pLDDT"):
+        confidence_summary(prediction, features)
