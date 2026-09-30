@@ -21,6 +21,10 @@ from foldjax.models.openfold3.data import (
 
 SEQUENCE = "ACDEFGHIK"
 TEMPLATE_SEQUENCE = "GAAG"
+# Upstream gives a chain under five tokens no templates
+# (TemplateSettings.min_n_tokens_per_chain), so the 4-residue template is
+# aligned to a 5-residue query that extends it by one residue.
+TEMPLATE_QUERY_SEQUENCE = TEMPLATE_SEQUENCE + "A"
 LOCAL_TEMPLATE_CIF = Path(__file__).with_name("fixtures") / "gaag.cif"
 
 
@@ -298,7 +302,7 @@ builtins.__import__ = import_without_torch
 import numpy as np
 from foldjax.models.openfold3.data import featurize_query
 
-sequence = "GAAG"
+sequence = "GAAGA"
 features = featurize_query({"queries": {"ubq": {"chains": [{
     "molecule_type": "protein",
     "chain_ids": ["A"],
@@ -329,7 +333,7 @@ def test_raw_inference_keeps_real_template_geometry_dense() -> None:
                     {
                         "molecule_type": "protein",
                         "chain_ids": ["A"],
-                        "sequence": TEMPLATE_SEQUENCE,
+                        "sequence": TEMPLATE_QUERY_SEQUENCE,
                         "template_cif_paths": [str(LOCAL_TEMPLATE_CIF)],
                         "template_cif_chain_ids": ["A"],
                     }
@@ -346,6 +350,41 @@ def test_raw_inference_keeps_real_template_geometry_dense() -> None:
     assert "_foldjax_zero_template_pair_features" not in features
     assert float(features["template_distogram"].sum()) > 0
     assert float(np.abs(features["template_unit_vector"]).sum()) > 0
+
+
+def test_a_chain_under_five_tokens_gets_no_templates() -> None:
+    """Upstream samples no templates for a chain below five tokens.
+
+    ``TemplateSettings.min_n_tokens_per_chain`` is 5, and v0.5.0 skips the chain
+    before sampling (pipelines/sample_processing/template.py:117-119). The same
+    template on a 5-token query must still produce geometry.
+    """
+
+    def featurize(sequence: str) -> dict:
+        return featurize_query(
+            {
+                "queries": {
+                    "query": {
+                        "chains": [
+                            {
+                                "molecule_type": "protein",
+                                "chain_ids": ["A"],
+                                "sequence": sequence,
+                                "template_cif_paths": [str(LOCAL_TEMPLATE_CIF)],
+                                "template_cif_chain_ids": ["A"],
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+
+    short = featurize(TEMPLATE_SEQUENCE)
+    long = featurize(TEMPLATE_QUERY_SEQUENCE)
+
+    assert float(short["template_pseudo_beta_mask"].sum()) == 0
+    assert float(short["template_backbone_frame_mask"].sum()) == 0
+    assert float(long["template_pseudo_beta_mask"].sum()) > 0
 
 
 def test_preprocessed_template_cache_and_adjacent_structures_are_torch_free(
@@ -393,7 +432,7 @@ builtins.__import__ = import_without_torch
 
 from foldjax.models.openfold3.data import featurize_query
 
-sequence = "GAAG"
+sequence = "GAAGA"
 features = featurize_query({"queries": {"ubq": {"chains": [{
     "molecule_type": "protein",
     "chain_ids": ["A"],

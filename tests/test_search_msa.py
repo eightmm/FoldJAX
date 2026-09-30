@@ -186,3 +186,120 @@ def test_a_server_that_never_recovers_still_ends_the_search(monkeypatch) -> None
     )
     with pytest.raises(SearchError, match="rate-limited for the whole"):
         client._json("POST", "ticket/msa")
+
+
+# Complex pairing: OpenFold3 v0.5.0 pairs a heteromer in one ColabFold job.
+
+OTHER = "GSHMLEDPVDAFQLGKVLNQ"
+
+
+class _ComplexBackend(_Backend):
+    """A backend that can also pair a complex, row-aligned across its chains."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.complex_calls: list[list[str]] = []
+
+    def search_complex(self, sequences):
+        from foldjax.search import ComplexPairPayload
+
+        self.complex_calls.append(list(sequences))
+        return ComplexPairPayload(
+            tuple(
+                f">{101 + i}\n{s}\n>hit\n{'A' * len(s)}\n"
+                for i, s in enumerate(sequences)
+            )
+        )
+
+
+def test_colabfold_pair_a3m_splits_on_the_nul_separator_only() -> None:
+    """Upstream's gather loop: only the header after a NUL (or the first) is a query."""
+    from foldjax.search.msa import _split_colabfold_a3m
+
+    text = (
+        ">101\nAAAA\n>UniRef100_X\t123\nAAAC\n"
+        "\x00>102\nCCCC\n>UniRef100_Y\t456\nCCCA\n"
+    )
+    assert _split_colabfold_a3m(text, "paired MSA") == {
+        101: ">101\nAAAA\n>UniRef100_X\t123\nAAAC\n",
+        102: ">102\nCCCC\n>UniRef100_Y\t456\nCCCA\n",
+    }
+
+
+def test_remote_complex_pairing_is_one_pairgreedy_job() -> None:
+    """One ``ticket/pair`` job, mode ``pairgreedy-env``, queries 101 and 102."""
+    import io
+    import tarfile
+    import urllib.parse
+
+    from foldjax.search.msa import HttpResponse, RemoteMMseqs2Client
+
+    pair = f">101\n{SEQUENCE}\n>h\t1\n{SEQUENCE}\n\x00>102\n{OTHER}\n>h\t1\n{OTHER}\n"
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        raw = pair.encode()
+        info = tarfile.TarInfo("pair.a3m")
+        info.size = len(raw)
+        tar.addfile(info, io.BytesIO(raw))
+    requests: list[tuple[str, str, bytes | None]] = []
+
+    def transport(method, url, data, _headers, _timeout):
+        requests.append((method, url, data))
+        if url.endswith("ticket/pair"):
+            return HttpResponse(200, b'{"status":"COMPLETE","id":"p-1"}')
+        return HttpResponse(200, buffer.getvalue())
+
+    client = RemoteMMseqs2Client(
+        "https://msa.invalid", version="api-v1", poll_interval=0, transport=transport
+    )
+    payload = client.search_complex([SEQUENCE, OTHER])
+
+    (method, url, data), download = requests
+    assert (method, url) == ("POST", "https://msa.invalid/ticket/pair")
+    assert urllib.parse.parse_qs(data.decode()) == {
+        "q": [f">101\n{SEQUENCE}\n>102\n{OTHER}\n"],
+        "mode": ["pairgreedy-env"],
+    }
+    assert download[1] == "https://msa.invalid/result/download/p-1"
+    assert payload.paired == (
+        f">101\n{SEQUENCE}\n>h\t1\n{SEQUENCE}\n",
+        f">102\n{OTHER}\n>h\t1\n{OTHER}\n",
+    )
+
+
+def test_complex_pairing_is_cached_and_maps_repeats(tmp_path: Path) -> None:
+    backend = _ComplexBackend()
+    pipeline = MsaSearchPipeline(cache_dir=tmp_path, backend=backend)
+
+    first = pipeline.search_complex([SEQUENCE, OTHER, SEQUENCE])
+    assert backend.complex_calls == [[SEQUENCE, OTHER]]
+    assert first[0] == first[2] and first[0] != first[1]
+    assert Path(first[1]["pairedMsaPath"]).read_text().startswith(f">102\n{OTHER}\n")
+
+    assert pipeline.search_complex([SEQUENCE, OTHER, SEQUENCE]) == first
+    assert backend.complex_calls == [[SEQUENCE, OTHER]], "the cache was not used"
+    # The per-sequence cache is a different identity and is untouched.
+    assert backend.calls == []
+
+
+def test_complex_pairing_needs_two_sequences_and_a_capable_backend(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="two distinct"):
+        MsaSearchPipeline(tmp_path / "a", _ComplexBackend()).search_complex(
+            [SEQUENCE, SEQUENCE]
+        )
+    plain = MsaSearchPipeline(tmp_path / "b", _Backend())
+    assert not plain.pairs_complexes
+    with pytest.raises(SearchError, match="cannot pair a complex"):
+        plain.search_complex([SEQUENCE, OTHER])
+
+
+def test_a_complex_block_for_the_wrong_query_is_refused(tmp_path: Path) -> None:
+    class _Swapped(_ComplexBackend):
+        def search_complex(self, sequences):
+            payload = super().search_complex(sequences)
+            return type(payload)(tuple(reversed(payload.paired)))
+
+    with pytest.raises(SearchError, match="does not match"):
+        MsaSearchPipeline(tmp_path, _Swapped()).search_complex([SEQUENCE, OTHER])

@@ -961,7 +961,13 @@ def _template_slices(
     from foldjax.models.openfold3._upstream.openfold3.core.data.primitives.structure.template import (  # noqa: E501
         align_template_to_query,
     )
+    from foldjax.models.openfold3._upstream.openfold3.projects.of3_all_atom.config.dataset_config_components import (  # noqa: E501
+        TemplateSettings,
+    )
 
+    # Upstream gives a chain with fewer tokens no templates at all
+    # (pipelines/sample_processing/template.py:117-119).
+    min_tokens = TemplateSettings().min_n_tokens_per_chain
     result: dict[str, list[Any]] = {}
     cif_cache: dict[str, tuple] = {}
     for chain in query.chains:
@@ -979,6 +985,17 @@ def _template_slices(
         for query_chain_id in chain.chain_ids:
             entries: dict[str, Any] = {}
             structure_directory: Path | None = None
+            chain_atoms = atom_array[atom_array.chain_id == query_chain_id]
+            if len(np.unique(chain_atoms.token_id)) < min_tokens:
+                if direct_paths or alignment_path is not None:
+                    logger.warning(
+                        "OpenFold3 uses no templates for chain %s: it has fewer "
+                        "than %d tokens",
+                        query_chain_id,
+                        min_tokens,
+                    )
+                result[query_chain_id] = []
+                continue
 
             if direct_paths:
                 entries = _rank_direct_template_entries(

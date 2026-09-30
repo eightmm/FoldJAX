@@ -86,20 +86,18 @@ def attach_msas(
         cache_dir: the search's own cache. Defaults to ``alignment_dir/cache``.
         backend: an ``MsaBackend``; ``RemoteMMseqs2Client`` when omitted, which
             calls the public ColabFold server.
-        paired: also record the paired alignment. Off by default, and that default
-            is not conservatism: pairing needs taxonomy annotations in the
-            alignment headers, and an alignment that cannot be paired does not
-            degrade gracefully -- upstream collapses the MSA to the query sequence
-            alone, with no error. Turn it on for a multimer whose backend returns a
-            genuinely paired search.
+        paired: also pair each query's protein chains the way OpenFold3 v0.5.0
+            does: one complex search over the query's distinct protein sequences
+            (``backend.search_complex``), and only when there are at least two of
+            them -- a homomer or monomer gets no paired alignment. Off by default.
         query_id: search only this query. Required by callers that select one
             member of a multi-query document, so unused queries never trigger
             network work or write alignments.
 
     Returns:
-        A copy of ``spec`` with ``main_msa_file_paths`` -- and
-        ``paired_msa_file_paths`` when ``paired`` -- set on every protein chain
-        that has a sequence.
+        A copy of ``spec`` with ``main_msa_file_paths`` set on every protein chain
+        that has a sequence, and ``paired_msa_file_paths`` on those chains too
+        when ``paired`` and the query has more than one distinct protein sequence.
 
     """
     # In-package since the search was vendored; it was an unpublished sibling
@@ -130,6 +128,12 @@ def attach_msas(
         cache_dir=pipeline_cache,
         backend=backend if backend is not None else RemoteMMseqs2Client(),
     )
+    if paired and not pipeline.pairs_complexes:
+        raise ValueError(
+            "paired=True needs a backend that pairs a complex in one search "
+            "(search_complex); per-chain paired alignments are not row-aligned, "
+            "and OpenFold3 v0.5.0 refuses them"
+        )
 
     updated = copy.deepcopy(dict(spec))
     for query_index, selected_id in selected:
@@ -144,6 +148,12 @@ def attach_msas(
             continue
         query_directory = _safe_directory(root, f"query_{query_index:04d}")
         results = pipeline.search([chain["sequence"] for chain in chains])
+        sequences = {"".join(chain["sequence"].split()).upper() for chain in chains}
+        pairs = (
+            pipeline.search_complex([chain["sequence"] for chain in chains])
+            if paired and len(sequences) > 1
+            else None
+        )
         for index, (chain, result) in enumerate(zip(chains, results, strict=True)):
             # Keyed by position rather than chain id: a chain entry can name
             # several ids, and the sequence is what was searched.
@@ -158,11 +168,11 @@ def attach_msas(
                     )
                 )
             ]
-            if paired:
+            if pairs is not None:
                 chain["paired_msa_file_paths"] = [
                     str(
                         _link(
-                            Path(result["pairedMsaPath"]),
+                            Path(pairs[index]["pairedMsaPath"]),
                             directory / f"{PAIRED_STEM}.a3m",
                         )
                     )

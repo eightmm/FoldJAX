@@ -45,6 +45,11 @@ _RNA_MSA_COMMAND_ENV = "FOLDJAX_RNA_MSA_COMMAND"
 _LOCAL_VERSION_ENV = "FOLDJAX_MSA_LOCAL_VERSION"
 _DEFAULT_LOCAL_VERSION = "local"
 
+#: Backends whose upstream pairs a complex in one search instead of pairing each
+#: chain on its own. Every other backend keeps the per-chain ``paircomplete``
+#: alignment this search inherited from the Protenix port.
+_COMPLEX_PAIRING = frozenset({"openfold3"})
+
 
 def _local_command(name: str) -> list[str] | None:
     """A configured local search command, split the way a shell would."""
@@ -173,15 +178,19 @@ def _search_alignments(
             "workflow, or supply unpaired_msa for it"
         )
     searched: list[dict[str, str]] = []
+    pairs_complex = model in _COMPLEX_PAIRING and "paired_msa" in target.features
     if wanted:
+        pipeline = _msa_pipeline()
         searched.extend(
             _run_search(
-                _msa_pipeline(),
+                pipeline,
                 wanted,
                 policy=policy,
-                paired="paired_msa" in target.features,
+                paired="paired_msa" in target.features and not pairs_complex,
             )
         )
+        if pairs_complex:
+            _pair_complex(pipeline, job, wanted, searched, policy=policy, model=model)
     if rna and rna_pipeline is not None:
         searched.extend(_run_search(rna_pipeline, rna, policy=policy, paired=False))
     return searched
@@ -230,6 +239,92 @@ def _run_search(
             }
         )
     return searched
+
+
+def _pair_complex(
+    pipeline: Any,
+    job: dict[str, Any],
+    wanted: list[dict[str, Any]],
+    searched: list[dict[str, str]],
+    *,
+    policy: str,
+    model: str,
+) -> None:
+    """Pair the whole complex in one search, as OpenFold3 v0.5.0 does.
+
+    Upstream submits one ColabFold ``pairgreedy-env`` job per query, over its
+    distinct protein sequences, and only when there is more than one of them
+    (colabfold_msa_server.py:642-648, 940-975); a homomer gets no paired MSA.
+    Its v0.5.0 featurizer requires every chain's paired block at one depth
+    (sample_processing/msa.py:239-246), which per-chain pair jobs do not give.
+
+    Only a job whose protein chains were all searched here is paired: pairing
+    submits every chain's sequence, and a chain that arrived with its own
+    alignment may have done so to keep its sequence off the server.
+    """
+    import warnings
+
+    from foldjax.input import _ids
+    from foldjax.search.msa import SearchError
+
+    proteins = [
+        entity for entity in job["entities"] if entity.get("type") == "protein"
+    ]
+    distinct = {"".join(str(entity["sequence"]).split()).upper() for entity in proteins}
+    if len(distinct) < 2:
+        return
+    searched_ids = {id(entity) for entity in wanted}
+    if not all(
+        id(entity) in searched_ids
+        and entity.get("unpaired_msa")
+        and not entity.get("paired_msa")
+        for entity in proteins
+    ):
+        # A failed search already warned; a caller-supplied alignment did not.
+        supplied = [
+            _ids(entity)[0]
+            for entity in proteins
+            if id(entity) not in searched_ids or entity.get("paired_msa")
+        ]
+        if supplied:
+            warnings.warn(
+                f"{model}: not pairing the complex because chain(s) "
+                f"{', '.join(supplied)} carry their own alignment; supply "
+                "paired_msa for every protein chain to pair it",
+                UserWarning,
+                stacklevel=3,
+            )
+        return
+    if not getattr(pipeline, "pairs_complexes", False):
+        warnings.warn(
+            f"{model}: the configured MSA search cannot pair a complex in one "
+            "job, so this heteromer is folded without a paired MSA",
+            UserWarning,
+            stacklevel=3,
+        )
+        return
+    try:
+        found = pipeline.search_complex(
+            [str(entity["sequence"]) for entity in proteins]
+        )
+    except (SearchError, TimeoutError, OSError, ValueError) as error:
+        if policy == "required":
+            raise ValueError(
+                f"paired MSA search failed and msa='required': {error}"
+            ) from error
+        warnings.warn(
+            f"paired MSA search failed ({error}); folding without a paired MSA",
+            UserWarning,
+            stacklevel=3,
+        )
+        return
+    records = {record["chain"]: record for record in searched}
+    for entity, result in zip(proteins, found, strict=True):
+        entity["paired_msa"] = result["pairedMsaPath"]
+        record = records.get(_ids(entity)[0])
+        if record is not None:
+            record["paired_msa"] = result["pairedMsaPath"]
+            record["paired_provenance"] = result["provenancePath"]
 
 
 def _warn_single_sequence(job: dict[str, Any], model: str) -> None:

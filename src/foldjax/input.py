@@ -104,8 +104,8 @@ _TARGETS = {
     "protenix": _Target(".json", _ALL_FEATURES - {"templates_unmapped", "affinity"}),
     # OpenFold3 expresses everything, but with two constraints its own layer
     # enforces and this writer therefore has to: alignment files are selected by
-    # *stem* and only database names are parsed, and a paired MSA that cannot
-    # actually be paired collapses the MSA to the query sequence alone.
+    # *stem* and only database names are parsed, and the chains' paired MSAs must
+    # be row-aligned at one depth, which `msa=auto` gets from one complex search.
     # The released OpenFold3 query schema declares covalent bonds but its
     # featurizer never applies them. Advertising the field would silently drop
     # chemistry, so reject it until the upstream pipeline consumes the contract.

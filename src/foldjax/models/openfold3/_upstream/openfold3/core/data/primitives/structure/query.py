@@ -1,5 +1,4 @@
 # Copyright 2026 AlQuraishi Laboratory
-# Modified by FoldJAX for portable v0.5.0 input parity; see the port NOTICE.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -40,7 +39,7 @@ from foldjax.models.openfold3._upstream.openfold3.core.data.primitives.structure
 from foldjax.models.openfold3._upstream.openfold3.core.data.resources.residues import (
     DNA_RESTYPE_1TO3,
     MOLECULE_TYPE_TO_LEAVING_ATOMS,
-    MOLECULE_TYPE_TO_UKNOWN_RESIDUES_3,
+    MOLECULE_TYPE_TO_UNKNOWN_RESIDUES_3,
     PROTEIN_RESTYPE_1TO3,
     RNA_RESTYPE_1TO3,
     MoleculeType,
@@ -328,7 +327,7 @@ def structure_with_ref_mols_from_sequence(
             raise ValueError(f"Unsupported molecule type: {poly_type}")
 
     # Figure out the unknown residue 3-letter identifier and leaving atom names
-    unk_res = MOLECULE_TYPE_TO_UKNOWN_RESIDUES_3[poly_type]
+    unk_res = MOLECULE_TYPE_TO_UNKNOWN_RESIDUES_3[poly_type]
     base_leaving_atoms = MOLECULE_TYPE_TO_LEAVING_ATOMS[poly_type]
 
     atom_array = None
@@ -633,11 +632,12 @@ def structure_with_ref_mols_from_query(query: Query) -> StructureWithReferenceMo
                 "entity_id",
                 np.repeat(entity_to_id[representation], len(segment_atom_array)),
             )
+            segment_atom_array.set_annotation(
+                "is_cyclic",
+                np.repeat(chain.cyclic, len(segment_atom_array)),
+            )
 
             # Append atom array to end
-            segment_atom_array.set_annotation(
-                "is_cyclic", np.repeat(chain.cyclic, len(segment_atom_array))
-            )
             if atom_array is None:
                 atom_array = segment_atom_array
             else:

@@ -292,10 +292,163 @@ def test_openfold3_links_a_searched_alignment_under_a_stem_it_reads(
     (query,) = native["queries"].values()
     chain = query["chains"][0]
     main = Path(chain["main_msa_file_paths"][0])
-    paired = Path(chain["paired_msa_file_paths"][0])
     assert main.stem == "colabfold_main"
-    assert paired.stem == "colabfold_paired"
-    assert main.is_file() and paired.is_file()
+    assert main.is_file()
+    # A monomer is never paired: upstream pairs only more than one distinct
+    # protein sequence (colabfold_msa_server.py:642-648).
+    assert "paired_msa_file_paths" not in chain
+
+
+OTHER_SEQUENCE = "GSHMLEDPVDAFQLGKVLNQ"
+
+
+class _ComplexStubSearch(_StubSearch):
+    """The stub, plus one-job complex pairing like the remote client."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.complex_calls: list[list[str]] = []
+
+    def search_complex(self, sequences):
+        from foldjax.search.msa import ComplexPairPayload
+
+        self.complex_calls.append(list(sequences))
+        return ComplexPairPayload(
+            tuple(
+                f">{101 + i}\n{s}\n>hit\n{'A' * len(s)}\n"
+                for i, s in enumerate(sequences)
+            )
+        )
+
+
+def _heteromer(tmp_path: Path, **extra: Any) -> Path:
+    return _write(
+        tmp_path / "job.json",
+        {
+            "entities": [
+                {"type": "protein", "id": "A", "sequence": SEQUENCE, **extra},
+                {"type": "protein", "id": "B", "sequence": OTHER_SEQUENCE},
+                {"type": "protein", "id": "C", "sequence": SEQUENCE},
+            ]
+        },
+    )
+
+
+def test_openfold3_pairs_a_heteromer_in_one_complex_search(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """One pairing job over the distinct sequences, as OpenFold3 v0.5.0 submits.
+
+    Per-chain pair jobs are not row-aligned across chains, and v0.5.0 refuses
+    paired blocks of different depth; the complex job is what upstream sends.
+    """
+    backend = _ComplexStubSearch()
+    monkeypatch.setattr(
+        "foldjax.msa_search._msa_pipeline", lambda: _stub_pipeline(tmp_path, backend)
+    )
+
+    out = tmp_path / "out"
+    native = json.loads(
+        _materialize(_heteromer(tmp_path), "openfold3", out, msa="auto").read_text()
+    )
+
+    assert backend.complex_calls == [[SEQUENCE, OTHER_SEQUENCE]]
+    assert backend.calls == [SEQUENCE, OTHER_SEQUENCE]
+    (query,) = native["queries"].values()
+    blocks = []
+    for chain, sequence in zip(
+        query["chains"], (SEQUENCE, OTHER_SEQUENCE, SEQUENCE), strict=True
+    ):
+        paired = Path(chain["paired_msa_file_paths"][0])
+        assert paired.stem == "colabfold_paired"
+        text = paired.read_text()
+        assert text.splitlines()[1] == sequence
+        blocks.append(text)
+    assert blocks[0] == blocks[2]
+    searched = json.loads((out / "msa_search.json").read_text())
+    assert all("paired_msa" in record for record in searched)
+
+
+def test_other_backends_keep_per_chain_pairing(tmp_path: Path, monkeypatch) -> None:
+    backend = _ComplexStubSearch()
+    monkeypatch.setattr(
+        "foldjax.msa_search._msa_pipeline", lambda: _stub_pipeline(tmp_path, backend)
+    )
+
+    native = json.loads(
+        _materialize(
+            _heteromer(tmp_path), "protenix", tmp_path / "out", msa="auto"
+        ).read_text()
+    )
+
+    assert backend.complex_calls == []
+    chain = native[0]["sequences"][0]["proteinChain"]
+    assert Path(chain["pairedMsaPath"]).name == "pairing.a3m"
+
+
+def test_openfold3_does_not_pair_without_a_complex_capable_search(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A local wrapper searches one sequence at a time and cannot pair a complex."""
+    backend = _StubSearch()
+    monkeypatch.setattr(
+        "foldjax.msa_search._msa_pipeline", lambda: _stub_pipeline(tmp_path, backend)
+    )
+
+    with pytest.warns(UserWarning, match="cannot pair a complex"):
+        path = _materialize(
+            _heteromer(tmp_path), "openfold3", tmp_path / "out", msa="auto"
+        )
+
+    (query,) = json.loads(path.read_text())["queries"].values()
+    assert all("paired_msa_file_paths" not in chain for chain in query["chains"])
+    assert all(chain["main_msa_file_paths"] for chain in query["chains"])
+
+
+def test_openfold3_does_not_pair_around_a_supplied_alignment(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Pairing would send a chain the caller chose to align locally."""
+    backend = _ComplexStubSearch()
+    monkeypatch.setattr(
+        "foldjax.msa_search._msa_pipeline", lambda: _stub_pipeline(tmp_path, backend)
+    )
+    alignment = tmp_path / "mine.a3m"
+    alignment.write_text(f">query\n{SEQUENCE}\n", encoding="utf-8")
+
+    with pytest.warns(UserWarning, match="not pairing the complex"):
+        _materialize(
+            _heteromer(tmp_path, unpaired_msa=str(alignment)),
+            "openfold3",
+            tmp_path / "out",
+            msa="auto",
+        )
+
+    assert backend.complex_calls == []
+
+
+def test_openfold3_never_replaces_a_supplied_paired_alignment(
+    tmp_path: Path, monkeypatch
+) -> None:
+    backend = _ComplexStubSearch()
+    monkeypatch.setattr(
+        "foldjax.msa_search._msa_pipeline", lambda: _stub_pipeline(tmp_path, backend)
+    )
+    alignment = tmp_path / "colabfold_paired.a3m"
+    alignment.write_text(f">query\n{SEQUENCE}\n>mine\n{SEQUENCE}\n", encoding="utf-8")
+
+    with pytest.warns(UserWarning, match="not pairing the complex"):
+        path = _materialize(
+            _heteromer(tmp_path, paired_msa=str(alignment)),
+            "openfold3",
+            tmp_path / "out",
+            msa="auto",
+        )
+
+    assert backend.complex_calls == []
+    (query,) = json.loads(path.read_text())["queries"].values()
+    (paired,) = query["chains"][0]["paired_msa_file_paths"]
+    assert Path(paired).read_text() == alignment.read_text()
 
 
 def test_a_failed_search_falls_back_under_auto_and_fails_under_required(

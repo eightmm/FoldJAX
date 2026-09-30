@@ -374,9 +374,11 @@ spec = attach_msas(
 )
 ```
 
-`paired=` is off by default: pairing needs taxonomy-annotated headers, and an
-alignment that cannot be paired collapses the MSA to the query sequence alone with
-no error at all.
+`paired=True` pairs each query the way OpenFold3 v0.5.0 does: one ColabFold
+`pairgreedy-env` search over the query's distinct protein sequences, and none for a
+monomer or homomer. Per-chain paired alignments are not row-aligned, and v0.5.0
+refuses paired blocks of different depth. `foldjax predict --msa auto` pairs an
+OpenFold3 heteromer the same way.
 
 Alignment files are selected by **stem** -- `colabfold_main`, `uniref90_hits`, and
 the other database names -- because that is how upstream selects them; an

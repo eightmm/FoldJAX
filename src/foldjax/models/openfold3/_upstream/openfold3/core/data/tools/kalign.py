@@ -1,4 +1,5 @@
 # Copyright 2026 AlQuraishi Laboratory
+# Modified by FoldJAX for portable v0.5.0 input parity; see the port NOTICE.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +16,7 @@
 from functools import lru_cache
 
 import kalign
+
 
 _KALIGN_CACHE_LIMIT = 32
 

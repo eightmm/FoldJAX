@@ -1,4 +1,5 @@
 # Copyright 2026 AlQuraishi Laboratory
+# Modified by FoldJAX for portable v0.5.0 input parity; see the port NOTICE.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -130,7 +131,9 @@ def parse_a3m(msa_string: str, max_seq_count: int | None = None) -> MsaArray:
     msa = _msa_list_to_np(msa)
     deletion_matrix = np.array(deletion_matrix)
 
-    parsed_msa = MsaArray(msa=msa, deletion_matrix=deletion_matrix, metadata=metadata)
+    parsed_msa = MsaArray.from_parsed(
+        msa=msa, deletion_matrix=deletion_matrix, metadata=metadata
+    )
 
     # Crop the MSA
     if max_seq_count is not None:
@@ -210,7 +213,9 @@ def parse_stockholm(
     deletion_matrix = np.array(deletion_matrix)
     metadata = list(name_to_sequence.keys())
 
-    parsed_msa = MsaArray(msa=msa, deletion_matrix=deletion_matrix, metadata=metadata)
+    parsed_msa = MsaArray.from_parsed(
+        msa=msa, deletion_matrix=deletion_matrix, metadata=metadata
+    )
 
     # Crop the MSA
     if max_seq_count is not None:
@@ -420,7 +425,7 @@ def parse_msas_preparsed(
                         "MSA will be kept.",
                         stacklevel=2,
                     )
-                msas[database_name] = MsaArray(
+                msas[database_name] = MsaArray.from_parsed(
                     msa=msa_array,
                     deletion_matrix=deletion_matrix,
                     metadata=metadata,

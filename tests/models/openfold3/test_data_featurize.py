@@ -110,6 +110,96 @@ def test_msa_files_reach_the_features(tmp_path: Path) -> None:
     assert with_msa["msa_mask"].shape[1] == with_msa["msa"].shape[1]
 
 
+PAIR_A = "MKTAYIAKQRQISFVKSHFSRQ"
+PAIR_B = "GSHMLEDPVDAFQLGKVLNQ"
+
+
+def _paired_spec(root: Path, *, paired_rows=(4, 4), paired: bool = True) -> dict:
+    """Two chains, three main hits each, and a precomputed paired block each."""
+    chains = []
+    for tag, sequence, n_paired in (
+        ("a", PAIR_A, paired_rows[0]),
+        ("b", PAIR_B, paired_rows[1]),
+    ):
+        directory = root / tag
+        directory.mkdir(parents=True, exist_ok=True)
+        main = directory / "colabfold_main.a3m"
+        main.write_text(
+            f">q\n{sequence}\n"
+            + "".join(f">m{i}\n{sequence[:-1]}A\n" for i in range(3))
+        )
+        pair = directory / "colabfold_paired.a3m"
+        pair.write_text(
+            f">q\n{sequence}\n"
+            + "".join(f">p{i}\nA{sequence[1:]}\n" for i in range(n_paired))
+        )
+        chain = {
+            "molecule_type": "protein",
+            "chain_ids": [tag.upper()],
+            "sequence": sequence,
+            "main_msa_file_paths": [str(main)],
+        }
+        if paired:
+            chain["paired_msa_file_paths"] = [str(pair)]
+        chains.append(chain)
+    return {"queries": {"q": {"chains": chains}}}
+
+
+def _decoded_rows(features: dict) -> list[str]:
+    from foldjax.models.openfold3._upstream.openfold3.core.data.resources.residues import (  # noqa: E501
+        STANDARD_RESIDUES_WITH_GAP_1,
+    )
+
+    indices = np.asarray(features["msa"][0]).argmax(-1)
+    return ["".join(STANDARD_RESIDUES_WITH_GAP_1[i] for i in row) for row in indices]
+
+
+def test_precomputed_paired_rows_reach_the_features(tmp_path: Path) -> None:
+    """Precomputed paired rows are kept, as in upstream v0.5.0 (commit 1aaf2623).
+
+    The bundled pre-v0.5.0 data code never set the paired row count for
+    precomputed paired MSAs, so the paired block was silently dropped: this input
+    gave 2 MSA rows. Upstream v0.5.0 on the same files gives ``num_paired_seqs``
+    [6] and exactly the 7 rows asserted here (query, 5 paired, 1 main).
+    """
+    from foldjax.models.openfold3._upstream.openfold3.projects.of3_all_atom.config.dataset_config_components import (  # noqa: E501
+        MSASettings,
+    )
+    from foldjax.models.openfold3.data._numpy_featurization import (
+        featurize_query_numpy,
+    )
+    from foldjax.models.openfold3.data.featurize import _query_set
+
+    spec = _paired_spec(tmp_path)
+    paired = featurize_query(spec)
+    unpaired = featurize_query(_paired_spec(tmp_path, paired=False))
+
+    both = PAIR_A + PAIR_B
+    hit = f"A{PAIR_A[1:]}A{PAIR_B[1:]}"
+    assert _decoded_rows(paired) == [
+        both,
+        both,
+        hit,
+        hit,
+        hit,
+        hit,
+        f"{PAIR_A[:-1]}A{PAIR_B[:-1]}A",
+    ]
+    assert unpaired["msa"].shape[1] == 3
+    raw = featurize_query_numpy(
+        _query_set(spec).queries["q"],
+        seed=0,
+        msa_settings=MSASettings(subsample_main=False),
+    )
+    assert raw.features["num_paired_seqs"].tolist() == [6]
+
+
+def test_paired_blocks_of_different_depth_are_refused(tmp_path: Path) -> None:
+    """v0.5.0 needs the paired blocks row-aligned; per-chain pairing is not."""
+    with pytest.raises(ValueError, match="mismatched row counts"):
+        featurize_query(_paired_spec(tmp_path, paired_rows=(4, 2)))
+
+
 def test_padding_preserves_the_masks(features: dict) -> None:
     n_token = features["token_mask"].shape[-1]
     n_atom = features["atom_mask"].shape[-1]
@@ -236,6 +326,42 @@ def test_selected_query_rejects_native_covalent_bonds() -> None:
         featurize_query(spec)
 
 
+def _pocket_spec() -> dict:
+    spec = _spec()
+    query = spec["queries"]["ubq"]
+    query["chains"].append(
+        {"molecule_type": "ligand", "chain_ids": ["L"], "smiles": "CCO"}
+    )
+    query["pocket_constraint"] = {
+        "ligand_chain_id": "L",
+        "pocket_residues": [["A", 10], ["A", 12]],
+    }
+    return spec
+
+
+def test_pocket_constraint_is_parsed_not_dropped() -> None:
+    """The pre-v0.5.0 schema had no such field, and pydantic dropped it silently."""
+    from foldjax.models.openfold3.data.featurize import _query_set
+
+    constraint = _query_set(_pocket_spec()).queries["ubq"].pocket_constraint
+    assert constraint is not None
+    assert constraint.ligand_chain_id == "L"
+    assert constraint.max_distance == 4.0
+
+
+def test_pocket_constraint_is_refused_rather_than_ignored() -> None:
+    """Upstream applies it only as pocket-guided sampling, which is not ported."""
+    with pytest.raises(ValueError, match="pocket_constraint.*does not implement"):
+        featurize_query(_pocket_spec())
+
+
+def test_pocket_constraint_on_a_non_ligand_chain_is_invalid() -> None:
+    spec = _pocket_spec()
+    spec["queries"]["ubq"]["pocket_constraint"]["ligand_chain_id"] = "A"
+    with pytest.raises(ValueError, match="does not match any ligand chain"):
+        featurize_query(spec)
+
+
 def test_unselected_query_msa_filename_is_not_validated(
     tmp_path: Path,
 ) -> None:
@@ -272,6 +398,15 @@ def test_a_recognized_stem_in_a_subdirectory_is_accepted(
     nested = tmp_path / "aln"
     nested.mkdir()
     path = nested / "uniref90_hits.a3m"
+    path.write_text(f">query\n{UBIQUITIN}\n>hit\n{'A' * len(UBIQUITIN)}\n")
+    features = featurize_query(_spec(main_msa_file_paths=[str(path)]))
+    assert features["msa"].shape[1] > 1
+
+
+@pytest.mark.parametrize("stem", ["cfdb_hits", "nucleotide_collection_hits"])
+def test_database_stems_added_in_v050_are_accepted(tmp_path: Path, stem: str) -> None:
+    """The pre-v0.5.0 MSASettings lacked these stems, so the files were refused."""
+    path = tmp_path / f"{stem}.a3m"
     path.write_text(f">query\n{UBIQUITIN}\n>hit\n{'A' * len(UBIQUITIN)}\n")
     features = featurize_query(_spec(main_msa_file_paths=[str(path)]))
     assert features["msa"].shape[1] > 1

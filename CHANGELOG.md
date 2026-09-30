@@ -285,6 +285,28 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **OpenFold3 keeps precomputed paired MSA rows.** The bundled OpenFold3 data
+  code predated v0.5.0 commit 1aaf2623 and never set the paired row count, so
+  a `paired_msa` was dropped without an error: a two-chain probe gave 2 MSA
+  rows where upstream v0.5.0 gives 7. The bundled files were refreshed from
+  the v0.5.0 tag (c4771653); the port `NOTICE` lists the few adaptations that
+  remain. The refresh also accepts the `cfdb_hits` and
+  `nucleotide_collection_hits` alignment stems, and uppercases Stockholm
+  residues. It keeps the original row order in species-filtered pairing, and
+  gives a chain under five tokens no templates, all as upstream does. Paired
+  blocks of different depths are now refused, as in v0.5.0. A native query's
+  `pocket_constraint` is refused rather than silently dropped. Upstream
+  applies it only as pocket-guided diffusion sampling, which the port does not
+  implement.
+  `--msa auto` now pairs an OpenFold3 heteromer as upstream does. It sends
+  one ColabFold `pairgreedy-env` search over the distinct protein sequences,
+  and none for a monomer or homomer; per-chain pair searches are not
+  row-aligned. A local search command cannot pair a complex, so the heteromer
+  is folded without a paired MSA and a warning. `attach_msas(paired=True)`
+  pairs the same way. The other backends keep their per-chain alignment. No
+  recorded benchmark input changes: the campaign's OpenFold3 inputs carry
+  main alignments only.
+
 - **A nucleic-acid `unpaired_msa` that the backend never reads is now
   refused instead of silently dropped.** Boltz-2 and ESMFold2 read no RNA or
   DNA alignment. OpenFold3 reads RNA alignments but not DNA ones. Protenix

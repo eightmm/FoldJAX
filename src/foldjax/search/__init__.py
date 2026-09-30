@@ -14,6 +14,7 @@ OpenFold3 MSA search -- could only skip without it.
 """
 
 from foldjax.search.msa import (
+    ComplexPairPayload,
     HttpResponse,
     LocalMsaClient,
     LocalRnaMsaClient,
@@ -30,6 +31,7 @@ from foldjax.search.msa import (
 __version__ = "0.1.0"
 
 __all__ = [
+    "ComplexPairPayload",
     "HttpResponse",
     "LocalMsaClient",
     "LocalRnaMsaClient",

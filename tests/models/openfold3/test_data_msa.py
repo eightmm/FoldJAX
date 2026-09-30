@@ -52,6 +52,25 @@ class _Backend:
         )
 
 
+class _ComplexBackend(_Backend):
+    """Also pairs a complex in one search, one row-aligned block per sequence."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.complex_calls: list[list[str]] = []
+
+    def search_complex(self, sequences):
+        from foldjax.search import ComplexPairPayload
+
+        self.complex_calls.append(list(sequences))
+        return ComplexPairPayload(
+            tuple(
+                f">{101 + i}\n{s}\n>paired_hit\n{'C' * len(s)}\n"
+                for i, s in enumerate(sequences)
+            )
+        )
+
+
 def _spec(*sequences: str) -> dict:
     return {
         "queries": {
@@ -82,17 +101,44 @@ def test_alignments_land_under_stems_upstream_parses(tmp_path: Path) -> None:
     assert main.is_file()
     assert UBIQUITIN in main.read_text()
     assert backend.calls == [UBIQUITIN]
-    # Paired alignments are opt-in; see test_unpairable_paired_msas_collapse_the_msa.
+    # Paired alignments are opt-in.
     assert "paired_msa_file_paths" not in chain
 
+    # A monomer is never paired, as upstream pairs only >1 distinct sequence.
+    monomer = attach_msas(
+        _spec(UBIQUITIN),
+        alignment_dir=tmp_path / "m",
+        backend=_ComplexBackend(),
+        paired=True,
+    )
+    assert "paired_msa_file_paths" not in monomer["queries"]["q"]["chains"][0]
+
+    complex_backend = _ComplexBackend()
     with_paired = attach_msas(
-        _spec(UBIQUITIN), alignment_dir=tmp_path / "p", backend=backend, paired=True
+        _spec(UBIQUITIN, SECOND),
+        alignment_dir=tmp_path / "p",
+        backend=complex_backend,
+        paired=True,
     )
-    paired = Path(
-        with_paired["queries"]["q"]["chains"][0]["paired_msa_file_paths"][0]
-    )
-    assert paired.stem == PAIRED_STEM
-    assert paired.is_file()
+    assert complex_backend.complex_calls == [[UBIQUITIN, SECOND]]
+    for chain, sequence in zip(
+        with_paired["queries"]["q"]["chains"], (UBIQUITIN, SECOND), strict=True
+    ):
+        paired = Path(chain["paired_msa_file_paths"][0])
+        assert paired.stem == PAIRED_STEM
+        assert paired.read_text().splitlines()[1] == sequence
+
+
+def test_paired_needs_a_backend_that_pairs_a_complex(tmp_path: Path) -> None:
+    backend = _Backend()
+    with pytest.raises(ValueError, match="pairs a complex in one search"):
+        attach_msas(
+            _spec(UBIQUITIN, SECOND),
+            alignment_dir=tmp_path,
+            backend=backend,
+            paired=True,
+        )
+    assert backend.calls == []
 
 
 def test_the_original_spec_is_not_mutated(tmp_path: Path) -> None:
@@ -231,24 +277,22 @@ def test_the_featurizer_sees_the_alignments(
     assert with_msa["msa"].shape[1] > without["msa"].shape[1]
 
 
-def test_unpairable_paired_msas_collapse_the_msa(
-    openfold3_source: Path, tmp_path: Path
-) -> None:
-    """Why ``paired`` defaults to off.
+def test_complex_paired_rows_reach_the_features(tmp_path: Path) -> None:
+    """The paired block is kept, as in upstream v0.5.0.
 
-    Pairing needs taxonomy annotations in the alignment headers. An alignment that
-    cannot be paired does not degrade to "unpaired only" -- upstream returns an MSA
-    containing just the query sequence, with no error, which looks exactly like a
-    successful run. Measured for both a monomer and a dimer.
+    The pre-v0.5.0 bundled data code dropped precomputed paired rows and returned
+    fewer rows than the main-only run; that is why ``paired`` used to be
+    documented as collapsing the MSA.
     """
-    main_only = attach_msas(
-        _spec(UBIQUITIN, SECOND), alignment_dir=tmp_path / "main", backend=_Backend()
-    )
+    spec = _spec(UBIQUITIN, SECOND)
+    main_only = attach_msas(spec, alignment_dir=tmp_path / "main", backend=_Backend())
     with_paired = attach_msas(
-        _spec(UBIQUITIN, SECOND),
+        spec,
         alignment_dir=tmp_path / "both",
-        backend=_Backend(),
+        backend=_ComplexBackend(),
         paired=True,
     )
-    assert featurize_query(main_only)["msa"].shape[1] > 1
-    assert featurize_query(with_paired)["msa"].shape[1] == 1
+    # query + (query, main hit) without pairing; query + (query, paired hit) +
+    # main hit with it.
+    assert featurize_query(main_only)["msa"].shape[1] == 3
+    assert featurize_query(with_paired)["msa"].shape[1] == 4

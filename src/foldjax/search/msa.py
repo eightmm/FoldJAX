@@ -59,6 +59,51 @@ class MsaBackend(Protocol):
     def search(self, sequence: str) -> MsaPayload: ...
 
 
+@dataclass(frozen=True)
+class ComplexPairPayload:
+    """One paired alignment per submitted sequence, row-aligned across them."""
+
+    paired: tuple[str, ...]
+    source: Mapping[str, Any] = field(default_factory=dict)
+
+
+#: How OpenFold3 v0.5.0 asks ColabFold to pair a complex: the greedy strategy
+#: with the environmental databases (``pairing_strategy="greedy"``,
+#: ``use_env=True`` in colabfold_msa_server.py:305-313).
+COMPLEX_PAIRING_MODE = "pairgreedy-env"
+
+
+def _split_colabfold_a3m(text: str, label: str) -> dict[int, str]:
+    """Split a multi-query ColabFold A3M into its per-query blocks, keyed by M.
+
+    The same gather loop OpenFold3 runs on ``pair.a3m``
+    (colabfold_msa_server.py:470-490): a NUL byte starts a new block, and only
+    the header right after it -- or the file's first header -- is the query
+    number. Hit headers inside a block are not numbers and stay in the block.
+    """
+    blocks: dict[int, list[str]] = {}
+    expect_query, query = True, None
+    for line in io.StringIO(text):
+        if "\x00" in line:
+            line = line.replace("\x00", "")
+            expect_query = True
+        if line.startswith(">") and expect_query:
+            try:
+                query = int(line[1:].rstrip())
+            except ValueError as exc:
+                raise SearchError(
+                    f"{label} block header {line.rstrip()!r} is not a query number"
+                ) from exc
+            expect_query = False
+            blocks.setdefault(query, [])
+        if query is None:
+            if line.strip():
+                raise SearchError(f"{label} does not start with a query header")
+            continue
+        blocks[query].append(line)
+    return {key: "".join(lines) for key, lines in blocks.items()}
+
+
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -266,6 +311,145 @@ class MsaSearchPipeline:
                 self.backend.search(sequence),
             )
         return [resolved[sequence] for sequence in normalized]
+
+    @property
+    def pairs_complexes(self) -> bool:
+        """Whether the backend can pair several sequences in one search."""
+        return callable(getattr(self.backend, "search_complex", None))
+
+    def search_complex(self, sequences: Sequence[str]) -> list[dict[str, str]]:
+        """Pair the distinct sequences of one complex in a single search.
+
+        One entry per input sequence, in input order; repeated sequences share a
+        file. The cache key is the ordered tuple of distinct sequences, so this
+        never collides with -- or reuses -- a per-sequence ``search`` entry.
+        """
+        normalized = [_normalize_sequence(sequence) for sequence in sequences]
+        unique = list(dict.fromkeys(normalized))
+        if len(unique) < 2:
+            raise ValueError("complex pairing needs at least two distinct sequences")
+        if not self.pairs_complexes:
+            raise SearchError(
+                f"MSA backend {self.backend.name!r} cannot pair a complex"
+            )
+        identity = {
+            "schema_version": 1,
+            "kind": "complex_pairing",
+            "sequences": unique,
+            "backend": {"name": self.backend.name, "version": self.backend.version},
+            "mode": getattr(self.backend, "complex_pairing_mode", None),
+            "options": self.options,
+        }
+        canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+        cache_key = _sha256(canonical.encode())
+        directory = self.cache_dir / cache_key
+        paths = self._complex_cached(
+            directory, unique, cache_key
+        ) or self._complex_materialize(
+            directory, unique, cache_key, identity, self.backend.search_complex(unique)
+        )
+        by_sequence = dict(zip(unique, paths, strict=True))
+        return [by_sequence[sequence] for sequence in normalized]
+
+    @staticmethod
+    def _complex_name(index: int) -> str:
+        return f"pair_{index:03d}.a3m"
+
+    def _complex_paths(self, directory: Path, count: int) -> list[dict[str, str]]:
+        provenance = str((directory / "provenance.json").resolve())
+        return [
+            {
+                "pairedMsaPath": str((directory / self._complex_name(i)).resolve()),
+                "provenancePath": provenance,
+            }
+            for i in range(count)
+        ]
+
+    def _complex_cached(
+        self, directory: Path, sequences: list[str], cache_key: str
+    ) -> list[dict[str, str]] | None:
+        provenance_path = directory / "provenance.json"
+        if not directory.exists():
+            return None
+        if not provenance_path.is_file():
+            raise SearchError(f"MSA cache is incomplete: {provenance_path} is missing")
+        try:
+            provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SearchError(
+                f"invalid MSA cache provenance: {provenance_path}"
+            ) from exc
+        if provenance.get("cache_key") != cache_key:
+            raise SearchError(f"MSA cache provenance key mismatch: {provenance_path}")
+        for index, sequence in enumerate(sequences):
+            filename = self._complex_name(index)
+            path = directory / filename
+            if not path.is_file():
+                raise SearchError(f"MSA cache is incomplete: {path} is missing")
+            expected = provenance.get("files", {}).get(filename, {}).get("sha256")
+            query = _first_verified_a3m_file_sequence(path, "paired MSA", expected)
+            if query is None:
+                raise SearchError(f"MSA cache content hash mismatch: {path}")
+            if query != sequence:
+                raise SearchError(
+                    "paired MSA query does not match requested protein sequence: "
+                    f"expected {sequence!r}, got {query!r}"
+                )
+        return self._complex_paths(directory, len(sequences))
+
+    def _complex_materialize(
+        self,
+        directory: Path,
+        sequences: list[str],
+        cache_key: str,
+        identity: Mapping[str, Any],
+        payload: ComplexPairPayload,
+    ) -> list[dict[str, str]]:
+        if len(payload.paired) != len(sequences):
+            raise SearchError(
+                f"complex pairing returned {len(payload.paired)} alignments for "
+                f"{len(sequences)} sequences"
+            )
+        for sequence, content in zip(sequences, payload.paired, strict=True):
+            if not isinstance(content, str) or not content.strip():
+                raise SearchError("paired MSA response is missing")
+            query = _first_a3m_sequence(content, "paired MSA")
+            if query != sequence:
+                raise SearchError(
+                    "paired MSA query does not match requested protein sequence: "
+                    f"expected {sequence!r}, got {query!r}"
+                )
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        temp_dir = Path(tempfile.mkdtemp(prefix=f".{cache_key}.", dir=self.cache_dir))
+        try:
+            files: dict[str, dict[str, Any]] = {}
+            for index, content in enumerate(payload.paired):
+                raw = content.encode()
+                filename = self._complex_name(index)
+                (temp_dir / filename).write_bytes(raw)
+                files[filename] = {"sha256": _sha256(raw), "bytes": len(raw)}
+            provenance = {
+                **identity,
+                "cache_key": cache_key,
+                "source": dict(payload.source),
+                "files": files,
+            }
+            (temp_dir / "provenance.json").write_text(
+                json.dumps(provenance, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            try:
+                temp_dir.rename(directory)
+            except FileExistsError:
+                shutil.rmtree(temp_dir)
+                cached = self._complex_cached(directory, sequences, cache_key)
+                if cached is None:
+                    raise AssertionError("cache disappeared during materialization")
+                return cached
+        except Exception:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
+        return self._complex_paths(directory, len(sequences))
 
 
 @dataclass(frozen=True)
@@ -583,6 +767,7 @@ class RemoteMMseqs2Client:
     """Minimal ColabFold-compatible MMseqs2 ticket client using stdlib HTTP."""
 
     name = "remote-mmseqs2"
+    complex_pairing_mode = COMPLEX_PAIRING_MODE
 
     def __init__(
         self,
@@ -669,9 +854,51 @@ class RemoteMMseqs2Client:
         return payload
 
     def _run(self, sequence: str, *, paired: bool) -> tuple[str, str]:
-        mode = "paircomplete" if paired else "env"
-        endpoint = "ticket/pair" if paired else "ticket/msa"
-        query = f">101\n{sequence}\n"
+        names = (
+            ("pair.a3m",)
+            if paired
+            else (
+                "uniref.a3m",
+                "bfd.mgnify30.metaeuk30.smag30.a3m",
+            )
+        )
+        texts, job_id = self._submit(
+            f">101\n{sequence}\n",
+            mode="paircomplete" if paired else "env",
+            endpoint="ticket/pair" if paired else "ticket/msa",
+            names=names,
+        )
+        return "".join(text.replace("\x00", "") for text in texts), job_id
+
+    def search_complex(self, sequences: Sequence[str]) -> ComplexPairPayload:
+        """Pair a complex in one job, the way OpenFold3 v0.5.0 does.
+
+        The sequences are submitted together as queries 101, 102, ... and the
+        returned ``pair.a3m`` is split back into one block per query.
+        """
+        query = "".join(
+            f">{101 + index}\n{sequence}\n" for index, sequence in enumerate(sequences)
+        )
+        (text,), job_id = self._submit(
+            query,
+            mode=COMPLEX_PAIRING_MODE,
+            endpoint="ticket/pair",
+            names=("pair.a3m",),
+        )
+        blocks = _split_colabfold_a3m(text, "paired MSA")
+        numbers = [101 + index for index in range(len(sequences))]
+        missing = [number for number in numbers if number not in blocks]
+        if missing:
+            raise SearchError(f"remote paired MSA has no block for queries {missing}")
+        return ComplexPairPayload(
+            tuple(blocks[number] for number in numbers),
+            {"paired_job_id": job_id, "mode": COMPLEX_PAIRING_MODE},
+        )
+
+    def _submit(
+        self, query: str, *, mode: str, endpoint: str, names: Sequence[str]
+    ) -> tuple[list[str], str]:
+        """Run one ticket to completion and return the named archive members."""
         data = urllib.parse.urlencode({"q": query, "mode": mode}).encode()
         response = self._json("POST", endpoint, data)
         state = response["status"]
@@ -691,14 +918,6 @@ class RemoteMMseqs2Client:
         if state != "COMPLETE":
             raise SearchError(f"remote MSA search {job_id} ended with status {state!r}")
         archive = self._request("GET", f"result/download/{job_id}")
-        names = (
-            ("pair.a3m",)
-            if paired
-            else (
-                "uniref.a3m",
-                "bfd.mgnify30.metaeuk30.smag30.a3m",
-            )
-        )
         chunks: list[str] = []
         try:
             with tarfile.open(fileobj=io.BytesIO(archive), mode="r:*") as tar:
@@ -711,12 +930,12 @@ class RemoteMMseqs2Client:
                     extracted = tar.extractfile(member)
                     if extracted is None:
                         raise SearchError(f"remote MSA archive cannot read: {name}")
-                    chunks.append(extracted.read().decode("utf-8").replace("\x00", ""))
+                    chunks.append(extracted.read().decode("utf-8"))
         except (tarfile.TarError, KeyError, UnicodeDecodeError) as exc:
             raise SearchError(
                 "remote MSA returned an invalid or incomplete archive"
             ) from exc
-        return "".join(chunks), job_id
+        return chunks, job_id
 
     def search(self, sequence: str) -> MsaPayload:
         unpaired, unpaired_job = self._run(sequence, paired=False)
