@@ -123,7 +123,7 @@ _TARGETS = {
     ),
 }
 
-#: The per-job option that lets a nucleic-acid ``unpaired_msa`` a backend does
+#: The per-job option that lets a nucleic-acid alignment a backend does
 #: not read be dropped instead of refused. The drop is recorded in the run
 #: manifest's ``ignored_msas``.
 IGNORE_NUCLEIC_MSA = "ignore_nucleic_msa"
@@ -162,6 +162,26 @@ _NUCLEIC_MSA_READ: dict[str, frozenset[str]] = {
 #: Backends that read an RNA ``unpaired_msa`` only under ``use_rna_msa=true``,
 #: and refuse RNA ``paired_msa`` outright: their upstreams have no field for it.
 _USE_RNA_MSA_MODELS = frozenset({"opendde", "protenix"})
+
+#: The same as ``_NUCLEIC_MSA_READ`` for ``paired_msa``, on the backends whose
+#: target takes one:
+#:
+#: - Protenix writes ``pairedMsaPath`` on a ``dnaSequence`` too, but
+#:   ``_build_nucleic_chain`` never reads it and pairs the query row alone
+#:   (models/protenix/data/featurize_json.py `_build_nucleic_chain`,
+#:   `_assemble_msa_features`); upstream's msa_featurizer.py does the same.
+#:   OpenDDE shares that builder. Both refuse an RNA ``paired_msa`` outright
+#:   (``_USE_RNA_MSA_MODELS``), so only the DNA one is governed here.
+#: - OpenFold3 maps ``paired_msa_file_paths`` only for ``MSASettings.moltypes``
+#:   (io/sequence/msa.py:626), so a DNA one is dropped and an RNA one read.
+#:
+#: Boltz-2 and ESMFold2 express no ``paired_msa`` at all, and AlphaFold 3's
+#: parser refuses ``pairedMsaPath`` on an RNA or DNA chain.
+_NUCLEIC_PAIRED_MSA_READ: dict[str, frozenset[str]] = {
+    "opendde": frozenset(),
+    "openfold3": frozenset({"rna"}),
+    "protenix": frozenset(),
+}
 
 
 def accepts_ignore_nucleic_msa(model: str) -> bool:
@@ -510,7 +530,7 @@ def _validate(
 ) -> None:
     """Check the common document against what ``model`` can express.
 
-    With ``ignore_nucleic_msa=true``, a nucleic-acid ``unpaired_msa`` the
+    With ``ignore_nucleic_msa=true``, a nucleic-acid alignment the
     backend does not read is removed from ``job`` and described in ``ignored``
     instead of refused.
     """
@@ -609,21 +629,23 @@ def _validate(
                         "use_rna_msa=true to read it, or --option "
                         f"{IGNORE_NUCLEIC_MSA}=true to fold without it",
                     )
+            paired = feature == "paired_msa"
+            read = _NUCLEIC_PAIRED_MSA_READ.get(model) if paired else nucleic_msa_read
             if (
                 value is not None
-                and feature == "unpaired_msa"
                 and kind in ("dna", "rna")
-                and nucleic_msa_read is not None
-                and kind not in nucleic_msa_read
+                and read is not None
+                and kind not in read
             ):
                 chain_ids = _ids(entity)
                 if not ignore_nucleic_msa:
                     _reject(
                         model,
-                        f"a {kind.upper()} unpaired_msa",
+                        f"a {kind.upper()} {feature}",
                         f"entity {chain_ids[0]!r} names {value.strip()!r}, but "
-                        f"{model} would discard it and fold that chain from "
-                        f"its sequence alone ({_nucleic_msa_readers(kind)}). "
+                        f"{model} would discard it and fold that chain "
+                        f"{'without pairing' if paired else 'from its sequence alone'} "
+                        f"({_nucleic_msa_readers(kind)}). "
                         f"Remove it, or set --option {IGNORE_NUCLEIC_MSA}=true "
                         "to run without it; the run manifest then records the "
                         "drop under ignored_msas",
@@ -637,7 +659,8 @@ def _validate(
                             "path": value.strip(),
                             "reason": (
                                 f"{model} does not read {kind.upper()} "
-                                f"alignments; dropped by {IGNORE_NUCLEIC_MSA}=true"
+                                f"{'paired ' if paired else ''}alignments; "
+                                f"dropped by {IGNORE_NUCLEIC_MSA}=true"
                             ),
                         }
                     )

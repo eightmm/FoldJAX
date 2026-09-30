@@ -324,6 +324,16 @@ unless it says so here, in its own paragraph.
   so an inline `unpairedMsa` on its RNA chains is now ignored too without
   `use_rna_msa=true`, matching its path field.
 
+- **A DNA `paired_msa` that the backend never reads is now refused too.**
+  Protenix and OpenDDE wrote `pairedMsaPath` on a `dnaSequence`, and their
+  shared nucleic featurizer never opened it. OpenFold3 left a DNA one out
+  through its molecule-type filter. Each folded the chain without the pairing
+  and said nothing. The common-schema validator now refuses these with the
+  entity and backend named, and `ignore_nucleic_msa=true` drops them into
+  `ignored_msas` like an unpaired one. OpenFold3's RNA `paired_msa` still
+  reaches it. Protenix and OpenDDE refuse an RNA one (entry above), Boltz-2 and
+  ESMFold2 refuse the field outright, and AlphaFold 3's parser refuses it.
+
 - **Protenix no longer accepts `triangle_attention_ring_kernel=tokamax` on a
   1-D run.** The check used the shared square-grid helper, which reads an
   omitted `cp_layout` as the grid on a perfect-square count. Protenix's

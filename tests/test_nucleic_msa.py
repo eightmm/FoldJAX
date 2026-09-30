@@ -4,6 +4,8 @@ Boltz-2 and ESMFold2 read no RNA or DNA alignment, OpenFold3 no DNA one, and
 Protenix and OpenDDE no DNA one and no RNA one without ``use_rna_msa=true``
 (upstream's flag, released false by both). Each used to accept the document
 and fold the chain from its sequence alone.
+A nucleic ``paired_msa`` follows the same rule: only OpenFold3 reads one,
+and only for RNA.
 """
 
 from __future__ import annotations
@@ -476,3 +478,182 @@ def test_protenix_use_rna_msa_follows_upstreams_model_list(tmp_path: Path) -> No
                 },
             )
         )
+
+
+# A paired alignment on a nucleic chain. Protenix writes `pairedMsaPath` on a
+# DNA chain and its nucleic builder never opens it, OpenDDE shares that
+# builder, and OpenFold3 maps paired alignments only for protein and RNA.
+
+#: (model, nucleic type) pairs whose paired alignment the backend discards.
+_PAIRED_IGNORED = [
+    ("protenix", "dna"),
+    ("opendde", "dna"),
+    ("openfold3", "dna"),
+]
+
+
+def _paired_job(tmp_path: Path, kind: str, *, protein_paired: bool = True) -> Path:
+    """A protein with its alignments, and a nucleic chain with a paired one."""
+    (tmp_path / "protein.a3m").write_text(">query\nACDEF\n>hit\nACDEY\n")
+    (tmp_path / "protein_paired.a3m").write_text(">query\nACDEF\n>101\nACDEW\n")
+    sequence = _SEQUENCES[kind]
+    (tmp_path / f"{kind}_paired.a3m").write_text(
+        f">query\n{sequence}\n>101\n{sequence}\n"
+    )
+    protein = {
+        "type": "protein",
+        "id": "A",
+        "sequence": "ACDEF",
+        "unpaired_msa": "protein.a3m",
+    }
+    if protein_paired:
+        protein["paired_msa"] = "protein_paired.a3m"
+    entities = [
+        protein,
+        {
+            "type": kind,
+            "id": "N",
+            "sequence": sequence,
+            "paired_msa": f"{kind}_paired.a3m",
+        },
+    ]
+    path = tmp_path / "job.json"
+    path.write_text(json.dumps({"name": "nucleic", "entities": entities}))
+    return path
+
+
+def _chain_paired_msas(model: str, native) -> dict[str, list[str]]:
+    """Every paired alignment path the native document hands to each chain type."""
+    found: dict[str, list[str]] = {}
+    if model in {"protenix", "opendde"}:
+        names = {"proteinChain": "protein", "dnaSequence": "dna", "rnaSequence": "rna"}
+        for entry in native[0]["sequences"]:
+            ((key, body),) = entry.items()
+            if body.get("pairedMsaPath"):
+                found.setdefault(names[key], []).append(body["pairedMsaPath"])
+    elif model == "openfold3":
+        (query,) = native["queries"].values()
+        for chain in query["chains"]:
+            for path in chain.get("paired_msa_file_paths", []):
+                found.setdefault(chain["molecule_type"], []).append(path)
+    return found
+
+
+@pytest.mark.parametrize(("model", "kind"), _PAIRED_IGNORED)
+def test_an_ignored_nucleic_paired_msa_is_refused_by_default(
+    tmp_path: Path, model: str, kind: str
+) -> None:
+    source = _paired_job(tmp_path, kind)
+    with pytest.raises(ValueError) as error:
+        _materialize(source, model)
+    message = str(error.value)
+    assert message.startswith(f"{model} cannot express a {kind.upper()} paired_msa")
+    assert "entity 'N'" in message
+    assert f"{kind}_paired.a3m" in message
+    assert f"{IGNORE_NUCLEIC_MSA}=true" in message
+
+
+@pytest.mark.parametrize(("model", "kind"), _PAIRED_IGNORED)
+def test_the_opt_in_leaves_a_nucleic_paired_msa_out_and_says_so(
+    tmp_path: Path, model: str, kind: str
+) -> None:
+    source = _paired_job(tmp_path, kind)
+    ignored: list = []
+    native = _read(_materialize(source, model, {IGNORE_NUCLEIC_MSA: True}, ignored))
+
+    paired = _chain_paired_msas(model, native)
+    assert kind not in paired
+    # The protein's alignments are untouched by the option.
+    assert len(paired["protein"]) == 1
+    assert len(_chain_msas(model, native)["protein"]) == 1
+    assert ignored == [
+        {
+            "chains": ["N"],
+            "type": kind,
+            "field": "paired_msa",
+            "path": f"{kind}_paired.a3m",
+            "resolved_path": str((tmp_path / f"{kind}_paired.a3m").resolve()),
+            "reason": (
+                f"{model} does not read {kind.upper()} paired alignments; "
+                f"dropped by {IGNORE_NUCLEIC_MSA}=true"
+            ),
+        }
+    ]
+
+
+@pytest.mark.parametrize("options", [None, {IGNORE_NUCLEIC_MSA: True}])
+def test_openfold3_still_receives_an_rna_paired_msa(
+    tmp_path: Path, options: dict | None
+) -> None:
+    """OpenFold3 maps paired alignments for RNA, so nothing is dropped there."""
+    source = _paired_job(tmp_path, "rna")
+    ignored: list = []
+    native = _read(_materialize(source, "openfold3", options, ignored))
+    paired = _chain_paired_msas("openfold3", native)
+    assert len(paired["rna"]) == 1
+    assert (
+        Path(paired["rna"][0]).read_text() == (tmp_path / "rna_paired.a3m").read_text()
+    )
+    assert len(paired["protein"]) == 1
+    assert ignored == []
+
+
+@pytest.mark.parametrize(
+    ("model", "kind", "reason"),
+    [
+        # Neither dialect has a paired alignment of any kind.
+        ("boltz2", "rna", "cannot express paired_msa: remove it from entity 'N'"),
+        ("boltz2", "dna", "cannot express paired_msa: remove it from entity 'N'"),
+        ("esmfold2", "rna", "cannot express paired_msa: remove it from entity 'N'"),
+        ("esmfold2", "dna", "cannot express paired_msa: remove it from entity 'N'"),
+        # Upstream Protenix and OpenDDE accept no RNA pairedMsaPath at all.
+        ("protenix", "rna", "cannot express RNA paired_msa"),
+        ("opendde", "rna", "cannot express RNA paired_msa"),
+    ],
+)
+def test_the_opt_in_does_not_turn_an_inexpressible_paired_msa_into_a_drop(
+    tmp_path: Path, model: str, kind: str, reason: str
+) -> None:
+    # No protein pairing, so the refusal can only come from the nucleic chain.
+    source = _paired_job(tmp_path, kind, protein_paired=False)
+    ignored: list = []
+    with pytest.raises(ValueError, match=reason):
+        _materialize(source, model, {IGNORE_NUCLEIC_MSA: True}, ignored)
+    assert ignored == []
+
+
+def test_a_run_refuses_then_records_a_dropped_paired_msa(tmp_path: Path) -> None:
+    source = _paired_job(tmp_path, "dna")
+    seen: list = []
+
+    def request(options: dict, out: str) -> PredictionRequest:
+        return PredictionRequest(
+            model="protenix",
+            input=source,
+            weights=_weights(tmp_path),
+            output_dir=tmp_path / out,
+            seed=3,
+            options=options,
+            use_compile_cache=False,
+        )
+
+    with backend_override("protenix", _recorder("protenix", seen)):
+        with pytest.raises(ValueError, match="a DNA paired_msa"):
+            foldjax.predict(request({}, "refused"))
+        assert seen == []
+        assert not (tmp_path / "refused" / MANIFEST_NAME).exists()
+
+        foldjax.predict(request({IGNORE_NUCLEIC_MSA: True}, "dropped"))
+
+    (ran,) = seen
+    assert IGNORE_NUCLEIC_MSA not in ran.options
+    assert _chain_paired_msas("protenix", _read(ran.input)) == {
+        "protein": [str((tmp_path / "protein_paired.a3m").resolve())]
+    }
+
+    manifest = json.loads((tmp_path / "dropped" / MANIFEST_NAME).read_text())
+    (record,) = manifest["ignored_msas"]
+    assert record["chains"] == ["N"]
+    assert record["type"] == "dna"
+    assert record["field"] == "paired_msa"
+    assert record["resolved_path"] == str((tmp_path / "dna_paired.a3m").resolve())

@@ -141,6 +141,14 @@ it under `ignored_msas`. AlphaFold 3's own parser already refuses a DNA
 alignment, so the option does not apply there. `--msa auto` searches RNA
 chains only for the backends that read the result.
 
+A nucleic-acid `paired_msa` follows the same rule. OpenFold3 reads an RNA one
+and no backend reads a DNA one. Protenix, OpenDDE and OpenFold3 would discard
+a DNA one, so the job is refused unless `ignore_nucleic_msa=true` is set, and
+the drop is then recorded under `ignored_msas`. Boltz-2 and ESMFold2 cannot
+express a `paired_msa` at all, Protenix and OpenDDE refuse an RNA one (above),
+and AlphaFold 3's parser refuses either, so the option does not turn those
+refusals into a drop.
+
 ### Templates and binding affinity
 
 ```yaml
