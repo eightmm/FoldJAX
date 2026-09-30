@@ -400,6 +400,7 @@ def test_backend_padding_flags_and_shape_profile_are_opt_in(
         weights=weight_path,
         output_dir=tmp_path / "out",
         use_compile_cache=False,
+        seed=0,
     )
 
     exact = backend.predict(PredictionRequest(**common))

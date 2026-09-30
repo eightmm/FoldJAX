@@ -91,6 +91,7 @@ def _request(tmp_path: Path, **options: Any) -> PredictionRequest:
         model="openfold3",
         input=input_path,
         weights=weights,
+        seed=0,
         options={"cp_devices": 4, "pair_chunk_size": 0, **options},
     )
 

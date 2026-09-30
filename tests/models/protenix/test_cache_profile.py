@@ -191,6 +191,7 @@ def _request(
         weights=weights,
         output_dir=tmp_path / output,
         cache_dir=tmp_path / "cache",
+        seed=0,
         options=merged,
     )
 

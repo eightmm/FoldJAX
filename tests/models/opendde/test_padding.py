@@ -269,6 +269,7 @@ def test_opendde_backend_forwards_padding_and_returns_concrete_profile(
             weights=weights_path,
             output_dir=tmp_path / "out",
             padding=True,
+            seed=0,
         )
     )
 
