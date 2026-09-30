@@ -656,8 +656,9 @@ def _validate(
                         f"but {model} reads RNA alignments only with "
                         "use_rna_msa=true, and upstream's released default is "
                         "false, which would discard it. Set --option "
-                        "use_rna_msa=true to read it, or drop "
-                        f"{IGNORE_NUCLEIC_MSA}=false to fold without it",
+                        "use_rna_msa=true to read it, or unset "
+                        f"{IGNORE_NUCLEIC_MSA}=false to fold without it as "
+                        "upstream does",
                     )
             paired = feature == "paired_msa"
             read = _NUCLEIC_PAIRED_MSA_READ.get(model) if paired else nucleic_msa_read
@@ -676,9 +677,9 @@ def _validate(
                         f"{model} would discard it and fold that chain "
                         f"{'without pairing' if paired else 'from its sequence alone'} "
                         f"({_nucleic_msa_readers(kind)}). "
-                        f"Remove it, or drop --option {IGNORE_NUCLEIC_MSA}=false "
-                        "to run without it as upstream does; the run manifest "
-                        "then records the drop under ignored_msas",
+                        f"Remove it, or unset {IGNORE_NUCLEIC_MSA}=false to run "
+                        "without it as upstream does; the run manifest then "
+                        "records the drop under ignored_msas",
                     )
                 if ignored is not None:
                     ignored.append(
@@ -725,7 +726,7 @@ def _validate(
                     f"template(s), but {model} reads templates only with "
                     "use_template=true, and upstream's released default is "
                     "false, which would discard them. Set --option "
-                    "use_template=true to read them, or drop --option "
+                    "use_template=true to read them, or unset "
                     f"{IGNORE_TEMPLATES}=false to fold without them as upstream "
                     "does; the run manifest then records the drop under "
                     "ignored_templates",
@@ -1428,7 +1429,7 @@ def materialize_native_input(
         for record in (*dropped, *dropped_templates):
             warnings.warn(
                 f"{model}: chain(s) {', '.join(record['chains'])} name "
-                f"{record['field']} {record['path']!r}, which {record['reason']}; "
+                f"{record['field']} {record['path']!r}: {record['reason']}; "
                 "the run manifest records it",
                 UserWarning,
                 stacklevel=2,
