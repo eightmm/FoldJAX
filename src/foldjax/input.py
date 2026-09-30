@@ -1349,6 +1349,36 @@ def read_job_document(path: Path) -> Any:
         raise ValueError(f"{path} is not readable as JSON: {error}") from error
 
 
+#: Models whose upstream folds a protein chain with no alignment from its
+#: sequence alone by default. ESMFold2's has no search path: ``forward`` on
+#: ``infer_protein`` builds a depth-1 MSA (transformers-esmfold2
+#: ``protein_utils.py:452-453``). Every other upstream refuses such a chain
+#: (Boltz-2, ``boltz/main.py:581-583``) or searches for an alignment
+#: (Protenix, OpenDDE, OpenFold3, and AlphaFold 3's data pipeline), so under
+#: ``msa="none"`` the chain is refused rather than silently folded alone.
+_SINGLE_SEQUENCE_UPSTREAM = frozenset({"esmfold2"})
+
+
+def _refuse_bare_proteins(job: dict[str, Any], model: str) -> None:
+    """Refuse protein chains with no alignment unless the caller opted in."""
+    bare = [
+        _ids(entity)[0]
+        for entity in job["entities"]
+        if entity.get("type") == "protein" and not entity.get("unpaired_msa")
+    ]
+    if not bare:
+        return
+    raise ValueError(
+        f"{model}: protein chain(s) {', '.join(bare)} have no alignment, and "
+        f"upstream {model} does not fold a protein from its sequence alone by "
+        "default (it searches for an alignment or refuses the job). Pass one "
+        "of: --msa auto (msa='auto') to search the ColabFold MMseqs2 server, "
+        "which SENDS THE SEQUENCE off this machine (FOLDJAX_MSA_SERVER_URL "
+        "points at your own); an unpaired_msa path on the entity; or --msa "
+        "single (msa='single') to fold from the single sequence on purpose"
+    )
+
+
 def materialize_native_input(
     source: Path,
     capabilities: ModelCapabilities,
@@ -1395,6 +1425,10 @@ def materialize_native_input(
         ignored.extend(dropped)
     if ignored_templates is not None:
         ignored_templates.extend(dropped_templates)
+
+    # Before anything is written: the refusal is about the job, not the run.
+    if msa == "none" and model not in _SINGLE_SEQUENCE_UPSTREAM:
+        _refuse_bare_proteins(job, model)
     # Created before the dialects are built: OpenFold3 writes alongside its
     # document rather than only into it, and a searched alignment is recorded
     # beside both.
@@ -1411,7 +1445,8 @@ def materialize_native_input(
     searched = _search_alignments(
         job,
         target,
-        policy=msa,
+        # `single` searches exactly as much as `none` does: nothing.
+        policy="none" if msa == "single" else msa,
         model=model,
         search_rna=read is None or "rna" in read,
     )
@@ -1419,7 +1454,7 @@ def materialize_native_input(
         _write_text_atomic(
             output_dir / "msa_search.json", json.dumps(searched, indent=2)
         )
-    elif msa == "none":
+    elif msa in ("none", "single"):
         _warn_single_sequence(job, model)
 
     # Which writer, and its suffix, are the port table's; OpenDDE reads the

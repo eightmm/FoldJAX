@@ -244,6 +244,6 @@ def test_bonds_and_modifications_reach_the_native_dialect(tmp_path: Path) -> Non
     )
     source = job.write(tmp_path / "job.json")
     native = materialize_native_input(
-        source, capabilities("protenix"), tmp_path / "out", seed=0
+        source, capabilities("protenix"), tmp_path / "out", seed=0, msa="single"
     ).read_text()
     assert "MSE" in native and "SG" in native

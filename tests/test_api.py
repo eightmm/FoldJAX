@@ -1172,7 +1172,9 @@ def test_predict_converts_common_input_before_dispatch(tmp_path: Path) -> None:
     )
     backend = DummyBackend(input_formats=("native", "foldjax"))
     with backend_override("boltz2", lambda: backend):
-        foldjax.predict(_request(tmp_path, input=source, input_format="foldjax"))
+        foldjax.predict(
+            _request(tmp_path, input=source, input_format="foldjax", msa="single")
+        )
 
     assert backend.seen is not None
     assert backend.seen.input_format == "native"

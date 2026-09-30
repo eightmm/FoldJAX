@@ -88,10 +88,10 @@ look. `--weights` still works if you keep them somewhere else.
 
 AlphaFold 3 refuses to featurise a protein or RNA chain whose MSA is *absent*:
 it assumes its own genetic-search pipeline will produce one, which needs
-hundreds of gigabytes of databases. FoldJAX therefore writes an **empty** MSA
-when your job carries no alignment, which AlphaFold 3 accepts as single-sequence
-mode — the same fallback the other MSA-capable backends already have. Predictions will
-be much worse than with a real MSA; supply one for anything you care about:
+hundreds of gigabytes of databases. A protein chain with no alignment is
+therefore refused by default. With `--msa single`, FoldJAX writes an **empty**
+MSA, which AlphaFold 3 accepts as single-sequence mode. Predictions will be
+much worse than with a real MSA; supply one for anything you care about:
 
 ```yaml
 entities:

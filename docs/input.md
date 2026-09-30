@@ -82,9 +82,15 @@ sets what that generated job is called in output file names; it defaults to
 
 ### Alignments
 
-A protein chain with no `unpaired_msa` is folded from its single sequence. That
-is unchanged and still the default — but it now says so, once per run, instead
-of being the invisible difference between a good prediction and a poor one.
+A protein chain with no `unpaired_msa` is refused by default (`--msa none`).
+No upstream but ESMFold2 folds such a chain from its sequence alone: Boltz-2
+refuses the job (`boltz/main.py:581-583`), and Protenix, OpenDDE, OpenFold3
+and AlphaFold 3 search for an alignment. The search is not FoldJAX's default
+because it sends the sequence to a server, so the error names the three ways
+on: `--msa auto`, an `unpaired_msa` path on the entity, or `--msa single` to
+fold from the single sequence on purpose, which says so once per run.
+ESMFold2 keeps its upstream behaviour and folds the chain alone with the same
+warning. Until 2026-09-30 every model folded it alone by default.
 
 ```bash
 uv run foldjax predict --model openfold3 --input job.yaml --msa auto

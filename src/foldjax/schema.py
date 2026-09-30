@@ -27,13 +27,17 @@ def _coordinate_shape(value: Any) -> list[int] | None:
     return None
 
 
-#: How a job without alignments is treated. ``none`` is the historical
-#: behaviour and stays the default: searching by default would change what a
-#: recorded command predicts. ``auto`` fills empty protein chains in from the
-#: shared alignment cache; ``required`` additionally refuses to fold a chain it
-#: could not find one for -- what a batch script wants, because the silent
-#: fallback it guards against is a *successful* single-sequence run.
-MSA_POLICIES = ("none", "auto", "required")
+#: How a job without alignments is treated. ``none``, the default, searches
+#: nothing and refuses a protein chain that has no alignment, because no
+#: upstream but ESMFold2 folds one from its single sequence by default:
+#: Boltz-2 refuses (``boltz/main.py:581-583``) and the others search. The
+#: search stays opt-in because it sends the sequence to a server. ``single``
+#: folds such a chain from its sequence on purpose. ``auto`` fills empty
+#: protein chains in from the shared alignment cache; ``required``
+#: additionally refuses to fold a chain it could not find one for -- what a
+#: batch script wants, because the silent fallback it guards against is a
+#: *successful* single-sequence run.
+MSA_POLICIES = ("none", "single", "auto", "required")
 
 #: What a failing run does to the rest of the request.
 #: Where a run may stop. ``trunk`` exists so that downstream work can take
@@ -425,10 +429,11 @@ class PredictionRequest:
     # third one's OOM is what makes people stop batching.
     on_error: str = "stop"
     # What to do about a protein chain that arrived without an alignment.
-    # ``none`` is what FoldJAX has always done -- fold it from the single
-    # sequence -- and stays the default, because searching by default would
-    # change what a recorded command predicts. ``auto`` searches and caches;
-    # ``required`` additionally refuses to fall back. See `foldjax.input`.
+    # ``none`` searches nothing and refuses such a chain, as upstream Boltz-2
+    # does (ESMFold2, whose upstream folds it from one sequence, is exempt);
+    # ``single`` folds it from its sequence on purpose. ``auto`` searches and
+    # caches; ``required`` additionally refuses to fall back. See
+    # `MSA_POLICIES` and `foldjax.input`.
     msa: str = "none"
     # Trunk representations to hand back: the per-token single stream and the
     # token-pair state every model in this package builds before it predicts

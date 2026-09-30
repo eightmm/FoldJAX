@@ -181,11 +181,14 @@ def _add_predict_arguments(
         "--msa",
         choices=MSA_POLICIES,
         default="none",
-        help="what to do about a protein chain with no alignment: fold it from "
-        "the single sequence (default, unchanged), 'auto' to search and cache "
-        "an alignment, or 'required' to fail rather than fall back. auto and "
-        "required SEND THE SEQUENCE to the public ColabFold MMseqs2 server "
-        "(FOLDJAX_MSA_SERVER_URL points at your own instead)",
+        help="what to do about a protein chain with no alignment: refuse the "
+        "job (default 'none', as upstream Boltz-2 does; ESMFold2, whose "
+        "upstream folds without one, is exempt), 'single' to fold it from "
+        "the single sequence on purpose, 'auto' to search and cache an "
+        "alignment, or 'required' to fail rather than fall back when the "
+        "search finds none. auto and required SEND THE SEQUENCE to the "
+        "public ColabFold MMseqs2 server (FOLDJAX_MSA_SERVER_URL points at "
+        "your own instead)",
     )
     parser.add_argument(
         "--representations",

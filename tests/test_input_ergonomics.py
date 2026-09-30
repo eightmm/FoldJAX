@@ -32,6 +32,8 @@ def _write(path: Path, document: dict[str, Any]) -> Path:
 
 
 def _materialize(source: Path, model: str, out: Path, **kwargs: Any) -> Path:
+    # These tests are about translation, not the missing-alignment policy.
+    kwargs.setdefault("msa", "single")
     return materialize_native_input(source, capabilities(model), out, seed=0, **kwargs)
 
 
@@ -152,7 +154,7 @@ def test_folding_without_an_alignment_says_so(tmp_path: Path) -> None:
     )
 
     with pytest.warns(UserWarning, match="single sequence"):
-        _materialize(source, "protenix", tmp_path / "out")
+        _materialize(source, "protenix", tmp_path / "out", msa="single")
 
 
 def test_a_chain_with_an_alignment_is_not_warned_about(tmp_path: Path) -> None:

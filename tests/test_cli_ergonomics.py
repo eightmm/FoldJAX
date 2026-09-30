@@ -34,11 +34,21 @@ def _weights(tmp_path: Path) -> Path:
 
 def _job(tmp_path: Path, name: str = "job") -> Path:
     path = tmp_path / f"{name}.json"
+    # An alignment, because a bare protein is refused under the default msa.
+    alignment = tmp_path / f"{name}.a3m"
+    alignment.write_text(f">query\n{SEQUENCE}\n", encoding="utf-8")
     path.write_text(
         json.dumps(
             {
                 "name": name,
-                "entities": [{"type": "protein", "id": "A", "sequence": SEQUENCE}],
+                "entities": [
+                    {
+                        "type": "protein",
+                        "id": "A",
+                        "sequence": SEQUENCE,
+                        "unpaired_msa": alignment.name,
+                    }
+                ],
             }
         ),
         encoding="utf-8",

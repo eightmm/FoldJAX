@@ -15,6 +15,7 @@ def _materialize(
     *,
     seed: int = 9,
     options: dict | None = None,
+    msa: str = "single",
 ) -> Path:
     return materialize_native_input(
         source,
@@ -22,6 +23,7 @@ def _materialize(
         output_dir,
         seed=seed,
         options=options,
+        msa=msa,
     )
 
 
@@ -551,3 +553,92 @@ def test_boltz_keeps_a_supplied_alignment(tmp_path) -> None:
         tmp_path,
     )
     assert document["sequences"][0]["protein"]["msa"].endswith("hits.a3m")
+
+
+_BARE_PROTEIN = {
+    "name": "bare",
+    "entities": [
+        {"type": "protein", "id": ["A"], "sequence": "ACDEFGHIK"},
+        {"type": "ligand", "id": ["L"], "ccd": "ATP"},
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    "model", ["alphafold3", "boltz2", "opendde", "openfold3", "protenix"]
+)
+def test_a_protein_without_an_alignment_is_refused_by_default(
+    tmp_path: Path, model: str
+) -> None:
+    """Upstream refuses (Boltz-2) or searches (the rest); none folds it alone.
+
+    The refusal comes before the generated-input directory is created, and it
+    names every way on, so the first thing a `--sequence` user sees says what
+    to type next.
+    """
+    source = _write(tmp_path / "job.json", _BARE_PROTEIN)
+    out = tmp_path / model
+    with pytest.raises(ValueError) as caught:
+        materialize_native_input(source, capabilities(model), out, seed=1)
+    message = str(caught.value)
+    assert "chain(s) A have no alignment" in message
+    for way_on in ("--msa auto", "unpaired_msa", "--msa single", "SENDS THE SEQUENCE"):
+        assert way_on in message
+    assert not out.exists()
+
+
+def test_esmfold2_folds_a_bare_protein_by_default_as_upstream_does(
+    tmp_path: Path,
+) -> None:
+    """Upstream ESMFold2 runs a depth-1 MSA with no search; it keeps the warning."""
+    job = {
+        "name": "bare",
+        "entities": [{"type": "protein", "id": ["A"], "sequence": "ACDEFGHIK"}],
+    }
+    source = _write(tmp_path / "job.json", job)
+    with pytest.warns(UserWarning, match="single sequence"):
+        written = materialize_native_input(
+            source, capabilities("esmfold2"), tmp_path / "out", seed=1
+        )
+    assert written.is_file()
+
+
+def test_msa_single_folds_a_bare_protein_on_purpose_without_searching(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import foldjax.msa_search as msa_search
+
+    def no_search():
+        raise AssertionError("msa='single' must not search")
+
+    monkeypatch.setattr(msa_search, "_msa_pipeline", no_search)
+    source = _write(tmp_path / "job.json", _BARE_PROTEIN)
+    with pytest.warns(UserWarning, match="single sequence"):
+        written = materialize_native_input(
+            source, capabilities("boltz2"), tmp_path / "out", seed=1, msa="single"
+        )
+    protein = yaml.safe_load(written.read_text())["sequences"][0]["protein"]
+    assert protein["msa"] == "empty"
+
+
+def test_a_bare_nucleic_chain_is_not_refused(tmp_path: Path) -> None:
+    """The refusal is about protein chains; RNA/DNA handling is unchanged."""
+    alignment = tmp_path / "a.a3m"
+    alignment.write_text(">q\nACDEFGHIK\n")
+    job = {
+        "name": "mixed",
+        "entities": [
+            {
+                "type": "protein",
+                "id": ["A"],
+                "sequence": "ACDEFGHIK",
+                "unpaired_msa": str(alignment),
+            },
+            {"type": "rna", "id": ["B"], "sequence": "ACGU"},
+        ],
+    }
+    source = _write(tmp_path / "job.json", job)
+    written = materialize_native_input(
+        source, capabilities("boltz2"), tmp_path / "out", seed=1
+    )
+    assert written.is_file()

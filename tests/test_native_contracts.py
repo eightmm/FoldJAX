@@ -25,7 +25,7 @@ def _materialize(job: dict, model: str, tmp_path: Path) -> Path:
     source = tmp_path / "common.json"
     source.write_text(json.dumps(job))
     return materialize_native_input(
-        source, capabilities(model), tmp_path / model, seed=1
+        source, capabilities(model), tmp_path / model, seed=1, msa="single"
     )
 
 

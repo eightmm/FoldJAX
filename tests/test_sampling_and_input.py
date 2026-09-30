@@ -73,8 +73,12 @@ def test_yaml_common_input_materializes_like_its_json_twin(tmp_path: Path) -> No
     as_yaml.write_text("entities:\n  - type: protein\n    id: A\n    sequence: ACD\n")
 
     caps = capabilities("protenix")
-    from_json = materialize_native_input(as_json, caps, tmp_path / "a", seed=1)
-    from_yaml = materialize_native_input(as_yaml, caps, tmp_path / "b", seed=1)
+    from_json = materialize_native_input(
+        as_json, caps, tmp_path / "a", seed=1, msa="single"
+    )
+    from_yaml = materialize_native_input(
+        as_yaml, caps, tmp_path / "b", seed=1, msa="single"
+    )
     assert from_json.read_text() == from_yaml.read_text()
 
 
@@ -405,6 +409,7 @@ def test_seeds_run_the_job_once_each_and_return_every_structure(
         output_dir=out,
         seeds=(7, 11, 13),
         use_compile_cache=False,
+        msa="single",
     )
     with backend_override("opendde", Recorder):
         result = foldjax.predict(request)
@@ -490,6 +495,7 @@ def test_one_seed_keeps_the_output_directory_it_was_given(
                 output_dir=out,
                 seed=4,
                 use_compile_cache=False,
+                msa="single",
             )
         )
     assert seen == [out]

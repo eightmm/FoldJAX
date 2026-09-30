@@ -706,6 +706,23 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **A protein chain with no alignment is refused by default instead of
+  folded from its single sequence.** No upstream but ESMFold2 does that by
+  default: Boltz-2 refuses the job ("Missing MSA's in input and
+  --use_msa_server flag not set", `boltz/main.py:581-583`), and Protenix,
+  OpenDDE, OpenFold3 and AlphaFold 3 search for an alignment. FoldJAX's
+  search stays opt-in because it sends the sequence to a server, so under
+  the default `--msa none` a common-schema job with such a chain now fails
+  before anything is written, naming the chains and the three ways on:
+  `--msa auto` (search), an `unpaired_msa` path, or the new `--msa single`
+  (`msa="single"`), which folds the chain alone on purpose, as `none` used
+  to, with the same warning. ESMFold2 is exempt: upstream builds a depth-1
+  MSA with no search, so it still folds the chain alone, with the warning.
+  **A command that relied on the old fallback, including `--sequence`
+  without `--msa`, now fails**; add `--msa single` to keep its prediction.
+  Jobs whose protein chains all carry an alignment, including every
+  benchmark job, and native-dialect inputs are unchanged.
+
 - **Boltz-2 recycles 3 times by default, as upstream does.** `boltz predict
   --recycling_steps` defaults to 3 (`boltz/main.py:856`). Since 2026-09-08
   the adapter injected 5, the Boltz-2 paper's PDB-evaluation count, which

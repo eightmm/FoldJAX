@@ -59,8 +59,21 @@ def _budget(
 
 def _job(tmp_path: Path) -> Path:
     path = tmp_path / "job.json"
+    # An alignment, because a bare protein is refused under the default msa.
+    (tmp_path / "job.a3m").write_text(">query\nACD\n")
     path.write_text(
-        json.dumps({"entities": [{"type": "protein", "id": "A", "sequence": "ACD"}]})
+        json.dumps(
+            {
+                "entities": [
+                    {
+                        "type": "protein",
+                        "id": "A",
+                        "sequence": "ACD",
+                        "unpaired_msa": "job.a3m",
+                    }
+                ]
+            }
+        )
     )
     return path
 

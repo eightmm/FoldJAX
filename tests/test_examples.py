@@ -51,11 +51,19 @@ def test_every_example_translates_to_every_backend(
     if not named <= supported:
         with pytest.raises(ValueError):
             materialize_native_input(
-                job, capabilities(model), tmp_path / model / job.stem, seed=101
+                job,
+                capabilities(model),
+                tmp_path / model / job.stem,
+                seed=101,
+                msa="single",
             )
         return
     written = materialize_native_input(
-        job, capabilities(model), tmp_path / model / job.stem, seed=101
+        job,
+        capabilities(model),
+        tmp_path / model / job.stem,
+        seed=101,
+        msa="single",
     )
     assert written.is_file()
     assert written.read_text().strip()

@@ -205,7 +205,7 @@ report = predict_batch(
         models=("protenix", "opendde", "openfold3"),
         input=job_path,
         output_dir=Path("foldjax-outputs"),
-        msa="none",
+        msa="single",  # fold without alignments; "auto" searches a server
         on_error="continue",
     )
 )
