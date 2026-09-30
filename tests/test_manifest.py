@@ -652,6 +652,88 @@ def test_an_unseeded_request_takes_the_upstream_fixed_seed(
     assert resolved.resolved_seeds == (seed, seed + 1)
 
 
+def _native_opendde(tmp_path: Path, *seed_lists) -> Path:
+    path = tmp_path / "native.json"
+    jobs = []
+    for index, seeds in enumerate(seed_lists):
+        job = {
+            "name": f"job{index}",
+            "sequences": [{"proteinChain": {"sequence": "ACD", "count": 1}}],
+        }
+        if seeds is not None:
+            job["modelSeeds"] = list(seeds)
+        jobs.append(job)
+    path.write_text(json.dumps(jobs))
+    return path
+
+
+def test_opendde_runs_every_model_seed_the_native_job_names(tmp_path: Path) -> None:
+    """Upstream OpenDDE runs the job's modelSeeds when --seeds is unset.
+
+    The adapter used to pass the request's seed (0 by default) as `--seed`,
+    which the runner prefers over modelSeeds, so a two-seed job ran once
+    under a seed it never named.
+    """
+    seen: list[int] = []
+
+    class Seen(_Recorder):
+        def predict(self, request):
+            seen.append(request.seed)
+            argv = self._native_invocation(request).argv
+            assert argv[argv.index("--seed") + 1] == str(request.seed)
+            return super().predict(request)
+
+    out = tmp_path / "out"
+    with backend_override("opendde", Seen):
+        foldjax.predict(
+            PredictionRequest(
+                model="opendde",
+                input=_native_opendde(tmp_path, (5, 9)),
+                weights=_weights(tmp_path),
+                output_dir=out,
+                use_compile_cache=False,
+            )
+        )
+
+    assert seen == [5, 9]
+    manifest = json.loads((out / MANIFEST_NAME).read_text())
+    assert (manifest["seeds"], manifest["seed_source"]) == ([5, 9], "job")
+
+
+@pytest.mark.parametrize("model", ["opendde", "alphafold3"])
+def test_model_seeds_resolve_like_upstream(tmp_path: Path, model: str) -> None:
+    from foldjax.api import resolve_request
+
+    weights = tmp_path / "weights"
+    weights.mkdir()
+
+    def resolve(path: Path, **fields) -> PredictionRequest:
+        return resolve_request(
+            PredictionRequest(
+                model=model,
+                input=path,
+                weights=weights,
+                output_dir=tmp_path / "out",
+                use_compile_cache=False,
+                **fields,
+            )
+        )
+
+    one = resolve(_native_opendde(tmp_path, (7,)), num_seeds=2)
+    assert (one.resolved_seeds, one.seed_source) == ((7, 8), "job")
+    given = resolve(_native_opendde(tmp_path, (7,)), seed=3)
+    assert (given.resolved_seeds, given.seed_source) == ((3,), "user")
+    unnamed = resolve(_native_opendde(tmp_path, None))
+    assert unnamed.seed_source == "random"
+    with pytest.raises(ValueError, match="num_seeds counts up from one seed"):
+        resolve(_native_opendde(tmp_path, (1, 2)), num_seeds=2)
+    with pytest.raises(ValueError, match="name different modelSeeds"):
+        resolve(_native_opendde(tmp_path, (1,), (2,)))
+    # A common-schema job has no modelSeeds: the run draws, as upstream does
+    # for a job without them.
+    assert resolve(_job(tmp_path)).seed_source == "random"
+
+
 @pytest.mark.parametrize("model", ["boltz2", "esmfold2"])
 def test_an_unseeded_request_draws_where_upstream_seeds_nothing(
     tmp_path: Path, model: str

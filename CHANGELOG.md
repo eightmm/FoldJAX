@@ -723,6 +723,18 @@ unless it says so here, in its own paragraph.
   Jobs whose protein chains all carry an alignment, including every
   benchmark job, and native-dialect inputs are unchanged.
 
+- **OpenDDE and AlphaFold 3 run a native job's `modelSeeds`.** Upstream
+  OpenDDE uses them when `--seeds` is unset
+  (`runner/batch_inference.py:698-703`), and AlphaFold 3 requires them in
+  its own dialect. The OpenDDE adapter always passed the request's seed,
+  0 by default, as `--seed`, which the runner prefers, so a job naming
+  `modelSeeds: [5, 9]` ran once under 0. With no `--seed`, every entry now
+  runs through the `seed_<n>` loop (`seed_source: job`); a single entry
+  with `--num-seeds` counts up from it, as AlphaFold 3's `--num_seeds`
+  does. A multi-job file whose jobs name different `modelSeeds` is refused
+  rather than run under one job's list. A job without `modelSeeds`, and
+  every common-schema job, gets a drawn seed (entry below).
+
 - **An omitted seed follows each model's upstream instead of 0.** Protenix
   runs 101 (`configs/configs_inference.py:24`) and OpenFold3 42
   (`entry_points/validator.py:311`). Boltz-2 (`--seed` None,

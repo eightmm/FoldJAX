@@ -53,6 +53,7 @@ from foldjax.result_validation import _sample_index, _validate_result
 from foldjax.schema import (
     DEFAULT_SEEDS,
     JOB_DOCUMENT_SUFFIXES,
+    JOB_SEEDS,
     RANDOM_SEED,
     RANDOM_SEED_BOUND,
     BatchReport,
@@ -121,10 +122,47 @@ def _recorded_random_seed(
     return seeds[0]
 
 
+def _job_model_seeds(path: Path, *, input_format: str) -> tuple[int, ...] | None:
+    """The ``modelSeeds`` a native job file names, or None when it names none.
+
+    A native file may hold several jobs (the Protenix/OpenDDE list dialect,
+    AlphaFold Server's list). They run under one request, so they must agree:
+    upstream would seed each from its own list, and choosing one list for
+    all of them would run the others under seeds they never named.
+    """
+    if input_format == "foldjax":
+        return None
+    try:
+        document = read_job_document(path)
+    except (ValueError, OSError):
+        return None
+    jobs = document if isinstance(document, list) else [document]
+    named = []
+    for job in jobs:
+        if not isinstance(job, Mapping):
+            return None
+        seeds = job.get("modelSeeds")
+        if seeds is None or seeds == []:
+            named.append(None)
+            continue
+        if not isinstance(seeds, list):
+            raise ValueError(f"modelSeeds in {path} must be a list of integers")
+        named.append(tuple(seeds))
+    if all(seeds is None for seeds in named):
+        return None
+    if len(set(named)) != 1:
+        raise ValueError(
+            f"the jobs in {path} name different modelSeeds (or only some name "
+            "any); pass --seed or --seeds for all of them, or split the file"
+        )
+    return named[0]
+
+
 def _seed_updates(
     request: PredictionRequest,
     model: str,
     *,
+    input_format: str,
     output_dir: Path | None,
     draw: bool,
 ) -> dict[str, Any]:
@@ -135,7 +173,21 @@ def _seed_updates(
     policy = DEFAULT_SEEDS.get(model)
     if policy is None:
         return {"seed": 0, "seed_source": "foldjax"}
-    if policy != RANDOM_SEED:
+    if policy == JOB_SEEDS:
+        named = _job_model_seeds(request.input, input_format=input_format)
+        if named is not None:
+            if len(named) == 1:
+                return {"seed": named[0], "seed_source": JOB_SEEDS}
+            if request.num_seeds is not None:
+                # AlphaFold 3's --num_seeds likewise wants exactly one seed in
+                # the job to count up from.
+                raise ValueError(
+                    f"num_seeds counts up from one seed, and {request.input} "
+                    f"names {len(named)} modelSeeds; drop num_seeds to run "
+                    "them, or pass --seed"
+                )
+            return {"seeds": named, "seed_source": JOB_SEEDS}
+    elif policy != RANDOM_SEED:
         return {"seed": int(policy), "seed_source": "upstream"}
     recorded = (
         _recorded_random_seed(request, output_dir) if request.resume else None
@@ -241,6 +293,7 @@ def resolve_request(
         _seed_updates(
             request,
             backend.name,
+            input_format=updates.get("input_format", request.input_format),
             output_dir=updates.get("output_dir", request.output_dir),
             draw=draw_seeds,
         )

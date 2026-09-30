@@ -50,11 +50,16 @@ ERROR_POLICIES = ("stop", "continue")
 #: Draw a seed: the backend's upstream seeds nothing by default.
 RANDOM_SEED = "random"
 
+#: Run the native job's own ``modelSeeds``; draw a seed when it has none.
+JOB_SEEDS = "job"
+
 #: The seed each backend runs when a request names none, following the
 #: upstream's released CLI (``AUDIT-DEFAULTS-20260930.md``). An integer is
 #: upstream's own fixed default. ``RANDOM_SEED`` is used where upstream seeds
 #: nothing: a seed is drawn, printed and recorded in the manifest, so the run
-#: can still be repeated with ``--seed``.
+#: can still be repeated with ``--seed``. ``JOB_SEEDS`` runs every entry of a
+#: native job's ``modelSeeds`` and draws only when the job names none; a
+#: common-schema job has no such field.
 #:
 #: - Protenix: ``--seeds`` defaults to 101 (``configs/configs_inference.py:24``).
 #: - OpenFold3: ``seeds: [42]`` (``entry_points/validator.py:311``).
@@ -68,17 +73,18 @@ RANDOM_SEED = "random"
 #:
 #: A backend missing from the table keeps FoldJAX's historical 0.
 DEFAULT_SEEDS: Mapping[str, int | str] = {
-    "alphafold3": RANDOM_SEED,
+    "alphafold3": JOB_SEEDS,
     "boltz2": RANDOM_SEED,
     "esmfold2": RANDOM_SEED,
-    "opendde": RANDOM_SEED,
+    "opendde": JOB_SEEDS,
     "openfold3": 42,
     "protenix": 101,
 }
 
 #: Where a resolved request's seed came from: the caller, the upstream's fixed
-#: default, a draw, or FoldJAX's own 0 for a backend with no table entry.
-SEED_SOURCES = ("user", "upstream", "random", "foldjax")
+#: default, a draw, the native job's ``modelSeeds``, or FoldJAX's own 0 for a
+#: backend with no table entry.
+SEED_SOURCES = ("user", "upstream", "random", "job", "foldjax")
 
 #: Drawn seeds stay below 2**31: ESMFold2 hands the seed to RDKit's
 #: ``randomSeed``, a C ``int``.

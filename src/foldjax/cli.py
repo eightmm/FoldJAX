@@ -153,9 +153,11 @@ def _add_predict_arguments(
             "representative seed (default: the model's default seed)"
             if cache_warm
             else "prediction seed. Omitted, each model uses its upstream's: "
-            "Protenix 101, OpenFold3 42; Boltz-2, ESMFold2, OpenDDE and "
-            "AlphaFold 3 seed nothing upstream, so a seed is drawn, printed "
-            "and recorded in foldjax_run.json. `foldjax plan` shows which"
+            "Protenix 101, OpenFold3 42; OpenDDE and AlphaFold 3 run a native "
+            "job's modelSeeds. Otherwise (Boltz-2, ESMFold2, and a job "
+            "without modelSeeds) upstream seeds nothing, so a seed is drawn, "
+            "printed and recorded in foldjax_run.json. `foldjax plan` shows "
+            "which"
         ),
     )
     sampling.add_argument(
