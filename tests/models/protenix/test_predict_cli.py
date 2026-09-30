@@ -557,6 +557,183 @@ def test_the_adapter_carries_msa_seed_into_the_native_run(tmp_path, monkeypatch)
         backend.validate_native_options({"msa_seed": True})
 
 
+def test_the_adapter_defaults_to_per_cycle_msa_and_offers_full_depth(tmp_path):
+    """`foldjax predict` runs upstream's per-cycle draw unless asked otherwise."""
+    from foldjax.backends.protenix import ProtenixBackend
+    from foldjax.schema import PredictionRequest
+
+    job = tmp_path / "job.json"
+    job.write_text("{}")
+    weights = tmp_path / "weights"
+    weights.mkdir()
+
+    def request(**options):
+        return PredictionRequest(
+            model="protenix",
+            input=job,
+            weights=weights,
+            output_dir=tmp_path / "out",
+            cache_dir=tmp_path / "cache",
+            seed=101,
+            msa="none",
+            options=options,
+        )
+
+    backend = ProtenixBackend()
+    bare = backend._native_invocation(request())
+    assert bare.config_fields["full_depth_msa"] is False
+    assert "--full-depth-msa" not in bare.argv
+    full = backend._native_invocation(request(full_depth_msa=True))
+    assert full.config_fields["full_depth_msa"] is True
+    assert "--full-depth-msa" in full.argv
+    # The two are different programs, so different cache namespaces; spelling
+    # the released `false` is the namespace omitting it selects.
+    assert "full_depth_msa" not in backend.cache_profile(request())
+    assert backend.cache_profile(request(full_depth_msa=False)) == (
+        backend.cache_profile(request())
+    )
+    assert backend.cache_profile(request(full_depth_msa=True))["full_depth_msa"]
+
+
+_MSA_QUERY = "ACDEFGH"
+_MSA_ROWS = ("ACDEFGA", "ACDQFGH", "WCDEFGH", "ACYEFGH", "ACDEFWH", "MCDEFGH")
+
+
+def _run_inline_msa_job(tmp_path, monkeypatch, *extra_argv):
+    """Featurize a real JSON job with a seven-row MSA; capture what the model gets."""
+
+    weights_path = tmp_path / "toy_weights.pkl"
+    if not weights_path.exists():
+        save_native_weights(
+            weights_path, _toy_params_with_relp_dim(139), compress=False
+        )
+    input_json = tmp_path / "input.json"
+    a3m = "".join(
+        f">row{index}\n{row}\n"
+        for index, row in enumerate((_MSA_QUERY, *_MSA_ROWS))
+    )
+    input_json.write_text(
+        json.dumps(
+            [
+                {
+                    "sequences": [
+                        {
+                            "proteinChain": {
+                                "sequence": _MSA_QUERY,
+                                "count": 1,
+                                "unpairedMsa": a3m,
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+    )
+    captured: dict[str, object] = {}
+
+    def fake_predict(_params, features, **kwargs):
+        captured["features"] = features
+        captured["kwargs"] = kwargs
+        n_atom = len(features["atom_to_token_idx"])
+        return {"coordinate": np.zeros((1, n_atom, 3), dtype=np.float32)}
+
+    monkeypatch.setattr(
+        "foldjax.models.protenix.models.predict.protenix_predict_static", fake_predict
+    )
+    main(
+        [
+            "--weights",
+            str(weights_path),
+            "--input-json",
+            str(input_json),
+            "--out",
+            str(tmp_path / "out.npz"),
+            "--model-name",
+            "unknown",
+            "--trunk-dtype",
+            "fp32",
+            "--n-sample",
+            "1",
+            "--n-cycle",
+            "4",
+            "--seeds",
+            "7",
+            "--n-queries",
+            "2",
+            "--n-keys",
+            "4",
+            "--prewarm-only",
+            "--no-compile-cache",
+            *extra_argv,
+        ]
+    )
+    return captured["features"], captured["kwargs"]
+
+
+def test_per_cycle_msa_sampling_is_the_default_and_full_depth_is_opt_in(
+    tmp_path, monkeypatch
+) -> None:
+    """Upstream redraws `U[1, n]` MSA rows every recycle; so does the default.
+
+    Upstream: `MSAModule.forward` -> `sample_msa_feature_dict_random_without_
+    replacement` (protenix/model/modules/pairformer.py:854-866), size
+    `randint(1, n + 1)` then `randperm(n)[:size]` (protenix/model/utils.py:
+    306-308). `--full-depth-msa` is the port's old every-row path.
+    """
+    from foldjax.models.protenix.models.trunk_blocks.msa import (
+        sample_msa_cycle_index_tape,
+    )
+
+    features, kwargs = _run_inline_msa_job(tmp_path, monkeypatch)
+    tape = kwargs["cycle_msa_index_tape"]
+    n_rows = int(features["msa"].shape[-2])
+    assert n_rows > 1
+    assert tape is not None
+    assert tape.row_indices.shape[0] == 4
+    # The draw is the seeded one, so a fixed seed reproduces it.
+    expected = sample_msa_cycle_index_tape(features, num_recycles=4, seed=7)
+    np.testing.assert_array_equal(tape.row_indices, expected.row_indices)
+    np.testing.assert_array_equal(tape.row_mask, expected.row_mask)
+    for cycle in range(4):
+        rows = tape.row_indices[cycle][tape.row_mask[cycle]]
+        assert 1 <= rows.size <= n_rows
+        assert len(set(rows.tolist())) == rows.size
+
+    _features, full_kwargs = _run_inline_msa_job(
+        tmp_path, monkeypatch, "--full-depth-msa"
+    )
+    assert full_kwargs["cycle_msa_index_tape"] is None
+
+
+def test_padding_runs_the_per_cycle_msa_draw_over_the_real_rows(
+    tmp_path, monkeypatch
+) -> None:
+    """Padding keeps per-cycle sampling and the unpadded run's row selection.
+
+    It used to refuse per-cycle sampling outright ("padding currently requires
+    --full-depth-msa"). The draw now sees the real rows only, and the tape
+    spans the padded MSA axis, so the executable does not depend on the draw.
+    """
+
+    features, kwargs = _run_inline_msa_job(tmp_path, monkeypatch)
+    reference = kwargs["cycle_msa_index_tape"]
+    n_rows = int(features["msa"].shape[-2])
+
+    padded_features, padded_kwargs = _run_inline_msa_job(
+        tmp_path, monkeypatch, "--padding"
+    )
+    tape = padded_kwargs["cycle_msa_index_tape"]
+    width = int(padded_features["msa"].shape[-2])
+    assert width > n_rows
+    assert tape.row_indices.shape == (4, width)
+    for cycle in range(4):
+        np.testing.assert_array_equal(
+            tape.row_indices[cycle][tape.row_mask[cycle]],
+            reference.row_indices[cycle][reference.row_mask[cycle]],
+        )
+        assert tape.row_indices[cycle][tape.row_mask[cycle]].max() < n_rows
+
+
 def test_predict_runs_from_sequence_json_features(tmp_path) -> None:
     weights_path = tmp_path / "toy_weights.pkl"
     features_path = tmp_path / "json_features.npz"

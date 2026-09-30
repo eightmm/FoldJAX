@@ -425,9 +425,16 @@ def _materialize_msa_cycle_from_index_tape(
             jnp.zeros((), dtype=selected.dtype),
         )
     mask_shape = (1,) * (output["msa"].ndim - 2) + (row_mask.shape[0], 1)
-    output["msa_mask"] = jnp.broadcast_to(
-        row_mask.reshape(mask_shape), output["msa"].shape
-    ).astype(jnp.float32)
+    selected_mask = jnp.broadcast_to(row_mask.reshape(mask_shape), output["msa"].shape)
+    source_mask = input_feature_dict.get("msa_mask")
+    if source_mask is not None:
+        # A padded job's mask also zeroes the padded token columns (and the
+        # padded rows, which the draw never selects). Replacing it with the
+        # row selection alone would unmask those columns in the MSA module.
+        selected_mask = selected_mask & (
+            jnp.take(jnp.asarray(source_mask), row_indices, axis=-2) != 0
+        )
+    output["msa_mask"] = selected_mask.astype(jnp.float32)
     return output
 
 

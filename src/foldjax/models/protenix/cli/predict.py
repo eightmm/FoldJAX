@@ -58,8 +58,8 @@ def main(
     parser.add_argument(
         "--msa-seed",
         type=int,
-        help="Seed for the per-cycle random MSA row draw "
-        "(--sample-msa-per-cycle). Defaults to --seed; setting it leaves the "
+        help="Seed for the per-cycle random MSA row draw (the default; inert "
+        "under --full-depth-msa). Defaults to --seed; setting it leaves the "
         "diffusion RNG on --seed.",
     )
     parser.add_argument(
@@ -163,15 +163,24 @@ def main(
         "--full-depth-msa",
         dest="full_depth_msa",
         action="store_true",
-        help="Use the faster single-shape full MSA path.",
+        help="Read every MSA row in every recycle instead of upstream's "
+        "per-cycle random subset; one executable per input whatever the seed, "
+        "but not upstream's computation.",
     )
     msa_group.add_argument(
         "--sample-msa-per-cycle",
         dest="full_depth_msa",
         action="store_false",
-        help="Use upstream-style random MSA depths (slower on XLA).",
+        help="Redraw a random U[1, n] subset of the n MSA rows every recycle, "
+        "as upstream's MSA module does (the default).",
     )
-    parser.set_defaults(full_depth_msa=True)
+    # Upstream's released inference draws a fresh random row subset inside
+    # every recycle: `MSAModule.forward` calls
+    # `sample_msa_feature_dict_random_without_replacement` with size
+    # U[lower_bound=1, n] and a `randperm`, cutoff 16384
+    # (protenix/model/modules/pairformer.py:854-866,
+    # protenix/model/utils.py:306-308, configs/configs_data.py:265-276).
+    parser.set_defaults(full_depth_msa=False)
     parser.add_argument(
         "--msa-row-alignment",
         type=int,

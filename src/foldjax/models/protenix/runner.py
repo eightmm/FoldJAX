@@ -294,11 +294,10 @@ def _run(
             raise SystemExit(
                 "padding with TFG guidance is not yet supported; use one or the other"
             )
-        if not config.full_depth_msa:
-            raise SystemExit(
-                "padding currently requires --full-depth-msa so random cycle "
-                "sampling cannot select padded rows"
-            )
+        # Per-cycle MSA sampling (the released default) pads too: the draw is
+        # taken over the job's real rows only and the index tape is the padded
+        # MSA width, so no padded row can be selected and the executable does
+        # not depend on the draw. See the tape call in the seed loop.
 
     guidance_config = None
     if config.guidance_config is not None:
@@ -811,15 +810,14 @@ def _run(
     memory_budget = memory_policy.device_memory_budget(
         override_gib=config.memory_budget_gib
     )
-    off_profile = memory_policy.off_profile_reason(
-        num_samples=config.num_samples,
-        # Upstream's random per-cycle depths gather a narrower slice than the
-        # argument carries, so the row count read below is an upper bound on
-        # what the trunk actually holds and the estimate reads high.
-        extras=()
-        if config.full_depth_msa
-        else ("--no-full-depth-msa, which samples fewer rows than it stores",),
-    )
+    # Per-cycle MSA sampling -- the released default -- compiles an index tape
+    # no wider than the stored rows (exactly the padded width under padding),
+    # so the stored row count read below bounds what the trunk holds and the
+    # estimate reads high by at most the rows the widest recycle leaves out.
+    # That is kept binding rather than declared off profile: an off-profile
+    # run loses the refusal, and on the default path that would switch
+    # admission off for every run.
+    off_profile = memory_policy.off_profile_reason(num_samples=config.num_samples)
     for job in jobs:
         job_features = job["features"]
         msa = job_features.get("msa")
@@ -947,6 +945,17 @@ def _run(
                 )
             cycle_msa_index_tape = None
             if not config.full_depth_msa:
+                # Under padding the draw sees the real rows only and the tape
+                # spans the padded MSA axis, so the real selection is the
+                # unpadded run's and the executable is the bucket's.
+                padded_tape = (
+                    {}
+                    if padding_plan is None or "msa" not in features
+                    else {
+                        "real_rows": int(padding_plan.actual["msa"]),
+                        "width": int(features["msa"].shape[-2]),
+                    }
+                )
                 cycle_msa_index_tape = sample_msa_cycle_index_tape(
                     features,
                     num_recycles=num_recycles,
@@ -955,6 +964,7 @@ def _run(
                     # tape above -- so `--msa-seed` moves the row subset and
                     # nothing else.
                     seed=seed if config.msa_seed is None else config.msa_seed,
+                    **padded_tape,
                 )
             output = protenix_predict_static(
                 job_params,

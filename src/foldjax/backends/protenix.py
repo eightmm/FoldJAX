@@ -64,10 +64,17 @@ _CLI_OPTIONS = {
     # is the spelling that reproduces the native gate on both stages.
     "amp_policy",
     "max_msa_depth",
+    # Upstream's per-cycle random MSA row subset is the released path; `true`
+    # reads every row in every recycle instead. A compile option: the two are
+    # different programs (the per-cycle path gathers each recycle's rows from
+    # a compact index tape).
+    "full_depth_msa",
     # The seed of the per-cycle random MSA row draw, separately from the
     # diffusion seed the request already carries. Not a compile option: `seed`
-    # is not one either, and the draw's padded row count already forks the
-    # executable through XLA's own HLO hash inside one cache namespace.
+    # is not one either, and without padding the draw's row bucket already
+    # forks the executable through XLA's own HLO hash inside one cache
+    # namespace; under padding the tape is the padded MSA width whatever the
+    # draw.
     "msa_seed",
     "diffusion_attention_backend",
     "trunk_single_attention_backend",
@@ -129,7 +136,7 @@ _PROFILE_MODEL_NAMES = {
 #: Options the native CLI takes as a bare switch rather than a value. Passing
 #: `--strict-token-limit true` makes argparse reject the whole command, and
 #: the usage dump that comes back says nothing about which argument was wrong.
-_FLAG_OPTIONS = frozenset({"strict_token_limit", "use_rna_msa"})
+_FLAG_OPTIONS = frozenset({"strict_token_limit", "use_rna_msa", "full_depth_msa"})
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"0", "false", "no", "off", ""})
 
@@ -267,6 +274,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "deterministic_ops": "off",
     "glu_backend": "xla",
     "use_rna_msa": False,
+    "full_depth_msa": False,
 }
 
 #: What an omitted `diffusion_attention_backend` runs when a context-parallel
@@ -332,7 +340,7 @@ _PARSER_DEFAULTS: dict[str, Any] = {
     "strict_token_limit": False,
     "memory_check": "refuse",
     "memory_budget_gib": None,
-    "full_depth_msa": True,
+    "full_depth_msa": False,
     "msa_row_alignment": 64,
     "max_msa_padding_rows": 8,
     "input_atom_heads": 4,
@@ -492,6 +500,7 @@ _OPTION_SPECS: dict[str, tuple[Callable[[str, Any], Any], tuple[str, ...] | None
     ),
     "diffusion_chunk_size": (_integer_option, None),
     "esm_checkpoint_dir": (_path_option, None),
+    "full_depth_msa": (_switch_option, None),
     "glu_backend": (_text_option, _GLU_BACKENDS),
     "max_msa_depth": (_integer_option, None),
     "memory_budget_gib": (_number_option, None),
@@ -702,6 +711,7 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         "trunk_dtype",
         "amp_policy",
         "max_msa_depth",
+        "full_depth_msa",
         "diffusion_attention_backend",
         "trunk_single_attention_backend",
         "trunk_triangle_attention_backend",

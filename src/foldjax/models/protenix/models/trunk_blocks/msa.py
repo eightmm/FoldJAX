@@ -166,8 +166,25 @@ def sample_msa_cycle_index_tape(
     num_recycles: int,
     seed: int,
     bucket_size: int = 64,
+    real_rows: int | None = None,
+    width: int | None = None,
 ) -> MSACycleIndexTape | None:
-    """Return upstream's row choices without copying their token-wide values."""
+    """Return upstream's row choices without copying their token-wide values.
+
+    Every recycle draws ``U[1, n]`` rows without replacement from the ``n``
+    real rows, as upstream's ``sample_indices`` does (lower bound 1, cutoff
+    16384 >= any depth this port assembles).
+
+    ``real_rows`` and ``width`` are for a padded MSA axis. The draw must see
+    only the real prefix -- ``n`` is the real row count, never the padded
+    one, or a padded row could be selected and the random stream would
+    depend on the padding target -- and the tape must be the padded width
+    whatever the draw, so one executable serves every seed and every job in
+    the bucket. The rows between a draw and the width are masked, exactly as
+    the unpadded bucket's are. With both omitted, ``n`` is the stored row
+    count and the width is the smallest multiple of ``bucket_size`` holding
+    the deepest recycle.
+    """
 
     if num_recycles <= 0:
         raise ValueError("num_recycles must be positive")
@@ -176,9 +193,19 @@ def sample_msa_cycle_index_tape(
     msa_fields = ("msa", "has_deletion", "deletion_value")
     if any(field not in input_feature_dict for field in msa_fields):
         return None
-    n_msa = int(input_feature_dict["msa"].shape[-2])
+    stored = int(input_feature_dict["msa"].shape[-2])
+    n_msa = stored if real_rows is None else int(real_rows)
     if n_msa <= 0:
         return None
+    if n_msa > stored:
+        raise ValueError(
+            f"real_rows={n_msa} exceeds the {stored} MSA rows the features store"
+        )
+    if width is not None and not n_msa <= width <= stored:
+        raise ValueError(
+            f"tape width {width} must lie between the {n_msa} real and the "
+            f"{stored} stored MSA rows"
+        )
     if n_msa > np.iinfo(np.int32).max:
         raise ValueError("MSA depth exceeds the compact int32 row-index range")
     rng = np.random.default_rng(seed)
@@ -188,8 +215,10 @@ def sample_msa_cycle_index_tape(
         indices = rng.permutation(n_msa)[:sample_size]
         sampled_indices.append(indices)
     max_depth = max(int(indices.size) for indices in sampled_indices)
-    padded_depth = min(
-        n_msa, ((max_depth + bucket_size - 1) // bucket_size) * bucket_size
+    padded_depth = (
+        min(n_msa, ((max_depth + bucket_size - 1) // bucket_size) * bucket_size)
+        if width is None
+        else int(width)
     )
     row_indices = np.zeros((num_recycles, padded_depth), dtype=np.int32)
     row_mask = np.zeros((num_recycles, padded_depth), dtype=bool)

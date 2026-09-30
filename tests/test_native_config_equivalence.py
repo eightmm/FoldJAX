@@ -144,6 +144,7 @@ _PROTENIX_OPTION_VALUES: dict[str, Any] = {
     "diffusion_attention_backend": "xla_jit",
     "diffusion_chunk_size": 2,
     "esm_checkpoint_dir": Path("/tmp/esm-checkpoint"),
+    "full_depth_msa": True,
     "glu_backend": "tokamax",
     "max_msa_depth": 1024,
     "memory_budget_gib": 12.5,
@@ -217,6 +218,7 @@ _PROTENIX_REQUESTS: dict[str, dict[str, Any]] = {
     "switches-off": {
         "options": {
             "cp_atom_windows": True,
+            "full_depth_msa": False,
             "strict_token_limit": False,
             "use_rna_msa": False,
         }

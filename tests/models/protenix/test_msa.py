@@ -696,6 +696,160 @@ def test_cycle_msa_index_tape_skips_missing_or_empty_alignments() -> None:
         )
 
 
+def _padded_msa_job(n_rows: int, n_token: int, *, width: int, tokens: int):
+    """One unpadded MSA and the same alignment right-padded as serving pads it."""
+    rng = np.random.default_rng(5)
+    unpadded = {
+        "msa": rng.integers(0, 32, size=(n_rows, n_token)).astype(np.int32),
+        "has_deletion": rng.integers(0, 2, size=(n_rows, n_token)).astype(
+            np.float32
+        ),
+        "deletion_value": rng.random((n_rows, n_token)).astype(np.float32),
+    }
+    padded = {}
+    for name, value in unpadded.items():
+        # Junk in the padded region: a mask that leaks shows up as a change.
+        fill = 31 if name == "msa" else 7.0
+        grown = np.full((width, tokens), fill, dtype=value.dtype)
+        grown[:n_rows, :n_token] = value
+        padded[name] = grown
+    msa_mask = np.zeros((width, tokens), dtype=np.float32)
+    msa_mask[:n_rows, :n_token] = 1.0
+    padded["msa_mask"] = msa_mask
+    return unpadded, padded
+
+
+def test_padded_msa_tape_draws_the_unpadded_rows_at_the_padded_width() -> None:
+    """Per-cycle sampling under padding: the unpadded run's rows, a fixed width.
+
+    Upstream draws `U[1, n]` rows from the job's `n` rows every recycle. A
+    padded job stores more rows than that, so the draw has to be over the real
+    prefix only -- otherwise a padded row could be picked and the random
+    stream would depend on the padding target -- and the tape has to be the
+    padded width whatever the draw, which is what lets every seed reuse the
+    bucket's executable.
+    """
+    unpadded, padded = _padded_msa_job(7, 3, width=16, tokens=5)
+
+    reference = sample_msa_cycle_index_tape(unpadded, num_recycles=6, seed=11)
+    tape = sample_msa_cycle_index_tape(
+        padded, num_recycles=6, seed=11, real_rows=7, width=16
+    )
+    again = sample_msa_cycle_index_tape(
+        padded, num_recycles=6, seed=11, real_rows=7, width=16
+    )
+
+    assert reference is not None and tape is not None and again is not None
+    assert tape.row_indices.shape == tape.row_mask.shape == (6, 16)
+    np.testing.assert_array_equal(tape.row_indices, again.row_indices)
+    np.testing.assert_array_equal(tape.row_mask, again.row_mask)
+    for cycle in range(6):
+        expected = reference.row_indices[cycle][reference.row_mask[cycle]]
+        actual = tape.row_indices[cycle][tape.row_mask[cycle]]
+        np.testing.assert_array_equal(actual, expected)
+        assert 1 <= actual.size <= 7
+        assert actual.max() < 7
+        assert len(set(actual.tolist())) == actual.size
+    # A second seed is a second draw, on the same shape.
+    other = sample_msa_cycle_index_tape(
+        padded, num_recycles=6, seed=12, real_rows=7, width=16
+    )
+    assert other is not None and other.row_indices.shape == (6, 16)
+    assert not np.array_equal(other.row_mask, tape.row_mask) or not np.array_equal(
+        other.row_indices, tape.row_indices
+    )
+
+    with pytest.raises(ValueError, match="real_rows=17 exceeds"):
+        sample_msa_cycle_index_tape(padded, num_recycles=1, seed=0, real_rows=17)
+    with pytest.raises(ValueError, match="tape width 4"):
+        sample_msa_cycle_index_tape(
+            padded, num_recycles=1, seed=0, real_rows=7, width=4
+        )
+
+
+def test_padded_msa_tape_keeps_the_padded_token_columns_masked() -> None:
+    """The gathered cycle carries the job's own MSA mask, not the row mask alone.
+
+    The per-cycle gather used to replace `msa_mask` with the row selection,
+    which on a padded job unmasks every padded token column. The MSA module
+    then reads the padded columns' junk. The real region must equal the
+    unpadded run's, and the padded columns must stay masked.
+    """
+    rng = np.random.default_rng(24)
+    state = {
+        "msa_module.linear_no_bias_m.weight": rng.normal(size=(4, 34)).astype(
+            np.float32
+        ),
+        "msa_module.linear_no_bias_s.weight": rng.normal(size=(4, 5)).astype(
+            np.float32
+        ),
+    }
+    for index, is_last in ((0, False), (1, True)):
+        state.update(
+            _msa_block_state(
+                rng,
+                f"msa_module.blocks.{index}",
+                c_m=4,
+                c_z=4,
+                msa_heads=2,
+                msa_c=2,
+                pair_heads=2,
+                is_last=is_last,
+            )
+        )
+    params = map_msa_module_state_dict(state, "msa_module")
+    n_rows, n_token, width, tokens = 6, 3, 8, 5
+    unpadded, padded = _padded_msa_job(n_rows, n_token, width=width, tokens=tokens)
+    reference = sample_msa_cycle_index_tape(unpadded, num_recycles=3, seed=3)
+    tape = sample_msa_cycle_index_tape(
+        padded, num_recycles=3, seed=3, real_rows=n_rows, width=width
+    )
+    z = rng.normal(size=(n_token, n_token, 4)).astype(np.float32)
+    s_inputs = rng.normal(size=(n_token, 5)).astype(np.float32)
+    z_padded = np.full((tokens, tokens, 4), 5.0, dtype=np.float32)
+    z_padded[:n_token, :n_token] = z
+    s_padded = np.full((tokens, 5), -3.0, dtype=np.float32)
+    s_padded[:n_token] = s_inputs
+    token_valid = np.arange(tokens) < n_token
+    pair_mask = jnp.asarray(token_valid[:, None] & token_valid[None, :])
+
+    for cycle in range(3):
+        cycle_features = _materialize_msa_cycle_from_index_tape(
+            jax.tree.map(jnp.asarray, padded),
+            MSACycleIndexTape(tape.row_indices[cycle], tape.row_mask[cycle]),
+        )
+        mask = np.asarray(cycle_features["msa_mask"])
+        assert mask.shape == (width, tokens)
+        np.testing.assert_array_equal(mask[:, n_token:], 0)
+        np.testing.assert_array_equal(
+            mask[:, :n_token].any(axis=1), tape.row_mask[cycle]
+        )
+        reference_features = _materialize_msa_cycle_from_index_tape(
+            jax.tree.map(jnp.asarray, unpadded),
+            MSACycleIndexTape(reference.row_indices[cycle], reference.row_mask[cycle]),
+        )
+        expected = msa_module(
+            reference_features,
+            jnp.asarray(z),
+            jnp.asarray(s_inputs),
+            None,
+            params,
+        )
+        actual = msa_module(
+            cycle_features,
+            jnp.asarray(z_padded),
+            jnp.asarray(s_padded),
+            pair_mask,
+            params,
+        )
+        np.testing.assert_allclose(
+            np.asarray(actual)[:n_token, :n_token],
+            np.asarray(expected),
+            rtol=1e-5,
+            atol=2e-5,
+        )
+
+
 def test_pad_msa_features_to_bucket_preserves_rows_and_adds_mask() -> None:
     features = {
         "msa": np.arange(30).reshape(5, 6),

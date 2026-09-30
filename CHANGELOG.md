@@ -356,6 +356,27 @@ unless it says so here, in its own paragraph.
   reaches it. Protenix and OpenDDE refuse an RNA one (entry above), Boltz-2 and
   ESMFold2 refuse the field outright, and AlphaFold 3's parser refuses it.
 
+- **Protenix draws a random MSA row subset in every recycle, as upstream
+  does.** Upstream's `MSAModule` samples `U[1, n]` of the `n` alignment rows
+  with a `randperm` inside each recycle (lower bound 1, cutoff 16,384:
+  `protenix/model/modules/pairformer.py:854-866`,
+  `protenix/model/utils.py:306-308`, `configs/configs_data.py:265-276`). The
+  port shipped `full_depth_msa=True`, reading all `n` rows ten times, and
+  `foldjax predict` could not change it. **This changes what a recorded
+  command predicts, and the compiled program,** for every Protenix job with
+  more than one MSA row. The draw is seeded (`--msa-seed`, else the request
+  seed), so a fixed seed still reproduces. `--option full_depth_msa=true`
+  (`--full-depth-msa` on the native CLI) restores the old path and names its
+  own compile-cache namespace. Padding no longer refuses the per-cycle path:
+  the draw is taken over the job's real rows only and the per-recycle index
+  tape spans the padded MSA axis, so a padded row is never selected, the real
+  selection is the unpadded run's, and every seed in a bucket reuses one
+  executable. Without padding the tape is the deepest recycle's draw rounded
+  up to 64 rows, so two seeds can compile two programs. Memory admission
+  stays binding on this path: the stored row count bounds the compiled tape
+  width, so the estimate reads high by at most the rows the widest recycle
+  leaves out.
+
 - **Protenix no longer accepts `triangle_attention_ring_kernel=tokamax` on a
   1-D run.** The check used the shared square-grid helper, which reads an
   omitted `cp_layout` as the grid on a perfect-square count. Protenix's

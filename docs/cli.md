@@ -164,7 +164,11 @@ alignment so jobs in one token band still share an executable. `--max-msa-depth`
 remains the one option that selects fewer rows, and `--pad-msa` is a capacity
 for the axis: a target below the stored rows is refused rather than truncating
 the input. `cache warm` compiles only the requested profile, not all MSA sizes.
-Protenix padding continues to require its full-depth MSA path. ESMFold2
+Protenix pads under both of its MSA paths: its released per-cycle row draw
+(`U[1, n]` rows per recycle, as upstream) is taken over the job's `n` real
+rows only, and the per-recycle index tape spans the padded MSA axis, so no
+padded row is ever selected and one executable serves every seed in the
+bucket. ESMFold2
 variants without active MSA selection require an explicit `--pad-msa` for inputs
 above the automatic capacity; padding does not silently sample those inputs.
 
@@ -1665,13 +1669,30 @@ native's own basin choices. Read parity residuals with the option off.
 
 ### `--msa-seed` (Protenix)
 
-Seeds only the per-cycle MSA row draw (`--sample-msa-per-cycle` on the
-native CLI, or `--option 'cli_args=["--sample-msa-per-cycle"]'` through
-FoldJAX); the diffusion key and the padded noise tape keep `--seed`. Omitted,
-it follows `--seed`. It exists so that an MSA-cap admission test can hold the
-diffusion stream fixed while varying only the alignment draw. On the released
-full-depth path it is inert. Not a compilation-cache option: a draw that
-changes the padded row count already forks the executable.
+Seeds only the per-cycle MSA row draw, which is the released default as it
+is upstream's (every recycle reads a fresh random `U[1, n]` subset of the `n`
+rows); the diffusion key and the padded noise tape keep `--seed`. Omitted, it
+follows `--seed`. It exists so that an MSA-cap admission test can hold the
+diffusion stream fixed while varying only the alignment draw. Under
+`--option full_depth_msa=true` (`--full-depth-msa` on the native CLI), which
+reads every row in every recycle, it is inert. Not a compilation-cache
+option: without padding a draw that changes the bucketed row count already
+forks the executable, and with padding the tape is the padded MSA width
+whatever the draw.
+
+### `--option full_depth_msa=true` (Protenix)
+
+Reads all `n` MSA rows in every recycle instead of upstream's per-cycle
+random subset. This was the port's default until it was found not to be
+upstream's computation: upstream's `MSAModule` redraws `U[1, n]` rows with a
+`randperm` inside every recycle
+(`protenix/model/modules/pairformer.py:854-866`,
+`protenix/model/utils.py:306-308`, cutoff 16,384 in
+`configs/configs_data.py:265-276`). The full-depth path compiles one
+executable per input whatever the seed; the per-cycle path without padding
+sizes its tape to the deepest recycle's draw rounded up to 64 rows, so two
+seeds can compile two programs. `--padding` removes that: the tape is the
+padded width. A compile option.
 
 ### `--max-msa-depth`
 
