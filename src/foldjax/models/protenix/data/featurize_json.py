@@ -1611,18 +1611,21 @@ def _assemble_msa_features(
         width = _chain_biological_count(c)
         if c["kind"] == "protein":
             skip = len(c["sequence"]) <= 4
-            # torch inference sets msa_pair_as_unpair=True (configs_inference.py):
-            # the paired A3M is folded into the unpaired stack (pairing rows
-            # first), then deduped together. Without this jax drops pairing.a3m
-            # for single-protein complexes, halving MSA depth and corrupting
-            # profile/deletion_mean. Mirrors msa_featurizer.py:654.
-            # Scope: only when NOT pairing (single unique protein). There the
-            # paired A3M would otherwise be discarded entirely (verified vs torch
-            # capture on 7r6r). For multimers the paired stack is consumed by the
-            # cross-chain pairing engine, and the assemble-level golden test
-            # encodes that path, so leave it untouched.
+            # Upstream inference sets msa_pair_as_unpair=True (Protenix
+            # configs/configs_inference.py:35, OpenDDE
+            # config/inference_defaults.py:27) and folds the paired A3M into
+            # every protein chain's unpaired stack (pairing rows first), deduped
+            # together, before assembly: `if msa_pair_as_unpair and p_a3m`,
+            # with no condition on pairing (Protenix
+            # protenix/data/msa/msa_featurizer.py:654, OpenDDE
+            # opendde/data/msa/msa_featurizer.py:376). A heteromer's paired A3M
+            # therefore feeds both the cross-chain pairing below and its own
+            # unpaired stack, so the paired rows pairing does not select stay
+            # in, and `profile`/`deletion_mean` are taken over the merged
+            # stack. This used to be gated to single-protein jobs; the
+            # assemble-level golden test it cited starts after this fold-in.
             unpaired_a3m = c["unpaired_a3m"]
-            if not skip and not need_pairing and c["paired_a3m"]:
+            if not skip and c["paired_a3m"]:
                 unpaired_a3m = (
                     _ensure_trailing_newline(c["paired_a3m"]) + c["unpaired_a3m"]
                 )

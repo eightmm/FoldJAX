@@ -677,3 +677,61 @@ def test_pinned_official_example_resolves_legacy_msa_from_repository_root() -> N
     assert (
         np.asarray(features["msa"]).shape[1] == np.asarray(features["restype"]).shape[0]
     )
+
+
+def test_opendde_heteromer_keeps_unselected_paired_rows_as_upstream() -> None:
+    """OpenDDE's `msa_pair_as_unpair=True` folds a heteromer's paired rows in.
+
+    `config/inference_defaults.py:27` and `opendde/data/msa/msa_featurizer.py:376`
+    at ddfa1df: no pairing condition. Upstream OpenDDE's fold-in plus
+    `FeatureAssemblyLine().assemble` gives these rows on this input: the MOUSE
+    and YEAST rows that species pairing leaves unselected stay in chain A's
+    unpaired stack (rows 2 and 3), where the port used to drop them.
+    """
+    job = {
+        "sequences": [
+            {
+                "proteinChain": {
+                    "sequence": "MKTAYIAK",
+                    "pairedMsa": (
+                        ">query\nMKTAYIAK\n"
+                        ">tr|A0A001|XA_HUMAN\nMKTAYLAK\n"
+                        ">tr|A0A002|XA_MOUSE\nMKSAYIAK\n"
+                        ">tr|A0A003|XA_YEAST\nMKTAYIvAR\n"
+                    ),
+                    "unpairedMsa": (
+                        ">query\nMKTAYIAK\n>u1\nMRTAYIAK\n>u2\nMKTAqYIAK\n"
+                    ),
+                }
+            },
+            {
+                "proteinChain": {
+                    "sequence": "GSHMLEDP",
+                    "pairedMsa": (
+                        ">query\nGSHMLEDP\n"
+                        ">tr|B0B001|YB_HUMAN\nGSHMLEEP\n"
+                        ">tr|B0B002|YB_RAT\nGAHMLEDP\n"
+                    ),
+                    "unpairedMsa": ">query\nGSHMLEDP\n>u3\nGSHMIEDP\n",
+                }
+            },
+        ]
+    }
+
+    features = featurize_opendde_json(job, n_queries=2, n_keys=4)
+
+    np.testing.assert_array_equal(
+        np.asarray(features["msa"]),
+        [
+            [12, 11, 16, 0, 18, 9, 0, 11, 7, 15, 8, 12, 10, 6, 3, 14],
+            [12, 11, 16, 0, 18, 10, 0, 11, 7, 15, 8, 12, 10, 6, 6, 14],
+            [12, 11, 15, 0, 18, 9, 0, 11, 7, 0, 8, 12, 10, 6, 3, 14],
+            [12, 11, 16, 0, 18, 9, 0, 1, 7, 15, 8, 12, 9, 6, 3, 14],
+            [12, 1, 16, 0, 18, 9, 0, 11, 31, 31, 31, 31, 31, 31, 31, 31],
+        ],
+    )
+    expected_deletion_mean = np.zeros(16, dtype=np.float32)
+    expected_deletion_mean[6] = 0.2
+    np.testing.assert_allclose(
+        np.asarray(features["deletion_mean"]), expected_deletion_mean, atol=1e-6
+    )

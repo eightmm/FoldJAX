@@ -425,6 +425,21 @@ unless it says so here, in its own paragraph.
   names its own compile-cache namespace. OpenDDE's featurizer now passes its
   `use_template` through to the shared one, which reads a path only when told.
 
+- **Protenix and OpenDDE fold a heteromer's paired MSA into its unpaired
+  stack, as both upstreams do.** Both release `msa_pair_as_unpair=True`
+  (Protenix `configs/configs_inference.py:35`, OpenDDE
+  `config/inference_defaults.py:27`) and fold every protein chain's paired
+  A3M into its unpaired one before assembly, with no condition on pairing
+  (Protenix `protenix/data/msa/msa_featurizer.py:654`, OpenDDE
+  `opendde/data/msa/msa_featurizer.py:376`). The shared featurizer did so
+  only for single-protein jobs. **This changes what a recorded command
+  predicts** for a heteromer (more than one distinct protein sequence) with a
+  paired MSA: the paired rows species pairing does not select now stay in the
+  unpaired stack, and `profile` and `deletion_mean` are taken over the merged
+  stack. On two heteromer fixtures the port's MSA features now equal both
+  upstreams' fold-in plus `FeatureAssemblyLine().assemble` exactly. Jobs
+  without a paired MSA, and monomers and homomers, are unchanged.
+
 - **Protenix no longer accepts `triangle_attention_ring_kernel=tokamax` on a
   1-D run.** The check used the shared square-grid helper, which reads an
   omitted `cp_layout` as the grid on a perfect-square count. Protenix's

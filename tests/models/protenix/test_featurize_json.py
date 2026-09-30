@@ -252,8 +252,13 @@ def test_featurize_json_emits_global_msa_rows(tmp_path) -> None:
 
 
 def test_featurize_json_multimer_pairing_matches_torch() -> None:
-    # Golden arrays produced by torch Protenix FeatureAssemblyLine.assemble
-    # on the same paired+unpaired 2-chain input (see msa_featurizer.py).
+    # Golden arrays produced by torch Protenix FeatureAssemblyLine.assemble on
+    # the same paired+unpaired 2-chain input, after upstream inference's
+    # msa_pair_as_unpair fold-in of each paired A3M into its chain's unpaired
+    # one (protenix/data/msa/msa_featurizer.py:654; OpenDDE's
+    # opendde/data/msa/msa_featurizer.py:376 gives the same arrays). The
+    # fold-in moves only deletion_mean (and profile) here: chain A's unpaired
+    # stack gains the HUMAN and MOUSE rows, 1/3 -> 1/5 at column 4.
     seq_a = "AGCDEFHIKL"
     seq_b = "KLMNPQRSTV"
     paired_a = (
@@ -305,8 +310,93 @@ def test_featurize_json_multimer_pairing_matches_torch() -> None:
     np.testing.assert_allclose(features["deletion_value"], expected_dv, atol=1e-6)
 
     expected_dm = np.zeros(20, dtype=np.float32)
-    expected_dm[4] = 1 / 3
+    expected_dm[4] = 1 / 5
     np.testing.assert_allclose(features["deletion_mean"], expected_dm, atol=1e-6)
+
+
+def test_heteromer_folds_paired_rows_into_the_unpaired_stack_as_upstream() -> None:
+    """`msa_pair_as_unpair` applies to heteromers too, in both upstreams.
+
+    Protenix (`configs/configs_inference.py:35`,
+    `protenix/data/msa/msa_featurizer.py:654`) and OpenDDE
+    (`config/inference_defaults.py:27`, `opendde/data/msa/msa_featurizer.py:376`)
+    fold every protein chain's paired A3M into its unpaired one before
+    assembly, whether or not the job needs pairing. The port gated this to
+    single-protein jobs, so a heteromer lost the paired rows species pairing
+    does not select (MOUSE and YEAST on chain A here) and took `profile` and
+    `deletion_mean` over the smaller stack. The arrays below are upstream's:
+    torch Protenix at 4c355be and OpenDDE at ddfa1df both gave them, fold-in
+    then `FeatureAssemblyLine().assemble`. OpenDDE featurizes through this
+    same function, so this covers both ports.
+    """
+    job = {
+        "sequences": [
+            {
+                "proteinChain": {
+                    "sequence": "MKTAYIAK",
+                    "pairedMsa": (
+                        ">query\nMKTAYIAK\n"
+                        ">tr|A0A001|XA_HUMAN\nMKTAYLAK\n"
+                        ">tr|A0A002|XA_MOUSE\nMKSAYIAK\n"
+                        ">tr|A0A003|XA_YEAST\nMKTAYIvAR\n"
+                    ),
+                    "unpairedMsa": (
+                        ">query\nMKTAYIAK\n>u1\nMRTAYIAK\n>u2\nMKTAqYIAK\n"
+                    ),
+                }
+            },
+            {
+                "proteinChain": {
+                    "sequence": "GSHMLEDP",
+                    "pairedMsa": (
+                        ">query\nGSHMLEDP\n"
+                        ">tr|B0B001|YB_HUMAN\nGSHMLEEP\n"
+                        ">tr|B0B002|YB_RAT\nGAHMLEDP\n"
+                    ),
+                    "unpairedMsa": ">query\nGSHMLEDP\n>u3\nGSHMIEDP\n",
+                }
+            },
+        ]
+    }
+
+    features = featurize_protein_json(job)
+
+    np.testing.assert_array_equal(
+        features["msa"],
+        [
+            [12, 11, 16, 0, 18, 9, 0, 11, 7, 15, 8, 12, 10, 6, 3, 14],
+            [12, 11, 16, 0, 18, 10, 0, 11, 7, 15, 8, 12, 10, 6, 6, 14],
+            [12, 11, 15, 0, 18, 9, 0, 11, 7, 0, 8, 12, 10, 6, 3, 14],
+            [12, 11, 16, 0, 18, 9, 0, 1, 7, 15, 8, 12, 9, 6, 3, 14],
+            [12, 1, 16, 0, 18, 9, 0, 11, 31, 31, 31, 31, 31, 31, 31, 31],
+        ],
+    )
+    expected_has_deletion = np.zeros((5, 16), dtype=np.float32)
+    expected_has_deletion[3, 6] = 1.0
+    np.testing.assert_array_equal(features["has_deletion"], expected_has_deletion)
+    expected_deletion_mean = np.zeros(16, dtype=np.float32)
+    expected_deletion_mean[6] = 0.2
+    np.testing.assert_allclose(
+        features["deletion_mean"], expected_deletion_mean, atol=1e-6
+    )
+    # Chain A's profile is over five rows (query, HUMAN, MOUSE, YEAST, u1),
+    # not the two its unpaired A3M alone leaves after deduplication.
+    expected_profile = {
+        0: {12: 1.0},
+        1: {1: 0.2, 11: 0.8},
+        2: {15: 0.2, 16: 0.8},
+        5: {9: 0.8, 10: 0.2},
+        7: {1: 0.2, 11: 0.8},
+        9: {0: 0.25, 15: 0.75},
+        12: {9: 0.25, 10: 0.75},
+        14: {3: 0.75, 6: 0.25},
+    }
+    profile = np.asarray(features["profile"])
+    for column, entries in expected_profile.items():
+        expected = np.zeros(32, dtype=np.float32)
+        for residue, fraction in entries.items():
+            expected[residue] = fraction
+        np.testing.assert_allclose(profile[column], expected, atol=1e-6)
 
 
 def test_featurize_json_paired_msa_path_loading(tmp_path) -> None:
