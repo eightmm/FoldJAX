@@ -42,13 +42,19 @@ _ALL_MODALITIES_JOB = {
     ],
 }
 
-# The random roto-translation applied to the reference conformers is unseeded,
-# so it differs between two runs of torch itself. The model is trained to be
-# invariant to it.
-NONDETERMINISTIC = {"ref_pos"}
+# The random roto-translation applied to the reference conformers is drawn
+# from a NumPy generator seeded by the job seed, and both backends consume the
+# same normals. What is left is the rotation itself: torch's float32 einsum
+# and NumPy's round differently, 2.4e-7 and 4.8e-7 at most on the two jobs
+# below (one or two ulp). A wrong draw moves atoms by angstroms, so a bound
+# of 1e-5 still refuses any real difference.
+_SEED = 5
+TOLERANCE = {"ref_pos": 1e-5}
 
 
-def _featurize(job: Path, out: Path, backend: str, mols: Path) -> dict:
+def _featurize(
+    job: Path, out: Path, backend: str, mols: Path, seed: int = _SEED
+) -> dict:
     """Featurize in a subprocess with a test-only upstream tensor injection."""
     test_backend = ""
     if backend == "torch":
@@ -72,7 +78,7 @@ def _featurize(job: Path, out: Path, backend: str, mols: Path) -> dict:
             "from foldjax.models.boltz2.data.featurize import featurize_yaml\n",
             "feats, _, _ = featurize_yaml(\n",
             f"    yaml_path=Path({str(job)!r}), out_dir=Path({str(out)!r}),\n",
-            f"    mol_dir=Path({str(mols)!r}))\n",
+            f"    mol_dir=Path({str(mols)!r}), seed={int(seed)})\n",
             f"np.savez({str(out) + '.npz'!r}, **feats)\n",
         )
     )
@@ -112,16 +118,18 @@ def test_the_numpy_layer_reproduces_the_torch_featurizer(
             mismatched.append(f"{name}: shape {expected.shape} vs {actual.shape}")
         elif expected.dtype != actual.dtype:
             mismatched.append(f"{name}: dtype {expected.dtype} vs {actual.dtype}")
-        elif name not in NONDETERMINISTIC and not np.array_equal(expected, actual):
+        elif name in TOLERANCE:
+            worst = np.max(np.abs(expected.astype(float) - actual.astype(float)))
+            if not worst <= TOLERANCE[name]:
+                mismatched.append(f"{name}: max|diff| {worst}")
+        elif not np.array_equal(expected, actual):
             worst = np.max(np.abs(expected.astype(float) - actual.astype(float)))
             mismatched.append(f"{name}: max|diff| {worst}")
     assert mismatched == []
 
 
-def test_the_augmentation_that_is_excluded_really_is_nondeterministic(
-    tmp_path: Path,
-) -> None:
-    """Excluding ref_pos is only honest if torch does not reproduce it either."""
+def test_the_torch_backend_reproduces_ref_pos_per_seed(tmp_path: Path) -> None:
+    """Upstream's global-RNG draw is replaced on both backends, torch included."""
     pytest.importorskip("torch")
     mols = weights_dir("boltz2") / "mols"
     if not mols.is_dir():
@@ -131,9 +139,7 @@ def test_the_augmentation_that_is_excluded_really_is_nondeterministic(
     job.write_text(json.dumps(_JOB))
     first = _featurize(job, tmp_path / "a", "torch", mols)
     second = _featurize(job, tmp_path / "b", "torch", mols)
+    other = _featurize(job, tmp_path / "c", "torch", mols, seed=_SEED + 1)
 
-    for name in NONDETERMINISTIC:
-        assert not np.array_equal(first[name], second[name]), (
-            f"{name} is reproducible under torch, so excluding it hides a real "
-            "difference"
-        )
+    np.testing.assert_array_equal(first["ref_pos"], second["ref_pos"])
+    assert not np.array_equal(first["ref_pos"], other["ref_pos"])

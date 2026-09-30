@@ -60,6 +60,7 @@ def test_inference_routes_around_the_training_distogram(monkeypatch) -> None:
         featurizer.process(
             data,
             random=np.random.default_rng(0),
+            augmentation_rng=np.random.default_rng(0),
             molecules={},
             training=training,
             max_seqs=1,

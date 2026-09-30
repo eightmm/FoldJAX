@@ -28,6 +28,7 @@ def _cache_opts(
     msa_pairing_strategy: str,
     max_msa_depth: int | None,
     msa_deletions: str,
+    seed: int,
 ) -> tuple:
     """Everything besides the input files that changes the features produced.
 
@@ -39,6 +40,9 @@ def _cache_opts(
     `msa_deletions` belongs here for the same reason: it changes three of the
     seven MSA arrays and nothing else about the request, so a cached
     `released` entry would answer a `restored` run silently.
+
+    `seed` draws the reference-conformer augmentation in `ref_pos`, so one
+    seed's entry would answer another seed's run with the wrong input.
     """
     return (
         use_msa_server,
@@ -46,6 +50,7 @@ def _cache_opts(
         msa_pairing_strategy,
         max_msa_depth,
         msa_deletions,
+        int(seed),
     )
 
 
@@ -103,6 +108,7 @@ def featurize_yaml(
     cache_dir: Path | None = None,
     max_msa_depth: int | None = None,
     msa_deletions: str = "released",
+    seed: int = 0,
 ) -> tuple[dict[str, np.ndarray], object, Path]:
     """Run preprocessing + featurization for one YAML.
 
@@ -122,6 +128,7 @@ def featurize_yaml(
         msa_pairing_strategy,
         max_msa_depth,
         msa_deletions,
+        seed,
     )
     cache_entry = None
     if cache_dir is not None:
@@ -163,6 +170,7 @@ def featurize_yaml(
         extra_mols_dir=processed / "mols",
         max_msa_seqs=max_msa_depth,
         msa_deletions=msa_deletions,
+        seed=seed,
     )
     features = dataset[0]
 
@@ -199,6 +207,7 @@ def featurize_affinity_from_prediction(
     out_dir: Path,
     max_msa_depth: int | None = None,
     msa_deletions: str = "released",
+    seed: int = 0,
 ) -> dict[str, np.ndarray]:
     """Build cropped affinity features under the primary stage's MSA cap."""
 
@@ -246,6 +255,7 @@ def featurize_affinity_from_prediction(
         affinity=True,
         max_msa_seqs=max_msa_depth,
         msa_deletions=msa_deletions,
+        seed=seed,
     )
     features = dataset[0]
     feats_np: dict[str, np.ndarray] = {}

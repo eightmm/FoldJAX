@@ -334,8 +334,12 @@ def featurize(
     feature_cache: str | Path | None = None,
     max_msa_depth: int | None = None,
     msa_deletions: str = "released",
+    seed: int = 0,
 ) -> tuple[dict[str, np.ndarray], str, Path]:
     """Featurize a YAML path or bare entities.
+
+    ``seed`` draws the reference-conformer augmentation in ``ref_pos``; the
+    same seed reproduces the same features.
 
     Returns ``(feats, record_id, struct_dir)``.
     """
@@ -376,6 +380,7 @@ def featurize(
         cache_dir=Path(feature_cache) if feature_cache is not None else None,
         max_msa_depth=max_msa_depth,
         msa_deletions=msa_deletions,
+        seed=seed,
     )
     if manifest is not None:
         record_id = manifest.records[0].id
@@ -928,6 +933,7 @@ def predict(
         feature_cache=feature_cache,
         max_msa_depth=max_msa_depth,
         msa_deletions=msa_deletions,
+        seed=seed,
     )
 
     cache = None
@@ -1426,6 +1432,7 @@ def predict(
             msa_api_key_value=msa_api_key_value,
             max_msa_depth=max_msa_depth,
             msa_deletions=msa_deletions,
+            seed=seed,
         )
         if padding is None:
             from foldjax.models.boltz2.data.bucket import select_model_features
@@ -1704,6 +1711,7 @@ def _prepare_affinity_features(
     msa_api_key_value: str | None = None,
     max_msa_depth: int | None = None,
     msa_deletions: str = "released",
+    seed: int = 0,
 ) -> dict[str, np.ndarray]:
     from foldjax.models.boltz2.data.featurize import (
         featurize_affinity_from_prediction,
@@ -1734,6 +1742,7 @@ def _prepare_affinity_features(
             cache_dir=None,
             max_msa_depth=max_msa_depth,
             msa_deletions=msa_deletions,
+            seed=seed,
         )
         processed_dir = regenerated_struct_dir.parent
         if manifest.records[0].id != record_id:
@@ -1747,4 +1756,5 @@ def _prepare_affinity_features(
         out_dir=out_dir,
         max_msa_depth=max_msa_depth,
         msa_deletions=msa_deletions,
+        seed=seed,
     )

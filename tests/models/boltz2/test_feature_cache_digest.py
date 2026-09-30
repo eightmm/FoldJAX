@@ -9,8 +9,10 @@ from pathlib import Path
 from foldjax.models.boltz2.data.featurize import _cache_opts, _input_digest
 
 
-def _opts(max_msa_depth: int | None = None, msa_deletions: str = "released"):
-    return _cache_opts(False, "u", "greedy", max_msa_depth, msa_deletions)
+def _opts(
+    max_msa_depth: int | None = None, msa_deletions: str = "released", seed: int = 0
+):
+    return _cache_opts(False, "u", "greedy", max_msa_depth, msa_deletions, seed)
 
 
 def test_the_msa_cap_is_part_of_the_cache_key() -> None:
@@ -71,3 +73,21 @@ def test_the_deletion_mode_is_part_of_the_cache_key() -> None:
     restored = _opts(msa_deletions="restored")
     assert released != restored
     assert "restored" in restored
+
+
+def test_the_seed_is_part_of_the_cache_key(tmp_path: Path) -> None:
+    """The seed draws the reference-conformer augmentation in `ref_pos`.
+
+    Without it in the key, a seed-1 run given a feature cache gets seed 0's
+    `ref_pos` back, and the run is no longer the one its seed names.
+    """
+    job = tmp_path / "job.yaml"
+    job.write_text("sequences:\n  - protein:\n      sequence: ACDE\n")
+    mols = tmp_path / "mols"
+
+    assert _input_digest(job, mols, _opts(seed=0)) != _input_digest(
+        job, mols, _opts(seed=1)
+    )
+    assert _input_digest(job, mols, _opts(seed=7)) == _input_digest(
+        job, mols, _opts(seed=7)
+    )

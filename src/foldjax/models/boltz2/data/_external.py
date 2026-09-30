@@ -1,17 +1,25 @@
 """Self-contained copies of the few functions the featurization core needs
 from outside ``boltz.data``.
 
-These are copied verbatim from the original Boltz source so the
+These are copied from the original Boltz source so the
 ``foldjax.models.boltz2.data`` package has no ``import boltz`` dependency:
 
 - ``center_random_augmentation`` / ``randomly_rotate`` (+ rotation helpers)
                                from ``boltz.model.modules.utils``
+
+One deliberate change: the random draws come from a caller-supplied NumPy
+generator instead of torch's global RNG. Upstream's global RNG is reproducible
+only because its predict path calls ``seed_everything(seed)``; the NumPy tensor
+layer had no such seed, so every featurization drew a different ``ref_pos``.
+An explicit generator makes the augmentation a function of the job seed, and
+both tensor backends consume the same normals.
 """
 
 from __future__ import annotations
 
-from foldjax.models.boltz2.data._torch import torch
-from foldjax.models.boltz2.data._torch import torch
+import numpy as np
+
+from foldjax.models.boltz2.data._torch import from_numpy, torch
 
 Device = torch.types.Device
 
@@ -69,8 +77,18 @@ def quaternion_to_matrix(quaternions: torch.Tensor) -> torch.Tensor:
     return o.reshape(quaternions.shape[:-1] + (3, 3))
 
 
+def _standard_normal(
+    rng: np.random.Generator, shape: tuple[int, ...], dtype: torch.dtype | None
+) -> torch.Tensor:
+    draw = from_numpy(rng.standard_normal(shape))
+    return draw if dtype is None else draw.to(dtype=dtype)
+
+
 def random_quaternions(
-    n: int, dtype: torch.dtype | None = None, device: Device | None = None
+    n: int,
+    rng: np.random.Generator,
+    dtype: torch.dtype | None = None,
+    device: Device | None = None,
 ) -> torch.Tensor:
     """
     Generate random quaternions representing rotations,
@@ -78,42 +96,43 @@ def random_quaternions(
 
     Args:
         n: Number of quaternions in a batch to return.
+        rng: Generator the normals are drawn from.
         dtype: Type to return.
-        device: Desired device of returned tensor. Default:
-            uses the current device for the default tensor type.
+        device: Unused; kept for upstream's signature. Draws are host-side.
 
     Returns:
         Quaternions as tensor of shape (N, 4).
     """
-    if isinstance(device, str):
-        device = torch.device(device)
-    o = torch.randn((n, 4), dtype=dtype, device=device)
+    o = _standard_normal(rng, (n, 4), dtype)
     s = (o * o).sum(1)
     o = o / _copysign(torch.sqrt(s), o[:, 0])[:, None]
     return o
 
 
 def random_rotations(
-    n: int, dtype: torch.dtype | None = None, device: Device | None = None
+    n: int,
+    rng: np.random.Generator,
+    dtype: torch.dtype | None = None,
+    device: Device | None = None,
 ) -> torch.Tensor:
     """
     Generate random rotations as 3x3 rotation matrices.
 
     Args:
         n: Number of rotation matrices in a batch to return.
+        rng: Generator the normals are drawn from.
         dtype: Type to return.
-        device: Device of returned tensor. Default: if None,
-            uses the current device for the default tensor type.
+        device: Unused; kept for upstream's signature.
 
     Returns:
         Rotation matrices as tensor of shape (n, 3, 3).
     """
-    quaternions = random_quaternions(n, dtype=dtype, device=device)
+    quaternions = random_quaternions(n, rng, dtype=dtype, device=device)
     return quaternion_to_matrix(quaternions)
 
 
-def randomly_rotate(coords, return_second_coords=False, second_coords=None):
-    R = random_rotations(len(coords), coords.dtype, coords.device)
+def randomly_rotate(coords, rng, return_second_coords=False, second_coords=None):
+    R = random_rotations(len(coords), rng, coords.dtype, coords.device)
 
     if return_second_coords:
         return torch.einsum("bmd,bds->bms", coords, R), torch.einsum(
@@ -126,6 +145,8 @@ def randomly_rotate(coords, return_second_coords=False, second_coords=None):
 def center_random_augmentation(
     atom_coords,
     atom_mask,
+    *,
+    rng: np.random.Generator,
     s_trans=1.0,
     augmentation=True,
     centering=True,
@@ -145,9 +166,10 @@ def center_random_augmentation(
 
     if augmentation:
         atom_coords, second_coords = randomly_rotate(
-            atom_coords, return_second_coords=True, second_coords=second_coords
+            atom_coords, rng, return_second_coords=True, second_coords=second_coords
         )
-        random_trans = torch.randn_like(atom_coords[:, 0:1, :]) * s_trans
+        trans_shape = tuple(atom_coords[:, 0:1, :].shape)
+        random_trans = _standard_normal(rng, trans_shape, atom_coords.dtype) * s_trans
         atom_coords = atom_coords + random_trans
 
         if second_coords is not None:

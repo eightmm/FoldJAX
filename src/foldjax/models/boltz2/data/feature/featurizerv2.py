@@ -1175,6 +1175,7 @@ def process_token_features(  # noqa: C901, PLR0915, PLR0912
 def process_atom_features(
     data: Tokenized,
     random: np.random.Generator,
+    augmentation_rng: np.random.Generator,
     ensemble_features: dict,
     molecules: dict[str, Mol],
     atoms_per_window_queries: int = 32,
@@ -1196,6 +1197,9 @@ def process_atom_features(
     ----------
     data : Tokenized
         The input to the model.
+    augmentation_rng : np.random.Generator
+        The stream for the reference-conformer roto-translation, kept apart
+        from ``random`` so the job seed moves ``ref_pos`` and nothing else.
     max_atoms : int, optional
         The maximum number of atoms.
     compute_disto_target : bool, optional
@@ -1555,7 +1559,10 @@ def process_atom_features(
         included = ref_space_uid == i
         if torch.sum(included) > 0 and torch.any(resolved_mask[included]):
             ref_pos[included] = center_random_augmentation(
-                ref_pos[included][None], resolved_mask[included][None], centering=True
+                ref_pos[included][None],
+                resolved_mask[included][None],
+                rng=augmentation_rng,
+                centering=True,
             )[0]
 
     # Compute padding and apply
@@ -2230,6 +2237,7 @@ class Boltz2Featurizer:
         self,
         data: Tokenized,
         random: np.random.Generator,
+        augmentation_rng: np.random.Generator,
         molecules: dict[str, Mol],
         training: bool,
         max_seqs: int,
@@ -2271,6 +2279,8 @@ class Boltz2Featurizer:
         ----------
         data : Tokenized
             The input to the model.
+        augmentation_rng : np.random.Generator
+            Draws the reference-conformer roto-translation (``ref_pos``).
         training : bool
             Whether the model is in training mode.
         max_tokens : int, optional
@@ -2325,6 +2335,7 @@ class Boltz2Featurizer:
         atom_features = process_atom_features(
             data=data,
             random=random,
+            augmentation_rng=augmentation_rng,
             molecules=molecules,
             ensemble_features=ensemble_features,
             atoms_per_window_queries=atoms_per_window_queries,

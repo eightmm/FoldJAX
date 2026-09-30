@@ -199,6 +199,7 @@ def main() -> None:
         msa_api_key_value=args.msa_api_key_value,
         cache_dir=args.feature_cache,
         msa_deletions=args.msa_deletions,
+        seed=args.seed,
     )
     if manifest is not None:
         records = manifest.records

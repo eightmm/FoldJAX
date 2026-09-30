@@ -119,6 +119,7 @@ class PredictionDataset(torch.utils.data.Dataset):
         affinity: bool = False,
         max_msa_seqs: int | None = None,
         msa_deletions: str = "released",
+        seed: int = 0,
     ) -> None:
         """Initialize the training dataset.
 
@@ -136,6 +137,9 @@ class PredictionDataset(torch.utils.data.Dataset):
             The path to the constraints directory.
         template_dir : Optional[Path]
             The path to the template directory.
+        seed : int
+            The job seed. It draws the reference-conformer roto-translation,
+            the one input upstream takes from the RNG its ``--seed`` sets.
 
         """
         super().__init__()
@@ -160,6 +164,7 @@ class PredictionDataset(torch.utils.data.Dataset):
         # Which deletion loop the featurizer runs. `released` reproduces
         # upstream v2.2.0+, zeroed deletion features included.
         self.msa_deletions = msa_deletions
+        self.seed = int(seed)
         if self.affinity:
             # Lazy import: AffinityCropper lives in foldjax.models.boltz2.data.crop (not
             # copied for the protein-only path). Only needed when affinity=True.
@@ -227,9 +232,14 @@ class PredictionDataset(torch.utils.data.Dataset):
                 options.contact_constraints,
             )
 
-        # Get random seed
+        # Get random seed. Upstream's constant, kept: this stream also picks
+        # the conformer, so the job seed must not move it.
         seed = 42
         random = np.random.default_rng(seed)
+        # The ref_pos augmentation upstream draws from torch's global RNG,
+        # which `seed_everything(seed)` sets; its own stream here, from the
+        # job seed.
+        augmentation_rng = np.random.default_rng(self.seed)
 
         # Compute features
         try:
@@ -237,6 +247,7 @@ class PredictionDataset(torch.utils.data.Dataset):
                 tokenized,
                 molecules=molecules,
                 random=random,
+                augmentation_rng=augmentation_rng,
                 training=False,
                 max_atoms=None,
                 max_tokens=None,

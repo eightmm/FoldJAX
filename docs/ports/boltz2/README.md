@@ -182,7 +182,7 @@ The CUDA 13 install defaults both triangle kernels to Torch-compatible cuEq;
 | `--compute-dtype` | `bfloat16` (default) / `float32` | bf16-mixed — trunk bf16, diffusion and confidence an fp32 island — is what upstream's predict path runs (`main.py:1262`). At 1,003 tokens over an 8,192-row alignment, five samples of the released schedule: 65.0 s against 87.3 s warm, 10,218 MiB against 13,035 MiB peak, TM to the deposited structure 0.9931 against 0.9932. Reported pLDDT is ~0.002 lower, four times fp32's own run-to-run scatter and not matched by anything in the structures. fp16 is range-unstable in the sampler |
 | `--diffusion-samples` | integer | generate multiple structures in one call; confidence runs sequentially when >1 to cap peak VRAM |
 | `--compile-cache` | dir (default on) | eligible readable XLA executables may be reused across processes; missing or rejected entries recompile |
-| `--feature-cache` | dir (default on) | memoize features by input digest; cache hit is bit-identical and skips featurization |
+| `--feature-cache` | dir (default on) | memoize features by input digest and seed (the seed draws the `ref_pos` conformer augmentation); cache hit is bit-identical and skips featurization |
 | `--prewarm-only` | flag | execute one input/profile to populate the persistent cache, then skip prediction-file writing |
 | `matmul_precision` | `highest` (default) / `default` | `default` = TF32 (GPU). Unlike the other three ports, `highest` here **matches** upstream: `main.py:1096` is `set_float32_matmul_precision("highest")`, not the `"high"`/`enable_tf32` that OpenFold3, Protenix and OpenDDE select. Asking for TF32 is a divergence from Boltz-2, not a convergence on it |
 | `attention_backend` | `xla` / `tokamax` | fused tokamax attention |
