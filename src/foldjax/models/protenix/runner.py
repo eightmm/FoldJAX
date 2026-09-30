@@ -15,6 +15,7 @@ output writing, reading its options off the config where it read them off
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shlex
@@ -23,6 +24,8 @@ from contextlib import ExitStack
 from functools import partial
 from pathlib import Path
 from typing import Any, NamedTuple
+
+import numpy as np
 
 from foldjax import memory_policy
 from foldjax.models import _representations
@@ -95,6 +98,8 @@ class PredictionConfig(NamedTuple):
     memory_check: str
     memory_budget_gib: float | None
     full_depth_msa: bool
+    mc_dropout_apply_rate: float
+    mc_dropout_rate: float
     msa_row_alignment: int
     max_msa_padding_rows: int
     input_atom_heads: int
@@ -253,6 +258,15 @@ def _run(
     _prepared_params_loader: Callable[[Path, str, bool], Any] | None = None,
 ) -> list[Path]:
     deterministic = config.deterministic_ops == "on"
+    if not 0.0 <= config.mc_dropout_apply_rate <= 1.0:
+        raise SystemExit(
+            "--mc-dropout-apply-rate must lie in [0, 1]; got "
+            f"{config.mc_dropout_apply_rate}"
+        )
+    if not 0.0 <= config.mc_dropout_rate < 1.0:
+        raise SystemExit(
+            f"--mc-dropout-rate must lie in [0, 1); got {config.mc_dropout_rate}"
+        )
 
     padding_requested = config.padding or any(
         value is not None
@@ -664,6 +678,9 @@ def _run(
 
         for job in jobs:
             features = job["features"]
+            # Before any row alignment or padding, so a padded run's coin is
+            # the unpadded run's.
+            job["mc_dropout_digest"] = mc_dropout_input_digest(features)
             if esm_name is not None:
                 from foldjax.models.protenix.data.esm import validate_esm_embeddings
 
@@ -966,6 +983,22 @@ def _run(
                     seed=seed if config.msa_seed is None else config.msa_seed,
                     **padded_tape,
                 )
+            cycle_pair_dropout_keys = mc_dropout_keys(
+                seed,
+                num_recycles=num_recycles,
+                apply_rate=config.mc_dropout_apply_rate,
+                rate=config.mc_dropout_rate,
+                input_digest=job["mc_dropout_digest"],
+            )
+            print(
+                f"{job['name']}: seed {seed}: MC dropout "
+                + (
+                    f"on the recycle pair update (p={config.mc_dropout_rate})"
+                    if cycle_pair_dropout_keys is not None
+                    else "off"
+                )
+                + f" (--mc-dropout-apply-rate {config.mc_dropout_apply_rate})"
+            )
             output = protenix_predict_static(
                 job_params,
                 features,
@@ -1018,6 +1051,17 @@ def _run(
                 confidence_autocast=amp_policy.confidence_autocast,
                 diffusion_autocast=amp_policy.diffusion_autocast,
                 cycle_msa_index_tape=cycle_msa_index_tape,
+                # The rate is a static argument; handed over only with keys, so
+                # a run whose coin stayed down compiles the no-dropout program
+                # whatever --mc-dropout-rate says.
+                **(
+                    {}
+                    if cycle_pair_dropout_keys is None
+                    else {
+                        "cycle_pair_dropout_keys": cycle_pair_dropout_keys,
+                        "pair_dropout_rate": config.mc_dropout_rate,
+                    }
+                ),
                 gamma0=gamma0,
                 step_scale_eta=eta,
                 preserve_prefix_rng=preserve_prefix_rng,
@@ -1125,6 +1169,88 @@ def _run(
                 written.append(output_path)
                 print(f"wrote: {output_path}")
     return written
+
+
+#: Domain tags that keep the MC-dropout coin and keys independent of every
+#: other stream derived from the same seed (the diffusion `PRNGKey(seed)`, the
+#: MSA row draw's `default_rng(seed)`).
+_MC_DROPOUT_COIN_TAG = 0x4D43_4F49  # "MCOI"
+_MC_DROPOUT_KEY_TAG = 0x4D43_4450  # "MCDP"
+
+
+def mc_dropout_input_digest(features: Any) -> int:
+    """A 64-bit digest of the job's chemistry, for the MC-dropout streams.
+
+    Upstream's coin is a function of seed *and* input: ``seed_everything``
+    runs per job, and featurization then consumes an input-dependent amount of
+    Python's ``random`` before the coin (``json_parser.py:215``). Mixing this
+    digest in keeps that property -- one seed fires on about 40% of jobs, not
+    on all of them or none -- while staying reproducible for a fixed job.
+    Taken from the unpadded token types and chain ids, so it depends on
+    neither file paths nor padding.
+    """
+
+    restype = np.asarray(features["restype"])
+    tokens = np.argmax(restype, axis=-1).astype(np.int64).reshape(-1)
+    # A custom static archive may omit chain ids; the token types still count.
+    chains = np.asarray(features.get("asym_id", ())).astype(np.int64).reshape(-1)
+    digest = hashlib.sha256()
+    digest.update(tokens.tobytes())
+    digest.update(b"|")
+    digest.update(chains.tobytes())
+    return int.from_bytes(digest.digest()[:8], "little")
+
+
+def mc_dropout_applies(seed: int, apply_rate: float, *, input_digest: int) -> bool:
+    """Upstream's per-forward MC-dropout coin, drawn from seed and input.
+
+    Upstream flips ``random.random() < mc_dropout_apply_rate`` once per forward
+    (protenix/model/protenix.py:440) on Python's global stream, after
+    featurization has consumed an input-dependent amount of it; that stream
+    cannot be reproduced here. The same Bernoulli(apply_rate) is drawn from a
+    tagged NumPy stream of the seed and :func:`mc_dropout_input_digest`
+    instead, so a fixed seed and job repeat it.
+    """
+
+    if apply_rate <= 0.0:
+        return False
+    entropy = (
+        int(seed) & 0xFFFF_FFFF_FFFF_FFFF,
+        int(input_digest) & 0xFFFF_FFFF_FFFF_FFFF,
+        _MC_DROPOUT_COIN_TAG,
+    )
+    return bool(np.random.default_rng(entropy).random() < apply_rate)
+
+
+def mc_dropout_keys(
+    seed: int,
+    *,
+    num_recycles: int,
+    apply_rate: float,
+    rate: float,
+    input_digest: int,
+) -> Any:
+    """Per-recycle dropout keys when the coin fires, else ``None``.
+
+    ``uint32 [num_recycles, 2]`` raw keys, which is what the trunk validates;
+    each recycle draws a fresh Bernoulli(1 - rate) keep-mask from its key, as
+    upstream's ``F.dropout`` draws a fresh mask in every recycle.
+    """
+
+    if rate <= 0.0 or not mc_dropout_applies(
+        seed, apply_rate, input_digest=input_digest
+    ):
+        return None
+    import jax
+
+    root = jax.random.fold_in(jax.random.PRNGKey(seed), _MC_DROPOUT_KEY_TAG)
+    digest = int(input_digest) & 0xFFFF_FFFF_FFFF_FFFF
+    root = jax.random.fold_in(root, digest & 0xFFFF_FFFF)
+    root = jax.random.fold_in(root, digest >> 32)
+    keys = jax.random.split(root, num_recycles)
+    if jax.dtypes.issubdtype(keys.dtype, jax.dtypes.prng_key):
+        keys = jax.random.key_data(keys)
+    return keys
 
 
 def _prefix_rng_is_supported() -> bool:

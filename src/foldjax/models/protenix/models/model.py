@@ -487,6 +487,7 @@ def protenix_infer_static(
     n_token = int(input_feature_dict["restype"].shape[-2])
     token_padding_mask = input_feature_dict.get("token_padding_mask")
     atom_padding_mask = input_feature_dict.get("atom_padding_mask")
+    pair_dropout_valid_mask = None
     if token_padding_mask is not None:
         token_valid = jnp.asarray(token_padding_mask).astype(bool)
         padding_pair_mask = token_valid[..., :, None] & token_valid[..., None, :]
@@ -495,6 +496,11 @@ def protenix_infer_static(
             if pair_mask is None
             else jnp.asarray(pair_mask).astype(bool) & padding_pair_mask
         )
+        if preserve_prefix_rng and cycle_pair_dropout_keys is not None:
+            # The dropout masks get the diffusion noise's treatment: each real
+            # pair draws the bits the unpadded run's would, so padding moves
+            # no real position's mask.
+            pair_dropout_valid_mask = padding_pair_mask
     trunk_features = input_feature_dict
     trunk_pair_mask = pair_mask
     if trunk_dtype is not None:
@@ -551,6 +557,7 @@ def protenix_infer_static(
         cycle_pair_dropout_keep_masks=cycle_pair_dropout_keep_masks,
         cycle_pair_dropout_keys=cycle_pair_dropout_keys,
         pair_dropout_rate=pair_dropout_rate,
+        pair_dropout_valid_mask=pair_dropout_valid_mask,
     )
     s_inputs = _capture.capture("single_inputs", s_inputs)
     s_trunk = _capture.capture("single", s_trunk)

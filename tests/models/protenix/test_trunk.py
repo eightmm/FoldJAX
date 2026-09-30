@@ -251,6 +251,65 @@ def test_dropout_cycle_tape_scan_matches_unrolled(cycles) -> None:
         )
 
 
+def test_padded_dropout_draws_the_unpadded_masks_on_the_real_pairs(
+    monkeypatch,
+) -> None:
+    """MC dropout under padding: every real pair keeps the unpadded run's bit.
+
+    Drawing `bernoulli(key, shape=[T, T, C])` on the padded shape would hand
+    every real pair a different bit than the unpadded `[N, N, C]` draw, so a
+    padded run would drop a different part of the recycle update than the
+    same seed unpadded. The valid-pair mask routes the draw through
+    `masked_prefix_draw`, the diffusion noise's padding treatment.
+    """
+    from foldjax.models.protenix.models.trunk_blocks import trunk as trunk_module
+
+    params = _pairformer_output_params()
+    seen: list[np.ndarray] = []
+    original = trunk_module.recycle_embeddings
+
+    def recording(*args, pair_dropout_keep_mask=None, **kwargs):
+        seen.append(np.asarray(pair_dropout_keep_mask))
+        return original(
+            *args, pair_dropout_keep_mask=pair_dropout_keep_mask, **kwargs
+        )
+
+    monkeypatch.setattr(trunk_module, "recycle_embeddings", recording)
+    keys = jax.random.split(jax.random.PRNGKey(17), 3)
+
+    def masks(tokens: int, valid) -> list[np.ndarray]:
+        seen.clear()
+        pairformer_output_from_s_inputs(
+            {
+                "relp": jnp.zeros((tokens, tokens, 2), dtype=jnp.float32),
+                "token_bonds": jnp.zeros((tokens, tokens), dtype=jnp.float32),
+            },
+            jnp.ones((tokens, 2), dtype=jnp.float32),
+            params,
+            num_recycles=3,
+            cycle_pair_dropout_keys=keys,
+            pair_dropout_rate=0.4,
+            pair_dropout_valid_mask=valid,
+            use_cycle_scan=False,
+        )
+        return list(seen)
+
+    real, padded_tokens = 3, 6
+    unpadded = masks(real, None)
+    token_valid = jnp.arange(padded_tokens) < real
+    padded = masks(padded_tokens, token_valid[:, None] & token_valid[None, :])
+
+    assert len(unpadded) == len(padded) == 3
+    for compact, wide in zip(unpadded, padded, strict=True):
+        assert compact.shape == (real, real, 2)
+        assert wide.shape == (padded_tokens, padded_tokens, 2)
+        np.testing.assert_array_equal(wide[:real, :real], compact)
+        assert not wide[real:].any()
+        assert not wide[:, real:].any()
+    # A fresh mask every recycle, as upstream's F.dropout draws one per call.
+    assert not all(np.array_equal(unpadded[0], other) for other in unpadded[1:])
+
+
 def test_map_trunk_initialization_state_dict_shapes() -> None:
     state = {
         "linear_no_bias_sinit.weight": np.ones((384, 449), dtype=np.float32),

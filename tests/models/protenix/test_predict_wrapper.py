@@ -278,3 +278,57 @@ def test_confidence_sample_sequential_matches_batched() -> None:
         np.testing.assert_allclose(
             np.asarray(got), np.asarray(value), atol=1e-5, err_msg=name
         )
+
+
+@pytest.mark.parametrize("preserve_prefix_rng", [False, True])
+def test_padded_dropout_keys_reach_the_trunk_with_the_real_pair_mask(
+    monkeypatch, preserve_prefix_rng
+) -> None:
+    """A padded run hands the trunk its valid pairs, so dropout is prefix-stable.
+
+    Only a padded run with prefix-stable draws does: the unpadded run and the
+    host-tape fallback keep the plain `[T, T, C]` draw.
+    """
+    from foldjax.models.protenix.models import model as model_impl
+
+    class TrunkReachedError(Exception):
+        pass
+
+    captured: dict[str, object] = {}
+
+    def fake_trunk(*_args, **kwargs):
+        captured.update(kwargs)
+        raise TrunkReachedError
+
+    monkeypatch.setattr(model_impl, "pairformer_output_from_s_inputs", fake_trunk)
+    features = dict(_toy_features())
+    features["token_padding_mask"] = jnp.asarray([1.0, 0.0], dtype=jnp.float32)
+    keys = jax.random.split(jax.random.PRNGKey(3), 2)
+    with pytest.raises(TrunkReachedError):
+        protenix_infer_static(
+            features,
+            _toy_params(),
+            inference_noise_schedule(num_steps=1, sigma_data=4.0),
+            key=jax.random.PRNGKey(0),
+            num_samples=1,
+            num_recycles=2,
+            input_atom_heads=1,
+            atom_encoder_heads=1,
+            token_heads=1,
+            atom_decoder_heads=1,
+            n_queries=2,
+            n_keys=4,
+            sigma_data=4.0,
+            preserve_prefix_rng=preserve_prefix_rng,
+            cycle_pair_dropout_keys=keys,
+            diffusion_attention_backend="xla_jit",
+        )
+
+    valid = captured["pair_dropout_valid_mask"]
+    if not preserve_prefix_rng:
+        assert valid is None
+    else:
+        np.testing.assert_array_equal(
+            np.asarray(valid), [[True, False], [False, False]]
+        )
+    assert captured["cycle_pair_dropout_keys"] is keys

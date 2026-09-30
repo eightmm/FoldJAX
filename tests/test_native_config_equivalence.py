@@ -147,6 +147,8 @@ _PROTENIX_OPTION_VALUES: dict[str, Any] = {
     "full_depth_msa": True,
     "glu_backend": "tokamax",
     "max_msa_depth": 1024,
+    "mc_dropout_apply_rate": 1.0,
+    "mc_dropout_rate": 0.25,
     "memory_budget_gib": 12.5,
     "memory_check": "warn",
     "model_name": "protenix-v2",

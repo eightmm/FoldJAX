@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 
 from foldjax.models._cp import shard_pair_rows
+from foldjax.models._random import masked_prefix_draw
 from foldjax.models.protenix.models.primitives.primitives import (
     LayerNormParams,
     LinearParams,
@@ -159,6 +160,7 @@ def pairformer_output_from_s_inputs(
     cycle_pair_dropout_keep_masks: jnp.ndarray | None = None,
     cycle_pair_dropout_keys: jnp.ndarray | None = None,
     pair_dropout_rate: float = 0.4,
+    pair_dropout_valid_mask: jnp.ndarray | None = None,
     use_cycle_scan: bool = True,
     msa_stack_first: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
@@ -166,6 +168,11 @@ def pairformer_output_from_s_inputs(
 
     ``use_cycle_scan`` runs recycling as one ``lax.scan`` instead of emitting the
     body per cycle. Same arithmetic; a tenth of the graph at the released depth.
+
+    ``pair_dropout_valid_mask`` (``[N_token, N_token]``, padded runs only) makes
+    the keyed dropout draw prefix-stable: every real pair receives the bits the
+    unpadded run draws for it (:func:`foldjax.models._random.masked_prefix_draw`),
+    and padded pairs are dropped.
     """
 
     # Everything the trunk builds keys off `s_inputs`: the MSA one-hot is
@@ -256,9 +263,19 @@ def pairformer_output_from_s_inputs(
         if cycle_pair_dropout_keys is not None:
             # Only one cycle's mask is materialized; never retain T*T*C*cycles
             # stochastic inputs for ordinary generation. Tape replay bypasses RNG.
-            pair_keep_mask = jax.random.bernoulli(
-                pair_keep_mask, p=1.0 - pair_dropout_rate, shape=z_init.shape
-            )
+            if pair_dropout_valid_mask is None:
+                pair_keep_mask = jax.random.bernoulli(
+                    pair_keep_mask, p=1.0 - pair_dropout_rate, shape=z_init.shape
+                )
+            else:
+                pair_keep_mask = masked_prefix_draw(
+                    lambda key, shape: jax.random.bernoulli(
+                        key, p=1.0 - pair_dropout_rate, shape=shape
+                    ),
+                    pair_keep_mask,
+                    pair_dropout_valid_mask,
+                    trailing_shape=z_init.shape[-1:],
+                )
         # ``lax.scan`` with ``xs=None`` hands the body ``None``, which is the right
         # signal that the alignment is not resampled per cycle -- every cycle then
         # reads the same MSA features out of the feature dict. Forwarding the

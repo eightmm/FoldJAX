@@ -76,6 +76,13 @@ _CLI_OPTIONS = {
     # namespace; under padding the tape is the padded MSA width whatever the
     # draw.
     "msa_seed",
+    # Upstream's MC dropout on the recycle pair update, both released 0.4
+    # (configs/configs_base.py:109-110). The apply rate is a per-seed coin,
+    # not a compile option for the reason `msa_seed` is not: whichever way the
+    # coin falls, the program is keyed by what it compiles. The dropout rate is
+    # a static argument of the program that runs when the coin fires.
+    "mc_dropout_apply_rate",
+    "mc_dropout_rate",
     "diffusion_attention_backend",
     "trunk_single_attention_backend",
     "trunk_triangle_attention_backend",
@@ -275,6 +282,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "glu_backend": "xla",
     "use_rna_msa": False,
     "full_depth_msa": False,
+    "mc_dropout_rate": 0.4,
 }
 
 #: What an omitted `diffusion_attention_backend` runs when a context-parallel
@@ -341,6 +349,8 @@ _PARSER_DEFAULTS: dict[str, Any] = {
     "memory_check": "refuse",
     "memory_budget_gib": None,
     "full_depth_msa": False,
+    "mc_dropout_apply_rate": 0.4,
+    "mc_dropout_rate": 0.4,
     "msa_row_alignment": 64,
     "max_msa_padding_rows": 8,
     "input_atom_heads": 4,
@@ -503,6 +513,8 @@ _OPTION_SPECS: dict[str, tuple[Callable[[str, Any], Any], tuple[str, ...] | None
     "full_depth_msa": (_switch_option, None),
     "glu_backend": (_text_option, _GLU_BACKENDS),
     "max_msa_depth": (_integer_option, None),
+    "mc_dropout_apply_rate": (_number_option, None),
+    "mc_dropout_rate": (_number_option, None),
     "memory_budget_gib": (_number_option, None),
     "memory_check": (_text_option, ("refuse", "warn")),
     "model_name": (_text_option, None),
@@ -712,6 +724,7 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         "amp_policy",
         "max_msa_depth",
         "full_depth_msa",
+        "mc_dropout_rate",
         "diffusion_attention_backend",
         "trunk_single_attention_backend",
         "trunk_triangle_attention_backend",
@@ -811,6 +824,25 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             isinstance(msa_seed, bool) or not isinstance(msa_seed, int)
         ):
             raise ValueError("msa_seed must be an integer")
+        # Probabilities, refused here so `foldjax plan` refuses them too. The
+        # dropout rate excludes 1, where the recycle update's rescale divides
+        # by zero.
+        for name, upper_inclusive in (
+            ("mc_dropout_apply_rate", True),
+            ("mc_dropout_rate", False),
+        ):
+            if name not in options:
+                continue
+            if isinstance(options[name], bool):
+                raise ValueError(f"{name} must be a number")
+            probability = _number_option(name, options[name])
+            if not (
+                0.0 <= probability <= 1.0
+                if upper_inclusive
+                else 0.0 <= probability < 1.0
+            ):
+                interval = "[0, 1]" if upper_inclusive else "[0, 1)"
+                raise ValueError(f"{name} must lie in {interval}; got {probability}")
         checkpoint_dir = options.get("esm_checkpoint_dir")
         if checkpoint_dir is not None and not isinstance(checkpoint_dir, (str, Path)):
             raise ValueError("esm_checkpoint_dir must be a path")

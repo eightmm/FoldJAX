@@ -181,6 +181,27 @@ def main(
     # (protenix/model/modules/pairformer.py:854-866,
     # protenix/model/utils.py:306-308, configs/configs_data.py:265-276).
     parser.set_defaults(full_depth_msa=False)
+    # Upstream's MC dropout on the recycle update, released on: per forward a
+    # coin `random.random() < mc_dropout_apply_rate` (protenix/model/
+    # protenix.py:440) decides whether `F.dropout(p=mc_dropout_rate)` -- whose
+    # `training=True` default survives `eval()` -- runs on the projected pair
+    # update in every recycle (protenix.py:240-245). Both 0.4
+    # (configs/configs_base.py:109-110; runner/inference.py:236).
+    parser.add_argument(
+        "--mc-dropout-apply-rate",
+        type=float,
+        default=0.4,
+        help="Probability that a prediction applies MC dropout to the recycle "
+        "pair update (upstream's mc_dropout_apply_rate). The coin is drawn "
+        "from the seed, so a fixed seed repeats it; 0 never applies it.",
+    )
+    parser.add_argument(
+        "--mc-dropout-rate",
+        type=float,
+        default=0.4,
+        help="Dropout probability on the recycle pair update when the coin "
+        "fires (upstream's mc_dropout_rate).",
+    )
     parser.add_argument(
         "--msa-row-alignment",
         type=int,

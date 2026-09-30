@@ -377,6 +377,22 @@ unless it says so here, in its own paragraph.
   width, so the estimate reads high by at most the rows the widest recycle
   leaves out.
 
+- **Protenix applies upstream's MC dropout to the recycle update.** Upstream
+  releases `mc_dropout_apply_rate=0.4` and `mc_dropout_rate=0.4`
+  (`configs/configs_base.py:109-110`, passed at `runner/inference.py:236`):
+  per forward a coin `random.random() < 0.4` (`protenix/model/protenix.py:440`)
+  decides whether `F.dropout(p=0.4)` runs on the projected pair update in
+  every recycle (`protenix.py:240-245`). The port never applied it. The coin
+  and the per-recycle keys are now drawn from the seed and a digest of the
+  job's token types and chain ids (upstream's coin depends on both, since
+  featurization consumes Python's `random` first), so a fixed seed and job
+  repeat both. **This changes what a recorded command predicts, and compiles
+  a second program,** for about 40% of (seed, job) pairs.
+  `--option mc_dropout_apply_rate=0` turns it off; `mc_dropout_rate` is a
+  compile option. Under padding each real pair draws the unpadded run's bit.
+  The memory law was fitted without the per-recycle mask; its cost is not
+  measured.
+
 - **Protenix no longer accepts `triangle_attention_ring_kernel=tokamax` on a
   1-D run.** The check used the shared square-grid helper, which reads an
   omitted `cp_layout` as the grid on a perfect-square count. Protenix's

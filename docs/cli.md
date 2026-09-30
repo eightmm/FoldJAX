@@ -1694,6 +1694,29 @@ sizes its tape to the deepest recycle's draw rounded up to 64 rows, so two
 seeds can compile two programs. `--padding` removes that: the tape is the
 padded width. A compile option.
 
+### `--option mc_dropout_apply_rate` / `mc_dropout_rate` (Protenix)
+
+Upstream's MC dropout on the recycle pair update, both released at 0.4
+(`configs/configs_base.py:109-110`). Per prediction, a coin with probability
+`mc_dropout_apply_rate` decides whether dropout runs at all
+(`protenix/model/protenix.py:440`); when it does, every recycle drops the
+projected pair update at rate `mc_dropout_rate` (`protenix.py:240-245`;
+`F.dropout` keeps `training=True` under `eval()`). Upstream flips its coin on
+Python's global stream after featurization has consumed an input-dependent
+amount of it, so its coin depends on the seed and the job. That stream cannot
+be reproduced; this port draws the coin and the per-recycle keys from the seed
+and a digest of the job's token types and chain ids instead, so one seed fires
+on about 40% of jobs, a fixed seed and job repeat both, and the log names
+which way the coin fell. `mc_dropout_apply_rate=0` turns it off. Because the
+two coin outcomes are two programs, `--prewarm-only` or `foldjax cache warm`
+at one seed compiles only that job's outcome, and a padded bucket holds one
+executable per outcome rather than one. A padded run draws, for every real pair, the bit the unpadded
+run draws (the prefix-stable draw the diffusion noise uses); where JAX's
+Threefry is not partitionable the run falls back to the host noise tape for
+diffusion, and the dropout mask then follows the padded shape. The dropout
+rate is a compile option; the apply rate is not, since the program run is
+keyed by what the coin selects.
+
 ### `--max-msa-depth`
 
 Selects the model's native MSA depth control. Candidate assembly, profile

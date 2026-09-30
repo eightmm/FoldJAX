@@ -269,6 +269,7 @@ _PROTENIX_FLAG_ORDER: tuple[str, ...] = (
     "--msa-search", "--msa-cache-dir", "--msa-search-version",
     "--msa-local-command", "--msa-remote-url",
     "--rna-msa-local-command", "--rna-msa-search-version", "--rna-msa-cache-dir",
+    "--use-rna-msa",
     "--template-search-command", "--template-search-version",
     "--template-search-cache-dir", "--template-mmcif-dir",
     "--strict-token-limit",
@@ -276,6 +277,7 @@ _PROTENIX_FLAG_ORDER: tuple[str, ...] = (
     # measurement instead of a constant.
     "--memory-check", "--memory-budget-gib",
     "--full-depth-msa", "--sample-msa-per-cycle",
+    "--mc-dropout-apply-rate", "--mc-dropout-rate",
     "--msa-row-alignment", "--max-msa-padding-rows",
     "--input-atom-heads", "--atom-encoder-heads",
     "--token-heads", "--atom-decoder-heads",

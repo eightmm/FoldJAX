@@ -705,6 +705,161 @@ def test_per_cycle_msa_sampling_is_the_default_and_full_depth_is_opt_in(
     assert full_kwargs["cycle_msa_index_tape"] is None
 
 
+#: Seeds below 12 whose coin fires at the released 0.4, for input digest 0.
+_PINNED_COIN_SEEDS = [0, 2, 3, 10]
+
+
+def test_mc_dropout_coin_is_upstream_s_rate_over_seeds_and_inputs() -> None:
+    """Upstream's coin is Bernoulli(0.4) per forward, per seed and per input.
+
+    `random.random() < mc_dropout_apply_rate` (protenix/model/protenix.py:440),
+    with 0.4 released (configs/configs_base.py:109). Upstream's draw sits on
+    Python's global stream after featurization has consumed an input-dependent
+    amount of it, which cannot be reproduced. A tagged stream of the seed and
+    an input digest gives the same rate over seeds and over jobs, and repeats
+    for a fixed pair: one seed must not switch dropout on for every job.
+    """
+    from foldjax.models.protenix.runner import mc_dropout_applies
+
+    over_seeds = [mc_dropout_applies(seed, 0.4, input_digest=0) for seed in range(4000)]
+    assert abs(sum(over_seeds) / len(over_seeds) - 0.4) < 0.03
+    over_inputs = [
+        mc_dropout_applies(101, 0.4, input_digest=digest) for digest in range(4000)
+    ]
+    assert abs(sum(over_inputs) / len(over_inputs) - 0.4) < 0.03
+    # Pinned, so a refactor that silently re-seeds the coin fails here.
+    assert [seed for seed in range(12) if over_seeds[seed]] == _PINNED_COIN_SEEDS
+    assert not any(
+        mc_dropout_applies(seed, 0.0, input_digest=0) for seed in range(100)
+    )
+    assert all(mc_dropout_applies(seed, 1.0, input_digest=0) for seed in range(100))
+    assert mc_dropout_applies(-5, 1.0, input_digest=2**64 - 1)
+
+
+def test_mc_dropout_digest_ignores_padding_and_paths_but_not_chemistry() -> None:
+    from foldjax.models.protenix.runner import mc_dropout_input_digest
+
+    restype = np.zeros((3, 32), dtype=np.float32)
+    restype[[0, 1, 2], [4, 7, 9]] = 1
+    base = {"restype": restype, "asym_id": np.asarray([0, 0, 1])}
+    same = {
+        "restype": restype.copy(),
+        "asym_id": np.asarray([0, 0, 1]),
+        "msa": np.zeros((5, 3)),
+    }
+    assert mc_dropout_input_digest(base) == mc_dropout_input_digest(same)
+    other = dict(base, asym_id=np.asarray([0, 1, 1]))
+    assert mc_dropout_input_digest(base) != mc_dropout_input_digest(other)
+
+
+def test_mc_dropout_reaches_the_model_as_seeded_keys(tmp_path, monkeypatch) -> None:
+    """When the coin fires, every recycle gets a key; when not, none do."""
+    from foldjax.models.protenix.runner import (
+        mc_dropout_input_digest,
+        mc_dropout_keys,
+    )
+
+    features, default = _run_inline_msa_job(tmp_path, monkeypatch)
+    digest = mc_dropout_input_digest(features)
+    expected = mc_dropout_keys(
+        7, num_recycles=4, apply_rate=0.4, rate=0.4, input_digest=digest
+    )
+    if expected is None:
+        assert "cycle_pair_dropout_keys" not in default
+    else:
+        np.testing.assert_array_equal(
+            np.asarray(default["cycle_pair_dropout_keys"]), np.asarray(expected)
+        )
+
+    _features, always = _run_inline_msa_job(
+        tmp_path, monkeypatch, "--mc-dropout-apply-rate", "1"
+    )
+    keys = np.asarray(always["cycle_pair_dropout_keys"])
+    assert keys.shape == (4, 2) and keys.dtype == np.uint32
+    assert always["pair_dropout_rate"] == 0.4
+    assert len({row.tobytes() for row in keys}) == 4
+
+    _features, again = _run_inline_msa_job(
+        tmp_path, monkeypatch, "--mc-dropout-apply-rate", "1"
+    )
+    np.testing.assert_array_equal(np.asarray(again["cycle_pair_dropout_keys"]), keys)
+
+    _features, other_seed = _run_inline_msa_job(
+        tmp_path, monkeypatch, "--mc-dropout-apply-rate", "1", "--seeds", "8"
+    )
+    assert not np.array_equal(
+        np.asarray(other_seed["cycle_pair_dropout_keys"]), keys
+    )
+
+    _features, rate = _run_inline_msa_job(
+        tmp_path,
+        monkeypatch,
+        "--mc-dropout-apply-rate",
+        "1",
+        "--mc-dropout-rate",
+        "0.25",
+    )
+    assert rate["pair_dropout_rate"] == 0.25
+
+    _features, never = _run_inline_msa_job(
+        tmp_path, monkeypatch, "--mc-dropout-apply-rate", "0"
+    )
+    assert "cycle_pair_dropout_keys" not in never
+    assert "pair_dropout_rate" not in never
+
+    with pytest.raises(SystemExit, match="mc-dropout-rate must lie in"):
+        _run_inline_msa_job(tmp_path, monkeypatch, "--mc-dropout-rate", "1")
+    with pytest.raises(SystemExit, match="mc-dropout-apply-rate must lie in"):
+        _run_inline_msa_job(
+            tmp_path, monkeypatch, "--mc-dropout-apply-rate", "1.5"
+        )
+
+
+def test_the_adapter_renders_the_mc_dropout_options(tmp_path) -> None:
+    from foldjax.backends.protenix import ProtenixBackend
+    from foldjax.schema import PredictionRequest
+
+    job = tmp_path / "job.json"
+    job.write_text("{}")
+    weights = tmp_path / "weights"
+    weights.mkdir()
+
+    def request(**options):
+        return PredictionRequest(
+            model="protenix",
+            input=job,
+            weights=weights,
+            output_dir=tmp_path / "out",
+            cache_dir=tmp_path / "cache",
+            seed=101,
+            msa="none",
+            options=options,
+        )
+
+    backend = ProtenixBackend()
+    bare = backend._native_invocation(request())
+    assert bare.config_fields["mc_dropout_apply_rate"] == 0.4
+    assert bare.config_fields["mc_dropout_rate"] == 0.4
+    off = backend._native_invocation(request(mc_dropout_apply_rate=0))
+    assert off.config_fields["mc_dropout_apply_rate"] == 0.0
+    assert off.argv[off.argv.index("--mc-dropout-apply-rate") + 1] == "0"
+    # The coin is not a compile option; the dropout rate is.
+    assert "mc_dropout_apply_rate" not in backend.cache_profile(
+        request(mc_dropout_apply_rate=0)
+    )
+    assert "mc_dropout_rate" not in backend.cache_profile(
+        request(mc_dropout_rate=0.4)
+    )
+    assert backend.cache_profile(request(mc_dropout_rate=0.25))[
+        "mc_dropout_rate"
+    ] == 0.25
+    for bad in ({"mc_dropout_rate": 1.0}, {"mc_dropout_apply_rate": -0.1}):
+        with pytest.raises(ValueError, match="must lie in"):
+            backend.validate_native_options(bad)
+    with pytest.raises(ValueError, match="must be a number"):
+        backend.validate_native_options({"mc_dropout_rate": True})
+
+
 def test_padding_runs_the_per_cycle_msa_draw_over_the_real_rows(
     tmp_path, monkeypatch
 ) -> None:
