@@ -285,6 +285,20 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **A nucleic-acid `unpaired_msa` that the backend never reads is now
+  refused instead of silently dropped.** Boltz-2 and ESMFold2 read no RNA or
+  DNA alignment. Protenix and OpenFold3 read RNA alignments but not DNA ones.
+  OpenDDE reads no DNA alignment, and reads RNA only with `use_rna_msa=true`.
+  Each of these backends used to accept such a document, discard the
+  alignment and fold the chain from its sequence alone. The common-schema
+  validator now names the backend and the entity. `--option
+  ignore_nucleic_msa=true` restores the old behaviour, and the run manifest
+  then lists each dropped alignment under `ignored_msas` (null for native
+  input, which is not inspected). `--msa auto` no longer searches RNA chains
+  for a backend that would discard the result, and `--msa required` no longer
+  demands such a search. AlphaFold 3 and the alignments the other backends
+  read are unchanged.
+
 - **Protenix no longer accepts `triangle_attention_ring_kernel=tokamax` on a
   1-D run.** The check used the shared square-grid helper, which reads an
   omitted `cp_layout` as the grid on a perfect-square count. Protenix's

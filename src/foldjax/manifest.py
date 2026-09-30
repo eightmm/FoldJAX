@@ -1188,6 +1188,7 @@ def describe_run(
     native_input: Path | None = None,
     cost: dict[str, Any] | None = None,
     directory: Path | None = None,
+    ignored_msas: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the manifest for one finished prediction.
 
@@ -1196,6 +1197,10 @@ def describe_run(
     schema -- recorded alongside rather than instead, because that file lives
     inside the output directory being described and naming only it would say
     nothing about which job produced the directory.
+
+    ``ignored_msas`` lists alignments the common job named that the native
+    input left out (``ignore_nucleic_msa``); ``None`` when the job was not
+    common-schema input, whose alignments FoldJAX does not inspect.
     """
     from foldjax import __version__
     from foldjax.cache import runtime_profile, weight_identity
@@ -1234,6 +1239,13 @@ def describe_run(
             ),
         },
         "input_dependencies": _input_dependencies(request),
+        # `input_dependencies` still hashes a dropped alignment, because the
+        # job names it; this says the model never read it.
+        "ignored_msas": (
+            [dict(record) for record in ignored_msas]
+            if ignored_msas is not None
+            else None
+        ),
         "weights": {
             "path": str(weights) if weights else None,
             "profile": request.profile,
@@ -1288,6 +1300,7 @@ def write(
     *,
     native_input: Path | None = None,
     cost: dict[str, Any] | None = None,
+    ignored_msas: list[dict[str, Any]] | None = None,
 ) -> Path | None:
     """Write the manifest, or return None if the directory cannot take it.
 
@@ -1309,6 +1322,7 @@ def write(
                         native_input=native_input,
                         cost=cost,
                         directory=directory,
+                        ignored_msas=ignored_msas,
                     ),
                     indent=2,
                     sort_keys=True,

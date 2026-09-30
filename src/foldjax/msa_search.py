@@ -134,6 +134,7 @@ def _search_alignments(
     *,
     policy: str,
     model: str,
+    search_rna: bool = True,
 ) -> list[dict[str, str]]:
     """Fill in missing alignments, and report what was searched.
 
@@ -141,6 +142,8 @@ def _search_alignments(
     the RNA pipeline in `foldjax.search.msa` needs a locally installed nhmmer
     workflow that this package does not ship. An RNA chain therefore keeps the
     behaviour it had, and ``required`` says why rather than pretending.
+    ``search_rna=False`` is for a backend that does not read RNA alignments:
+    nothing is searched for its RNA chains, and ``required`` does not demand it.
     """
     from foldjax.input import _ids
 
@@ -158,7 +161,9 @@ def _search_alignments(
     rna = [
         entity
         for entity in job["entities"]
-        if entity.get("type") == "rna" and not entity.get("unpaired_msa")
+        if search_rna
+        and entity.get("type") == "rna"
+        and not entity.get("unpaired_msa")
     ]
     rna_pipeline = _rna_msa_pipeline() if rna else None
     if policy == "required" and rna and rna_pipeline is None:

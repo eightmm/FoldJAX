@@ -123,6 +123,62 @@ _TARGETS = {
     ),
 }
 
+#: The per-job option that lets a nucleic-acid ``unpaired_msa`` a backend does
+#: not read be dropped instead of refused. The drop is recorded in the run
+#: manifest's ``ignored_msas``.
+IGNORE_NUCLEIC_MSA = "ignore_nucleic_msa"
+
+#: Nucleic-acid entity types whose ``unpaired_msa`` each backend's featurizer
+#: actually reads. Every other nucleic alignment would reach a native document
+#: and be discarded there without a word:
+#:
+#: - Boltz-2 keeps an ``msa`` only for protein entities; RNA and DNA chains get
+#:   ``msa_id=-1`` (models/boltz2/data/parse/schema.py:1143-1146).
+#: - ESMFold2 reads alignments for protein chains only
+#:   (models/esmfold2/data/all_atom.py `_msa`).
+#: - Protenix reads ``unpairedMsaPath`` on ``rnaSequence`` alone; a
+#:   ``dnaSequence`` path is never opened
+#:   (models/protenix/data/featurize_json.py `_build_nucleic_chain`).
+#: - OpenDDE shares that featurizer, and additionally discards RNA alignments
+#:   unless ``use_rna_msa=true`` (models/opendde/data/featurize_json.py:47-50).
+#: - OpenFold3 parses MSAs for ``MSASettings.moltypes``, PROTEIN and RNA
+#:   (openfold3 dataset_config_components.py:76-79, io/sequence/msa.py:626).
+#:
+#: AlphaFold 3 is absent on purpose: it reads RNA alignments, and its own
+#: parser already refuses ``unpairedMsaPath`` on a DNA chain
+#: (alphafold3/common/folding_input.py `DnaChain.from_dict`), so nothing is
+#: dropped there and the option does not apply to it.
+_NUCLEIC_MSA_READ: dict[str, frozenset[str]] = {
+    "boltz2": frozenset(),
+    "esmfold2": frozenset(),
+    "opendde": frozenset(),
+    "openfold3": frozenset({"rna"}),
+    "protenix": frozenset({"rna"}),
+}
+
+
+def accepts_ignore_nucleic_msa(model: str) -> bool:
+    """Whether ``IGNORE_NUCLEIC_MSA`` is a meaningful option for ``model``."""
+    return model in _NUCLEIC_MSA_READ
+
+
+def _nucleic_msa_read(model: str, *, use_rna_msa: bool) -> frozenset[str] | None:
+    """Nucleic entity types ``model`` reads an alignment for; None if not governed."""
+    kinds = _NUCLEIC_MSA_READ.get(model)
+    if kinds is not None and model == "opendde" and use_rna_msa:
+        return kinds | {"rna"}
+    return kinds
+
+
+def _nucleic_msa_readers(kind: str) -> str:
+    """Name the backends that would use this alignment, for the refusal."""
+    if kind == "dna":
+        return "no FoldJAX backend reads a DNA alignment"
+    return (
+        "RNA alignments are read by alphafold3, openfold3, protenix, and opendde "
+        "with use_rna_msa=true"
+    )
+
 
 def _ids(entity: dict[str, Any]) -> list[str]:
     value = entity.get("id")
@@ -443,8 +499,14 @@ def _validate(
     entity_types: tuple[str, ...],
     *,
     options: Mapping[str, Any] | None = None,
+    ignored: list[dict[str, Any]] | None = None,
 ) -> None:
-    """Check the common document against what ``model`` can express."""
+    """Check the common document against what ``model`` can express.
+
+    With ``ignore_nucleic_msa=true``, a nucleic-acid ``unpaired_msa`` the
+    backend does not read is removed from ``job`` and described in ``ignored``
+    instead of refused.
+    """
     options = options or {}
     # Only Boltz-2 resolves a CCD code against its own chemistry archive, and
     # only it therefore validates the identifier here. The validator is named by
@@ -466,6 +528,10 @@ def _validate(
         use_rna_msa = _strict_boolean(
             options.get("use_rna_msa", False), name="use_rna_msa"
         )
+    nucleic_msa_read = _nucleic_msa_read(model, use_rna_msa=use_rna_msa)
+    ignore_nucleic_msa = nucleic_msa_read is not None and _strict_boolean(
+        options.get(IGNORE_NUCLEIC_MSA, False), name=IGNORE_NUCLEIC_MSA
+    )
     _reject_unknown(set(job) - _JOB_KEYS, _JOB_KEYS, "top-level fields")
     entities = job.get("entities")
     if not isinstance(entities, list) or not entities:
@@ -524,13 +590,49 @@ def _validate(
                         "RNA paired_msa",
                         "upstream accepts only rnaSequence.unpairedMsaPath",
                     )
-                if not use_rna_msa:
+                if not use_rna_msa and not ignore_nucleic_msa:
                     _reject(
                         model,
                         "RNA unpaired_msa",
+                        f"entity {_ids(entity)[0]!r} names {value.strip()!r}; "
                         "set the native option use_rna_msa=true; the released "
-                        "default is false and would discard the alignment",
+                        "default is false and would discard the alignment "
+                        f"(or {IGNORE_NUCLEIC_MSA}=true to fold without it)",
                     )
+            if (
+                value is not None
+                and feature == "unpaired_msa"
+                and kind in ("dna", "rna")
+                and nucleic_msa_read is not None
+                and kind not in nucleic_msa_read
+            ):
+                chain_ids = _ids(entity)
+                if not ignore_nucleic_msa:
+                    _reject(
+                        model,
+                        f"a {kind.upper()} unpaired_msa",
+                        f"entity {chain_ids[0]!r} names {value.strip()!r}, but "
+                        f"{model} would discard it and fold that chain from "
+                        f"its sequence alone ({_nucleic_msa_readers(kind)}). "
+                        f"Remove it, or set --option {IGNORE_NUCLEIC_MSA}=true "
+                        "to run without it; the run manifest then records the "
+                        "drop under ignored_msas",
+                    )
+                if ignored is not None:
+                    ignored.append(
+                        {
+                            "chains": chain_ids,
+                            "type": kind,
+                            "field": feature,
+                            "path": value.strip(),
+                            "reason": (
+                                f"{model} does not read {kind.upper()} "
+                                f"alignments; dropped by {IGNORE_NUCLEIC_MSA}=true"
+                            ),
+                        }
+                    )
+                del entity[feature]
+                continue
             if value is not None:
                 entity[feature] = value.strip()
         if entity.get("modifications") and "modifications" not in target.features:
@@ -1163,8 +1265,13 @@ def materialize_native_input(
     seed: int,
     msa: str = "none",
     options: Mapping[str, Any] | None = None,
+    ignored: list[dict[str, Any]] | None = None,
 ) -> Path:
-    """Translate a FoldJAX JSON document to one backend-native input file."""
+    """Translate a FoldJAX JSON document to one backend-native input file.
+
+    ``ignored``, when given, receives one record per alignment the document
+    named but the native input leaves out (see ``IGNORE_NUCLEIC_MSA``).
+    """
     model = capabilities.model
     target = _TARGETS.get(model)
     if target is None:
@@ -1175,15 +1282,21 @@ def materialize_native_input(
     job = read_job_document(source)
     if not isinstance(job, dict):
         raise ValueError("a FoldJAX job must be a JSON or YAML mapping")
+    dropped: list[dict[str, Any]] = []
     _validate(
         job,
         model,
         target,
         capabilities.entity_types,
         options=options,
+        ignored=dropped,
     )
 
     base = source.parent
+    for record in dropped:
+        record["resolved_path"] = _path(record["path"], base)
+    if ignored is not None:
+        ignored.extend(dropped)
     # Created before the dialects are built: OpenFold3 writes alongside its
     # document rather than only into it, and a searched alignment is recorded
     # beside both.
@@ -1191,7 +1304,19 @@ def materialize_native_input(
     if output_dir.is_symlink():
         raise ValueError(f"generated input directory is a symlink: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
-    searched = _search_alignments(job, target, policy=msa, model=model)
+    # Validation ran before the search, so a searched RNA alignment is only
+    # attached where the backend reads one; elsewhere it would be discarded
+    # after the check above.
+    read = _nucleic_msa_read(
+        model, use_rna_msa=(options or {}).get("use_rna_msa") is True
+    )
+    searched = _search_alignments(
+        job,
+        target,
+        policy=msa,
+        model=model,
+        search_rna=read is None or "rna" in read,
+    )
     if searched:
         _write_text_atomic(
             output_dir / "msa_search.json", json.dumps(searched, indent=2)

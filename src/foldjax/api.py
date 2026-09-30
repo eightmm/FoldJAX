@@ -29,7 +29,11 @@ from foldjax.cache import (
     runtime_profile,
     weight_identity,
 )
-from foldjax.input import materialize_native_input, read_job_document
+from foldjax.input import (
+    IGNORE_NUCLEIC_MSA,
+    materialize_native_input,
+    read_job_document,
+)
 from foldjax.manifest import (
     MANIFEST_NAME,
     device_peak_bytes,
@@ -968,7 +972,12 @@ def _predict_once(
     started = time.perf_counter()
     timeline = progress.Timeline()
     progress.header(backend.name, request.input.name, request.seed)
+    # Alignments the common document named but the native input leaves out,
+    # recorded in the manifest. None when the input was not common-schema,
+    # because a native document is passed through without being inspected.
+    ignored_msas: list[dict[str, Any]] | None = None
     if request.input_format == "foldjax":
+        ignored_msas = []
         with timeline.stage("prepare input"):
             native_input = materialize_native_input(
                 request.input,
@@ -977,6 +986,7 @@ def _predict_once(
                 seed=request.seed,
                 msa=request.msa,
                 options=backend.apply_sampling(request),
+                ignored=ignored_msas,
             )
         # Most backends have a dialect of their own and the materialised file
         # is in it. ESMFold2 does not -- its adapter reads the common schema
@@ -990,6 +1000,17 @@ def _predict_once(
     if request.input_format not in capabilities.input_formats:
         raise ValueError(
             f"{backend.name} does not support input format {request.input_format!r}"
+        )
+    # Consumed by the translation above; no native runner takes it. `asked`
+    # keeps it, so the manifest's options still record the choice.
+    if IGNORE_NUCLEIC_MSA in request.options:
+        request = dataclasses.replace(
+            request,
+            options={
+                key: value
+                for key, value in request.options.items()
+                if key != IGNORE_NUCLEIC_MSA
+            },
         )
     if request.cache_dir is not None:
         request = dataclasses.replace(
@@ -1071,6 +1092,7 @@ def _predict_once(
         request.output_dir,
         native_input=request.input if request.input != asked.input else None,
         cost=cost,
+        ignored_msas=ignored_msas,
     )
     return result
 

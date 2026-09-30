@@ -124,6 +124,17 @@ FoldJAX request preserves that default and rejects an RNA `unpaired_msa` or
 MSAs remain supported independently. Native OpenDDE input follows the same
 rule for `unpairedMsaPath`.
 
+The same rule applies to every nucleic-acid alignment a backend would discard.
+RNA `unpaired_msa` is read by AlphaFold 3, OpenFold3, Protenix and OpenDDE
+(with `use_rna_msa=true`). No backend reads a DNA one. Boltz-2 and ESMFold2
+read neither. A common-schema job that gives such an alignment to a backend
+that ignores it is refused, with the entity and the backend named. Set
+`--option ignore_nucleic_msa=true` to fold the chain without it. The
+alignment is then left out of the native input, and the run manifest lists
+it under `ignored_msas`. AlphaFold 3's own parser already refuses a DNA
+alignment, so the option does not apply there. `--msa auto` searches RNA
+chains only for the backends that read the result.
+
 ### Templates and binding affinity
 
 ```yaml

@@ -714,6 +714,14 @@ def _msa(
         chain_queries[chain.asym_id] = np.asarray(
             [token.res_type for token in chain.tokens], dtype=np.int64
         )
+        if path is not None and chain.kind != "protein":
+            # The common-input layer refuses or drops these before they get
+            # here; this is the guard for callers that build features directly.
+            raise ValueError(
+                f"ESMFold2 reads alignments only for protein chains; "
+                f"{chain.kind} chain {chain.chain_id!r} names {str(path)!r}, "
+                "which would be discarded"
+            )
         if chain.kind == "protein" and chain.sequence is not None:
             chain_msas[chain.asym_id] = (
                 read_a3m(path, expected_columns=len(chain.sequence))
