@@ -55,7 +55,7 @@ def test_template_features_match_torch_golden() -> None:
             },
         ],
     }
-    features = featurize_protein_json(job)
+    features = featurize_protein_json(job, use_template=True)
     golden = _load_golden()
 
     for key in _TEMPLATE_KEYS:
@@ -68,6 +68,44 @@ def test_template_features_match_torch_golden() -> None:
     assert features["template_aatype"].shape == (4, 5)
     assert features["template_distogram"].shape == (4, 5, 5, 39)
     assert features["template_unit_vector"].shape == (4, 5, 5, 3)
+
+
+def test_templates_path_is_ignored_at_upstream_s_released_use_template() -> None:
+    """Upstream reads `templatesPath` only under `use_template`, released false.
+
+    `configs/configs_inference.py:36` and
+    `protenix/data/template/template_featurizer.py:710`: without the flag the
+    chain gets the dummy template, as if no path were given. Upstream says
+    nothing; this warns.
+    """
+    with_path = {
+        "name": "tpl",
+        "sequences": [
+            {
+                "proteinChain": {
+                    "sequence": _QUERY,
+                    "count": 1,
+                    "templatesPath": str(_TEMPLATE_JSON),
+                }
+            }
+        ],
+    }
+    without_path = {
+        "name": "tpl",
+        "sequences": [{"proteinChain": {"sequence": _QUERY, "count": 1}}],
+    }
+
+    with pytest.warns(RuntimeWarning, match="templatesPath is ignored unless"):
+        ignored = featurize_protein_json(with_path)
+    dummy = featurize_protein_json(without_path)
+    read = featurize_protein_json(with_path, use_template=True)
+
+    for key in _TEMPLATE_KEYS:
+        np.testing.assert_array_equal(
+            np.asarray(ignored[key]), np.asarray(dummy[key]), err_msg=key
+        )
+    assert np.asarray(read["template_atom_mask"])[0].any()
+    assert not np.asarray(ignored["template_atom_mask"]).any()
 
 
 def test_dummy_template_emitted_without_templates() -> None:
@@ -108,7 +146,7 @@ def test_template_short_chain_skipped_emits_dummy() -> None:
             },
         ],
     }
-    features = featurize_protein_json(job)
+    features = featurize_protein_json(job, use_template=True)
     aatype = np.asarray(features["template_aatype"])
     assert aatype.shape == (4, 4)
     assert (aatype[0] == 31).all()
@@ -225,7 +263,7 @@ def test_template_a3m_resolves_local_mmcif_coordinates(tmp_path, monkeypatch) ->
             },
         ],
     }
-    features = featurize_protein_json(job)
+    features = featurize_protein_json(job, use_template=True)
     assert features["template_atom_mask"][0].any()
     assert features["template_aatype"][0].tolist() == [0, 7, 15, 1, 13, 0, 7, 15, 1, 13]
 
@@ -251,7 +289,8 @@ def test_template_hhr_realigns_query_against_mmcif_seqres(
                     }
                 }
             ]
-        }
+        },
+        use_template=True,
     )
     assert features["template_atom_mask"][0].any(axis=1).all()
 
@@ -272,7 +311,8 @@ def test_template_mmcif_seqres_indices_preserve_missing_residue_masks(
                     }
                 }
             ]
-        }
+        },
+        use_template=True,
     )
     residue_mask = features["template_atom_mask"][0].any(axis=1)
     assert residue_mask.tolist() == [False, False, *([True] * 8)]
@@ -322,7 +362,8 @@ def test_mapped_json_uses_observed_indices_even_with_seqres(tmp_path, monkeypatc
                     }
                 }
             ]
-        }
+        },
+        use_template=True,
     )
     assert features["template_atom_mask"][0].any(axis=1).tolist() == [
         *([True] * 8),
@@ -362,7 +403,8 @@ def test_template_search_artifact_requires_local_mmcif_db(
                         }
                     }
                 ]
-            }
+            },
+            use_template=True,
         )
     except ValueError as exc:
         assert "PROTENIX_TEMPLATE_MMCIF_DIR" in str(exc)

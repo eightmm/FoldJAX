@@ -238,15 +238,25 @@ class Backend(ABC):
         options = self.apply_sampling(request)
         # Consumed while the common document is translated, never by the
         # native runner, so it leaves the option set before the native checks.
-        from foldjax.input import IGNORE_NUCLEIC_MSA, accepts_ignore_nucleic_msa
+        from foldjax.input import (
+            IGNORE_NUCLEIC_MSA,
+            IGNORE_TEMPLATES,
+            accepts_ignore_nucleic_msa,
+            accepts_ignore_templates,
+        )
 
-        if IGNORE_NUCLEIC_MSA in options and accepts_ignore_nucleic_msa(self.name):
+        for option, accepts in (
+            (IGNORE_NUCLEIC_MSA, accepts_ignore_nucleic_msa),
+            (IGNORE_TEMPLATES, accepts_ignore_templates),
+        ):
+            if option not in options or not accepts(self.name):
+                continue
             if (
-                _strict_boolean(options.pop(IGNORE_NUCLEIC_MSA), name=IGNORE_NUCLEIC_MSA)
+                _strict_boolean(options.pop(option), name=option)
                 and request.input_format != "foldjax"
             ):
                 raise ValueError(
-                    f"{IGNORE_NUCLEIC_MSA} applies to FoldJAX common-schema input; "
+                    f"{option} applies to FoldJAX common-schema input; "
                     f"native {self.name} input is passed through untouched"
                 )
         if request.padding is not None:

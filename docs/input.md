@@ -168,12 +168,19 @@ properties:
 The two forms of a template are different inputs, not one input in two
 spellings. AlphaFold 3 and Protenix require the query→template residue map and
 refuse a bare file; **Boltz-2 aligns the mmCIF itself** and refuses a map it
-would have to ignore. OpenDDE has native template machinery, but its released
-inference configuration sets `use_template=False`: FoldJAX preserves that
-default and rejects common-schema templates instead of silently dropping them.
-Set `options={"use_template": true}` (CLI:
-`--option use_template=true`) to materialize the mapped templates and run the
-v1.1.1 template path. Native `templatesPath` follows the same opt-in rule.
+would have to ignore. Protenix and OpenDDE have native template machinery,
+but both released inference configurations set `use_template=False` (Protenix
+`configs/configs_inference.py:36`, OpenDDE `config/inference_defaults.py:28`)
+and then ignore a job's templates: FoldJAX preserves that default and rejects
+common-schema templates instead of silently dropping them. Set
+`options={"use_template": true}` (CLI: `--option use_template=true`) to
+materialize the mapped templates and run the template path, or
+`--option ignore_templates=true` to fold without them; the run manifest then
+lists each dropped template under `ignored_templates` (null for native input,
+which is not inspected). Native `templatesPath` follows the same opt-in rule
+and is ignored with a warning without it. Upstream Protenix allows
+`use_template` only for `protenix-v2` and the two v1.0.0 base models, and so
+does this port; `--template-search-command` requires it.
 Exact checked parity uses native Kalign 3.3.5; newer wrapper builds are not
 assumed alignment-equivalent. Affinity
 reaches Boltz-2 alone — it is the only carried model with that head. OpenFold3

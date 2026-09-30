@@ -164,7 +164,9 @@ databases implicitly.
   `--use-rna-msa`; upstream's `use_rna_msa` is released false and this port
   keeps that default.
 - Template search: local wrapper producing A3M or HHR plus a user-managed mmCIF
-  coordinate database.
+  coordinate database. Templates, searched or supplied, are read only with
+  `--use-template`; upstream's `use_template` is released false and this port
+  keeps that default.
 
 All search results use sequence, backend, version, options, and input-file
 hashes in their cache identity. Run `protenix-jax-predict --help` for the

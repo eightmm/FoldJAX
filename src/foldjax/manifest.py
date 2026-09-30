@@ -1189,6 +1189,7 @@ def describe_run(
     cost: dict[str, Any] | None = None,
     directory: Path | None = None,
     ignored_msas: list[dict[str, Any]] | None = None,
+    ignored_templates: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the manifest for one finished prediction.
 
@@ -1201,6 +1202,7 @@ def describe_run(
     ``ignored_msas`` lists alignments the common job named that the native
     input left out (``ignore_nucleic_msa``); ``None`` when the job was not
     common-schema input, whose alignments FoldJAX does not inspect.
+    ``ignored_templates`` does the same for templates (``ignore_templates``).
     """
     from foldjax import __version__
     from foldjax.cache import runtime_profile, weight_identity
@@ -1244,6 +1246,11 @@ def describe_run(
         "ignored_msas": (
             [dict(record) for record in ignored_msas]
             if ignored_msas is not None
+            else None
+        ),
+        "ignored_templates": (
+            [dict(record) for record in ignored_templates]
+            if ignored_templates is not None
             else None
         ),
         "weights": {
@@ -1301,6 +1308,7 @@ def write(
     native_input: Path | None = None,
     cost: dict[str, Any] | None = None,
     ignored_msas: list[dict[str, Any]] | None = None,
+    ignored_templates: list[dict[str, Any]] | None = None,
 ) -> Path | None:
     """Write the manifest, or return None if the directory cannot take it.
 
@@ -1323,6 +1331,7 @@ def write(
                         cost=cost,
                         directory=directory,
                         ignored_msas=ignored_msas,
+                        ignored_templates=ignored_templates,
                     ),
                     indent=2,
                     sort_keys=True,

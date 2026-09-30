@@ -166,6 +166,7 @@ _PROTENIX_OPTION_VALUES: dict[str, Any] = {
     "trunk_single_attention_backend": "tokamax",
     "trunk_triangle_attention_backend": "cueq_jit",
     "use_rna_msa": True,
+    "use_template": True,
 }
 
 _OPENDDE_OPTION_VALUES: dict[str, Any] = {
@@ -223,6 +224,7 @@ _PROTENIX_REQUESTS: dict[str, dict[str, Any]] = {
             "full_depth_msa": False,
             "strict_token_limit": False,
             "use_rna_msa": False,
+            "use_template": False,
         }
     },
     # `--option num_samples=3` arrives as JSON's int and a quoted one as text,
@@ -393,7 +395,9 @@ def test_each_opendde_option_alone_reaches_the_same_configuration(
 
 
 @pytest.mark.parametrize(("spelling", "meaning"), _PROTENIX_BOOLEANS)
-@pytest.mark.parametrize("option", ("cp_atom_windows", "strict_token_limit"))
+@pytest.mark.parametrize(
+    "option", ("cp_atom_windows", "full_depth_msa", "strict_token_limit")
+)
 def test_every_protenix_switch_spelling_means_the_same_in_both_paths(
     tmp_path: Path, option: str, spelling: Any, meaning: bool
 ) -> None:

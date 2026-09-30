@@ -90,6 +90,7 @@ class PredictionConfig(NamedTuple):
     rna_msa_search_version: str | None
     rna_msa_cache_dir: Path
     use_rna_msa: bool
+    use_template: bool
     template_search_command: str | None
     template_search_version: str | None
     template_search_cache_dir: Path
@@ -377,6 +378,7 @@ def _run(
     from foldjax.models.protenix.runtime_policy import (
         KNOWN_MODEL_NAMES,
         RNA_MSA_MODEL_NAMES,
+        TEMPLATE_MODEL_NAMES,
         infer_model_name_from_path,
         model_inference_defaults,
         validate_inference_limits,
@@ -421,6 +423,13 @@ def _run(
                 f"--use-rna-msa is not supported by {model_name}; upstream "
                 "allows RNA MSA inference only for "
                 f"{', '.join(sorted(RNA_MSA_MODEL_NAMES))}"
+            )
+    if config.use_template and model_name is not None:
+        if model_name not in TEMPLATE_MODEL_NAMES:
+            raise SystemExit(
+                f"--use-template is not supported by {model_name}; upstream "
+                "allows template inference only for "
+                f"{', '.join(sorted(TEMPLATE_MODEL_NAMES))}"
             )
     num_recycles = (
         config.num_recycles
@@ -509,6 +518,11 @@ def _run(
         # templatesPath when no automatic search command is requested.
         os.environ["PROTENIX_TEMPLATE_MMCIF_DIR"] = str(mmcif_dir)
     if config.template_search_command is not None:
+        # Upstream searches templates only under use_template
+        # (runner/batch_inference.py:124); without it the featurizer would
+        # discard what the search found.
+        if not config.use_template:
+            raise SystemExit("--template-search-command requires --use-template")
         if config.features is not None:
             raise SystemExit("template search requires --input-json")
         if not config.template_search_version:
@@ -603,6 +617,7 @@ def _run(
                     n_keys=config.n_keys,
                     max_msa_depth=config.max_msa_depth,
                     use_rna_msa=config.use_rna_msa,
+                    use_template=config.use_template,
                 )
                 language_model_profile = None
                 if esm_provider is not None and padding_config is not None:

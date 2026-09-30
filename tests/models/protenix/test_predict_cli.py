@@ -1684,6 +1684,7 @@ def test_predict_orders_msa_template_and_rna_preprocessing(
         "--out", str(tmp_path / "out.npz"),
         "--msa-search", "local", "--msa-local-command", "protein-search",
         "--msa-search-version", "protein-v1",
+        "--use-template",
         "--template-search-command", "template-search",
         "--template-search-version", "template-v1",
         "--template-mmcif-dir", str(mmcif),
@@ -1721,6 +1722,60 @@ def test_use_rna_msa_is_refused_for_a_model_upstream_refuses(tmp_path) -> None:
             "--use-rna-msa",
             "--no-compile-cache",
         ])
+
+
+def test_template_search_without_use_template_is_refused(tmp_path) -> None:
+    """Upstream searches templates only under use_template; the result would be
+    dropped (runner/batch_inference.py:124)."""
+    with pytest.raises(SystemExit, match="requires --use-template"):
+        main([
+            "--model-name", "unknown",
+            "--weights", str(tmp_path / "w.jax"),
+            "--input-json", str(tmp_path / "job.json"),
+            "--out", str(tmp_path / "out.npz"),
+            "--template-search-command", "template-search",
+            "--template-search-version", "template-v1",
+            "--no-compile-cache",
+        ])
+
+
+def test_use_template_is_refused_for_a_model_upstream_refuses(tmp_path) -> None:
+    """Upstream asserts the same three models for use_template
+    (runner/batch_inference.py:877-881)."""
+    with pytest.raises(SystemExit, match="--use-template is not supported by"):
+        main([
+            "--model-name", "protenix_mini_esm_v0.5.0",
+            "--weights", str(tmp_path / "w.jax"),
+            "--input-json", str(tmp_path / "job.json"),
+            "--out", str(tmp_path / "out.npz"),
+            "--use-template",
+            "--no-compile-cache",
+        ])
+
+
+def test_the_runner_reads_templates_only_under_use_template(
+    tmp_path, monkeypatch
+) -> None:
+    """`--use-template` reaches the featurizer; its absence is upstream's off."""
+    import foldjax.models.protenix.data.featurize_json as featurize_module
+
+    seen: list[bool] = []
+    real = featurize_module.featurize_protein_json
+
+    def spy(job, **kwargs):
+        seen.append(kwargs["use_template"])
+        return real(job, **kwargs)
+
+    monkeypatch.setattr(featurize_module, "featurize_protein_json", spy)
+    _run_inline_msa_job(tmp_path, monkeypatch)
+    _run_inline_msa_job(
+        tmp_path,
+        monkeypatch,
+        "--use-template",
+        "--model-name",
+        "protenix_base_default_v1.0.0",
+    )
+    assert seen == [False, True]
 
 
 def test_predict_checks_v2_size_before_loading_weights(tmp_path) -> None:

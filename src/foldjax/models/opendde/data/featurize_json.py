@@ -174,6 +174,10 @@ def featurize_opendde_json(
         # `_prepare_job` already removed the path when this is false, and the
         # shared featurizer now reads an RNA alignment only when told to.
         use_rna_msa=use_rna_msa,
+        # The same for templates: the shared featurizer reads `templatesPath`
+        # only under Protenix's released-false `use_template`, which OpenDDE
+        # shares (config/inference_defaults.py:28).
+        use_template=use_template,
     )
     _prepare_reference_features(
         features,

@@ -29,6 +29,11 @@ RNA_MSA_MODEL_NAMES = frozenset(
     }
 )
 
+#: The models upstream lets read templates: the same three, asserted for
+#: `use_template` a few lines above the RNA check
+#: (`runner/batch_inference.py:877-881`).
+TEMPLATE_MODEL_NAMES = RNA_MSA_MODEL_NAMES
+
 _BASE_INFERENCE_DEFAULTS = {
     "num_recycles": 10,
     "num_steps": 200,

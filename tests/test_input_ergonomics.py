@@ -679,7 +679,10 @@ def test_a_mapped_template_reaches_alphafold3_and_protenix(tmp_path: Path) -> No
     assert chain["templates"][0]["queryIndices"] == [1, 2, 3]
     assert chain["templates"][0]["templateIndices"] == [5, 6, 7]
 
-    written = _materialize(source, "protenix", tmp_path / "px")
+    # Protenix reads templates only under use_template, released false.
+    written = _materialize(
+        source, "protenix", tmp_path / "px", options={"use_template": True}
+    )
     native = json.loads(written.read_text())
     sidecar = Path(native[0]["sequences"][0]["proteinChain"]["templatesPath"])
     # Protenix reads the structure's contents, not a path, so the mmCIF is

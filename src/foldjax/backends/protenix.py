@@ -50,6 +50,10 @@ _CLI_OPTIONS = {
     # alignment is read at all. A compile option, as it is on OpenDDE, which
     # shares the name and the featurizer; the released false strips below.
     "use_rna_msa",
+    # Upstream's `use_template`, released false: whether a chain's
+    # `templatesPath` is read at all. A compile option for the reason
+    # `use_rna_msa` is, and named as OpenDDE names it.
+    "use_template",
     # Admission against this card's own ceiling, rather than against the
     # 2,560-token constant `strict_token_limit` restores. Neither is a compile
     # option: they decide whether the run starts, never what it compiles.
@@ -143,7 +147,9 @@ _PROFILE_MODEL_NAMES = {
 #: Options the native CLI takes as a bare switch rather than a value. Passing
 #: `--strict-token-limit true` makes argparse reject the whole command, and
 #: the usage dump that comes back says nothing about which argument was wrong.
-_FLAG_OPTIONS = frozenset({"strict_token_limit", "use_rna_msa", "full_depth_msa"})
+_FLAG_OPTIONS = frozenset(
+    {"strict_token_limit", "use_rna_msa", "use_template", "full_depth_msa"}
+)
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"0", "false", "no", "off", ""})
 
@@ -281,6 +287,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "deterministic_ops": "off",
     "glu_backend": "xla",
     "use_rna_msa": False,
+    "use_template": False,
     "full_depth_msa": False,
     "mc_dropout_rate": 0.4,
 }
@@ -341,6 +348,7 @@ _PARSER_DEFAULTS: dict[str, Any] = {
     "rna_msa_search_version": None,
     "rna_msa_cache_dir": Path("outputs/rna_msa_cache"),
     "use_rna_msa": False,
+    "use_template": False,
     "template_search_command": None,
     "template_search_version": None,
     "template_search_cache_dir": Path("outputs/template_cache"),
@@ -538,6 +546,7 @@ _OPTION_SPECS: dict[str, tuple[Callable[[str, Any], Any], tuple[str, ...] | None
         ("xla", "xla_jit", "tokamax", "cueq", "cueq_jit"),
     ),
     "use_rna_msa": (_switch_option, None),
+    "use_template": (_switch_option, None),
 }
 
 
@@ -752,6 +761,8 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         # Which RNA alignment rows the run is given; OpenDDE, which shares
         # the name and the featurizer, records it the same way.
         "use_rna_msa",
+        # Whether the job's templates reach the template embedder; the same.
+        "use_template",
         "cli_args",
         # Two policies, two programs: the value becomes the `precision`
         # attribute on every float32 dot XLA lowers, it selects the
@@ -865,6 +876,22 @@ class ProtenixBackend(ManagedCcdSession, Backend):
                 f"use_rna_msa is not supported by {model_name}; upstream allows "
                 "RNA MSA inference only for "
                 f"{', '.join(sorted(runtime_policy.RNA_MSA_MODEL_NAMES))}"
+            )
+        # A real boolean for the reason `use_rna_msa` is one: the common-schema
+        # translation reads it too, to decide whether a template is refused.
+        use_template = _strict_boolean(
+            options.get("use_template", False), name="use_template"
+        )
+        if (
+            use_template
+            and model_name in runtime_policy.KNOWN_MODEL_NAMES
+            and model_name not in runtime_policy.TEMPLATE_MODEL_NAMES
+        ):
+            # Upstream's assertion (`runner/batch_inference.py:877-881`).
+            raise ValueError(
+                f"use_template is not supported by {model_name}; upstream "
+                "allows template inference only for "
+                f"{', '.join(sorted(runtime_policy.TEMPLATE_MODEL_NAMES))}"
             )
         # Here rather than at the parser for the reason `glu_backend` gives,
         # and here rather than at the admission check because `foldjax plan`

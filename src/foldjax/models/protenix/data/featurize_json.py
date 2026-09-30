@@ -274,6 +274,7 @@ def featurize_protein_json(
     center_reference: bool = True,
     augment_reference: bool = True,
     use_rna_msa: bool = False,
+    use_template: bool = False,
 ) -> dict[str, Any]:
     """Build static features for proteinChain inputs.
 
@@ -283,6 +284,11 @@ def featurize_protein_json(
     from its sequence alone, as upstream's ``InferenceMSAFeaturizer`` does
     (``protenix/data/msa/msa_featurizer.py:633-640``). Upstream says nothing
     when it ignores one; this warns.
+
+    ``use_template`` is the same for a ``proteinChain``'s ``templatesPath``:
+    released false (``configs/configs_inference.py:36``), and upstream's
+    template featurizer reads the path only when it is set
+    (``protenix/data/template/template_featurizer.py:710``). This warns too.
     """
 
     if not isinstance(job, dict):
@@ -305,7 +311,9 @@ def featurize_protein_json(
         raise ValueError("n_keys must be >= n_queries and both must be even")
     if max_msa_depth <= 0:
         raise ValueError("max_msa_depth must be positive")
-    chains = _expand_chains(job, base_dir=base_dir, use_rna_msa=use_rna_msa)
+    chains = _expand_chains(
+        job, base_dir=base_dir, use_rna_msa=use_rna_msa, use_template=use_template
+    )
     chemistry_rng = random.Random(_resolve_featurization_seed(job, seed))
     _remove_polymer_link_leaving_groups(chains, rng=chemistry_rng)
     _remove_covalent_leaving_groups(
@@ -633,6 +641,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         action="store_true",
         help="Read rnaSequence alignments (upstream's use_rna_msa; off by default).",
     )
+    parser.add_argument(
+        "--use-template",
+        action="store_true",
+        help="Read proteinChain templatesPath (upstream's use_template; off by "
+        "default).",
+    )
     args = parser.parse_args(argv)
 
     features = featurize_protein_json(
@@ -642,6 +656,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         n_keys=args.n_keys,
         max_msa_depth=args.max_msa_depth,
         use_rna_msa=args.use_rna_msa,
+        use_template=args.use_template,
     )
     save_static_feature_npz(args.out, features)
     print(f"wrote: {args.out}")
@@ -687,6 +702,7 @@ def _expand_chains(
     *,
     base_dir: str | Path | None,
     use_rna_msa: bool = False,
+    use_template: bool = False,
 ) -> list[dict[str, Any]]:
     sequences = job.get("sequences")
     if not isinstance(sequences, list) or not sequences:
@@ -699,7 +715,9 @@ def _expand_chains(
             raise ValueError("each sequence entry must have one entity key")
         (kind,) = entry.keys()
         if kind == "proteinChain":
-            built = _build_protein_chain(entry[kind], base_dir=base_dir)
+            built = _build_protein_chain(
+                entry[kind], base_dir=base_dir, use_template=use_template
+            )
         elif kind in ("dnaSequence", "rnaSequence"):
             built = _build_nucleic_chain(
                 entry[kind], kind=kind, base_dir=base_dir, use_rna_msa=use_rna_msa
@@ -770,10 +788,20 @@ def _build_protein_chain(
     chain: dict[str, Any],
     *,
     base_dir: str | Path | None,
+    use_template: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(chain, dict):
         raise ValueError("proteinChain entry must be an object")
     templates_path = chain.get("templatesPath") or None
+    if templates_path and not use_template:
+        warnings.warn(
+            "a proteinChain templatesPath is ignored unless use_template is "
+            "true, upstream's released default being false; folding the chain "
+            "without templates. Set use_template to read it.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        templates_path = None
     if templates_path:
         templates_path = str(_resolve_path(templates_path, base_dir=base_dir))
     sequence = _normalize_sequence(chain.get("sequence"))

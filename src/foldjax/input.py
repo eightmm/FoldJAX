@@ -183,10 +183,27 @@ _NUCLEIC_PAIRED_MSA_READ: dict[str, frozenset[str]] = {
     "protenix": frozenset(),
 }
 
+#: Backends whose upstream reads a chain's templates only under
+#: ``use_template=true``, released false: Protenix
+#: (``configs/configs_inference.py:36``, ``template_featurizer.py:710``) and
+#: OpenDDE (``config/inference_defaults.py:28``). A common-schema template is
+#: refused for them by default rather than silently discarded.
+_USE_TEMPLATE_MODELS = frozenset({"opendde", "protenix"})
+
+#: The per-job option that drops such a template instead of refusing it, the
+#: template counterpart of ``IGNORE_NUCLEIC_MSA``. The drop is recorded in the
+#: run manifest's ``ignored_templates``.
+IGNORE_TEMPLATES = "ignore_templates"
+
 
 def accepts_ignore_nucleic_msa(model: str) -> bool:
     """Whether ``IGNORE_NUCLEIC_MSA`` is a meaningful option for ``model``."""
     return model in _NUCLEIC_MSA_READ
+
+
+def accepts_ignore_templates(model: str) -> bool:
+    """Whether ``IGNORE_TEMPLATES`` is a meaningful option for ``model``."""
+    return model in _USE_TEMPLATE_MODELS
 
 
 def _nucleic_msa_read(model: str, *, use_rna_msa: bool) -> frozenset[str] | None:
@@ -527,12 +544,15 @@ def _validate(
     *,
     options: Mapping[str, Any] | None = None,
     ignored: list[dict[str, Any]] | None = None,
+    ignored_templates: list[dict[str, Any]] | None = None,
 ) -> None:
     """Check the common document against what ``model`` can express.
 
     With ``ignore_nucleic_msa=true``, a nucleic-acid alignment the
     backend does not read is removed from ``job`` and described in ``ignored``
-    instead of refused.
+    instead of refused. With ``ignore_templates=true``, a template a backend
+    would discard at ``use_template=false`` is removed and described in
+    ``ignored_templates``.
     """
     options = options or {}
     # Only Boltz-2 resolves a CCD code against its own chemistry archive, and
@@ -548,10 +568,19 @@ def _validate(
     )
     use_template = False
     use_rna_msa = False
-    if model == "opendde":
+    ignore_templates = False
+    if model in _USE_TEMPLATE_MODELS:
         use_template = _strict_boolean(
             options.get("use_template", False), name="use_template"
         )
+        ignore_templates = _strict_boolean(
+            options.get(IGNORE_TEMPLATES, False), name=IGNORE_TEMPLATES
+        )
+        if use_template and ignore_templates:
+            raise ValueError(
+                f"use_template=true reads the job's templates and "
+                f"{IGNORE_TEMPLATES}=true drops them; set one of the two"
+            )
     if model in _USE_RNA_MSA_MODELS:
         use_rna_msa = _strict_boolean(
             options.get("use_rna_msa", False), name="use_rna_msa"
@@ -679,15 +708,45 @@ def _validate(
             for ccd, _ in modifications:
                 validate_ccd(ccd, field="modification CCD code")
 
-        for template in _templates(entity):
-            feature = "templates" if template["mapping"] else "templates_unmapped"
-            if model == "opendde" and feature == "templates" and not use_template:
+        templates = _templates(entity)
+        if (
+            templates
+            and model in _USE_TEMPLATE_MODELS
+            and not use_template
+            and all(template["mapping"] for template in templates)
+        ):
+            chain_ids = _ids(entity)
+            if not ignore_templates:
                 _reject(
                     model,
                     "templates in the common schema",
-                    "set the native option use_template=true; the released "
-                    "default is false and would discard templatesPath",
+                    f"entity {chain_ids[0]!r} names {len(templates)} "
+                    f"template(s), but {model} reads templates only with "
+                    "use_template=true, and upstream's released default is "
+                    "false, which would discard them. Set --option "
+                    "use_template=true to read them, or --option "
+                    f"{IGNORE_TEMPLATES}=true to fold without them; the run "
+                    "manifest then records the drop under ignored_templates",
                 )
+            if ignored_templates is not None:
+                ignored_templates.extend(
+                    {
+                        "chains": chain_ids,
+                        "type": kind,
+                        "field": "templates",
+                        "path": template["mmcif"],
+                        "reason": (
+                            f"{model} reads templates only with "
+                            f"use_template=true; dropped by "
+                            f"{IGNORE_TEMPLATES}=true"
+                        ),
+                    }
+                    for template in templates
+                )
+            del entity["templates"]
+            templates = []
+        for template in templates:
+            feature = "templates" if template["mapping"] else "templates_unmapped"
             if feature in target.features:
                 continue
             if feature == "templates_unmapped" and "templates" in target.features:
@@ -1299,11 +1358,13 @@ def materialize_native_input(
     msa: str = "none",
     options: Mapping[str, Any] | None = None,
     ignored: list[dict[str, Any]] | None = None,
+    ignored_templates: list[dict[str, Any]] | None = None,
 ) -> Path:
     """Translate a FoldJAX JSON document to one backend-native input file.
 
     ``ignored``, when given, receives one record per alignment the document
-    named but the native input leaves out (see ``IGNORE_NUCLEIC_MSA``).
+    named but the native input leaves out (see ``IGNORE_NUCLEIC_MSA``), and
+    ``ignored_templates`` one per template (see ``IGNORE_TEMPLATES``).
     """
     model = capabilities.model
     target = _TARGETS.get(model)
@@ -1316,6 +1377,7 @@ def materialize_native_input(
     if not isinstance(job, dict):
         raise ValueError("a FoldJAX job must be a JSON or YAML mapping")
     dropped: list[dict[str, Any]] = []
+    dropped_templates: list[dict[str, Any]] = []
     _validate(
         job,
         model,
@@ -1323,13 +1385,16 @@ def materialize_native_input(
         capabilities.entity_types,
         options=options,
         ignored=dropped,
+        ignored_templates=dropped_templates,
     )
 
     base = source.parent
-    for record in dropped:
+    for record in (*dropped, *dropped_templates):
         record["resolved_path"] = _path(record["path"], base)
     if ignored is not None:
         ignored.extend(dropped)
+    if ignored_templates is not None:
+        ignored_templates.extend(dropped_templates)
     # Created before the dialects are built: OpenFold3 writes alongside its
     # document rather than only into it, and a searched alignment is recorded
     # beside both.

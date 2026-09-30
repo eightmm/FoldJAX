@@ -270,6 +270,7 @@ _PROTENIX_FLAG_ORDER: tuple[str, ...] = (
     "--msa-local-command", "--msa-remote-url",
     "--rna-msa-local-command", "--rna-msa-search-version", "--rna-msa-cache-dir",
     "--use-rna-msa",
+    "--use-template",
     "--template-search-command", "--template-search-version",
     "--template-search-cache-dir", "--template-mmcif-dir",
     "--strict-token-limit",

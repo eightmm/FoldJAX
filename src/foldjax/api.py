@@ -31,6 +31,7 @@ from foldjax.cache import (
 )
 from foldjax.input import (
     IGNORE_NUCLEIC_MSA,
+    IGNORE_TEMPLATES,
     materialize_native_input,
     read_job_document,
 )
@@ -976,8 +977,10 @@ def _predict_once(
     # recorded in the manifest. None when the input was not common-schema,
     # because a native document is passed through without being inspected.
     ignored_msas: list[dict[str, Any]] | None = None
+    ignored_templates: list[dict[str, Any]] | None = None
     if request.input_format == "foldjax":
         ignored_msas = []
+        ignored_templates = []
         with timeline.stage("prepare input"):
             native_input = materialize_native_input(
                 request.input,
@@ -987,6 +990,7 @@ def _predict_once(
                 msa=request.msa,
                 options=backend.apply_sampling(request),
                 ignored=ignored_msas,
+                ignored_templates=ignored_templates,
             )
         # Most backends have a dialect of their own and the materialised file
         # is in it. ESMFold2 does not -- its adapter reads the common schema
@@ -1003,13 +1007,14 @@ def _predict_once(
         )
     # Consumed by the translation above; no native runner takes it. `asked`
     # keeps it, so the manifest's options still record the choice.
-    if IGNORE_NUCLEIC_MSA in request.options:
+    consumed = {IGNORE_NUCLEIC_MSA, IGNORE_TEMPLATES}
+    if consumed & set(request.options):
         request = dataclasses.replace(
             request,
             options={
                 key: value
                 for key, value in request.options.items()
-                if key != IGNORE_NUCLEIC_MSA
+                if key not in consumed
             },
         )
     if request.cache_dir is not None:
@@ -1093,6 +1098,7 @@ def _predict_once(
         native_input=request.input if request.input != asked.input else None,
         cost=cost,
         ignored_msas=ignored_msas,
+        ignored_templates=ignored_templates,
     )
     return result
 

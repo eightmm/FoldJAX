@@ -119,6 +119,14 @@ def main(
         "required by --rna-msa-local-command.",
     )
     parser.add_argument(
+        "--use-template",
+        dest="use_template",
+        action="store_true",
+        help="Read proteinChain templatesPath, as upstream's --use_template "
+        "does. Off by default, like upstream's release, which then ignores "
+        "them; required by --template-search-command.",
+    )
+    parser.add_argument(
         "--template-search-command",
         help="Local template wrapper producing one .a3m or .hhr (off by default).",
     )

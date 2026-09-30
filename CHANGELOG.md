@@ -406,6 +406,25 @@ unless it says so here, in its own paragraph.
   network coordinates. On a mixed fixture the port's float32 rebuild is
   bitwise equal to upstream's torch function.
 
+- **Protenix reads a job's templates only with `use_template=true`, as
+  upstream does.** Protenix releases `use_template: False`
+  (`configs/configs_inference.py:36`, `--use_template` default false), and its
+  template featurizer then never opens `templatesPath`
+  (`protenix/data/template/template_featurizer.py:710`). The port read it
+  unconditionally. **This changes what a recorded command predicts** for a
+  Protenix job with templates; others are unchanged. The common-schema
+  validator now refuses such a job for Protenix, as it already did for
+  OpenDDE, naming the entity and pointing to `--option use_template=true`
+  (read them, as before) and the new `--option ignore_templates=true` (fold
+  without them, recorded under the manifest's new `ignored_templates`, which
+  is null for native input). `ignore_templates` works for OpenDDE too. Native
+  input without the option is featurized without templates, with a
+  `RuntimeWarning`. The native CLI takes `--use-template`; as upstream, it is
+  refused for any named model other than `protenix-v2` and the two v1.0.0 base
+  models, `--template-search-command` now requires it, and `use_template=true`
+  names its own compile-cache namespace. OpenDDE's featurizer now passes its
+  `use_template` through to the shared one, which reads a path only when told.
+
 - **Protenix no longer accepts `triangle_attention_ring_kernel=tokamax` on a
   1-D run.** The check used the shared square-grid helper, which reads an
   omitted `cp_layout` as the grid on a perfect-square count. Protenix's
