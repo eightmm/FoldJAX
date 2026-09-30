@@ -584,6 +584,35 @@ def _runner_identity(
     )
 
 
+#: Upstream's `BoltzSteeringParams()` as `boltz predict` passes it without
+#: `--use_potentials` (`boltz/main.py:148-157,1309-1311`): only contact
+#: guidance is on.
+UPSTREAM_STEERING_ARGS: Mapping[str, object] = {
+    "fk_steering": False,
+    "num_particles": 3,
+    "fk_lambda": 4.0,
+    "fk_resampling_interval": 3,
+    "physical_guidance_update": False,
+    "contact_guidance_update": True,
+    "num_gd_steps": 20,
+}
+
+
+def _carries_guidance_constraints(feats: Mapping[str, object]) -> bool:
+    """Whether contact guidance has anything to steer toward.
+
+    The featurizer keeps only forced pocket/contact constraints in
+    ``contact_pair_index`` (`process_contact_feature_constraints`), and the
+    template potential acts only on a template with ``force``. With neither,
+    upstream's guidance gradient is zero.
+    """
+    index = feats.get("contact_pair_index")
+    if index is not None and np.shape(index)[-1] > 0:
+        return True
+    force = feats.get("template_force")
+    return force is not None and bool(np.any(np.asarray(force)))
+
+
 @_pinned_matmul_precision
 def predict(
     *,
@@ -736,6 +765,9 @@ def predict(
     #: run every recorded Boltz-2 measurement describes; on costs wall time,
     #: unmeasured for this port's BF16 trunk.
     deterministic: bool = False,
+    #: None is upstream's default: `UPSTREAM_STEERING_ARGS` (contact guidance)
+    #: when the job has a forced constraint or template, and no steering
+    #: otherwise. A mapping is used as given.
     steering_args: Mapping[str, object] | None = None,
     use_msa_server: bool = False,
     msa_server_url: str = "https://api.colabfold.com",
@@ -1010,6 +1042,34 @@ def predict(
                 "native affinity weights use the obsolete head-only format; "
                 "rerun scripts/setup.sh to export the complete affinity model"
             )
+
+    if steering_args is None and _carries_guidance_constraints(feats_np):
+        # Upstream always passes `BoltzSteeringParams()` with contact guidance
+        # on (`boltz/main.py:156,1309-1311`). It only moves a job that has a
+        # forced contact/pocket constraint or a forced template, so it is
+        # turned on for exactly those; every other job keeps the compiled
+        # sampler. The guidance runs eagerly, which three options cannot.
+        blocked = [
+            name
+            for name, active in (
+                ("deterministic=true", deterministic),
+                ("context parallelism (cp_devices > 1)", cp_devices > 1),
+                ("padding", padding is not None),
+            )
+            if active
+        ]
+        if blocked:
+            raise ValueError(
+                "this Boltz-2 job has a forced contact/pocket constraint or a "
+                "forced template, and upstream steers the sampler toward it "
+                "with contact guidance (contact_guidance_update=True, "
+                "boltz/main.py:156). The guidance runs eagerly, so it cannot "
+                f"be combined with {' or '.join(blocked)}. Drop that, or skip "
+                "the guidance on purpose with --option steering_args="
+                '\'{"fk_steering": false, "physical_guidance_update": false, '
+                '"contact_guidance_update": false}\''
+            )
+        steering_args = dict(UPSTREAM_STEERING_ARGS)
 
     steering_active = steering_args is not None and any(
         bool(steering_args.get(key, False))

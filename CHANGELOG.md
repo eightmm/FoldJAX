@@ -723,6 +723,23 @@ unless it says so here, in its own paragraph.
   Jobs whose protein chains all carry an alignment, including every
   benchmark job, and native-dialect inputs are unchanged.
 
+- **Boltz-2 applies upstream's contact guidance to a job with a forced
+  constraint.** `boltz predict` always passes `BoltzSteeringParams()`
+  with `contact_guidance_update=True` (`boltz/main.py:156,1309-1311`),
+  which steers the sampler toward a pocket/contact constraint or template
+  marked `force: true`. The port ran no steering unless asked. With
+  `steering_args` unset, it now runs upstream's parameters (contact
+  guidance only, 20 gradient steps) when the features carry a forced
+  contact (`contact_pair_index` nonempty) or a forced template; every
+  other job keeps the compiled sampler, where upstream's gradient is zero.
+  The guidance runs eagerly, so such a job is **refused** under
+  `deterministic=true`, context parallelism or padding, naming the option
+  and the explicit opt-out
+  `--option steering_args='{"fk_steering": false, "physical_guidance_update": false, "contact_guidance_update": false}'`,
+  instead of silently skipping it. **This changes what a recorded command
+  predicts** for Boltz-2 jobs with `force: true` constraints or templates
+  (native YAML; the common schema has no constraint field).
+
 - **OpenDDE and AlphaFold 3 run a native job's `modelSeeds`.** Upstream
   OpenDDE uses them when `--seeds` is unset
   (`runner/batch_inference.py:698-703`), and AlphaFold 3 requires them in

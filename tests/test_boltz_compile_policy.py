@@ -10,6 +10,7 @@ import pytest
 from foldjax.backends.boltz2 import Boltz2Backend
 from foldjax.models.boltz2 import api, compile_policy
 from foldjax.models.boltz2.models.trunk_blocks import trunk
+from foldjax.schema import PaddingConfig
 from tests.test_boltz2_session import _features, _request
 
 
@@ -199,3 +200,98 @@ def test_eager_steering_is_explicitly_outside_outer_jit_policy(tmp_path, monkeyp
         "compiler_options": {},
         "scope": "eager_steering_not_covered",
     }
+
+
+def _constrained(kind: str | None) -> dict[str, np.ndarray]:
+    """`_features()` with what the featurizer emits for each constraint kind."""
+    features = _features()
+    features["contact_pair_index"] = np.zeros(
+        (1, 2, 4 if kind == "contact" else 0), dtype=np.int64
+    )
+    features["template_force"] = np.asarray(
+        [[kind == "template"]], dtype=bool
+    )
+    return features
+
+
+def _run_guided(tmp_path, monkeypatch, features, **kwargs):
+    request = _request(tmp_path)
+    seen = {}
+    monkeypatch.setattr(api, "featurize", lambda **kw: (features, "job", tmp_path))
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.bridge.native.load_params", lambda path: {"trunk": {}}
+    )
+
+    def predict(*args, **kw):
+        seen["steering_args"] = kw["steering_args"]
+        return {
+            "sample_atom_coords": jnp.zeros((1, 3, 3)),
+            "plddt": jnp.ones((1, 2)),
+            "iptm": jnp.zeros(1),
+        }
+
+    monkeypatch.setattr("foldjax.models.boltz2.models.predict.boltz2_predict", predict)
+    result = api.predict(
+        seq=["AA"],
+        weights=request.weights,
+        mols=request.options["mols"],
+        out_dir=tmp_path,
+        **kwargs,
+    )
+    return result, seen
+
+
+@pytest.mark.parametrize("kind", ["contact", "template"])
+def test_a_forced_constraint_turns_on_upstreams_contact_guidance(
+    tmp_path, monkeypatch, kind
+):
+    """`boltz predict` passes contact_guidance_update=True (main.py:156)."""
+    result, seen = _run_guided(tmp_path, monkeypatch, _constrained(kind))
+    assert seen["steering_args"] == {
+        "fk_steering": False,
+        "num_particles": 3,
+        "fk_lambda": 4.0,
+        "fk_resampling_interval": 3,
+        "physical_guidance_update": False,
+        "contact_guidance_update": True,
+        "num_gd_steps": 20,
+    }
+    assert result["execution_policy"]["primary"]["mode"] == "eager"
+
+
+def test_an_unconstrained_job_keeps_the_compiled_sampler(tmp_path, monkeypatch):
+    result, seen = _run_guided(tmp_path, monkeypatch, _constrained(None))
+    assert seen["steering_args"] is None
+    assert result["execution_policy"]["primary"]["mode"] == "jit"
+
+
+def test_explicit_steering_args_opt_out_of_the_guidance(tmp_path, monkeypatch):
+    off = {
+        "fk_steering": False,
+        "physical_guidance_update": False,
+        "contact_guidance_update": False,
+    }
+    result, seen = _run_guided(
+        tmp_path, monkeypatch, _constrained("contact"), steering_args=off
+    )
+    assert seen["steering_args"] == off
+    assert result["execution_policy"]["primary"]["mode"] == "jit"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "named"),
+    [
+        ({"deterministic": True}, "deterministic=true"),
+        ({"cp_devices": 2}, "context parallelism"),
+        ({"padding": PaddingConfig()}, "padding"),
+    ],
+)
+def test_guidance_that_cannot_run_is_refused_not_skipped(
+    tmp_path, monkeypatch, kwargs, named
+):
+    with pytest.raises(ValueError) as caught:
+        _run_guided(tmp_path, monkeypatch, _constrained("contact"), **kwargs)
+    message = str(caught.value)
+    assert named in message
+    assert "contact_guidance_update" in message
+    assert '"contact_guidance_update": false' in message
