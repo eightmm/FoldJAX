@@ -779,6 +779,15 @@ def quaternion_to_rotation(q: jnp.ndarray) -> jnp.ndarray:
     ).reshape(q.shape[0], 3, 3)
 
 
+#: The augmentation rotation and the Kabsch align carry atom coordinates, so
+#: they run at full FP32 as upstream's do (torch leaves `allow_tf32` off, and
+#: the align sits under `autocast(enabled=False)`). This port pins no matmul
+#: precision elsewhere, and JAX's GPU default rounds FP32 dot operands to TF32:
+#: ~2^-11 of each coordinate's magnitude per step, which made backbone bond
+#: lengths noisier the farther an atom sat from the origin.
+_COORDINATE_PRECISION = jax.lax.Precision.HIGHEST
+
+
 def center_random_augmentation(
     key: jnp.ndarray,
     x: jnp.ndarray,
@@ -807,9 +816,10 @@ def center_random_augmentation(
         if quaternion is None
         else quaternion
     )
-    x = jnp.einsum("bmd,bds->bms", x, rotation)
+    precision = _COORDINATE_PRECISION
+    x = jnp.einsum("bmd,bds->bms", x, rotation, precision=precision)
     if second is not None:
-        second = jnp.einsum("bmd,bds->bms", second, rotation)
+        second = jnp.einsum("bmd,bds->bms", second, rotation, precision=precision)
 
     shift = (
         translation
@@ -882,13 +892,19 @@ def weighted_rigid_align(
     x_centred = x - mu
     gt_centred = x_gt - mu_gt
 
-    correlation = jnp.einsum("bni,bnj->bij", w * gt_centred, x_centred)
+    precision = _COORDINATE_PRECISION
+    correlation = jnp.einsum(
+        "bni,bnj->bij", w * gt_centred, x_centred, precision=precision
+    )
     u, _, vh = jnp.linalg.svd(correlation)
-    determinant = jnp.linalg.det(u @ vh)
+    determinant = jnp.linalg.det(jnp.matmul(u, vh, precision=precision))
     ones = jnp.ones_like(determinant)
     flip = jnp.stack([ones, ones, determinant], axis=-1)
-    rotation = u @ (flip[..., None] * vh)
-    return x_centred @ jnp.swapaxes(rotation, -1, -2) + mu_gt
+    rotation = jnp.matmul(u, flip[..., None] * vh, precision=precision)
+    return (
+        jnp.matmul(x_centred, jnp.swapaxes(rotation, -1, -2), precision=precision)
+        + mu_gt
+    )
 
 
 def _step(

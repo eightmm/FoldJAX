@@ -828,16 +828,20 @@ def boltz2_sample_forward(
                     random_r, random_tr = _compute_random_augmentation(
                         aug_key, atom_coords_c.shape[0], s_trans, atom_coords_c.dtype
                     )
-                atom_coords_c = atom_coords_c - atom_coords_c.mean(
-                    axis=-2, keepdims=True
+                atom_coords_c = atom_coords_c - _native_storage_mean(
+                    atom_coords_c, atom_mask
                 )
-                atom_coords_c = atom_coords_c @ random_r + random_tr
+                atom_coords_c = _rotate(atom_coords_c, random_r) + random_tr
                 # Step 0 has no prior denoised coords (eager keeps it None and
                 # skips the transform). Gate on ``has_denoised`` to replicate.
                 denoised_aug = (
-                    atom_coords_denoised_c
-                    - atom_coords_denoised_c.mean(axis=-2, keepdims=True)
-                ) @ random_r + random_tr
+                    _rotate(
+                        atom_coords_denoised_c
+                        - _native_storage_mean(atom_coords_denoised_c, atom_mask),
+                        random_r,
+                    )
+                    + random_tr
+                )
                 atom_coords_denoised_c = jnp.where(
                     has_denoised, denoised_aug, atom_coords_denoised_c
                 )
@@ -934,15 +938,17 @@ def boltz2_sample_forward(
                 random_r, random_tr = _compute_random_augmentation(
                     aug_key, atom_coords.shape[0], s_trans, atom_coords.dtype
                 )
-            atom_coords = atom_coords - atom_coords.mean(axis=-2, keepdims=True)
-            atom_coords = atom_coords @ random_r + random_tr
+            atom_coords = atom_coords - _native_storage_mean(atom_coords, atom_mask)
+            atom_coords = _rotate(atom_coords, random_r) + random_tr
             if atom_coords_denoised is not None:
-                atom_coords_denoised = atom_coords_denoised - atom_coords_denoised.mean(
-                    axis=-2, keepdims=True
+                atom_coords_denoised = atom_coords_denoised - _native_storage_mean(
+                    atom_coords_denoised, atom_mask
                 )
-                atom_coords_denoised = atom_coords_denoised @ random_r + random_tr
+                atom_coords_denoised = (
+                    _rotate(atom_coords_denoised, random_r) + random_tr
+                )
             if scaled_guidance_update is not None:
-                scaled_guidance_update = scaled_guidance_update @ random_r
+                scaled_guidance_update = _rotate(scaled_guidance_update, random_r)
 
         t_hat = sigma_tm * (1.0 + gamma)
         noise_var = jnp.maximum(noise_scale**2 * (t_hat**2 - sigma_tm**2), 0.0)
@@ -1103,6 +1109,45 @@ def _fk_energy_increment(
     return previous_energy - energy
 
 
+#: Every contraction that carries atom coordinates -- the per-step augmentation
+#: rotation and the reverse-diffusion Kabsch align -- runs at full FP32, which
+#: is what upstream runs them at (`main.py:1096` asks for "highest", and the
+#: align sits under `autocast(enabled=False)`). An explicit precision beats the
+#: `jax.default_matmul_precision` scope the port ships at "high": under TF32
+#: each coordinate is rounded to ~2^-11 of its magnitude on every step, which
+#: showed up as backbone bond lengths twice as noisy as upstream's, growing with
+#: the atom's distance from the centroid.
+_COORDINATE_PRECISION = jax.lax.Precision.HIGHEST
+
+#: Boltz's native atom storage rounds the real atoms up to the query window
+#: (`featurizerv2.py` pads to a multiple of `atoms_per_window_queries`).
+_NATIVE_ATOM_WINDOW = 32
+
+
+def _rotate(coords: jnp.ndarray, rotation: jnp.ndarray) -> jnp.ndarray:
+    return jnp.matmul(coords, rotation, precision=_COORDINATE_PRECISION)
+
+
+def _native_storage_mean(coords: jnp.ndarray, atom_mask: jnp.ndarray) -> jnp.ndarray:
+    """Upstream's unmasked centroid, taken over the native atom storage only.
+
+    Upstream centres on `atom_coords.mean(dim=-2)`, which includes the few
+    window-padding atoms of its own storage. A serving bucket or a
+    context-parallel alignment appends further dummy atoms, and those must not
+    move the structure, so the mean stops at the native storage length: the
+    real atoms rounded up to the window, never past the array.
+    """
+    atoms = coords.shape[-2]
+    real = jnp.sum(atom_mask.astype(jnp.int32), axis=-1, keepdims=True)
+    native = jnp.minimum(
+        (real + _NATIVE_ATOM_WINDOW - 1) // _NATIVE_ATOM_WINDOW * _NATIVE_ATOM_WINDOW,
+        atoms,
+    )
+    keep = jnp.arange(atoms, dtype=jnp.int32)[None, :] < native
+    total = jnp.sum(jnp.where(keep[..., None], coords, 0.0), axis=-2, keepdims=True)
+    return total / jnp.maximum(native, 1)[..., None].astype(coords.dtype)
+
+
 def _compute_random_augmentation(
     key: jnp.ndarray,
     multiplicity: int,
@@ -1157,18 +1202,26 @@ def _weighted_rigid_align(
     pred_centered = pred_coords - pred_centroid
 
     # cov[..., i, j] = sum_n (w * pred_centered)[..., n, i] * true_centered[..., n, j]
-    cov = jnp.einsum("...ni,...nj->...ij", w * pred_centered, true_centered)
+    precision = _COORDINATE_PRECISION
+    cov = jnp.einsum(
+        "...ni,...nj->...ij", w * pred_centered, true_centered, precision=precision
+    )
     u, _, vh = jnp.linalg.svd(cov.astype(jnp.float32), full_matrices=True)
     v = jnp.swapaxes(vh, -1, -2)
 
-    rot = jnp.einsum("...ij,...kj->...ik", u, v)
+    rot = jnp.einsum("...ij,...kj->...ik", u, v, precision=precision)
     det = jnp.linalg.det(rot)
     f = jnp.broadcast_to(jnp.eye(dim, dtype=jnp.float32), cov.shape[:-2] + (dim, dim))
     f = f.at[..., -1, -1].set(det)
-    rot = jnp.einsum("...ij,...jk,...lk->...il", u, f, v)
+    rot = jnp.einsum("...ij,...jk,...lk->...il", u, f, v, precision=precision)
 
     aligned = (
-        jnp.einsum("...ni,...ji->...nj", true_centered, rot.astype(true_coords.dtype))
+        jnp.einsum(
+            "...ni,...ji->...nj",
+            true_centered,
+            rot.astype(true_coords.dtype),
+            precision=precision,
+        )
         + pred_centroid
     )
     return aligned

@@ -1171,7 +1171,11 @@ def predict(
     predict_kwargs = {
         "recycling_steps": num_recycles,
         "num_sampling_steps": num_steps,
-        "augmentation": False,
+        # Upstream `AtomDiffusion.sample` centres, rotates and translates the
+        # coordinates on every step with no switch (`diffusionv2.py:351-357`).
+        # With it off the sampler never re-centres, and the released run's
+        # structures drifted to a fixed ~46 A off the origin.
+        "augmentation": True,
         "steering_args": steering_args,
         "run_confidence": True,
         "return_representations": wanted_representations,
