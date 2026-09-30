@@ -293,13 +293,14 @@ def test_protenix_bond_copy_index_follows_chain_order(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("model", "mutate", "message"),
+    ("model", "mutate", "message", "options"),
     [
         # Boltz derives pairing from one a3m, so a paired MSA has nowhere to go.
         (
             "boltz2",
             lambda job: job["entities"][0].update({"paired_msa": "paired.a3m"}),
             "cannot express paired_msa",
+            None,
         ),
         (
             "opendde",
@@ -315,6 +316,9 @@ def test_protenix_bond_copy_index_follows_chain_order(tmp_path: Path) -> None:
                 }
             ),
             "use_template=true",
+            # By default upstream's ignored template is dropped with a warning
+            # (tests/test_template_gate.py); the refusal is the opt-out's.
+            {"ignore_templates": False},
         ),
         (
             "opendde",
@@ -326,6 +330,8 @@ def test_protenix_bond_copy_index_follows_chain_order(tmp_path: Path) -> None:
                 }
             ),
             "use_rna_msa=true",
+            # Likewise dropped by default (tests/test_nucleic_msa.py).
+            {"ignore_nucleic_msa": False},
         ),
         (
             "opendde",
@@ -337,16 +343,17 @@ def test_protenix_bond_copy_index_follows_chain_order(tmp_path: Path) -> None:
                 }
             ),
             "only rnaSequence.unpairedMsaPath",
+            None,
         ),
     ],
 )
 def test_unsupported_features_fail_instead_of_being_dropped(
-    tmp_path: Path, job: dict, model: str, mutate, message: str
+    tmp_path: Path, job: dict, model: str, mutate, message: str, options
 ) -> None:
     mutate(job)
     source = _write(tmp_path / "job.json", job)
     with pytest.raises(ValueError, match=message):
-        _materialize(source, model, tmp_path)
+        _materialize(source, model, tmp_path, options=options)
 
 
 def test_opendde_opt_in_materializes_rna_msa_and_mapped_template(

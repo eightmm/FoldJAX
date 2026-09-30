@@ -227,9 +227,12 @@ configuration on both sides and explicitly cuts only the sample count to four.
 and sampling surface. OpenDDE reports template and RNA-MSA support, but both
 routes are deliberately opt-in: set `options.use_template=true` and/or
 `options.use_rna_msa=true` in the common job. Their default is false, and a job
-that supplies either input without its opt-in is rejected instead of silently
-dropping scientific input. Two fields further describe the *common schema* route:
-`common_schema_features` is what this backend's dialect can carry from a
+that supplies either input without its opt-in folds without it, as upstream
+does, with a `UserWarning` and a record in the run manifest's
+`ignored_templates` or `ignored_msas`; `options.ignore_templates=false` or
+`options.ignore_nucleic_msa=false` rejects such a job instead. Two fields
+further describe the *common schema* route: `common_schema_features` is what
+this backend's dialect can carry from a
 FoldJAX job document, and `native_only_features` names abilities the model has
 but the common adapter cannot safely reach. Templates are the case that
 matters: backend support does not imply that every input route honours a

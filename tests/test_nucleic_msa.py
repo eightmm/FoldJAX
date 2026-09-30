@@ -1,9 +1,11 @@
-"""A nucleic-acid alignment a backend never reads is refused, not dropped.
+"""A nucleic-acid alignment a backend never reads is dropped as upstream drops it.
 
 Boltz-2 and ESMFold2 read no RNA or DNA alignment, OpenFold3 no DNA one, and
 Protenix and OpenDDE no DNA one and no RNA one without ``use_rna_msa=true``
-(upstream's flag, released false by both). Each used to accept the document
-and fold the chain from its sequence alone.
+(upstream's flag, released false by both). Each upstream folds such a chain
+from its sequence alone and says nothing. FoldJAX does the same by default,
+but warns and records the drop in the run manifest's ``ignored_msas``;
+``ignore_nucleic_msa=false`` refuses the job instead.
 A nucleic ``paired_msa`` follows the same rule: only OpenFold3 reads one,
 and only for RNA.
 """
@@ -11,6 +13,7 @@ and only for RNA.
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -80,6 +83,15 @@ def _materialize(
     )
 
 
+def _assert_warned(caught, chain: str, field: str, path: str) -> None:
+    """One warning names the chain, the field and the file it drops."""
+    messages = [str(warning.message) for warning in caught]
+    assert any(
+        f"chain(s) {chain} " in message and field in message and repr(path) in message
+        for message in messages
+    ), messages
+
+
 def _read(path: Path):
     text = path.read_text()
     return yaml.safe_load(text) if path.suffix == ".yaml" else json.loads(text)
@@ -116,46 +128,51 @@ def _chain_msas(model: str, native) -> dict[str, list[str]]:
     return found
 
 
+@pytest.mark.parametrize("options", [None, {IGNORE_NUCLEIC_MSA: True}])
 @pytest.mark.parametrize(("model", "kind"), _IGNORED)
-def test_an_ignored_nucleic_msa_is_refused_by_default(
+def test_an_ignored_nucleic_msa_is_dropped_with_a_warning_and_a_record(
+    tmp_path: Path, model: str, kind: str, options: dict | None
+) -> None:
+    """The default, and an explicit true, fold the chain without it as upstream."""
+    source = _job(tmp_path, kind)
+    ignored: list = []
+    with pytest.warns(UserWarning) as caught:
+        native = _read(_materialize(source, model, options, ignored))
+    _assert_warned(caught, "N", "unpaired_msa", f"{kind}.a3m")
+
+    msas = _chain_msas(model, native)
+    assert kind not in msas
+    # The protein alignment is untouched.
+    assert len(msas["protein"]) == 1
+    (record,) = ignored
+    assert {key: value for key, value in record.items() if key != "reason"} == {
+        "chains": ["N"],
+        "type": kind,
+        "field": "unpaired_msa",
+        "path": f"{kind}.a3m",
+        "resolved_path": str((tmp_path / f"{kind}.a3m").resolve()),
+    }
+    assert record["reason"].startswith(
+        f"{model} does not read {kind.upper()} alignments"
+    )
+    assert "as upstream does" in record["reason"]
+
+
+@pytest.mark.parametrize(("model", "kind"), _IGNORED)
+def test_ignore_nucleic_msa_false_refuses_it(
     tmp_path: Path, model: str, kind: str
 ) -> None:
     source = _job(tmp_path, kind)
+    ignored: list = []
     with pytest.raises(ValueError) as error:
-        _materialize(source, model)
+        _materialize(source, model, {IGNORE_NUCLEIC_MSA: False}, ignored)
     message = str(error.value)
     assert message.startswith(f"{model} cannot express ")
     assert f"{kind.upper()} unpaired_msa" in message
     assert "entity 'N'" in message
     assert f"{kind}.a3m" in message
-    assert f"{IGNORE_NUCLEIC_MSA}=true" in message
-
-
-@pytest.mark.parametrize(("model", "kind"), _IGNORED)
-def test_the_opt_in_leaves_it_out_of_the_native_input_and_says_so(
-    tmp_path: Path, model: str, kind: str
-) -> None:
-    source = _job(tmp_path, kind)
-    ignored: list = []
-    native = _read(_materialize(source, model, {IGNORE_NUCLEIC_MSA: True}, ignored))
-
-    msas = _chain_msas(model, native)
-    assert kind not in msas
-    # The protein alignment is untouched by the option.
-    assert len(msas["protein"]) == 1
-    assert ignored == [
-        {
-            "chains": ["N"],
-            "type": kind,
-            "field": "unpaired_msa",
-            "path": f"{kind}.a3m",
-            "resolved_path": str((tmp_path / f"{kind}.a3m").resolve()),
-            "reason": (
-                f"{model} does not read {kind.upper()} alignments; dropped by "
-                f"{IGNORE_NUCLEIC_MSA}=true"
-            ),
-        }
-    ]
+    assert f"{IGNORE_NUCLEIC_MSA}=false" in message
+    assert ignored == []
 
 
 @pytest.mark.parametrize(
@@ -164,10 +181,13 @@ def test_the_opt_in_leaves_it_out_of_the_native_input_and_says_so(
         ("alphafold3", None),
         ("protenix", {"use_rna_msa": True}),
         ("protenix", {"use_rna_msa": True, IGNORE_NUCLEIC_MSA: True}),
+        ("protenix", {"use_rna_msa": True, IGNORE_NUCLEIC_MSA: False}),
         ("openfold3", None),
         ("openfold3", {IGNORE_NUCLEIC_MSA: True}),
+        ("openfold3", {IGNORE_NUCLEIC_MSA: False}),
         ("opendde", {"use_rna_msa": True}),
         ("opendde", {"use_rna_msa": True, IGNORE_NUCLEIC_MSA: True}),
+        ("opendde", {"use_rna_msa": True, IGNORE_NUCLEIC_MSA: False}),
     ],
 )
 def test_an_rna_msa_the_backend_reads_still_reaches_it(
@@ -175,7 +195,10 @@ def test_an_rna_msa_the_backend_reads_still_reaches_it(
 ) -> None:
     source = _job(tmp_path, "rna")
     ignored: list = []
-    native = _read(_materialize(source, model, options, ignored))
+    # Nothing is dropped, so nothing is warned about.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        native = _read(_materialize(source, model, options, ignored))
     msas = _chain_msas(model, native)
     assert len(msas["rna"]) == 1
     assert len(msas["protein"]) == 1
@@ -212,13 +235,15 @@ def test_the_option_is_checked_while_planning(tmp_path: Path, model: str) -> Non
     job = _job(tmp_path, None)
     backend = get_backend(model)
     formats = backend.capabilities().input_formats
-    common = PredictionRequest(
-        model=model,
-        input=job,
-        input_format="foldjax",
-        options={IGNORE_NUCLEIC_MSA: True},
-    )
-    backend.validate_request(common)
+    for value in (True, False):
+        backend.validate_request(
+            PredictionRequest(
+                model=model,
+                input=job,
+                input_format="foldjax",
+                options={IGNORE_NUCLEIC_MSA: value},
+            )
+        )
     with pytest.raises(ValueError, match=f"{IGNORE_NUCLEIC_MSA} must be a boolean"):
         backend.validate_request(
             PredictionRequest(
@@ -269,7 +294,7 @@ def _weights(tmp_path: Path) -> Path:
 
 
 @pytest.mark.parametrize("model", ["opendde", "protenix"])
-def test_a_run_refuses_then_records_the_drop_in_its_manifest(
+def test_a_run_drops_and_records_it_unless_the_option_refuses(
     tmp_path: Path, model: str
 ) -> None:
     source = _job(tmp_path, "rna")
@@ -288,32 +313,40 @@ def test_a_run_refuses_then_records_the_drop_in_its_manifest(
 
     with backend_override(model, _recorder(model, seen)):
         with pytest.raises(ValueError) as refusal:
-            foldjax.predict(request({}, "refused"))
+            foldjax.predict(request({IGNORE_NUCLEIC_MSA: False}, "refused"))
         assert seen == []
         assert not (tmp_path / "refused" / MANIFEST_NAME).exists()
 
-        foldjax.predict(request({IGNORE_NUCLEIC_MSA: True}, "dropped"))
+        with pytest.warns(UserWarning) as caught:
+            foldjax.predict(request({}, "default"))
+        _assert_warned(caught, "N", "unpaired_msa", "rna.a3m")
+        with pytest.warns(UserWarning):
+            foldjax.predict(request({IGNORE_NUCLEIC_MSA: True}, "explicit"))
 
     # The refusal names the entity and both ways out.
     message = str(refusal.value)
     assert "entity 'N'" in message
     assert "use_rna_msa=true" in message
-    assert f"{IGNORE_NUCLEIC_MSA}=true" in message
+    assert f"{IGNORE_NUCLEIC_MSA}=false" in message
 
     # The native runner never sees an option only the translation consumes.
-    (ran,) = seen
-    assert IGNORE_NUCLEIC_MSA not in ran.options
-    native = _read(ran.input)
-    assert _chain_msas(model, native) == {
-        "protein": [str((tmp_path / "protein.a3m").resolve())]
-    }
+    for ran in seen:
+        assert IGNORE_NUCLEIC_MSA not in ran.options
+        assert _chain_msas(model, _read(ran.input)) == {
+            "protein": [str((tmp_path / "protein.a3m").resolve())]
+        }
+    assert len(seen) == 2
 
-    manifest = json.loads((tmp_path / "dropped" / MANIFEST_NAME).read_text())
-    assert manifest["options"][IGNORE_NUCLEIC_MSA] is True
-    (record,) = manifest["ignored_msas"]
-    assert record["chains"] == ["N"]
-    assert record["type"] == "rna"
-    assert record["resolved_path"] == str((tmp_path / "rna.a3m").resolve())
+    for out in ("default", "explicit"):
+        manifest = json.loads((tmp_path / out / MANIFEST_NAME).read_text())
+        (record,) = manifest["ignored_msas"]
+        assert record["chains"] == ["N"]
+        assert record["type"] == "rna"
+        assert record["resolved_path"] == str((tmp_path / "rna.a3m").resolve())
+    default = json.loads((tmp_path / "default" / MANIFEST_NAME).read_text())
+    assert IGNORE_NUCLEIC_MSA not in default["options"]
+    explicit = json.loads((tmp_path / "explicit" / MANIFEST_NAME).read_text())
+    assert explicit["options"][IGNORE_NUCLEIC_MSA] is True
 
 
 def test_a_run_without_a_dropped_alignment_records_none(tmp_path: Path) -> None:
@@ -541,48 +574,52 @@ def _chain_paired_msas(model: str, native) -> dict[str, list[str]]:
 
 
 @pytest.mark.parametrize(("model", "kind"), _PAIRED_IGNORED)
-def test_an_ignored_nucleic_paired_msa_is_refused_by_default(
+def test_ignore_nucleic_msa_false_refuses_a_nucleic_paired_msa(
     tmp_path: Path, model: str, kind: str
 ) -> None:
     source = _paired_job(tmp_path, kind)
     with pytest.raises(ValueError) as error:
-        _materialize(source, model)
+        _materialize(source, model, {IGNORE_NUCLEIC_MSA: False})
     message = str(error.value)
     assert message.startswith(f"{model} cannot express a {kind.upper()} paired_msa")
     assert "entity 'N'" in message
     assert f"{kind}_paired.a3m" in message
-    assert f"{IGNORE_NUCLEIC_MSA}=true" in message
-
-
-@pytest.mark.parametrize(("model", "kind"), _PAIRED_IGNORED)
-def test_the_opt_in_leaves_a_nucleic_paired_msa_out_and_says_so(
-    tmp_path: Path, model: str, kind: str
-) -> None:
-    source = _paired_job(tmp_path, kind)
-    ignored: list = []
-    native = _read(_materialize(source, model, {IGNORE_NUCLEIC_MSA: True}, ignored))
-
-    paired = _chain_paired_msas(model, native)
-    assert kind not in paired
-    # The protein's alignments are untouched by the option.
-    assert len(paired["protein"]) == 1
-    assert len(_chain_msas(model, native)["protein"]) == 1
-    assert ignored == [
-        {
-            "chains": ["N"],
-            "type": kind,
-            "field": "paired_msa",
-            "path": f"{kind}_paired.a3m",
-            "resolved_path": str((tmp_path / f"{kind}_paired.a3m").resolve()),
-            "reason": (
-                f"{model} does not read {kind.upper()} paired alignments; "
-                f"dropped by {IGNORE_NUCLEIC_MSA}=true"
-            ),
-        }
-    ]
+    assert f"{IGNORE_NUCLEIC_MSA}=false" in message
 
 
 @pytest.mark.parametrize("options", [None, {IGNORE_NUCLEIC_MSA: True}])
+@pytest.mark.parametrize(("model", "kind"), _PAIRED_IGNORED)
+def test_a_nucleic_paired_msa_is_dropped_with_a_warning_and_a_record(
+    tmp_path: Path, model: str, kind: str, options: dict | None
+) -> None:
+    source = _paired_job(tmp_path, kind)
+    ignored: list = []
+    with pytest.warns(UserWarning) as caught:
+        native = _read(_materialize(source, model, options, ignored))
+    _assert_warned(caught, "N", "paired_msa", f"{kind}_paired.a3m")
+
+    paired = _chain_paired_msas(model, native)
+    assert kind not in paired
+    # The protein's alignments are untouched.
+    assert len(paired["protein"]) == 1
+    assert len(_chain_msas(model, native)["protein"]) == 1
+    (record,) = ignored
+    assert {key: value for key, value in record.items() if key != "reason"} == {
+        "chains": ["N"],
+        "type": kind,
+        "field": "paired_msa",
+        "path": f"{kind}_paired.a3m",
+        "resolved_path": str((tmp_path / f"{kind}_paired.a3m").resolve()),
+    }
+    assert record["reason"].startswith(
+        f"{model} does not read {kind.upper()} paired alignments"
+    )
+    assert "as upstream does" in record["reason"]
+
+
+@pytest.mark.parametrize(
+    "options", [None, {IGNORE_NUCLEIC_MSA: True}, {IGNORE_NUCLEIC_MSA: False}]
+)
 def test_openfold3_still_receives_an_rna_paired_msa(
     tmp_path: Path, options: dict | None
 ) -> None:
@@ -612,18 +649,21 @@ def test_openfold3_still_receives_an_rna_paired_msa(
         ("opendde", "rna", "cannot express RNA paired_msa"),
     ],
 )
-def test_the_opt_in_does_not_turn_an_inexpressible_paired_msa_into_a_drop(
-    tmp_path: Path, model: str, kind: str, reason: str
+@pytest.mark.parametrize("options", [None, {IGNORE_NUCLEIC_MSA: True}])
+def test_an_inexpressible_paired_msa_is_refused_not_dropped(
+    tmp_path: Path, model: str, kind: str, reason: str, options: dict | None
 ) -> None:
     # No protein pairing, so the refusal can only come from the nucleic chain.
     source = _paired_job(tmp_path, kind, protein_paired=False)
     ignored: list = []
     with pytest.raises(ValueError, match=reason):
-        _materialize(source, model, {IGNORE_NUCLEIC_MSA: True}, ignored)
+        _materialize(source, model, options, ignored)
     assert ignored == []
 
 
-def test_a_run_refuses_then_records_a_dropped_paired_msa(tmp_path: Path) -> None:
+def test_a_run_records_a_dropped_paired_msa_unless_the_option_refuses(
+    tmp_path: Path,
+) -> None:
     source = _paired_job(tmp_path, "dna")
     seen: list = []
 
@@ -640,11 +680,13 @@ def test_a_run_refuses_then_records_a_dropped_paired_msa(tmp_path: Path) -> None
 
     with backend_override("protenix", _recorder("protenix", seen)):
         with pytest.raises(ValueError, match="a DNA paired_msa"):
-            foldjax.predict(request({}, "refused"))
+            foldjax.predict(request({IGNORE_NUCLEIC_MSA: False}, "refused"))
         assert seen == []
         assert not (tmp_path / "refused" / MANIFEST_NAME).exists()
 
-        foldjax.predict(request({IGNORE_NUCLEIC_MSA: True}, "dropped"))
+        with pytest.warns(UserWarning) as caught:
+            foldjax.predict(request({}, "dropped"))
+    _assert_warned(caught, "N", "paired_msa", "dna_paired.a3m")
 
     (ran,) = seen
     assert IGNORE_NUCLEIC_MSA not in ran.options

@@ -11,7 +11,13 @@ import foldjax
 from foldjax import ExecutionConfig, Job, ModelConfig, Protein, get_model
 from foldjax.models import _representations
 from foldjax.registry import get_backend
-from foldjax.schema import PredictionRequest, PredictionResult
+from foldjax.schema import (
+    DEFAULT_SEEDS,
+    RANDOM_SEED,
+    RANDOM_SEED_BOUND,
+    PredictionRequest,
+    PredictionResult,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -46,6 +52,21 @@ def test_all_models_advertise_real_input_stage_and_resolve_all(tmp_path, model):
         handle.plan(tmp_path / "job.json", stage="inputs", outputs="pair")
     with pytest.raises(ValueError, match="representation"):
         handle.plan(tmp_path / "job.json", stage="inputs", outputs="all,pair")
+
+
+@pytest.mark.parametrize("model", foldjax.available_models())
+def test_an_omitted_seed_follows_the_upstream_default(tmp_path, model):
+    handle = get_model(model, weights=tmp_path / "weights")
+    request = handle.plan(tmp_path / "job.json")
+    policy = DEFAULT_SEEDS[model]
+    if isinstance(policy, int):
+        assert (request.seed, request.seed_source) == (policy, "upstream")
+    else:
+        # A common-schema job names no modelSeeds, so both other policies draw.
+        assert request.seed_source == RANDOM_SEED
+        assert 0 <= request.seed < RANDOM_SEED_BOUND
+    explicit = handle.plan(tmp_path / "job.json", seed=5)
+    assert (explicit.seed, explicit.seed_source) == (5, "user")
 
 
 def test_model_padding_selects_shapes_without_choosing_an_msa_depth(tmp_path):

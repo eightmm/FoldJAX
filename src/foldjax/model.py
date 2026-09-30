@@ -151,7 +151,7 @@ class Model:
         *,
         stage: str = "full",
         outputs: Sequence[str] | str | None = None,
-        seed: int = 0,
+        seed: int | None = None,
         output_dir: str | Path | None = None,
         base_dir: str | Path | None = None,
     ) -> PredictionRequest:
@@ -160,6 +160,11 @@ class Model:
         A Job object is persisted in the managed job store. Relative assets in
         that object use base_dir (default current directory); file inputs retain
         their own document-relative semantics.
+
+        An omitted ``seed`` follows the model's upstream default, as `foldjax
+        predict` does (``DEFAULT_SEEDS``). Where upstream seeds nothing, one is
+        drawn here rather than left unset as `foldjax plan` shows it, because
+        the stage methods run the plan they are given.
         """
         supported = self.capabilities
         if stage not in {"full", "trunk", "inputs"}:

@@ -562,7 +562,8 @@ def test_capabilities_name_what_the_common_schema_cannot_reach() -> None:
 
     # OpenDDE's released default leaves templates off, but the v1.1.1 route is
     # reachable through the explicit use_template option. Capabilities describe
-    # what can be selected, while compatibility below enforces the opt-in.
+    # what can be selected; without the opt-in a template is dropped, as
+    # upstream drops it (compatibility below).
     opendde = capabilities("opendde")
     assert opendde.supports_templates is True
     assert "templates" in opendde.common_schema_features
@@ -570,41 +571,39 @@ def test_capabilities_name_what_the_common_schema_cannot_reach() -> None:
 
 
 @pytest.mark.parametrize(
-    ("entity", "message"),
+    "entity",
     [
-        (
-            {
-                "type": "rna",
-                "id": "R",
-                "sequence": "ACGU",
-                "unpaired_msa": "rna.a3m",
-            },
-            "use_rna_msa=true",
-        ),
-        (
-            {
-                "type": "protein",
-                "id": "A",
-                "sequence": SEQUENCE,
-                "templates": [
-                    {
-                        "mmcif": "template.cif",
-                        "query_indices": [1],
-                        "template_indices": [1],
-                    }
-                ],
-            },
-            "use_template=true",
-        ),
+        {
+            "type": "rna",
+            "id": "R",
+            "sequence": "ACGU",
+            "unpaired_msa": "rna.a3m",
+        },
+        {
+            "type": "protein",
+            "id": "A",
+            "sequence": SEQUENCE,
+            "templates": [
+                {
+                    "mmcif": "template.cif",
+                    "query_indices": [1],
+                    "template_indices": [1],
+                }
+            ],
+        },
     ],
+    ids=["rna_msa", "template"],
 )
-def test_opendde_compatibility_rejects_common_inputs_it_would_drop(
-    entity: dict, message: str
+def test_opendde_compatibility_accepts_inputs_it_drops_as_upstream(
+    entity: dict,
 ) -> None:
-    reason = compatibility({"entities": [entity]}, "opendde")
+    """The run proceeds, dropping the input with a warning, so the job is runnable.
 
-    assert reason is not None
-    assert message in reason
+    `compatibility` answers with `_validate` at its defaults; the refusal that
+    ``ignore_nucleic_msa=false`` or ``ignore_templates=false`` asks for is
+    covered in tests/test_nucleic_msa.py and tests/test_template_gate.py.
+    """
+    assert compatibility({"entities": [entity]}, "opendde") is None
 
 
 def test_fasta_records_become_chains() -> None:

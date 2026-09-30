@@ -1,12 +1,13 @@
-"""A common-schema template Protenix or OpenDDE would ignore is refused.
+"""A common-schema template Protenix or OpenDDE would ignore is dropped as upstream.
 
 Both upstreams read a chain's templates only under ``use_template``, released
 false (Protenix ``configs/configs_inference.py:36`` and
 ``protenix/data/template/template_featurizer.py:710``; OpenDDE
-``config/inference_defaults.py:28``). The Protenix port used to read them
-anyway. The contract follows the nucleic-MSA one (``tests/test_nucleic_msa.py``):
-refused by default, read with ``use_template=true``, dropped and recorded in the
-manifest's ``ignored_templates`` with ``ignore_templates=true``.
+``config/inference_defaults.py:28``), and otherwise ignore them silently. The
+Protenix port used to read them anyway. The contract follows the nucleic-MSA
+one (``tests/test_nucleic_msa.py``): by default the template is dropped with a
+warning and recorded in the manifest's ``ignored_templates``; it is read with
+``use_template=true`` and refused with ``ignore_templates=false``.
 
 Requests below pass ``seed`` and ``msa`` explicitly and give every protein an
 alignment, so they mean the same on a base where either default moves.
@@ -15,6 +16,7 @@ alignment, so they mean the same on a base where either default moves.
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 
 import pytest
@@ -76,40 +78,70 @@ def _templates_path(path: Path) -> object:
     return entry["proteinChain"].get("templatesPath")
 
 
+def _assert_warned(caught) -> None:
+    """One warning names the chain, the field and the file it drops."""
+    messages = [str(warning.message) for warning in caught]
+    assert any(
+        "chain(s) A " in message
+        and "templates" in message
+        and "'template.cif'" in message
+        for message in messages
+    ), messages
+
+
 @pytest.mark.parametrize("model", _MODELS)
-def test_a_template_is_refused_at_the_released_use_template(
-    tmp_path: Path, model: str
-) -> None:
+def test_ignore_templates_false_refuses_it(tmp_path: Path, model: str) -> None:
+    ignored: list = []
     with pytest.raises(ValueError) as refusal:
-        _materialize(_job(tmp_path), model)
+        _materialize(
+            _job(tmp_path),
+            model,
+            options={IGNORE_TEMPLATES: False},
+            ignored_templates=ignored,
+        )
     message = str(refusal.value)
     assert f"{model} cannot express templates in the common schema" in message
     assert "entity 'A'" in message
     assert "use_template=true" in message
-    assert f"{IGNORE_TEMPLATES}=true" in message
+    assert f"{IGNORE_TEMPLATES}=false" in message
+    assert ignored == []
 
 
+@pytest.mark.parametrize(
+    "options", [{"use_template": True}, {"use_template": True, IGNORE_TEMPLATES: False}]
+)
 @pytest.mark.parametrize("model", _MODELS)
-def test_use_template_reads_it(tmp_path: Path, model: str) -> None:
-    written = _materialize(_job(tmp_path), model, options={"use_template": True})
-    assert _templates_path(written)
-
-
-@pytest.mark.parametrize("model", _MODELS)
-def test_ignore_templates_drops_and_records_it(tmp_path: Path, model: str) -> None:
+def test_use_template_reads_it(tmp_path: Path, model: str, options: dict) -> None:
     ignored: list = []
-    written = _materialize(
-        _job(tmp_path),
-        model,
-        options={IGNORE_TEMPLATES: True},
-        ignored_templates=ignored,
-    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        written = _materialize(
+            _job(tmp_path), model, options=options, ignored_templates=ignored
+        )
+    assert _templates_path(written)
+    assert ignored == []
+
+
+@pytest.mark.parametrize("options", [None, {IGNORE_TEMPLATES: True}])
+@pytest.mark.parametrize("model", _MODELS)
+def test_a_template_is_dropped_with_a_warning_and_a_record(
+    tmp_path: Path, model: str, options: dict | None
+) -> None:
+    """The default, and an explicit true, fold without it as upstream does."""
+    ignored: list = []
+    with pytest.warns(UserWarning) as caught:
+        written = _materialize(
+            _job(tmp_path), model, options=options, ignored_templates=ignored
+        )
+    _assert_warned(caught)
     assert _templates_path(written) is None
     (record,) = ignored
     assert record["chains"] == ["A"]
     assert record["field"] == "templates"
+    assert record["path"] == "template.cif"
     assert record["resolved_path"] == str((tmp_path / "template.cif").resolve())
     assert "use_template=true" in record["reason"]
+    assert "as upstream does" in record["reason"]
 
 
 @pytest.mark.parametrize("model", _MODELS)
@@ -126,16 +158,17 @@ def test_reading_and_dropping_at_once_is_refused(tmp_path: Path, model: str) -> 
 def test_the_option_is_checked_while_planning(tmp_path: Path, model: str) -> None:
     backend = get_backend(model)
     job = _job(tmp_path)
-    backend.validate_request(
-        PredictionRequest(
-            model=model,
-            input=job,
-            input_format="foldjax",
-            seed=1,
-            msa="none",
-            options={IGNORE_TEMPLATES: True},
+    for value in (True, False):
+        backend.validate_request(
+            PredictionRequest(
+                model=model,
+                input=job,
+                input_format="foldjax",
+                seed=1,
+                msa="none",
+                options={IGNORE_TEMPLATES: value},
+            )
         )
-    )
     with pytest.raises(ValueError, match=f"{IGNORE_TEMPLATES} must be a boolean"):
         backend.validate_request(
             PredictionRequest(
@@ -197,7 +230,7 @@ def _recorder(model: str, seen: list):
 
 
 @pytest.mark.parametrize("model", _MODELS)
-def test_a_run_records_the_dropped_template_in_its_manifest(
+def test_a_run_records_the_dropped_template_unless_the_option_refuses(
     tmp_path: Path, model: str
 ) -> None:
     weights = tmp_path / "weights.jax"
@@ -219,19 +252,30 @@ def test_a_run_records_the_dropped_template_in_its_manifest(
 
     with backend_override(model, _recorder(model, seen)):
         with pytest.raises(ValueError, match="use_template=true"):
-            foldjax.predict(request({}, "refused"))
+            foldjax.predict(request({IGNORE_TEMPLATES: False}, "refused"))
         assert seen == []
-        foldjax.predict(request({IGNORE_TEMPLATES: True}, "dropped"))
+        assert not (tmp_path / "refused" / MANIFEST_NAME).exists()
+        with pytest.warns(UserWarning) as caught:
+            foldjax.predict(request({}, "dropped"))
+        _assert_warned(caught)
+        with pytest.warns(UserWarning):
+            foldjax.predict(request({IGNORE_TEMPLATES: True}, "explicit"))
         foldjax.predict(request({"use_template": True}, "read"))
 
-    dropped, read = seen
-    assert IGNORE_TEMPLATES not in dropped.options
-    assert _templates_path(dropped.input) is None
+    dropped, explicit, read = seen
+    for ran in (dropped, explicit):
+        assert IGNORE_TEMPLATES not in ran.options
+        assert _templates_path(ran.input) is None
     assert _templates_path(read.input)
-    manifest = json.loads((tmp_path / "dropped" / MANIFEST_NAME).read_text())
-    assert manifest["options"][IGNORE_TEMPLATES] is True
-    (record,) = manifest["ignored_templates"]
-    assert record["chains"] == ["A"]
+    for out in ("dropped", "explicit"):
+        manifest = json.loads((tmp_path / out / MANIFEST_NAME).read_text())
+        (record,) = manifest["ignored_templates"]
+        assert record["chains"] == ["A"]
+        assert record["resolved_path"] == str((tmp_path / "template.cif").resolve())
+    default = json.loads((tmp_path / "dropped" / MANIFEST_NAME).read_text())
+    assert IGNORE_TEMPLATES not in default["options"]
+    asked = json.loads((tmp_path / "explicit" / MANIFEST_NAME).read_text())
+    assert asked["options"][IGNORE_TEMPLATES] is True
     read_manifest = json.loads((tmp_path / "read" / MANIFEST_NAME).read_text())
     assert read_manifest["ignored_templates"] == []
 

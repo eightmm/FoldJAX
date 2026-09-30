@@ -25,6 +25,10 @@ The same calls support `alphafold3`, `boltz2`, `protenix`, `opendde`,
 Relative MSA/template references inside a Python `Job` use `base_dir` (current
 working directory by default); file inputs retain document-relative references.
 Planning stores Python jobs in the managed job store and validates paths.
+An omitted `seed` follows the model's upstream default, as `foldjax predict`
+does (Protenix 101, OpenFold3 42, otherwise a drawn seed recorded as
+`seed_source: random`); `plan` resolves it, so the stage methods run the seed
+the plan shows.
 
 ## Public and private boundaries
 

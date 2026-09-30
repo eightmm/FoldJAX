@@ -706,6 +706,30 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **A nucleic-acid alignment or a template the backend never reads is
+  ignored, as upstream does, instead of refused.** This reverses the default
+  of the four Unreleased entries under Fixed that refused them (a nucleic
+  `unpaired_msa`, Protenix's RNA alignment under `use_rna_msa=false`, a DNA
+  `paired_msa`, and a Protenix or OpenDDE template under
+  `use_template=false`). Each upstream folds such a chain without the input
+  and says nothing, and FoldJAX input defaults follow the upstream.
+  `ignore_nucleic_msa` and `ignore_templates` now default to true: the input
+  is left out of the native input, a `UserWarning` names the chains, the
+  field and the path, and the run manifest records it under `ignored_msas`
+  or `ignored_templates` with the reason "ignored, as upstream does".
+  **This changes behaviour: a run that used to be refused now proceeds with
+  a warning**, following upstream. No recorded prediction changes: those
+  runs produced none, and a run that set the option to true drops the same
+  input as before. `--option
+  ignore_nucleic_msa=false` or `--option ignore_templates=false` restores
+  the refusal. `foldjax models --for JOB` answers from the same validator,
+  so it now lists such a job as runnable on those backends. `use_template=true`
+  with an explicit `ignore_templates=true` is still refused; with
+  `ignore_templates` omitted there is no conflict.
+  Fields a target cannot express are refused as before: an RNA `paired_msa`
+  on Protenix or OpenDDE, a `paired_msa` on Boltz-2 or ESMFold2, a template
+  on OpenFold3. AlphaFold 3 is unchanged and takes neither option.
+
 - **A protein chain with no alignment is refused by default instead of
   folded from its single sequence.** No upstream but ESMFold2 does that by
   default: Boltz-2 refuses the job ("Missing MSA's in input and
@@ -770,7 +794,11 @@ unless it says so here, in its own paragraph.
   defaults to None, `resolve_request` fills it in, and
   `PredictionRequest.resolved_seeds` raises until it has; a backend or
   `manifest.describe_run` called directly needs a request with a seed. An
-  explicit `seed=0` beside `seeds` is still accepted.
+  explicit `seed=0` beside `seeds` is still accepted. `Model.plan`,
+  `embed`, `encode` and `predict` follow the same default: their `seed`
+  keyword defaults to None instead of 0, and `plan` resolves it (drawing
+  where upstream seeds nothing, so the stage methods run the seed the plan
+  shows).
 
 - **Boltz-2 recycles 3 times by default, as upstream does.** `boltz predict
   --recycling_steps` defaults to 3 (`boltz/main.py:856`). Since 2026-09-08

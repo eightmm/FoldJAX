@@ -125,9 +125,10 @@ mixing generations. `foldjax doctor` prints which search is configured.
 Protenix 2.0.0 and OpenDDE both release `use_rna_msa=False`
 (Protenix `configs/configs_inference.py:37`, `--use_rna_msa` default false).
 With it false, upstream never opens an RNA chain's alignment and says nothing
-about it. A FoldJAX request keeps that default, and rejects an RNA
-`unpaired_msa` or `paired_msa` for either model instead of materializing a file
-the model will discard. Set `options={"use_rna_msa": true}` (CLI:
+about it. A FoldJAX request keeps that default: an RNA `unpaired_msa` is left
+out of the native input, as upstream leaves it unread, with a warning and a
+manifest record (below). An RNA `paired_msa` is refused for either model, since
+neither dialect can carry one. Set `options={"use_rna_msa": true}` (CLI:
 `--option use_rna_msa=true`) to read the RNA alignment, as upstream's flag
 does; protein MSAs are unaffected. Protenix, like upstream, allows the flag
 only for `protenix-v2` and the two v1.0.0 base models. Native Protenix and
@@ -140,17 +141,19 @@ The same rule applies to every nucleic-acid alignment a backend would discard.
 RNA `unpaired_msa` is read by AlphaFold 3 and OpenFold3, and by Protenix and
 OpenDDE with `use_rna_msa=true`. No backend reads a DNA one. Boltz-2 and
 ESMFold2 read neither. A common-schema job that gives such an alignment to a backend
-that ignores it is refused, with the entity and the backend named. Set
-`--option ignore_nucleic_msa=true` to fold the chain without it. The
-alignment is then left out of the native input, and the run manifest lists
-it under `ignored_msas`. AlphaFold 3's own parser already refuses a DNA
+that ignores it folds the chain without it, as that upstream does, but not
+silently: the alignment is left out of the native input, a `UserWarning` names
+the chain, the field and the file, and the run manifest lists it under
+`ignored_msas`. `ignore_nucleic_msa` (default `true`) governs this; set
+`--option ignore_nucleic_msa=false` to refuse such a job instead, with the
+entity and the backend named. AlphaFold 3's own parser already refuses a DNA
 alignment, so the option does not apply there. `--msa auto` searches RNA
 chains only for the backends that read the result.
 
 A nucleic-acid `paired_msa` follows the same rule. OpenFold3 reads an RNA one
 and no backend reads a DNA one. Protenix, OpenDDE and OpenFold3 would discard
-a DNA one, so the job is refused unless `ignore_nucleic_msa=true` is set, and
-the drop is then recorded under `ignored_msas`. Boltz-2 and ESMFold2 cannot
+a DNA one, so it is dropped with a warning and recorded under `ignored_msas`,
+or refused under `ignore_nucleic_msa=false`. Boltz-2 and ESMFold2 cannot
 express a `paired_msa` at all, Protenix and OpenDDE refuse an RNA one (above),
 and AlphaFold 3's parser refuses either, so the option does not turn those
 refusals into a drop.
@@ -177,13 +180,15 @@ refuse a bare file; **Boltz-2 aligns the mmCIF itself** and refuses a map it
 would have to ignore. Protenix and OpenDDE have native template machinery,
 but both released inference configurations set `use_template=False` (Protenix
 `configs/configs_inference.py:36`, OpenDDE `config/inference_defaults.py:28`)
-and then ignore a job's templates: FoldJAX preserves that default and rejects
-common-schema templates instead of silently dropping them. Set
-`options={"use_template": true}` (CLI: `--option use_template=true`) to
-materialize the mapped templates and run the template path, or
-`--option ignore_templates=true` to fold without them; the run manifest then
-lists each dropped template under `ignored_templates` (null for native input,
-which is not inspected). Native `templatesPath` follows the same opt-in rule
+and then ignore a job's templates. FoldJAX preserves that default and folds
+without common-schema templates as upstream does, but not silently: a
+`UserWarning` names the chain and the file, and the run manifest lists each
+dropped template under `ignored_templates` (null for native input, which is not
+inspected). Set `options={"use_template": true}` (CLI:
+`--option use_template=true`) to materialize the mapped templates and run the
+template path, or `--option ignore_templates=false` to refuse such a job
+instead. `use_template=true` with an explicit `ignore_templates=true` is
+refused as contradictory. Native `templatesPath` follows the same opt-in rule
 and is ignored with a warning without it. Upstream Protenix allows
 `use_template` only for `protenix-v2` and the two v1.0.0 base models, and so
 does this port; `--template-search-command` requires it.

@@ -123,9 +123,10 @@ _TARGETS = {
     ),
 }
 
-#: The per-job option that lets a nucleic-acid alignment a backend does
-#: not read be dropped instead of refused. The drop is recorded in the run
-#: manifest's ``ignored_msas``.
+#: The per-job option governing a nucleic-acid alignment a backend does not
+#: read. Its default, true, does what every such upstream does -- folds the
+#: chain without it -- but not silently: the drop is warned about and recorded
+#: in the run manifest's ``ignored_msas``. ``false`` refuses the job instead.
 IGNORE_NUCLEIC_MSA = "ignore_nucleic_msa"
 
 #: Nucleic-acid entity types whose ``unpaired_msa`` each backend's featurizer
@@ -186,13 +187,12 @@ _NUCLEIC_PAIRED_MSA_READ: dict[str, frozenset[str]] = {
 #: Backends whose upstream reads a chain's templates only under
 #: ``use_template=true``, released false: Protenix
 #: (``configs/configs_inference.py:36``, ``template_featurizer.py:710``) and
-#: OpenDDE (``config/inference_defaults.py:28``). A common-schema template is
-#: refused for them by default rather than silently discarded.
+#: OpenDDE (``config/inference_defaults.py:28``). Without it a common-schema
+#: template is discarded as upstream discards it, with a warning and a record.
 _USE_TEMPLATE_MODELS = frozenset({"opendde", "protenix"})
 
-#: The per-job option that drops such a template instead of refusing it, the
-#: template counterpart of ``IGNORE_NUCLEIC_MSA``. The drop is recorded in the
-#: run manifest's ``ignored_templates``.
+#: The template counterpart of ``IGNORE_NUCLEIC_MSA``: true by default (drop,
+#: warn, record under ``ignored_templates``), ``false`` refuses the job.
 IGNORE_TEMPLATES = "ignore_templates"
 
 
@@ -548,11 +548,11 @@ def _validate(
 ) -> None:
     """Check the common document against what ``model`` can express.
 
-    With ``ignore_nucleic_msa=true``, a nucleic-acid alignment the
-    backend does not read is removed from ``job`` and described in ``ignored``
-    instead of refused. With ``ignore_templates=true``, a template a backend
-    would discard at ``use_template=false`` is removed and described in
-    ``ignored_templates``.
+    A nucleic-acid alignment the backend does not read is removed from ``job``
+    and described in ``ignored``, and a template a backend would discard at
+    ``use_template=false`` in ``ignored_templates``, as their upstreams drop
+    them; ``ignore_nucleic_msa=false`` or ``ignore_templates=false`` refuses
+    the job instead.
     """
     options = options or {}
     # Only Boltz-2 resolves a CCD code against its own chemistry archive, and
@@ -573,10 +573,11 @@ def _validate(
         use_template = _strict_boolean(
             options.get("use_template", False), name="use_template"
         )
-        ignore_templates = _strict_boolean(
-            options.get(IGNORE_TEMPLATES, False), name=IGNORE_TEMPLATES
+        explicit = options.get(IGNORE_TEMPLATES)
+        ignore_templates = explicit is None or _strict_boolean(
+            explicit, name=IGNORE_TEMPLATES
         )
-        if use_template and ignore_templates:
+        if use_template and explicit is not None and ignore_templates:
             raise ValueError(
                 f"use_template=true reads the job's templates and "
                 f"{IGNORE_TEMPLATES}=true drops them; set one of the two"
@@ -587,7 +588,7 @@ def _validate(
         )
     nucleic_msa_read = _nucleic_msa_read(model, use_rna_msa=use_rna_msa)
     ignore_nucleic_msa = nucleic_msa_read is not None and _strict_boolean(
-        options.get(IGNORE_NUCLEIC_MSA, False), name=IGNORE_NUCLEIC_MSA
+        options.get(IGNORE_NUCLEIC_MSA, True), name=IGNORE_NUCLEIC_MSA
     )
     _reject_unknown(set(job) - _JOB_KEYS, _JOB_KEYS, "top-level fields")
     entities = job.get("entities")
@@ -655,8 +656,8 @@ def _validate(
                         f"but {model} reads RNA alignments only with "
                         "use_rna_msa=true, and upstream's released default is "
                         "false, which would discard it. Set --option "
-                        "use_rna_msa=true to read it, or --option "
-                        f"{IGNORE_NUCLEIC_MSA}=true to fold without it",
+                        "use_rna_msa=true to read it, or drop "
+                        f"{IGNORE_NUCLEIC_MSA}=false to fold without it",
                     )
             paired = feature == "paired_msa"
             read = _NUCLEIC_PAIRED_MSA_READ.get(model) if paired else nucleic_msa_read
@@ -675,9 +676,9 @@ def _validate(
                         f"{model} would discard it and fold that chain "
                         f"{'without pairing' if paired else 'from its sequence alone'} "
                         f"({_nucleic_msa_readers(kind)}). "
-                        f"Remove it, or set --option {IGNORE_NUCLEIC_MSA}=true "
-                        "to run without it; the run manifest then records the "
-                        "drop under ignored_msas",
+                        f"Remove it, or drop --option {IGNORE_NUCLEIC_MSA}=false "
+                        "to run without it as upstream does; the run manifest "
+                        "then records the drop under ignored_msas",
                     )
                 if ignored is not None:
                     ignored.append(
@@ -689,7 +690,7 @@ def _validate(
                             "reason": (
                                 f"{model} does not read {kind.upper()} "
                                 f"{'paired ' if paired else ''}alignments; "
-                                f"dropped by {IGNORE_NUCLEIC_MSA}=true"
+                                "ignored, as upstream does"
                             ),
                         }
                     )
@@ -724,9 +725,10 @@ def _validate(
                     f"template(s), but {model} reads templates only with "
                     "use_template=true, and upstream's released default is "
                     "false, which would discard them. Set --option "
-                    "use_template=true to read them, or --option "
-                    f"{IGNORE_TEMPLATES}=true to fold without them; the run "
-                    "manifest then records the drop under ignored_templates",
+                    "use_template=true to read them, or drop --option "
+                    f"{IGNORE_TEMPLATES}=false to fold without them as upstream "
+                    "does; the run manifest then records the drop under "
+                    "ignored_templates",
                 )
             if ignored_templates is not None:
                 ignored_templates.extend(
@@ -737,8 +739,7 @@ def _validate(
                         "path": template["mmcif"],
                         "reason": (
                             f"{model} reads templates only with "
-                            f"use_template=true; dropped by "
-                            f"{IGNORE_TEMPLATES}=true"
+                            "use_template=true; ignored, as upstream does"
                         ),
                     }
                     for template in templates
@@ -1421,6 +1422,17 @@ def materialize_native_input(
     base = source.parent
     for record in (*dropped, *dropped_templates):
         record["resolved_path"] = _path(record["path"], base)
+    if dropped or dropped_templates:
+        import warnings
+
+        for record in (*dropped, *dropped_templates):
+            warnings.warn(
+                f"{model}: chain(s) {', '.join(record['chains'])} name "
+                f"{record['field']} {record['path']!r}, which {record['reason']}; "
+                "the run manifest records it",
+                UserWarning,
+                stacklevel=2,
+            )
     if ignored is not None:
         ignored.extend(dropped)
     if ignored_templates is not None:
