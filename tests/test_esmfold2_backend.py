@@ -12,6 +12,7 @@ import dataclasses
 import json
 import os
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -191,7 +192,7 @@ def test_scalar_backend_withholds_unused_graph_outputs_without_exposing_an_overr
     assert seen.pop("memory_check") == "refuse"
     assert seen.pop("memory_budget").source == "none"
     assert seen == {
-        "num_recycles": 9,
+        "num_recycles": 3,
         "return_distogram_logits": False,
         **({"return_auxiliary_outputs": False} if managed_auxiliary_api else {}),
     }
@@ -599,7 +600,7 @@ def test_padded_split_path_requests_managed_outputs(tmp_path, monkeypatch) -> No
     assert kwargs.pop("memory_check") == "refuse"
     assert kwargs.pop("memory_budget").source == "none"
     assert kwargs == {
-        "num_recycles": 9,
+        "num_recycles": 3,
         "language_model_tokens": None,
         "preserve_prefix_rng": True,
         "return_distogram_logits": False,
@@ -1796,15 +1797,22 @@ def test_multi_seed_session_keeps_predict_job_only_wrappers_compatible(
     assert calls == {"load": 1, "predict_job": 2}
 
 
-def test_managed_recycling_uses_paper_loops_without_changing_sample_budget() -> None:
-    """Ten total paper loops override the release's three additional recycles.
+def test_managed_recycling_is_the_released_checkpoint_loop_count() -> None:
+    """The recycle default is the release's `num_loops`, 3 (4 trunk passes).
 
-    Steps and samples still come from the checkpoint: matching recurrence does
-    not silently opt into the paper's full diffusion and multi-seed protocol.
+    Upstream `ESMFold2Model.forward` reads `config.num_loops` when the argument
+    is None. Steps and samples come from the checkpoint inside the model, so
+    the adapter keeps no copy of them that nothing reads.
     """
-    assert DEFAULTS["num_diffusion_samples"] == 32
-    assert DEFAULTS["num_recycles"] + 1 == 10
-    assert DEFAULTS["num_sampling_steps"] == 14
+    assert DEFAULTS["num_recycles"] == 3
+    assert set(DEFAULTS) == {"num_recycles", "max_msa_depth"}
+    request = PredictionRequest(
+        model="esmfold2",
+        input=Path(__file__),
+        weights=Path(__file__).parent,
+        seed=0,
+    )
+    assert ESMFold2Backend().apply_sampling(request)["num_recycles"] == 3
 
     config = weights_dir("esmfold2") / "config.json"
     if not config.is_file():
@@ -1812,14 +1820,11 @@ def test_managed_recycling_uses_paper_loops_without_changing_sample_budget() -> 
 
     document = json.loads(config.read_text(encoding="utf-8"))
     assert document["type"] == "release", document.get("type")
-    assert document["num_diffusion_samples"] == DEFAULTS["num_diffusion_samples"]
+    assert document["num_diffusion_samples"] == 32
     # The release spells this `num_loops`; `num_recycles` is only this port's
     # internal name for it. Unifying internal names never renamed a checkpoint
     # key, and asserting the internal spelling against the release artifact is
     # how this test read a KeyError as a missing default for three weeks --
     # invisible in CI, which has no weight store and returns above.
-    assert document["num_loops"] == 3
-    assert (
-        document["structure_head"]["inference_num_steps"]
-        == DEFAULTS["num_sampling_steps"]
-    )
+    assert document["num_loops"] == DEFAULTS["num_recycles"]
+    assert document["structure_head"]["inference_num_steps"] == 14

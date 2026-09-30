@@ -74,12 +74,13 @@ from foldjax.schema import (
     _strict_boolean,
 )
 
-#: Managed defaults: paper inference loop count, with the remaining schedule
-#: inherited from the released checkpoint. See docs/recycling-defaults.md.
+#: Managed defaults. The recycle count is the released checkpoint's
+#: ``num_loops`` (3, so 4 trunk passes: upstream ``forward`` runs
+#: ``max(1, num_loops + 1)``). Diffusion steps and samples are not listed:
+#: they come off the checkpoint config (14 and 32) inside the model, and a
+#: copy here would be a second, unread statement of them.
 DEFAULTS = {
-    "num_recycles": 9,
-    "num_sampling_steps": 14,
-    "num_diffusion_samples": 32,
+    "num_recycles": 3,
     "max_msa_depth": 1024,
 }
 
@@ -954,8 +955,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
 
     def apply_sampling(self, request: PredictionRequest) -> dict[str, Any]:
         options = super().apply_sampling(request)
-        # ESMFold2 Appendix A.2.11 uses ten total loops; this port adds one.
-        # Keep the effective value in cache identity, including omitted requests.
+        # The released checkpoint's `num_loops`, which upstream `forward` reads
+        # when the argument is None. Keep the effective value in cache
+        # identity, including omitted requests.
         options.setdefault("num_recycles", DEFAULTS["num_recycles"])
         return options
 

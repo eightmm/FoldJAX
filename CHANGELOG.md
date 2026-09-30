@@ -717,6 +717,16 @@ unless it says so here, in its own paragraph.
   namespace; runs cached at the former 5 stay in theirs.
   `docs/recycling-defaults.md` records the superseded paper policy.
 
+- **ESMFold2 recycles 3 times by default, the released checkpoint's
+  `num_loops`.** Upstream `ESMFold2Model.forward` reads `config.num_loops`
+  (3) when no count is passed and runs `n + 1` loops, so 4. Since 2026-09-08
+  the adapter defaulted to 9 (ten loops), the paper's Appendix A.2.11
+  setting. **This changes what a recorded command predicts** for every
+  ESMFold2 run that did not name `--num-recycles`; pass `--num-recycles 9`
+  for the paper's ten loops. The adapter's `DEFAULTS` no longer lists
+  `num_sampling_steps` and `num_diffusion_samples`: nothing read them, and the
+  model takes both (14 and 32) from the checkpoint config, unchanged.
+
 - **On a GPU, Boltz-2 and OpenFold3 run the Pallas pair kernels by default,
   and Protenix runs the Pallas triangle multiplication.** An omitted setting
   now realises the Pallas-Triton kernels from the Added entry below:

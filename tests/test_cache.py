@@ -199,7 +199,7 @@ def test_esmfold2_fixed_defaults_share_the_omitted_cache_namespace(
         },
     )
 
-    assert backend.cache_profile(omitted) == {"num_recycles": 9}
+    assert backend.cache_profile(omitted) == {"num_recycles": 3}
     assert backend.cache_profile(explicit) == backend.cache_profile(omitted)
     assert resolve_cache_dir(explicit, backend) == resolve_cache_dir(omitted, backend)
 
@@ -212,7 +212,7 @@ def test_esmfold2_fixed_defaults_share_the_omitted_cache_namespace(
         ("max_msa_depth", 1023),
         ("num_samples", 32),
         ("num_steps", 14),
-        ("num_recycles", 3),
+        ("num_recycles", 9),
         ("cp_devices", np.int64(1)),
         ("max_msa_depth", np.int64(1024)),
         ("no_language_model", 0),
@@ -1254,7 +1254,7 @@ def test_resolve_cache_dir_requires_a_cache_root(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("model", "recycles"), [("alphafold3", 3), ("esmfold2", 9)]
+    ("model", "recycles"), [("alphafold3", 3)]
 )
 @pytest.mark.parametrize("padding", [False, True])
 def test_paper_recycling_defaults_preserve_overrides_and_cache_identity(
@@ -1301,3 +1301,21 @@ def test_boltz2_recycles_default_to_upstream_three(
 
     assert inspect.signature(native_predict).parameters["num_recycles"].default == 3
 
+
+@pytest.mark.parametrize("padding", [False, True])
+def test_esmfold2_recycles_default_to_the_checkpoint_loop_count(
+    tmp_path: Path, padding: bool
+) -> None:
+    """The release's `num_loops` is 3; the paper's 9 is now opt-in."""
+    backend = get_backend("esmfold2")
+    request = dataclasses.replace(
+        _request(tmp_path), model="esmfold2", padding=padding
+    )
+    explicit = dataclasses.replace(request, num_recycles=3)
+    native = dataclasses.replace(request, options={"num_recycles": 3})
+    paper = dataclasses.replace(request, num_recycles=9)
+    assert backend.apply_sampling(request)["num_recycles"] == 3
+    assert backend.apply_sampling(paper)["num_recycles"] == 9
+    assert resolve_cache_dir(request, backend) == resolve_cache_dir(explicit, backend)
+    assert resolve_cache_dir(request, backend) == resolve_cache_dir(native, backend)
+    assert resolve_cache_dir(request, backend) != resolve_cache_dir(paper, backend)

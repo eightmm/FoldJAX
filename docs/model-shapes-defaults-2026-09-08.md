@@ -59,7 +59,7 @@ Diffusion steps/samples는 기존 checkpoint 기본값이며, 전체 논문 재�
 | Protenix released base | 10 | 10 | 200 | 5 |
 | OpenDDE | 10 | 10 | 200 | 5 |
 | OpenFold3 | native 추가 recycling 3; 내부 config 4 | 4 | 200 | 5 |
-| ESMFold2 | 9 | 10 | 14 | 32 |
+| ESMFold2 | 3 (2026-09-30부터 checkpoint `num_loops`; 이전 9) | 4 | 14 | 32 |
 
 AF3/Boltz2/ESMFold2는 코드에서 recycle 설정에 1을 더한다. Protenix/OpenDDE는
 그 횟수만큼 loop를 돈다. OpenFold3는 adapter가 추가 recycling 수를 내부 실행

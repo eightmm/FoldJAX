@@ -3,7 +3,8 @@
 > **Superseded on 2026-09-30.** The project rule is now that input and
 > inference defaults follow each upstream's released inference path, not the
 > paper's benchmark schedule. Under that rule Boltz-2 is back to upstream's
-> `--recycling_steps 3` (`boltz/main.py:856`). Rows below that still follow
+> `--recycling_steps 3` (`boltz/main.py:856`), and ESMFold2 to the released
+> checkpoint's `num_loops: 3`. Rows below that still follow
 > the paper policy are marked; the rest of this page is kept as the record of
 > the 2026-09-08 decision. The audit is
 > `foldjax-bench/jctc-v2/paper/AUDIT-DEFAULTS-20260930.md`.
@@ -23,7 +24,7 @@ precision and checkpoints must also match to reproduce a paper's results.
 | Protenix base v1.0.0 | 10 | 10 | Protenix-v1 section 3.1 evaluation fixes inference recycles at 10. |
 | OpenDDE | 10 | 10 | **Publisher inference fallback**, not a verified paper benchmark count. |
 | OpenFold3 / OpenBind-0 | 3 | 4 | **Publisher checkpoint default fallback**; the older preview2 report is not evidence for OpenBind-0's evaluation schedule. |
-| ESMFold2 | **9** | **10** | Paper Appendix A.2.11 specifies ten loops; Algorithm 1 iterates T times. Current port adds one to `num_recycles`. |
+| ESMFold2 | 3 | 4 | **Upstream default since 2026-09-30**: the released checkpoint's `num_loops: 3`, which `ESMFold2Model.forward` reads when the argument is None and runs `max(1, n+1)` passes. From 2026-09-08 to 2026-09-30 it was 9 (ten loops), the paper's Appendix A.2.11 setting. |
 
 AF3 and ESMFold2 defaults are supplied by their common backend adapters for
 predict and cache warm, whether padding is on or off. Explicit common or native

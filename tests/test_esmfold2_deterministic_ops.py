@@ -132,7 +132,7 @@ def test_off_shares_the_omitted_namespace_and_on_gets_its_own(tmp_path) -> None:
     asked = dataclasses.replace(omitted, options={"deterministic": "on"})
 
     assert backend.cache_profile(explicit_off) == backend.cache_profile(omitted)
-    assert backend.cache_profile(asked) == {"num_recycles": 9, "deterministic": True}
+    assert backend.cache_profile(asked) == {"num_recycles": 3, "deterministic": True}
     assert resolve_cache_dir(asked, backend) != resolve_cache_dir(omitted, backend)
 
 
