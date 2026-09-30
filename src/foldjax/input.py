@@ -136,11 +136,14 @@ IGNORE_NUCLEIC_MSA = "ignore_nucleic_msa"
 #:   ``msa_id=-1`` (models/boltz2/data/parse/schema.py:1143-1146).
 #: - ESMFold2 reads alignments for protein chains only
 #:   (models/esmfold2/data/all_atom.py `_msa`).
-#: - Protenix reads ``unpairedMsaPath`` on ``rnaSequence`` alone; a
-#:   ``dnaSequence`` path is never opened
-#:   (models/protenix/data/featurize_json.py `_build_nucleic_chain`).
-#: - OpenDDE shares that featurizer, and additionally discards RNA alignments
-#:   unless ``use_rna_msa=true`` (models/opendde/data/featurize_json.py:47-50).
+#: - Protenix reads ``unpairedMsaPath`` on ``rnaSequence`` alone, and only
+#:   with ``use_rna_msa=true``; a ``dnaSequence`` path is never opened
+#:   (models/protenix/data/featurize_json.py `_build_nucleic_chain`). The
+#:   flag is upstream's, released false (Protenix 2.0.0
+#:   configs/configs_inference.py:37), and upstream then ignores the path
+#:   without a word (protenix/data/msa/msa_featurizer.py:633-640).
+#: - OpenDDE shares that featurizer and the same rule
+#:   (models/opendde/data/featurize_json.py:47-50).
 #: - OpenFold3 parses MSAs for ``MSASettings.moltypes``, PROTEIN and RNA
 #:   (openfold3 dataset_config_components.py:76-79, io/sequence/msa.py:626).
 #:
@@ -153,8 +156,12 @@ _NUCLEIC_MSA_READ: dict[str, frozenset[str]] = {
     "esmfold2": frozenset(),
     "opendde": frozenset(),
     "openfold3": frozenset({"rna"}),
-    "protenix": frozenset({"rna"}),
+    "protenix": frozenset(),
 }
+
+#: Backends that read an RNA ``unpaired_msa`` only under ``use_rna_msa=true``,
+#: and refuse RNA ``paired_msa`` outright: their upstreams have no field for it.
+_USE_RNA_MSA_MODELS = frozenset({"opendde", "protenix"})
 
 
 def accepts_ignore_nucleic_msa(model: str) -> bool:
@@ -165,7 +172,7 @@ def accepts_ignore_nucleic_msa(model: str) -> bool:
 def _nucleic_msa_read(model: str, *, use_rna_msa: bool) -> frozenset[str] | None:
     """Nucleic entity types ``model`` reads an alignment for; None if not governed."""
     kinds = _NUCLEIC_MSA_READ.get(model)
-    if kinds is not None and model == "opendde" and use_rna_msa:
+    if kinds is not None and model in _USE_RNA_MSA_MODELS and use_rna_msa:
         return kinds | {"rna"}
     return kinds
 
@@ -175,8 +182,8 @@ def _nucleic_msa_readers(kind: str) -> str:
     if kind == "dna":
         return "no FoldJAX backend reads a DNA alignment"
     return (
-        "RNA alignments are read by alphafold3, openfold3, protenix, and opendde "
-        "with use_rna_msa=true"
+        "RNA alignments are read by alphafold3 and openfold3, and by protenix "
+        "and opendde with use_rna_msa=true"
     )
 
 
@@ -525,6 +532,7 @@ def _validate(
         use_template = _strict_boolean(
             options.get("use_template", False), name="use_template"
         )
+    if model in _USE_RNA_MSA_MODELS:
         use_rna_msa = _strict_boolean(
             options.get("use_rna_msa", False), name="use_rna_msa"
         )
@@ -583,7 +591,7 @@ def _validate(
                 raise ValueError(f"{feature} must be a non-empty path string")
             if value is not None and feature not in target.features:
                 _reject(model, feature, f"remove it from entity {_ids(entity)[0]!r}")
-            if value is not None and model == "opendde" and kind == "rna":
+            if value is not None and model in _USE_RNA_MSA_MODELS and kind == "rna":
                 if feature == "paired_msa":
                     _reject(
                         model,
@@ -594,10 +602,12 @@ def _validate(
                     _reject(
                         model,
                         "RNA unpaired_msa",
-                        f"entity {_ids(entity)[0]!r} names {value.strip()!r}; "
-                        "set the native option use_rna_msa=true; the released "
-                        "default is false and would discard the alignment "
-                        f"(or {IGNORE_NUCLEIC_MSA}=true to fold without it)",
+                        f"entity {_ids(entity)[0]!r} names {value.strip()!r}, "
+                        f"but {model} reads RNA alignments only with "
+                        "use_rna_msa=true, and upstream's released default is "
+                        "false, which would discard it. Set --option "
+                        "use_rna_msa=true to read it, or --option "
+                        f"{IGNORE_NUCLEIC_MSA}=true to fold without it",
                     )
             if (
                 value is not None

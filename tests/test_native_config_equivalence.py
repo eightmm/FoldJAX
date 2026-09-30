@@ -162,6 +162,7 @@ _PROTENIX_OPTION_VALUES: dict[str, Any] = {
     "trunk_dtype": "fp32",
     "trunk_single_attention_backend": "tokamax",
     "trunk_triangle_attention_backend": "cueq_jit",
+    "use_rna_msa": True,
 }
 
 _OPENDDE_OPTION_VALUES: dict[str, Any] = {
@@ -214,7 +215,11 @@ _PROTENIX_REQUESTS: dict[str, dict[str, Any]] = {
     },
     "fused-glu": {"options": {"glu_backend": "tokamax"}},
     "switches-off": {
-        "options": {"cp_atom_windows": True, "strict_token_limit": False}
+        "options": {
+            "cp_atom_windows": True,
+            "strict_token_limit": False,
+            "use_rna_msa": False,
+        }
     },
     # `--option num_samples=3` arrives as JSON's int and a quoted one as text,
     # so the same run can reach the adapter either way and has to land on the

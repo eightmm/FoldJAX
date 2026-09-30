@@ -160,7 +160,9 @@ databases implicitly.
 
 - Protein MSA: local wrapper or a ColabFold-compatible remote MMseqs2 endpoint.
 - RNA MSA: local nhmmer-style wrapper with user-managed Rfam, RNAcentral, and
-  NT-RNA databases.
+  NT-RNA databases. RNA alignments, searched or supplied, are read only with
+  `--use-rna-msa`; upstream's `use_rna_msa` is released false and this port
+  keeps that default.
 - Template search: local wrapper producing A3M or HHR plus a user-managed mmCIF
   coordinate database.
 

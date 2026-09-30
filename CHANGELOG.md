@@ -287,8 +287,9 @@ unless it says so here, in its own paragraph.
 
 - **A nucleic-acid `unpaired_msa` that the backend never reads is now
   refused instead of silently dropped.** Boltz-2 and ESMFold2 read no RNA or
-  DNA alignment. Protenix and OpenFold3 read RNA alignments but not DNA ones.
-  OpenDDE reads no DNA alignment, and reads RNA only with `use_rna_msa=true`.
+  DNA alignment. OpenFold3 reads RNA alignments but not DNA ones. Protenix
+  and OpenDDE read no DNA alignment, and read RNA only with
+  `use_rna_msa=true` (Protenix since the entry below).
   Each of these backends used to accept such a document, discard the
   alignment and fold the chain from its sequence alone. The common-schema
   validator now names the backend and the entity. `--option
@@ -298,6 +299,30 @@ unless it says so here, in its own paragraph.
   for a backend that would discard the result, and `--msa required` no longer
   demands such a search. AlphaFold 3 and the alignments the other backends
   read are unchanged.
+
+- **Protenix reads an RNA alignment only with `use_rna_msa=true`, as
+  upstream does.** Protenix 2.0.0 releases `use_rna_msa: False`
+  (`configs/configs_inference.py:37`, `--use_rna_msa` default false in
+  `runner/batch_inference.py`). With it false, upstream's featurizer never
+  opens an `rnaSequence` alignment (`protenix/data/msa/msa_featurizer.py:633-640`).
+  This port read it unconditionally, so an RNA job with an alignment got a
+  different MSA, and a different prediction, from upstream's released
+  configuration. **This changes what a recorded command predicts** for a
+  Protenix job whose RNA chain carries an `unpaired_msa`,
+  `unpairedMsaPath` or `unpairedMsa`. Other jobs, including every benchmark
+  job, are unchanged. The common-schema validator now refuses such a job by
+  default, naming the entity and pointing to `--option use_rna_msa=true` (read
+  it, as before) and `--option ignore_nucleic_msa=true` (fold without it,
+  recorded under `ignored_msas`). It also refuses an RNA `paired_msa`, which
+  neither upstream nor this port ever read. Native input without the option
+  is featurized from the RNA sequence alone, with a `RuntimeWarning`. The
+  native CLI takes the flag as `--use-rna-msa`. As in upstream, it is
+  refused for any named model other than `protenix-v2` and the two v1.0.0
+  base models, and `--rna-msa-local-command` now requires it. `--msa auto`
+  searches Protenix RNA chains only under it, and `use_rna_msa=true` names
+  its own compile-cache namespace, as on OpenDDE. OpenDDE shares the featurizer,
+  so an inline `unpairedMsa` on its RNA chains is now ignored too without
+  `use_rna_msa=true`, matching its path field.
 
 - **Protenix no longer accepts `triangle_attention_ring_kernel=tokamax` on a
   1-D run.** The check used the shared square-grid helper, which reads an

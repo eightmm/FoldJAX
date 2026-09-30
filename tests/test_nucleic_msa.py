@@ -1,8 +1,9 @@
 """A nucleic-acid alignment a backend never reads is refused, not dropped.
 
-Boltz-2 and ESMFold2 read no RNA or DNA alignment, Protenix and OpenFold3 no
-DNA one, and OpenDDE no DNA one and no RNA one without ``use_rna_msa=true``.
-Each used to accept the document and fold the chain from its sequence alone.
+Boltz-2 and ESMFold2 read no RNA or DNA alignment, OpenFold3 no DNA one, and
+Protenix and OpenDDE no DNA one and no RNA one without ``use_rna_msa=true``
+(upstream's flag, released false by both). Each used to accept the document
+and fold the chain from its sequence alone.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 import yaml
 
@@ -29,6 +31,7 @@ _IGNORED = [
     ("esmfold2", "rna"),
     ("esmfold2", "dna"),
     ("protenix", "dna"),
+    ("protenix", "rna"),
     ("openfold3", "dna"),
     ("opendde", "dna"),
     ("opendde", "rna"),
@@ -157,8 +160,8 @@ def test_the_opt_in_leaves_it_out_of_the_native_input_and_says_so(
     ("model", "options"),
     [
         ("alphafold3", None),
-        ("protenix", None),
-        ("protenix", {IGNORE_NUCLEIC_MSA: True}),
+        ("protenix", {"use_rna_msa": True}),
+        ("protenix", {"use_rna_msa": True, IGNORE_NUCLEIC_MSA: True}),
         ("openfold3", None),
         ("openfold3", {IGNORE_NUCLEIC_MSA: True}),
         ("opendde", {"use_rna_msa": True}),
@@ -263,13 +266,16 @@ def _weights(tmp_path: Path) -> Path:
     return path
 
 
-def test_a_run_refuses_then_records_the_drop_in_its_manifest(tmp_path: Path) -> None:
+@pytest.mark.parametrize("model", ["opendde", "protenix"])
+def test_a_run_refuses_then_records_the_drop_in_its_manifest(
+    tmp_path: Path, model: str
+) -> None:
     source = _job(tmp_path, "rna")
     seen: list = []
 
     def request(options: dict, out: str) -> PredictionRequest:
         return PredictionRequest(
-            model="opendde",
+            model=model,
             input=source,
             weights=_weights(tmp_path),
             output_dir=tmp_path / out,
@@ -278,19 +284,25 @@ def test_a_run_refuses_then_records_the_drop_in_its_manifest(tmp_path: Path) -> 
             use_compile_cache=False,
         )
 
-    with backend_override("opendde", _recorder("opendde", seen)):
-        with pytest.raises(ValueError, match="use_rna_msa=true"):
+    with backend_override(model, _recorder(model, seen)):
+        with pytest.raises(ValueError) as refusal:
             foldjax.predict(request({}, "refused"))
         assert seen == []
         assert not (tmp_path / "refused" / MANIFEST_NAME).exists()
 
         foldjax.predict(request({IGNORE_NUCLEIC_MSA: True}, "dropped"))
 
+    # The refusal names the entity and both ways out.
+    message = str(refusal.value)
+    assert "entity 'N'" in message
+    assert "use_rna_msa=true" in message
+    assert f"{IGNORE_NUCLEIC_MSA}=true" in message
+
     # The native runner never sees an option only the translation consumes.
     (ran,) = seen
     assert IGNORE_NUCLEIC_MSA not in ran.options
     native = _read(ran.input)
-    assert _chain_msas("opendde", native) == {
+    assert _chain_msas(model, native) == {
         "protein": [str((tmp_path / "protein.a3m").resolve())]
     }
 
@@ -334,9 +346,18 @@ def test_required_search_does_not_demand_an_rna_alignment_nobody_reads(
     materialize_native_input(
         path, capabilities("boltz2"), tmp_path / "boltz", seed=1, msa="required"
     )
+    # Protenix reads none at its released use_rna_msa=false, either.
+    materialize_native_input(
+        path, capabilities("protenix"), tmp_path / "protenix", seed=1, msa="required"
+    )
     with pytest.raises(ValueError, match="no RNA search is configured"):
         materialize_native_input(
-            path, capabilities("protenix"), tmp_path / "protenix", seed=1, msa="required"
+            path,
+            capabilities("protenix"),
+            tmp_path / "protenix-rna",
+            seed=1,
+            msa="required",
+            options={"use_rna_msa": True},
         )
 
 
@@ -355,3 +376,103 @@ def test_esmfold2_features_refuse_a_nucleic_alignment(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="only for protein chains"):
         _msa([chain], [], {0: tmp_path / "rna.a3m"}, msa_depth=None)
+
+
+def test_protenix_use_rna_msa_reaches_the_features(tmp_path: Path) -> None:
+    """The option is rendered as the native flag, and the featurizer reads it."""
+    from foldjax.backends.protenix import ProtenixBackend
+    from foldjax.models.protenix.data.featurize_json import featurize_protein_json
+
+    source = _job(tmp_path, "rna")
+    # A hit unlike the query, so deduplication cannot hide it.
+    (tmp_path / "rna.a3m").write_text(">query\nACGUAC\n>hit\nAGGUCC\n")
+    seen: list = []
+    with backend_override("protenix", _recorder("protenix", seen)):
+        foldjax.predict(
+            PredictionRequest(
+                model="protenix",
+                input=source,
+                weights=_weights(tmp_path),
+                output_dir=tmp_path / "out",
+                seed=3,
+                options={"use_rna_msa": True},
+                use_compile_cache=False,
+            )
+        )
+    (ran,) = seen
+    native = _read(ran.input)
+    assert _chain_msas("protenix", native)["rna"] == [
+        str((tmp_path / "rna.a3m").resolve())
+    ]
+    invocation = ProtenixBackend()._native_invocation(ran)
+    assert "--use-rna-msa" in invocation.argv
+    assert invocation.config_fields["use_rna_msa"] is True
+    manifest = json.loads((tmp_path / "out" / MANIFEST_NAME).read_text())
+    assert manifest["ignored_msas"] == []
+
+    job = native[0]
+    read = featurize_protein_json(
+        job, use_rna_msa=invocation.config_fields["use_rna_msa"]
+    )
+    with pytest.warns(RuntimeWarning, match="use_rna_msa"):
+        unread = featurize_protein_json(job)
+    rna = np.asarray(read["restype"]).argmax(-1) >= 21
+    assert rna.any()
+    # The hit "AGGUCC" (torch STD_RESIDUES: A=21 G=22 C=23 U=24) is a row of
+    # the RNA columns only when the alignment was read.
+    hit = [21, 22, 22, 24, 23, 23]
+    assert hit in read["msa"][:, rna].tolist()
+    assert hit not in unread["msa"][:, rna].tolist()
+
+
+def test_protenix_defaults_to_upstreams_released_flag(tmp_path: Path) -> None:
+    from foldjax.backends.protenix import ProtenixBackend
+
+    request = PredictionRequest(
+        model="protenix",
+        input=_job(tmp_path, None),
+        weights=_weights(tmp_path),
+        output_dir=tmp_path / "out",
+    )
+    invocation = ProtenixBackend()._native_invocation(request)
+    assert "--use-rna-msa" not in invocation.argv
+    assert invocation.config_fields["use_rna_msa"] is False
+
+
+@pytest.mark.parametrize("value", ["true", 1])
+def test_protenix_use_rna_msa_must_be_a_boolean(tmp_path: Path, value) -> None:
+    request = PredictionRequest(
+        model="protenix",
+        input=_job(tmp_path, None),
+        input_format="foldjax",
+        options={"use_rna_msa": value},
+    )
+    with pytest.raises(ValueError, match="use_rna_msa must be a boolean"):
+        get_backend("protenix").validate_request(request)
+
+
+def test_protenix_use_rna_msa_follows_upstreams_model_list(tmp_path: Path) -> None:
+    """Upstream asserts the flag only for its v1.0.0 base models and protenix-v2."""
+    job = _job(tmp_path, None)
+    backend = get_backend("protenix")
+    for name in ("protenix-v2", "protenix_base_default_v1.0.0"):
+        backend.validate_request(
+            PredictionRequest(
+                model="protenix",
+                input=job,
+                input_format="foldjax",
+                options={"use_rna_msa": True, "model_name": name},
+            )
+        )
+    with pytest.raises(ValueError, match="use_rna_msa is not supported by"):
+        backend.validate_request(
+            PredictionRequest(
+                model="protenix",
+                input=job,
+                input_format="foldjax",
+                options={
+                    "use_rna_msa": True,
+                    "model_name": "protenix_mini_esm_v0.5.0",
+                },
+            )
+        )

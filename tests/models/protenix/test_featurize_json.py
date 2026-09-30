@@ -392,7 +392,7 @@ def test_featurize_rna_unpaired_msa_inline_updates_msa_profile_and_deletions() -
         ]
     }
 
-    features = featurize_protein_json(job)
+    features = featurize_protein_json(job, use_rna_msa=True)
 
     np.testing.assert_array_equal(
         features["msa"],
@@ -411,8 +411,11 @@ def test_featurize_rna_unpaired_msa_path_matches_inline(tmp_path) -> None:
     a3m = ">query\nAGCUA\n>hit\nAgu-TUA\n"
     (tmp_path / "rna.a3m").write_text(a3m)
     inline = featurize_protein_json(
-        {"sequences": [{"rnaSequence": {"sequence": "AGCUA", "unpairedMsa": a3m}}]}
+        {"sequences": [{"rnaSequence": {"sequence": "AGCUA", "unpairedMsa": a3m}}]},
+        use_rna_msa=True,
     )
+    # Not vacuous: the alignment reached both, so both carry its rows.
+    assert inline["msa"].shape[0] > 1
     from_path = featurize_protein_json(
         {
             "sequences": [
@@ -425,10 +428,37 @@ def test_featurize_rna_unpaired_msa_path_matches_inline(tmp_path) -> None:
             ]
         },
         base_dir=tmp_path,
+        use_rna_msa=True,
     )
 
     for name in ("msa", "has_deletion", "deletion_value", "profile", "deletion_mean"):
         np.testing.assert_array_equal(from_path[name], inline[name])
+
+
+@pytest.mark.parametrize("field", ["unpairedMsa", "unpairedMsaPath"])
+def test_an_rna_alignment_is_ignored_with_a_warning_by_default(
+    tmp_path, field: str
+) -> None:
+    """Upstream's released use_rna_msa=False: the chain folds from its sequence.
+
+    Upstream ignores both spellings without a word
+    (protenix/data/msa/msa_featurizer.py:633-640); this port says so.
+    """
+    a3m = ">query\nAGCUA\n>hit\nAgu-TUA\n"
+    (tmp_path / "rna.a3m").write_text(a3m)
+    value = a3m if field == "unpairedMsa" else "rna.a3m"
+    job = {"sequences": [{"rnaSequence": {"sequence": "AGCUA", field: value}}]}
+
+    with pytest.warns(RuntimeWarning, match="use_rna_msa"):
+        ignored = featurize_protein_json(job, base_dir=tmp_path)
+    without = featurize_protein_json(
+        {"sequences": [{"rnaSequence": {"sequence": "AGCUA"}}]}
+    )
+    read = featurize_protein_json(job, base_dir=tmp_path, use_rna_msa=True)
+
+    for name in ("msa", "has_deletion", "deletion_value", "profile", "deletion_mean"):
+        np.testing.assert_array_equal(ignored[name], without[name])
+    assert ignored["msa"].shape[0] < read["msa"].shape[0]
 
 
 @pytest.mark.parametrize(
@@ -444,7 +474,8 @@ def test_featurize_rna_unpaired_msa_rejects_invalid_rows(
 ) -> None:
     with pytest.raises(ValueError, match=error):
         featurize_protein_json(
-            {"sequences": [{"rnaSequence": {"sequence": "AGCUA", "unpairedMsa": a3m}}]}
+            {"sequences": [{"rnaSequence": {"sequence": "AGCUA", "unpairedMsa": a3m}}]},
+            use_rna_msa=True,
         )
 
 

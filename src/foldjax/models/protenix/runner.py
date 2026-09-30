@@ -86,6 +86,7 @@ class PredictionConfig(NamedTuple):
     rna_msa_local_command: str | None
     rna_msa_search_version: str | None
     rna_msa_cache_dir: Path
+    use_rna_msa: bool
     template_search_command: str | None
     template_search_version: str | None
     template_search_cache_dir: Path
@@ -361,6 +362,7 @@ def _run(
     )
     from foldjax.models.protenix.runtime_policy import (
         KNOWN_MODEL_NAMES,
+        RNA_MSA_MODEL_NAMES,
         infer_model_name_from_path,
         model_inference_defaults,
         validate_inference_limits,
@@ -398,6 +400,14 @@ def _run(
             sampler_defaults = model_inference_defaults(model_name)
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
+    # `--model-name unknown` names no model, so there is nothing to check.
+    if config.use_rna_msa and model_name is not None:
+        if model_name not in RNA_MSA_MODEL_NAMES:
+            raise SystemExit(
+                f"--use-rna-msa is not supported by {model_name}; upstream "
+                "allows RNA MSA inference only for "
+                f"{', '.join(sorted(RNA_MSA_MODEL_NAMES))}"
+            )
     num_recycles = (
         config.num_recycles
         if config.num_recycles is not None
@@ -446,6 +456,11 @@ def _run(
 
     rna_msa_pipeline = None
     if config.rna_msa_local_command is not None:
+        # Upstream searches RNA only under use_rna_msa
+        # (runner/batch_inference.py:134); without it the featurizer would
+        # discard what the search found.
+        if not config.use_rna_msa:
+            raise SystemExit("--rna-msa-local-command requires --use-rna-msa")
         if config.features is not None:
             raise SystemExit("RNA MSA search requires --input-json")
         if not config.rna_msa_search_version:
@@ -573,6 +588,7 @@ def _run(
                     n_queries=config.n_queries,
                     n_keys=config.n_keys,
                     max_msa_depth=config.max_msa_depth,
+                    use_rna_msa=config.use_rna_msa,
                 )
                 language_model_profile = None
                 if esm_provider is not None and padding_config is not None:

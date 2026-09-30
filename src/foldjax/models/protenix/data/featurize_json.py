@@ -13,6 +13,7 @@ import random
 import re
 import string
 import tempfile
+import warnings
 from collections import OrderedDict
 from collections.abc import Sequence
 from pathlib import Path
@@ -272,8 +273,17 @@ def featurize_protein_json(
     seed: int | None = None,
     center_reference: bool = True,
     augment_reference: bool = True,
+    use_rna_msa: bool = False,
 ) -> dict[str, Any]:
-    """Build static features for proteinChain inputs."""
+    """Build static features for proteinChain inputs.
+
+    ``use_rna_msa`` is upstream's inference flag of the same name, released
+    false (Protenix 2.0.0 ``configs/configs_inference.py:37``): unless it is
+    set, an ``rnaSequence`` alignment is not read and the chain is featurized
+    from its sequence alone, as upstream's ``InferenceMSAFeaturizer`` does
+    (``protenix/data/msa/msa_featurizer.py:633-640``). Upstream says nothing
+    when it ignores one; this warns.
+    """
 
     if not isinstance(job, dict):
         raise ValueError("job must be an object")
@@ -295,7 +305,7 @@ def featurize_protein_json(
         raise ValueError("n_keys must be >= n_queries and both must be even")
     if max_msa_depth <= 0:
         raise ValueError("max_msa_depth must be positive")
-    chains = _expand_chains(job, base_dir=base_dir)
+    chains = _expand_chains(job, base_dir=base_dir, use_rna_msa=use_rna_msa)
     chemistry_rng = random.Random(_resolve_featurization_seed(job, seed))
     _remove_polymer_link_leaving_groups(chains, rng=chemistry_rng)
     _remove_covalent_leaving_groups(
@@ -618,6 +628,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         type=int,
         default=16384,
     )
+    parser.add_argument(
+        "--use-rna-msa",
+        action="store_true",
+        help="Read rnaSequence alignments (upstream's use_rna_msa; off by default).",
+    )
     args = parser.parse_args(argv)
 
     features = featurize_protein_json(
@@ -626,6 +641,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         n_queries=args.n_queries,
         n_keys=args.n_keys,
         max_msa_depth=args.max_msa_depth,
+        use_rna_msa=args.use_rna_msa,
     )
     save_static_feature_npz(args.out, features)
     print(f"wrote: {args.out}")
@@ -670,6 +686,7 @@ def _expand_chains(
     job: dict[str, Any],
     *,
     base_dir: str | Path | None,
+    use_rna_msa: bool = False,
 ) -> list[dict[str, Any]]:
     sequences = job.get("sequences")
     if not isinstance(sequences, list) or not sequences:
@@ -684,7 +701,9 @@ def _expand_chains(
         if kind == "proteinChain":
             built = _build_protein_chain(entry[kind], base_dir=base_dir)
         elif kind in ("dnaSequence", "rnaSequence"):
-            built = _build_nucleic_chain(entry[kind], kind=kind, base_dir=base_dir)
+            built = _build_nucleic_chain(
+                entry[kind], kind=kind, base_dir=base_dir, use_rna_msa=use_rna_msa
+            )
         elif kind in ("ligand", "ion"):
             built = _build_ligand_chain(entry[kind], kind=kind, base_dir=base_dir)
         else:
@@ -837,7 +856,11 @@ def _build_ligand_chain(
 
 
 def _build_nucleic_chain(
-    info: dict[str, Any], *, kind: str, base_dir: str | Path | None
+    info: dict[str, Any],
+    *,
+    kind: str,
+    base_dir: str | Path | None,
+    use_rna_msa: bool = False,
 ) -> dict[str, Any]:
     """Build a DNA/RNA chain (one per-residue token like protein)."""
 
@@ -874,7 +897,17 @@ def _build_nucleic_chain(
     ids = info.get("id")
     _validate_ids(ids, count, kind)
     unpaired_a3m = ""
-    if kind == "rnaSequence":
+    if kind == "rnaSequence" and not use_rna_msa:
+        if info.get("unpairedMsa") or info.get("unpairedMsaPath"):
+            warnings.warn(
+                "an rnaSequence unpairedMsa/unpairedMsaPath is ignored unless "
+                "use_rna_msa is true, upstream's released default being "
+                "false; folding the RNA chain from its sequence alone. Set "
+                "use_rna_msa to read it.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+    elif kind == "rnaSequence":
         unpaired_a3m = info.get("unpairedMsa") or ""
         if not unpaired_a3m and info.get("unpairedMsaPath"):
             unpaired_a3m = _resolve_path(

@@ -1291,6 +1291,7 @@ def test_predict_orders_msa_template_and_rna_preprocessing(
         "--template-search-command", "template-search",
         "--template-search-version", "template-v1",
         "--template-mmcif-dir", str(mmcif),
+        "--use-rna-msa",
         "--rna-msa-local-command", "rna-search",
         "--rna-msa-search-version", "rna-v1",
         "--trunk-dtype", "fp32", "--n-queries", "2", "--n-keys", "4",
@@ -1298,6 +1299,32 @@ def test_predict_orders_msa_template_and_rna_preprocessing(
     ])
     applies = [call[0] for call in calls if call[0].endswith("-apply")]
     assert applies == ["msa-apply", "template-apply", "rna-apply"]
+
+
+def test_rna_search_without_use_rna_msa_is_refused(tmp_path) -> None:
+    """Upstream searches RNA only under use_rna_msa; the result would be dropped."""
+    with pytest.raises(SystemExit, match="requires --use-rna-msa"):
+        main([
+            "--model-name", "unknown",
+            "--weights", str(tmp_path / "w.jax"),
+            "--input-json", str(tmp_path / "job.json"),
+            "--out", str(tmp_path / "out.npz"),
+            "--rna-msa-local-command", "rna-search",
+            "--rna-msa-search-version", "rna-v1",
+            "--no-compile-cache",
+        ])
+
+
+def test_use_rna_msa_is_refused_for_a_model_upstream_refuses(tmp_path) -> None:
+    with pytest.raises(SystemExit, match="--use-rna-msa is not supported by"):
+        main([
+            "--model-name", "protenix_mini_esm_v0.5.0",
+            "--weights", str(tmp_path / "w.jax"),
+            "--input-json", str(tmp_path / "job.json"),
+            "--out", str(tmp_path / "out.npz"),
+            "--use-rna-msa",
+            "--no-compile-cache",
+        ])
 
 
 def test_predict_checks_v2_size_before_loading_weights(tmp_path) -> None:

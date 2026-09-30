@@ -116,18 +116,24 @@ Nothing is sent anywhere on this path. The version string is part of the cache
 key, so upgrading a database invalidates the alignments it produced instead of
 mixing generations. `foldjax doctor` prints which search is configured.
 
-OpenDDE's released inference configuration sets `use_rna_msa=False`. A
-FoldJAX request preserves that default and rejects an RNA `unpaired_msa` or
-`paired_msa` instead of materializing a file the model will discard. Set
-`options={"use_rna_msa": true}` (CLI:
-`--option use_rna_msa=true`) to opt into OpenDDE 1.1.1's RNA-MSA path; protein
-MSAs remain supported independently. Native OpenDDE input follows the same
-rule for `unpairedMsaPath`.
+Protenix 2.0.0 and OpenDDE both release `use_rna_msa=False`
+(Protenix `configs/configs_inference.py:37`, `--use_rna_msa` default false).
+With it false, upstream never opens an RNA chain's alignment and says nothing
+about it. A FoldJAX request keeps that default, and rejects an RNA
+`unpaired_msa` or `paired_msa` for either model instead of materializing a file
+the model will discard. Set `options={"use_rna_msa": true}` (CLI:
+`--option use_rna_msa=true`) to read the RNA alignment, as upstream's flag
+does; protein MSAs are unaffected. Protenix, like upstream, allows the flag
+only for `protenix-v2` and the two v1.0.0 base models. Native Protenix and
+OpenDDE input follow the same rule for `unpairedMsaPath` (and the
+inline `unpairedMsa`): without the option the alignment is ignored with a
+warning. The native `protenix-jax-predict` spells it `--use-rna-msa`, which
+`--rna-msa-local-command` now requires.
 
 The same rule applies to every nucleic-acid alignment a backend would discard.
-RNA `unpaired_msa` is read by AlphaFold 3, OpenFold3, Protenix and OpenDDE
-(with `use_rna_msa=true`). No backend reads a DNA one. Boltz-2 and ESMFold2
-read neither. A common-schema job that gives such an alignment to a backend
+RNA `unpaired_msa` is read by AlphaFold 3 and OpenFold3, and by Protenix and
+OpenDDE with `use_rna_msa=true`. No backend reads a DNA one. Boltz-2 and
+ESMFold2 read neither. A common-schema job that gives such an alignment to a backend
 that ignores it is refused, with the entity and the backend named. Set
 `--option ignore_nucleic_msa=true` to fold the chain without it. The
 alignment is then left out of the native input, and the run manifest lists

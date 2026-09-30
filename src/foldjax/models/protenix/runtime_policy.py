@@ -18,6 +18,17 @@ KNOWN_MODEL_NAMES = (
     "protenix_tiny_default_v0.5.0",
 )
 
+#: The models upstream lets read an RNA alignment: `--use_rna_msa` with any
+#: other name fails an assertion (Protenix 2.0.0
+#: `runner/batch_inference.py:893-898`).
+RNA_MSA_MODEL_NAMES = frozenset(
+    {
+        "protenix_base_default_v1.0.0",
+        "protenix_base_20250630_v1.0.0",
+        "protenix-v2",
+    }
+)
+
 _BASE_INFERENCE_DEFAULTS = {
     "num_recycles": 10,
     "num_steps": 200,

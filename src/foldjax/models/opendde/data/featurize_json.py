@@ -171,6 +171,9 @@ def featurize_opendde_json(
         seed=resolved_seed,
         center_reference=False,
         augment_reference=False,
+        # `_prepare_job` already removed the path when this is false, and the
+        # shared featurizer now reads an RNA alignment only when told to.
+        use_rna_msa=use_rna_msa,
     )
     _prepare_reference_features(
         features,

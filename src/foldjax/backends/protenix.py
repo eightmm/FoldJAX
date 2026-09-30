@@ -30,6 +30,7 @@ from foldjax.schema import (
     PredictionRequest,
     PredictionResult,
     PredictionSample,
+    _strict_boolean,
 )
 from foldjax.scores import sample_summary_scores
 
@@ -45,6 +46,10 @@ _CLI_OPTIONS = {
     "num_recycles",
     "model_name",
     "strict_token_limit",
+    # Upstream's `use_rna_msa`, released false: whether an RNA chain's
+    # alignment is read at all. A compile option, as it is on OpenDDE, which
+    # shares the name and the featurizer; the released false strips below.
+    "use_rna_msa",
     # Admission against this card's own ceiling, rather than against the
     # 2,560-token constant `strict_token_limit` restores. Neither is a compile
     # option: they decide whether the run starts, never what it compiles.
@@ -124,7 +129,7 @@ _PROFILE_MODEL_NAMES = {
 #: Options the native CLI takes as a bare switch rather than a value. Passing
 #: `--strict-token-limit true` makes argparse reject the whole command, and
 #: the usage dump that comes back says nothing about which argument was wrong.
-_FLAG_OPTIONS = frozenset({"strict_token_limit"})
+_FLAG_OPTIONS = frozenset({"strict_token_limit", "use_rna_msa"})
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"0", "false", "no", "off", ""})
 
@@ -261,6 +266,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "cp_layout": "auto",
     "deterministic_ops": "off",
     "glu_backend": "xla",
+    "use_rna_msa": False,
 }
 
 #: What an omitted `diffusion_attention_backend` runs when a context-parallel
@@ -318,6 +324,7 @@ _PARSER_DEFAULTS: dict[str, Any] = {
     "rna_msa_local_command": None,
     "rna_msa_search_version": None,
     "rna_msa_cache_dir": Path("outputs/rna_msa_cache"),
+    "use_rna_msa": False,
     "template_search_command": None,
     "template_search_version": None,
     "template_search_cache_dir": Path("outputs/template_cache"),
@@ -509,6 +516,7 @@ _OPTION_SPECS: dict[str, tuple[Callable[[str, Any], Any], tuple[str, ...] | None
         _text_option,
         ("xla", "xla_jit", "tokamax", "cueq", "cueq_jit"),
     ),
+    "use_rna_msa": (_switch_option, None),
 }
 
 
@@ -718,6 +726,9 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         "opm_chunk_size",
         "diffusion_chunk_size",
         "deterministic_ops",
+        # Which RNA alignment rows the run is given; OpenDDE, which shares
+        # the name and the featurizer, records it the same way.
+        "use_rna_msa",
         "cli_args",
         # Two policies, two programs: the value becomes the `precision`
         # attribute on every float32 dot XLA lowers, it selects the
@@ -793,6 +804,26 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         checkpoint_dir = options.get("esm_checkpoint_dir")
         if checkpoint_dir is not None and not isinstance(checkpoint_dir, (str, Path)):
             raise ValueError("esm_checkpoint_dir must be a path")
+        # A real boolean, as the common-schema validator reads it
+        # (`input._validate`): the translation and the run must agree on
+        # whether an RNA alignment is read, and text would split them.
+        use_rna_msa = _strict_boolean(
+            options.get("use_rna_msa", False), name="use_rna_msa"
+        )
+        model_name = options.get("model_name", "auto")
+        if (
+            use_rna_msa
+            and model_name in runtime_policy.KNOWN_MODEL_NAMES
+            and model_name not in runtime_policy.RNA_MSA_MODEL_NAMES
+        ):
+            # Upstream's assertion (`runner/batch_inference.py:893-898`), here
+            # so `foldjax plan` refuses it too; the runner repeats it for a
+            # name read off the weight file.
+            raise ValueError(
+                f"use_rna_msa is not supported by {model_name}; upstream allows "
+                "RNA MSA inference only for "
+                f"{', '.join(sorted(runtime_policy.RNA_MSA_MODEL_NAMES))}"
+            )
         # Here rather than at the parser for the reason `glu_backend` gives,
         # and here rather than at the admission check because `foldjax plan`
         # runs this and never reaches one.

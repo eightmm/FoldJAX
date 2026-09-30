@@ -111,6 +111,14 @@ def main(
         default=Path("outputs/rna_msa_cache"),
     )
     parser.add_argument(
+        "--use-rna-msa",
+        dest="use_rna_msa",
+        action="store_true",
+        help="Read rnaSequence alignments, as upstream's --use_rna_msa does. "
+        "Off by default, like upstream's release, which then ignores them; "
+        "required by --rna-msa-local-command.",
+    )
+    parser.add_argument(
         "--template-search-command",
         help="Local template wrapper producing one .a3m or .hhr (off by default).",
     )
