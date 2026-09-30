@@ -356,6 +356,7 @@ def _run(
     )
     from foldjax.models.protenix.data.featurize_json import featurize_protein_json
     from foldjax.models.protenix.data.output import (
+        fix_cterminal_carboxyl_oxygens,
         project_generated_writer_features,
         sanitize_job_name,
         write_protenix_outputs,
@@ -1113,6 +1114,15 @@ def _run(
             if config.output_format in ("protenix", "both"):
                 if output_features is None:
                     raise RuntimeError("structured output feature snapshot is missing")
+                # Upstream rebuilds each chain's C-terminal O/OXT on every
+                # sample before writing (runner/inference.py:600). The
+                # npz-only format below keeps the network's raw coordinates.
+                output = {
+                    **output,
+                    "coordinate": fix_cterminal_carboxyl_oxygens(
+                        output["coordinate"], output_features
+                    ),
+                }
                 paths = write_protenix_outputs(
                     config.out,
                     job_name=job["name"],

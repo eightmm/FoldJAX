@@ -187,6 +187,81 @@ def write_protenix_outputs(
     return paths
 
 
+def fix_cterminal_carboxyl_oxygens(
+    coordinates: Any,
+    features: Mapping[str, Any],
+) -> np.ndarray:
+    """Rebuild every polymer chain's C-terminal O/OXT as upstream Protenix does.
+
+    A port of ``fix_cterminal_carboxyl_oxygens`` in upstream Protenix
+    ``runner/inference.py:261-362`` (4c355be; absent at the v2.0.0 tag), which
+    upstream applies to every sample's coordinates before writing them
+    (``runner/inference.py:600``). The O<->OXT permutation symmetry can leave
+    one terminal oxygen under-constrained. Per chain -- a contiguous block of
+    ``chain_id`` -- the last residue is taken by ``res_id`` at the block's
+    end, and only one carrying all of ``C``, ``CA``, ``O`` and ``OXT`` is
+    touched. The oxygen nearest ``C`` (``O`` on a tie) is kept in the ``O``
+    slot; ``OXT`` becomes its reflection across the ``C->CA`` axis, so both
+    make the same angle with ``CA`` at ``C`` and the same bond length.
+    Computed in float32 and written back in the input dtype. Every other atom
+    is returned bitwise unchanged, and the input is never mutated.
+
+    Confidence is computed from the network's coordinates before this, in
+    upstream and here alike.
+    """
+
+    coords = np.array(coordinates, copy=True)
+    if coords.ndim != 3 or coords.shape[-1] != 3:
+        raise ValueError("coordinate must have shape (num_samples, n_atom, 3)")
+    n_atom = coords.shape[1]
+    if n_atom == 0:
+        return coords
+    metadata = _atom_metadata(dict(features), n_atom)
+    chain_ids = np.asarray(metadata["chain_id"]).astype(str)
+    res_ids = np.asarray(metadata["res_id"])
+    atom_names = np.asarray(metadata["name"]).astype(str)
+
+    is_chain_end = np.empty(n_atom, dtype=bool)
+    is_chain_end[-1] = True
+    is_chain_end[:-1] = chain_ids[1:] != chain_ids[:-1]
+    idx_c, idx_ca, idx_o, idx_oxt = [], [], [], []
+    for end in np.flatnonzero(is_chain_end):
+        terminal = np.flatnonzero(
+            (chain_ids == chain_ids[end]) & (res_ids == res_ids[end])
+        )
+        # Later duplicates win, as upstream's dict comprehension lets them.
+        name_to_pos = {atom_names[position]: position for position in terminal}
+        if not {"C", "CA", "O", "OXT"} <= name_to_pos.keys():
+            continue
+        idx_c.append(name_to_pos["C"])
+        idx_ca.append(name_to_pos["CA"])
+        idx_o.append(name_to_pos["O"])
+        idx_oxt.append(name_to_pos["OXT"])
+    if not idx_c:
+        return coords
+
+    work = coords.astype(np.float32, copy=False)
+    carbon = work[:, idx_c, :]
+    alpha = work[:, idx_ca, :]
+    oxygen = work[:, idx_o, :]
+    terminal_oxygen = work[:, idx_oxt, :]
+    nearest_is_o = (
+        np.linalg.norm(oxygen - carbon, axis=-1)
+        <= np.linalg.norm(terminal_oxygen - carbon, axis=-1)
+    )[..., None]
+    kept = np.where(nearest_is_o, oxygen, terminal_oxygen)
+    axis = alpha - carbon
+    axis = axis / np.maximum(
+        np.linalg.norm(axis, axis=-1, keepdims=True), np.float32(1e-8)
+    )
+    arm = kept - carbon
+    projection = np.sum(arm * axis, axis=-1, keepdims=True)
+    reflected = carbon + np.float32(2.0) * projection * axis - arm
+    coords[:, idx_o, :] = kept.astype(coords.dtype, copy=False)
+    coords[:, idx_oxt, :] = reflected.astype(coords.dtype, copy=False)
+    return coords
+
+
 def sanitize_job_name(name: str) -> str:
     """Return the filesystem-safe name used by original-style outputs."""
 

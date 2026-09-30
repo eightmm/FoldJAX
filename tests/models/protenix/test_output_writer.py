@@ -381,3 +381,127 @@ def test_writer_rejects_incomplete_or_out_of_range_covalent_metadata(tmp_path) -
             output=output,
             features=out_of_range,
         )
+
+
+def _metadata_features(names, chains, res_ids):
+    """Explicit writer metadata for ``len(names)`` atoms, nothing else read."""
+    count = len(names)
+    return {
+        "output_atom_name": np.array(names),
+        "output_atom_element": np.array([name[0] for name in names]),
+        "output_atom_res_name": np.array(["ALA"] * count),
+        "output_atom_chain_id": np.array(chains),
+        "output_atom_res_id": np.array(res_ids),
+    }
+
+
+def _angle(vertex, left, right):
+    a, b = left - vertex, right - vertex
+    cosine = np.sum(a * b, -1) / (
+        np.linalg.norm(a, axis=-1) * np.linalg.norm(b, axis=-1)
+    )
+    return np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0)))
+
+
+def test_cterminal_oxygens_are_rebuilt_as_upstream_does() -> None:
+    """Upstream 4c355be `runner/inference.py:261-362`, applied at `:600`.
+
+    The oxygen nearer C stays in the O slot and OXT becomes its reflection
+    across the C->CA axis: equal C-O and C-OXT bond lengths, equal CA-C-O and
+    CA-C-OXT angles, and O, OXT, C and CA coplanar. Nothing else moves.
+    """
+    from foldjax.models.protenix.data.output import fix_cterminal_carboxyl_oxygens
+
+    names = [
+        # chain A: two residues, the second the C-terminus
+        "N", "CA", "C", "O", "N", "CA", "C", "O", "OXT",
+        # chain B: a terminus with no OXT (left alone)
+        "N", "CA", "C", "O",
+        # chain C: a ligand
+        "C1", "O1",
+        # chain D: one residue whose O drifted beyond OXT
+        "N", "CA", "C", "O", "OXT",
+    ]
+    chains = ["A"] * 9 + ["B"] * 4 + ["C"] * 2 + ["D"] * 5
+    res_ids = [1, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    features = _metadata_features(names, chains, res_ids)
+    rng = np.random.default_rng(3)
+    coordinates = rng.normal(scale=3.0, size=(3, len(names), 3)).astype(np.float32)
+    # Chain D's O far away and OXT close: the O slot must take OXT's position.
+    coordinates[:, 18] = coordinates[:, 17] + 25.0
+    coordinates[:, 19] = coordinates[:, 17] + np.float32([1.2, 0.3, 0.1])
+    original = coordinates.copy()
+
+    fixed = fix_cterminal_carboxyl_oxygens(coordinates, features)
+
+    np.testing.assert_array_equal(coordinates, original)  # not mutated
+    assert fixed.dtype == np.float32 and fixed.shape == coordinates.shape
+    changed = {7, 8, 18, 19}
+    untouched = [index for index in range(len(names)) if index not in changed]
+    np.testing.assert_array_equal(
+        fixed[:, untouched].view(np.uint32), original[:, untouched].view(np.uint32)
+    )
+    for c, ca, o, oxt in ((6, 5, 7, 8), (17, 16, 18, 19)):
+        carbon, alpha = fixed[:, c], fixed[:, ca]
+        oxygen, terminal = fixed[:, o], fixed[:, oxt]
+        np.testing.assert_allclose(
+            np.linalg.norm(oxygen - carbon, axis=-1),
+            np.linalg.norm(terminal - carbon, axis=-1),
+            rtol=1e-5,
+        )
+        np.testing.assert_allclose(
+            _angle(carbon, alpha, oxygen), _angle(carbon, alpha, terminal), atol=1e-2
+        )
+        volume = np.einsum(
+            "sk,sk->s", np.cross(alpha - carbon, oxygen - carbon), terminal - carbon
+        )
+        np.testing.assert_allclose(volume, 0.0, atol=1e-3)
+    # Chain A keeps whichever of its two oxygens was nearer C in the O slot.
+    near_o = np.linalg.norm(original[:, 7] - original[:, 6], axis=-1) <= (
+        np.linalg.norm(original[:, 8] - original[:, 6], axis=-1)
+    )
+    np.testing.assert_array_equal(
+        fixed[:, 7], np.where(near_o[:, None], original[:, 7], original[:, 8])
+    )
+    # Chain D's O slot now holds the old OXT, the nearer oxygen.
+    np.testing.assert_array_equal(fixed[:, 18], original[:, 19])
+
+
+def test_cterminal_rebuild_keeps_o_on_a_tie_and_skips_chains_without_oxt() -> None:
+    from foldjax.models.protenix.data.output import fix_cterminal_carboxyl_oxygens
+
+    features = _metadata_features(["N", "CA", "C", "O", "OXT"], ["A"] * 5, [1] * 5)
+    # C at the origin, CA on +x; O and OXT equidistant from C (a tie).
+    coordinates = np.array(
+        [[[9, 9, 9], [1.5, 0, 0], [0, 0, 0], [-0.6, 1.1, 0], [-0.6, 0, 1.1]]],
+        dtype=np.float32,
+    )
+    fixed = fix_cterminal_carboxyl_oxygens(coordinates, features)
+    np.testing.assert_array_equal(fixed[0, 3], coordinates[0, 3])
+    np.testing.assert_allclose(fixed[0, 4], [-0.6, -1.1, 0.0], atol=1e-6)
+
+    no_oxt = _metadata_features(["N", "CA", "C", "O"], ["A"] * 4, [1] * 4)
+    plain = np.arange(12, dtype=np.float32).reshape(1, 4, 3)
+    np.testing.assert_array_equal(fix_cterminal_carboxyl_oxygens(plain, no_oxt), plain)
+
+
+def test_generated_protein_chains_carry_the_quartet_the_rebuild_needs() -> None:
+    """The featurizer gives each protein C-terminus its OXT, so the fix fires."""
+    from foldjax.models.protenix.data.output import fix_cterminal_carboxyl_oxygens
+
+    features = featurize_protein_json(
+        {"sequences": [{"proteinChain": {"sequence": "AG", "count": 2}}]},
+        n_queries=2,
+        n_keys=4,
+    )
+    names = np.asarray(features["output_atom_name"]).astype(str)
+    chains = np.asarray(features["output_atom_chain_id"]).astype(str)
+    assert (names == "OXT").sum() == 2
+    rng = np.random.default_rng(0)
+    coordinates = rng.normal(size=(2, names.size, 3)).astype(np.float32)
+    fixed = fix_cterminal_carboxyl_oxygens(coordinates, features)
+    moved = np.flatnonzero(np.any(fixed != coordinates, axis=(0, 2)))
+    assert set(names[moved]) <= {"O", "OXT"}
+    for chain in np.unique(chains):
+        oxt = np.flatnonzero((names == "OXT") & (chains == chain))
+        assert oxt.size == 1 and oxt[0] in moved

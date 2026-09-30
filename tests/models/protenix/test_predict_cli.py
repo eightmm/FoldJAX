@@ -860,6 +860,70 @@ def test_the_adapter_renders_the_mc_dropout_options(tmp_path) -> None:
         backend.validate_native_options({"mc_dropout_rate": True})
 
 
+def test_structured_output_carries_the_rebuilt_cterminal_oxygens(
+    tmp_path, monkeypatch
+) -> None:
+    """The ranked CIF path writes upstream's O/OXT rebuild; raw npz does not.
+
+    Upstream 4c355be applies `fix_cterminal_carboxyl_oxygens` to every sample
+    before its dumper (runner/inference.py:600).
+    """
+    from foldjax.models.protenix.data.output import fix_cterminal_carboxyl_oxygens
+
+    weights_path = tmp_path / "toy_weights.pkl"
+    save_native_weights(weights_path, _toy_params_with_relp_dim(139), compress=False)
+    input_json = tmp_path / "input.json"
+    input_json.write_text(
+        '[{"sequences": [{"proteinChain": {"sequence": "AG", "count": 2}}]}]'
+    )
+    raw: dict[str, np.ndarray] = {}
+    written: dict[str, object] = {}
+
+    def fake_predict(_params, features, **_kwargs):
+        n_atom = len(features["atom_to_token_idx"])
+        rng = np.random.default_rng(1)
+        raw["coordinate"] = rng.normal(size=(1, n_atom, 3)).astype(np.float32)
+        return {
+            "coordinate": raw["coordinate"],
+            "atom_plddt": np.full((1, n_atom), 0.5, dtype=np.float32),
+        }
+
+    def fake_writer(root, **kwargs):
+        written.update(kwargs)
+        return [root / "job_sample_0.cif"]
+
+    monkeypatch.setattr(
+        "foldjax.models.protenix.models.predict.protenix_predict_static", fake_predict
+    )
+    monkeypatch.setattr(
+        "foldjax.models.protenix.data.output.write_protenix_outputs", fake_writer
+    )
+    main(
+        [
+            "--weights", str(weights_path),
+            "--input-json", str(input_json),
+            "--out", str(tmp_path / "out"),
+            "--output-format", "protenix",
+            "--model-name", "unknown",
+            "--trunk-dtype", "fp32",
+            "--n-sample", "1",
+            "--n-queries", "2",
+            "--n-keys", "4",
+            "--no-compile-cache",
+        ]
+    )
+
+    features = written["features"]
+    names = np.asarray(features["output_atom_name"]).astype(str)
+    coordinates = np.asarray(written["output"]["coordinate"])
+    np.testing.assert_array_equal(
+        coordinates, fix_cterminal_carboxyl_oxygens(raw["coordinate"], features)
+    )
+    moved = np.flatnonzero(np.any(coordinates != raw["coordinate"], axis=(0, 2)))
+    assert set(names[moved]) == {"O", "OXT"}
+    assert (names[moved] == "OXT").sum() == 2
+
+
 def test_padding_runs_the_per_cycle_msa_draw_over_the_real_rows(
     tmp_path, monkeypatch
 ) -> None:

@@ -393,6 +393,19 @@ unless it says so here, in its own paragraph.
   The memory law was fitted without the per-recycle mask; its cost is not
   measured.
 
+- **Protenix rebuilds each chain's C-terminal O/OXT before writing, as
+  upstream does.** Upstream 4c355be (after the v2.0.0 tag) applies
+  `fix_cterminal_carboxyl_oxygens` to every sample before its dumper
+  (`runner/inference.py:261-362`, called at `:600`): the oxygen nearer C stays
+  `O`, and `OXT` becomes its reflection across the C->CA axis. The port wrote
+  the network's coordinates. **This changes the written coordinates of two
+  atoms per protein chain** in every ranked CIF (`--output-format protenix`,
+  the `foldjax predict` default, and `both`, whose `raw_output.npz` then
+  carries the same coordinates). Confidence is unchanged: both sides compute
+  it from the network's coordinates first. `--output-format npz` keeps the raw
+  network coordinates. On a mixed fixture the port's float32 rebuild is
+  bitwise equal to upstream's torch function.
+
 - **Protenix no longer accepts `triangle_attention_ring_kernel=tokamax` on a
   1-D run.** The check used the shared square-grid helper, which reads an
   omitted `cp_layout` as the grid on a perfect-square count. Protenix's
