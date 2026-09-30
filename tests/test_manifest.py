@@ -42,8 +42,21 @@ class _Recorder(OpenDDEBackend):
 
 def _job(tmp_path: Path) -> Path:
     path = tmp_path / "job.json"
+    # An alignment, because a bare protein is refused under the default msa.
+    (tmp_path / "job.a3m").write_text(">query\nACD\n")
     path.write_text(
-        json.dumps({"entities": [{"type": "protein", "id": "A", "sequence": "ACD"}]})
+        json.dumps(
+            {
+                "entities": [
+                    {
+                        "type": "protein",
+                        "id": "A",
+                        "sequence": "ACD",
+                        "unpaired_msa": "job.a3m",
+                    }
+                ]
+            }
+        )
     )
     return path
 
@@ -107,6 +120,7 @@ def test_manifest_preserves_same_shape_boltz_static_executable_identity(
         },
     }
     request = PredictionRequest(
+        seed=0,
         model="boltz2",
         input=_job(tmp_path),
         weights=_weights(tmp_path),
@@ -153,7 +167,18 @@ def test_editing_the_job_changes_the_recorded_digest(tmp_path: Path) -> None:
 
     before = run()
     job.write_text(
-        json.dumps({"entities": [{"type": "protein", "id": "A", "sequence": "ACDE"}]})
+        json.dumps(
+            {
+                "entities": [
+                    {
+                        "type": "protein",
+                        "id": "A",
+                        "sequence": "ACDE",
+                        "unpaired_msa": "job.a3m",
+                    }
+                ]
+            }
+        )
     )
     assert run() != before
 
@@ -222,6 +247,7 @@ def test_describe_run_without_directory_uses_absolute_artifact_paths(
     structure.write_text("data_mock\n#\n", encoding="utf-8")
     native.write_text("{}\n", encoding="utf-8")
     request = PredictionRequest(
+        seed=0,
         model="opendde",
         input=_job(tmp_path),
         weights=_weights(tmp_path),
@@ -258,6 +284,7 @@ def test_a_manifest_symlink_cannot_rewrite_an_external_file(tmp_path: Path) -> N
     destination = output / MANIFEST_NAME
     destination.symlink_to(external)
     request = PredictionRequest(
+        seed=0,
         model="opendde",
         input=_job(tmp_path),
         weights=_weights(tmp_path),
@@ -322,6 +349,7 @@ def test_the_manifest_records_what_the_run_cost(tmp_path: Path, monkeypatch) -> 
 
     monkeypatch.setattr(manifest, "device_peak_bytes", lambda: 12_884_901_888)
     request = PredictionRequest(
+        seed=0,
         model="opendde",
         input=_job(tmp_path),
         weights=_weights(tmp_path),
@@ -344,6 +372,7 @@ def test_a_run_without_a_device_still_records_its_time(tmp_path: Path) -> None:
     from foldjax import manifest
 
     request = PredictionRequest(
+        seed=0,
         model="opendde",
         input=_job(tmp_path),
         weights=_weights(tmp_path),
@@ -417,6 +446,7 @@ def test_nested_credentials_are_redacted_without_erasing_public_types(
 
     secrets = ("outer-secret", "bearer-secret", "nested-secret")
     request = PredictionRequest(
+        seed=0,
         model="opendde",
         input=_job(tmp_path),
         weights=_weights(tmp_path),
@@ -533,3 +563,113 @@ def test_nested_credentials_are_redacted_without_erasing_public_types(
             "following-secret",
         )
     )
+
+
+def _unseeded(tmp_path: Path, **fields) -> PredictionRequest:
+    return PredictionRequest(
+        model="opendde",
+        input=_job(tmp_path),
+        weights=_weights(tmp_path),
+        output_dir=tmp_path / "out",
+        use_compile_cache=False,
+        msa="single",
+        **fields,
+    )
+
+
+def test_an_unseeded_run_draws_prints_and_records_its_seed(tmp_path: Path) -> None:
+    """Upstream OpenDDE draws `random.randint` for a job without modelSeeds.
+
+    FoldJAX draws too, rather than running 0, and the draw is what makes the
+    run repeatable afterwards: it is printed and recorded beside its source.
+    """
+    import io
+
+    from foldjax import progress
+
+    stream = io.StringIO()
+    progress.enable(stream)
+    try:
+        with backend_override("opendde", _Recorder):
+            result = foldjax.predict(_unseeded(tmp_path))
+    finally:
+        progress.disable()
+
+    manifest = json.loads((tmp_path / "out" / MANIFEST_NAME).read_text())
+    (drawn,) = manifest["seeds"]
+    assert manifest["seed_source"] == "random"
+    assert 0 <= drawn < 2**31
+    assert [sample.seed for sample in result.samples] == [drawn]
+    assert f"drew {drawn} " in stream.getvalue()
+    assert f"--seed {drawn} repeats it" in stream.getvalue()
+
+
+def test_resume_reuses_the_drawn_seed_instead_of_drawing_again(
+    tmp_path: Path,
+) -> None:
+    """A fresh draw would never match the recorded seed, so resume reuses it."""
+    from foldjax.api import resolve_request
+
+    with backend_override("opendde", _Recorder):
+        first = foldjax.predict(_unseeded(tmp_path, resume=True))
+    (drawn,) = [sample.seed for sample in first.samples]
+
+    resumed = resolve_request(_unseeded(tmp_path, resume=True))
+    assert (resumed.seed, resumed.seed_source) == (drawn, "random")
+    fresh = {resolve_request(_unseeded(tmp_path)).seed for _ in range(4)}
+    assert fresh != {drawn}
+
+
+def test_a_given_seed_is_recorded_as_the_callers(tmp_path: Path) -> None:
+    with backend_override("opendde", _Recorder):
+        foldjax.predict(_unseeded(tmp_path, seed=0))
+    manifest = json.loads((tmp_path / "out" / MANIFEST_NAME).read_text())
+    assert manifest["seeds"] == [0]
+    assert manifest["seed_source"] == "user"
+
+
+@pytest.mark.parametrize(
+    ("model", "seed"), [("protenix", 101), ("openfold3", 42)]
+)
+def test_an_unseeded_request_takes_the_upstream_fixed_seed(
+    tmp_path: Path, model: str, seed: int
+) -> None:
+    from foldjax.api import resolve_request
+
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    resolved = resolve_request(
+        PredictionRequest(
+            model=model,
+            input=_job(tmp_path),
+            weights=weights,
+            output_dir=tmp_path / "out",
+            use_compile_cache=False,
+            num_seeds=2,
+        )
+    )
+    assert resolved.seed_source == "upstream"
+    assert resolved.resolved_seeds == (seed, seed + 1)
+
+
+@pytest.mark.parametrize("model", ["boltz2", "esmfold2"])
+def test_an_unseeded_request_draws_where_upstream_seeds_nothing(
+    tmp_path: Path, model: str
+) -> None:
+    from foldjax.api import resolve_request
+
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    request = PredictionRequest(
+        model=model,
+        input=_job(tmp_path),
+        weights=weights,
+        output_dir=tmp_path / "out",
+        use_compile_cache=False,
+    )
+    draws = {resolve_request(request).seed for _ in range(8)}
+    assert len(draws) > 1
+    planned = resolve_request(request, draw_seeds=False)
+    assert (planned.seed, planned.seed_source) == (None, "random")
+    with pytest.raises(ValueError, match="not resolved"):
+        planned.resolved_seeds

@@ -613,7 +613,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         if self._session_open:
             raise RuntimeError("nested ESMFold2 backend sessions are not supported")
         self._session_open = True
-        attempts = sum(len(request.resolved_seeds) for request in requests)
+        attempts = sum(request.seed_count for request in requests)
         # A scalar run has nothing to reuse and keeps the historical direct
         # ``predict_job`` route for direct/wrapper calls. The first-party
         # managed path may still stage its two checkpoint halves when this

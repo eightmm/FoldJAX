@@ -812,6 +812,7 @@ def test_the_opendde_backend_hands_its_native_path_a_mesh_aware_profile(
     )
     OpenDDEBackend().predict(
         PredictionRequest(
+            seed=0,
             model="opendde",
             input=input_path,
             weights=weights_path,
@@ -830,6 +831,7 @@ def test_the_opendde_backend_hands_its_native_path_a_mesh_aware_profile(
     seen.clear()
     OpenDDEBackend().predict(
         PredictionRequest(
+            seed=0,
             model="opendde",
             input=input_path,
             weights=weights_path,

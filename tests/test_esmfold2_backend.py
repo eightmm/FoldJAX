@@ -581,6 +581,7 @@ def test_padded_split_path_requests_managed_outputs(tmp_path, monkeypatch) -> No
 
     result = ESMFold2Backend().predict(
         PredictionRequest(
+            seed=0,
             model="esmfold2",
             input=job,
             weights=weights,
@@ -668,6 +669,7 @@ def _all_atom_session_fixture(tmp_path, monkeypatch, *, build_error=None):
         input=job,
         weights=weights,
         output_dir=tmp_path / "out",
+        seed=0,
         num_seeds=2,
         options={"no_language_model": True},
     )
@@ -1104,6 +1106,7 @@ def test_single_input_managed_session_stages_esmc_before_structure_weights(
     )
     weights = _fake_session_weights(tmp_path)
     request = PredictionRequest(
+        seed=0,
         model="esmfold2",
         input=_job(
             tmp_path / "input",
@@ -1453,6 +1456,7 @@ def test_request_session_loads_once_and_runs_esmc_once_per_input(
         [{"type": "protein", "id": ["A"], "sequence": "ACDE"}],
     )
     first = PredictionRequest(
+        seed=0,
         model="esmfold2",
         input=first_job,
         weights=weights,
@@ -1510,6 +1514,7 @@ def test_legacy_split_wrapper_recomputes_raw_states_without_retaining_them(
     )
     weights = _fake_session_weights(tmp_path)
     request = PredictionRequest(
+        seed=0,
         model="esmfold2",
         input=_job(tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACD"}]),
         weights=weights,
@@ -1775,6 +1780,7 @@ def test_multi_seed_session_keeps_predict_job_only_wrappers_compatible(
         "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
     )
     request = PredictionRequest(
+        seed=0,
         model="esmfold2",
         input=job,
         weights=weights,

@@ -92,7 +92,7 @@ def test_warm_cache_keeps_an_explicit_output_directory(
     from foldjax import warmup
 
     output = tmp_path / "kept"
-    request = _request(tmp_path, output_dir=output, seeds=None)
+    request = _request(tmp_path, output_dir=output, seeds=None, seed=0)
     namespace = tmp_path / "namespace"
     monkeypatch.setattr(warmup, "resolve_requests", lambda _request: (request,))
     monkeypatch.setattr(
@@ -155,7 +155,7 @@ def test_plural_warm_preserves_the_generated_output_symlink_boundary(
     generated = generated_parent / "job"
     generated.symlink_to(outside, target_is_directory=True)
 
-    scalar = _request(tmp_path, output_dir=generated, seeds=None)
+    scalar = _request(tmp_path, output_dir=generated, seeds=None, seed=0)
     plural = PredictionRequest(
         models=("boltz2",),
         input=scalar.input,

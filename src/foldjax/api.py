@@ -51,7 +51,10 @@ from foldjax.paths import compile_cache_dir
 from foldjax.registry import get_backend
 from foldjax.result_validation import _sample_index, _validate_result
 from foldjax.schema import (
+    DEFAULT_SEEDS,
     JOB_DOCUMENT_SUFFIXES,
+    RANDOM_SEED,
+    RANDOM_SEED_BOUND,
     BatchReport,
     PredictionError,
     PredictionFailure,
@@ -81,11 +84,82 @@ def detect_input_format(path: Path) -> str:
     return "native"
 
 
-def resolve_request(request: PredictionRequest) -> PredictionRequest:
+def _draw_seed() -> int:
+    import secrets
+
+    return secrets.randbelow(RANDOM_SEED_BOUND)
+
+
+def _recorded_random_seed(
+    request: PredictionRequest, output_dir: Path | None
+) -> int | None:
+    """The seed a finished run in ``output_dir`` drew, for ``resume``.
+
+    A fresh draw would never match the recorded one, so resuming a run whose
+    seed was drawn would silently repeat it. Only a manifest that says its
+    seed was drawn, for the same seed count, is reused.
+    """
+    if output_dir is None:
+        return None
+    try:
+        document = json.loads(
+            (Path(output_dir) / MANIFEST_NAME).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return None
+    if not isinstance(document, dict) or document.get("seed_source") != RANDOM_SEED:
+        return None
+    seeds = document.get("seeds")
+    if not (
+        isinstance(seeds, list)
+        and seeds
+        and all(type(seed) is int and seed >= 0 for seed in seeds)
+    ):
+        return None
+    if seeds != list(range(seeds[0], seeds[0] + request.seed_count)):
+        return None
+    return seeds[0]
+
+
+def _seed_updates(
+    request: PredictionRequest,
+    model: str,
+    *,
+    output_dir: Path | None,
+    draw: bool,
+) -> dict[str, Any]:
+    """Fill in the seed the way ``model``'s upstream does when none is given."""
+    if request.seed is not None or request.seeds is not None:
+        source = request.seed_source or "user"
+        return {} if source == request.seed_source else {"seed_source": source}
+    policy = DEFAULT_SEEDS.get(model)
+    if policy is None:
+        return {"seed": 0, "seed_source": "foldjax"}
+    if policy != RANDOM_SEED:
+        return {"seed": int(policy), "seed_source": "upstream"}
+    recorded = (
+        _recorded_random_seed(request, output_dir) if request.resume else None
+    )
+    if recorded is not None:
+        return {"seed": recorded, "seed_source": RANDOM_SEED}
+    if not draw:
+        return {"seed_source": RANDOM_SEED}
+    return {"seed": _draw_seed(), "seed_source": RANDOM_SEED}
+
+
+def resolve_request(
+    request: PredictionRequest, *, draw_seeds: bool = True
+) -> PredictionRequest:
     """Apply every default without running anything.
 
     Exposed separately so callers (and `foldjax plan`) can see exactly what a
     bare request turns into before any weights load.
+
+    The seed follows `DEFAULT_SEEDS`. Where the model's upstream seeds nothing
+    a seed is drawn here, unless ``draw_seeds`` is false: then the seed stays
+    None with ``seed_source`` ``"random"``, which is what `foldjax plan`
+    shows, because a number drawn for a plan would not be the one a later
+    run draws.
     """
     if request.models is not None or request.inputs is not None:
         raise ValueError(
@@ -163,12 +237,22 @@ def resolve_request(request: PredictionRequest) -> PredictionRequest:
         updates["output_dir"] = Path("foldjax-outputs") / request.input.stem
     if request.cache_dir is None and request.use_compile_cache:
         updates["cache_dir"] = compile_cache_dir()
+    updates.update(
+        _seed_updates(
+            request,
+            backend.name,
+            output_dir=updates.get("output_dir", request.output_dir),
+            draw=draw_seeds,
+        )
+    )
     resolved = dataclasses.replace(request, **updates) if updates else request
     backend.validate_request(resolved)
     return resolved
 
 
-def resolve_requests(request: PredictionRequest) -> tuple[PredictionRequest, ...]:
+def resolve_requests(
+    request: PredictionRequest, *, draw_seeds: bool = True
+) -> tuple[PredictionRequest, ...]:
     """Resolve every scalar run represented by ``request`` without executing it.
 
     Scalar requests return a one-item tuple. Plural ``models``/``inputs`` form
@@ -178,7 +262,7 @@ def resolve_requests(request: PredictionRequest) -> tuple[PredictionRequest, ...
     """
     plural = request.models is not None or request.inputs is not None
     if not plural:
-        return (resolve_request(request),)
+        return (resolve_request(request, draw_seeds=draw_seeds),)
 
     root = request.output_dir or Path("foldjax-outputs")
     runs: list[PredictionRequest] = []
@@ -217,7 +301,7 @@ def resolve_requests(request: PredictionRequest) -> tuple[PredictionRequest, ...
                 inputs=None,
                 output_dir=destination,
             )
-            runs.append(resolve_request(scalar))
+            runs.append(resolve_request(scalar, draw_seeds=draw_seeds))
     return tuple(runs)
 
 
@@ -825,6 +909,19 @@ def _predict_resolved(
     entry_failure_count = len(failures)
     _prepare_output_directory(request.output_dir, boundary=output_root)
     seeds = request.resolved_seeds
+    if request.seed_source == RANDOM_SEED:
+        # Upstream would leave this run unrepeatable; the drawn number is also
+        # in the manifest, but a terminal line is where people look first.
+        again = (
+            f"--seed {seeds[0]}"
+            if len(seeds) == 1
+            else f"--seed {seeds[0]} --num-seeds {len(seeds)}"
+        )
+        progress._write(
+            f"[foldjax] {request.model} has no upstream default seed; drew "
+            f"{', '.join(map(str, seeds))} (recorded in {MANIFEST_NAME}; "
+            f"{again} repeats it)"
+        )
     if len(seeds) == 1:
         outcome = _attempt(
             request,

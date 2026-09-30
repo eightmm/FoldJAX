@@ -723,6 +723,26 @@ unless it says so here, in its own paragraph.
   Jobs whose protein chains all carry an alignment, including every
   benchmark job, and native-dialect inputs are unchanged.
 
+- **An omitted seed follows each model's upstream instead of 0.** Protenix
+  runs 101 (`configs/configs_inference.py:24`) and OpenFold3 42
+  (`entry_points/validator.py:311`). Boltz-2 (`--seed` None,
+  `boltz/main.py:922`), ESMFold2 (`forward` takes no seed), OpenDDE and
+  AlphaFold 3 seed nothing upstream for a job without seeds, so FoldJAX
+  draws one below 2^31, prints it with the `--seed` that repeats it, and
+  records it in `foldjax_run.json`. `--num-seeds N` counts up from that
+  default. The table is `foldjax.schema.DEFAULT_SEEDS`. `foldjax plan`
+  and the manifest show `seed_source`: `user`, `upstream`, `random`, or
+  `foldjax` for a backend outside the table, which keeps 0. A plan draws
+  nothing and shows `seeds: null` where the run would draw. `--resume`
+  reuses the seed a finished run in the same directory drew.
+  **This changes what a recorded command predicts** for every run that did
+  not name `--seed`, `--seeds` or `--num-seeds` with `--seed`; pass
+  `--seed 0` for the old draw. For API users, `PredictionRequest.seed` now
+  defaults to None, `resolve_request` fills it in, and
+  `PredictionRequest.resolved_seeds` raises until it has; a backend or
+  `manifest.describe_run` called directly needs a request with a seed. An
+  explicit `seed=0` beside `seeds` is still accepted.
+
 - **Boltz-2 recycles 3 times by default, as upstream does.** `boltz predict
   --recycling_steps` defaults to 3 (`boltz/main.py:856`). Since 2026-09-08
   the adapter injected 5, the Boltz-2 paper's PDB-evaluation count, which

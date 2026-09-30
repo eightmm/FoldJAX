@@ -49,9 +49,16 @@ what they always meant.
 
 All four reach all six models; setting both a neutral knob and its native
 name is an error, and `--option KEY=VALUE` passes anything native straight
-through. Seeds fan out the same way — `--seeds 0 1 2` (or `--num-seeds 3`)
-runs the job once per seed into `seed_<n>` directories and returns every
-structure together. Every run writes `foldjax_run.json` beside its structures:
+through. Seeds fan out the same way — `--seeds 0 1 2` (or `--seed 0
+--num-seeds 3`) runs the job once per seed into `seed_<n>` directories and
+returns every structure together.
+
+An omitted `--seed` follows each model's upstream: Protenix 101, OpenFold3 42.
+Boltz-2, ESMFold2, OpenDDE and AlphaFold 3 seed nothing by default upstream,
+so FoldJAX draws a seed, prints it and records it; `--resume` reuses a drawn
+seed recorded in the output directory. `foldjax plan` and `foldjax_run.json`
+show the seed and its `seed_source` (`user`, `upstream` or `random`). Every
+run writes `foldjax_run.json` beside its structures:
 model, input SHA-256, resolved weights and their stat/tree identity, the knobs
 actually used, and each structure's confidence.
 

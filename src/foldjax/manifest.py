@@ -1261,6 +1261,10 @@ def describe_run(
             **(weights_stat or {}),
         },
         "seeds": list(request.resolved_seeds),
+        # "user", "upstream" (the model's fixed default), "random" (drawn,
+        # because upstream seeds nothing) or "foldjax". Not part of the resume
+        # identity: manifests written before it existed have no such key.
+        "seed_source": request.seed_source,
         # Whether the alignments were the caller's or FoldJAX searched for them
         # changes the prediction, so it belongs with the knobs, not in a log.
         "msa": request.msa,

@@ -680,7 +680,7 @@ class Boltz2Backend(Backend):
         if self._session_open:
             raise RuntimeError("nested Boltz2 backend sessions are not supported")
         self._session_open = True
-        attempts = sum(len(request.resolved_seeds) for request in requests)
+        attempts = sum(request.seed_count for request in requests)
         self._session_active = attempts > 1
         try:
             yield self

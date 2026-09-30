@@ -351,7 +351,7 @@ class Backend(ABC):
             raise ValueError(
                 "representations must name at least one representation or 'all'"
             )
-        if len(request.resolved_seeds) > 1:
+        if request.seed_count > 1:
             raise ValueError(
                 "representations cannot be combined with multiple seeds: "
                 "PredictionResult carries one representation archive; run one "

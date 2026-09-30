@@ -431,6 +431,7 @@ def test_protenix_defaults_to_upstreams_released_flag(tmp_path: Path) -> None:
     from foldjax.backends.protenix import ProtenixBackend
 
     request = PredictionRequest(
+        seed=0,
         model="protenix",
         input=_job(tmp_path, None),
         weights=_weights(tmp_path),

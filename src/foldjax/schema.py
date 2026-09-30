@@ -47,6 +47,43 @@ STOP_POINTS: tuple[str, ...] = ("full", "trunk", "inputs")
 
 ERROR_POLICIES = ("stop", "continue")
 
+#: Draw a seed: the backend's upstream seeds nothing by default.
+RANDOM_SEED = "random"
+
+#: The seed each backend runs when a request names none, following the
+#: upstream's released CLI (``AUDIT-DEFAULTS-20260930.md``). An integer is
+#: upstream's own fixed default. ``RANDOM_SEED`` is used where upstream seeds
+#: nothing: a seed is drawn, printed and recorded in the manifest, so the run
+#: can still be repeated with ``--seed``.
+#:
+#: - Protenix: ``--seeds`` defaults to 101 (``configs/configs_inference.py:24``).
+#: - OpenFold3: ``seeds: [42]`` (``entry_points/validator.py:311``).
+#: - Boltz-2: ``--seed`` defaults to None and nothing is seeded
+#:   (``boltz/main.py:922,1102-1103``).
+#: - ESMFold2: ``ESMFold2Model.forward`` takes no seed.
+#: - OpenDDE: ``--seeds``, else the job's ``modelSeeds``, else
+#:   ``random.randint`` (``runner/batch_inference.py:698-703``).
+#: - AlphaFold 3: the job's ``modelSeeds``; the AlphaFold Server dialect
+#:   draws one when they are absent (``folding_input.py:1119-1122``).
+#:
+#: A backend missing from the table keeps FoldJAX's historical 0.
+DEFAULT_SEEDS: Mapping[str, int | str] = {
+    "alphafold3": RANDOM_SEED,
+    "boltz2": RANDOM_SEED,
+    "esmfold2": RANDOM_SEED,
+    "opendde": RANDOM_SEED,
+    "openfold3": 42,
+    "protenix": 101,
+}
+
+#: Where a resolved request's seed came from: the caller, the upstream's fixed
+#: default, a draw, or FoldJAX's own 0 for a backend with no table entry.
+SEED_SOURCES = ("user", "upstream", "random", "foldjax")
+
+#: Drawn seeds stay below 2**31: ESMFold2 hands the seed to RDKit's
+#: ``randomSeed``, a C ``int``.
+RANDOM_SEED_BOUND = 2**31
+
 
 class PredictionError(RuntimeError):
     """A requested prediction could not produce a usable result."""
@@ -385,14 +422,17 @@ class PredictionRequest:
     weights: Path | None = None
     output_dir: Path | None = None
     input_format: str = "auto"
-    seed: int = 0
+    # None until `foldjax.resolve_request` applies the backend's default from
+    # `DEFAULT_SEEDS`; a number here is the caller's.
+    seed: int | None = None
     # Several models take a list of seeds natively, and running one job under
     # more than one is the ordinary way to use them -- the samples from a single
     # seed are correlated. `seeds` runs the job once per entry and returns every
     # structure together; leave it unset to run the single `seed`.
     seeds: tuple[int, ...] | None = None
-    # `--num-seeds 5` is the same request as `--seeds 0 1 2 3 4`, and is what
-    # people actually want when they say "run it five times": the seed values
+    # `--num-seeds 5` is `--seeds s s+1 ... s+4` counting from `seed`, or from
+    # the backend's default seed when `seed` is unset, and is what people
+    # actually want when they say "run it five times": the seed values
     # themselves carry no meaning, only that they differ.
     num_seeds: int | None = None
     # Model-neutral sampling knobs. None means "keep this backend's default".
@@ -449,6 +489,9 @@ class PredictionRequest:
     # nobody asked for. A ``trunk`` run returns no samples, so it is only
     # meaningful together with `representations`.
     stop_after: str = "full"
+    # One of `SEED_SOURCES`, set by `foldjax.resolve_request`: where the seed
+    # came from, recorded beside it in `foldjax plan` and the run manifest.
+    seed_source: str | None = None
 
     def __post_init__(self) -> None:
         padding = _normalize_padding(self.padding)
@@ -559,8 +602,17 @@ class PredictionRequest:
                 "cache_dir and use_compile_cache=False were both set; remove "
                 "cache_dir or enable the compile cache"
             )
-        seed = _strict_integer(self.seed, name="seed", minimum=0)
+        seed = (
+            None
+            if self.seed is None
+            else _strict_integer(self.seed, name="seed", minimum=0)
+        )
         object.__setattr__(self, "seed", seed)
+        if self.seed_source is not None and self.seed_source not in SEED_SOURCES:
+            raise ValueError(
+                f"seed_source must be one of {', '.join(SEED_SOURCES)}; "
+                f"got {self.seed_source!r}"
+            )
         if self.seeds is not None:
             seeds = tuple(
                 _strict_integer(value, name="each seed", minimum=0)
@@ -570,10 +622,11 @@ class PredictionRequest:
                 raise ValueError("seeds must not be empty")
             if len(set(seeds)) != len(seeds):
                 raise ValueError("seeds must be unique")
-            if seed != 0:
+            if seed not in (None, 0):
                 # Silently preferring one would change which structures come
                 # back without changing the exit code, the same rule the
-                # sampling knobs follow.
+                # sampling knobs follow. An explicit 0 beside `seeds` is what
+                # callers wrote while 0 was the default, and stays accepted.
                 raise ValueError("seed and seeds were both set; pass one of them")
             object.__setattr__(self, "seeds", seeds)
         if self.num_seeds is not None:
@@ -613,9 +666,21 @@ class PredictionRequest:
         """
         if self.seeds is not None:
             return self.seeds
+        if self.seed is None:
+            raise ValueError(
+                "this request's seed is not resolved yet; "
+                "foldjax.resolve_request() applies the model's default seed"
+            )
         if self.num_seeds is not None:
             return tuple(range(self.seed, self.seed + self.num_seeds))
         return (self.seed,)
+
+    @property
+    def seed_count(self) -> int:
+        """How many seeds this request runs, known before any is drawn."""
+        if self.seeds is not None:
+            return len(self.seeds)
+        return 1 if self.num_seeds is None else self.num_seeds
 
     @property
     def sampling(self) -> dict[str, int]:

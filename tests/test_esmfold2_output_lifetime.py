@@ -467,6 +467,7 @@ def test_multi_seed_session_keeps_one_compact_embedding_not_feature_trees(
     _install_modules(monkeypatch, inference, writer)
     weights = _weights(tmp_path, session=True)
     request = PredictionRequest(
+        seed=0,
         model="esmfold2",
         input=_job(tmp_path, all_atom=False),
         weights=weights,

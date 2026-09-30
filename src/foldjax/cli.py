@@ -149,7 +149,14 @@ def _add_predict_arguments(
         "--seed",
         type=int,
         default=None,
-        help="representative seed (default 0)" if cache_warm else None,
+        help=(
+            "representative seed (default: the model's default seed)"
+            if cache_warm
+            else "prediction seed. Omitted, each model uses its upstream's: "
+            "Protenix 101, OpenFold3 42; Boltz-2, ESMFold2, OpenDDE and "
+            "AlphaFold 3 seed nothing upstream, so a seed is drawn, printed "
+            "and recorded in foldjax_run.json. `foldjax plan` shows which"
+        ),
     )
     sampling.add_argument(
         "--seeds",
@@ -173,8 +180,9 @@ def _add_predict_arguments(
             "accepted for request parity; cache warm still executes only the "
             "first seed. Mutually exclusive with --seeds"
             if cache_warm
-            else "how many seeds to run, counting up from --seed. --num-seeds "
-            "3 is --seeds 0 1 2; mutually exclusive with --seeds"
+            else "how many seeds to run, counting up from --seed or, without "
+            "it, from the model's default seed. --seed 0 --num-seeds 3 is "
+            "--seeds 0 1 2; mutually exclusive with --seeds"
         ),
     )
     source.add_argument(
@@ -715,7 +723,7 @@ def _request(args: argparse.Namespace) -> PredictionRequest:
         profile=args.profile,
         output_dir=args.output_dir,
         input_format=args.input_format,
-        seed=0 if args.seed is None else args.seed,
+        seed=args.seed,
         seeds=tuple(args.seeds) if args.seeds else None,
         num_seeds=args.num_seeds,
         num_samples=args.num_samples,
@@ -1239,7 +1247,14 @@ def _plan_summary(request: PredictionRequest) -> dict[str, Any]:
         "profile": request.profile,
         "output_dir": str(request.output_dir),
         "cache_dir": str(request.cache_dir) if request.cache_dir is not None else None,
-        "seeds": list(request.resolved_seeds),
+        # None while the seed is still to be drawn: a plan does not draw one,
+        # because the run would draw another. `seed_source` says which.
+        "seeds": (
+            None
+            if request.seed is None and request.seeds is None
+            else list(request.resolved_seeds)
+        ),
+        "seed_source": request.seed_source,
         "msa": request.msa,
         "sampling": request.sampling,
         "options": public_options(request.options),
@@ -1351,7 +1366,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_cache(args)
     if args.command == "plan":
         requested = _request(args)
-        resolved = resolve_requests(requested)
+        resolved = resolve_requests(requested, draw_seeds=False)
         payload = [_plan_summary(item) for item in resolved]
         print(
             json.dumps(

@@ -905,6 +905,43 @@ def test_plan_refuses_requests_that_predict_would_reject(
         )
 
 
+@pytest.mark.parametrize(
+    ("model", "seeds", "source"),
+    [
+        ("protenix", [101], "upstream"),
+        ("openfold3", [42], "upstream"),
+        ("boltz2", None, "random"),
+        ("esmfold2", None, "random"),
+        ("opendde", None, "random"),
+        ("alphafold3", None, "random"),
+    ],
+)
+def test_plan_shows_each_models_default_seed(
+    tmp_path: Path, capsys, model: str, seeds: list[int] | None, source: str
+) -> None:
+    """An omitted seed follows the model's upstream; `plan` says which.
+
+    Where upstream seeds nothing the plan draws no number, because the run
+    would draw a different one.
+    """
+    input_path = tmp_path / "job.json"
+    input_path.write_text(
+        json.dumps({"entities": [{"type": "protein", "id": "A", "sequence": "ACD"}]})
+    )
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    argv = ["plan", "--model", model, "--input", str(input_path)]
+    argv += ["--weights", str(weights), "--no-cache"]
+
+    assert main(argv) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert (payload["seeds"], payload["seed_source"]) == (seeds, source)
+
+    assert main([*argv, "--seed", "7"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert (payload["seeds"], payload["seed_source"]) == ([7], "user")
+
+
 def test_plan_validates_mem_fraction_without_mutating_the_allocator(
     tmp_path: Path, monkeypatch
 ) -> None:

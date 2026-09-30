@@ -210,6 +210,7 @@ _FORCED_CP_SESSION_PROBE = textwrap.dedent(
             input_format="native",
             weights=weights,
             output_dir=root / "out",
+            seed=0,
             num_seeds=2,
             options={"mols": mols},
         )
@@ -309,6 +310,8 @@ def _request(
         input_format="native",
         weights=weights,
         output_dir=tmp_path / "out",
+        # Seeds 0 and 1: Boltz-2's own default is a drawn seed.
+        seed=0,
         num_seeds=2,
         cache_dir=tmp_path / "cache",
         on_error=on_error,
