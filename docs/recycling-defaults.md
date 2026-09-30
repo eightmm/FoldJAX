@@ -1,5 +1,13 @@
 # Recycling defaults: paper inference settings
 
+> **Superseded on 2026-09-30.** The project rule is now that input and
+> inference defaults follow each upstream's released inference path, not the
+> paper's benchmark schedule. Under that rule Boltz-2 is back to upstream's
+> `--recycling_steps 3` (`boltz/main.py:856`). Rows below that still follow
+> the paper policy are marked; the rest of this page is kept as the record of
+> the 2026-09-08 decision. The audit is
+> `foldjax-bench/jctc-v2/paper/AUDIT-DEFAULTS-20260930.md`.
+
 Policy selected on 2026-09-08: prefer each selected model's published inference
 or benchmark schedule over training tables and generic algorithm signatures.
 For AF3, the subsequent explicit decision selects Algorithm 1 instead: four
@@ -11,13 +19,13 @@ precision and checkpoints must also match to reproduce a paper's results.
 | Managed model | Common `num_recycles` | Executed main trunk passes | Evidence and status |
 | --- | --- | --- | --- |
 | AlphaFold 3 | **3** | **4** | Explicitly select SI Algorithm 1, `N_cycle=4`, over the timing schedule. |
-| Boltz2 | **5** | 6 | Paper Appendix D.1 PDB evaluation uses five recycling rounds; changed from native CLI default 3. |
+| Boltz2 | 3 | 4 | **Upstream default since 2026-09-30** (`--recycling_steps 3`, `main.py:856`). From 2026-09-08 to 2026-09-30 it was 5, the paper's Appendix D.1 PDB evaluation count. |
 | Protenix base v1.0.0 | 10 | 10 | Protenix-v1 section 3.1 evaluation fixes inference recycles at 10. |
 | OpenDDE | 10 | 10 | **Publisher inference fallback**, not a verified paper benchmark count. |
 | OpenFold3 / OpenBind-0 | 3 | 4 | **Publisher checkpoint default fallback**; the older preview2 report is not evidence for OpenBind-0's evaluation schedule. |
 | ESMFold2 | **9** | **10** | Paper Appendix A.2.11 specifies ten loops; Algorithm 1 iterates T times. Current port adds one to `num_recycles`. |
 
-AF3, Boltz2 and ESMFold2 defaults are supplied by their common backend adapters for
+AF3 and ESMFold2 defaults are supplied by their common backend adapters for
 predict and cache warm, whether padding is on or off. Explicit common or native
 recycle options take precedence. Their effective counts remain in compile
 profiles: omitted and explicitly equal requests share a namespace, while former

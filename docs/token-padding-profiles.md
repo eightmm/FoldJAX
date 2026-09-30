@@ -56,10 +56,10 @@ See [implementation and verification](openfold3-streamed-msa-2026-09-08.md).
 
 ## Recycling defaults
 
-The common API uses the [paper inference recycling policy](recycling-defaults.md).
-Padding and cache warming keep that same policy. Boltz2 defaults to five
-additional recycles; ESMFold2 defaults to nine additional recycles (ten total
-loops). Explicit values take precedence. Other managed model defaults are
+The common API uses the [recycling policy](recycling-defaults.md); since
+2026-09-30 Boltz-2 follows upstream's `--recycling_steps 3`. Padding and cache
+warming keep that same policy. ESMFold2 defaults to nine additional recycles
+(ten total loops). Explicit values take precedence. Other managed model defaults are
 AF3 3 (four total passes, explicitly choosing Algorithm 1), Protenix base 10, OpenDDE 10 and OpenFold3/OpenBind 3. The linked audit
 separates verified paper settings from publisher fallbacks and explains
 initial-pass counting; not every code default is a paper benchmark setting.

@@ -695,15 +695,8 @@ class Boltz2Backend(Backend):
         for role in tuple(self._runners):
             self._drop_runner(role)
 
-    def apply_sampling(self, request: PredictionRequest) -> dict[str, Any]:
-        options = super().apply_sampling(request)
-        # Boltz-2 Appendix D.1 uses five recycling rounds for PDB evaluation.
-        # Keep the effective value in cache identity, including omitted requests.
-        options.setdefault("num_recycles", 5)
-        return options
-
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
-        """Normalize native defaults while retaining the managed recycle count.
+        """Normalize native defaults, including the omitted recycle count.
 
         The native API resolves omitted options to these exact values before it
         builds either retained runner identity.  Naming them explicitly must

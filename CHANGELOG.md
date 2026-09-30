@@ -706,6 +706,17 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Boltz-2 recycles 3 times by default, as upstream does.** `boltz predict
+  --recycling_steps` defaults to 3 (`boltz/main.py:856`). Since 2026-09-08
+  the adapter injected 5, the Boltz-2 paper's PDB-evaluation count, which
+  ran 6 trunk passes where upstream runs 4. The adapter no longer injects a
+  count, so an omitted `--num-recycles` reaches the native API's own 3.
+  **This changes what a recorded command predicts** for every Boltz-2 run
+  that did not name `--num-recycles`. Pass `--num-recycles 5` for the paper
+  schedule. An omitted count and an explicit 3 share one compile-cache
+  namespace; runs cached at the former 5 stay in theirs.
+  `docs/recycling-defaults.md` records the superseded paper policy.
+
 - **On a GPU, Boltz-2 and OpenFold3 run the Pallas pair kernels by default,
   and Protenix runs the Pallas triangle multiplication.** An omitted setting
   now realises the Pallas-Triton kernels from the Added entry below:

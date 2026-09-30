@@ -409,7 +409,7 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
         omitted,
         options={
             "num_steps": 200,
-            "num_recycles": 5,
+            "num_recycles": 3,
             "num_samples": 1,
             "cp_atom_windows": True,
             "cp_devices": 1,
@@ -433,7 +433,7 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
     neutral = dataclasses.replace(
         omitted,
         num_steps=200,
-        num_recycles=5,
+        num_recycles=3,
         num_samples=1,
         options={
             "cp_atom_windows": True,
@@ -466,7 +466,6 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
     # The three arms below spell it and still share one namespace, which is
     # the aliasing the strip used to provide.
     assert backend.cache_profile(omitted) == {
-        "num_recycles": 5,
         "pair_residual_dtype": "bfloat16",
         "diffusion_chunk_size": None,
         "affinity_diffusion_chunk_size": None,
@@ -596,7 +595,6 @@ def test_boltz2_cache_profile_records_the_cp_layout_its_resolver_builds(
     assert backend.cache_profile(cp_omitted) == {
         "cp_devices": 4,
         "cp_layout": "2d",
-        "num_recycles": 5,
         "pair_residual_dtype": "bfloat16",
         "diffusion_chunk_size": None,
         "affinity_diffusion_chunk_size": None,
@@ -1256,7 +1254,7 @@ def test_resolve_cache_dir_requires_a_cache_root(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("model", "recycles"), [("alphafold3", 3), ("boltz2", 5), ("esmfold2", 9)]
+    ("model", "recycles"), [("alphafold3", 3), ("esmfold2", 9)]
 )
 @pytest.mark.parametrize("padding", [False, True])
 def test_paper_recycling_defaults_preserve_overrides_and_cache_identity(
@@ -1273,3 +1271,33 @@ def test_paper_recycling_defaults_preserve_overrides_and_cache_identity(
     assert resolve_cache_dir(request, backend) == resolve_cache_dir(explicit, backend)
     assert resolve_cache_dir(request, backend) == resolve_cache_dir(native, backend)
     assert resolve_cache_dir(request, backend) != resolve_cache_dir(previous, backend)
+
+
+@pytest.mark.parametrize("padding", [False, True])
+def test_boltz2_recycles_default_to_upstream_three(
+    tmp_path: Path, padding: bool
+) -> None:
+    """`boltz predict --recycling_steps` defaults to 3 (`main.py:856`).
+
+    The adapter no longer injects the paper's 5: an omitted count reaches the
+    native API's own 3, and an explicit 3 shares its cache namespace, while the
+    former managed 5 stays a separate program.
+    """
+    backend = get_backend("boltz2")
+    request = dataclasses.replace(
+        _request(tmp_path), model="boltz2", padding=padding
+    )
+    explicit = dataclasses.replace(request, num_recycles=3)
+    native = dataclasses.replace(request, options={"num_recycles": 3})
+    paper = dataclasses.replace(request, num_recycles=5)
+    assert "num_recycles" not in backend.apply_sampling(request)
+    assert backend.apply_sampling(explicit)["num_recycles"] == 3
+    assert resolve_cache_dir(request, backend) == resolve_cache_dir(explicit, backend)
+    assert resolve_cache_dir(request, backend) == resolve_cache_dir(native, backend)
+    assert resolve_cache_dir(request, backend) != resolve_cache_dir(paper, backend)
+    import inspect
+
+    from foldjax.models.boltz2.api import predict as native_predict
+
+    assert inspect.signature(native_predict).parameters["num_recycles"].default == 3
+

@@ -55,7 +55,7 @@ Diffusion steps/samples는 기존 checkpoint 기본값이며, 전체 논문 재�
 | 모델 | 기본 recycle 설정 | 실제 주요 trunk 실행 횟수 | diffusion steps | 한 seed의 samples `S` |
 | --- | --- | --- | --- | --- |
 | AlphaFold 3 | 3 | 4 | 200 | 5 |
-| Boltz2 | 5 | 6 | 200 | 1 |
+| Boltz2 | 3 (2026-09-30부터 상류 기본값; 이전 5) | 4 | 200 | 1 |
 | Protenix released base | 10 | 10 | 200 | 5 |
 | OpenDDE | 10 | 10 | 200 | 5 |
 | OpenFold3 | native 추가 recycling 3; 내부 config 4 | 4 | 200 | 5 |
