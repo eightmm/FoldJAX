@@ -319,6 +319,55 @@ def test_confidence_array_records_validate_and_reach_the_row(tmp_path: Path) -> 
     assert row["confidence_arrays"] == ["pae", "plddt"]
 
 
+def test_a_written_confidence_archive_validates_and_reaches_the_row(
+    tmp_path: Path,
+) -> None:
+    """The real `confidence_arrays` writer path, not a hand-written record."""
+    import dataclasses
+
+    import numpy as np
+
+    from foldjax import confidence_arrays
+    from foldjax.registry import backend_override
+    from foldjax.schema import PredictionRequest
+    from foldjax.summary import load_schema
+    from tests._schema_lite import errors
+    from tests.test_manifest import _job, _Recorder, _weights
+
+    class _WithArrays(_Recorder):
+        def predict(self, request):
+            result = super().predict(request)
+            (sample,) = result.samples
+            confidence_arrays.write(
+                confidence_arrays.staged_path(sample.structure_path),
+                model="opendde",
+                arrays={"atom_plddt": np.full(4, 0.5)},
+                scales={"atom_plddt": "0-1"},
+                unavailable=confidence_arrays.AVAILABILITY["opendde"]["unavailable"],
+            )
+            metadata = confidence_arrays.sample_metadata(sample.structure_path)
+            return dataclasses.replace(
+                result, samples=(dataclasses.replace(sample, metadata=metadata),)
+            )
+
+    out = tmp_path / "out"
+    request = PredictionRequest(
+        model="opendde",
+        input=_job(tmp_path),
+        weights=_weights(tmp_path),
+        output_dir=out,
+        seed=17,
+        use_compile_cache=False,
+    )
+    with backend_override("opendde", _WithArrays):
+        foldjax.predict(request)
+
+    manifest = json.loads((out / "foldjax_run.json").read_text())
+    assert errors(manifest, load_schema("run")) == []
+    (row,) = results_table(load_results(out))
+    assert row["confidence_arrays"] == ["atom_plddt"]
+
+
 def test_an_input_the_model_never_read_reaches_the_row(tmp_path: Path) -> None:
     """Boltz-2 reads no RNA alignment: dropped, recorded, and shown per row."""
     from foldjax.summary import load_schema

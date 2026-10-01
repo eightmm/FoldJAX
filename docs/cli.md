@@ -143,6 +143,7 @@ Every model writes the same layout:
 <run>/foldjax_run.json                                     the run manifest
 <run>/seed-<seed>_sample-<nn>/<job>_seed-<seed>_sample-<nn>.cif
 <run>/seed-<seed>_sample-<nn>/confidence.json              one per sample
+<run>/seed-<seed>_sample-<nn>/confidence_full.npz          arrays, where the model has them
 <batch>/<model>/<input stem>/...                           one run per pair
 <batch>/foldjax_failures.json                              runs that failed
 ```
@@ -190,6 +191,13 @@ structure, whatever the model wrote (several write 0.0); a ligand in its own
 chain counts as a chain. OpenFold3 on protein input reports only
 `sample_ranking_score_no_disorder`, a different quantity, so its `ranking` is
 null with the reason.
+
+`confidence_full.npz` holds the per-sample arrays the model computes (PAE,
+chain-pair matrices, per-token or per-atom pLDDT) with their index maps, units
+and axes; `foldjax.load_confidence_arrays(sample_dir)` reads it, the manifest's
+`confidence_arrays` (run level and per sample) says which arrays are present
+and why others are not, and `show --format csv|json` lists them in the
+`confidence_arrays` column.
 
 `foldjax_run.json` keeps `schema: 1` (what makes a run safe to resume) and adds
 `schema_version` (this contract). Both files are described by JSON Schemas
