@@ -271,6 +271,14 @@ def test_stage_record_and_table_round_trip(tmp_path) -> None:
     assert "| demo | S1_features | not_captured |" in table
     assert "0.01235" in table
     assert "backend=cpu; matmul_precision=highest" in table
+    # A metric spelled with |d| must not split the Markdown row.
+    report["stages"]["S3_trunk"]["headline"]["metric"] = "max |d|"
+    (tmp_path / "demo.json").write_text(json.dumps(sp._jsonable(report)))
+    row = next(
+        line for line in sp.render_table(tmp_path).splitlines() if "S3_trunk" in line
+    )
+    assert row.count(" | ") == 6
+    assert "max \\|d\\|" in row
     with pytest.raises(ValueError, match="unknown stage status"):
         sp.stage_record("skipped")
 
