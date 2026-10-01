@@ -19,6 +19,7 @@ def test_observer_policy_binds_every_optional_switch():
     switches = dict.fromkeys((
         "capture_confidence_boundary", "capture_linear_policy",
         "capture_trunk_boundary", "capture_ffi_policy", "capture_consumed_tape",
+        "capture_stages",
     ), False)
     assert observer_policy(SimpleNamespace(**switches)) == switches
     for name in switches:
