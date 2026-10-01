@@ -22,7 +22,7 @@ from typing import Any
 
 import numpy as np
 
-from foldjax import memory_policy
+from foldjax import confidence_arrays, memory_policy
 from foldjax._openfold3_compile import (
     resolve_triangle_kernel,
 )
@@ -1160,6 +1160,7 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
                     seed=request.seed,
                     structure_path=path,
                     scores=scores.get(index, {}),
+                    metadata=confidence_arrays.sample_metadata(path),
                 )
                 for index, path in enumerate(written["structures"])
             ),

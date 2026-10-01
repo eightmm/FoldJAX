@@ -106,6 +106,8 @@ def write_protenix_outputs(
     include_raw: bool = False,
     include_trunk: bool = False,
     extra_summary_fields: Collection[str] = (),
+    model: str = "protenix",
+    atom_to_token: np.ndarray | None = None,
 ) -> list[Path]:
     """Write ranked CIF and summary JSON files in the upstream directory layout.
 
@@ -114,6 +116,11 @@ def write_protenix_outputs(
     ``output_atom_res_name``, ``output_atom_chain_id``, and
     ``output_atom_res_id``. Existing static features are supported through a
     deterministic fallback reconstructed from encoded model features.
+
+    Beside each CIF, FoldJAX also stages `<name>_sample_<rank>_confidence_full.npz`
+    (see `foldjax.confidence_arrays`) for ``model``; ``atom_to_token`` is the
+    unpadded atom-to-token map, needed to index its token-pair arrays. It is
+    not among the returned paths, which stay upstream's files.
     """
 
     coordinates = np.asarray(output.get("coordinate"))
@@ -141,6 +148,9 @@ def write_protenix_outputs(
         coordinates.shape[1],
     )
     ranks = _sample_ranks(output, coordinates.shape[0])
+    token_owners = (
+        features.get("atom_to_token_idx") if atom_to_token is None else atom_to_token
+    )
     paths: list[Path] = []
     for sample_index, rank in enumerate(ranks):
         cif_path = prediction_dir / f"{safe_name}_sample_{rank}.cif"
@@ -170,6 +180,16 @@ def write_protenix_outputs(
             encoding="utf-8",
         )
         paths.extend((cif_path, confidence_path))
+        _write_confidence_arrays(
+            cif_path,
+            output,
+            sample_index,
+            coordinates.shape[0],
+            metadata,
+            token_owners,
+            model=model,
+            rank=int(rank),
+        )
     if include_raw:
         raw_path = prediction_dir / "raw_output.npz"
         omitted = save_output_npz(raw_path, output, include_trunk=include_trunk)
@@ -185,6 +205,119 @@ def write_protenix_outputs(
             )
         paths.append(raw_path)
     return paths
+
+
+#: Per-chain and chain-pair arrays the confidence head returns with a leading
+#: sample axis, under the same names in `foldjax.confidence_arrays`.
+_CHAIN_ARRAYS = (
+    "chain_ptm",
+    "chain_iptm",
+    "chain_plddt",
+    "chain_gpde",
+    "chain_pair_iptm",
+    "chain_pair_iptm_global",
+    "chain_pair_plddt",
+    "chain_pair_gpde",
+    "chain_pair_pae_mean",
+    "chain_pair_pae_min",
+)
+#: Token-pair arrays, returned only when the run kept confidence details.
+_PAIR_ARRAYS = (
+    ("token_pair_pae", "pae"),
+    ("token_pair_pde", "pde"),
+    ("contact_probs", "contact_probs"),
+)
+
+
+def _write_confidence_arrays(
+    cif_path: Path,
+    output: Mapping[str, Any],
+    sample_index: int,
+    num_samples: int,
+    metadata: Mapping[str, np.ndarray],
+    atom_to_token: Any,
+    *,
+    model: str,
+    rank: int,
+) -> None:
+    """Stage one sample's confidence arrays beside its CIF.
+
+    Only arrays already in ``output`` are written. Atoms are indexed in the
+    CIF's own order (``metadata``); the chain axis follows the chain order
+    the CIF writes, which is the head's asym order. Token maps are written
+    only when ``atom_to_token`` covers exactly these atoms and tokens.
+    """
+    from foldjax import confidence_arrays
+
+    arrays: dict[str, np.ndarray] = {}
+    sources: dict[str, str] = {}
+
+    def take(native: str, name: str) -> None:
+        if native not in output:
+            return
+        value = np.asarray(output[native])
+        ndim = len(confidence_arrays.SPECS[name].axes)
+        if value.ndim == ndim + 1 and value.shape[0] == num_samples:
+            value = value[sample_index]
+        elif value.ndim != ndim:
+            return
+        arrays[name] = value
+        sources[name] = native
+
+    take("atom_plddt", "atom_plddt")
+    for name in _CHAIN_ARRAYS:
+        take(name, name)
+    for native, name in _PAIR_ARRAYS:
+        take(native, name)
+
+    unavailable = dict(confidence_arrays.AVAILABILITY[model]["unavailable"])
+    atom_chain = np.asarray(metadata["chain_id"]).astype(str)
+    atom_residue = np.asarray(metadata["res_id"])
+    arrays["atom_chain_id"] = atom_chain
+    arrays["atom_residue_index"] = atom_residue
+    chain_order = np.asarray(list(dict.fromkeys(atom_chain.tolist())))
+    chain_sizes = {
+        arrays[name].shape[0] for name in _CHAIN_ARRAYS if name in arrays
+    }
+    if chain_sizes <= {chain_order.size}:
+        arrays["chain_id"] = chain_order
+    else:
+        unavailable["chain_id"] = (
+            "the chain arrays do not have one row per chain written in the CIF"
+        )
+
+    n_token = next(
+        (arrays[name].shape[-1] for _native, name in _PAIR_ARRAYS if name in arrays),
+        None,
+    )
+    owners = None if atom_to_token is None else np.asarray(atom_to_token).reshape(-1)
+    if owners is not None and owners.size >= atom_chain.size:
+        # The writer's atoms are a prefix of the model's: padding is a suffix.
+        owners = owners[: atom_chain.size].astype(np.int64)
+        tokens, first_atom = np.unique(owners, return_index=True)
+        complete = tokens.size and np.array_equal(tokens, np.arange(tokens.size))
+        if complete and (n_token is None or n_token == tokens.size):
+            arrays["atom_token_index"] = owners
+            arrays["token_chain_id"] = atom_chain[first_atom]
+            arrays["token_residue_index"] = atom_residue[first_atom]
+    if n_token is not None and "token_chain_id" not in arrays:
+        unavailable["token_chain_id"] = (
+            "no atom-to-token map covering these atoms reached the writer"
+        )
+
+    confidence_arrays.write(
+        confidence_arrays.staged_path(cif_path),
+        model=model,
+        arrays=arrays,
+        scales={
+            "atom_plddt": "0-1",
+            "chain_plddt": "0-1",
+            "chain_pair_plddt": "0-1",
+        },
+        sources=sources,
+        unavailable=unavailable,
+        sample={"sample": sample_index, "native_rank": rank},
+    )
 
 
 def fix_cterminal_carboxyl_oxygens(

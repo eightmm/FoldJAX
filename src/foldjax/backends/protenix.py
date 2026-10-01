@@ -8,6 +8,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from foldjax import confidence_arrays
 from foldjax.backends._ccd_session import ManagedCcdSession
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import PreparedWeightSession
@@ -1277,6 +1278,7 @@ class ProtenixBackend(ManagedCcdSession, Backend):
                 seed=request.seed,
                 structure_path=path,
                 scores=sample_summary_scores(path),
+                metadata=confidence_arrays.sample_metadata(path),
             )
             for path in written
             if path.suffix == ".cif"

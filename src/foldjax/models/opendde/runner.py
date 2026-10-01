@@ -473,6 +473,7 @@ def _write(root: Path, **kwargs: Any) -> list[Path]:
     # reported outputs, so opt them in explicitly without widening Protenix's
     # allowlist or exposing unrelated pair arrays.
     kwargs["extra_summary_fields"] = SHAPE_COMPLEMENTARITY_SCORE_KEYS
+    kwargs.setdefault("model", "opendde")
     output = kwargs.get("output")
     features = kwargs.get("features")
     if isinstance(output, Mapping) and isinstance(features, Mapping):

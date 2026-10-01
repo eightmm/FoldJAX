@@ -151,13 +151,12 @@ def test_protenix_writer_labels(tmp_path: Path) -> None:
 # --- OpenFold3 ------------------------------------------------------------------
 
 
-def test_openfold3_writer_labels(tmp_path: Path) -> None:
+def openfold3_case(*, samples: int = 1, chain_pair_iptm=None):
+    """A two-chain OpenFold3 output: protein P (two residues) and ligand L."""
     from foldjax.models.openfold3.data import OutputMetadata
     from foldjax.models.openfold3.inference import Prediction
-    from foldjax.models.openfold3.output import write_prediction_outputs
     from tests.models.openfold3.feature_fixture import minimal_features
 
-    # Two protein residues of chain P (one token each), one ligand atom in L.
     metadata = OutputMetadata(
         atom_name=np.asarray(["N", "CA", "N", "CA", "C1"]),
         element=np.asarray(["N", "C", "N", "C", "C"]),
@@ -183,15 +182,24 @@ def test_openfold3_writer_labels(tmp_path: Path) -> None:
             names[0, atom_index, position, ord(character) - 32] = 1
     features["ref_atom_name_chars"] = names
     prediction = Prediction(
-        coordinates=np.zeros((1, 5, 3), dtype=np.float32),
-        plddt=np.full((1, 5), 0.9, dtype=np.float32),
-        ptm=np.asarray([0.7], dtype=np.float32),
-        iptm=np.asarray([0.6], dtype=np.float32),
-        chain_pair_iptm=None,
+        coordinates=np.zeros((samples, 5, 3), dtype=np.float32),
+        plddt=np.linspace(0.5, 0.9, samples * 5, dtype=np.float32).reshape(
+            samples, 5
+        ),
+        ptm=np.full(samples, 0.7, dtype=np.float32),
+        iptm=np.full(samples, 0.6, dtype=np.float32),
+        chain_pair_iptm=chain_pair_iptm,
         pae_logits=None,
         pde_logits=None,
         distogram_logits=None,
     )
+    return prediction, features, metadata
+
+
+def test_openfold3_writer_labels(tmp_path: Path) -> None:
+    from foldjax.models.openfold3.output import write_prediction_outputs
+
+    prediction, features, metadata = openfold3_case()
     written = write_prediction_outputs(
         prediction, features, tmp_path, output_metadata=metadata
     )

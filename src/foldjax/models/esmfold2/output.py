@@ -202,6 +202,81 @@ def crop_prediction(
     return cropped
 
 
+def _confidence_index(
+    features: Mapping[str, np.ndarray], *, n_atom: int
+) -> dict[str, np.ndarray]:
+    """Token and atom index maps in the order the structure writer emits atoms.
+
+    Chain names are the ones the mmCIF carries: the all-biomolecule features'
+    own chain ids, else the PDB alphabet the legacy writer uses. Residue
+    numbers are the writer's `residue_index + 1`.
+    """
+    take = lambda name: pdb._drop_batch(np.asarray(features[name]))  # noqa: E731
+    token_mask = take("token_attention_mask").astype(bool)
+    n_token = int(token_mask.sum())
+    if "token_chain_id_chars" in features:
+        chains = [
+            pdb._decode_text(row) for row in take("token_chain_id_chars")[:n_token]
+        ]
+    else:
+        chains = [
+            pdb.CHAIN_ALPHABET[int(asym)]
+            if int(asym) < len(pdb.CHAIN_ALPHABET)
+            else str(int(asym))
+            for asym in take("asym_id")[:n_token]
+        ]
+    return {
+        "token_chain_id": np.asarray(chains),
+        "token_residue_index": take("residue_index")[:n_token].astype(np.int32) + 1,
+        "atom_token_index": take("atom_to_token")[:n_atom].astype(np.int32),
+    }
+
+
+def _write_confidence_arrays(
+    structure_path: Path,
+    cropped: Mapping[str, object],
+    index: int,
+    n_samples: int,
+    index_maps: Mapping[str, np.ndarray],
+) -> None:
+    """Stage one sample's `confidence_full.npz` beside its structure.
+
+    pLDDT stays on the head's 0-1 scale. `pae`/`pde` are present only when
+    the caller compiled them as outputs (`return_confidence_logits=True`);
+    the managed backend does not.
+    """
+    from foldjax import confidence_arrays
+
+    def per_sample(name: str, ndim: int) -> np.ndarray | None:
+        if name not in cropped:
+            return None
+        array = _numpy(cropped[name])
+        if array.ndim == ndim + 1 and array.shape[0] == n_samples:
+            return array[index]
+        return array if array.ndim == ndim else None
+
+    confidence_arrays.write(
+        confidence_arrays.staged_path(structure_path),
+        model="esmfold2",
+        arrays={
+            "token_plddt": per_sample("plddt", 1),
+            "atom_plddt": per_sample("plddt_per_atom", 1),
+            "pae": per_sample("pae", 2),
+            "pde": per_sample("pde", 2),
+            **index_maps,
+        },
+        scales={"token_plddt": "0-1", "atom_plddt": "0-1"},
+        sources={
+            "token_plddt": "plddt",
+            "atom_plddt": "plddt_per_atom",
+            "pae": "pae",
+            "pde": "pde",
+        },
+        unavailable=confidence_arrays.AVAILABILITY["esmfold2"]["unavailable"],
+        sample={"sample": index},
+    )
+
+
 def write_prediction_outputs(
     output: Mapping[str, object],
     features: Mapping[str, np.ndarray],
@@ -240,6 +315,10 @@ def write_prediction_outputs(
             encoding="utf-8",
         )
         structures.append(path)
+
+    index_maps = _confidence_index(features, n_atom=coords.shape[1])
+    for index, path in enumerate(structures):
+        _write_confidence_arrays(path, cropped, index, coords.shape[0], index_maps)
 
     scores = sample_scores(cropped)
     summary = {

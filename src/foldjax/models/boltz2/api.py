@@ -1770,6 +1770,10 @@ def _confidence_index(
         value = np.asarray(feats[name])
         return value[0] if value.ndim > 1 and value.shape[0] == 1 else value
 
+    if not {"token_pad_mask", "atom_pad_mask", "residue_index", "asym_id"} <= set(
+        feats
+    ):
+        return {}
     token_mask = real("token_pad_mask").astype(bool)
     atom_mask = real("atom_pad_mask").astype(bool)
     index: dict[str, np.ndarray] = {

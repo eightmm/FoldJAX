@@ -17,7 +17,7 @@ import json
 import re
 import sys
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -1435,18 +1435,102 @@ def _samples(
             metadata = getattr(result, "metadata", None)
             if isinstance(metadata, dict) and "ranking_score" in metadata:
                 scores["ranking_score"] = float(metadata["ranking_score"])
+            placed = structure_path if structure_path.is_file() else None
+            arrays = _write_confidence_arrays(
+                result, placed, sample=sample_offset + len(samples)
+            )
             samples.append(
                 PredictionSample(
                     seed=seed,
-                    structure_path=(
-                        structure_path if structure_path.is_file() else None
-                    ),
+                    structure_path=placed,
                     scores=scores,
                     metadata={
                         "job": job_name,
                         "native_sample": index,
                         "sample": sample_offset + len(samples),
+                        **({"confidence_arrays": arrays} if arrays else {}),
                     },
                 )
             )
     return samples
+
+
+#: `foldjax.confidence_arrays` name -> where upstream's `InferenceResult` keeps
+#: it. `chain_ptm`/`chain_iptm` are the arrays upstream's own summary JSON
+#: writes under those names (`iptm_ichain`/`iptm_xchain`).
+_NUMERICAL_ARRAYS = {
+    "pae": "full_pae",
+    "pde": "full_pde",
+    "contact_probs": "contact_probs",
+}
+_METADATA_ARRAYS = {
+    "chain_ptm": "iptm_ichain",
+    "chain_iptm": "iptm_xchain",
+    "chain_pair_iptm": "chain_pair_iptm",
+    "chain_pair_pae_min": "chain_pair_pae_min",
+    "chain_pair_pde_min": "chain_pair_pde_min",
+    "chain_pair_pde_mean": "chain_pair_pde_mean",
+}
+
+
+def _write_confidence_arrays(
+    result: Any, structure_path: Path | None, *, sample: int
+) -> dict[str, Any] | None:
+    """Stage one sample's `confidence_full.npz` beside its native structure.
+
+    Everything comes from the upstream `InferenceResult` already on the host:
+    the arrays its `*_confidences.json` and `*_summary_confidences.json` are
+    written from, unrounded. Atoms follow the predicted structure's order,
+    which is the order of the CIF it writes; its chain axis is
+    `predicted_structure.chains` (asym id k+1 is chain k).
+    """
+    if structure_path is None:
+        return None
+    from foldjax import confidence_arrays
+
+    numerical = getattr(result, "numerical_data", None)
+    numerical = numerical if isinstance(numerical, Mapping) else {}
+    metadata = getattr(result, "metadata", None)
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    arrays: dict[str, Any] = {}
+    sources: dict[str, str] = {}
+    for name, native in _NUMERICAL_ARRAYS.items():
+        if numerical.get(native) is not None:
+            arrays[name], sources[name] = numerical[native], native
+    for name, native in _METADATA_ARRAYS.items():
+        if metadata.get(native) is not None:
+            arrays[name], sources[name] = metadata[native], native
+    if metadata.get("token_chain_ids") is not None:
+        arrays["token_chain_id"] = np.asarray(
+            [str(chain) for chain in metadata["token_chain_ids"]]
+        )
+    if metadata.get("token_res_ids") is not None:
+        arrays["token_residue_index"] = metadata["token_res_ids"]
+    unavailable = dict(confidence_arrays.AVAILABILITY["alphafold3"]["unavailable"])
+    structure = getattr(result, "predicted_structure", None)
+    if structure is not None:
+        arrays["atom_plddt"] = structure.atom_b_factor
+        sources["atom_plddt"] = "predicted_structure.atom_b_factor"
+        arrays["atom_chain_id"] = np.asarray(structure.chain_id).astype(str)
+        arrays["atom_residue_index"] = structure.res_id
+        chains = np.asarray([str(chain) for chain in structure.chains])
+        chain_rows = {
+            np.asarray(arrays[name]).shape[0]
+            for name in _METADATA_ARRAYS
+            if name in arrays
+        }
+        if chain_rows <= {chains.size}:
+            arrays["chain_id"] = chains
+        else:
+            unavailable["chain_id"] = (
+                "the chain arrays do not have one row per predicted chain"
+            )
+    return confidence_arrays.write(
+        confidence_arrays.staged_path(structure_path),
+        model="alphafold3",
+        arrays=arrays,
+        scales={"atom_plddt": "0-100"},
+        sources=sources,
+        unavailable=unavailable,
+        sample={"sample": sample},
+    )

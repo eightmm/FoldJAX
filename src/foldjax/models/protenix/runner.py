@@ -749,6 +749,12 @@ def _run(
                 output_features = project_generated_writer_features(output_features)
             if output_features is not None:
                 job["output_features"] = output_features
+                # The unpadded map, kept for `confidence_full.npz`: the
+                # generated writer snapshot above drops it, and the features
+                # are padded below.
+                job["output_atom_to_token"] = np.asarray(
+                    features["atom_to_token_idx"]
+                )
             if padding_config is not None:
                 from foldjax.models.protenix.data.padding import (
                     pad_protenix_features,
@@ -1146,6 +1152,7 @@ def _run(
                     features=output_features,
                     include_raw=config.output_format == "both",
                     include_trunk=config.include_trunk,
+                    atom_to_token=job.get("output_atom_to_token"),
                 )
                 if wanted_representations:
                     archive = _representations.save(

@@ -41,7 +41,7 @@ from typing import Any
 
 import numpy as np
 
-from foldjax import memory_policy
+from foldjax import confidence_arrays, memory_policy
 from foldjax.backends._ccd_session import ManagedCcdMemory
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import WeightAnchors
@@ -1450,6 +1450,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                         for key, value in scores.get(index, {}).items()
                         if key != "sample"
                     },
+                    metadata=confidence_arrays.sample_metadata(path),
                 )
                 for index, path in enumerate(written["structures"])
             ),

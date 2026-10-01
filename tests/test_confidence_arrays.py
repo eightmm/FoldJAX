@@ -281,3 +281,321 @@ def test_boltz2_index_maps_agree_with_the_written_mmcif(tmp_path: Path) -> None:
     assert index["token_residue_index"][owners].tolist() == [
         int(value) for value in site["auth_seq_id"]
     ]
+
+
+# --- Protenix and OpenDDE (one writer) ----------------------------------------
+
+
+def _protenix_features():
+    from foldjax.models.protenix.data.featurize_json import featurize_protein_json
+
+    return featurize_protein_json(
+        {
+            "name": "arrays",
+            "sequences": [
+                {"proteinChain": {"sequence": "CAG", "count": 2, "id": ["P", "Q"]}},
+                {"ion": {"ion": "MG", "count": 1, "id": ["M"]}},
+            ],
+        },
+        n_queries=2,
+        n_keys=2,
+    )
+
+
+def _protenix_output(n_atom: int, n_token: int, *, details: bool) -> dict:
+    samples, chains = 2, 3
+    output = {
+        "coordinate": np.zeros((samples, n_atom, 3), dtype=np.float32),
+        "atom_plddt": np.stack(
+            [np.linspace(0.1, 0.9, n_atom), np.linspace(0.9, 0.1, n_atom)]
+        ).astype(np.float32),
+        # Sample 1 ranks first, so the native suffixes are reversed.
+        "summary_ranking_score": np.asarray([0.2, 0.8], dtype=np.float32),
+        "chain_ptm": np.arange(samples * chains, dtype=np.float32).reshape(2, 3),
+        "chain_pair_iptm": np.ones((samples, chains, chains), dtype=np.float32),
+    }
+    if details:
+        output["token_pair_pae"] = np.stack(
+            [np.full((n_token, n_token), 2.0), np.full((n_token, n_token), 9.0)]
+        ).astype(np.float32)
+        output["contact_probs"] = np.full((n_token, n_token), 0.25, np.float32)
+    return output
+
+
+@pytest.mark.parametrize("details", [False, True])
+def test_protenix_writer_stages_arrays_in_cif_atom_order(
+    tmp_path: Path, details: bool
+) -> None:
+    gemmi = pytest.importorskip("gemmi")
+    from foldjax.models.protenix.data.output import write_protenix_outputs
+
+    features = _protenix_features()
+    owners = np.asarray(features["atom_to_token_idx"])
+    n_atom, n_token = owners.size, int(owners.max()) + 1
+    output = _protenix_output(n_atom, n_token, details=details)
+    written = write_protenix_outputs(
+        tmp_path, job_name="arrays", seed=1, output=output, features=features
+    )
+    cifs = [path for path in written if path.suffix == ".cif"]
+    assert [path.stem[-1] for path in cifs] == ["1", "0"]  # diffusion order
+    assert not [path for path in written if path.suffix == ".npz"]
+
+    for sample_index, cif in enumerate(cifs):
+        entry = confidence_arrays.sample_metadata(cif)["confidence_arrays"]
+        loaded = load_confidence_arrays(Path(entry["path"]))
+        assert loaded.model == "protenix"
+        assert loaded.meta["sample"] == {
+            "sample": sample_index,
+            "native_rank": 1 - sample_index,
+        }
+        np.testing.assert_allclose(
+            loaded["atom_plddt"], output["atom_plddt"][sample_index]
+        )
+        assert loaded.describe("atom_plddt")["scale"] == "0-1"
+        np.testing.assert_array_equal(
+            loaded["chain_ptm"], output["chain_ptm"][sample_index]
+        )
+        assert loaded["chain_id"].tolist() == ["P", "Q", "M"]
+        site = gemmi.cif.read_file(str(cif)).sole_block().get_mmcif_category(
+            "_atom_site."
+        )
+        assert loaded["atom_chain_id"].tolist() == site["auth_asym_id"]
+        assert loaded["atom_residue_index"].tolist() == [
+            int(value) for value in site["auth_seq_id"]
+        ]
+        if details:
+            np.testing.assert_array_equal(
+                loaded["pae"], output["token_pair_pae"][sample_index]
+            )
+            assert loaded["contact_probs"].shape == (n_token, n_token)
+            owners_read = loaded["atom_token_index"]
+            assert loaded["token_chain_id"][owners_read].tolist() == (
+                site["auth_asym_id"]
+            )
+            assert "pae" not in loaded.unavailable
+        else:
+            assert "pae" not in loaded
+            assert "output_format" in loaded.unavailable["pae"]
+
+
+def _assert_maps_name_every_cif_atom(loaded, cif: Path) -> None:
+    gemmi = pytest.importorskip("gemmi")
+    site = gemmi.cif.read_file(str(cif)).sole_block().get_mmcif_category(
+        "_atom_site."
+    )
+    owners = loaded["atom_token_index"]
+    assert len(owners) == len(site["auth_asym_id"])
+    assert loaded["token_chain_id"][owners].tolist() == site["auth_asym_id"]
+    assert loaded["token_residue_index"][owners].tolist() == [
+        int(value) for value in site["auth_seq_id"]
+    ]
+
+
+# --- ESMFold2 -------------------------------------------------------------------
+
+
+def _esmfold2_output(built, samples: int = 2) -> dict:
+    n_atom = int(np.asarray(built["atom_attention_mask"]).sum())
+    n_token = int(np.asarray(built["token_attention_mask"]).sum())
+    return {
+        "sample_atom_coords": np.zeros((samples, n_atom, 3), dtype=np.float32),
+        "plddt": np.stack([np.full(n_token, 0.25), np.full(n_token, 0.75)]),
+        "plddt_per_atom": np.stack([np.full(n_atom, 0.2), np.full(n_atom, 0.8)]),
+        "ptm": np.asarray([0.5, 0.6]),
+    }
+
+
+def test_esmfold2_writer_stages_plddt_and_reports_withheld_pae(
+    tmp_path: Path,
+) -> None:
+    from foldjax.models.esmfold2.data import features
+    from foldjax.models.esmfold2.output import write_prediction_outputs
+
+    built = features.build_features([("ACDK", "A", 0, 0), ("GHK", "B", 0, 1)])
+    written = write_prediction_outputs(
+        _esmfold2_output(built), built, tmp_path, name="j"
+    )
+
+    for index, cif in enumerate(written["structures"]):
+        entry = confidence_arrays.sample_metadata(cif)["confidence_arrays"]
+        assert entry["arrays"] == ["atom_plddt", "token_plddt"]
+        loaded = load_confidence_arrays(Path(entry["path"]))
+        assert loaded.model == "esmfold2"
+        assert loaded["token_plddt"].tolist() == [[0.25, 0.75][index]] * 7
+        assert loaded.describe("atom_plddt")["scale"] == "0-1"
+        assert "return_confidence_logits" in loaded.unavailable["pae"]
+        _assert_maps_name_every_cif_atom(loaded, cif)
+
+
+def test_esmfold2_all_biomolecule_maps_and_direct_pae(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A direct caller that compiled `pae` gets it; ligands map atom by atom."""
+    from foldjax.models.esmfold2.data import all_atom
+    from foldjax.models.esmfold2.output import write_prediction_outputs
+    from tests.models.esmfold2.test_all_atom_features import (
+        _FakeCCD,
+        _mixed_document,
+    )
+
+    monkeypatch.setattr(all_atom, "get_ccd_store", _FakeCCD)
+    built = all_atom.build_job_features(
+        _mixed_document(), base_dir=".", ccd_path="unused.pkl", seed=7
+    )
+    output = _esmfold2_output(built)
+    n_token = output["plddt"].shape[-1]
+    output["pae"] = np.full((2, n_token, n_token), 3.5, dtype=np.float32)
+    written = write_prediction_outputs(output, built, tmp_path, name="mixed")
+
+    loaded = load_confidence_arrays(
+        confidence_arrays.staged_path(written["structures"][1])
+    )
+    assert loaded["pae"].shape == (n_token, n_token)
+    assert "pae" not in loaded.unavailable
+    assert set(loaded["token_chain_id"].tolist()) == {
+        "PROT",
+        "DNA",
+        "RNA",
+        "ATPCHAIN",
+        "SMILES",
+    }
+    _assert_maps_name_every_cif_atom(loaded, written["structures"][1])
+
+
+@pytest.mark.parametrize("multimer", [True, False])
+def test_openfold3_writer_stages_atom_plddt_and_chain_pair_iptm(
+    tmp_path: Path, multimer: bool
+) -> None:
+    from foldjax.models.openfold3.output import write_prediction_outputs
+    from tests.test_mmcif_label_fields import openfold3_case
+
+    chain_pair = (
+        np.asarray([[[0.0, 0.3], [0.3, 0.0]], [[0.0, 0.8], [0.8, 0.0]]])
+        if multimer
+        else None
+    )
+    prediction, features, metadata = openfold3_case(
+        samples=2, chain_pair_iptm=chain_pair
+    )
+    written = write_prediction_outputs(
+        prediction, features, tmp_path, output_metadata=metadata
+    )
+
+    for index, cif in enumerate(written["structures"]):
+        entry = confidence_arrays.sample_metadata(cif)["confidence_arrays"]
+        loaded = load_confidence_arrays(Path(entry["path"]))
+        assert loaded.model == "openfold3"
+        np.testing.assert_allclose(loaded["atom_plddt"], prediction.plddt[index])
+        assert loaded.describe("atom_plddt")["scale"] == "0-1"
+        assert loaded["chain_id"].tolist() == ["P", "L"]
+        assert loaded["atom_chain_id"].tolist() == ["P"] * 4 + ["L"]
+        assert "all_arrays" in loaded.unavailable["pae"]
+        if multimer:
+            np.testing.assert_allclose(loaded["chain_pair_iptm"], chain_pair[index])
+        else:
+            assert "chain_pair_iptm" in loaded.unavailable
+        _assert_maps_name_every_cif_atom(loaded, cif)
+
+
+# --- AlphaFold 3 ----------------------------------------------------------------
+
+
+def _alphafold3_structure():
+    try:
+        from foldjax.models.alphafold3 import build
+
+        build.register_runtime()
+        from alphafold3 import structure
+        from alphafold3.constants import chemical_components
+
+        ccd = chemical_components.Ccd()
+    except Exception as error:  # noqa: BLE001 - any missing native piece skips
+        pytest.skip(f"AlphaFold 3 native runtime is not available: {error}")
+    built = structure.from_sequences_and_bonds(
+        sequences=["MKV", "GA", "ZN"],
+        chain_types=["polypeptide(L)", "polypeptide(L)", "non-polymer"],
+        sequence_formats=[
+            structure.SequenceFormat.FASTA,
+            structure.SequenceFormat.FASTA,
+            structure.SequenceFormat.CCD_CODES,
+        ],
+        bonded_atom_pairs=None,
+        ccd=ccd,
+    )
+    plddt = np.linspace(10.0, 90.0, built.num_atoms).astype(np.float32)
+    return built.copy_and_update_atoms(atom_b_factor=plddt)
+
+
+def test_alphafold3_routes_the_inference_result_arrays(tmp_path: Path) -> None:
+    from foldjax.backends.alphafold3 import _samples
+
+    predicted = _alphafold3_structure()
+    n_token, n_chain = 6, 3
+    pae = np.arange(n_token * n_token, dtype=np.float32).reshape(n_token, n_token) / 2
+    result = SimpleNamespace(
+        predicted_structure=predicted,
+        numerical_data={
+            "full_pae": pae,
+            "full_pde": pae + 1,
+            "contact_probs": np.full((n_token, n_token), 0.5, np.float32),
+        },
+        metadata={
+            "ranking_score": 0.9,
+            "chain_pair_iptm": np.eye(n_chain, dtype=np.float32),
+            "chain_pair_pae_min": np.ones((n_chain, n_chain), np.float32),
+            "iptm_ichain": np.asarray([0.1, 0.2, 0.3], np.float32),
+            "iptm_xchain": np.asarray([0.4, 0.5, 0.6], np.float32),
+            "token_chain_ids": ["A", "A", "A", "B", "B", "C"],
+            "token_res_ids": np.asarray([1, 2, 3, 1, 2, 1]),
+        },
+    )
+    sample_dir = tmp_path / "seed-5_sample-0"
+    sample_dir.mkdir()
+    cif = sample_dir / "job_seed-5_sample-0_model.cif"
+    cif.write_text(predicted.to_mmcif())
+
+    (sample,) = _samples(
+        (SimpleNamespace(seed=5, inference_results=(result,)),), tmp_path, "job"
+    )
+
+    entry = sample.metadata["confidence_arrays"]
+    loaded = load_confidence_arrays(Path(entry["path"]))
+    assert loaded.model == "alphafold3"
+    np.testing.assert_allclose(loaded["pae"], pae, atol=0.008)
+    assert loaded.describe("pae")["source"] == "full_pae"
+    np.testing.assert_allclose(loaded["chain_ptm"], [0.1, 0.2, 0.3], rtol=1e-6)
+    assert loaded.describe("chain_ptm")["source"] == "iptm_ichain"
+    assert loaded["chain_id"].tolist() == ["A", "B", "C"]
+    assert loaded["token_chain_id"].tolist() == ["A", "A", "A", "B", "B", "C"]
+    assert loaded.describe("atom_plddt")["scale"] == "0-100"
+    assert "atom_token_index" in loaded.unavailable
+
+    gemmi = pytest.importorskip("gemmi")
+    site = gemmi.cif.read_file(str(cif)).sole_block().get_mmcif_category(
+        "_atom_site."
+    )
+    assert loaded["atom_chain_id"].tolist() == site["auth_asym_id"]
+    assert loaded["atom_residue_index"].tolist() == [
+        int(value) for value in site["auth_seq_id"]
+    ]
+    np.testing.assert_allclose(
+        loaded["atom_plddt"],
+        [float(value) for value in site["B_iso_or_equiv"]],
+        atol=0.01,
+    )
+
+
+def test_opendde_writer_names_its_own_model(tmp_path: Path) -> None:
+    from foldjax.models.opendde import runner
+
+    features = _protenix_features()
+    owners = np.asarray(features["atom_to_token_idx"])
+    output = _protenix_output(owners.size, int(owners.max()) + 1, details=False)
+    output.pop("chain_pair_iptm")
+    written = runner._write(
+        tmp_path, job_name="arrays", seed=1, output=output, features=features
+    )
+    cif = next(path for path in written if path.suffix == ".cif")
+    loaded = load_confidence_arrays(confidence_arrays.staged_path(cif))
+    assert loaded.model == "opendde"
+    assert "include_raw" in loaded.unavailable["pae"]

@@ -938,6 +938,81 @@ def _set_bond_categories(document: Any, metadata: AtomMetadata) -> None:
         block.set_mmcif_category("_struct_conn.", inter)
 
 
+def _write_confidence_arrays(
+    structures: list[Path],
+    prediction: Any,
+    features: Mapping[str, Any],
+    metadata: AtomMetadata,
+) -> None:
+    """Stage each sample's `confidence_full.npz` beside its structure.
+
+    Holds per-atom pLDDT as the prediction carries it (fractional unless a
+    caller already converted it) and the chain-pair ipTM matrix when the
+    complex has more than one chain. PAE and PDE exist here only as binned
+    logits and only with `all_arrays`; they are left in the native
+    ``<name>_raw.npz`` rather than decoded. Atoms follow the CIF's order,
+    which groups them by chain as `write_structure` does.
+    """
+    from foldjax import confidence_arrays
+
+    order = np.concatenate(
+        [
+            np.flatnonzero(metadata.chain_id == chain)
+            for chain in dict.fromkeys(metadata.chain_id.tolist())
+        ]
+    )
+    atom_chain = metadata.chain_id.astype(str)
+    token_mask = _first(features["token_mask"], 1).astype(bool)
+    n_token = int(token_mask.sum())
+    owners = _first(features["atom_to_token_index"], 1)[metadata.keep].astype(
+        np.int64
+    )
+    maps: dict[str, np.ndarray] = {
+        "atom_token_index": owners[order],
+        "atom_chain_id": atom_chain[order],
+        "atom_residue_index": np.asarray(metadata.residue_id)[order],
+    }
+    tokens, first_atom = np.unique(owners, return_index=True)
+    if np.array_equal(tokens, np.arange(n_token)):
+        maps["token_chain_id"] = atom_chain[first_atom]
+        maps["token_residue_index"] = np.asarray(metadata.residue_id)[first_atom]
+        asym = _first(features["asym_id"], 1)[:n_token]
+        _chains, first_token = np.unique(asym, return_index=True)
+        maps["chain_id"] = maps["token_chain_id"][first_token]
+
+    plddt = np.asarray(prediction.plddt, dtype=np.float32)
+    if plddt.ndim == 1:
+        plddt = plddt[None, :]
+    finite = plddt[np.isfinite(plddt)]
+    scale = "0-1" if finite.size == 0 or float(finite.max()) <= 1.0 + 1e-6 else "0-100"
+    chain_pair = (
+        None
+        if prediction.chain_pair_iptm is None
+        else np.asarray(prediction.chain_pair_iptm, dtype=np.float32)
+    )
+    reasons = dict(confidence_arrays.AVAILABILITY["openfold3"]["unavailable"])
+    if chain_pair is None:
+        reasons["chain_pair_iptm"] = "OpenFold3 computes it only for multimers"
+    for index, structure in enumerate(structures):
+        arrays = {
+            "atom_plddt": plddt[min(index, plddt.shape[0] - 1)][metadata.keep][order],
+            **maps,
+        }
+        if chain_pair is not None:
+            arrays["chain_pair_iptm"] = (
+                chain_pair[index] if chain_pair.ndim == 3 else chain_pair
+            )
+        confidence_arrays.write(
+            confidence_arrays.staged_path(structure),
+            model="openfold3",
+            arrays=arrays,
+            scales={"atom_plddt": scale},
+            sources={"atom_plddt": "plddt", "chain_pair_iptm": "chain_pair_iptm"},
+            unavailable=reasons,
+            sample={"sample": index},
+        )
+
+
 def write_prediction_outputs(
     prediction: Any,
     features: Mapping[str, Any],
@@ -1003,6 +1078,8 @@ def write_prediction_outputs(
                 b_factors=row[metadata.keep],
             )
         )
+
+    _write_confidence_arrays(structures, prediction, features, metadata)
 
     arrays, omitted = write_arrays(
         crop_prediction(prediction, features),

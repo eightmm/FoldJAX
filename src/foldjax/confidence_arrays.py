@@ -293,8 +293,11 @@ def write(
     sources: Mapping[str, str] | None = None,
     unavailable: Mapping[str, str] | None = None,
     sample: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     """Write one sample's arrays atomically and return its metadata record.
+
+    Returns None, writing nothing, when no confidence array is present: index
+    maps alone describe nothing.
 
     ``scales`` gives the numerical range of a pLDDT-like array as the model
     reports it (``"0-1"`` or ``"0-100"``); nothing is rescaled. ``sources``
@@ -331,6 +334,8 @@ def write(
         if name in sources:
             entry["source"] = sources[name]
         described[name] = entry
+    if not set(stored) - INDEX_ARRAYS:
+        return None
     missing_scale = [
         name
         for name in stored
@@ -346,7 +351,10 @@ def write(
     meta = {
         "schema_version": SCHEMA_VERSION,
         "model": model,
-        "sample": dict(sample or {}),
+        "sample": {
+            str(key): value.item() if isinstance(value, np.generic) else value
+            for key, value in (sample or {}).items()
+        },
         "axes": AXES,
         "arrays": described,
         "unavailable": absent,
@@ -397,6 +405,12 @@ def staged_record(structure_path: str | Path | None) -> dict[str, Any] | None:
     return record(path, read_meta(path))
 
 
+def sample_metadata(structure_path: str | Path | None) -> dict[str, Any]:
+    """`PredictionSample.metadata` naming the archive staged beside a structure."""
+    entry = staged_record(structure_path)
+    return {RECORD_KEY: entry} if entry is not None else {}
+
+
 def read_meta(path: str | Path) -> dict[str, Any]:
     with np.load(path, allow_pickle=False) as archive:
         return json.loads(str(archive[META_KEY][()]))
@@ -409,6 +423,10 @@ def place(sample: Any, directory: Path) -> Any:
     sample with its record pointing at ``confidence_full.npz`` by name, so a
     manifest never carries the staging path. A sample without a staged
     archive is returned unchanged.
+
+    Unlike a structure, the staged file is always moved: only a file this
+    module wrote, under its fixed staging suffix, is accepted as a source, so
+    the move cannot take a user's file.
     """
     metadata = getattr(sample, "metadata", None) or {}
     entry = metadata.get(RECORD_KEY)
@@ -416,7 +434,11 @@ def place(sample: Any, directory: Path) -> Any:
         return sample
     source = Path(str(entry["path"]))
     target = Path(directory) / FILENAME
-    if source.is_symlink() or not source.is_file():
+    if (
+        not source.name.endswith(STAGED_SUFFIX)
+        or source.is_symlink()
+        or not source.is_file()
+    ):
         return sample
     if source.absolute() != target.absolute():
         try:
@@ -459,7 +481,7 @@ def manifest_record(samples: Any) -> dict[str, Any] | None:
     }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class ConfidenceArrays(Mapping[str, np.ndarray]):
     """One sample's confidence arrays, read back from ``confidence_full.npz``.
 
@@ -527,6 +549,7 @@ __all__ = [
     "manifest_record",
     "place",
     "record",
+    "sample_metadata",
     "staged_path",
     "staged_record",
     "write",
