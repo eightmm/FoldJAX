@@ -1,0 +1,1034 @@
+{
+  "model": "protenix",
+  "capture": "/home/jaemin/non-project/optimizing/foldjax-bench/protenix-master-native-20260909-9yET4f/protein_1ubq/native-A",
+  "environment": {
+    "host": "master",
+    "python": "3.13.15",
+    "omp_num_threads": "16",
+    "jax_platforms": "cpu",
+    "foldjax_home": "/home/jaemin/non-project/optimizing/foldjax/.foldjax",
+    "cpu_affinity": 16,
+    "git_commit": "e70017b",
+    "jax": "0.11.1",
+    "jaxlib": "0.11.1"
+  },
+  "wall_s": 426.7,
+  "stages": {
+    "S1_features": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "port_featurizer": "foldjax.models.protenix.data.featurize_json.featurize_protein_json, re-run in this checkout (bench.protenix_foldjax_capture.featurize)",
+        "input_document": "/home/jaemin/non-project/optimizing/foldjax-bench/upstream-default-multimodal-n5-20260904/work/protein_1ubq/foldjax/protenix-v2/inputs/protenix_input.json",
+        "native": "native-input.npz + native-derived.npz + native-identity.npz",
+        "name_mapping": "bench.protenix_closure_report.COMMON_FIELDS (the 41 fields both sides spell the same)"
+      },
+      "headline": {
+        "metric": "min exact-match fraction (categorical) / max |d| (float)",
+        "value": "1.0 / 0.0"
+      },
+      "metrics": {
+        "summary": {
+          "arrays_compared": 40,
+          "categorical_arrays": 21,
+          "float_arrays": 19,
+          "shape_mismatches": [],
+          "min_exact_match_fraction": 1.0,
+          "arrays_not_exact": [],
+          "max_float_max_abs": 0.0,
+          "max_float_relative_rms": 0.0
+        },
+        "arrays": {
+          "asym_id": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "atom_to_tokatom_idx": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "atom_to_token_idx": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "d_lm": {
+            "port_shape": [
+              19,
+              32,
+              128,
+              3
+            ],
+            "native_shape": [
+              19,
+              32,
+              128,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "deletion_mean": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "deletion_value": {
+            "port_shape": [
+              1025,
+              76
+            ],
+            "native_shape": [
+              1025,
+              76
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "distogram_rep_atom_mask": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0,
+            "exact_match_fraction": 1.0
+          },
+          "entity_id": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "frame_atom_index": {
+            "port_shape": [
+              76,
+              3
+            ],
+            "native_shape": [
+              76,
+              3
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "has_deletion": {
+            "port_shape": [
+              1025,
+              76
+            ],
+            "native_shape": [
+              1025,
+              76
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "has_frame": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "is_ligand": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "mol_id": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "msa": {
+            "port_shape": [
+              1025,
+              76
+            ],
+            "native_shape": [
+              1025,
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "output_atom_chain_id": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "<U1",
+            "native_dtype": "<U16",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "output_atom_element": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "<U1",
+            "native_dtype": "<U2",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "output_atom_name": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "<U3",
+            "native_dtype": "<U6",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "output_atom_res_id": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "output_atom_res_name": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "<U3",
+            "native_dtype": "<U5",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "pad_info.mask_trunked": {
+            "port_shape": [
+              19,
+              32,
+              128
+            ],
+            "native_shape": [
+              19,
+              32,
+              128
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "profile": {
+            "port_shape": [
+              76,
+              32
+            ],
+            "native_shape": [
+              76,
+              32
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "ref_atom_name_chars": {
+            "port_shape": [
+              602,
+              4,
+              64
+            ],
+            "native_shape": [
+              602,
+              4,
+              64
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0,
+            "exact_match_fraction": 1.0
+          },
+          "ref_charge": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0,
+            "exact_match_fraction": 1.0
+          },
+          "ref_element": {
+            "port_shape": [
+              602,
+              128
+            ],
+            "native_shape": [
+              602,
+              128
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0,
+            "exact_match_fraction": 1.0
+          },
+          "ref_mask": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0,
+            "exact_match_fraction": 1.0
+          },
+          "ref_pos": {
+            "port_shape": [
+              602,
+              3
+            ],
+            "native_shape": [
+              602,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "ref_space_uid": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "residue_index": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "restype": {
+            "port_shape": [
+              76,
+              32
+            ],
+            "native_shape": [
+              76,
+              32
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "sym_id": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "template_aatype": {
+            "port_shape": [
+              4,
+              76
+            ],
+            "native_shape": [
+              4,
+              76
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "template_atom_mask": {
+            "port_shape": [
+              4,
+              76,
+              24
+            ],
+            "native_shape": [
+              4,
+              76,
+              24
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "template_atom_positions": {
+            "port_shape": [
+              4,
+              76,
+              24,
+              3
+            ],
+            "native_shape": [
+              4,
+              76,
+              24,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_backbone_frame_mask": {
+            "port_shape": [
+              4,
+              76,
+              76
+            ],
+            "native_shape": [
+              4,
+              76,
+              76
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_distogram": {
+            "port_shape": [
+              4,
+              76,
+              76,
+              39
+            ],
+            "native_shape": [
+              4,
+              76,
+              76,
+              39
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_pseudo_beta_mask": {
+            "port_shape": [
+              4,
+              76,
+              76
+            ],
+            "native_shape": [
+              4,
+              76,
+              76
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_unit_vector": {
+            "port_shape": [
+              4,
+              76,
+              76,
+              3
+            ],
+            "native_shape": [
+              4,
+              76,
+              76,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "token_bonds": {
+            "port_shape": [
+              76,
+              76
+            ],
+            "native_shape": [
+              76,
+              76
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "token_index": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "v_lm": {
+            "port_shape": [
+              19,
+              32,
+              128,
+              1
+            ],
+            "native_shape": [
+              19,
+              32,
+              128,
+              1
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0,
+            "exact_match_fraction": 1.0
+          }
+        },
+        "semantic_input_gate": {
+          "passed": true,
+          "failures": [],
+          "derived_mappings": [
+            "32/128 local atom padding",
+            "native dense vs independent compact139 relative position",
+            "all-valid native MSA mask",
+            "atom polymer and token ligand identity",
+            "inactive native constraints"
+          ]
+        },
+        "rerun_vs_capture_time_port_features_equal": true,
+        "rerun_vs_capture_time_port_features_value_mismatches": {}
+      },
+      "runtime_s": 0.5,
+      "notes": "Derived fields (relp, local-atom padding, polymer flags) are checked by the capture's own semantic gate (check_inputs), whose verdict is recorded, rather than by name.",
+      "source": {
+        "git": "e70017b",
+        "cpu_affinity": 16,
+        "recorded": "2026-10-01 20:55:12"
+      }
+    },
+    "S2_weights": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu (host NumPy; no model run)",
+        "native_checkpoint": "/home/jaemin/non-project/optimizing/foldjax-bench/protenix-master-native-20260909-9yET4f/protein_1ubq/native-A/checkpoint/protenix_base_default_v1.0.0.pt",
+        "native_sha256": "2b7d5a8b30494514fc47fd2271a16260528cdba170ba09cc112fdecd8f85ec04",
+        "converted": "/home/jaemin/non-project/optimizing/foldjax/.foldjax/weights/protenix/protenix_base_default_v1.0.0.jax",
+        "mapper": "foldjax.models.protenix.bridge.torch_mapping.map_protenix_inference_state_dict",
+        "reader": "foldjax.torch_archive.load (no torch)"
+      },
+      "headline": {
+        "metric": "max |stored - map(native)| over groups (storage dtype)",
+        "value": 0.0
+      },
+      "metrics": {
+        "stored_vs_mapped": {
+          "groups": {
+            "input_embedder": {
+              "leaves": 99,
+              "elements": 1041478,
+              "max_abs": 0.0,
+              "dtypes": [
+                "bool",
+                "float32"
+              ]
+            },
+            "pairformer_output": {
+              "leaves": 3161,
+              "elements": 151275552,
+              "max_abs": 0.0,
+              "dtypes": [
+                "bool",
+                "float32"
+              ]
+            },
+            "diffusion": {
+              "leaves": 826,
+              "elements": 203257645,
+              "max_abs": 0.0,
+              "dtypes": [
+                "bool",
+                "float32"
+              ]
+            },
+            "distogram": {
+              "leaves": 2,
+              "elements": 8256,
+              "max_abs": 0.0,
+              "dtypes": [
+                "float32"
+              ]
+            },
+            "confidence": {
+              "leaves": 256,
+              "elements": 12901974,
+              "max_abs": 0.0,
+              "dtypes": [
+                "bool",
+                "float32"
+              ]
+            }
+          },
+          "leaves": 4344,
+          "elements": 368484905,
+          "max_abs": 0.0
+        },
+        "coverage_direct_reads": {
+          "checkpoint_tensors": 4174,
+          "tensors_read": 4174,
+          "checkpoint_elements": 368484735,
+          "elements_read": 368484735,
+          "unread_tensors": [],
+          "unread_tensor_count": 0
+        },
+        "value_containment_port_in_checkpoint": {
+          "checkpoint_float_elements": 368484735,
+          "port_float_elements": 368484735,
+          "checkpoint_non_float_elements": 0,
+          "port_non_float_elements": 170,
+          "port_values_absent_from_checkpoint": 0,
+          "max_distance_to_nearest_checkpoint_value": 0.0,
+          "multiplicity_excess": 0
+        },
+        "value_multiset_checkpoint_vs_port": {
+          "native_elements": 368484735,
+          "port_elements": 368484735,
+          "native_non_float_elements": 0,
+          "port_non_float_elements": 170,
+          "comparable": true,
+          "nonfinite_mismatch": 0,
+          "sorted_max_abs": 0.0
+        }
+      },
+      "runtime_s": 98.8,
+      "notes": "",
+      "source": {
+        "git": "e70017b",
+        "cpu_affinity": 16,
+        "recorded": "2026-10-01 20:55:12"
+      }
+    },
+    "S3_trunk": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "input": "port-featurized foldjax-input.npz (port-A of the same capture; its input gate certified it equal to native-input.npz)",
+        "msa": "native per-cycle MSA rows injected (msa-tape.npz)",
+        "trunk_dtype": "bfloat16 (native AMP match: upstream autocast bf16)",
+        "triangle_attention": "cueq_jit (port default, as in the parity subset)",
+        "glu_backend": "xla",
+        "recycles": 10
+      },
+      "headline": {
+        "metric": "relative RMS single / pair",
+        "value": "3.663e-03 / 1.963e-02"
+      },
+      "metrics": {
+        "arrays": {
+          "single_inputs": {
+            "relative_rms": 0.002391469658857492,
+            "max_abs": 0.0078125,
+            "native_max_abs_value": 1.15625
+          },
+          "single": {
+            "relative_rms": 0.0036626070025808787,
+            "max_abs": 16.0,
+            "native_max_abs_value": 1392.0
+          },
+          "pair": {
+            "relative_rms": 0.0196271423257492,
+            "max_abs": 64.0,
+            "native_max_abs_value": 2384.0
+          }
+        }
+      },
+      "runtime_s": 46.0,
+      "notes": "",
+      "source": {
+        "git": "e70017b",
+        "cpu_affinity": 16,
+        "recorded": "2026-10-01 20:55:12"
+      }
+    },
+    "S4_diffusion": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "input": "port-featurized foldjax-input.npz (port-A of the same capture; its input gate certified it equal to native-input.npz)",
+        "msa": "native per-cycle MSA rows injected (msa-tape.npz)",
+        "trunk_dtype": "n/a (trunk not run; native trunk injected)",
+        "triangle_attention": "cueq_jit (port default, as in the parity subset)",
+        "glu_backend": "xla",
+        "injected_native": "trunk.npz s_inputs/s/z (float32) replace pairformer_output_from_s_inputs; sampler-tape.npz; noise schedule",
+        "samples_x_steps": "5 x 200",
+        "diffusion_attention": "xla_jit",
+        "diffusion_dtype": "float32 (native diffusion_skip_amp=true)"
+      },
+      "headline": {
+        "metric": "per-sample all-atom RMSD (A), worst sample",
+        "value": "0.0229"
+      },
+      "metrics": {
+        "samples": 5,
+        "atoms": 602,
+        "all_atom_rmsd_angstrom": [
+          0.0029616927543143637,
+          0.01091291571223152,
+          0.018202921261023842,
+          0.022863342427722737,
+          0.009121094925261038
+        ],
+        "max_unaligned_displacement_angstrom": 0.2405865963607325,
+        "ca_atoms": 76,
+        "ca_rmsd_angstrom": [
+          0.0025230252304595142,
+          0.00626375018742553,
+          0.011201309952422403,
+          0.021478635689793923,
+          0.008498856115469943
+        ],
+        "entity_rmsd_angstrom_panel_metric": {
+          "A": [
+            0.002961692754314183,
+            0.010912915712231738,
+            0.018202921261023717,
+            0.02286334242772276,
+            0.009121094925261168
+          ]
+        },
+        "injection_calls": 1
+      },
+      "runtime_s": 121.8,
+      "notes": "",
+      "source": {
+        "git": "e70017b",
+        "cpu_affinity": 16,
+        "recorded": "2026-10-01 20:55:12"
+      }
+    },
+    "S5_confidence": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "input": "port-featurized foldjax-input.npz (port-A of the same capture; its input gate certified it equal to native-input.npz)",
+        "msa": "native per-cycle MSA rows injected (msa-tape.npz)",
+        "trunk_dtype": "n/a (native trunk injected)",
+        "triangle_attention": "cueq_jit (port default, as in the parity subset)",
+        "glu_backend": "xla",
+        "injected_native": "confidence-input.npz s_inputs/s_trunk/z_trunk replace the trunk; x_pred_coords replace the sampler",
+        "confidence_dtype": "float32 (native confidence_skip_amp=true)",
+        "confidence_triangle_attention": "follows trunk (cueq_jit)"
+      },
+      "headline": {
+        "metric": "max |d| atom pLDDT (0-1) / PAE (A) / pTM",
+        "value": "0.00032 / 0.0188 / 6.64e-05"
+      },
+      "metrics": {
+        "port_output_keys": [
+          "atom_plddt",
+          "chain_gpde",
+          "chain_iptm",
+          "chain_pair_gpde",
+          "chain_pair_iptm",
+          "chain_pair_iptm_global",
+          "chain_pair_pae_mean",
+          "chain_pair_pae_min",
+          "chain_pair_plddt",
+          "chain_plddt",
+          "chain_ptm",
+          "contact_probs",
+          "coordinate",
+          "disorder",
+          "distogram_logits",
+          "has_clash",
+          "has_vdw_clash",
+          "num_recycles",
+          "pae",
+          "pde",
+          "plddt",
+          "ranking_score",
+          "resolved",
+          "summary_gpde",
+          "summary_iptm",
+          "summary_plddt",
+          "summary_ptm",
+          "summary_ranking_score",
+          "summary_ranking_score_vdw_penalized",
+          "token_pair_pae",
+          "token_pair_pde"
+        ],
+        "plddt_logits": {
+          "max_abs": 0.007227897644042969,
+          "relative_rms": 0.00030631203989496715,
+          "native_range": [
+            -5.612892150878906,
+            11.331131935119629
+          ]
+        },
+        "pae_logits": {
+          "max_abs": 0.013264179229736328,
+          "relative_rms": 0.00036884756337166074,
+          "native_range": [
+            -4.897112846374512,
+            9.85096263885498
+          ]
+        },
+        "pde_logits": {
+          "max_abs": 0.00882720947265625,
+          "relative_rms": 0.0005447937066506437,
+          "native_range": [
+            -3.0652413368225098,
+            12.700990676879883
+          ]
+        },
+        "atom_plddt": {
+          "max_abs": 0.0003199577331542969,
+          "relative_rms": 5.826590839852199e-05,
+          "native_range": [
+            0.5391746163368225,
+            0.9879209399223328
+          ]
+        },
+        "token_pair_pae_angstrom": {
+          "max_abs": 0.018838882446289062,
+          "relative_rms": 0.000340275397653026,
+          "native_range": [
+            0.3044578433036804,
+            24.15086555480957
+          ]
+        },
+        "token_pair_pde_angstrom": {
+          "max_abs": 0.0025823116302490234,
+          "relative_rms": 0.0004453745233022644,
+          "native_range": [
+            0.26914238929748535,
+            2.9298501014709473
+          ]
+        },
+        "ptm": {
+          "max_abs": 6.639957427978516e-05,
+          "relative_rms": 7.02246470391371e-05,
+          "native_range": [
+            0.9215142130851746,
+            0.9228091835975647
+          ]
+        },
+        "summary_plddt": {
+          "max_abs": 0.00319671630859375,
+          "relative_rms": 3.0434998967783244e-05,
+          "native_range": [
+            93.99903106689453,
+            94.08255004882812
+          ]
+        },
+        "distogram_logits_from_native_z": {
+          "max_abs": 0.5,
+          "relative_rms": 4.2947375339680466e-05,
+          "native_range": [
+            -338.0,
+            692.0
+          ]
+        },
+        "atom_plddt_scale_factor_applied_to_port": 1.0
+      },
+      "runtime_s": 3.4,
+      "notes": "",
+      "source": {
+        "git": "e70017b",
+        "cpu_affinity": 16,
+        "recorded": "2026-10-01 20:55:12"
+      }
+    },
+    "S6_final": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "input": "port-featurized foldjax-input.npz (port-A of the same capture; its input gate certified it equal to native-input.npz)",
+        "msa": "native per-cycle MSA rows injected (msa-tape.npz)",
+        "trunk_dtype": "bfloat16 (native AMP match: upstream autocast bf16)",
+        "triangle_attention": "cueq_jit (port default, as in the parity subset)",
+        "glu_backend": "xla",
+        "tape": "native sampler-tape.npz (init/step noise, rotations, translations, noise schedule) + MSA cycle rows",
+        "schedule": "native, pinned",
+        "samples_x_steps": "5 x 200",
+        "diffusion_attention": "xla_jit (as calibrated)",
+        "confidence": "off"
+      },
+      "headline": {
+        "metric": "per-sample all-atom / CA RMSD (A), worst sample",
+        "value": "0.1132 / 0.0492"
+      },
+      "metrics": {
+        "samples": 5,
+        "atoms": 602,
+        "all_atom_rmsd_angstrom": [
+          0.014674831424000577,
+          0.11322550842889165,
+          0.014762222938664376,
+          0.029600190481673148,
+          0.0507977739842118
+        ],
+        "max_unaligned_displacement_angstrom": 1.984484605953745,
+        "ca_atoms": 76,
+        "ca_rmsd_angstrom": [
+          0.015384814633792054,
+          0.021931230094491237,
+          0.012106669129896816,
+          0.02271531482303832,
+          0.04915268575128873
+        ],
+        "entity_rmsd_angstrom_panel_metric": {
+          "A": [
+            0.014674831424001701,
+            0.11322550842889181,
+            0.014762222938663586,
+            0.029600190481672825,
+            0.050797773984211335
+          ]
+        }
+      },
+      "runtime_s": 154.7,
+      "notes": "",
+      "source": {
+        "git": "e70017b",
+        "cpu_affinity": 16,
+        "recorded": "2026-10-01 20:55:12"
+      }
+    }
+  }
+}
