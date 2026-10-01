@@ -1,133 +1,66 @@
-# Stages the stored captures cannot support
+# What the stage table still does not measure
 
-`bench/stage_parity.py` writes a stage as `not_captured` when the native
-capture holds nothing to compare against, rather than filling it from the
-port. Six stage cells are in that state, all for the same reason: the
-ESMFold2 and OpenDDE master captures did not save the native trunk boundary,
-so there is no native trunk to compare against (S3) or to inject (S4, S5).
-Each section below names the upstream hook (pinned source, file:function),
-the tensors a new GPU capture must save, and where the port takes the
-injection, plus a capture sketch that reuses the existing tape harness, so
-the noise, dropout and MSA draws stay on the same tape the stored captures
-already carry.
+Every port now has all six stages measured. The six ESMFold2 and OpenDDE
+stage cells (S3-S5) that the 2026-09-09 master captures could not support are
+filled from a native *stage re-capture*, described first so its use can be
+checked. What remains open is listed after it: two featurizer draws the
+port cannot take, one inferred input document, the CPU-vs-GPU confound shared
+by every S3-S6 cell, and the AlphaFold 3 row's lack of intermediate stages.
 
-| model | S3 trunk | S4 diffusion | S5 confidence | cause |
+## The stage re-captures (ESMFold2, OpenDDE)
+
+`foldjax-bench/stage-captures-20261001/<model>/protein_1ubq/native-A`, code
+snapshot `code-24bbb78` beside them (commit `24bbb78`, the whole tree), job
+scripts in `jobs/`, logs in `logs/`. Each is the stored capture's own
+command, input, seed (101) and environment variables, plus one flag:
+
+| model | Slurm job | wall | harness flag | hooks (run time only; upstream checkouts unchanged) |
 | --- | --- | --- | --- | --- |
-| ESMFold2 `protein_1ubq` | not captured | not captured | not captured | `tape.npz` holds `initial_pair_state` (a trunk *input*); no trunk output saved |
-| OpenDDE `protein_1ubq` | not captured | not captured | not captured | `raw.npz` holds heads + coordinates only; `torch/tape.json` records `"stages": {}` |
+| ESMFold2 (Biohub `transformers` fork `ef32577f`, torch 2.13.0+cu130) | 4243 | 71 s | `bench/esmfold2_tape.py capture --capture-stages` | instance wrapper on `structure_head.sample` (its `z_trunk`, `s_inputs`, `relative_position_encoding` and returned `sample_atom_coords`); forward hook with kwargs on `confidence_head` (every tensor input and output); the returned `distogram_logits` |
+| OpenDDE (`ddfa1df8`, torch 2.7.1+cu128) | 4244 | 30 s | `bench/opendde_closure_capture.py native --capture-stages` | class-level `functools.wraps` wrappers on `get_pairformer_output`, `expand_to_structural_tokens`, `run_sample_diffusion_stage`, `run_confidence_head_stage` |
 
-Protenix, Boltz-2 and OpenFold3 have every stage. Three measured stages carry
-a caveat that a re-capture would also close; they are listed at the end.
+Both wrote `stages.npz`, with each tensor's dtype at the boundary recorded in
+`metadata.json:stages_schema` / `provenance.json:stages`. Upstream's
+ESMFold2 `z_trunk`, `relative_position_encoding` and `token_bonds_encoding`
+hold bf16-representable values (autocast), so the port receives them at its
+own bf16 width losslessly; `s_inputs` is not bf16-exact and is injected as
+float32, which is also the port's width there. In OpenDDE every boundary is
+float32, and the same tensor seen at two boundaries is one value (the
+structural trunk output is what the sampler received, the residue trunk is
+what the confidence head received, the sampler's coordinates are the head's
+`x_pred_coords`).
 
-## ESMFold2 (Biohub `transformers` snapshot `ef32577f`)
+**Re-capture vs stored capture.** The draws are the same draws; what differs
+is GPU rerun noise, of the size the same campaign's native-A vs native-B
+rerun already shows:
 
-Upstream source: `jctc-matrix-20260904/upstream-root/transformers-esmfold2/src/transformers/models/esmfold2/modeling_esmfold2.py`.
-ESMFold2 has no single-representation trunk: the folding trunk produces a
-pair tensor `z`, and the sampler and confidence head read `x_inputs` (the
-input embedding) as their single input.
+| | ESMFold2 re-capture vs stored | ESMFold2 stored A vs B | OpenDDE re-capture vs stored | OpenDDE stored A vs B |
+| --- | --- | --- | --- | --- |
+| inputs, tape (MSA draws, noise, dropout masks) | bitwise equal | | bitwise equal (`native-input/derived/identity.npz`, `torch/tape.npz`, `torch/msa.npz`) | |
+| ESM-C LM hidden states | bitwise equal | bitwise equal | n/a | n/a |
+| all-atom RMSD per sample (A) | 0.0045, 0.0076, 0.0060, 0.0036, 0.0042 | 0.0059, 0.0052, 0.0044, 0.0031, 0.0039 | 0.0021, 0.0059, 0.0020, 0.0021, 0.0028 | 0.0021, 0.0063, 0.0021, 0.0020, 0.0019 |
+| max unaligned displacement (A) | 0.083 | 0.066 | 0.105 | 0.127 |
+| max \|d\| pLDDT / PAE (A) / pTM | 0.0016 / 0.54 / 4.0e-4 | 0.0042 / 0.30 / 2.1e-4 | atom pLDDT 2.6e-4 / token PAE 0.018 / 5.2e-6 | 1.5e-4 / 0.015 / 3.1e-6 |
 
-| stage | upstream hook | tensors to save |
-| --- | --- | --- |
-| S3 | `ESMFold2Model.forward`, the `z` after `z = self.parcae_coda(z, pair_attention_mask=pair_mask)` and `z = z.float()` (lines 1027-1029), observed as the `z_trunk` keyword of `self.structure_head.sample(...)` (line 1032) | `z_trunk` `[1, N, N, 256]` f32; `s_inputs` (= `x_inputs`) `[1, N, 451]`; `relative_position_encoding`; `distogram_logits` from line 1030 |
-| S4 | `DiffusionStructureHead.sample` (called at line 1032) | its keyword arguments above plus the returned `sample_atom_coords` `[5, A, 3]`; the diffusion draws are already in `tape.npz` |
-| S5 | `ConfidenceHead.forward` (class at line 96, forward at line 172; called at line 1061) | keyword inputs `s_inputs`, `z`, `x_pred`, `relative_position_encoding`, `token_bonds_encoding`, `distogram_atom_idx`, masks; outputs `plddt_logits`, `pae_logits`, `pde_logits`, `resolved_logits` and the reduced scores already in `upstream_confidence.npz` |
+So the re-capture is used as the native side of S3-S5 for both models: S4 and
+S5 compare against the re-capture's *own* sampler and head outputs (which came
+from the very tensors injected), and S1, S2 and S6 stay on the stored capture.
+Every S3-S5 record carries this comparison as
+`native_rerun_vs_stored_capture`. One provenance difference: the OpenDDE
+checkout's `git status` hash is now that of a clean tree
+(`e3b0c442...`, was `5a0e4e0e...` at the stored capture); the commit and the
+tracked-diff hash (empty) are unchanged.
 
-Port injection seams (`src/foldjax/models/esmfold2/models/model.py`,
-`predict`): the `folding_trunk(z, ..., "parcae_coda", ...)` call (line 1669)
-for the trunk (patch that call site, not the module-global `folding_trunk`,
-which the recycling loop at line 1031 also uses); `diffusion.sample` (line
-1736) for S5's coordinates; `confidence_head` (line 1815) is downstream of
-both.
+Port seams the injections use (all counted; a seam that never fires fails the
+stage): ESMFold2 `models/model.py` module globals `inputs_embedding`,
+`relative_position_encoding`, `_token_bonds_encoding`, `folding_trunk` (only
+its `parcae_coda` call is replaced) and `diffusion.sample`, each stage traced
+afresh with `jax.clear_caches()` on both sides; OpenDDE `models/model.py`
+`pairformer_output_from_s_inputs`, `structural_token_expand` (the expanded
+`s_inputs`; the expander still builds the structural pair features),
+`structural_refiner_stack` and `sample_diffusion`.
 
-Capture sketch -- add to `bench/esmfold2_tape.py:_capture` before the
-`model(**device_features, num_diffusion_samples=SAMPLES)` call (line 681), so
-the `TorchRecorder` that writes `tape.npz` is still the only RNG observer:
-
-```python
-stages: dict[str, torch.Tensor] = {}
-original_sample = model.structure_head.sample
-
-def sample(**kwargs):
-    for name in ("z_trunk", "s_inputs", "relative_position_encoding"):
-        stages[f"trunk.{name}"] = kwargs[name].detach().float().cpu()
-    output = original_sample(**kwargs)
-    stages["diffusion.sample_atom_coords"] = output["sample_atom_coords"].detach().cpu()
-    return output
-
-model.structure_head.sample = sample
-
-def on_confidence(module, args, kwargs, output):
-    for name, value in kwargs.items():
-        if torch.is_tensor(value):
-            stages[f"confidence_in.{name}"] = value.detach().float().cpu()
-    for name, value in output.items():
-        stages[f"confidence_out.{name}"] = value.detach().float().cpu()
-
-handle = model.confidence_head.register_forward_hook(on_confidence, with_kwargs=True)
-...  # existing forward
-handle.remove()
-_save_npz(args.output_dir / "stages.npz", {k: v.numpy() for k, v in stages.items()})
-```
-
-Then S3 compares the port's `z` at the `parcae_coda` seam with
-`trunk.z_trunk`; S4 injects `trunk.*` there and replays `tape.npz`; S5
-additionally injects `diffusion.sample_atom_coords` at `diffusion.sample`.
-
-## OpenDDE 1.1.1 (commit `ddfa1df8`)
-
-Upstream source: `/home/jaemin/non-project/optimizing/OpenDDE/opendde/model/opendde.py`.
-OpenDDE runs a residue-level Pairformer trunk and then expands to structural
-tokens; the sampler and confidence head read the *structural* tensors.
-
-| stage | upstream hook | tensors to save |
-| --- | --- | --- |
-| S3 | `OpenDDE.get_pairformer_output` (line 952; called from `_main_inference_loop` at line 1869) and `OpenDDE.expand_to_structural_tokens` (line 422; called at line 1899) | residue `s_inputs`, `s`, `z` (`[N_res, 449]`, `[N_res, 384]`, `[N_res, N_res, 128]`) and structural `s_inputs`, `s`, `z` (`[N_struct, ...]`; 146 structural tokens on 1UBQ) |
-| S4 | `OpenDDE.run_sample_diffusion_stage` (line 1195, called at line 1998) / `OpenDDE.sample_diffusion` (line 1299) | the structural `s_inputs`, `s_trunk`, `z_trunk` it receives and the returned `coordinate`; the sampler draws are already in `torch/tape.npz` |
-| S5 | `OpenDDE.run_confidence_head_stage` (line 1509, called at line 2033) | keyword inputs `s_inputs`, `s_trunk`, `z_trunk`, `pair_mask`, `x_pred_coords`; returned `plddt`, `pae`, `pde`, `resolved` logits (the reduced scores are already in `raw.npz`) |
-
-Port injection seams (`src/foldjax/models/opendde/models/model.py`,
-`opendde_infer_static`): `pairformer_output_from_s_inputs` (line 1022) for the
-residue trunk, `structural_token_expand` (line 1049) for the structural
-boundary, `sample_diffusion` (line 1213) for S5's coordinates; the
-`confidence_head` call (line 1330) is downstream. All three are module globals, so
-the same counted-patch-plus-pool-clear pattern `run_protenix` uses applies.
-
-Capture sketch -- `tests/models/opendde/scripts/capture_upstream_tape.py`
-already installs forward hooks on `input_embedder`, `msa_module` and
-`pairformer_stack` (lines 320-433), but the master capture's
-`torch/tape.json` records `"stages": {}` -- what `--skip-trunk-stages`
-produces, a flag that exists because the per-block stage tensors are ~26 GiB.
-The boundaries themselves are small (about 15 MB at 76 residue / 146
-structural tokens), so wrap the methods instead of the blocks:
-
-```python
-saved = {}
-
-def wrap(name, method, pick):
-    def wrapped(*args, **kwargs):
-        result = method(*args, **kwargs)
-        for key, value in pick(kwargs, result).items():
-            saved[f"{name}.{key}"] = value.detach().float().cpu().numpy()
-        return result
-    return wrapped
-
-model.get_pairformer_output = wrap(
-    "residue_trunk", model.get_pairformer_output,
-    lambda kw, out: dict(zip(("s_inputs", "s", "z"), out)))
-model.expand_to_structural_tokens = wrap(
-    "structural_trunk", model.expand_to_structural_tokens,
-    lambda kw, out: dict(zip(("s_inputs", "s", "z"), out[1:])))
-model.run_confidence_head_stage = wrap(
-    "confidence", model.run_confidence_head_stage,
-    lambda kw, out: {
-        **{k: kw[k] for k in ("s_inputs", "s_trunk", "z_trunk", "x_pred_coords")},
-        **dict(zip(("plddt", "pae", "pde", "resolved"), out)),
-    })
-...  # existing tape-recorded forward, unchanged, with --skip-trunk-stages
-np.savez_compressed(out_dir / "stages.npz", **saved)
-```
-
-## Caveats on measured stages that a re-capture would close
+## Still open
 
 * **Boltz-2 S1 -- reference-conformer augmentation not replayed.** The
   featurizer rotates and translates each reference conformer at random.
@@ -153,15 +86,27 @@ np.savez_compressed(out_dir / "stages.npz", **saved)
   `_compute_conformer` / `multistrategy_compute_conformer` (they are what
   upstream writes into `ref_pos`), and the port featurizer needs a seam to
   take them. S3-S6 are unaffected: they run on the native `input.npz`.
-* **ESMFold2 S1 -- input document inferred.** The capture ran a shared feature
-  archive (`metadata.json: core_only_shared_features = true`) and records only
-  its sha256, not the document or MSA it was built from. S1 re-featurizes the
+* **ESMFold2 S1 -- input document inferred.** Both the stored capture and the
+  re-capture ran the shared feature archive
+  (`entity-parity-20260905/inputs/protein_1ubq/esmfold2/upstream-biohub-full.npz`;
+  `metadata.json: core_only_shared_features = true`), which records only its
+  own sha256, not the document or MSA it was built from. S1 re-featurizes the
   JCTC-matrix 1UBQ job with the bench's 1UBQ alignment (sha256 `4bf7b489...`,
   the alignment OpenDDE's capture recorded for the same sequence); the result
   agrees with the archive to 1.2e-7 on every shared array, which is what
-  supports the inference. A re-capture should record the input document and
-  alignment digests next to `features.npz`.
-* **Every S3-S6 stage runs CPU XLA against a GPU capture.** Triangle kernels
-  are XLA where the native run used cuEquivariance, and bf16 is CPU bf16. The
-  residuals are therefore a CPU-vs-GPU number on top of port-vs-native (see
-  `docs/parity-cpu.md`); a GPU run of this script would separate the two.
+  supports the inference. Closing it needs a capture that starts from the
+  document (the backend's featurizer) rather than from the archive.
+* **Every S3-S6 port stage runs CPU XLA against a GPU capture.** Triangle
+  kernels are XLA where the native run used cuEquivariance, and bf16 is CPU
+  bf16. The residuals are therefore a CPU-vs-GPU number on top of
+  port-vs-native (see `docs/parity-cpu.md`); a GPU run of this script would
+  separate the two.
+* **AlphaFold 3 -- no intermediate stages.** The `alphafold3` row compares two
+  complete CPU runs (DeepMind's `run_alphafold.py` v3.0.4 and FoldJAX's
+  vendored AF3) on 8REH; S3/S4 are `not_captured`. Every compared output is
+  bitwise identical (the featurised batch, all 405 parameters, every
+  confidence leaf, the raw padded model outputs including the distogram
+  contact probabilities, and both samples' coordinates, by both the harness and
+  the CLI route), so there is no residual to localize. The check is one
+  target, CPU, 2 samples and 1 recycle with FoldJAX given DeepMind's bucket
+  list; it is not a GPU or default-bucket statement.

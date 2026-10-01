@@ -1576,7 +1576,7 @@
         "injected_native": "stages.npz confidence.in.{s_inputs, s_trunk, z_trunk} replace pairformer_output_from_s_inputs; confidence.in.x_pred_coords replace sample_diffusion; summaries vs the re-capture's raw.npz"
       },
       "headline": {
-        "metric": "max |d| atom pLDDT (0-100) / PAE (A) / pTM",
+        "metric": "max |d| atom pLDDT (0-1) / PAE (A) / pTM",
         "value": "0.000221 / 0.0132 / 2.81e-05"
       },
       "metrics": {
