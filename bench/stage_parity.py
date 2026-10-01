@@ -30,7 +30,7 @@ Usage::
 
     JAX_PLATFORMS=cpu FOLDJAX_HOME=<store> PYTHONPATH=<tree>/src:<tree> \\
         python bench/stage_parity.py --model protenix \\
-        --capture <bench>/protenix-master-native-20260909-9yET4f/protein_1ubq/native-A \\
+        --capture <protenix master capture>/protein_1ubq/native-A \\
         --out bench/stage_parity_results/protenix.json
     python bench/stage_parity.py --table bench/stage_parity_results
 
@@ -181,7 +181,7 @@ def kabsch_rmsd(
     mask: Any | None = None,
     measure_mask: Any | None = None,
 ) -> float:
-    """RMSD after one proper-rotation least-squares fit of ``mobile`` onto ``reference``.
+    """RMSD after one proper-rotation fit of ``mobile`` onto ``reference``.
 
     The fit uses the atoms in ``mask`` (all atoms when omitted); the RMSD is
     taken over ``measure_mask`` (the fitted atoms when omitted) *without
@@ -202,7 +202,9 @@ def kabsch_rmsd(
             return np.ones(p.shape[0], dtype=bool)
         selected = np.asarray(value, dtype=bool)
         if selected.shape != p.shape[:1]:
-            raise ValueError(f"mask {selected.shape} does not match atoms {p.shape[:1]}")
+            raise ValueError(
+                f"mask {selected.shape} does not match atoms {p.shape[:1]}"
+            )
         return selected
 
     fit = selection(mask)
@@ -235,7 +237,9 @@ def per_sample_rmsd(
     ]
 
 
-def max_unaligned_displacement(port: Any, native: Any, mask: Any | None = None) -> float:
+def max_unaligned_displacement(
+    port: Any, native: Any, mask: Any | None = None
+) -> float:
     """Largest per-atom distance without any fit (the replay shares a frame)."""
     left = np.asarray(port, dtype=np.float64)
     right = np.asarray(native, dtype=np.float64)
@@ -582,7 +586,9 @@ def compare_parameter_trees(
         stored_leaf = np.asarray(leaf)
         mapped_leaf = np.asarray(right[path])
         if stored_leaf.shape != mapped_leaf.shape:
-            raise ValueError(f"{path}: stored {stored_leaf.shape} mapped {mapped_leaf.shape}")
+            raise ValueError(
+                f"{path}: stored {stored_leaf.shape} mapped {mapped_leaf.shape}"
+            )
         group = groups.setdefault(
             _group_of(path, group_depth),
             {"leaves": 0, "elements": 0, "max_abs": 0.0, "dtypes": set()},
@@ -592,14 +598,20 @@ def compare_parameter_trees(
         group["dtypes"].add(str(stored_leaf.dtype))
         if stored_leaf.size:
             if stored_leaf.dtype.kind in "biu":
-                delta = float(np.max(np.abs(
-                    stored_leaf.astype(np.int64) - mapped_leaf.astype(np.int64)
-                )))
+                delta = float(
+                    np.max(
+                        np.abs(
+                            stored_leaf.astype(np.int64) - mapped_leaf.astype(np.int64)
+                        )
+                    )
+                )
             else:
                 cast = mapped_leaf.astype(stored_leaf.dtype)
-                delta = float(np.max(np.abs(
-                    stored_leaf.astype(np.float64) - cast.astype(np.float64)
-                )))
+                delta = float(
+                    np.max(
+                        np.abs(stored_leaf.astype(np.float64) - cast.astype(np.float64))
+                    )
+                )
             group["max_abs"] = max(group["max_abs"], delta)
     for group in groups.values():
         group["dtypes"] = sorted(group["dtypes"])
@@ -612,7 +624,7 @@ def compare_parameter_trees(
 
 
 def weight_value_checks(
-    state: "TrackingState",
+    state: TrackingState,
     port_leaves: Sequence[Any],
     *,
     ignored: Callable[[str], bool] = lambda key: False,
@@ -723,7 +735,9 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         case_a = fixture_case("protenix", "protein_1ubq", "A")
         stored = parity._arrays(case_a.path("foldjax-input.npz"))
         features = parity._nest(stored)
-        cycles = parity._msa_cycles(features, parity._arrays(case_a.path("msa-tape.npz")))
+        cycles = parity._msa_cycles(
+            features, parity._arrays(case_a.path("msa-tape.npz"))
+        )
         return stored, features, cycles
 
     # -- S1 ---------------------------------------------------------------
@@ -744,7 +758,8 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         for name in ("native-input.npz", "native-derived.npz", "native-identity.npz"):
             native.update(npz(capture / name))
         records = {
-            name: array_parity(port[name], native[name]) for name in sorted(COMMON_FIELDS)
+            name: array_parity(port[name], native[name])
+            for name in sorted(COMMON_FIELDS)
         }
         gate = check_inputs(capture, features)
         stored = npz(case_dir / "port-A" / "foldjax-input.npz")
@@ -880,9 +895,9 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         return record
 
     def sampler_tape() -> dict[str, np.ndarray]:
-        return parity._arrays(fixture_case("protenix", "protein_1ubq", "B").path(
-            "sampler-tape.npz"
-        ))
+        return parity._arrays(
+            fixture_case("protenix", "protein_1ubq", "B").path("sampler-tape.npz")
+        )
 
     def native_coordinates() -> np.ndarray:
         return parity._array(
@@ -1052,15 +1067,21 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
             "pde_logits": (output.get("pde"), native_pred["pde"], 1.0),
             "atom_plddt": (output.get("atom_plddt"), native_atom_plddt, scale),
             "token_pair_pae_angstrom": (
-                output.get("token_pair_pae"), native_pae, 1.0,
+                output.get("token_pair_pae"),
+                native_pae,
+                1.0,
             ),
             "token_pair_pde_angstrom": (
-                output.get("token_pair_pde"), native_pde, 1.0,
+                output.get("token_pair_pde"),
+                native_pde,
+                1.0,
             ),
             "ptm": (output.get("summary_ptm"), native_ptm, 1.0),
             "summary_plddt": (output.get("summary_plddt"), native_plddt, 1.0),
             "distogram_logits_from_native_z": (
-                output.get("distogram_logits"), native_disto["logits"], 1.0,
+                output.get("distogram_logits"),
+                native_disto["logits"],
+                1.0,
             ),
         }
         for name, (port, native, factor) in pairs.items():
@@ -1276,7 +1297,8 @@ def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
             "measured",
             condition={
                 **CPU_CONDITION,
-                "port_featurizer": "foldjax.models.boltz2.data.featurize.featurize_yaml "
+                "port_featurizer": "foldjax.models.boltz2.data.featurize."
+                "featurize_yaml "
                 "(torch-free), re-run in this checkout",
                 "input_document": str(yaml_path),
                 "seed": seed,
@@ -1317,7 +1339,10 @@ def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
             captured["dtype"] = dtype
             return {"weights_path": str(path)}
 
-        original = (export_weights.load_checkpoint_state_dict, export_weights.save_params)
+        original = (
+            export_weights.load_checkpoint_state_dict,
+            export_weights.save_params,
+        )
         export_weights.load_checkpoint_state_dict = lambda _path: state
         export_weights.save_params = capture_params
         try:
@@ -1429,8 +1454,13 @@ def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         native_disto = jnp.asarray(native_out["pdistogram"][:, :, :, 0], jnp.float32)
         options = {
             key: parity.SHARED_OPTIONS[key]
-            for key in ("chunk_size", "matmul_precision", "attention_backend",
-                        "triangle_backend", "glu_backend")
+            for key in (
+                "chunk_size",
+                "matmul_precision",
+                "attention_backend",
+                "triangle_backend",
+                "glu_backend",
+            )
         }
 
         def one(x_pred: jnp.ndarray) -> dict[str, jnp.ndarray]:
@@ -1462,7 +1492,9 @@ def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         keys = sorted(set(per_sample[0]) & set(native_out))
         metrics: dict[str, Any] = {
             "native_coordinates": "forward-output.npz sample_atom_coords",
-            "forward_output_vs_coordinate_npz_max_abs": max_abs(coords, coordinate_file),
+            "forward_output_vs_coordinate_npz_max_abs": max_abs(
+                coords, coordinate_file
+            ),
             "distogram_logits_from_native_z": {
                 "max_abs": max_abs(port_disto, native_out["pdistogram"]),
                 "relative_rms": relative_rms(port_disto, native_out["pdistogram"]),
@@ -1470,7 +1502,10 @@ def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         }
         for key in keys:
             port_value = np.concatenate(
-                [np.asarray(out[key], np.float64).reshape((1, -1)) for out in per_sample]
+                [
+                    np.asarray(out[key], np.float64).reshape((1, -1))
+                    for out in per_sample
+                ]
             ).reshape(native_out[key].shape)
             native_value = native_out[key].astype(np.float64)
             metrics[key] = {
@@ -1601,9 +1636,7 @@ def run_openfold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
 
     def coordinate_record(port: np.ndarray) -> dict[str, Any]:
         native = npz(capture_b / "coordinate.npz")["coordinate"].astype(np.float64)
-        record = coordinate_metrics(
-            port, native, atom_mask=atom_valid, ca_mask=ca_mask
-        )
+        record = coordinate_metrics(port, native, atom_mask=atom_valid, ca_mask=ca_mask)
         record["entity_rmsd_angstrom_panel_metric"] = parity.entity_rmsd(
             capture_b, port
         )["entity_rmsd"]
@@ -1829,7 +1862,11 @@ def run_openfold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
                     capture_b,
                     stop_after_trunk=False,
                     return_plddt_logits=True,
-                    returned_pair_logits=("pae_logits", "pde_logits", "distogram_logits"),
+                    returned_pair_logits=(
+                        "pae_logits",
+                        "pde_logits",
+                        "distogram_logits",
+                    ),
                 )
         finally:
             clear()
@@ -1843,7 +1880,8 @@ def run_openfold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
             "pae_logits": (prediction.pae_logits, raw["pae_logits"][0]),
             "pde_logits": (prediction.pde_logits, raw["pde_logits"][0]),
             "distogram_logits_from_native_z": (
-                prediction.distogram_logits, raw["distogram_logits"][0, 0],
+                prediction.distogram_logits,
+                raw["distogram_logits"][0, 0],
             ),
         }
         for name, (port, native) in pairs.items():
@@ -1862,7 +1900,9 @@ def run_openfold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         for index in range(1, 6):
             stem = written / f"protein_rna_1urn_seed_101_sample_{index}"
             full = json.loads(Path(f"{stem}_confidences.json").read_text())
-            summary = json.loads(Path(f"{stem}_confidences_aggregated.json").read_text())
+            summary = json.loads(
+                Path(f"{stem}_confidences_aggregated.json").read_text()
+            )
             native_plddt.append(full["plddt"])
             native_pae.append(full["pae"])
             native_ptm.append(summary["ptm"])
@@ -1903,7 +1943,10 @@ def run_openfold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         metrics["iptm_written"] = {
             "max_abs": max_abs(np.asarray(prediction.iptm).reshape(5), native_iptm)
         }
-        metrics["injection_calls"] = {"trunk": trunk_calls["n"], "sampler": sampler_calls["n"]}
+        metrics["injection_calls"] = {
+            "trunk": trunk_calls["n"],
+            "sampler": sampler_calls["n"],
+        }
         return stage_record(
             "measured",
             condition={
@@ -1917,7 +1960,9 @@ def run_openfold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
                 "metric": "max |d| pLDDT (0-100) / PAE (A) / pTM, vs written JSON",
                 "value": "{:.3g} / {:.3g} / {:.3g}".format(
                     metrics["plddt_written"]["max_abs"],
-                    metrics.get("pae_written_angstrom", {}).get("max_abs", float("nan")),
+                    metrics.get("pae_written_angstrom", {}).get(
+                        "max_abs", float("nan")
+                    ),
                     metrics["ptm_written"]["max_abs"],
                 ),
             },
@@ -2072,7 +2117,9 @@ def run_esmfold2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
                 group["tensors"] += 1
                 group["elements"] += int(native.size)
                 group["dtypes"].add(f"{native.dtype}->{stored.dtype}")
-                delta = max_abs(stored.astype(native.dtype), native) if native.size else 0.0
+                delta = (
+                    max_abs(stored.astype(native.dtype), native) if native.size else 0.0
+                )
                 group["max_abs"] = max(group["max_abs"], delta)
         for group in groups.values():
             group["dtypes"] = sorted(group["dtypes"])
@@ -2138,7 +2185,9 @@ def run_esmfold2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         record["entity_rmsd_angstrom_panel_metric"] = parity.per_sample_rmsd(
             native, port, replay_features
         )
-        output = {k: np.asarray(v) for k, v in jax.device_get(captured["output"]).items()}
+        output = {
+            k: np.asarray(v) for k, v in jax.device_get(captured["output"]).items()
+        }
         native_conf = npz(capture / "upstream_confidence.npz")
         record["port_output_keys"] = sorted(output)
         record["end_to_end_confidence"] = confidence_comparison(
@@ -2332,7 +2381,9 @@ def run_opendde(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         features = parity.load_features(case)
         cycle_msa = parity.load_cycle_msa(case)
         with np.load(case.path("tape.npz"), allow_pickle=False) as archive:
-            tape = {name: np.asarray(archive[name], np.float32) for name in archive.files}
+            tape = {
+                name: np.asarray(archive[name], np.float32) for name in archive.files
+            }
         steps, samples = tape["step_noises"].shape[:2]
         params = load_native_weights(parity.weights_path())
         started = time.perf_counter()
@@ -2352,12 +2403,25 @@ def run_opendde(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
                 structural_single_attention_backend="xla",
                 structural_triangle_attention_backend="xla",
                 init_noise=jnp.asarray(tape["init_noise"]),
-                step_noises=tuple(jnp.asarray(tape["step_noises"][i]) for i in range(steps)),
+                step_noises=tuple(
+                    jnp.asarray(tape["step_noises"][i]) for i in range(steps)
+                ),
                 rotations=jnp.asarray(tape["rotations"]),
                 translations=jnp.asarray(tape["translations"]),
             )
             output = jax.device_get(output)
         seconds = time.perf_counter() - started
+        # The released summaries (pLDDT, PAE, pTM), from the port's logits by
+        # the port's own postprocess, as the CLI writes them.
+        from foldjax.models.opendde.postprocess import opendde_confidence_scores
+
+        scores = opendde_confidence_scores(
+            dict(output),
+            features,
+            num_recycles=len(cycle_msa),
+            include_shape_complementarity=False,
+        )
+        output = {**output, **jax.device_get(dict(scores))}
         output = {k: np.asarray(v) for k, v in output.items() if hasattr(v, "shape")}
         port = output["coordinate"].astype(np.float64)
         while port.ndim > 3 and port.shape[0] == 1:
@@ -2365,7 +2429,10 @@ def run_opendde(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         native = parity.native_coordinates(case)
         record = coordinate_metrics(port, native, ca_mask=ca_mask)
         record["entity_rmsd_angstrom_panel_metric"] = [
-            {str(k): v for k, v in parity.entity_rmsds(case, port[i], native[i]).items()}
+            {
+                str(k): v
+                for k, v in parity.entity_rmsds(case, port[i], native[i]).items()
+            }
             for i in range(samples)
         ]
         raw = npz(capture / "raw.npz")
@@ -2379,7 +2446,9 @@ def run_opendde(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
             "token_pair_pae": np.stack(
                 [raw[f"full_data.{i}.token_pair_pae"] for i in range(samples)]
             ),
-            "ptm": np.array([raw[f"summary_confidence.{i}.ptm"] for i in range(samples)]),
+            "ptm": np.array(
+                [raw[f"summary_confidence.{i}.ptm"] for i in range(samples)]
+            ),
         }
         record["port_output_keys"] = sorted(output)
         record["end_to_end_confidence"] = confidence_comparison(
@@ -2462,7 +2531,9 @@ def environment() -> dict[str, Any]:
     try:
         record["git_commit"] = subprocess.run(
             ["git", "-C", str(REPO), "describe", "--always", "--dirty"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         record["git_commit"] = None
@@ -2482,7 +2553,9 @@ def run_model(model: str, capture: Path, stages: set[str]) -> dict[str, Any]:
     started = time.perf_counter()
     results = MODELS[model](capture, stages)
     ordered = {
-        f"{key}_{label}": results.get(key, stage_record("not_captured", notes="not run"))
+        f"{key}_{label}": results.get(
+            key, stage_record("not_captured", notes="not run")
+        )
         for key, label in STAGES
         if key in stages
     }
@@ -2605,7 +2678,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="keep stages already in --out that this run does not measure",
     )
-    parser.add_argument("--table", type=Path, help="render TABLE.md rows for a directory")
+    parser.add_argument(
+        "--table", type=Path, help="render TABLE.md rows for a directory"
+    )
     args = parser.parse_args(argv)
     if args.table is not None:
         print(render_table(args.table), end="")

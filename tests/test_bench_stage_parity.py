@@ -140,7 +140,11 @@ def test_ca_mask_from_names_requires_carbon() -> None:
     names = np.array(["N", "CA", "C", " CA ", "CA"])
     elements = np.array(["N", "C", "C", "C", "CA"])  # last: calcium named CA
     assert sp.ca_mask_from_names(names, elements).tolist() == [
-        False, True, False, True, False,
+        False,
+        True,
+        False,
+        True,
+        False,
     ]
 
 
