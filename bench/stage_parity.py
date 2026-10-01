@@ -3524,9 +3524,21 @@ def run_alphafold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]
         }
         identical = sum(v["bitwise_identical"] for v in values.values())
 
-        def worst(fragment: str) -> float:
-            hits = [v["max_abs"] for k, v in values.items() if fragment in k]
+        def worst(suffix: str) -> float:
+            hits = [v["max_abs"] for k, v in values.items() if k.endswith(suffix)]
             return max(hits) if hits else float("nan")
+
+        raw_native, raw_port = npz(capture / "raw.npz"), npz(port_dir / "raw.npz")
+        raw = {
+            name: {
+                "max_abs": max_abs(raw_port[name], raw_native[name]),
+                "bitwise_identical": bool(
+                    raw_native[name].tobytes() == raw_port[name].tobytes()
+                ),
+            }
+            for name in sorted(set(raw_native) & set(raw_port))
+            if raw_native[name].dtype.kind in "fiub"
+        }
 
         return stage_record(
             "measured",
@@ -3534,14 +3546,17 @@ def run_alphafold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]
             headline={
                 "metric": "max |d| atom pLDDT / PAE / pTM; leaves bitwise identical",
                 "value": "{:.3g} / {:.3g} / {:.3g}; {}/{}".format(
-                    worst("atom_plddt"),
-                    worst("full_pae"),
-                    worst(".ptm"),
+                    worst(".atom_plddt"),
+                    worst(".numerical.full_pae"),
+                    worst(".metadata.ptm"),
                     identical,
                     len(values),
                 ),
             },
-            metrics={"leaves": values},
+            metrics={"leaves": values, "raw_model_outputs": raw},
+            notes="raw_model_outputs compares run_inference's padded outputs "
+            "(predicted lDDT, PAE/PDE, distogram contact probabilities, the "
+            "diffusion samples) before extraction.",
         )
 
     def s6() -> dict[str, Any]:
