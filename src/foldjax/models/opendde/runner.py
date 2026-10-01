@@ -26,7 +26,10 @@ from foldjax.models.opendde.data.compact_categories import (
     compact_ref_atom_category_storage,
 )
 from foldjax.models.protenix.chunking import ChunkPolicyName
-from foldjax.models.protenix.data.template_features import dedup_templates
+from foldjax.models.protenix.data.template_features import (
+    compact_zero_template_geometry,
+    dedup_templates,
+)
 from foldjax.schema import PaddingConfig, PredictionError
 
 # Private backend capability: defer request-scoped reuse until after the CLI
@@ -518,8 +521,7 @@ def run_prediction(
 
     if padding is not None:
         unsupported = sorted(
-            set(padding.explicit_axes)
-            - {"tokens", "atoms", "msa", "structural_tokens"}
+            set(padding.explicit_axes) - {"tokens", "atoms", "msa", "structural_tokens"}
         )
         if unsupported:
             raise ValueError(
@@ -809,7 +811,16 @@ def run_prediction(
                 # `pad_protenix_features`, which requires the native depth of
                 # four. OpenDDE reads the templates every recycle, so the stack
                 # evaluations come off once per cycle rather than once.
-                model_features = dedup_templates(model_features)
+                # A template-free query's four quadratic geometry tensors are
+                # then bitwise zero -- 2 x 44 x 4 B x N^2 of arguments, 5.9 GB
+                # at 4,100 tokens -- and the shared Protenix trunk rebuilds
+                # them from a scalar, as on Protenix's own runner. After
+                # deduplication, because the dropped arrays are what
+                # distinguishes the rows; after the padded selection above,
+                # which keeps only `template_*` names and would drop the marker.
+                model_features = compact_zero_template_geometry(
+                    dedup_templates(model_features)
+                )
                 # Keep public/output features dense for the writer and every
                 # direct/archive ABI.  Only this generated, normalized model
                 # copy may replace exact int64 one-hot atom categories by IDs.

@@ -50,6 +50,9 @@ from foldjax.models.opendde.models.structural_tokens import (
     StructuralTokenExpanderParams,
     structural_token_expand,
 )
+from foldjax.models.protenix.data.template_features import (
+    validate_zero_template_geometry,
+)
 from foldjax.models.protenix.models.diffusion.atom import (
     atom_attention_encoder_prepare_diffusion_cache,
 )
@@ -1547,6 +1550,9 @@ def opendde_infer_compiled(
     # concrete.  Dense public arrays take precedence and remove stale private
     # keys before they can affect the JIT input tree/cache identity.
     validate_compact_ref_atom_categories(input_feature_dict)
+    # The trunk is Protenix's, so it reads the same private template marker
+    # and needs the same host check that it is exactly a float32 +0.0.
+    validate_zero_template_geometry(input_feature_dict)
     if (
         "ref_element" in input_feature_dict
         or "ref_atom_name_chars" in input_feature_dict
