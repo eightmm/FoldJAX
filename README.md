@@ -209,7 +209,20 @@ report = predict_batch(
         on_error="continue",
     )
 )
+
+# Read the directory back: one row per model/input/seed/sample, failures too.
+from foldjax import load_results, results_table
+
+rows = results_table(load_results("foldjax-outputs"))
 ```
+
+Each row carries the model's own scores and a common `summary` (pLDDT on
+0-100, pTM, ipTM, the model's ranking score) with the native source of each.
+Common fields standardize names and numerical scales. They retain
+model-specific definitions and calibration and do not establish comparable
+accuracy probabilities or authorize pooled cross-model ranking.
+`foldjax compare foldjax-outputs` writes the pairwise CA RMSD between every
+structure of each input.
 
 ## Reference
 
@@ -219,7 +232,7 @@ README that documents every flag stops being a README.
 | | |
 |---|---|
 | [Input](docs/input.md) | every format FoldJAX reads, what each backend accepts, and how alignments, templates and binding affinity are supplied |
-| [Command line](docs/cli.md) | the complete `foldjax` surface: prediction, batches, padding, memory knobs, weights, compile cache |
+| [Command line](docs/cli.md) | the complete `foldjax` surface: prediction, batches, the output layout and its versioned contract (`confidence.json`, `foldjax_run.json`, `show`, `compare`), padding, memory knobs, weights, compile cache |
 | [Python API](docs/python-api.md) | requests, results, sessions, and the structured events the CLI renders |
 | [Benchmark](docs/benchmark.md) | the numbers above, their method, and what each one does not say |
 
