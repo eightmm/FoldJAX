@@ -189,6 +189,10 @@ _CONFIDENCE_FIELDS = (
     "protein_iptm",
     "complex_plddt",
     "complex_iplddt",
+    # Upstream writes these two into its confidence JSON as well; the head
+    # has always computed them and they were simply not read.
+    "complex_pde",
+    "complex_ipde",
 )
 
 
@@ -225,6 +229,60 @@ def _sample_scores(
         # A per-sample vector is indexed; a single value applies to them all.
         scores[field] = float(flat[index] if flat.size == sample_count else flat[0])
     return scores
+
+
+def _write_confidence_arrays(
+    output: Mapping[str, Any],
+    index_maps: Mapping[str, np.ndarray] | None,
+    plddt: np.ndarray,
+    index: int,
+    structure_path: Path | None,
+) -> dict[str, Any] | None:
+    """Stage one sample's `confidence_full.npz` beside its structure.
+
+    Only arrays the compiled program already returned and that
+    `_detach_prediction_output` already moved to the host: `pae` and `pde` are
+    `[samples, token, token]` in angstroms, `plddt` is per token on the head's
+    0-1 scale.
+    """
+    if structure_path is None or not structure_path.is_file():
+        return None
+    from foldjax import confidence_arrays
+
+    maps = dict(index_maps or {})
+    raw = output.get("raw")
+    raw = raw if isinstance(raw, Mapping) else {}
+    n_token = (
+        len(maps["token_residue_index"]) if "token_residue_index" in maps else None
+    )
+
+    def per_sample(value: Any, ndim: int) -> np.ndarray | None:
+        if value is None:
+            return None
+        array = np.asarray(value)
+        if array.size == 0:
+            return None
+        if array.ndim == ndim + 1:
+            array = array[index]
+        if n_token is not None:
+            array = array[tuple(slice(0, n_token) for _ in range(ndim))]
+        return array
+
+    available = confidence_arrays.AVAILABILITY["boltz2"]
+    return confidence_arrays.write(
+        confidence_arrays.staged_path(structure_path),
+        model="boltz2",
+        arrays={
+            "pae": per_sample(raw.get("pae"), 2),
+            "pde": per_sample(raw.get("pde"), 2),
+            "token_plddt": per_sample(plddt, 1),
+            **maps,
+        },
+        scales={"token_plddt": "0-1"},
+        sources={"pae": "pae", "pde": "pde", "token_plddt": "plddt"},
+        unavailable=available["unavailable"],
+        sample={"sample": index},
+    )
 
 
 def _detach_prediction_output(
@@ -1405,17 +1463,23 @@ class Boltz2Backend(Backend):
         paths = output.get("out_paths")
         if paths is None:
             paths = [output.get("out_path")] * sample_count
-        samples = tuple(
-            PredictionSample(
-                seed=request.seed,
-                structure_path=Path(paths[index]) if paths[index] else None,
-                coordinates=coords[index] if coords.ndim == 3 else coords,
-                scores=_sample_scores(output, plddt, index, sample_count),
-            )
-            for index in range(sample_count)
-        )
         shape_profile = _padding_shape_profile(output.get("padding"))
+        index_maps = output.pop("confidence_index", None)
         output = _detach_prediction_output(output, coords=coords, plddt=plddt)
+        samples = []
+        for index in range(sample_count):
+            path = Path(paths[index]) if paths[index] else None
+            arrays = _write_confidence_arrays(output, index_maps, plddt, index, path)
+            samples.append(
+                PredictionSample(
+                    seed=request.seed,
+                    structure_path=path,
+                    coordinates=coords[index] if coords.ndim == 3 else coords,
+                    scores=_sample_scores(output, plddt, index, sample_count),
+                    metadata={"confidence_arrays": arrays} if arrays else {},
+                )
+            )
+        samples = tuple(samples)
         return PredictionResult(
             model=self.name,
             samples=samples,

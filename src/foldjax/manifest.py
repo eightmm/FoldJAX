@@ -1204,7 +1204,7 @@ def describe_run(
     common-schema input, whose alignments FoldJAX does not inspect.
     ``ignored_templates`` does the same for templates (``ignore_templates``).
     """
-    from foldjax import __version__
+    from foldjax import __version__, confidence_arrays
     from foldjax.cache import runtime_profile, weight_identity
     from foldjax.output import best_sample
 
@@ -1293,6 +1293,9 @@ def describe_run(
         # corrected. `None` when this model has no fitted law.
         "memory": memory_profile(),
         "samples": [_sample_record(sample, directory) for sample in result.samples],
+        # Which per-sample confidence arrays (`confidence_full.npz`) this run
+        # wrote, and why the model's other arrays are absent.
+        "confidence_arrays": confidence_arrays.manifest_record(result.samples),
         # Which sample this model ranks first, by the score it ranks with. A
         # pointer rather than a second copy of the coordinates: the top-ranked
         # structure used to be written twice, and two files with one content

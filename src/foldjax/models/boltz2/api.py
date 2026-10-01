@@ -967,6 +967,9 @@ def predict(
         msa_deletions=msa_deletions,
         seed=seed,
     )
+    # Read now, while `atom_to_token` is still the featurizer's dense map;
+    # the storage passes below compact it.
+    confidence_index = _confidence_index(feats_np, struct_dir / f"{record_id}.npz")
 
     cache = None
     if compile_cache is not None:
@@ -1694,6 +1697,7 @@ def predict(
         "record_id": record_id,
         "raw": public_out,
         "execution_policy": execution_policy,
+        "confidence_index": confidence_index,
     }
     if padding_plan is not None:
         primary_summary = padding_plan.summary()
@@ -1749,6 +1753,44 @@ def predict(
         else:
             result["out_paths"] = paths
     return result
+
+
+def _confidence_index(
+    feats: Mapping[str, Any], structure_npz: Path
+) -> dict[str, np.ndarray]:
+    """Host index maps that say which chain, residue and atoms a token is.
+
+    Taken from the unpadded features, so they cover exactly the real tokens
+    and atoms that `plddt`/`pae` keep after cropping, in the order the mmCIF
+    writer emits atoms. Chain names come from the processed structure the
+    writer reads; `residue_index` is 0-based there and the writer adds one.
+    """
+
+    def real(name: str) -> np.ndarray:
+        value = np.asarray(feats[name])
+        return value[0] if value.ndim > 1 and value.shape[0] == 1 else value
+
+    token_mask = real("token_pad_mask").astype(bool)
+    atom_mask = real("atom_pad_mask").astype(bool)
+    index: dict[str, np.ndarray] = {
+        "token_residue_index": real("residue_index")[token_mask].astype(np.int32)
+        + 1,
+    }
+    owners = np.asarray(feats.get("atom_to_token", np.zeros(0)))
+    if owners.ndim == 3 and owners.shape[0] == 1:
+        index["atom_token_index"] = (
+            owners[0][atom_mask].argmax(axis=-1).astype(np.int32)
+        )
+    asym = real("asym_id")[token_mask].astype(np.int64)
+    try:
+        from foldjax.models.boltz2.data.types import StructureV2
+
+        chains = StructureV2.load(structure_npz).remove_invalid_chains().chains
+        names = {int(chain["asym_id"]): str(chain["name"]) for chain in chains}
+        index["token_chain_id"] = np.asarray([names[int(a)] for a in asym])
+    except (OSError, KeyError, ValueError):
+        pass
+    return index
 
 
 def _native_weights_exist(path: Path) -> bool:

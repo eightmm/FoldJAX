@@ -37,6 +37,7 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 
+from foldjax import confidence_arrays
 from foldjax.schema import PredictionOutputError, PredictionResult, PredictionSample
 
 #: The score each model ranks its own samples by, best first. Used only to name
@@ -256,6 +257,7 @@ def normalize(
         _write_confidence(
             directory / "confidence.json", sample, model=result.model, index=index
         )
+        sample = confidence_arrays.place(sample, directory)
         samples.append(replace(sample, structure_path=target))
     return replace(result, samples=tuple(samples))
 

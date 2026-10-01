@@ -184,6 +184,10 @@ class ModelCapabilities:
     representations: tuple[str, ...] = ()
     # Arrays available before any trunk recycling. Feature ABI stays private.
     input_representations: tuple[str, ...] = ()
+    # Confidence arrays a default run writes to each sample's
+    # `confidence_full.npz`. Filled in by `foldjax.capabilities` from
+    # `foldjax.confidence_arrays.AVAILABILITY`, like the schema fields above.
+    confidence_arrays: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,6 +255,7 @@ class ModelInfo:
             "native_only_features": list(capabilities.native_only_features),
             "representations": list(capabilities.representations),
             "input_representations": list(capabilities.input_representations),
+            "confidence_arrays": list(capabilities.confidence_arrays),
             "sampling": dict(capabilities.sampling),
             "input_requirements": {
                 name: requirement.summary()
