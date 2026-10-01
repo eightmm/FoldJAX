@@ -127,7 +127,7 @@ so the one document cannot be mistaken for another; any other top-level key is
 refused. `--input-format native` leaves the file whole. Because a jobs file is
 several runs, the Python API takes it as `inputs=("jobs.yaml",)`, the spelling
 a directory takes; `input=` refuses it and says so. `foldjax models
---for-input` reads one job and does not accept a jobs file.
+--for` reads one job and does not accept a jobs file.
 
 `--sequence`/`--dna`/`--rna`/`--ligand`/`--ligand-smiles` and FASTA files are
 turned into an ordinary common-schema job under `$FOLDJAX_HOME/runtime/jobs/`

@@ -49,7 +49,13 @@ what they always meant.
 
 All four reach all six models; setting both a neutral knob and its native
 name is an error, and `--option KEY=VALUE` passes anything native straight
-through. Seeds fan out the same way — `--seeds 0 1 2` (or `--seed 0
+through. Where a section below names a port's own flag (`--amp-policy`,
+`--confidence-dtype`, `--trunk-dtype`, `--cp-devices`, `--glu-backend`, ...),
+that is the spelling of the port's native CLI (`protenix-jax-predict`,
+`opendde-jax-predict`); through `foldjax predict` the same setting is
+`--option` with underscores, for example `--option amp_policy=upstream`.
+An option a backend does not accept is refused by name, and `foldjax plan`
+checks a spelling without running anything. Seeds fan out the same way — `--seeds 0 1 2` (or `--seed 0
 --num-seeds 3`) runs the job once per seed into `seed_<n>` directories and
 returns every structure together.
 
@@ -495,8 +501,10 @@ input-stage arrays; requesting a trunk array is an error. The Python
 
 Protenix defaults to `bf16` (its upstream ships bf16-mixed). OpenDDE shipped
 `fp32` with its upstream until 2026-08-28 and now defaults to `bf16` too;
-`--option dtype=float32` restores upstream's precision -- at 1,531
-tokens it is the difference between completing and OOM on both sides. Boltz-2's
+`--option dtype=float32` restores upstream's trunk precision -- at 1,531
+tokens it is the difference between completing and OOM on both sides -- and
+`--option confidence_dtype=fp32` its confidence head, which narrows
+independently (next section). Boltz-2's
 equivalent is `compute_dtype`, default `bfloat16`.
 Details and measurements: [docs/engineering-notes.md](engineering-notes.md).
 

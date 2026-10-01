@@ -118,14 +118,19 @@ the CLI and prints one object for a scalar request or a list for a plural one.
 `sample.scores` carries that model's released confidence summaries. Native
 option spellings (`compute_dtype`, `trunk_dtype=bf16`, ...) still work and
 warn once; `foldjax.execution.KNOBS` lists the neutral vocabulary.
-`deterministic="on"` is Protenix-only for now and compiles that run's
-executables for repeatable reduction orders, at 13% of the wall time at 1,003
-tokens; see [the CLI reference](cli.md#--option-deterministicon). Predictions
-return summaries, not raw tensors -- the full-bin PAE/PDE logits are tens of
-GiB at long sequences and come back only on request
-(`--option return_confidence_logits=true` on Boltz-2, `--option
-include_raw=true` on OpenDDE, or the raw `.npz` output formats). Both are
-native option names passed through `--option`, not FoldJAX flags of their own.
+`deterministic="on"` is accepted by all six models and compiles that run's
+executables for repeatable reduction orders; on Protenix it costs 13% of the
+wall time at 1,003 tokens. See [the CLI reference](cli.md#--option-deterministicon)
+for what it covers on each port. Predictions return scalar summaries plus the
+per-sample arrays in `confidence_full.npz` -- which arrays, PAE included,
+differs by model (`foldjax capabilities --model M`, and the table under
+"Outputs" in the README). The full-bin PAE/PDE logits are tens of GiB at long
+sequences and come back only on request (`--option
+return_confidence_logits=true` on Boltz-2, `--option all_arrays=true` on
+OpenFold3); `--option include_raw=true` on OpenDDE and `--option
+output_format=both` on Protenix add decoded PAE, PDE and contact
+probabilities to `confidence_full.npz`. These are native option names passed
+through `--option`, not FoldJAX flags of their own.
 
 `foldjax.output.best_sample(result)` names the top-ranked sample of one run,
 and is what fills the manifest's `best` block, the `foldjax predict` summary

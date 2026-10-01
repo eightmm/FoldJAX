@@ -150,7 +150,7 @@ what the persisted store removes, and why AlphaFold 3 rows measured before
 |---|---|
 | `--option kernel_autotuning=heuristics` | use a persisted result first; otherwise use upstream's faster guess, which may not fit your device |
 | `--option kernel_autotuning=error` | use a persisted result first; fail loudly if any kernel remains uncovered |
-| `--option attention_backend=xla` | skip the Triton attention kernel entirely |
+| `--option attention_kernel=xla` | skip the Triton attention kernel entirely (the native spelling `attention_backend=xla` also works) |
 
 Explicit external AlphaFold 3 sources, unverifiable managed assets, CPU runs,
 and `--no-cache` keep Tokamax 0.0.13's process-local behaviour on the
@@ -197,12 +197,18 @@ ranking-score maximum absolute drift was 0.000284.
 
 ## Options
 
-`--num-samples` and `--num-recycles` map onto AlphaFold 3's own
-`diffusion_samples` and `recycles`; its defaults (5 samples, 10 recycles) apply
-otherwise. Native names are still reachable with `--option`:
+`--num-samples` and `--num-recycles` set AlphaFold 3's diffusion sample count
+and recycle count (upstream `run_alphafold.py`'s `--num_diffusion_samples` and
+`--num_recycles`). Omitted, FoldJAX runs 5 samples and 3 recycles -- four trunk
+passes, the SI Algorithm 1 count, where `run_alphafold.py` defaults to 10
+recycles; see [recycling defaults](recycling-defaults.md). Pass
+`--num-recycles 10` for upstream's count. AlphaFold 3's own option names
+(`diffusion_samples`, `recycles`) are not accepted through `--option`; the
+native options it does take include `buckets`, `kernel_autotuning`,
+`return_embeddings` and `return_distogram`:
 
 ```bash
 foldjax predict --model alphafold3 --input job.yaml \
-  --option diffusion_samples=5 --option recycles=10 \
+  --num-samples 5 --num-recycles 10 \
   --option buckets='[256,512,1024,2048,5120]'
 ```
