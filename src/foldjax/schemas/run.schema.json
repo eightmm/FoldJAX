@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "foldjax/schemas/run.schema.json",
+  "title": "FoldJAX foldjax_run.json",
+  "description": "The manifest one finished prediction writes at <run>/foldjax_run.json: what ran (model, input and its digest, weights identity, seeds and their source, sampling, options, padding), what it cost, which inputs the model never read, and every sample's structure with its SHA-256 and native scores. Its presence means the run finished. `schema` (integer) versions the fields that make a run safe to resume; `schema_version` versions this published contract. Compatibility: schema_version is MAJOR.MINOR. A minor version only adds optional fields, so a reader for 1.x accepts any 1.y and ignores fields it does not know; removing, renaming or reinterpreting a field requires a new major version. Per-sample `scores` are native and model-specific; the common names and scales are in each sample's confidence.json `summary`. Common fields standardize names and numerical scales. They retain model-specific definitions and calibration and do not establish comparable accuracy probabilities or authorize pooled cross-model ranking.",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "artifact_paths",
+    "foldjax",
+    "finished",
+    "model",
+    "input",
+    "input_dependencies",
+    "ignored_msas",
+    "ignored_templates",
+    "weights",
+    "seeds",
+    "seed_source",
+    "msa",
+    "sampling",
+    "options",
+    "options_verifiable",
+    "padding",
+    "requested_representations",
+    "stop_after",
+    "representations",
+    "runtime",
+    "cost",
+    "memory",
+    "samples",
+    "best"
+  ],
+  "properties": {
+    "schema": {"const": 1},
+    "schema_version": {"type": "string", "pattern": "^1\\.[0-9]+$"},
+    "artifact_paths": {"enum": ["manifest-relative", "absolute"]},
+    "foldjax": {"type": "string"},
+    "finished": {"type": "string"},
+    "model": {"type": "string", "minLength": 1},
+    "input": {
+      "type": "object",
+      "required": ["path", "resolved_path", "format", "sha256", "native"],
+      "properties": {
+        "path": {"type": "string"},
+        "resolved_path": {"type": ["string", "null"]},
+        "format": {"type": "string"},
+        "sha256": {"type": ["string", "null"]},
+        "native": {"type": ["string", "null"]}
+      }
+    },
+    "input_dependencies": {"type": "object"},
+    "ignored_msas": {
+      "description": "Alignments the common job named that the native input left out; null when the input was native (not inspected).",
+      "type": ["array", "null"],
+      "items": {"$ref": "#/$defs/ignored"}
+    },
+    "ignored_templates": {
+      "description": "Templates the common job named that the native input left out; null when the input was native (not inspected).",
+      "type": ["array", "null"],
+      "items": {"$ref": "#/$defs/ignored"}
+    },
+    "weights": {
+      "type": "object",
+      "required": ["path", "profile", "label", "identity"],
+      "properties": {
+        "path": {"type": ["string", "null"]},
+        "profile": {"type": ["string", "null"]},
+        "label": {"type": ["string", "null"]},
+        "identity": {"type": ["string", "null"]}
+      }
+    },
+    "seeds": {"type": "array", "items": {"type": "integer"}},
+    "seed_source": {
+      "description": "Where the seeds came from: the caller, the model's fixed upstream default, a draw, the native job's modelSeeds, or FoldJAX's own default.",
+      "enum": ["user", "upstream", "random", "job", "foldjax", null]
+    },
+    "msa": {"type": "string"},
+    "sampling": {"type": ["object", "null"]},
+    "options": {"type": "object"},
+    "options_verifiable": {"type": "boolean"},
+    "padding": {"type": ["object", "null"]},
+    "requested_representations": {"type": ["array", "null"], "items": {"type": "string"}},
+    "stop_after": {"type": ["string", "null"]},
+    "representations": {"type": ["object", "null"]},
+    "runtime": {"type": "object"},
+    "cost": {"type": ["object", "null"]},
+    "memory": {"type": ["object", "null"]},
+    "shape_profile": {"type": "object"},
+    "samples": {"type": "array", "items": {"$ref": "#/$defs/sample"}},
+    "best": {"oneOf": [{"$ref": "#/$defs/best"}, {"type": "null"}]}
+  },
+  "$defs": {
+    "ignored": {
+      "type": "object",
+      "required": ["field", "reason"],
+      "properties": {
+        "field": {"type": "string"},
+        "reason": {"type": "string"}
+      }
+    },
+    "sample": {
+      "type": "object",
+      "required": ["seed", "structure_path", "structure_sha256", "scores", "metadata"],
+      "properties": {
+        "seed": {"type": "integer"},
+        "structure_path": {"type": ["string", "null"]},
+        "structure_sha256": {"type": ["string", "null"]},
+        "coordinate_shape": {"type": ["array", "null"], "items": {"type": "integer"}},
+        "scores": {"type": "object", "additionalProperties": {"type": "number"}},
+        "metadata": {
+          "type": "object",
+          "properties": {
+            "sample": {"type": "integer", "minimum": 0},
+            "native_rank": {"type": "integer", "minimum": 0},
+            "job": {"type": "string"},
+            "num_recycles": {"type": "number"}
+          }
+        }
+      }
+    },
+    "best": {
+      "description": "This model's top-ranked sample by the score it ranks with, within this run. Not an accuracy claim and never a cross-model pick.",
+      "type": "object",
+      "required": ["score", "value", "seed", "sample", "structure_path", "selection"],
+      "properties": {
+        "score": {"type": "string"},
+        "value": {"type": "number"},
+        "seed": {"type": "integer"},
+        "sample": {"type": "integer", "minimum": 0},
+        "structure_path": {"type": ["string", "null"]},
+        "selection": {"const": "within-model confidence ranking"},
+        "job": {"type": "string"}
+      }
+    }
+  }
+}

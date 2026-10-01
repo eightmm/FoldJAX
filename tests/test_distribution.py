@@ -331,6 +331,13 @@ def test_wheel_carries_alphafold3_first_use_build_inputs(tmp_path: Path) -> None
         and path.suffix in {".cc", ".h", ".py", ".pyi"}
     )
     required.add("foldjax/redaction.py")
+    # The published output contract is package data, not a source file.
+    required.update(
+        {
+            "foldjax/schemas/confidence.schema.json",
+            "foldjax/schemas/run.schema.json",
+        }
+    )
     required.update(
         {
             "foldjax/models/openfold3/LICENSE",

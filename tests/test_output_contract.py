@@ -1,0 +1,270 @@
+"""`confidence.json` and `foldjax_run.json` from all six backends meet the contract.
+
+Each fixture in ``tests/fixtures/outputs`` is one real sample copied from a
+finished run (``sources.json`` names it): the structure, the native scores the
+manifest recorded, and for Protenix and OpenDDE the native summary JSON whose
+name carries the sample's rank. A replay backend hands those back through the
+real `foldjax.predict` pipeline -- the real backend class's validation and input
+translation, `foldjax.output.normalize`, the manifest writer -- so what is
+validated is what a run writes, not a file edited to match.
+"""
+
+from __future__ import annotations
+
+import gzip
+import json
+import shutil
+from pathlib import Path
+
+import pytest
+
+import foldjax
+from foldjax.manifest import MANIFEST_NAME
+from foldjax.registry import backend_override, get_backend
+from foldjax.schema import PredictionRequest, PredictionResult, PredictionSample
+from foldjax.scores import ranked_native_samples
+from foldjax.summary import COMMON_FIELDS_NOTE, SCHEMA_VERSION, load_schema
+from tests._schema_lite import errors, unsupported_keywords
+
+FIXTURES = Path(__file__).parent / "fixtures" / "outputs"
+CASES = sorted(path.name for path in FIXTURES.iterdir() if path.is_dir())
+
+#: Per model: where the common pLDDT comes from, and the ranking key.
+EXPECTED = {
+    "alphafold3": ("structure:_atom_site.B_iso_or_equiv", "ranking_score"),
+    "boltz2": ("scores.complex_plddt", "confidence_score"),
+    "esmfold2": ("scores.complex_plddt", "plddt"),
+    "opendde": ("scores.plddt", "ranking_score"),
+    "openfold3": ("scores.mean_plddt", "sample_ranking_score"),
+    "protenix": ("scores.plddt", "ranking_score"),
+}
+NATIVE_SCALE = {
+    "boltz2": 100.0,
+    "esmfold2": 100.0,
+    "opendde": 1.0,
+    "openfold3": 1.0,
+    "protenix": 1.0,
+}
+
+
+def test_every_model_has_a_fixture() -> None:
+    assert {case.split("_", 1)[0] for case in CASES} == set(EXPECTED)
+
+
+@pytest.mark.parametrize("name", ["confidence", "run"])
+def test_schemas_use_only_keywords_the_validator_checks(name: str) -> None:
+    assert unsupported_keywords(load_schema(name)) == set()
+
+
+@pytest.mark.parametrize("name", ["confidence", "run"])
+def test_schemas_carry_the_common_fields_wording(name: str) -> None:
+    assert COMMON_FIELDS_NOTE in load_schema(name)["description"]
+
+
+def _replay_backend(model: str, case: Path):
+    base = type(get_backend(model))
+    fixture = json.loads((case / "sample.json").read_text())
+
+    class Replay(base):  # type: ignore[misc, valid-type]
+        def predict(self, request: PredictionRequest) -> PredictionResult:
+            job = fixture["job"]
+            if "native_summary" in fixture:
+                # The native layout: diffusion order, named by rank.
+                native = fixture["native_summary"]
+                rank = native.rsplit("_", 1)[1].split(".")[0]
+                directory = (
+                    request.output_dir / job / f"seed_{request.seed}" / "predictions"
+                )
+                directory.mkdir(parents=True)
+                structure = directory / f"{job}_sample_{rank}.cif"
+                shutil.copy2(case / "native" / native, directory / native)
+            else:
+                structure = request.output_dir / f"{job}_native.cif"
+            with gzip.open(case / "structure.cif.gz", "rb") as source:
+                structure.write_bytes(source.read())
+            if "native_summary" in fixture:
+                samples = tuple(
+                    PredictionSample(
+                        seed=request.seed,
+                        structure_path=path,
+                        scores=scores,
+                        metadata=metadata,
+                    )
+                    for path, scores, metadata in ranked_native_samples([structure])
+                )
+            else:
+                samples = (
+                    PredictionSample(
+                        seed=request.seed,
+                        structure_path=structure,
+                        scores=dict(fixture["scores"]),
+                        metadata=dict(fixture["metadata"]),
+                    ),
+                )
+            return PredictionResult(
+                model=model, samples=samples, output_dir=request.output_dir
+            )
+
+    return Replay, fixture
+
+
+def _run(tmp_path: Path, case_name: str) -> tuple[dict, dict, dict]:
+    case = FIXTURES / case_name
+    model = case_name.split("_", 1)[0]
+    backend, fixture = _replay_backend(model, case)
+    (tmp_path / "job.a3m").write_text(">query\nACD\n")
+    job = tmp_path / "job.json"
+    job.write_text(
+        json.dumps(
+            {
+                "name": fixture["job"],
+                "entities": [
+                    {
+                        "type": "protein",
+                        "id": "A",
+                        "sequence": "ACD",
+                        "unpaired_msa": "job.a3m",
+                    }
+                ],
+            }
+        )
+    )
+    weights = tmp_path / "weights.jax"
+    weights.write_bytes(b"replayed")
+    out = tmp_path / "out"
+    request = PredictionRequest(
+        model=model,
+        input=job,
+        weights=weights,
+        output_dir=out,
+        seed=int(fixture["seed"]),
+        use_compile_cache=False,
+    )
+    with backend_override(model, backend):
+        foldjax.predict(request)
+    seed = int(fixture["seed"])
+    confidence = json.loads(
+        (out / f"seed-{seed}_sample-00" / "confidence.json").read_text()
+    )
+    manifest = json.loads((out / MANIFEST_NAME).read_text())
+    return confidence, manifest, fixture
+
+
+@pytest.mark.parametrize("case_name", CASES)
+def test_written_files_validate_against_the_published_schemas(
+    tmp_path: Path, case_name: str
+) -> None:
+    confidence, manifest, _fixture = _run(tmp_path, case_name)
+
+    assert errors(confidence, load_schema("confidence")) == []
+    assert errors(manifest, load_schema("run")) == []
+    assert confidence["schema_version"] == manifest["schema_version"] == SCHEMA_VERSION
+
+
+@pytest.mark.parametrize("case_name", CASES)
+def test_summary_keys_and_scales_per_model(tmp_path: Path, case_name: str) -> None:
+    """The coordinator's contract: one name and one scale, with the source."""
+    model, target = case_name.split("_", 1)
+    confidence, _manifest, fixture = _run(tmp_path, case_name)
+    summary = confidence["summary"]
+    scores = confidence["scores"]
+    plddt_source, ranking_key = EXPECTED[model]
+
+    plddt = summary["plddt"]
+    assert plddt["scale"] == "0-100"
+    assert plddt["source"] == plddt_source
+    assert 0.0 <= plddt["value"] <= 100.0
+    # Real outputs: every model here is confident, so a 0-1 value left
+    # unscaled would sit below 1 and fail this.
+    assert plddt["value"] > 50.0
+    if model == "alphafold3":
+        assert "mean" in plddt["transform"] and "B-factor" in plddt["transform"]
+    else:
+        key = plddt_source.removeprefix("scores.")
+        assert plddt["value"] == pytest.approx(scores[key] * NATIVE_SCALE[model])
+
+    assert summary["ptm"]["scale"] == "0-1"
+    assert summary["ptm"]["value"] == scores["ptm"]
+    assert 0.0 <= summary["ptm"]["value"] <= 1.0
+
+    if target == "e9_8reh":  # one chain: no interface, whatever the model wrote
+        assert summary["iptm"]["value"] is None
+        assert "single chain" in summary["iptm"]["reason"]
+    else:  # protein + ligand in its own chain
+        assert summary["iptm"]["value"] == scores["iptm"]
+        assert 0.0 < summary["iptm"]["value"] <= 1.0
+
+    ranking = summary["ranking"]
+    if model == "openfold3":
+        # Protein input: only the partial no-disorder score exists, and it is
+        # a different quantity, so the common field is null, not substituted.
+        assert ranking["value"] is None
+        assert ranking["key"] == ranking_key
+        assert "sample_ranking_score_no_disorder" in ranking["reason"]
+    else:
+        assert ranking["key"] == ranking_key
+        assert ranking["value"] == scores[ranking_key]
+        assert ranking["scope"] == "within one model run"
+        assert ranking["higher_is_better"] is True
+        assert ranking["defined_by"] == ("foldjax" if model == "esmfold2" else "upstream")
+    assert confidence["summary_note"] == COMMON_FIELDS_NOTE
+
+
+def test_alphafold3_plddt_is_the_mean_of_its_per_atom_plddt(tmp_path: Path) -> None:
+    """Checked against the native `atom_plddts` mean of the same sample (96.1033)."""
+    confidence, _manifest, _fixture = _run(tmp_path, "alphafold3_e9_8reh")
+
+    assert confidence["summary"]["plddt"]["value"] == pytest.approx(96.1033, abs=1e-3)
+    assert confidence["summary"]["plddt"]["granularity"] == "atom"
+
+
+@pytest.mark.parametrize(
+    ("case_name", "rank"), [("protenix_e9_8reh", 3), ("opendde_e9_8reh", 1)]
+)
+def test_ranked_writers_keep_native_rank_flags_and_execution(
+    tmp_path: Path, case_name: str, rank: int
+) -> None:
+    confidence, manifest, _fixture = _run(tmp_path, case_name)
+
+    # Diffusion sample 0 was written as "_sample_<rank>".
+    assert confidence["sample"] == 0
+    assert confidence["native_rank"] == rank
+    assert manifest["samples"][0]["metadata"]["native_rank"] == rank
+    # A boolean flag survives as 0/1; a recycle count is not a score.
+    assert confidence["scores"]["has_clash"] == 0.0
+    assert "num_recycles" not in confidence["scores"]
+    assert confidence["execution"] == {"num_recycles": 10}
+
+
+def test_esmfold2_keeps_its_scale_note(tmp_path: Path) -> None:
+    confidence, _manifest, _fixture = _run(tmp_path, "esmfold2_e9_8reh")
+
+    assert confidence["score_notes"] == {
+        "plddt_scale": "0-1 here; the structures' b-factor column is 0-100"
+    }
+
+
+def test_the_validator_rejects_what_the_contract_forbids(tmp_path: Path) -> None:
+    confidence, _manifest, _fixture = _run(tmp_path, "boltz2_e9_8reh")
+    schema = load_schema("confidence")
+
+    unscaled = json.loads(json.dumps(confidence))
+    unscaled["summary"]["plddt"]["value"] = 101.0
+    assert errors(unscaled, schema)
+
+    zero_without_reason = json.loads(json.dumps(confidence))
+    zero_without_reason["summary"]["iptm"] = {"value": None}
+    assert errors(zero_without_reason, schema)
+
+    pooled = json.loads(json.dumps(confidence))
+    pooled["summary"]["ranking"]["scope"] = "across models"
+    assert errors(pooled, schema)
+
+    newer_minor = json.loads(json.dumps(confidence))
+    newer_minor["schema_version"] = "1.7"
+    newer_minor["a_field_added_in_1_7"] = {"anything": True}
+    assert errors(newer_minor, schema) == []
+
+    next_major = json.loads(json.dumps(confidence))
+    next_major["schema_version"] = "2.0"
+    assert errors(next_major, schema)

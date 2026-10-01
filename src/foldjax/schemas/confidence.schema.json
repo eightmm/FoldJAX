@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "foldjax/schemas/confidence.schema.json",
+  "title": "FoldJAX confidence.json",
+  "description": "One sample's confidence, written beside its structure at <run>/seed-<seed>_sample-<nn>/confidence.json. `scores` holds the model's own scalar scores under the model's own names, unchanged. `summary` maps pLDDT, pTM, ipTM and the model's ranking score onto common names and scales, recording for each the native source and the transform. Common fields standardize names and numerical scales. They retain model-specific definitions and calibration and do not establish comparable accuracy probabilities or authorize pooled cross-model ranking. Compatibility: schema_version is MAJOR.MINOR. A minor version only adds optional fields, so a reader for 1.x accepts any 1.y and ignores fields it does not know; removing, renaming or reinterpreting a field requires a new major version.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "model",
+    "seed",
+    "sample",
+    "native_rank",
+    "scores",
+    "scores_are_model_specific",
+    "summary",
+    "summary_note",
+    "execution"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^1\\.[0-9]+$"
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "seed": {
+      "type": "integer"
+    },
+    "sample": {
+      "description": "The diffusion index within this job and seed, for every model. Never a rank.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "native_rank": {
+      "description": "The rank a native writer put in its own file name (Protenix, OpenDDE); null for models whose native names carry no rank.",
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "job": {
+      "description": "The native job name, when the backend reports one: always for AlphaFold 3, and for Protenix and OpenDDE when the native input held several jobs. Several jobs nest their sample directories under <run>/<job>/.",
+      "type": "string"
+    },
+    "scores": {
+      "description": "Native scalar scores under native names. Boolean flags are encoded 0.0/1.0.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "number"
+      }
+    },
+    "scores_are_model_specific": {
+      "const": true
+    },
+    "summary": {
+      "type": "object",
+      "required": ["plddt", "ptm", "iptm", "ranking"],
+      "properties": {
+        "plddt": {
+          "oneOf": [
+            {"$ref": "#/$defs/plddt"},
+            {"$ref": "#/$defs/missing"}
+          ]
+        },
+        "ptm": {
+          "oneOf": [
+            {"$ref": "#/$defs/unit_interval"},
+            {"$ref": "#/$defs/missing"}
+          ]
+        },
+        "iptm": {
+          "oneOf": [
+            {"$ref": "#/$defs/unit_interval"},
+            {"$ref": "#/$defs/missing"}
+          ]
+        },
+        "ranking": {
+          "oneOf": [
+            {"$ref": "#/$defs/ranking"},
+            {"$ref": "#/$defs/missing"}
+          ]
+        }
+      }
+    },
+    "summary_note": {
+      "type": "string",
+      "minLength": 1
+    },
+    "execution": {
+      "description": "How the run executed, where a native summary reported it among its scores (e.g. num_recycles).",
+      "type": "object"
+    },
+    "score_notes": {
+      "description": "Notes the native writer attached to its scores, kept verbatim.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "missing": {
+      "description": "A common field the model does not report or that does not apply, with the reason. Never 0 by default.",
+      "type": "object",
+      "required": ["value", "reason"],
+      "properties": {
+        "value": {"type": "null"},
+        "reason": {"type": "string", "minLength": 1},
+        "key": {"type": "string"}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["value", "scale", "source", "transform", "granularity", "population"],
+      "properties": {
+        "value": {"type": "number"},
+        "scale": {"type": "string"},
+        "source": {"type": "string", "minLength": 1},
+        "transform": {"type": "string", "minLength": 1},
+        "granularity": {"type": "string", "minLength": 1},
+        "population": {"type": "string", "minLength": 1}
+      }
+    },
+    "plddt": {
+      "allOf": [{"$ref": "#/$defs/provenance"}],
+      "properties": {
+        "value": {"type": "number", "minimum": 0, "maximum": 100},
+        "scale": {"const": "0-100"}
+      }
+    },
+    "unit_interval": {
+      "allOf": [{"$ref": "#/$defs/provenance"}],
+      "properties": {
+        "value": {"type": "number", "minimum": 0, "maximum": 1},
+        "scale": {"const": "0-1"}
+      }
+    },
+    "ranking": {
+      "description": "The score this model orders its own samples by. Valid only within one model run.",
+      "type": "object",
+      "required": ["key", "value", "higher_is_better", "scope"],
+      "properties": {
+        "key": {"type": "string", "minLength": 1},
+        "value": {"type": "number"},
+        "higher_is_better": {"type": "boolean"},
+        "scope": {"const": "within one model run"},
+        "defined_by": {"enum": ["upstream", "foldjax"]}
+      }
+    }
+  }
+}

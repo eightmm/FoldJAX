@@ -190,7 +190,9 @@ where = ["src"]
 # The public surface is fully annotated. Without this marker a downstream
 # mypy/pyright sees `Any` for every FoldJAX symbol, which is worse than no
 # annotations at all: it silently disables checking at the boundary.
-"foldjax" = ["py.typed"]
+# The output contract (`confidence.json`, `foldjax_run.json`) ships as JSON
+# Schema so a reader can validate a run without importing FoldJAX's code.
+"foldjax" = ["py.typed", "schemas/*.json"]
 # Every vendored port ships its upstream's licence and attribution with it.
 "foldjax.models.opendde" = ["data/*.npz", "LICENSE", "NOTICE"]
 "foldjax.models.protenix" = ["data/*.npz", "LICENSE", "NOTICE"]

@@ -31,6 +31,7 @@ from foldjax._fsutil import sha256_file as _sha256_file
 from foldjax.portspec import PORTS, provider
 from foldjax.redaction import public_options
 from foldjax.schema import PredictionRequest, PredictionResult
+from foldjax.summary import SCHEMA_VERSION
 
 MANIFEST_NAME = "foldjax_run.json"
 #: Version of the fields that make a finished run safe to reuse.  Manifests
@@ -1222,7 +1223,11 @@ def describe_run(
             Path(str(best["structure_path"])), directory
         )
     manifest = {
+        # `schema` versions what makes a run safe to resume; `schema_version`
+        # is the published file contract (foldjax/schemas/run.schema.json),
+        # whose minor versions only add optional fields.
         "schema": MANIFEST_SCHEMA,
+        "schema_version": SCHEMA_VERSION,
         "artifact_paths": (
             "manifest-relative" if directory is not None else "absolute"
         ),
@@ -1261,9 +1266,10 @@ def describe_run(
             **(weights_stat or {}),
         },
         "seeds": list(request.resolved_seeds),
-        # "user", "upstream" (the model's fixed default), "random" (drawn,
-        # because upstream seeds nothing) or "foldjax". Not part of the resume
-        # identity: manifests written before it existed have no such key.
+        # One of `foldjax.schema.SEED_SOURCES`: "user", "upstream" (the model's
+        # fixed default), "random" (drawn, because upstream seeds nothing),
+        # "job" (the native file's modelSeeds) or "foldjax". Not part of the
+        # resume identity: manifests written before it existed have no such key.
         "seed_source": request.seed_source,
         # Whether the alignments were the caller's or FoldJAX searched for them
         # changes the prediction, so it belongs with the knobs, not in a log.

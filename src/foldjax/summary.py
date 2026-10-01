@@ -289,6 +289,17 @@ def plddt_source(model: str) -> str | None:
     return spec.key if spec is not None else None
 
 
+def load_schema(name: str) -> dict[str, Any]:
+    """The published JSON Schema ``"confidence"`` or ``"run"``."""
+    import json
+    from importlib.resources import files
+
+    if name not in {"confidence", "run"}:
+        raise ValueError(f"no FoldJAX schema named {name!r}; use 'confidence' or 'run'")
+    resource = files("foldjax").joinpath("schemas", f"{name}.schema.json")
+    return json.loads(resource.read_text(encoding="utf-8"))
+
+
 def mapping_table() -> list[dict[str, Any]]:
     """The per-model mapping, as rows a document or test can print."""
     from foldjax.output import _RANKING_SCORE
