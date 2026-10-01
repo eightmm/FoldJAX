@@ -151,6 +151,12 @@ def write_protenix_outputs(
     token_owners = (
         features.get("atom_to_token_idx") if atom_to_token is None else atom_to_token
     )
+    # Each confidence array crosses to the host once, not once per sample.
+    confidence_source = {
+        name: np.asarray(output[name])
+        for name in ("atom_plddt", *_CHAIN_ARRAYS, *(n for n, _ in _PAIR_ARRAYS))
+        if name in output
+    }
     paths: list[Path] = []
     for sample_index, rank in enumerate(ranks):
         cif_path = prediction_dir / f"{safe_name}_sample_{rank}.cif"
@@ -182,7 +188,7 @@ def write_protenix_outputs(
         paths.extend((cif_path, confidence_path))
         _write_confidence_arrays(
             cif_path,
-            output,
+            confidence_source,
             sample_index,
             coordinates.shape[0],
             metadata,
