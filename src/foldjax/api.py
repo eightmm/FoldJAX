@@ -1180,7 +1180,14 @@ def _predict_once(
                 # caller wrote one job of a multi-job file, so name that.
                 if request.source is None:
                     raise
-                raise type(error)(f"{request.source.describe()}: {error}") from error
+                # Not ``type(error)``: a ValueError subclass such as
+                # UnicodeDecodeError cannot be built from one message.
+                kind = (
+                    FileNotFoundError
+                    if isinstance(error, FileNotFoundError)
+                    else ValueError
+                )
+                raise kind(f"{request.source.describe()}: {error}") from error
         # Most backends have a dialect of their own and the materialised file
         # is in it. ESMFold2 does not -- its adapter reads the common schema
         # directly -- so for it the written file is still FoldJAX's, and
