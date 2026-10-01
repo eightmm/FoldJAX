@@ -8,7 +8,7 @@
     "jax_platforms": "cpu",
     "foldjax_home": "/home/jaemin/non-project/optimizing/foldjax/.foldjax",
     "cpu_affinity": 16,
-    "git_commit": "e4f95fa",
+    "git_commit": "35d85f9",
     "jax": "0.11.1",
     "jaxlib": "0.11.1"
   },
@@ -40,6 +40,7 @@
           5120
         ],
         "seed": 101,
+        "alphafold3_python_source": "9 of 86 files of the imported alphafold3 package differ between the arms (FoldJAX's vendored copy carries its own edits); run_alphafold.py itself byte-identical: True",
         "compared": "the featurised batch each arm handed ModelRunner.run_inference (input.npz + input-metadata.json)"
       },
       "headline": {
@@ -951,9 +952,9 @@
       "runtime_s": 0.1,
       "notes": "",
       "source": {
-        "git": "e4f95fa",
+        "git": "35d85f9",
         "cpu_affinity": 16,
-        "recorded": "2026-10-01 21:39:10"
+        "recorded": "2026-10-01 22:21:50"
       }
     },
     "S2_weights": {
@@ -979,9 +980,9 @@
       "runtime_s": 0.0,
       "notes": "",
       "source": {
-        "git": "e4f95fa",
+        "git": "35d85f9",
         "cpu_affinity": 16,
-        "recorded": "2026-10-01 21:39:10"
+        "recorded": "2026-10-01 22:21:50"
       }
     },
     "S3_trunk": {
@@ -992,9 +993,9 @@
       "runtime_s": null,
       "notes": "Not a stage-injection row: AlphaFold 3 is compared as two complete CPU runs (DeepMind's run_alphafold.py and FoldJAX's vendored AF3) on the same input and seed; no intermediate trunk or sampler boundary is taped or injected, so S3/S4 have no separate measurement.",
       "source": {
-        "git": "e4f95fa",
+        "git": "35d85f9",
         "cpu_affinity": 16,
-        "recorded": "2026-10-01 21:39:10"
+        "recorded": "2026-10-01 22:21:50"
       }
     },
     "S4_diffusion": {
@@ -1005,9 +1006,9 @@
       "runtime_s": null,
       "notes": "Not a stage-injection row: AlphaFold 3 is compared as two complete CPU runs (DeepMind's run_alphafold.py and FoldJAX's vendored AF3) on the same input and seed; no intermediate trunk or sampler boundary is taped or injected, so S3/S4 have no separate measurement.",
       "source": {
-        "git": "e4f95fa",
+        "git": "35d85f9",
         "cpu_affinity": 16,
-        "recorded": "2026-10-01 21:39:10"
+        "recorded": "2026-10-01 22:21:50"
       }
     },
     "S5_confidence": {
@@ -1036,6 +1037,7 @@
           5120
         ],
         "seed": 101,
+        "alphafold3_python_source": "9 of 86 files of the imported alphafold3 package differ between the arms (FoldJAX's vendored copy carries its own edits); run_alphafold.py itself byte-identical: True",
         "compared": "every numeric confidence leaf"
       },
       "headline": {
@@ -1303,9 +1305,9 @@
       "runtime_s": 0.0,
       "notes": "raw_model_outputs compares run_inference's padded outputs (predicted lDDT, PAE/PDE, distogram contact probabilities, the diffusion samples) before extraction.",
       "source": {
-        "git": "e4f95fa",
+        "git": "35d85f9",
         "cpu_affinity": 16,
-        "recorded": "2026-10-01 21:39:10"
+        "recorded": "2026-10-01 22:21:50"
       }
     },
     "S6_final": {
@@ -1334,11 +1336,12 @@
           5120
         ],
         "seed": 101,
+        "alphafold3_python_source": "9 of 86 files of the imported alphafold3 package differ between the arms (FoldJAX's vendored copy carries its own edits); run_alphafold.py itself byte-identical: True",
         "cli_route": "jctc-v2/e9/run_af3_deepmind.py (AF3CMP_CPU_SMOKE=1) vs foldjax.cli predict --option buckets=..., CIF coordinates"
       },
       "headline": {
         "metric": "max |dxyz| (A) over all samples / all-atom RMSD worst sample",
-        "value": "0 / 1.35e-14 (bitwise identical)"
+        "value": "0 / 0 (bitwise identical)"
       },
       "metrics": {
         "samples": 2,
@@ -1351,6 +1354,17 @@
         "max_abs_dxyz_angstrom": 0.0,
         "bitwise_identical": true,
         "masks_equal": true,
+        "alphafold3_source_files_differing": [
+          "constants/chemical_components.py",
+          "data/featurisation.py",
+          "data/pipeline.py",
+          "model/confidences.py",
+          "model/features.py",
+          "model/model.py",
+          "model/network/diffusion_head.py",
+          "structure/chemical_components.py",
+          "structure/parsing.py"
+        ],
         "cli_route": {
           "native": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/alphafold3/e9_8reh/cli-deepmind",
           "port": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/alphafold3/e9_8reh/cli-foldjax",
@@ -1381,9 +1395,9 @@
       "runtime_s": 0.0,
       "notes": "",
       "source": {
-        "git": "e4f95fa",
+        "git": "35d85f9",
         "cpu_affinity": 16,
-        "recorded": "2026-10-01 21:39:10"
+        "recorded": "2026-10-01 22:21:50"
       }
     }
   }

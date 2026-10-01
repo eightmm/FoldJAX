@@ -51,6 +51,16 @@ checkout's `git status` hash is now that of a clean tree
 (`e3b0c442...`, was `5a0e4e0e...` at the stored capture); the commit and the
 tracked-diff hash (empty) are unchanged.
 
+Other differences from the stored captures' jobs, none touching numerics:
+`PYTHONDONTWRITEBYTECODE=1` (the jobs ran as `sjm0775` against shared trees);
+no `oms run-ledger` wrapper; `--mem=40G` (was 48G; peak RSS 17.7 GB ESMFold2,
+4.8 GB OpenDDE); ESMFold2 ran from the snapshot directory rather than the
+checkout (imports come from `PYTHONPATH` under `-P` either way) and through
+`jctc/upstream-root/esmfold2-venv`, a symlink to the same torch build
+(`2.13.0+cu130`, git `cf30153c`) whose fork source is byte-identical (`.py`)
+to the `jctc-matrix-20260904` copy the stored capture used. OpenDDE's
+`stages.npz` sits beside `raw.npz`, not under `torch/` with the tape.
+
 Port seams the injections use (all counted; a seam that never fires fails the
 stage): ESMFold2 `models/model.py` module globals `inputs_embedding`,
 `relative_position_encoding`, `_token_bonds_encoding`, `folding_trunk` (only

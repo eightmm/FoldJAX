@@ -23,7 +23,9 @@ sampler and head outputs; S1, S2 and S6 stay on the stored capture.
 
 The `alphafold3` row is not a port against a GPU capture. It runs DeepMind's
 `run_alphafold.py` (v3.0.4, archived checkout `deepmind-af3-85c4d20`) and
-FoldJAX's vendored AlphaFold 3 side by side on CPU on 8REH (129 tokens; seed
+FoldJAX's vendored AlphaFold 3 (a copy of that source with FoldJAX's own edits:
+9 of the 86 package files differ; `run_alphafold.py` itself is byte-identical)
+side by side on CPU on 8REH (129 tokens; seed
 101, 2 samples, 1 recycle, 200 steps, XLA attention, the common FoldJAX JAX
 environment, FoldJAX given DeepMind's bucket list), through
 `bench/af3_closure_capture.py --cpu`, and compares the featurised batch, the
@@ -54,7 +56,7 @@ change. The ESMFold2 and OpenDDE records were rerun in full on 2026-10-01 from
 code `e4f95fa`: the ESMFold2 record names `c20f889` (a result file on top) and
 the OpenDDE record `92779d4-dirty`, the head when its run ended (result files
 and an uncommitted edit to this preamble on top); the AlphaFold 3 record names
-`e4f95fa`.
+`35d85f9`.
 
 Cases:
 
@@ -88,7 +90,7 @@ Cases:
 | alphafold3 | S3_trunk | not_captured |  |  | Not a stage-injection row: AlphaFold 3 is compared as two complete CPU runs (DeepMind's run_alphafold.py and FoldJAX's vendored AF3) on the same input and seed; no intermediate trunk or sampler boundary is taped or injected, so S3/S4 have no separate measurement. |  |
 | alphafold3 | S4_diffusion | not_captured |  |  | Not a stage-injection row: AlphaFold 3 is compared as two complete CPU runs (DeepMind's run_alphafold.py and FoldJAX's vendored AF3) on the same input and seed; no intermediate trunk or sampler boundary is taped or injected, so S3/S4 have no separate measurement. |  |
 | alphafold3 | S5_confidence | measured | max \|d\| atom pLDDT / PAE / pTM; leaves bitwise identical | 0 / 0 / 0; 52/52 | backend=cpu (JAX_PLATFORMS=cpu, both arms); matmul_precision=AF3 default (bfloat16: 'all'; not pinned) | 0.0 |
-| alphafold3 | S6_final | measured | max \|dxyz\| (A) over all samples / all-atom RMSD worst sample | 0 / 1.35e-14 (bitwise identical) | backend=cpu (JAX_PLATFORMS=cpu, both arms); matmul_precision=AF3 default (bfloat16: 'all'; not pinned) | 0.0 |
+| alphafold3 | S6_final | measured | max \|dxyz\| (A) over all samples / all-atom RMSD worst sample | 0 / 0 (bitwise identical) | backend=cpu (JAX_PLATFORMS=cpu, both arms); matmul_precision=AF3 default (bfloat16: 'all'; not pinned) | 0.0 |
 | boltz2 | S1_features | measured | min exact-match fraction (categorical) / max \|d\| (float) | 1.0 / 13 (ref_pos after per-conformer Kabsch: 1.4e-06) | backend=cpu; matmul_precision=highest | 1.6 |
 | boltz2 | S2_weights | measured | max \|stored - map(native)\| over groups (storage dtype) | 0 | backend=cpu (host NumPy; no model run) | 95.1 |
 | boltz2 | S3_trunk | measured | relative RMS single (s) / pair (z) | 1.297e-03 / 2.736e-03 | backend=cpu; trunk_dtype=bfloat16 parameters, float32 pair residual (native bf16-mixed AMP match; parity-subset pin); matmul_precision=highest | 66.9 |
