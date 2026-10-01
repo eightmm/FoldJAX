@@ -9,7 +9,44 @@ The `0.1.0` values still present in a few model-package `__init__.py` files
 identify the JAX port code, not the upstream model or checkpoint. They must not
 be used as the model identity of an experiment.
 
-## Latest validation checkpoint (2026-09-05)
+## Stage-level parity (current)
+
+[`bench/stage_parity_results/TABLE.md`](../bench/stage_parity_results/TABLE.md)
+is the current port-against-upstream record. It compares each of the five
+JAX ports with a native capture of its upstream at six stages, on CPU XLA with
+float32 matmuls at `highest`:
+
+| stage | what is compared |
+|---|---|
+| S1 features | the featurized input arrays |
+| S2 weights | the converted parameters against the native checkpoint |
+| S3 trunk | single and pair representations, from the same input and random tape |
+| S4 diffusion | the sampler's coordinates, with the native trunk injected and the same noise tape |
+| S5 confidence | pLDDT, PAE and pTM, with the native trunk and coordinates injected |
+| S6 final | the whole prediction under the same tape: all-atom and CA RMSD per sample |
+
+All six stages are measured for Boltz-2, ESMFold2, OpenDDE, OpenFold3 and
+Protenix. The AlphaFold 3 row is different in kind: DeepMind's
+`run_alphafold.py` and FoldJAX's vendored copy run side by side on CPU on one
+input, so it has S1, S2, S5 and S6 and no separate trunk or sampler stage.
+[`MISSING.md`](../bench/stage_parity_results/MISSING.md) lists what the table
+still does not measure, including the featurizer draws that are not replayed
+and the CPU-versus-GPU confound shared by every S3-S6 cell.
+
+Each row runs the precision policy of the capture it is compared with, which
+is upstream's (the per-stage `condition` column records it): Boltz-2 with a
+float32 pair residual, OpenDDE and OpenFold3 with a float32 trunk, Protenix
+with its confidence head float32. So the table certifies the port at
+upstream's precision; FoldJAX's own reduced-precision defaults (README,
+"Precision") are justified separately, by the structure-level measurements in
+[engineering-notes.md](engineering-notes.md#which-precision-each-model-runs).
+The table is generated from the per-model JSON files beside it; quote it
+rather than copying its numbers here.
+
+The sections below are dated records. Where one of them disagrees with the
+stage table, the stage table is the later measurement.
+
+## Validation checkpoint (2026-09-05)
 
 Boltz update (2026-09-07): [native conditioning and pair-normalization
 repairs](boltz-trunk-pair-norm-2026-09-07.md) are now in the installable code.
@@ -64,7 +101,7 @@ statistics below are historical only and are excluded from this parity gate.
 
 | FoldJAX model | upstream source implemented | released parameter target | advertised boundary |
 |---|---|---|---|
-| `alphafold3` | AlphaFold 3 `3.0.4`, commit `85c4d20505fd5cef05eac22b534d4e793971ae69` | caller-supplied `af3.bin` | vendored upstream implementation with an audited eight-file FoldJAX runtime patch set; not a separate model port |
+| `alphafold3` | AlphaFold 3 `3.0.4`, commit `85c4d20505fd5cef05eac22b534d4e793971ae69` | caller-supplied `af3.bin` | vendored upstream implementation with an audited nine-file FoldJAX patch set (`provenance.py` `UPSTREAM_PATCHES`); not a separate model port |
 | `boltz2` | package metadata `2.2.1`, commit `b1ebfc46ecf57f5414e0d1a6f9027bbb122c53bc` | `boltz2_conf.ckpt`, `boltz2_aff.ckpt`, and `mols.tar` at Hugging Face revision `6fdef46d763fee7fbb83ca5501ccceff43b85607` | full JAX inference and preprocessing |
 | `esmfold2` | untagged Biohub Transformers snapshot `ef32577f55da19a4989cd7b22e004dc43a4998cb` | ESMFold2 revision `8fc3ff471022fdce52c77030685eb775de0c00a3` plus ESMC-6B revision `45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a` | JAX structure, ESMC inference, and all-biomolecule common preprocessing |
 | `opendde` | OpenDDE `1.1.1`, commit `ddfa1df8aff1babf1fddac4247b7d2351bd0ce9f` | `released` (`opendde.pt`) and opt-in `abag` (`opendde_abag.pt`) at Hugging Face revision `eddd563ce96571f784012edd8f045181c8f8627d` | full JAX inference and preprocessing, including the 1.1.1 OXT/ion behavior and opt-in RNA-MSA/template paths |
@@ -111,9 +148,9 @@ is a separate per-model claim:
 
 | model target | real-weight coverage beyond the 7/7 matrix | upstream/port parity evidence | remaining boundary |
 |---|---|---|---|
-| AlphaFold 3 3.0.4 | mapped 9FM7 template completed | complete vendored-tree comparison against `85c4d205`: every carried upstream file is exact except the eight declared runtime patches | upstream code is vendored rather than independently reimplemented; the user-supplied weight file remains experiment-specific |
+| AlphaFold 3 3.0.4 | mapped 9FM7 template completed | complete vendored-tree comparison against `85c4d205`: every carried upstream file is exact except the declared runtime patches (eight at this date, nine now) | upstream code is vendored rather than independently reimplemented; the user-supplied weight file remains experiment-specific |
 | Boltz-2 2.2.1 | unmapped 9FM7 template and the real affinity head completed | 77 clean-upstream checkpoint/component/feature gates passed; on the all-entity input, a shared 20-step noise tape gave `0.194365 Å` raw all-atom RMSD and trunk correlations `>=0.99999992` | the 20-step parity run is a numerical port gate, not the released 200-step accuracy schedule |
-| ESMFold2 | no template or affinity head exists | creator-source component suite passed; rotary tables are bit-identical; the separately versioned `transformers` 5.16.1 atom encoder passed on its pinned HF re-export; FoldJAX/upstream completed 6/6 real-weight protein cells at 128, 488, and 976 residues | the six end-to-end cells are independent stochastic samples, not matched-coordinate parity |
+| ESMFold2 | no template or affinity head exists | creator-source component suite passed; rotary tables are bit-identical; the separately versioned `transformers` 5.16.1 atom encoder passed on its pinned HF re-export; FoldJAX/upstream completed 6/6 real-weight protein cells at 128, 488, and 976 residues | the six end-to-end cells are independent stochastic samples, not matched-coordinate parity; matched-tape parity is now in the stage table above |
 | OpenDDE 1.1.1 | released 7/7, ABAG all-entity, and mapped 9FM7 template completed | across ten protein/DNA/RNA/CCD/SMILES/ion/RNA-MSA/template cases, all 60 shared upstream feature arrays per case were bit-identical; ABAG with the same MSA and random tape gave `0.081714 Å` raw all-atom RMSD | template parity requires the recorded native Kalign 3.3.5 executable; base and ABAG are distinct checkpoints |
 | OpenFold3 0.5.0/OpenBind | native-pipeline 9FM7 template completed | seven exact-v0.5 real-target/preprocessing gates covered DNA, protein, RNA/metal, protein/ligand, and direct-template geometry; the current-tree 1BNA shared-tape run gave `5.78e-6 Å` all-atom Kabsch RMSD | per-job common-schema templates remain unsupported because v0.5 constructs them in its native pipeline |
 | Protenix 2.0.0 / v2 | mapped 9FM7 template completed | 75 local modality/search/feature gates passed; the all-entity shared-noise run gave `0.016047 Å` raw and `0.015961 Å` Kabsch all-atom RMSD with trunk correlations `>=0.99999961` | two optional tests need publisher example/database files absent from the repository; the equivalent 9FM7 template path was exercised with pinned assets |
@@ -378,7 +415,7 @@ FoldJAX carries AlphaFold 3 `v3.0.4` at upstream commit
 The upstream package fallback still says `3.0.2` at that tag because the real
 version is generated from Git; FoldJAX's explicit provenance constant is the
 release identity. Every carried Python/C++ source file is byte-identical to the
-commit except the eight paths listed in
+commit except the nine paths listed in
 [`provenance.py`](../src/foldjax/models/alphafold3/provenance.py), and the suite
 compares the whole vendored tree against a clean upstream checkout.
 FoldJAX cannot distribute, fetch, or choose a parameter release for the user.
