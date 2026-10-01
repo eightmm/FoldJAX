@@ -69,6 +69,7 @@ uv run foldjax predict --model boltz2 --sequence MKTAYIAKQRQISFVK --ligand ATP
 uv run foldjax predict --model protenix --input target.fasta   # one chain per record
 uv run foldjax predict --model boltz2   --input 1abc.pdb       # re-fold a deposition
 uv run foldjax predict --model boltz2   --input jobs/          # a directory is a batch
+uv run foldjax predict --model boltz2   --input jobs.yaml      # so is a {jobs: [...]} file
 ```
 
 A `.pdb` or `.mmcif` file is read for its **chemistry, never its coordinates**:
@@ -77,6 +78,56 @@ ligands, and the point is to predict the positions again. `.cif` needs the
 explicit `structure:1abc.cif` spelling, because that suffix is also a perfectly
 good name for a job document. A residue with no one-letter code is refused by
 name rather than dropped — express it as a `modifications` entry instead.
+
+### Several jobs in one file
+
+A batch can also be one file. A mapping with a single `jobs` key holds a list
+of ordinary common-schema jobs, in JSON or YAML:
+
+```yaml
+jobs:
+  - name: kinase
+    entities:
+      - {type: protein, id: A, sequence: MKTAYIAKQR, unpaired_msa: kinase.a3m}
+  - name: kinase_atp
+    entities:
+      - {type: protein, id: A, sequence: MKTAYIAKQR, unpaired_msa: kinase.a3m}
+      - {type: ligand, id: L, ccd: ATP}
+```
+
+```bash
+uv run foldjax predict --model boltz2 protenix --input jobs.yaml --msa none
+```
+
+It runs exactly as a directory holding `kinase.json` and `kinase_atp.json`
+would: each job into `<out>/<model>/<job name>`, the same native input, the
+same `--resume` and `--keep-going` behaviour, one `foldjax_run.json` per run.
+Each job is written to `$FOLDJAX_HOME/runtime/jobs/split/<digest>/<name>.json`
+and run from there, with its relative `unpaired_msa`, `paired_msa` and template
+paths made absolute against the jobs file's directory, so they name the files
+they name in the jobs file. The digest is of that job alone: editing or moving
+one job reruns that job under `--resume`, not the others.
+
+Every job needs a `name`, and the names must be unique within the file, also
+after they are made safe for a directory name (`a/b` and `a_b` collide); the
+file is refused otherwise, naming both jobs. A job's own content is checked
+when it runs, per model, as a file of its own would be, and the error names the
+job by file, 0-based index and name (`jobs.yaml jobs[1] ('kinase_atp'): ...`).
+`foldjax_run.json` records the generated document under `input.path` and the
+file you wrote under `input.source` (`path`, `resolved_path`, `sha256`,
+`index`, `name`); `foldjax_failures.json` and `foldjax plan` carry the same
+`source`. It is provenance only and not part of the resume identity.
+
+The container is a mapping on purpose. A top-level list is already a native
+shape -- AlphaFold Server's job list and the Protenix/OpenDDE list of jobs --
+and `--input-format auto` treats every top-level list as native. No native
+dialect has a top-level `jobs` key (AlphaFold 3: `name`, `sequences`,
+`modelSeeds`; Boltz: `version`, `sequences`; OpenFold3: `seeds`, `queries`),
+so the one document cannot be mistaken for another; any other top-level key is
+refused. `--input-format native` leaves the file whole. Because a jobs file is
+several runs, the Python API takes it as `inputs=("jobs.yaml",)`, the spelling
+a directory takes; `input=` refuses it and says so. `foldjax models
+--for-input` reads one job and does not accept a jobs file.
 
 `--sequence`/`--dna`/`--rna`/`--ligand`/`--ligand-smiles` and FASTA files are
 turned into an ordinary common-schema job under `$FOLDJAX_HOME/runtime/jobs/`

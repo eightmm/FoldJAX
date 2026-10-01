@@ -29,6 +29,17 @@ unless it says so here, in its own paragraph.
   model/input/seed/sample from the canonical files alone, with failures as
   rows, structure SHA-256 verification and each run's ignored inputs.
   Aggregation stays within one (input, model, configuration).
+- **Several common-schema jobs in one file.** A `{"jobs": [{job}, ...]}`
+  document, JSON or YAML, runs exactly as a directory of those jobs would:
+  `foldjax predict --input jobs.yaml` and `PredictionRequest(inputs=
+  ("jobs.yaml",))` run each job into `<out>/<model>/<job name>`, with the same
+  native input, resume and failure handling. Names must be unique within the
+  file; errors name the job by file, index and name. The run manifest records
+  the file and the job's index under `input.source`, as do
+  `foldjax_failures.json` and `foldjax plan`; `PredictionRequest.source` and
+  `foldjax.JobSource` carry it. A mapping rather than a top-level list,
+  because a list is already the AlphaFold Server and Protenix/OpenDDE native
+  shape.
 - **`foldjax compare DIR`**: pairwise CA RMSD and coverage between every
   structure of each input, with the residue correspondence used, as JSON and
   CSV (`foldjax.compare_directory`, `foldjax.residue_correspondence`).

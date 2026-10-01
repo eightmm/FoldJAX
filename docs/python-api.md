@@ -52,7 +52,12 @@ several -- the plural spelling fans out, nothing else changes. `models` x
 `output_dir/<model>/<input stem>` subtree; `seeds` reruns each under every
 seed. Model aliases are canonicalized before the path is chosen, and two input
 files with the same stem are refused if they would collide. One result comes
-back per model/input run, in declaration order:
+back per model/input run, in declaration order. A `{"jobs": [...]}` file in
+`inputs` counts as its jobs, exactly as a directory counts as its files: each
+runs into `output_dir/<model>/<job name>` from a generated single-job document,
+with `PredictionRequest.source` (a `JobSource`: file, 0-based `index`, `name`)
+naming where it came from; `input=` refuses such a file and names the plural
+spelling. See [input](input.md#several-jobs-in-one-file):
 
 ```python
 results = predict(

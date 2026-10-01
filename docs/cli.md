@@ -94,6 +94,12 @@ Batches get two flags that only make sense per model/input pair:
 uv run foldjax predict --model boltz2 --input jobs/ --resume --keep-going
 ```
 
+A file of several common-schema jobs (`{"jobs": [...]}`, see
+[input](input.md#several-jobs-in-one-file)) is the same batch as a directory
+of those jobs: `--input jobs.yaml` runs each job into `<out>/<model>/<job
+name>`, resumes and fails per job, and `plan`, `foldjax_run.json` and
+`foldjax_failures.json` name the file and the job's index under `source`.
+
 `--resume` skips a run only when its finished `foldjax_run.json` matches the
 exact request, input, checkpoint and referenced-local-asset stat/tree
 identities, and the persisted structure/representation artifacts. Any relevant
