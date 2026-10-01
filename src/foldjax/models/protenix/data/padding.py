@@ -220,8 +220,8 @@ def pad_protenix_features(
     target_template = resolve_axis(
         actual_template, config, "templates", minimum=storage_template
     )
-    # The native featurizer always materializes four templates, including
-    # masked empty slots. Adding a fifth slot is not neutral: the template
+    # The native featurizer always emits four template slots, including masked
+    # empty ones. Adding a fifth slot is not neutral: the template
     # module divides by its storage depth. Refuse it instead of changing the
     # released averaging rule behind an "exact" public pin.
     if target_template != storage_template:

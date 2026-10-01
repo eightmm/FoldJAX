@@ -285,6 +285,15 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **Protenix and OpenDDE no longer fill host memory with template-free
+  geometry.** A query with no template hits used to allocate all four template
+  slots' quadratic geometry densely on the host -- 30 GB at 6,568 tokens --
+  only to drop it before the device saw it, so an 8-chain 6,568-token Protenix
+  job was killed by a 40 GiB host limit during featurization. Featurizing that
+  job now peaks at 1.0 GiB (3,012 tokens: 9.4 to 2.7 GiB). OpenDDE now also
+  replaces the all-zero geometry with Protenix's scalar marker instead of
+  copying it to the device: 3.2 GB fewer arguments at 3,012 tokens and 5.9 GB
+  at 4,100. Predictions are bitwise unchanged.
 - **OpenFold3 keeps precomputed paired MSA rows.** The bundled OpenFold3 data
   code predated v0.5.0 commit 1aaf2623 and never set the paired row count, so
   a `paired_msa` was dropped without an error: a two-chain probe gave 2 MSA
