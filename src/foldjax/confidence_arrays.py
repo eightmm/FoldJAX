@@ -150,6 +150,15 @@ INDEX_ARRAYS = frozenset(
     }
 )
 
+_DETAILS_REASON = (
+    "computed inside the confidence head, but returned by the compiled program "
+    "only with --option {option} (a different executable)"
+)
+_NO_CHAIN_PAIR_PAE = (
+    "OpenDDE's confidence path runs with include_chain_pair_pae=False, so the "
+    "program never computes it"
+)
+
 #: Per model: the confidence arrays a default run writes, the ones an existing
 #: native option adds, and why the rest are absent. `foldjax capabilities`
 #: reports `default`; the npz of each sample records exactly what it holds.
@@ -216,13 +225,11 @@ AVAILABILITY: dict[str, dict[str, Any]] = {
         ),
         "opt_in": {"include_raw=true": ("pae", "pde", "contact_probs")},
         "unavailable": {
-            "pae": (
-                "returned by the compiled program only with "
-                "--option include_raw=true (a different executable)"
-            ),
-            "chain_pair_pae_min": (
-                "OpenDDE's confidence path runs with include_chain_pair_pae=False"
-            ),
+            "pae": _DETAILS_REASON.format(option="include_raw=true"),
+            "pde": _DETAILS_REASON.format(option="include_raw=true"),
+            "contact_probs": _DETAILS_REASON.format(option="include_raw=true"),
+            "chain_pair_pae_min": _NO_CHAIN_PAIR_PAE,
+            "chain_pair_pae_mean": _NO_CHAIN_PAIR_PAE,
         },
     },
     "openfold3": {
@@ -254,14 +261,11 @@ AVAILABILITY: dict[str, dict[str, Any]] = {
             "chain_pair_pae_mean",
             "chain_pair_pae_min",
         ),
-        "opt_in": {
-            "output_format=npz|both": ("pae", "pde", "contact_probs"),
-        },
+        "opt_in": {"output_format=both": ("pae", "pde", "contact_probs")},
         "unavailable": {
-            "pae": (
-                "returned by the compiled program only with "
-                "--option output_format=npz or both (a different executable)"
-            ),
+            "pae": _DETAILS_REASON.format(option="output_format=both"),
+            "pde": _DETAILS_REASON.format(option="output_format=both"),
+            "contact_probs": _DETAILS_REASON.format(option="output_format=both"),
         },
     },
 }
