@@ -146,7 +146,7 @@ above pins exactly that, because a row that compared two precisions would not
 be a comparison.
 
 **ESMFold2 runs its trunk under bfloat16 autocast, as upstream does.** The
-released fork (`transformers-esmfold2`, `modeling_esmfold2.py`) wraps the input
+released fork (Biohub `transformers-esmfold2` at `ef32577`, `modeling_esmfold2.py`) wraps the input
 embedder, pair initialisation, language-model encoder, folding trunk and coda
 in one CUDA bfloat16 autocast region, and its run metadata records bfloat16
 inputs on every trunk loop. The port reproduces that region operation by
