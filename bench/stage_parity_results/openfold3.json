@@ -1,0 +1,894 @@
+{
+  "model": "openfold3",
+  "capture": "/home/jaemin/non-project/optimizing/foldjax-bench/openbind-master-native-20260909/protein_rna_1urn/native-cueq",
+  "environment": {
+    "host": "master",
+    "python": "3.13.15",
+    "omp_num_threads": "16",
+    "jax_platforms": "cpu",
+    "foldjax_home": "/home/jaemin/non-project/optimizing/foldjax/.foldjax",
+    "cpu_affinity": 16,
+    "git_commit": "a2c3fef",
+    "jax": "0.11.1",
+    "jaxlib": "0.11.1"
+  },
+  "wall_s": 691.0,
+  "stages": {
+    "S1_features": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "port_featurizer": "foldjax.models.openfold3.data.featurize.featurize_query (vendored NumPy featurizer), re-run in this checkout",
+        "input_document": "/home/jaemin/non-project/optimizing/foldjax-bench/upstream-default-multimodal-n5-20260904/work/protein_rna_1urn/foldjax/openfold3/inputs/openfold3_input.json",
+        "seed": 101,
+        "native": "input.npz (upstream OpenFold3 v0.5.0 batch)",
+        "name_mapping": "identical names; every key both sides emit",
+        "random_draws": "NOT replayed: reference conformers come from RDKit ETKDGv3 embedding (upstream core/data/primitives/structure/conformer.py:_compute_conformer), a preprocessing draw this capture did not tape; ref_pos is therefore expected to differ beyond a rigid motion"
+      },
+      "headline": {
+        "metric": "min exact-match fraction (categorical) / max |d| (float)",
+        "value": "1.0 / 11 (ref_pos after per-conformer Kabsch: 3.9)"
+      },
+      "metrics": {
+        "summary": {
+          "arrays_compared": 35,
+          "categorical_arrays": 22,
+          "float_arrays": 13,
+          "shape_mismatches": [],
+          "min_exact_match_fraction": 1.0,
+          "arrays_not_exact": [],
+          "max_float_max_abs": 11.033039093017578,
+          "max_float_relative_rms": 1.3756496863054222
+        },
+        "only_in_port": [
+          "max_atom_per_token_mask"
+        ],
+        "only_in_native": [
+          "num_paired_seqs",
+          "repeated_sample",
+          "valid_sample"
+        ],
+        "ref_pos_max_abs_after_per_conformer_kabsch": 3.941227619683304,
+        "arrays": {
+          "asym_id": {
+            "port_shape": [
+              1,
+              118
+            ],
+            "native_shape": [
+              1,
+              118
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "atom_mask": {
+            "port_shape": [
+              1,
+              1225
+            ],
+            "native_shape": [
+              1,
+              1225
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "atom_to_token_index": {
+            "port_shape": [
+              1,
+              1225
+            ],
+            "native_shape": [
+              1,
+              1225
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "cyclic_mask": {
+            "port_shape": [
+              1,
+              118
+            ],
+            "native_shape": [
+              1,
+              118
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "deletion_mean": {
+            "port_shape": [
+              1,
+              118
+            ],
+            "native_shape": [
+              1,
+              118
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "deletion_value": {
+            "port_shape": [
+              1,
+              10273,
+              118
+            ],
+            "native_shape": [
+              1,
+              10273,
+              118
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 1.1920928955078125e-07,
+            "relative_rms": 3.609449548005436e-08
+          },
+          "entity_id": {
+            "port_shape": [
+              1,
+              118
+            ],
+            "native_shape": [
+              1,
+              118
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "has_deletion": {
+            "port_shape": [
+              1,
+              10273,
+              118
+            ],
+            "native_shape": [
+              1,
+              10273,
+              118
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "is_atomized": {
+            "port_shape": [
+              1,
+              118
+            ],
+            "native_shape": [
+              1,
+              118
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "is_dna": {
+            "port_shape": [
+              1,
+              118
+            ],
+            "native_shape": [
+              1,
+              118
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "is_ligand": {
+            "port_shape": [
+              1,
+              118
+            ],
+            "native_shape": [
+              1,
+              118
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "is_protein": {
+            "port_shape": [
+              1,
+              118
+            ],
+            "native_shape": [
+              1,
+              118
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "is_rna": {
+            "port_shape": [
+              1,
+              118
+            ],
+            "native_shape": [
+              1,
+              118
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "msa": {
+            "port_shape": [
+              1,
+              10273,
+              118,
+              32
+            ],
+            "native_shape": [
+              1,
+              10273,
+              118,
+              32
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "msa_mask": {
+            "port_shape": [
+              1,
+              10273,
+              118
+            ],
+            "native_shape": [
+              1,
+              10273,
+              118
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "num_atoms_per_token": {
+            "port_shape": [
+              1,
+              118
+            ],
+            "native_shape": [
+              1,
+              118
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "profile": {
+            "port_shape": [
+              1,
+              118,
+              32
+            ],
+            "native_shape": [
+              1,
+              118,
+              32
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "ref_atom_name_chars": {
+            "port_shape": [
+              1,
+              1225,
+              4,
+              64
+            ],
+            "native_shape": [
+              1,
+              1225,
+              4,
+              64
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "ref_charge": {
+            "port_shape": [
+              1,
+              1225
+            ],
+            "native_shape": [
+              1,
+              1225
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "ref_element": {
+            "port_shape": [
+              1,
+              1225,
+              119
+            ],
+            "native_shape": [
+              1,
+              1225,
+              119
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "ref_mask": {
+            "port_shape": [
+              1,
+              1225
+            ],
+            "native_shape": [
+              1,
+              1225
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "ref_pos": {
+            "port_shape": [
+              1,
+              1225,
+              3
+            ],
+            "native_shape": [
+              1,
+              1225,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 11.033039093017578,
+            "relative_rms": 1.3756496863054222
+          },
+          "ref_space_uid": {
+            "port_shape": [
+              1,
+              1225
+            ],
+            "native_shape": [
+              1,
+              1225
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "residue_index": {
+            "port_shape": [
+              1,
+              118
+            ],
+            "native_shape": [
+              1,
+              118
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "restype": {
+            "port_shape": [
+              1,
+              118,
+              32
+            ],
+            "native_shape": [
+              1,
+              118,
+              32
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "start_atom_index": {
+            "port_shape": [
+              1,
+              118
+            ],
+            "native_shape": [
+              1,
+              118
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "sym_id": {
+            "port_shape": [
+              1,
+              118
+            ],
+            "native_shape": [
+              1,
+              118
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "template_backbone_frame_mask": {
+            "port_shape": [
+              1,
+              4,
+              118
+            ],
+            "native_shape": [
+              1,
+              4,
+              118
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_distogram": {
+            "port_shape": [
+              1,
+              4,
+              118,
+              118,
+              39
+            ],
+            "native_shape": [
+              1,
+              4,
+              118,
+              118,
+              39
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_pseudo_beta_mask": {
+            "port_shape": [
+              1,
+              4,
+              118
+            ],
+            "native_shape": [
+              1,
+              4,
+              118
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_restype": {
+            "port_shape": [
+              1,
+              4,
+              118,
+              32
+            ],
+            "native_shape": [
+              1,
+              4,
+              118,
+              32
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "template_unit_vector": {
+            "port_shape": [
+              1,
+              4,
+              118,
+              118,
+              3
+            ],
+            "native_shape": [
+              1,
+              4,
+              118,
+              118,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "token_bonds": {
+            "port_shape": [
+              1,
+              118,
+              118
+            ],
+            "native_shape": [
+              1,
+              118,
+              118
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "token_index": {
+            "port_shape": [
+              1,
+              118
+            ],
+            "native_shape": [
+              1,
+              118
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "token_mask": {
+            "port_shape": [
+              1,
+              118
+            ],
+            "native_shape": [
+              1,
+              118
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          }
+        }
+      },
+      "runtime_s": 5.0,
+      "notes": "",
+      "source": {
+        "git": "a2c3fef",
+        "cpu_affinity": 16,
+        "recorded": "2026-10-01 21:06:45"
+      }
+    },
+    "S2_weights": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu (host NumPy; no model run)",
+        "native_checkpoint": "/home/jaemin/non-project/optimizing/foldjax/.foldjax/weights/openfold3/of3-ob-2025-06-30-174k.pt",
+        "native_sha256": "bd43301c011d5f87580d3e8b548658869433e4488399feb03035ba248f8e29e4",
+        "converted": "none stored: the runtime maps the .pt in-process (.foldjax-conversion.json names the .pt itself), so stored == mapped",
+        "mapper": "foldjax.models.openfold3.bridge.torch_mapping.map_inference_params (after prune_sample_diffusion_aliases)",
+        "reader": "foldjax.torch_archive via bridge.checkpoint.load_checkpoint"
+      },
+      "headline": {
+        "metric": "mapped floats absent from checkpoint / max distance (no stored file)",
+        "value": "0 / 0.0"
+      },
+      "metrics": {
+        "mapped_leaves": 596,
+        "coverage_direct_reads": {
+          "checkpoint_tensors": 4149,
+          "tensors_read": 4149,
+          "checkpoint_elements": 368294300,
+          "elements_read": 368294300,
+          "unread_tensors": [],
+          "unread_tensor_count": 0
+        },
+        "value_containment_port_in_checkpoint": {
+          "checkpoint_float_elements": 368294300,
+          "port_float_elements": 368294300,
+          "checkpoint_non_float_elements": 0,
+          "port_non_float_elements": 0,
+          "port_values_absent_from_checkpoint": 0,
+          "max_distance_to_nearest_checkpoint_value": 0.0,
+          "multiplicity_excess": 0
+        },
+        "value_multiset_checkpoint_vs_port": {
+          "native_elements": 368294300,
+          "port_elements": 368294300,
+          "native_non_float_elements": 0,
+          "port_non_float_elements": 0,
+          "comparable": true,
+          "nonfinite_mismatch": 0,
+          "sorted_max_abs": 0.0
+        }
+      },
+      "runtime_s": 69.5,
+      "notes": "No converted artifact exists for OpenFold3; the stage reports coverage of the checkpoint and that the mapped parameters are a rearrangement of the checkpoint values.",
+      "source": {
+        "git": "a2c3fef",
+        "cpu_affinity": 16,
+        "recorded": "2026-10-01 21:06:45"
+      }
+    },
+    "S3_trunk": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "input": "native input.npz (upstream featurizer output; core-only)",
+        "msa": "native per-cycle MSA row draws (tape randint/randperm) replayed",
+        "trunk_dtype": "float32 (native 32-true)",
+        "triangle_kernel": "xla (native ran cuEq; no CPU cuEq)",
+        "recycles": 4
+      },
+      "headline": {
+        "metric": "relative RMS single / pair",
+        "value": "6.263e-05 / 5.587e-04"
+      },
+      "metrics": {
+        "arrays": {
+          "single_inputs": {
+            "relative_rms": 0.0001891606195324861,
+            "max_abs": 0.0026259422302246094,
+            "native_max_abs_value": 8.963994979858398
+          },
+          "single": {
+            "relative_rms": 6.26276929812063e-05,
+            "max_abs": 19.328125,
+            "native_max_abs_value": 160182.984375
+          },
+          "pair": {
+            "relative_rms": 0.0005586948926616589,
+            "max_abs": 5.013671875,
+            "native_max_abs_value": 10069.759765625
+          }
+        },
+        "parity_subset_metric_max_abs_over_max_native": {
+          "single_inputs": 0.0002929432954977057,
+          "single": 0.00012066278497316204,
+          "pair": 0.0004978938913830996
+        }
+      },
+      "runtime_s": 47.3,
+      "notes": "",
+      "source": {
+        "git": "a2c3fef",
+        "cpu_affinity": 16,
+        "recorded": "2026-10-01 21:06:45"
+      }
+    },
+    "S4_diffusion": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "input": "native input.npz (upstream featurizer output; core-only)",
+        "msa": "native per-cycle MSA row draws (tape randint/randperm) replayed",
+        "trunk_dtype": "n/a (native trunk injected)",
+        "triangle_kernel": "xla (native ran cuEq; no CPU cuEq)",
+        "recycles": 4,
+        "injected_native": "trunk-00.npz s_inputs/s/z replace inference.trunk; tape.npz noise + augmentation",
+        "diffusion_dtype": "float32",
+        "samples_x_steps": "5 x 200"
+      },
+      "headline": {
+        "metric": "per-sample all-atom / CA RMSD (A), worst sample",
+        "value": "0.0530 / 0.0194"
+      },
+      "metrics": {
+        "samples": 5,
+        "atoms": 1225,
+        "all_atom_rmsd_angstrom": [
+          0.01476099489805467,
+          0.01837513175409221,
+          0.05300377999332181,
+          0.024393168368068794,
+          0.02013047934806188
+        ],
+        "max_unaligned_displacement_angstrom": 1.3801957261662068,
+        "ca_atoms": 97,
+        "ca_rmsd_angstrom": [
+          0.012518778856331196,
+          0.014180687442320341,
+          0.017207468753744033,
+          0.019368679667965134,
+          0.016872264955581674
+        ],
+        "entity_rmsd_angstrom_panel_metric": {
+          "P": [
+            0.014424292371684452,
+            0.015361481771758886,
+            0.0645924277319935,
+            0.021613207229019417,
+            0.018564162557926693
+          ],
+          "R": [
+            0.015345394219175192,
+            0.022796477517465694,
+            0.019220635827612218,
+            0.028705674397562136,
+            0.022666073116929756
+          ]
+        },
+        "injection_calls": 1
+      },
+      "runtime_s": 284.9,
+      "notes": "",
+      "source": {
+        "git": "a2c3fef",
+        "cpu_affinity": 16,
+        "recorded": "2026-10-01 21:06:45"
+      }
+    },
+    "S5_confidence": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "input": "native input.npz (upstream featurizer output; core-only)",
+        "msa": "native per-cycle MSA row draws (tape randint/randperm) replayed",
+        "trunk_dtype": "n/a (native trunk injected)",
+        "triangle_kernel": "xla (native ran cuEq; no CPU cuEq)",
+        "recycles": 4,
+        "confidence_dtype": "float32",
+        "injected_native": "trunk-00.npz replaces inference.trunk; raw-output.npz atom_positions_predicted replaces sample_diffusion"
+      },
+      "headline": {
+        "metric": "max |d| pLDDT (0-100) / PAE (A) / pTM, vs written JSON",
+        "value": "0.046 / 0.0416 / 6.02e-05"
+      },
+      "metrics": {
+        "plddt_logits": {
+          "max_abs": 0.011852264404296875,
+          "relative_rms": 0.000365514895324412
+        },
+        "pae_logits": {
+          "max_abs": 0.019202232360839844,
+          "relative_rms": 0.00033320271292353927
+        },
+        "pde_logits": {
+          "max_abs": 0.024120330810546875,
+          "relative_rms": 0.0002762722616639714
+        },
+        "distogram_logits_from_native_z": {
+          "max_abs": 1.24456787109375,
+          "relative_rms": 0.0005287092157925204
+        },
+        "plddt_written": {
+          "max_abs": 0.045962153152458995,
+          "scale_factor_applied_to_port": 100.0
+        },
+        "pae_written_angstrom": {
+          "max_abs": 0.04158844586181587
+        },
+        "ptm_written": {
+          "max_abs": 6.019379806521119e-05
+        },
+        "iptm_written": {
+          "max_abs": 4.8046962738079735e-05
+        },
+        "injection_calls": {
+          "trunk": 1,
+          "sampler": 1
+        }
+      },
+      "runtime_s": 5.9,
+      "notes": "Written JSON scores are rounded by upstream's writer; the logit rows are the unrounded comparison.",
+      "source": {
+        "git": "a2c3fef",
+        "cpu_affinity": 16,
+        "recorded": "2026-10-01 21:06:45"
+      }
+    },
+    "S6_final": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "input": "native input.npz (upstream featurizer output; core-only)",
+        "msa": "native per-cycle MSA row draws (tape randint/randperm) replayed",
+        "trunk_dtype": "float32 (native 32-true)",
+        "triangle_kernel": "xla (native ran cuEq; no CPU cuEq)",
+        "recycles": 4,
+        "injected_native": "tape.npz (MSA draws, initial/churn noise, augmentation quaternions/translations)",
+        "samples_x_steps": "5 x 200"
+      },
+      "headline": {
+        "metric": "per-sample all-atom / CA RMSD (A), worst sample",
+        "value": "0.0554 / 0.0198"
+      },
+      "metrics": {
+        "samples": 5,
+        "atoms": 1225,
+        "all_atom_rmsd_angstrom": [
+          0.014856195927287158,
+          0.0189016642688712,
+          0.055413581813076984,
+          0.024642986818203018,
+          0.029022065047663696
+        ],
+        "max_unaligned_displacement_angstrom": 1.4505428089717576,
+        "ca_atoms": 97,
+        "ca_rmsd_angstrom": [
+          0.012549423966470923,
+          0.014695761596343266,
+          0.017230491186093128,
+          0.019763323080378845,
+          0.017330994920318685
+        ],
+        "entity_rmsd_angstrom_panel_metric": {
+          "P": [
+            0.014394113225462067,
+            0.01573816915048237,
+            0.06763161819524174,
+            0.021649730805245383,
+            0.032331028510236094
+          ],
+          "R": [
+            0.015649477881889653,
+            0.02352602408938785,
+            0.019467428706227925,
+            0.029246706328290094,
+            0.02188139129345448
+          ]
+        }
+      },
+      "runtime_s": 273.3,
+      "notes": "",
+      "source": {
+        "git": "a2c3fef",
+        "cpu_affinity": 16,
+        "recorded": "2026-10-01 21:06:45"
+      }
+    }
+  }
+}
