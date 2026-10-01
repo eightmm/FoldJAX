@@ -746,7 +746,6 @@ unless it says so here, in its own paragraph.
 - `native_only_features` names every native-only input a port consumes
   (multi-residue ligands, user CCD, ligand files, pocket and contact
   constraints, cyclic polymers), not only templates and affinity.
-
 - **A nucleic-acid alignment or a template the backend never reads is
   ignored, as upstream does, instead of refused.** This reverses the default
   of the four Unreleased entries under Fixed that refused them (a nucleic

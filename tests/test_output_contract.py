@@ -51,6 +51,17 @@ def test_every_model_has_a_fixture() -> None:
     assert {case.split("_", 1)[0] for case in CASES} == set(EXPECTED)
 
 
+def test_the_printed_mapping_table_is_the_one_the_writer_uses() -> None:
+    from foldjax.summary import mapping_table
+
+    rows = {row["model"]: row for row in mapping_table()}
+    assert set(rows) == set(EXPECTED)
+    for model, (source, ranking_key) in EXPECTED.items():
+        assert rows[model]["ranking_key"] == ranking_key
+        if model != "alphafold3":
+            assert f"scores.{rows[model]['plddt_source']}" == source
+
+
 @pytest.mark.parametrize("name", ["confidence", "run"])
 def test_schemas_use_only_keywords_the_validator_checks(name: str) -> None:
     assert unsupported_keywords(load_schema(name)) == set()
