@@ -410,6 +410,41 @@ def _normalize_padding(padding):
 
 
 @dataclass(frozen=True, slots=True)
+class JobSource:
+    """Where one job of a multi-job file came from.
+
+    A ``{"jobs": [...]}`` file runs each job as its own input, through a
+    generated single-job document (see ``foldjax.input.expand_jobs_files``),
+    so every consumer of an input keeps reading exactly one job. This is the
+    provenance that generated file cannot carry: the file the caller named and
+    the job's position and name in it, for the run manifest, failure records,
+    ``foldjax plan`` and error messages.
+    """
+
+    path: Path
+    #: The job's 0-based position in the file's ``jobs`` list.
+    index: int
+    name: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.path, Path):
+            object.__setattr__(self, "path", Path(self.path))
+        if isinstance(self.index, bool) or not isinstance(self.index, int):
+            raise ValueError("job source index must be an integer")
+        if self.index < 0:
+            raise ValueError("job source index must be non-negative")
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError("job source name must be a non-empty string")
+
+    def describe(self) -> str:
+        """How error messages name the job: ``jobs.yaml jobs[1] ('b')``."""
+        return f"{self.path} jobs[{self.index}] ({self.name!r})"
+
+    def summary(self) -> dict[str, Any]:
+        return {"path": str(self.path), "index": self.index, "name": self.name}
+
+
+@dataclass(frozen=True, slots=True)
 class PredictionRequest:
     """One model-neutral prediction job.
 
@@ -503,6 +538,11 @@ class PredictionRequest:
     # One of `SEED_SOURCES`, set by `foldjax.resolve_request`: where the seed
     # came from, recorded beside it in `foldjax plan` and the run manifest.
     seed_source: str | None = None
+    # Set by `foldjax.resolve_requests` when this run is one job of a
+    # multi-job file: `input` is then the generated single-job document and
+    # this names the file and job it came from. Provenance only -- it never
+    # changes what runs, and it is not part of the resume identity.
+    source: JobSource | None = None
 
     def __post_init__(self) -> None:
         padding = _normalize_padding(self.padding)
@@ -619,6 +659,14 @@ class PredictionRequest:
             else _strict_integer(self.seed, name="seed", minimum=0)
         )
         object.__setattr__(self, "seed", seed)
+        if self.source is not None:
+            if not isinstance(self.source, JobSource):
+                raise ValueError("source must be a JobSource or None")
+            if self.inputs is not None:
+                raise ValueError(
+                    "source names the file one input came from; it cannot "
+                    "describe several inputs"
+                )
         if self.seed_source is not None and self.seed_source not in SEED_SOURCES:
             raise ValueError(
                 f"seed_source must be one of {', '.join(SEED_SOURCES)}; "
@@ -852,9 +900,11 @@ class PredictionFailure:
     error_type: str
     seed: int | None = None
     output_dir: Path | None = None
+    #: The multi-job file and job this input came from, when it did.
+    source: JobSource | None = None
 
     def summary(self) -> dict[str, Any]:
-        return {
+        summary = {
             "model": self.model,
             "input": str(self.input),
             "seed": self.seed,
@@ -864,6 +914,10 @@ class PredictionFailure:
             "error_type": self.error_type,
             "error": self.error,
         }
+        # Only when set, so a directory batch's failure file is unchanged.
+        if self.source is not None:
+            summary["source"] = self.source.summary()
+        return summary
 
 
 @dataclass(frozen=True, slots=True)

@@ -47,7 +47,19 @@
         "resolved_path": {"type": ["string", "null"]},
         "format": {"type": "string"},
         "sha256": {"type": ["string", "null"]},
-        "native": {"type": ["string", "null"]}
+        "native": {"type": ["string", "null"]},
+        "source": {
+          "description": "Present when the run is one job of a multi-job file: path is then the generated single-job document, and this is the file the caller wrote and the job's 0-based index and name in it.",
+          "type": "object",
+          "required": ["path", "index", "name"],
+          "properties": {
+            "path": {"type": "string"},
+            "resolved_path": {"type": ["string", "null"]},
+            "sha256": {"type": ["string", "null"]},
+            "index": {"type": "integer", "minimum": 0},
+            "name": {"type": "string"}
+          }
+        }
       }
     },
     "input_dependencies": {"type": "object"},

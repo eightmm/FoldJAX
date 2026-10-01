@@ -26,6 +26,7 @@ from foldjax import (
     report,
 )
 from foldjax.api import predict_batch, resolve_requests
+from foldjax.input import is_jobs_file
 from foldjax.job import Job
 from foldjax.redaction import public_options
 from foldjax.registry import available_models, capabilities, model_info
@@ -737,7 +738,11 @@ def _as_job_file(path: Path) -> Path:
 def _request(args: argparse.Namespace) -> PredictionRequest:
     inputs = _resolve_inputs(args)
     single_model = len(args.model) == 1
-    single_input = len(inputs) == 1
+    # A multi-job file is several runs, like a directory, so it takes the
+    # plural spelling even alone; the request expands it into its jobs.
+    single_input = len(inputs) == 1 and not (
+        args.input_format in ("auto", "foldjax") and is_jobs_file(inputs[0])
+    )
     if args.seed is not None and args.seeds:
         raise ValueError("--seed and --seeds are mutually exclusive")
     padding_values = {
@@ -1289,6 +1294,10 @@ def _plan_summary(request: PredictionRequest) -> dict[str, Any]:
     summary = {
         "model": request.model,
         "input": str(request.input),
+        # The multi-job file and job this generated input came from.
+        "source": (
+            request.source.summary() if request.source is not None else None
+        ),
         "input_format": request.input_format,
         "weights": str(request.weights),
         "profile": request.profile,

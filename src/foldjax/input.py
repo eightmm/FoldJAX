@@ -1486,6 +1486,170 @@ def read_job_document(path: Path) -> Any:
         raise ValueError(f"{path} is not readable as JSON: {error}") from error
 
 
+#: The one top-level key of a multi-job common-schema file:
+#: ``{"jobs": [{job}, {job}, ...]}``. A mapping, not a top-level list, because
+#: a list is already a native shape -- AlphaFold Server's job list and the
+#: Protenix/OpenDDE list of jobs -- and `foldjax.api.detect_input_format` and
+#: `_job_model_seeds` treat every top-level list as native. No native dialect
+#: has a top-level ``jobs`` key: AlphaFold 3 has ``name``/``sequences``/
+#: ``modelSeeds``, a Boltz YAML ``version``/``sequences``, OpenFold3's query set
+#: ``seeds``/``queries``, and ESMFold2 reads the single-job common schema.
+JOBS_KEY = "jobs"
+
+#: Common-schema fields holding a path, resolved against the job file's own
+#: directory. A job split out of a multi-job file is written elsewhere, so
+#: these are made absolute against the source's directory first.
+_PATH_FIELDS = ("unpaired_msa", "paired_msa")
+
+
+def is_jobs_document(document: Any) -> bool:
+    """Whether ``document`` is a multi-job file rather than one job."""
+    return (
+        isinstance(document, Mapping)
+        and JOBS_KEY in document
+        and "entities" not in document
+    )
+
+
+def is_jobs_file(path: Path) -> bool:
+    """Whether ``path`` holds a multi-job common-schema document."""
+    from foldjax.schema import JOB_DOCUMENT_SUFFIXES
+
+    path = Path(path)
+    if path.suffix.lower() not in JOB_DOCUMENT_SUFFIXES or not path.is_file():
+        return False
+    try:
+        return is_jobs_document(read_job_document(path))
+    except (OSError, ValueError):
+        return False
+
+
+def read_jobs_file(path: Path) -> list[tuple[str, dict[str, Any]]]:
+    """Return ``(name, job)`` for each job of a multi-job file, in order.
+
+    The container is checked here -- one ``jobs`` key, a non-empty list of
+    mappings, each with a name of its own that no other job in the file
+    shares, before or after it is made safe for a directory name. Each job's
+    content is checked later, per run and per model, exactly as a file of its
+    own would be.
+    """
+    from foldjax.output import safe_job_name
+
+    path = Path(path)
+    document = read_job_document(path)
+    if not is_jobs_document(document):
+        raise ValueError(f"{path} is not a multi-job file ({{{JOBS_KEY!r}: [...]}})")
+    allowed = frozenset({JOBS_KEY})
+    _reject_unknown(
+        set(document) - allowed, allowed, f"top-level fields of multi-job file {path}"
+    )
+    jobs = document[JOBS_KEY]
+    if not isinstance(jobs, list) or not jobs:
+        raise ValueError(f"{path}: {JOBS_KEY} must be a non-empty list of jobs")
+    named: list[tuple[str, dict[str, Any]]] = []
+    names: dict[str, int] = {}
+    directories: dict[str, tuple[int, str]] = {}
+    for index, job in enumerate(jobs):
+        where = f"{path} {JOBS_KEY}[{index}]"
+        if not isinstance(job, dict):
+            raise ValueError(f"{where} must be a job mapping")
+        name = job.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(
+                f"{where} needs a non-empty name: in a multi-job file each "
+                "job's name is its output directory"
+            )
+        name = name.strip()
+        where = f"{where} ({name!r})"
+        if name in names:
+            raise ValueError(
+                f"{where} repeats the name of {JOBS_KEY}[{names[name]}]; job "
+                "names must be unique within the file"
+            )
+        names[name] = index
+        directory = safe_job_name(name)
+        if directory in directories:
+            other, other_name = directories[directory]
+            raise ValueError(
+                f"{where} and {JOBS_KEY}[{other}] ({other_name!r}) would both "
+                f"write to the output directory {directory!r}; rename one"
+            )
+        directories[directory] = (index, name)
+        named.append((name, job))
+    return named
+
+
+def _absolute_job_paths(job: dict[str, Any], base: Path) -> dict[str, Any]:
+    """A copy of ``job`` whose relative path fields name the same files from anywhere.
+
+    Not resolved: ``_path`` resolves when the native document is written, and
+    leaving that to it is what makes a split job's native input identical to
+    the one its own file would produce. A field that is not a usable path is
+    left alone, so it is refused later with the same message as in a file of
+    its own.
+    """
+    from copy import deepcopy
+
+    def absolute(value: Any) -> Any:
+        if not isinstance(value, str) or not value.strip():
+            return value
+        path = Path(value.strip())
+        return value if path.is_absolute() else str(base / path)
+
+    job = deepcopy(job)
+    entities = job.get("entities")
+    if not isinstance(entities, list):
+        return job
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        for key in _PATH_FIELDS:
+            if key in entity:
+                entity[key] = absolute(entity[key])
+        templates = entity.get("templates")
+        if isinstance(templates, list):
+            for template in templates:
+                if isinstance(template, dict) and "mmcif" in template:
+                    template["mmcif"] = absolute(template["mmcif"])
+    return job
+
+
+def expand_jobs_file(path: Path) -> tuple[tuple[Path, Any], ...]:
+    """Write each job of a multi-job file as its own document; return them.
+
+    Each entry is ``(generated path, JobSource)``. The generated file is named
+    after the job, so a batch puts it in ``<out>/<model>/<job name>`` exactly
+    as it would a file of that name, and it lives in a directory keyed by its
+    own content: an unchanged job keeps its path, and therefore its resume
+    identity, when another job in the same file is edited or reordered.
+    """
+    import hashlib
+
+    from foldjax import paths
+    from foldjax.output import safe_job_name
+    from foldjax.schema import JobSource
+
+    path = Path(path)
+    base = path.parent.absolute()
+    root = paths.runtime_dir("jobs") / "split"
+    expanded: list[tuple[Path, Any]] = []
+    for index, (name, job) in enumerate(read_jobs_file(path)):
+        try:
+            text = json.dumps(_absolute_job_paths(job, base), indent=2)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"{path} {JOBS_KEY}[{index}] ({name!r}) cannot be written as "
+                f"JSON: {error}"
+            ) from error
+        digest = hashlib.sha256(text.encode()).hexdigest()[:16]
+        target = root / digest / f"{safe_job_name(name)}.json"
+        if not (target.is_file() and target.read_text(encoding="utf-8") == text):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _write_text_atomic(target, text)
+        expanded.append((target, JobSource(path=path, index=index, name=name)))
+    return tuple(expanded)
+
+
 #: Models whose upstream folds a protein chain with no alignment from its
 #: sequence alone by default. ESMFold2's has no search path: ``forward`` on
 #: ``infer_protein`` builds a depth-1 MSA (transformers-esmfold2

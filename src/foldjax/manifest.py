@@ -1226,6 +1226,26 @@ def describe_run(
         best["structure_path"] = _artifact_path(
             Path(str(best["structure_path"])), directory
         )
+    input_record: dict[str, Any] = {
+        "path": str(request.input),
+        "resolved_path": _resolved_path(request.input),
+        "format": request.input_format,
+        "sha256": _digest(request.input),
+        "native": (
+            _artifact_path(native_input, directory)
+            if native_input is not None
+            else None
+        ),
+    }
+    if request.source is not None:
+        # One job of a multi-job file: `path` above is the generated
+        # single-job document that ran, this is the file the caller wrote.
+        # Not part of the resume identity -- the job's own content is.
+        input_record["source"] = {
+            **request.source.summary(),
+            "resolved_path": _resolved_path(request.source.path),
+            "sha256": _digest(request.source.path),
+        }
     manifest = {
         # `schema` versions what makes a run safe to resume; `schema_version`
         # is the published file contract (foldjax/schemas/run.schema.json),
@@ -1238,17 +1258,7 @@ def describe_run(
         "foldjax": __version__,
         "finished": datetime.now(UTC).isoformat(timespec="seconds"),
         "model": request.model,
-        "input": {
-            "path": str(request.input),
-            "resolved_path": _resolved_path(request.input),
-            "format": request.input_format,
-            "sha256": _digest(request.input),
-            "native": (
-                _artifact_path(native_input, directory)
-                if native_input is not None
-                else None
-            ),
-        },
+        "input": input_record,
         "input_dependencies": _input_dependencies(request),
         # `input_dependencies` still hashes a dropped alignment, because the
         # job names it; this says the model never read it.

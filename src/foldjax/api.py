@@ -33,6 +33,9 @@ from foldjax.input import (
     IGNORE_CONSTRAINTS,
     IGNORE_NUCLEIC_MSA,
     IGNORE_TEMPLATES,
+    expand_jobs_file,
+    is_jobs_document,
+    is_jobs_file,
     materialize_native_input,
     native_ignored_constraints,
     read_job_document,
@@ -74,7 +77,9 @@ def detect_input_format(path: Path) -> str:
 
     Detection is on content, not extension: every backend's native dialect also
     uses JSON or YAML, and only the common schema is a mapping with
-    ``entities``. Anything unreadable as JSON/YAML is native by definition.
+    ``entities`` -- or, for several jobs in one file, a mapping with ``jobs``
+    (`foldjax.input.JOBS_KEY`). Anything unreadable as JSON/YAML is native by
+    definition.
     """
     if path.suffix.lower() not in JOB_DOCUMENT_SUFFIXES:
         return "native"
@@ -83,6 +88,8 @@ def detect_input_format(path: Path) -> str:
     except (ValueError, json.JSONDecodeError, OSError):
         return "native"
     if isinstance(document, dict) and "entities" in document:
+        return "foldjax"
+    if is_jobs_document(document):
         return "foldjax"
     return "native"
 
@@ -225,6 +232,13 @@ def resolve_request(
 
     if request.model != backend.name:
         updates["model"] = backend.name
+    if request.input_format in ("auto", "foldjax") and is_jobs_file(request.input):
+        # Several runs, like a directory: `predict` returns one result for a
+        # scalar request, so it cannot quietly become a batch.
+        raise ValueError(
+            f"input holds several jobs ({request.input}); use "
+            f"inputs=({request.input.name!r},) to run every job in it"
+        )
     if request.input_format == "auto":
         detected = detect_input_format(request.input)
         # OpenFold3 feature archives are the one binary input dialect with a
@@ -321,7 +335,7 @@ def resolve_requests(
 
     root = request.output_dir or Path("foldjax-outputs")
     runs: list[PredictionRequest] = []
-    destinations: dict[Path, tuple[str, Path]] = {}
+    destinations: dict[Path, tuple[str, str]] = {}
     canonical_models = tuple(
         get_backend(model).name for model in request.resolved_models
     )
@@ -335,19 +349,31 @@ def resolve_requests(
             "one explicit weights path cannot be shared by several models; omit "
             "weights to use each model's managed checkpoint, or run them separately"
         )
+    # A multi-job file runs as the jobs inside it, each through a generated
+    # single-job document named after the job, so it lands where a directory
+    # of those files would put it. Expanded once, before the cross product.
+    inputs: list[tuple[Path, Any]] = []
+    for path in request.resolved_inputs:
+        if request.input_format in ("auto", "foldjax") and is_jobs_file(path):
+            inputs.extend(expand_jobs_file(path))
+        else:
+            inputs.append((path, request.source))
     for model in canonical_models:
         backend = get_backend(model)
-        for path in request.resolved_inputs:
+        for path, source in inputs:
             destination = root / backend.name / path.stem
+            # A split job is named by its file and position, not by the
+            # generated document nobody wrote.
+            label = source.describe() if source is not None else str(path)
             previous = destinations.get(destination)
             if previous is not None:
-                previous_model, previous_path = previous
+                previous_model, previous_label = previous
                 raise ValueError(
-                    f"runs ({previous_model}, {previous_path}) and "
-                    f"({backend.name}, {path}) share output {destination}; remove "
+                    f"runs ({previous_model}, {previous_label}) and "
+                    f"({backend.name}, {label}) share output {destination}; remove "
                     "the duplicate or give same-named inputs separate output roots"
                 )
-            destinations[destination] = (backend.name, path)
+            destinations[destination] = (backend.name, label)
             scalar = dataclasses.replace(
                 request,
                 model=backend.name,
@@ -355,6 +381,7 @@ def resolve_requests(
                 input=path,
                 inputs=None,
                 output_dir=destination,
+                source=source,
             )
             runs.append(resolve_request(scalar, draw_seeds=draw_seeds))
     return tuple(runs)
@@ -939,6 +966,7 @@ def _attempt(
                 output_dir=Path(directory),
                 error=str(error),
                 error_type=type(error).__name__,
+                source=request.source,
             )
         )
         return None
@@ -1056,6 +1084,7 @@ def _predict_resolved(
                     output_dir=Path(request.output_dir),
                     error=str(error),
                     error_type=type(error).__name__,
+                    source=request.source,
                 )
             )
     return combined
@@ -1135,16 +1164,23 @@ def _predict_once(
         ignored_msas = []
         ignored_templates = []
         with timeline.stage("prepare input"):
-            native_input = materialize_native_input(
-                request.input,
-                capabilities,
-                request.output_dir / "inputs",
-                seed=request.seed,
-                msa=request.msa,
-                options=backend.apply_sampling(request),
-                ignored=ignored_msas,
-                ignored_templates=ignored_templates,
-            )
+            try:
+                native_input = materialize_native_input(
+                    request.input,
+                    capabilities,
+                    request.output_dir / "inputs",
+                    seed=request.seed,
+                    msa=request.msa,
+                    options=backend.apply_sampling(request),
+                    ignored=ignored_msas,
+                    ignored_templates=ignored_templates,
+                )
+            except (ValueError, FileNotFoundError) as error:
+                # The generated document is an implementation detail; the
+                # caller wrote one job of a multi-job file, so name that.
+                if request.source is None:
+                    raise
+                raise type(error)(f"{request.source.describe()}: {error}") from error
         # Most backends have a dialect of their own and the materialised file
         # is in it. ESMFold2 does not -- its adapter reads the common schema
         # directly -- so for it the written file is still FoldJAX's, and
