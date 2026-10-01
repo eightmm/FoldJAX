@@ -145,17 +145,17 @@ finishes at 44.2 GiB. `--option dtype=float32` puts it back, and the benchmark
 above pins exactly that, because a row that compared two precisions would not
 be a comparison.
 
-**ESMFold2 runs a bfloat16 trunk where upstream's released checkpoint is
-float32.** Upstream's single autocast wraps its language model alone; the
-folding trunk is not covered by it. At 1,003 tokens on the released schedule
-the width costs 0.0992 Å all-atom against a 0.0230 Å rerun floor — resolvable,
-unlike on Boltz-2 — and buys 27.38 → 16.78 s and 32.84 → 23.47 GiB with pLDDT
-and pTM identical to four decimals. That is nine times inside the 0.9135 Å this
-model's own diffusion samples already disagree by. There is no flag: the width
-is not reachable from any knob, which is the honest description of a choice
-rather than an option.
+**ESMFold2 runs its trunk under bfloat16 autocast, as upstream does.** The
+released fork (`transformers-esmfold2`, `modeling_esmfold2.py`) wraps the input
+embedder, pair initialisation, language-model encoder, folding trunk and coda
+in one CUDA bfloat16 autocast region, and its run metadata records bfloat16
+inputs on every trunk loop. The port reproduces that region operation by
+operation: bfloat16 GEMM operands and pair residual, float32 LayerNorm, a
+float32 diffusion head and float32 confidence re-embedding. It is not a
+precision departure. (An earlier version of this note compared against the
+generic `transformers` package, whose ESMFold2 wraps the language model alone.)
 
-Both are recorded with their measurements in
+The three departures are recorded with their measurements in
 [docs/engineering-notes.md](docs/engineering-notes.md).
 
 ## Installation
