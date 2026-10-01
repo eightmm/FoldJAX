@@ -3431,6 +3431,23 @@ def run_alphafold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]
         "buckets": provenance["deepmind"]["buckets"],
         "seed": 101,
     }
+    native_source = provenance["deepmind"]["source_files"]
+    port_source = provenance["foldjax"]["source_files"]
+    source_differs = sorted(
+        name
+        for name in set(native_source) | set(port_source)
+        if native_source.get(name) != port_source.get(name)
+    )
+    same_runner = (
+        provenance["deepmind"]["runner_sha256"]
+        == provenance["foldjax"]["runner_sha256"]
+    )
+    condition["alphafold3_python_source"] = (
+        f"{len(source_differs)} of {len(native_source)} files of the imported "
+        "alphafold3 package differ between the arms (FoldJAX's vendored copy "
+        "carries its own edits); run_alphafold.py itself byte-identical: "
+        f"{same_runner}"
+    )
 
     def s1() -> dict[str, Any]:
         native, port = npz(capture / "input.npz"), npz(port_dir / "input.npz")
@@ -3580,6 +3597,7 @@ def run_alphafold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]
             np.array_equal(port["coordinate"][:, mask], native["coordinate"][:, mask])
         )
         record["masks_equal"] = bool(np.array_equal(native["mask"], port["mask"]))
+        record["alphafold3_source_files_differing"] = source_differs
         if (root / "cli-deepmind").is_dir() and (root / "cli-foldjax").is_dir():
             record["cli_route"] = cli_route_comparison(
                 root / "cli-deepmind", root / "cli-foldjax"
@@ -3594,9 +3612,12 @@ def run_alphafold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]
             headline={
                 "metric": "max |dxyz| (A) over all samples / all-atom RMSD worst "
                 "sample",
-                "value": f"{record['max_abs_dxyz_angstrom']:.4g} / "
-                f"{max(record['all_atom_rmsd_angstrom']):.4g}"
-                + (" (bitwise identical)" if record["bitwise_identical"] else ""),
+                # A Kabsch fit of identical coordinates returns SVD noise
+                # (~1e-14), not zero; the bitwise flag is the statement.
+                "value": "0 / 0 (bitwise identical)"
+                if record["bitwise_identical"]
+                else f"{record['max_abs_dxyz_angstrom']:.4g} / "
+                f"{max(record['all_atom_rmsd_angstrom']):.4g}",
             },
             metrics=record,
         )
@@ -3735,7 +3756,9 @@ sampler and head outputs; S1, S2 and S6 stay on the stored capture.
 
 The `alphafold3` row is not a port against a GPU capture. It runs DeepMind's
 `run_alphafold.py` (v3.0.4, archived checkout `deepmind-af3-85c4d20`) and
-FoldJAX's vendored AlphaFold 3 side by side on CPU on 8REH (129 tokens; seed
+FoldJAX's vendored AlphaFold 3 (a copy of that source with FoldJAX's own edits:
+9 of the 86 package files differ; `run_alphafold.py` itself is byte-identical)
+side by side on CPU on 8REH (129 tokens; seed
 101, 2 samples, 1 recycle, 200 steps, XLA attention, the common FoldJAX JAX
 environment, FoldJAX given DeepMind's bucket list), through
 `bench/af3_closure_capture.py --cpu`, and compares the featurised batch, the

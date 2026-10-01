@@ -103,7 +103,9 @@ afresh with `jax.clear_caches()` on both sides; OpenDDE `models/model.py`
   separate the two.
 * **AlphaFold 3 -- no intermediate stages.** The `alphafold3` row compares two
   complete CPU runs (DeepMind's `run_alphafold.py` v3.0.4 and FoldJAX's
-  vendored AF3) on 8REH; S3/S4 are `not_captured`. Every compared output is
+  vendored AF3, whose `alphafold3` package differs from DeepMind's in 9 of 86
+  files: memory-saving reductions, prefix-stable noise and MSA-crop options,
+  import order) on 8REH; S3/S4 are `not_captured`. Every compared output is
   bitwise identical (the featurised batch, all 405 parameters, every
   confidence leaf, the raw padded model outputs including the distogram
   contact probabilities, and both samples' coordinates, by both the harness and
