@@ -381,7 +381,12 @@ def test_protenix_writer_stages_arrays_in_cif_atom_order(
     n_atom, n_token = owners.size, int(owners.max()) + 1
     output = _protenix_output(n_atom, n_token, details=details)
     written = write_protenix_outputs(
-        tmp_path, job_name="arrays", seed=1, output=output, features=features
+        tmp_path,
+        job_name="arrays",
+        seed=1,
+        output=output,
+        features=features,
+        atom_to_token=owners,
     )
     cifs = [path for path in written if path.suffix == ".cif"]
     assert [path.stem[-1] for path in cifs] == ["1", "0"]  # diffusion order

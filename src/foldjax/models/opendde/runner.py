@@ -476,6 +476,10 @@ def _write(root: Path, **kwargs: Any) -> list[Path]:
     kwargs.setdefault("model", "opendde")
     output = kwargs.get("output")
     features = kwargs.get("features")
+    if isinstance(features, Mapping) and "atom_to_token_idx" in features:
+        # OpenDDE's writer snapshot keeps the unpadded map; hand it over
+        # explicitly, since the shared writer reads only admitted fields.
+        kwargs.setdefault("atom_to_token", features["atom_to_token_idx"])
     if isinstance(output, Mapping) and isinstance(features, Mapping):
         coordinates, repaired = repair_terminal_oxt_coordinates(
             output.get("coordinate"), features

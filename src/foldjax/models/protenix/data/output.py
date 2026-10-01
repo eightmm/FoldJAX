@@ -119,8 +119,10 @@ def write_protenix_outputs(
 
     Beside each CIF, FoldJAX also stages `<name>_sample_<rank>_confidence_full.npz`
     (see `foldjax.confidence_arrays`) for ``model``; ``atom_to_token`` is the
-    unpadded atom-to-token map, needed to index its token-pair arrays. It is
-    not among the returned paths, which stay upstream's files.
+    unpadded atom-to-token map, needed to index its token-pair arrays; it is a
+    separate argument because the writer reads only the admitted metadata
+    fields of ``features``. The archive is not among the returned paths,
+    which stay upstream's files.
     """
 
     coordinates = np.asarray(output.get("coordinate"))
@@ -148,9 +150,6 @@ def write_protenix_outputs(
         coordinates.shape[1],
     )
     ranks = _sample_ranks(output, coordinates.shape[0])
-    token_owners = (
-        features.get("atom_to_token_idx") if atom_to_token is None else atom_to_token
-    )
     # Each confidence array crosses to the host once, not once per sample.
     confidence_source = {
         name: np.asarray(output[name])
@@ -192,7 +191,7 @@ def write_protenix_outputs(
             sample_index,
             coordinates.shape[0],
             metadata,
-            token_owners,
+            atom_to_token,
             model=model,
             rank=int(rank),
         )

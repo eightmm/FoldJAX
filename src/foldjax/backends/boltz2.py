@@ -268,7 +268,14 @@ def _write_confidence_arrays(
             array = array[tuple(slice(0, n_token) for _ in range(ndim))]
         return array
 
-    available = confidence_arrays.AVAILABILITY["boltz2"]
+    unavailable = dict(confidence_arrays.AVAILABILITY["boltz2"]["unavailable"])
+    for name, reason in (
+        ("token_chain_id", "the processed structure's chain table was not readable"),
+        ("atom_token_index", "the features carried no dense atom-to-token map"),
+        ("token_residue_index", "the features carried no residue index"),
+    ):
+        if name not in maps:
+            unavailable[name] = reason
     return confidence_arrays.write(
         confidence_arrays.staged_path(structure_path),
         model="boltz2",
@@ -280,7 +287,7 @@ def _write_confidence_arrays(
         },
         scales={"token_plddt": "0-1"},
         sources={"pae": "pae", "pde": "pde", "token_plddt": "plddt"},
-        unavailable=available["unavailable"],
+        unavailable=unavailable,
         sample={"sample": index},
     )
 
