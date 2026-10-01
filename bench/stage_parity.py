@@ -17,7 +17,9 @@ through the CPU parity subset's own loaders and replay helpers
 (``tests/parity/test_<port>.py``), resolving the digest-verified fixture copies
 through ``tests.parity._fixtures.FixtureStore``; extra native arrays the
 fixtures do not carry (confidence inputs, head outputs) are read from the
-capture directory named by ``--capture``. Where an upstream tensor is injected
+capture directory named by ``--capture``. ESMFold2 and OpenDDE take S3-S5
+from a native re-capture with ``stages.npz`` (``--stage-capture``, default
+``STAGE_CAPTURES``). Where an upstream tensor is injected
 in place of the port's own (S4, S5), the seam is a module-global patch that is
 counted, and the compiled-program pool is cleared on both sides of it so a
 cached trace can neither serve nor leak the patch.
