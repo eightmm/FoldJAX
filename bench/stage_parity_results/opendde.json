@@ -1072,7 +1072,7 @@
         "input": "re-capture native-input.npz + native-derived.npz (bitwise equal to the stored capture's: True / True)",
         "tape": "re-capture torch/tape.npz + torch/msa.npz (bitwise equal to the stored capture's: True / True)",
         "kernels": "all attention backends xla",
-        "trunk_dtype": "float32 (port default; native TF32 trunk -> CPU highest, see docs/parity-cpu.md)",
+        "trunk_dtype": "float32 (parity condition; the shipped default is bfloat16; native TF32 trunk -> CPU highest, see docs/parity-cpu.md)",
         "recycles": 10
       },
       "headline": {
@@ -1899,7 +1899,7 @@
         "backend": "cpu",
         "matmul_precision": "highest",
         "input": "native-input.npz + native-derived.npz (upstream featurizer output; core-only)",
-        "trunk_dtype": "float32 (port default; native TF32 trunk -> CPU highest, see docs/parity-cpu.md)",
+        "trunk_dtype": "float32 (parity condition; the shipped default is bfloat16; native TF32 trunk -> CPU highest, see docs/parity-cpu.md)",
         "kernels": "all attention backends xla",
         "injected_native": "tape.npz (noise schedule, initial/churn noise, rotations, translations) + msa.npz per-recycle MSA rows",
         "samples_x_steps": "5 x 200 (all samples; the parity subset replays sample 0 only)",

@@ -604,8 +604,15 @@ threshold -- `--amp-policy bf16`, which narrows the head *and* the sampler and
 so does strictly more than `auto`, lands 0.39-0.45 Å per chain from the
 deposited structure for 11.9% less wall time and 7.7% less peak memory. Those
 savings are the two-stage arm's; `auto` narrows one stage and takes the
-smaller share. **There is no GPU row for the confidence-only change below
-2,560 tokens yet.**
+smaller share.
+
+Below the gate, the confidence-only change was measured as an A/B on GPU at
+1,003 and 2,096 tokens (seed 101, 5 samples): the float32 head
+(`amp_policy=upstream`) against the shipped bfloat16 head. Per sample it moved
+pLDDT by at most 0.0064 (0-100 scale), pTM by at most 1.2e-4 and gPDE by at most
+2.0e-4. Five same-seed passes of the shipped default differ among themselves by
+up to 0.022, 2.8e-4 and 1.9e-3, so every difference lies inside the default's own
+rerun spread, and the bfloat16 head stays the default.
 
 The policy is realized only under a bfloat16 trunk. Upstream's `skip_amp`
 flags choose whether a stage *leaves* the ambient autocast context, and under

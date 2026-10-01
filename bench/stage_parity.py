@@ -2885,7 +2885,7 @@ def run_opendde(
                 **CPU_CONDITION,
                 "input": "native-input.npz + native-derived.npz (upstream "
                 "featurizer output; core-only)",
-                "trunk_dtype": "float32 (port default; native TF32 trunk -> CPU "
+                "trunk_dtype": "float32 (parity condition; the shipped default is bfloat16; native TF32 trunk -> CPU "
                 "highest, see docs/parity-cpu.md)",
                 "kernels": "all attention backends xla",
                 "injected_native": "tape.npz (noise schedule, initial/churn noise, "
@@ -3175,7 +3175,7 @@ def run_opendde(
         return stage_record(
             "measured",
             condition=stage_condition(
-                trunk_dtype="float32 (port default; native TF32 trunk -> CPU "
+                trunk_dtype="float32 (parity condition; the shipped default is bfloat16; native TF32 trunk -> CPU "
                 "highest, see docs/parity-cpu.md)",
                 recycles=len(data["cycle_msa"]),
             ),
