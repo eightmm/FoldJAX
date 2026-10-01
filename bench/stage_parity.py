@@ -3332,16 +3332,279 @@ def run_opendde(
 
 
 # --------------------------------------------------------------------------
+# AlphaFold 3: FoldJAX's vendored source against DeepMind's run_alphafold.py
+# --------------------------------------------------------------------------
+
+AF3_NO_STAGE = (
+    "Not a stage-injection row: AlphaFold 3 is compared as two complete CPU "
+    "runs (DeepMind's run_alphafold.py and FoldJAX's vendored AF3) on the same "
+    "input and seed; no intermediate trunk or sampler boundary is taped or "
+    "injected, so S3/S4 have no separate measurement."
+)
+
+
+def cif_coordinates(path: Path) -> tuple[list[tuple[str, int, str]], np.ndarray]:
+    """Atom keys (chain, residue number, atom name) and coordinates of an mmCIF."""
+    import gemmi
+
+    structure = gemmi.read_structure(str(path))
+    keys, xyz = [], []
+    for chain in structure[0]:
+        for residue in chain:
+            for atom in residue:
+                keys.append((chain.name, residue.seqid.num, atom.name))
+                xyz.append(atom.pos.tolist())
+    return keys, np.asarray(xyz, np.float64)
+
+
+def cli_route_comparison(native_dir: Path, port_dir: Path) -> dict[str, Any]:
+    """Per-sample coordinates of two CLI output trees, matched by atom key."""
+    record: dict[str, Any] = {"native": str(native_dir), "port": str(port_dir)}
+
+    def sample_files(root: Path) -> dict[int, Path]:
+        found: dict[int, Path] = {}
+        for path in sorted(root.rglob("*_model.cif")):
+            for part in path.parts:
+                if part.startswith("seed-") and "_sample-" in part:
+                    found[int(part.rsplit("_sample-", 1)[1])] = path
+        return found
+
+    native, port = sample_files(native_dir), sample_files(port_dir)
+    record["samples"] = sorted(native)
+    if not native or sorted(native) != sorted(port):
+        record["error"] = f"sample sets differ: {sorted(native)} vs {sorted(port)}"
+        return record
+    rows = []
+    for index in sorted(native):
+        nkeys, nxyz = cif_coordinates(native[index])
+        pkeys, pxyz = cif_coordinates(port[index])
+        if nkeys != pkeys:
+            common = sorted(set(nkeys) & set(pkeys))
+            nidx = {k: i for i, k in enumerate(nkeys)}
+            pidx = {k: i for i, k in enumerate(pkeys)}
+            nxyz = nxyz[[nidx[k] for k in common]]
+            pxyz = pxyz[[pidx[k] for k in common]]
+        rows.append(
+            {
+                "sample": index,
+                "atoms": int(len(nxyz)),
+                "atom_keys_identical": nkeys == pkeys,
+                "max_abs_dxyz_angstrom": max_abs(pxyz, nxyz),
+                "all_atom_rmsd_angstrom": kabsch_rmsd(pxyz, nxyz),
+                "coordinates_identical_as_written": bool(np.array_equal(pxyz, nxyz)),
+            }
+        )
+    record["per_sample"] = rows
+    return record
+
+
+def run_alphafold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
+    """``capture`` is the DeepMind arm of ``bench/af3_closure_capture.py --cpu``;
+    the FoldJAX arm is its sibling ``harness-foldjax``, and the CLI route's
+    output trees (``cli-deepmind``, ``cli-foldjax``) sit beside both."""
+    root = capture.parent
+    port_dir = root / "harness-foldjax"
+    results: dict[str, dict[str, Any]] = {}
+    provenance = {
+        arm: json.loads((path / "provenance.json").read_text())
+        for arm, path in (("deepmind", capture), ("foldjax", port_dir))
+    }
+    condition = {
+        "backend": "cpu (JAX_PLATFORMS=cpu, both arms)",
+        "matmul_precision": "AF3 default (bfloat16: 'all'; not pinned)",
+        "native": "DeepMind run_alphafold.py v3.0.4 (archived checkout "
+        "deepmind-af3-85c4d20): ModelRunner + predict_structure",
+        "port": "FoldJAX vendored AF3 through foldjax.predict, "
+        "options buckets=DeepMind's list",
+        "environment": "the common FoldJAX JAX environment for both arms",
+        "samples_x_steps": "{} x 200; recycles {}".format(
+            provenance["deepmind"]["samples"], provenance["deepmind"]["native_recycles"]
+        ),
+        "attention": provenance["deepmind"]["attention"],
+        "buckets": provenance["deepmind"]["buckets"],
+        "seed": 101,
+    }
+
+    def s1() -> dict[str, Any]:
+        native, port = npz(capture / "input.npz"), npz(port_dir / "input.npz")
+        common = sorted(set(native) & set(port))
+        records = {name: array_parity(port[name], native[name]) for name in common}
+        bitwise = {
+            name: bool(
+                native[name].dtype == port[name].dtype
+                and native[name].shape == port[name].shape
+                and native[name].tobytes() == port[name].tobytes()
+            )
+            for name in common
+        }
+        metadata_equal = json.loads(
+            (capture / "input-metadata.json").read_text()
+        ) == json.loads((port_dir / "input-metadata.json").read_text())
+        summary = summarize_features(records)
+        identical = (
+            all(bitwise.values()) and set(native) == set(port) and metadata_equal
+        )
+        return stage_record(
+            "measured",
+            condition={
+                **condition,
+                "compared": "the featurised batch each arm handed "
+                "ModelRunner.run_inference (input.npz + input-metadata.json)",
+            },
+            headline={
+                "metric": "arrays bitwise identical (count) / max |d| (float)",
+                "value": f"{sum(bitwise.values())}/{len(bitwise)} identical"
+                f"{' (all, metadata equal)' if identical else ''} / "
+                f"{summary['max_float_max_abs']}",
+            },
+            metrics={
+                "summary": summary,
+                "bitwise_identical": identical,
+                "bitwise": bitwise,
+                "metadata_equal": metadata_equal,
+                "only_in_port": sorted(set(port) - set(native)),
+                "only_in_native": sorted(set(native) - set(port)),
+                "arrays": records,
+                "port_input_audit": json.loads(
+                    (port_dir / "input-audit.json").read_text()
+                ),
+            },
+        )
+
+    def s2() -> dict[str, Any]:
+        native = json.loads((capture / "parameters.json").read_text())
+        port = json.loads((port_dir / "parameters.json").read_text())
+        differing = sorted(
+            name
+            for name in set(native) | set(port)
+            if native.get(name) != port.get(name)
+        )
+        same_file = (
+            provenance["deepmind"]["weights_sha256"]
+            == provenance["foldjax"]["weights_sha256"]
+        )
+        return stage_record(
+            "measured",
+            condition={
+                "backend": "cpu (host hashes; no model run)",
+                "parameter_file": "af3.bin, sha256 "
+                + provenance["deepmind"]["weights_sha256"],
+                "compared": "per-parameter sha256 of the arrays each arm's "
+                "ModelRunner.model_params held at inference",
+            },
+            headline={
+                "metric": "same parameter file / parameters with differing hash",
+                "value": f"{same_file} / {len(differing)} of {len(native)}",
+            },
+            metrics={
+                "weights_sha256": {
+                    arm: record["weights_sha256"] for arm, record in provenance.items()
+                },
+                "same_parameter_file": same_file,
+                "parameters": len(native),
+                "differing": differing[:50],
+            },
+        )
+
+    def s5() -> dict[str, Any]:
+        native, port = npz(capture / "confidence.npz"), npz(port_dir / "confidence.npz")
+        numeric = sorted(
+            name
+            for name in set(native) & set(port)
+            if native[name].dtype.kind in "fiub"
+        )
+        values = {
+            name: {
+                "max_abs": max_abs(port[name], native[name]),
+                "bitwise_identical": bool(
+                    native[name].tobytes() == port[name].tobytes()
+                ),
+            }
+            for name in numeric
+        }
+        identical = sum(v["bitwise_identical"] for v in values.values())
+
+        def worst(fragment: str) -> float:
+            hits = [v["max_abs"] for k, v in values.items() if fragment in k]
+            return max(hits) if hits else float("nan")
+
+        return stage_record(
+            "measured",
+            condition={**condition, "compared": "every numeric confidence leaf"},
+            headline={
+                "metric": "max |d| atom pLDDT / PAE / pTM; leaves bitwise identical",
+                "value": "{:.3g} / {:.3g} / {:.3g}; {}/{}".format(
+                    worst("atom_plddt"),
+                    worst("full_pae"),
+                    worst(".ptm"),
+                    identical,
+                    len(values),
+                ),
+            },
+            metrics={"leaves": values},
+        )
+
+    def s6() -> dict[str, Any]:
+        native = npz(capture / "coordinate.npz")
+        port = npz(port_dir / "coordinate.npz")
+        mask = native["mask"][0].astype(bool)
+        record = coordinate_metrics(
+            port["coordinate"], native["coordinate"], atom_mask=mask
+        )
+        record["max_abs_dxyz_angstrom"] = max_abs(
+            port["coordinate"][:, mask], native["coordinate"][:, mask]
+        )
+        record["bitwise_identical"] = bool(
+            np.array_equal(port["coordinate"][:, mask], native["coordinate"][:, mask])
+        )
+        record["masks_equal"] = bool(np.array_equal(native["mask"], port["mask"]))
+        if (root / "cli-deepmind").is_dir() and (root / "cli-foldjax").is_dir():
+            record["cli_route"] = cli_route_comparison(
+                root / "cli-deepmind", root / "cli-foldjax"
+            )
+        return stage_record(
+            "measured",
+            condition={
+                **condition,
+                "cli_route": "jctc-v2/e9/run_af3_deepmind.py (AF3CMP_CPU_SMOKE=1) "
+                "vs foldjax.cli predict --option buckets=..., CIF coordinates",
+            },
+            headline={
+                "metric": "max |dxyz| (A) over all samples / all-atom RMSD worst "
+                "sample",
+                "value": f"{record['max_abs_dxyz_angstrom']:.4g} / "
+                f"{max(record['all_atom_rmsd_angstrom']):.4g}"
+                + (" (bitwise identical)" if record["bitwise_identical"] else ""),
+            },
+            metrics=record,
+        )
+
+    for name in ("S3", "S4"):
+        if name in stages:
+            results[name] = not_captured(AF3_NO_STAGE)
+    runners = {"S1": s1, "S2": s2, "S5": s5, "S6": s6}
+    for name, function in runners.items():
+        if name in stages:
+            results[name] = run_stage(f"alphafold3 {name}", function)
+    return results
+
+
+# --------------------------------------------------------------------------
 # CLI and table
 # --------------------------------------------------------------------------
 
-MODELS: dict[str, Callable[[Path, set[str]], dict[str, dict[str, Any]]]] = {
+MODELS: dict[str, Callable[..., dict[str, dict[str, Any]]]] = {
     "protenix": run_protenix,
     "boltz2": run_boltz2,
     "openfold3": run_openfold3,
     "esmfold2": run_esmfold2,
     "opendde": run_opendde,
+    "alphafold3": run_alphafold3,
 }
+
+#: Models compared against a second implementation rather than a CPU parity
+#: manifest; their table context comes from the record itself.
+NO_PARITY_MANIFEST = frozenset({"alphafold3"})
 
 
 def environment() -> dict[str, Any]:
@@ -3468,6 +3731,19 @@ def _manifest_context(model: str, report: Mapping[str, Any]) -> list[str]:
     if per_sample:
         values = ", ".join(f"{v:.4f}" for v in per_sample)
         lines.append(f"  * S6 all-atom RMSD per sample (A): {values}")
+    if model in NO_PARITY_MANIFEST:
+        cli = final.get("metrics", {}).get("cli_route", {}).get("per_sample")
+        if cli:
+            values = ", ".join(f"{row['max_abs_dxyz_angstrom']:.4g}" for row in cli)
+            lines.append(
+                f"  * CLI route (run_alphafold.py vs foldjax.cli), max |dxyz| per "
+                f"sample (A): {values}"
+            )
+        lines.append(
+            "  * no CPU parity manifest: the reference is DeepMind's "
+            "run_alphafold.py run on CPU beside FoldJAX, not a GPU capture"
+        )
+        return lines
     try:
         from tests.parity._manifest import load_manifest
 
