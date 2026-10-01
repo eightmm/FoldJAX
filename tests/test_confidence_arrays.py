@@ -9,6 +9,7 @@ arrays its program returned without inventing any.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -152,6 +153,52 @@ def test_a_sample_without_arrays_is_left_alone(tmp_path: Path) -> None:
     sample = PredictionSample(seed=1, metadata={"job": "x"})
     assert confidence_arrays.place(sample, tmp_path) is sample
     assert confidence_arrays.manifest_record([sample]) is None
+
+
+def test_a_run_places_the_archive_and_records_it_in_the_manifest(
+    tmp_path: Path,
+) -> None:
+    import foldjax
+    from foldjax.manifest import MANIFEST_NAME
+    from foldjax.registry import backend_override
+    from tests.test_manifest import _job, _Recorder, _weights
+
+    class _WithArrays(_Recorder):
+        def predict(self, request):
+            result = super().predict(request)
+            (sample,) = result.samples
+            confidence_arrays.write(
+                confidence_arrays.staged_path(sample.structure_path),
+                model="opendde",
+                arrays={"atom_plddt": np.full(4, 0.5)},
+                scales={"atom_plddt": "0-1"},
+                unavailable=confidence_arrays.AVAILABILITY["opendde"]["unavailable"],
+            )
+            metadata = confidence_arrays.sample_metadata(sample.structure_path)
+            return dataclasses.replace(
+                result, samples=(dataclasses.replace(sample, metadata=metadata),)
+            )
+
+    out = tmp_path / "out"
+    request = PredictionRequest(
+        model="opendde",
+        input=_job(tmp_path),
+        weights=_weights(tmp_path),
+        output_dir=out,
+        seed=17,
+        use_compile_cache=False,
+    )
+    with backend_override("opendde", _WithArrays):
+        result = foldjax.predict(request)
+
+    directory = out / "seed-17_sample-00"
+    assert load_confidence_arrays(directory)["atom_plddt"].tolist() == [0.5] * 4
+    assert result.samples[0].metadata["confidence_arrays"]["file"] == FILENAME
+    manifest = json.loads((out / MANIFEST_NAME).read_text())
+    assert manifest["confidence_arrays"]["arrays"] == ["atom_plddt"]
+    assert "pae" in manifest["confidence_arrays"]["unavailable"]
+    recorded = manifest["samples"][0]["metadata"]["confidence_arrays"]
+    assert recorded["file"] == FILENAME and "path" not in recorded
 
 
 @pytest.mark.parametrize("model", MODELS)
