@@ -8,11 +8,11 @@
     "jax_platforms": "cpu",
     "foldjax_home": "/home/jaemin/non-project/optimizing/foldjax/.foldjax",
     "cpu_affinity": 16,
-    "git_commit": "a2c3fef",
+    "git_commit": "c20f889",
     "jax": "0.11.1",
     "jaxlib": "0.11.1"
   },
-  "wall_s": 64.6,
+  "wall_s": 77.5,
   "stages": {
     "S1_features": {
       "status": "measured",
@@ -398,12 +398,12 @@
           }
         }
       },
-      "runtime_s": 2.0,
+      "runtime_s": 1.5,
       "notes": "The native side is the archive the capture ran, but the capture does not record which featurizer or document produced it, so a mismatch here does not by itself locate a port defect.",
       "source": {
-        "git": "a2c3fef",
+        "git": "c20f889",
         "cpu_affinity": 16,
-        "recorded": "2026-10-01 21:00:27"
+        "recorded": "2026-10-01 21:52:54"
       }
     },
     "S2_weights": {
@@ -572,51 +572,577 @@
         "checkpoint_tensors_not_loaded": [],
         "loaded_not_in_checkpoint": []
       },
-      "runtime_s": 4.9,
+      "runtime_s": 2.5,
       "notes": "ESM-C (the 25.4 GB language model) is not loaded or compared: S6 injects the native LM hidden states.",
       "source": {
-        "git": "a2c3fef",
+        "git": "c20f889",
         "cpu_affinity": 16,
-        "recorded": "2026-10-01 21:00:27"
+        "recorded": "2026-10-01 21:52:54"
       }
     },
     "S3_trunk": {
-      "status": "not_captured",
-      "condition": {},
-      "headline": {},
-      "metrics": {},
-      "runtime_s": null,
-      "notes": "The ESMFold2 capture stores no trunk boundary: tape.npz holds initial_pair_state (an input to the trunk) and the remaining tape draws, and upstream_confidence.npz / upstream_coords.npz are end-of-run outputs. Needs: a native capture of the folding-trunk output and the confidence-head inputs (see MISSING.md).",
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "stage_capture": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/esmfold2/protein_1ubq/native-A",
+        "input": "re-capture features.npz (bitwise equal to the stored capture's: True)",
+        "tape": "re-capture tape.npz (bitwise equal to the stored capture's: True) and its own upstream_lm.npz (LM not run)",
+        "samples_x_steps": "5 x released schedule",
+        "trunk_dtype": "bfloat16 (native CUDA bf16 autocast; replay settings)",
+        "compared_at": "the parcae_coda output (upstream's z after z.float(), the z_trunk sample() receives), the input embedding x_inputs (sample()'s s_inputs) and the distogram logits"
+      },
+      "headline": {
+        "metric": "relative RMS s_inputs / pair (z_trunk)",
+        "value": "3.317e-03 / 1.201e-02"
+      },
+      "metrics": {
+        "arrays": {
+          "single_inputs": {
+            "relative_rms": 0.0033171438594418977,
+            "max_abs": 0.03125,
+            "native_max_abs_value": 3.046875,
+            "native_key": "trunk.s_inputs"
+          },
+          "pair": {
+            "relative_rms": 0.01201048388199796,
+            "max_abs": 16.0,
+            "native_max_abs_value": 2400.0,
+            "native_key": "trunk.z_trunk"
+          },
+          "distogram_logits": {
+            "relative_rms": 0.011174867535706737,
+            "max_abs": 2.024871826171875,
+            "native_max_abs_value": 276.2290344238281,
+            "native_key": "trunk.distogram_logits"
+          }
+        },
+        "native_rerun_vs_stored_capture": {
+          "stored": "/home/jaemin/non-project/optimizing/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A",
+          "new": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/esmfold2/protein_1ubq/native-A",
+          "bitwise": {
+            "features.npz": {
+              "all_equal": true,
+              "arrays": {
+                "asym_id": true,
+                "atom_attention_mask": true,
+                "atom_to_token": true,
+                "deletion_mean": true,
+                "deletion_value": true,
+                "disto_cond": true,
+                "disto_cond_mask": true,
+                "distogram_atom_idx": true,
+                "entity_id": true,
+                "frames_idx": true,
+                "gt_coords": true,
+                "has_deletion": true,
+                "input_ids": true,
+                "is_resolved": true,
+                "mol_type": true,
+                "msa": true,
+                "msa_attention_mask": true,
+                "pocket_feature": true,
+                "ref_atom_name_chars": true,
+                "ref_charge": true,
+                "ref_element": true,
+                "ref_pos": true,
+                "ref_space_uid": true,
+                "res_type": true,
+                "residue_index": true,
+                "sym_id": true,
+                "token_attention_mask": true,
+                "token_bonds": true,
+                "token_index": true
+              }
+            },
+            "tape.npz": {
+              "all_equal": true,
+              "arrays": {
+                "diffusion_churn_normals": true,
+                "diffusion_initial_normal": true,
+                "diffusion_rotation_quaternions": true,
+                "diffusion_translations": true,
+                "initial_pair_state": true,
+                "lm_dropout_masks": true,
+                "msa_column_keep": true,
+                "msa_row_choices": true
+              }
+            }
+          },
+          "coordinates": {
+            "samples": 5,
+            "atoms": 601,
+            "all_atom_rmsd_angstrom": [
+              0.004490147028847651,
+              0.007587553309201866,
+              0.005977707304267232,
+              0.0036414544833228983,
+              0.004206100650697346
+            ],
+            "max_unaligned_displacement_angstrom": 0.0832450175931112,
+            "ca_atoms": 76,
+            "ca_rmsd_angstrom": [
+              0.0021627923391260026,
+              0.003858090460900002,
+              0.0024030452041495947,
+              0.0019150456854668027,
+              0.0018019273657337456
+            ]
+          },
+          "values_max_abs": {
+            "upstream_lm.npz:lm_hidden_states": 0.0,
+            "upstream_confidence.npz:plddt": 0.0016232728958129883,
+            "upstream_confidence.npz:pae": 0.5388498306274414,
+            "upstream_confidence.npz:ptm": 0.00040227174758911133,
+            "upstream_confidence.npz:complex_plddt": 0.0002434253692626953
+          },
+          "stored_rerun_floor_native_A_vs_B": {
+            "file": "/home/jaemin/non-project/optimizing/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A-vs-native-B.json",
+            "entity_rmsd": {
+              "entity=0|mol_type=0|asym=0": [
+                0.0058887726628031115,
+                0.005196109315905402,
+                0.004378401005013105,
+                0.0030816012317088502,
+                0.0038741851015566646
+              ]
+            },
+            "global_rmsd": [
+              0.0058887726628031115,
+              0.005196109315905402,
+              0.004378401005013105,
+              0.0030816012317088502,
+              0.0038741851015566646
+            ]
+          }
+        }
+      },
+      "runtime_s": 23.9,
+      "notes": "ESMFold2 has no single trunk output: x_inputs is the input embedding the sampler and confidence head read as their single input, so its row checks the input stage the trunk starts from.",
       "source": {
-        "git": "a2c3fef",
+        "git": "c20f889",
         "cpu_affinity": 16,
-        "recorded": "2026-10-01 21:00:27"
+        "recorded": "2026-10-01 21:52:54"
       }
     },
     "S4_diffusion": {
-      "status": "not_captured",
-      "condition": {},
-      "headline": {},
-      "metrics": {},
-      "runtime_s": null,
-      "notes": "The ESMFold2 capture stores no trunk boundary: tape.npz holds initial_pair_state (an input to the trunk) and the remaining tape draws, and upstream_confidence.npz / upstream_coords.npz are end-of-run outputs. Needs: a native capture of the folding-trunk output and the confidence-head inputs (see MISSING.md).",
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "stage_capture": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/esmfold2/protein_1ubq/native-A",
+        "input": "re-capture features.npz (bitwise equal to the stored capture's: True)",
+        "tape": "re-capture tape.npz (bitwise equal to the stored capture's: True) and its own upstream_lm.npz (LM not run)",
+        "samples_x_steps": "5 x released schedule",
+        "trunk_dtype": "n/a (native trunk injected)",
+        "diffusion_dtype": "float32 (port default; native sampler runs outside the trunk autocast)",
+        "injected_native": "stages.npz trunk.z_trunk at the parcae_coda output, trunk.s_inputs at inputs_embedding, trunk.relative_position_encoding at relative_position_encoding; tape.npz diffusion initial/churn normals, rotations, translations"
+      },
+      "headline": {
+        "metric": "per-sample all-atom / CA RMSD (A), worst sample",
+        "value": "0.0987 / 0.0788"
+      },
+      "metrics": {
+        "samples": 5,
+        "atoms": 601,
+        "all_atom_rmsd_angstrom": [
+          0.014758164162775684,
+          0.09873671387812322,
+          0.016517402334015985,
+          0.011588263156356611,
+          0.013589022810775082
+        ],
+        "max_unaligned_displacement_angstrom": 1.8433026534058912,
+        "ca_atoms": 76,
+        "ca_rmsd_angstrom": [
+          0.006411582160516072,
+          0.0788144711553757,
+          0.005415264275287762,
+          0.006216433908137443,
+          0.004628581731641784
+        ],
+        "injection_calls": {
+          "single_inputs": 1,
+          "relative_position_encoding": 1,
+          "pair": 1
+        },
+        "injected_width": {
+          "single_inputs": "float32",
+          "relative_position_encoding": "bfloat16 (exact)",
+          "pair": "bfloat16 (exact)"
+        },
+        "native_rerun_vs_stored_capture": {
+          "stored": "/home/jaemin/non-project/optimizing/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A",
+          "new": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/esmfold2/protein_1ubq/native-A",
+          "bitwise": {
+            "features.npz": {
+              "all_equal": true,
+              "arrays": {
+                "asym_id": true,
+                "atom_attention_mask": true,
+                "atom_to_token": true,
+                "deletion_mean": true,
+                "deletion_value": true,
+                "disto_cond": true,
+                "disto_cond_mask": true,
+                "distogram_atom_idx": true,
+                "entity_id": true,
+                "frames_idx": true,
+                "gt_coords": true,
+                "has_deletion": true,
+                "input_ids": true,
+                "is_resolved": true,
+                "mol_type": true,
+                "msa": true,
+                "msa_attention_mask": true,
+                "pocket_feature": true,
+                "ref_atom_name_chars": true,
+                "ref_charge": true,
+                "ref_element": true,
+                "ref_pos": true,
+                "ref_space_uid": true,
+                "res_type": true,
+                "residue_index": true,
+                "sym_id": true,
+                "token_attention_mask": true,
+                "token_bonds": true,
+                "token_index": true
+              }
+            },
+            "tape.npz": {
+              "all_equal": true,
+              "arrays": {
+                "diffusion_churn_normals": true,
+                "diffusion_initial_normal": true,
+                "diffusion_rotation_quaternions": true,
+                "diffusion_translations": true,
+                "initial_pair_state": true,
+                "lm_dropout_masks": true,
+                "msa_column_keep": true,
+                "msa_row_choices": true
+              }
+            }
+          },
+          "coordinates": {
+            "samples": 5,
+            "atoms": 601,
+            "all_atom_rmsd_angstrom": [
+              0.004490147028847651,
+              0.007587553309201866,
+              0.005977707304267232,
+              0.0036414544833228983,
+              0.004206100650697346
+            ],
+            "max_unaligned_displacement_angstrom": 0.0832450175931112,
+            "ca_atoms": 76,
+            "ca_rmsd_angstrom": [
+              0.0021627923391260026,
+              0.003858090460900002,
+              0.0024030452041495947,
+              0.0019150456854668027,
+              0.0018019273657337456
+            ]
+          },
+          "values_max_abs": {
+            "upstream_lm.npz:lm_hidden_states": 0.0,
+            "upstream_confidence.npz:plddt": 0.0016232728958129883,
+            "upstream_confidence.npz:pae": 0.5388498306274414,
+            "upstream_confidence.npz:ptm": 0.00040227174758911133,
+            "upstream_confidence.npz:complex_plddt": 0.0002434253692626953
+          },
+          "stored_rerun_floor_native_A_vs_B": {
+            "file": "/home/jaemin/non-project/optimizing/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A-vs-native-B.json",
+            "entity_rmsd": {
+              "entity=0|mol_type=0|asym=0": [
+                0.0058887726628031115,
+                0.005196109315905402,
+                0.004378401005013105,
+                0.0030816012317088502,
+                0.0038741851015566646
+              ]
+            },
+            "global_rmsd": [
+              0.0058887726628031115,
+              0.005196109315905402,
+              0.004378401005013105,
+              0.0030816012317088502,
+              0.0038741851015566646
+            ]
+          }
+        }
+      },
+      "runtime_s": 9.2,
+      "notes": "Reference: the re-capture's own sample_atom_coords (the coordinates its sampler returned from the trunk injected here).",
       "source": {
-        "git": "a2c3fef",
+        "git": "c20f889",
         "cpu_affinity": 16,
-        "recorded": "2026-10-01 21:00:27"
+        "recorded": "2026-10-01 21:52:54"
       }
     },
     "S5_confidence": {
-      "status": "not_captured",
-      "condition": {},
-      "headline": {},
-      "metrics": {},
-      "runtime_s": null,
-      "notes": "The ESMFold2 capture stores no trunk boundary: tape.npz holds initial_pair_state (an input to the trunk) and the remaining tape draws, and upstream_confidence.npz / upstream_coords.npz are end-of-run outputs. Needs: a native capture of the folding-trunk output and the confidence-head inputs (see MISSING.md).",
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "stage_capture": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/esmfold2/protein_1ubq/native-A",
+        "input": "re-capture features.npz (bitwise equal to the stored capture's: True)",
+        "tape": "re-capture tape.npz (bitwise equal to the stored capture's: True) and its own upstream_lm.npz (LM not run)",
+        "samples_x_steps": "5 x released schedule",
+        "trunk_dtype": "n/a (native trunk injected)",
+        "confidence_dtype": "float32 (port setting; the native head's own folding trunk runs under bf16 autocast)",
+        "injected_native": "stages.npz confidence_in.{s_inputs, z, relative_position_encoding, token_bonds_encoding} at their seams; confidence_in.x_pred replaces diffusion.sample"
+      },
+      "headline": {
+        "metric": "max |d| pLDDT (0-1) / PAE (A) / pTM",
+        "value": "0.00613 / 0.0339 / 8.91e-05"
+      },
+      "metrics": {
+        "complex_iplddt": {
+          "port_name": "complex_iplddt",
+          "max_abs": 0.0,
+          "relative_rms": 0.0,
+          "native_range": [
+            0.0,
+            0.0
+          ]
+        },
+        "complex_plddt": {
+          "port_name": "complex_plddt",
+          "max_abs": 7.355213165283203e-05,
+          "relative_rms": 5.894359431108121e-05,
+          "native_range": [
+            0.7892568707466125,
+            0.7997660636901855
+          ]
+        },
+        "iptm": {
+          "port_name": "iptm",
+          "max_abs": 0.0,
+          "relative_rms": 0.0,
+          "native_range": [
+            0.0,
+            0.0
+          ]
+        },
+        "pae": {
+          "port_name": "pae",
+          "max_abs": 0.03388786315917969,
+          "relative_rms": 0.0005953132932473371,
+          "native_range": [
+            0.25055795907974243,
+            29.036781311035156
+          ]
+        },
+        "pae_logits": {
+          "port_name": "pae_logits",
+          "max_abs": 0.056897640228271484,
+          "relative_rms": 0.0009574001531669466,
+          "native_range": [
+            -11.435120582580566,
+            11.473010063171387
+          ]
+        },
+        "pair_chains_iptm": {
+          "port_name": "pair_chains_iptm",
+          "max_abs": 4.8279762268066406e-05,
+          "relative_rms": 4.940755613662804e-05,
+          "native_range": [
+            0.562576949596405,
+            0.5824204683303833
+          ]
+        },
+        "pde": {
+          "port_name": "pde",
+          "max_abs": 0.035315513610839844,
+          "relative_rms": 0.0011328064193058707,
+          "native_range": [
+            0.31027117371559143,
+            8.051109313964844
+          ]
+        },
+        "pde_logits": {
+          "port_name": "pde_logits",
+          "max_abs": 0.040047645568847656,
+          "relative_rms": 0.000738458219702717,
+          "native_range": [
+            -9.753350257873535,
+            4.0615234375
+          ]
+        },
+        "plddt": {
+          "port_name": "plddt",
+          "max_abs": 0.006131172180175781,
+          "relative_rms": 0.0005002193352975258,
+          "native_range": [
+            0.4805245101451874,
+            0.8778925538063049
+          ]
+        },
+        "plddt_ca": {
+          "port_name": "plddt_ca",
+          "max_abs": 0.007207214832305908,
+          "relative_rms": 0.0005530050639967808,
+          "native_range": [
+            0.47819238901138306,
+            0.8906038999557495
+          ]
+        },
+        "plddt_logits": {
+          "port_name": "plddt_logits",
+          "max_abs": 0.5292959213256836,
+          "relative_rms": 0.0028103903436856796,
+          "native_range": [
+            -16.994258880615234,
+            5.643123626708984
+          ]
+        },
+        "plddt_per_atom": {
+          "port_name": "plddt_per_atom",
+          "max_abs": 0.01145017147064209,
+          "relative_rms": 0.000688480393452322,
+          "native_range": [
+            0.3859432339668274,
+            0.8952862620353699
+          ]
+        },
+        "ptm": {
+          "port_name": "ptm",
+          "max_abs": 8.910894393920898e-05,
+          "relative_rms": 6.059277505816644e-05,
+          "native_range": [
+            0.7280901670455933,
+            0.7394496202468872
+          ]
+        },
+        "resolved_logits": {
+          "port_name": "resolved_logits",
+          "max_abs": 0.2395174503326416,
+          "relative_rms": 0.004517399169010641,
+          "native_range": [
+            -4.878693103790283,
+            4.848629951477051
+          ]
+        },
+        "injection_calls": {
+          "single_inputs": 1,
+          "relative_position_encoding": 1,
+          "token_bonds_encoding": 1,
+          "pair": 1,
+          "coordinates": 1
+        },
+        "injected_width": {
+          "single_inputs": "float32",
+          "relative_position_encoding": "bfloat16 (exact)",
+          "token_bonds_encoding": "bfloat16 (exact)",
+          "pair": "bfloat16 (exact)",
+          "coordinates": "float32"
+        },
+        "native_rerun_vs_stored_capture": {
+          "stored": "/home/jaemin/non-project/optimizing/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A",
+          "new": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/esmfold2/protein_1ubq/native-A",
+          "bitwise": {
+            "features.npz": {
+              "all_equal": true,
+              "arrays": {
+                "asym_id": true,
+                "atom_attention_mask": true,
+                "atom_to_token": true,
+                "deletion_mean": true,
+                "deletion_value": true,
+                "disto_cond": true,
+                "disto_cond_mask": true,
+                "distogram_atom_idx": true,
+                "entity_id": true,
+                "frames_idx": true,
+                "gt_coords": true,
+                "has_deletion": true,
+                "input_ids": true,
+                "is_resolved": true,
+                "mol_type": true,
+                "msa": true,
+                "msa_attention_mask": true,
+                "pocket_feature": true,
+                "ref_atom_name_chars": true,
+                "ref_charge": true,
+                "ref_element": true,
+                "ref_pos": true,
+                "ref_space_uid": true,
+                "res_type": true,
+                "residue_index": true,
+                "sym_id": true,
+                "token_attention_mask": true,
+                "token_bonds": true,
+                "token_index": true
+              }
+            },
+            "tape.npz": {
+              "all_equal": true,
+              "arrays": {
+                "diffusion_churn_normals": true,
+                "diffusion_initial_normal": true,
+                "diffusion_rotation_quaternions": true,
+                "diffusion_translations": true,
+                "initial_pair_state": true,
+                "lm_dropout_masks": true,
+                "msa_column_keep": true,
+                "msa_row_choices": true
+              }
+            }
+          },
+          "coordinates": {
+            "samples": 5,
+            "atoms": 601,
+            "all_atom_rmsd_angstrom": [
+              0.004490147028847651,
+              0.007587553309201866,
+              0.005977707304267232,
+              0.0036414544833228983,
+              0.004206100650697346
+            ],
+            "max_unaligned_displacement_angstrom": 0.0832450175931112,
+            "ca_atoms": 76,
+            "ca_rmsd_angstrom": [
+              0.0021627923391260026,
+              0.003858090460900002,
+              0.0024030452041495947,
+              0.0019150456854668027,
+              0.0018019273657337456
+            ]
+          },
+          "values_max_abs": {
+            "upstream_lm.npz:lm_hidden_states": 0.0,
+            "upstream_confidence.npz:plddt": 0.0016232728958129883,
+            "upstream_confidence.npz:pae": 0.5388498306274414,
+            "upstream_confidence.npz:ptm": 0.00040227174758911133,
+            "upstream_confidence.npz:complex_plddt": 0.0002434253692626953
+          },
+          "stored_rerun_floor_native_A_vs_B": {
+            "file": "/home/jaemin/non-project/optimizing/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A-vs-native-B.json",
+            "entity_rmsd": {
+              "entity=0|mol_type=0|asym=0": [
+                0.0058887726628031115,
+                0.005196109315905402,
+                0.004378401005013105,
+                0.0030816012317088502,
+                0.0038741851015566646
+              ]
+            },
+            "global_rmsd": [
+              0.0058887726628031115,
+              0.005196109315905402,
+              0.004378401005013105,
+              0.0030816012317088502,
+              0.0038741851015566646
+            ]
+          }
+        }
+      },
+      "runtime_s": 4.4,
+      "notes": "Reference: the re-capture's confidence_head outputs (forward hook), from the inputs injected here.",
       "source": {
-        "git": "a2c3fef",
+        "git": "c20f889",
         "cpu_affinity": 16,
-        "recorded": "2026-10-01 21:00:27"
+        "recorded": "2026-10-01 21:52:54"
       }
     },
     "S6_final": {
@@ -811,12 +1337,12 @@
           }
         }
       },
-      "runtime_s": 55.5,
+      "runtime_s": 31.8,
       "notes": "end_to_end_confidence compares the replay's own confidence outputs (port trunk, port coordinates) with upstream_confidence.npz; it is not S5, which needs the native trunk and coordinates injected.",
       "source": {
-        "git": "a2c3fef",
+        "git": "c20f889",
         "cpu_affinity": 16,
-        "recorded": "2026-10-01 21:00:27"
+        "recorded": "2026-10-01 21:52:54"
       }
     }
   }
