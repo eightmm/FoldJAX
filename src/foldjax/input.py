@@ -200,6 +200,84 @@ _USE_TEMPLATE_MODELS = frozenset({"opendde", "protenix"})
 IGNORE_TEMPLATES = "ignore_templates"
 
 
+#: The constraint counterpart of ``IGNORE_TEMPLATES``. Only native input can
+#: carry a constraint -- the common schema has no field for one -- so unlike
+#: the two options above it governs the native document: true by default
+#: (drop, warn, record under ``ignored_constraints``), ``false`` refuses it.
+IGNORE_CONSTRAINTS = "ignore_constraints"
+
+#: Backends whose upstream reads no native ``constraint`` at inference. OpenDDE
+#: shares Protenix's featurizer, which builds ``constraint_feature``, but its
+#: model has no constraint embedder, and upstream's inference build warns and
+#: ignores the field (OpenDDE 1.1.1 ``opendde/data/inference/
+#: json_to_feature.py:28-32``; ``docs/infer_json_format.md`` "Unsupported
+#: `constraint`"; ``config/model_registry.py`` lists Constraint as x).
+_IGNORED_CONSTRAINT_MODELS = frozenset({"opendde"})
+
+
+def accepts_ignore_constraints(model: str) -> bool:
+    """Whether ``IGNORE_CONSTRAINTS`` is a meaningful option for ``model``."""
+    return model in _IGNORED_CONSTRAINT_MODELS
+
+
+def native_ignored_constraints(path: Path, model: str) -> list[dict[str, Any]] | None:
+    """One record per native job whose ``constraint`` ``model`` never reads.
+
+    None when ``model`` reads constraints (or has no such field), so the
+    manifest keeps "not inspected" distinct from "inspected, nothing dropped".
+    An empty constraint carries nothing and is not recorded, the rule
+    ``_drop_fields_opendde_ignores`` applies to an empty path.
+    """
+    if model not in _IGNORED_CONSTRAINT_MODELS:
+        return None
+    try:
+        document = read_job_document(Path(path))
+    except (OSError, ValueError):
+        return []
+    jobs = document if isinstance(document, list) else [document]
+    records: list[dict[str, Any]] = []
+    for index, job in enumerate(jobs):
+        if not isinstance(job, Mapping):
+            continue
+        constraint = job.get("constraint")
+        if constraint in (None, {}, [], ""):
+            continue
+        records.append(
+            {
+                "job": str(job.get("name") or index),
+                "field": "constraint",
+                "keys": (
+                    sorted(map(str, constraint))
+                    if isinstance(constraint, Mapping)
+                    else []
+                ),
+                "reason": (
+                    f"{model} reads no constraint at inference (upstream's "
+                    "inference build warns and ignores it); ignored, as "
+                    "upstream does"
+                ),
+            }
+        )
+    return records
+
+
+def refuse_ignored_constraints(path: Path, model: str) -> None:
+    """Refuse a native job whose constraint ``model`` would discard."""
+    records = native_ignored_constraints(path, model) or []
+    if not records:
+        return
+    jobs = ", ".join(repr(record["job"]) for record in records)
+    _reject(
+        model,
+        "a constraint",
+        f"job(s) {jobs} in {path} carry one, but upstream {model}'s inference "
+        "build ignores the constraint field and only covalent_bonds reach the "
+        "model. Remove it, or unset "
+        f"{IGNORE_CONSTRAINTS}=false to run without it as upstream does; the "
+        "run manifest then records the drop under ignored_constraints",
+    )
+
+
 def accepts_ignore_nucleic_msa(model: str) -> bool:
     """Whether ``IGNORE_NUCLEIC_MSA`` is a meaningful option for ``model``."""
     return model in _NUCLEIC_MSA_READ
@@ -1299,7 +1377,10 @@ def common_schema_features(model: str) -> tuple[str, ...]:
 #:   (data/parse/schema.py) and Protenix ``constraint`` (featurize_json.py,
 #:   embedded by trunk_blocks/embedders.py ``constraint_embedder``; a checkpoint
 #:   without constraint weights refuses them). Boltz-2's ``bond`` constraint is
-#:   the common ``bonds`` and is not listed.
+#:   the common ``bonds`` and is not listed. OpenDDE shares the Protenix
+#:   featurizer but not the embedder, and its upstream inference build ignores
+#:   ``constraint`` (``_IGNORED_CONSTRAINT_MODELS``), so OpenDDE does not list
+#:   them: the port drops the field as upstream does.
 #: - ``cyclic_polymer``: Boltz-2 and OpenFold3 ``cyclic`` chains.
 #:
 #: ESMFold2 has no native dialect: it reads the common document itself.

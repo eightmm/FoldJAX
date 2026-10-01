@@ -413,16 +413,22 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
                 "in the base install and do not import PyTorch. Native "
                 "templatesPath and RNA unpairedMsaPath are used when the native "
                 "options use_template=true and use_rna_msa=true are selected; "
-                "both retain upstream's released false defaults."
+                "both retain upstream's released false defaults, and without "
+                "them the field is dropped with a warning. A job's constraint "
+                "is never read, as upstream's inference build reads none: it is "
+                "dropped with a warning and recorded under ignored_constraints, "
+                "or refused with ignore_constraints=false."
             )
         )
         common_requirement = InputRequirement(
             notes=(
                 "NumPy/Gemmi/RDKit featurization and JAX prediction are included "
                 "in the base install and do not import PyTorch. FoldJAX common "
-                "inputs can carry mapped templates and RNA unpaired MSAs when "
-                "their matching native options are true; otherwise they are "
-                "rejected before materialization."
+                "inputs can carry mapped templates and RNA unpaired MSAs, read "
+                "when their matching native options are true; otherwise they "
+                "are dropped with a warning and recorded under "
+                "ignored_templates or ignored_msas, or refused with "
+                "ignore_templates=false or ignore_nucleic_msa=false."
             )
         )
         return ModelCapabilities(

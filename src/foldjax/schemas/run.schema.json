@@ -61,6 +61,11 @@
       "type": ["array", "null"],
       "items": {"$ref": "#/$defs/ignored"}
     },
+    "ignored_constraints": {
+      "description": "Native jobs whose constraint the backend never reads (OpenDDE) and that were run without it; null where the backend has no such gate or the input was common-schema, which cannot carry one. Optional: absent from manifests written before it existed.",
+      "type": ["array", "null"],
+      "items": {"$ref": "#/$defs/ignored"}
+    },
     "weights": {
       "type": "object",
       "required": ["path", "profile", "label", "identity"],

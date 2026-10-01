@@ -30,9 +30,11 @@ from foldjax.cache import (
     weight_identity,
 )
 from foldjax.input import (
+    IGNORE_CONSTRAINTS,
     IGNORE_NUCLEIC_MSA,
     IGNORE_TEMPLATES,
     materialize_native_input,
+    native_ignored_constraints,
     read_job_document,
 )
 from foldjax.manifest import (
@@ -1156,9 +1158,18 @@ def _predict_once(
         raise ValueError(
             f"{backend.name} does not support input format {request.input_format!r}"
         )
+    # A native constraint the backend's upstream never reads: the featurizer
+    # drops it with a warning, and this records it. Asked of the caller's
+    # input, since a common job cannot carry one. `ignore_constraints=false`
+    # was already refused by `validate_request` above.
+    ignored_constraints = (
+        native_ignored_constraints(asked.input, backend.name)
+        if asked.input_format != "foldjax"
+        else None
+    )
     # Consumed by the translation above; no native runner takes it. `asked`
     # keeps it, so the manifest's options still record the choice.
-    consumed = {IGNORE_NUCLEIC_MSA, IGNORE_TEMPLATES}
+    consumed = {IGNORE_NUCLEIC_MSA, IGNORE_TEMPLATES, IGNORE_CONSTRAINTS}
     if consumed & set(request.options):
         request = dataclasses.replace(
             request,
@@ -1250,6 +1261,7 @@ def _predict_once(
         cost=cost,
         ignored_msas=ignored_msas,
         ignored_templates=ignored_templates,
+        ignored_constraints=ignored_constraints,
     )
     return result
 

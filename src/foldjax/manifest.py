@@ -1191,6 +1191,7 @@ def describe_run(
     directory: Path | None = None,
     ignored_msas: list[dict[str, Any]] | None = None,
     ignored_templates: list[dict[str, Any]] | None = None,
+    ignored_constraints: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the manifest for one finished prediction.
 
@@ -1204,6 +1205,9 @@ def describe_run(
     input left out (``ignore_nucleic_msa``); ``None`` when the job was not
     common-schema input, whose alignments FoldJAX does not inspect.
     ``ignored_templates`` does the same for templates (``ignore_templates``).
+    ``ignored_constraints`` lists native jobs whose ``constraint`` the backend
+    never reads (``ignore_constraints``); ``None`` where the backend has no
+    such gate or the input was common-schema, which cannot carry one.
     """
     from foldjax import __version__, confidence_arrays
     from foldjax.cache import runtime_profile, weight_identity
@@ -1256,6 +1260,11 @@ def describe_run(
         "ignored_templates": (
             [dict(record) for record in ignored_templates]
             if ignored_templates is not None
+            else None
+        ),
+        "ignored_constraints": (
+            [dict(record) for record in ignored_constraints]
+            if ignored_constraints is not None
             else None
         ),
         "weights": {
@@ -1322,6 +1331,7 @@ def write(
     cost: dict[str, Any] | None = None,
     ignored_msas: list[dict[str, Any]] | None = None,
     ignored_templates: list[dict[str, Any]] | None = None,
+    ignored_constraints: list[dict[str, Any]] | None = None,
 ) -> Path | None:
     """Write the manifest, or return None if the directory cannot take it.
 
@@ -1345,6 +1355,7 @@ def write(
                         directory=directory,
                         ignored_msas=ignored_msas,
                         ignored_templates=ignored_templates,
+                        ignored_constraints=ignored_constraints,
                     ),
                     indent=2,
                     sort_keys=True,

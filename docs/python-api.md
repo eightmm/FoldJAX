@@ -283,7 +283,10 @@ routes are deliberately opt-in: set `options.use_template=true` and/or
 that supplies either input without its opt-in folds without it, as upstream
 does, with a `UserWarning` and a record in the run manifest's
 `ignored_templates` or `ignored_msas`; `options.ignore_templates=false` or
-`options.ignore_nucleic_msa=false` rejects such a job instead. Two fields
+`options.ignore_nucleic_msa=false` rejects such a job instead. A native
+OpenDDE job's `constraint` is never read, as upstream's inference build reads
+none: it is dropped with a warning and recorded under `ignored_constraints`,
+and `options.ignore_constraints=false` rejects it instead. Two fields
 further describe the *common schema* route: `common_schema_features` is what
 this backend's dialect can carry from a
 FoldJAX job document, and `native_only_features` names abilities the model has

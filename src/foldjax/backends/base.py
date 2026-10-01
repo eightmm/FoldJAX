@@ -239,11 +239,30 @@ class Backend(ABC):
         # Consumed while the common document is translated, never by the
         # native runner, so it leaves the option set before the native checks.
         from foldjax.input import (
+            IGNORE_CONSTRAINTS,
             IGNORE_NUCLEIC_MSA,
             IGNORE_TEMPLATES,
+            accepts_ignore_constraints,
             accepts_ignore_nucleic_msa,
             accepts_ignore_templates,
+            refuse_ignored_constraints,
         )
+
+        # The mirror image of the two below: a constraint has no common-schema
+        # field, so this option governs native input and is meaningless on a
+        # common job. ``false`` is checked here, where `foldjax plan` sees it.
+        if IGNORE_CONSTRAINTS in options and accepts_ignore_constraints(self.name):
+            ignore_constraints = _strict_boolean(
+                options.pop(IGNORE_CONSTRAINTS), name=IGNORE_CONSTRAINTS
+            )
+            if request.input_format == "foldjax":
+                if ignore_constraints:
+                    raise ValueError(
+                        f"{IGNORE_CONSTRAINTS} applies to native {self.name} "
+                        "input; the FoldJAX common schema has no constraint field"
+                    )
+            elif not ignore_constraints:
+                refuse_ignored_constraints(request.input, self.name)
 
         for option, accepts in (
             (IGNORE_NUCLEIC_MSA, accepts_ignore_nucleic_msa),

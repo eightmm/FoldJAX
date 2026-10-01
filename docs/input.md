@@ -29,10 +29,11 @@ alignment or a structural template that the backend's upstream ignores (see
 [templates](#templates-and-binding-affinity) below) is dropped as upstream drops it, but never
 silently: FoldJAX warns and records it in `foldjax_run.json` under
 `ignored_msas` or `ignored_templates`, and `ignore_nucleic_msa=false` /
-`ignore_templates=false` refuse the job instead. Everything else -- chemistry,
-bonds, modifications, affinity, a template form the backend cannot take -- is
-refused, because discarding it would change the science without changing the
-exit code.
+`ignore_templates=false` refuse the job instead. A native OpenDDE job's
+`constraint`, which upstream's inference build never reads, follows the same
+rule (below). Everything else -- chemistry, bonds, modifications, affinity, a
+template form the backend cannot take -- is refused, because discarding it
+would change the science without changing the exit code.
 
 The same document can be built in Python instead of written by hand:
 
@@ -213,6 +214,21 @@ ligands read from a file (Protenix, OpenDDE, OpenFold3), pocket and contact
 constraints (Boltz-2, Protenix) and cyclic polymers (Boltz-2, OpenFold3). The
 common schema has no field for any of them; pass the model's native file
 instead.
+
+OpenDDE is absent from that constraint list on purpose. It shares Protenix's
+native dialect and featurizer, but its model has no constraint embedder, and
+upstream's inference build warns and ignores a job's `constraint` (OpenDDE
+1.1.1 `opendde/data/inference/json_to_feature.py:28-32`, and its
+`docs/infer_json_format.md`, "Unsupported `constraint`"). A native OpenDDE job
+that carries one is therefore folded without it, as upstream folds it, but not
+silently: the featurizer drops the field before the shared Protenix code can
+build a `constraint_feature` from it, warns, and the run manifest lists the job
+under `ignored_constraints` (an empty list when no job had one, null for every
+other backend and for common-schema input, which cannot carry a constraint).
+`--option ignore_constraints=false` refuses such a job instead, at `plan` as
+well as `predict`. The option governs native input only: `true` on a
+common-schema job is refused as meaningless. Covalent links reach OpenDDE
+through `covalent_bonds` (the common `bonds`), as upstream says.
 
 From a bare sequence the same affinity request is `--affinity-binder CHAIN`,
 naming which chain of the generated job to score. It reaches Boltz-2 alone, for

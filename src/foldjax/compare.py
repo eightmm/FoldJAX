@@ -10,8 +10,9 @@ reference atoms, so it is directional and the matrix is written in full rather
 than as a mirrored triangle. There is no TM-score.
 
 Each structure row carries what its model never read (``ignored_msas``,
-``ignored_templates``): a "matched-input" panel is only matched in what the
-models were given, and those columns say where it was not.
+``ignored_templates``, ``ignored_constraints``): a "matched-input" panel is
+only matched in what the models were given, and those columns say where it
+was not.
 """
 
 from __future__ import annotations
@@ -191,6 +192,7 @@ def compare_rows(
                         "seed_source": member.get("seed_source"),
                         "ignored_msas": member.get("ignored_msas"),
                         "ignored_templates": member.get("ignored_templates"),
+                        "ignored_constraints": member.get("ignored_constraints"),
                     }
                     for member in members
                 ],
@@ -316,6 +318,7 @@ def compare_directory(
                 "seed_source",
                 "ignored_msas",
                 "ignored_templates",
+                "ignored_constraints",
                 "structure_path",
                 "structure_sha256",
             ),

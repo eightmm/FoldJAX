@@ -306,6 +306,18 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **A native OpenDDE job's `constraint` is no longer dropped silently.** The
+  Protenix featurizer OpenDDE shares built a `constraint_feature` from it that
+  no OpenDDE module reads, so the job ran as if the field were absent and said
+  nothing. Upstream's inference build ignores the field too, with a warning
+  (OpenDDE 1.1.1 `opendde/data/inference/json_to_feature.py:28-32`), so the
+  port now does what the other ignored inputs do: it drops the field before
+  featurization, warns, and records the job in the run manifest's new
+  `ignored_constraints` (also a `foldjax show --format` and `foldjax compare`
+  column). `--option ignore_constraints=false` refuses such a job instead,
+  at `plan` as well as `predict`. OpenDDE's capability notes no longer say
+  common-schema templates and RNA alignments are refused at the released
+  defaults; they are dropped with a warning and recorded.
 - **Protenix and OpenDDE no longer fill host memory with template-free
   geometry.** A query with no template hits used to allocate all four template
   slots' quadratic geometry densely on the host -- 30 GB at 6,568 tokens --

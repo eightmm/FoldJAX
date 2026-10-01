@@ -83,6 +83,30 @@ def _drop_fields_opendde_ignores(
         )
 
 
+def _drop_constraint(job: dict[str, Any]) -> None:
+    """Remove the job's ``constraint`` before the shared featurizer sees it.
+
+    The Protenix featurizer this port shares would validate it and build a
+    ``constraint_feature`` that no OpenDDE module reads. Upstream's inference
+    build ignores the field outright, with a warning and without inspecting it
+    (OpenDDE 1.1.1 ``opendde/data/inference/json_to_feature.py:28-32``), so it
+    is dropped here unread, as there. An empty one carries nothing and is
+    dropped without a word. ``ignore_constraints=false`` refuses such a job
+    before it gets this far (``foldjax.input.refuse_ignored_constraints``).
+    """
+    import warnings
+
+    if not job.pop("constraint", None):
+        return
+    warnings.warn(
+        "OpenDDE ignores the job's 'constraint': its inference build reads "
+        "only covalent_bonds (opendde/data/inference/json_to_feature.py). "
+        "Dropping it here so the prediction matches upstream's.",
+        RuntimeWarning,
+        stacklevel=4,
+    )
+
+
 _NO_TWIN_TOKEN_IDX = -1
 _PROTEIN_BACKBONE_ATOMS = frozenset({"N", "CA", "C", "O", "OXT"})
 _NUCLEIC_BACKBONE_ATOMS = frozenset(
@@ -198,6 +222,7 @@ def _prepare_job(
 ) -> dict[str, Any]:
     prepared = deepcopy(job)
     prepared.pop("assembly_id", None)
+    _drop_constraint(prepared)
 
     sequences = prepared.get("sequences")
     if not isinstance(sequences, list):
