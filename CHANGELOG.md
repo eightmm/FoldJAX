@@ -10,6 +10,8 @@ unless it says so here, in its own paragraph.
 
 ## Unreleased
 
+## 0.4.0 (2026-10-02)
+
 ### Added
 
 - **A versioned output contract** (`schema_version` 1.0). Every
