@@ -1,0 +1,1803 @@
+{
+  "model": "boltz2",
+  "capture": "/home/jaemin/non-project/optimizing/foldjax-bench/boltz2-master-native-20260909/protein_dna_ion_1aay/native-A",
+  "environment": {
+    "host": "master",
+    "python": "3.13.15",
+    "omp_num_threads": "16",
+    "jax_platforms": "cpu",
+    "foldjax_home": "/home/jaemin/non-project/optimizing/foldjax/.foldjax",
+    "cpu_affinity": 16,
+    "git_commit": "9b7aeab",
+    "jax": "0.11.1",
+    "jaxlib": "0.11.1"
+  },
+  "wall_s": 674.4,
+  "stages": {
+    "S1_features": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "port_featurizer": "foldjax.models.boltz2.data.featurize.featurize_yaml (torch-free), re-run in this checkout",
+        "input_document": "/home/jaemin/non-project/optimizing/foldjax-bench/upstream-default-multimodal-n5-20260904/work/protein_dna_ion_1aay/foldjax/boltz2/inputs/boltz2_input.yaml",
+        "seed": 101,
+        "native": "features.npz (upstream boltz b1ebfc4 featurizer)",
+        "name_mapping": "identical names; every key both sides emit",
+        "random_draws": "NOT replayed: upstream's reference-conformer augmentation draws (preprocessing-tape.npz) have no port injection hook, so ref_pos differs by a rigid motion per conformer"
+      },
+      "headline": {
+        "metric": "min exact-match fraction (categorical) / max |d| (float)",
+        "value": "1.0 / 13 (ref_pos after per-conformer Kabsch: 1.4e-06)"
+      },
+      "metrics": {
+        "summary": {
+          "arrays_compared": 77,
+          "categorical_arrays": 47,
+          "float_arrays": 30,
+          "shape_mismatches": [],
+          "min_exact_match_fraction": 1.0,
+          "arrays_not_exact": [],
+          "max_float_max_abs": 12.96739912033081,
+          "max_float_relative_rms": 1.4432575430436119
+        },
+        "only_in_port": [],
+        "only_in_native": [
+          "disto_target"
+        ],
+        "ref_pos_max_abs_after_per_conformer_kabsch": 1.413219054224868e-06,
+        "arrays": {
+          "affinity_token_mask": {
+            "port_shape": [
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              115
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "asym_id": {
+            "port_shape": [
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              115
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "atom_backbone_feat": {
+            "port_shape": [
+              1,
+              1216,
+              17
+            ],
+            "native_shape": [
+              1,
+              1216,
+              17
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "atom_pad_mask": {
+            "port_shape": [
+              1,
+              1216
+            ],
+            "native_shape": [
+              1,
+              1216
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "atom_resolved_mask": {
+            "port_shape": [
+              1,
+              1216
+            ],
+            "native_shape": [
+              1,
+              1216
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "atom_to_token": {
+            "port_shape": [
+              1,
+              1216,
+              115
+            ],
+            "native_shape": [
+              1,
+              1216,
+              115
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "bfactor": {
+            "port_shape": [
+              1,
+              1216
+            ],
+            "native_shape": [
+              1,
+              1216
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "chiral_atom_index": {
+            "port_shape": [
+              1,
+              4,
+              0
+            ],
+            "native_shape": [
+              1,
+              4,
+              0
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "chiral_atom_orientations": {
+            "port_shape": [
+              1,
+              0
+            ],
+            "native_shape": [
+              1,
+              0
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "chiral_reference_mask": {
+            "port_shape": [
+              1,
+              0
+            ],
+            "native_shape": [
+              1,
+              0
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "connected_atom_index": {
+            "port_shape": [
+              1,
+              2,
+              0
+            ],
+            "native_shape": [
+              1,
+              2,
+              0
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "connected_chain_index": {
+            "port_shape": [
+              1,
+              2,
+              0
+            ],
+            "native_shape": [
+              1,
+              2,
+              0
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "contact_conditioning": {
+            "port_shape": [
+              1,
+              115,
+              115,
+              5
+            ],
+            "native_shape": [
+              1,
+              115,
+              115,
+              5
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "contact_negation_mask": {
+            "port_shape": [
+              1,
+              0
+            ],
+            "native_shape": [
+              1,
+              0
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "contact_pair_index": {
+            "port_shape": [
+              1,
+              2,
+              0
+            ],
+            "native_shape": [
+              1,
+              2,
+              0
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "contact_threshold": {
+            "port_shape": [
+              1,
+              115,
+              115
+            ],
+            "native_shape": [
+              1,
+              115,
+              115
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "contact_thresholds": {
+            "port_shape": [
+              1,
+              0
+            ],
+            "native_shape": [
+              1,
+              0
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "contact_union_index": {
+            "port_shape": [
+              1,
+              0
+            ],
+            "native_shape": [
+              1,
+              0
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "coords": {
+            "port_shape": [
+              1,
+              1,
+              1216,
+              3
+            ],
+            "native_shape": [
+              1,
+              1,
+              1216,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "cyclic_period": {
+            "port_shape": [
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              115
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "deletion_mean": {
+            "port_shape": [
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              115
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "deletion_value": {
+            "port_shape": [
+              1,
+              8192,
+              115
+            ],
+            "native_shape": [
+              1,
+              8192,
+              115
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "disto_center": {
+            "port_shape": [
+              1,
+              115,
+              3
+            ],
+            "native_shape": [
+              1,
+              115,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "disto_coords_ensemble": {
+            "port_shape": [
+              1,
+              1,
+              115,
+              3
+            ],
+            "native_shape": [
+              1,
+              1,
+              115,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "ensemble_ref_idxs": {
+            "port_shape": [
+              1,
+              1
+            ],
+            "native_shape": [
+              1,
+              1
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "entity_id": {
+            "port_shape": [
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              115
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "frame_resolved_mask": {
+            "port_shape": [
+              1,
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              1,
+              115
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "frames_idx": {
+            "port_shape": [
+              1,
+              1,
+              115,
+              3
+            ],
+            "native_shape": [
+              1,
+              1,
+              115,
+              3
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "has_deletion": {
+            "port_shape": [
+              1,
+              8192,
+              115
+            ],
+            "native_shape": [
+              1,
+              8192,
+              115
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "method_feature": {
+            "port_shape": [
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              115
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "modified": {
+            "port_shape": [
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              115
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "mol_type": {
+            "port_shape": [
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              115
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "msa": {
+            "port_shape": [
+              1,
+              8192,
+              115
+            ],
+            "native_shape": [
+              1,
+              8192,
+              115
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "msa_mask": {
+            "port_shape": [
+              1,
+              8192,
+              115
+            ],
+            "native_shape": [
+              1,
+              8192,
+              115
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "msa_paired": {
+            "port_shape": [
+              1,
+              8192,
+              115
+            ],
+            "native_shape": [
+              1,
+              8192,
+              115
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "planar_bond_index": {
+            "port_shape": [
+              1,
+              6,
+              0
+            ],
+            "native_shape": [
+              1,
+              6,
+              0
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "planar_ring_5_index": {
+            "port_shape": [
+              1,
+              5,
+              0
+            ],
+            "native_shape": [
+              1,
+              5,
+              0
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "planar_ring_6_index": {
+            "port_shape": [
+              1,
+              6,
+              0
+            ],
+            "native_shape": [
+              1,
+              6,
+              0
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "plddt": {
+            "port_shape": [
+              1,
+              1216
+            ],
+            "native_shape": [
+              1,
+              1216
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "profile": {
+            "port_shape": [
+              1,
+              115,
+              33
+            ],
+            "native_shape": [
+              1,
+              115,
+              33
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "query_to_template": {
+            "port_shape": [
+              1,
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              1,
+              115
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "r_set_to_rep_atom": {
+            "port_shape": [
+              1,
+              112,
+              1216
+            ],
+            "native_shape": [
+              1,
+              112,
+              1216
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "rdkit_bounds_angle_mask": {
+            "port_shape": [
+              1,
+              0
+            ],
+            "native_shape": [
+              1,
+              0
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "rdkit_bounds_bond_mask": {
+            "port_shape": [
+              1,
+              0
+            ],
+            "native_shape": [
+              1,
+              0
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "rdkit_bounds_index": {
+            "port_shape": [
+              1,
+              2,
+              0
+            ],
+            "native_shape": [
+              1,
+              2,
+              0
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "rdkit_lower_bounds": {
+            "port_shape": [
+              1,
+              0
+            ],
+            "native_shape": [
+              1,
+              0
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "rdkit_upper_bounds": {
+            "port_shape": [
+              1,
+              0
+            ],
+            "native_shape": [
+              1,
+              0
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "ref_atom_name_chars": {
+            "port_shape": [
+              1,
+              1216,
+              4,
+              64
+            ],
+            "native_shape": [
+              1,
+              1216,
+              4,
+              64
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "ref_charge": {
+            "port_shape": [
+              1,
+              1216
+            ],
+            "native_shape": [
+              1,
+              1216
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "ref_chirality": {
+            "port_shape": [
+              1,
+              1216
+            ],
+            "native_shape": [
+              1,
+              1216
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "ref_element": {
+            "port_shape": [
+              1,
+              1216,
+              128
+            ],
+            "native_shape": [
+              1,
+              1216,
+              128
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "ref_pos": {
+            "port_shape": [
+              1,
+              1216,
+              3
+            ],
+            "native_shape": [
+              1,
+              1216,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 12.96739912033081,
+            "relative_rms": 1.4432575430436119
+          },
+          "ref_space_uid": {
+            "port_shape": [
+              1,
+              1216
+            ],
+            "native_shape": [
+              1,
+              1216
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "res_type": {
+            "port_shape": [
+              1,
+              115,
+              33
+            ],
+            "native_shape": [
+              1,
+              115,
+              33
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "residue_index": {
+            "port_shape": [
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              115
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "stereo_bond_index": {
+            "port_shape": [
+              1,
+              4,
+              0
+            ],
+            "native_shape": [
+              1,
+              4,
+              0
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "stereo_bond_orientations": {
+            "port_shape": [
+              1,
+              0
+            ],
+            "native_shape": [
+              1,
+              0
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "stereo_reference_mask": {
+            "port_shape": [
+              1,
+              0
+            ],
+            "native_shape": [
+              1,
+              0
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "sym_id": {
+            "port_shape": [
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              115
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "symmetric_chain_index": {
+            "port_shape": [
+              1,
+              2,
+              3
+            ],
+            "native_shape": [
+              1,
+              2,
+              3
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "template_ca": {
+            "port_shape": [
+              1,
+              1,
+              115,
+              3
+            ],
+            "native_shape": [
+              1,
+              1,
+              115,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_cb": {
+            "port_shape": [
+              1,
+              1,
+              115,
+              3
+            ],
+            "native_shape": [
+              1,
+              1,
+              115,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_frame_rot": {
+            "port_shape": [
+              1,
+              1,
+              115,
+              3,
+              3
+            ],
+            "native_shape": [
+              1,
+              1,
+              115,
+              3,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_frame_t": {
+            "port_shape": [
+              1,
+              1,
+              115,
+              3
+            ],
+            "native_shape": [
+              1,
+              1,
+              115,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_mask": {
+            "port_shape": [
+              1,
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              1,
+              115
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_mask_cb": {
+            "port_shape": [
+              1,
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              1,
+              115
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_mask_frame": {
+            "port_shape": [
+              1,
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              1,
+              115
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_restype": {
+            "port_shape": [
+              1,
+              1,
+              115,
+              33
+            ],
+            "native_shape": [
+              1,
+              1,
+              115,
+              33
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "token_bonds": {
+            "port_shape": [
+              1,
+              115,
+              115,
+              1
+            ],
+            "native_shape": [
+              1,
+              115,
+              115,
+              1
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "token_disto_mask": {
+            "port_shape": [
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              115
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "token_index": {
+            "port_shape": [
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              115
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "token_pad_mask": {
+            "port_shape": [
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              115
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "token_resolved_mask": {
+            "port_shape": [
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              115
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "token_to_center_atom": {
+            "port_shape": [
+              1,
+              115,
+              1216
+            ],
+            "native_shape": [
+              1,
+              115,
+              1216
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "token_to_rep_atom": {
+            "port_shape": [
+              1,
+              115,
+              1216
+            ],
+            "native_shape": [
+              1,
+              115,
+              1216
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "type_bonds": {
+            "port_shape": [
+              1,
+              115,
+              115
+            ],
+            "native_shape": [
+              1,
+              115,
+              115
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "visibility_ids": {
+            "port_shape": [
+              1,
+              1,
+              115
+            ],
+            "native_shape": [
+              1,
+              1,
+              115
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          }
+        }
+      },
+      "runtime_s": 1.6,
+      "notes": "",
+      "source": {
+        "git": "9b7aeab",
+        "cpu_affinity": 16,
+        "recorded": "2026-10-01 20:59:19"
+      }
+    },
+    "S2_weights": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu (host NumPy; no model run)",
+        "native_checkpoint": "/home/jaemin/non-project/optimizing/foldjax/.foldjax/downloads/boltz2/boltz2_conf.ckpt",
+        "native_sha256": "090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1",
+        "capture_checkpoint_sha256": "090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1",
+        "converted": "/home/jaemin/non-project/optimizing/foldjax/.foldjax/weights/boltz2/boltz2_conf.safetensors",
+        "mapper": "foldjax.models.boltz2.bridge.export_weights.export_confidence (writer intercepted, nothing written)",
+        "reader": "foldjax.torch_archive.load (no torch)"
+      },
+      "headline": {
+        "metric": "max |stored - map(native)| over groups (storage dtype)",
+        "value": 0.0
+      },
+      "metrics": {
+        "stored_vs_mapped": {
+          "groups": {
+            "bfactor": {
+              "leaves": 2,
+              "elements": 24640,
+              "max_abs": 0.0,
+              "dtypes": [
+                "float32"
+              ]
+            },
+            "conditioned_diffusion": {
+              "leaves": 809,
+              "elements": 280016430,
+              "max_abs": 0.0,
+              "dtypes": [
+                "float32",
+                "int64"
+              ]
+            },
+            "confidence": {
+              "leaves": 453,
+              "elements": 25026367,
+              "max_abs": 0.0,
+              "dtypes": [
+                "float32"
+              ]
+            },
+            "distogram": {
+              "leaves": 2,
+              "elements": 8256,
+              "max_abs": 0.0,
+              "dtypes": [
+                "float32"
+              ]
+            },
+            "trunk": {
+              "leaves": 3803,
+              "elements": 201649395,
+              "max_abs": 0.0,
+              "dtypes": [
+                "float32",
+                "int64"
+              ]
+            }
+          },
+          "leaves": 5069,
+          "elements": 506725088,
+          "max_abs": 0.0
+        },
+        "coverage_direct_reads": {
+          "checkpoint_tensors": 5102,
+          "tensors_read": 4612,
+          "checkpoint_elements": 521047871,
+          "elements_read": 482158271,
+          "unread_tensors": [
+            "confidence_module.pairformer_stack.layers.0.attention.proj_g.weight",
+            "confidence_module.pairformer_stack.layers.0.attention.proj_k.weight",
+            "confidence_module.pairformer_stack.layers.0.attention.proj_o.weight",
+            "confidence_module.pairformer_stack.layers.0.attention.proj_q.bias",
+            "confidence_module.pairformer_stack.layers.0.attention.proj_q.weight",
+            "confidence_module.pairformer_stack.layers.0.attention.proj_v.weight",
+            "confidence_module.pairformer_stack.layers.0.attention.proj_z.0.bias",
+            "confidence_module.pairformer_stack.layers.0.attention.proj_z.0.weight",
+            "confidence_module.pairformer_stack.layers.0.attention.proj_z.1.weight",
+            "confidence_module.pairformer_stack.layers.0.pre_norm_s.bias",
+            "confidence_module.pairformer_stack.layers.0.pre_norm_s.weight",
+            "confidence_module.pairformer_stack.layers.0.transition_s.fc1.weight",
+            "confidence_module.pairformer_stack.layers.0.transition_s.fc2.weight",
+            "confidence_module.pairformer_stack.layers.0.transition_s.fc3.weight",
+            "confidence_module.pairformer_stack.layers.0.transition_s.norm.bias",
+            "confidence_module.pairformer_stack.layers.0.transition_s.norm.weight",
+            "confidence_module.pairformer_stack.layers.0.transition_z.fc1.weight",
+            "confidence_module.pairformer_stack.layers.0.transition_z.fc2.weight",
+            "confidence_module.pairformer_stack.layers.0.transition_z.fc3.weight",
+            "confidence_module.pairformer_stack.layers.0.transition_z.norm.bias",
+            "confidence_module.pairformer_stack.layers.0.transition_z.norm.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_att_end.layer_norm.bias",
+            "confidence_module.pairformer_stack.layers.0.tri_att_end.layer_norm.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_att_end.linear.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_att_end.mha.linear_g.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_att_end.mha.linear_k.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_att_end.mha.linear_o.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_att_end.mha.linear_q.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_att_end.mha.linear_v.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_att_start.layer_norm.bias",
+            "confidence_module.pairformer_stack.layers.0.tri_att_start.layer_norm.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_att_start.linear.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_att_start.mha.linear_g.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_att_start.mha.linear_k.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_att_start.mha.linear_o.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_att_start.mha.linear_q.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_att_start.mha.linear_v.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_mul_in.g_in.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_mul_in.g_out.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_mul_in.norm_in.bias",
+            "confidence_module.pairformer_stack.layers.0.tri_mul_in.norm_in.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_mul_in.norm_out.bias",
+            "confidence_module.pairformer_stack.layers.0.tri_mul_in.norm_out.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_mul_in.p_in.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_mul_in.p_out.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_mul_out.g_in.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_mul_out.g_out.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_mul_out.norm_in.bias",
+            "confidence_module.pairformer_stack.layers.0.tri_mul_out.norm_in.weight",
+            "confidence_module.pairformer_stack.layers.0.tri_mul_out.norm_out.bias"
+          ],
+          "unread_tensor_count": 490
+        },
+        "value_containment_port_in_checkpoint": {
+          "checkpoint_float_elements": 521047871,
+          "port_float_elements": 506725055,
+          "checkpoint_non_float_elements": 0,
+          "port_non_float_elements": 33,
+          "port_values_absent_from_checkpoint": 0,
+          "max_distance_to_nearest_checkpoint_value": 0.0,
+          "multiplicity_excess": 0
+        }
+      },
+      "runtime_s": 95.1,
+      "notes": "",
+      "source": {
+        "git": "9b7aeab",
+        "cpu_affinity": 16,
+        "recorded": "2026-10-01 20:59:19"
+      }
+    },
+    "S3_trunk": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "input": "native features.npz (upstream featurizer output; core-only)",
+        "msa": "all 8,192 native rows (capture ran subsample_msa=false)",
+        "trunk_dtype": "bfloat16 parameters, float32 pair residual (native bf16-mixed AMP match; parity-subset pin)",
+        "kernels": "attention/triangle/GLU = xla; triangle multiplication = xla",
+        "recycles": 3
+      },
+      "headline": {
+        "metric": "relative RMS single (s) / pair (z)",
+        "value": "1.297e-03 / 2.736e-03"
+      },
+      "metrics": {
+        "arrays": {
+          "s": {
+            "relative_rms": 0.001297224584886732,
+            "max_abs": 1.4613037109375,
+            "native_max_abs_value": 1766.663330078125
+          },
+          "z": {
+            "relative_rms": 0.0027356019294664585,
+            "max_abs": 1.5497283935546875,
+            "native_max_abs_value": 509.0480041503906
+          },
+          "s_inputs": {
+            "relative_rms": 0.0004495813270527395,
+            "max_abs": 0.007341742515563965,
+            "native_max_abs_value": 6.573919296264648
+          },
+          "relative_position_encoding": {
+            "relative_rms": 0.0,
+            "max_abs": 0.0,
+            "native_max_abs_value": 13.5
+          }
+        }
+      },
+      "runtime_s": 66.9,
+      "notes": "",
+      "source": {
+        "git": "9b7aeab",
+        "cpu_affinity": 16,
+        "recorded": "2026-10-01 20:59:19"
+      }
+    },
+    "S4_diffusion": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "input": "native features.npz (upstream featurizer output; core-only)",
+        "msa": "all 8,192 native rows (capture ran subsample_msa=false)",
+        "trunk_dtype": "n/a (native trunk injected)",
+        "kernels": "attention/triangle/GLU = xla; triangle multiplication = xla",
+        "recycles": 3,
+        "injected_native": "trunk.npz s/z/s_inputs/relative_position_encoding (trunk= argument); tape.npz init/step noise + rotations/translations",
+        "diffusion_dtype": "float32 score model (released island)",
+        "samples_x_steps": "5 x 200"
+      },
+      "headline": {
+        "metric": "per-sample all-atom / CA RMSD (A), worst sample",
+        "value": "0.0015 / 0.0008"
+      },
+      "metrics": {
+        "samples": 5,
+        "atoms": 1209,
+        "all_atom_rmsd_angstrom": [
+          0.001489336675016364,
+          0.0003676333029233607,
+          0.00036694429533392275,
+          0.00027913774543208736,
+          0.0014583561773756435
+        ],
+        "max_unaligned_displacement_angstrom": 0.04664944710214621,
+        "ca_atoms": 90,
+        "ca_rmsd_angstrom": [
+          0.0007519179439782977,
+          0.0002454515250094693,
+          0.00022159456261548085,
+          0.00024555129887132346,
+          0.0005074574705464805
+        ],
+        "entity_rmsd_angstrom_panel_metric": {
+          "entity=0|mol_type=0|asym=0": [
+            0.0018758081824468737,
+            0.000439884210692099,
+            0.00044927505575803427,
+            0.0003252469974180761,
+            0.0018396259854706173
+          ],
+          "entity=1|mol_type=1|asym=1": [
+            0.00021341625460420511,
+            0.0002146240676019854,
+            0.00015619567429787516,
+            0.00019309331197187775,
+            0.0002004607053016079
+          ],
+          "entity=2|mol_type=1|asym=2": [
+            0.00024237647376912036,
+            0.00014644149733718636,
+            0.00011824681806004113,
+            0.00013614273273219438,
+            0.0001519035601385536
+          ],
+          "entity=3|mol_type=3|asym=3": [
+            0.00016191775346227958,
+            4.586746700585497e-05,
+            8.294837874763874e-05,
+            0.00010405643270762321,
+            6.573607288593661e-05
+          ],
+          "entity=3|mol_type=3|asym=4": [
+            0.00023258569826998255,
+            7.514962900686991e-05,
+            7.685536202781247e-05,
+            7.754827472914455e-05,
+            0.00023872230514480392
+          ],
+          "entity=3|mol_type=3|asym=5": [
+            0.0012650313060811613,
+            0.001394295793913971,
+            0.0012921501710284164,
+            0.0012756310763918928,
+            0.0013398541727973497
+          ]
+        }
+      },
+      "runtime_s": 234.8,
+      "notes": "",
+      "source": {
+        "git": "9b7aeab",
+        "cpu_affinity": 16,
+        "recorded": "2026-10-01 20:59:19"
+      }
+    },
+    "S5_confidence": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "input": "native features.npz (upstream featurizer output; core-only)",
+        "msa": "all 8,192 native rows (capture ran subsample_msa=false)",
+        "trunk_dtype": "n/a (native trunk injected)",
+        "kernels": "attention/triangle/GLU = xla; triangle multiplication = xla",
+        "recycles": 3,
+        "confidence_dtype": "bfloat16 parameters (native bf16-mixed AMP; confidence runs under autocast upstream)",
+        "injected_native": "trunk.npz s_inputs/s/z; forward-output.npz sample_atom_coords and pdistogram[...,0] (pred_distogram_logits)",
+        "confidence_schedule": "one sample at a time (run_confidence_sequentially=true upstream)"
+      },
+      "headline": {
+        "metric": "max |d| pLDDT (0-1) / PAE (A) / pTM",
+        "value": "0.000403 / 0.107 / 6.79e-05"
+      },
+      "metrics": {
+        "native_coordinates": "forward-output.npz sample_atom_coords",
+        "forward_output_vs_coordinate_npz_max_abs": 0.0,
+        "distogram_logits_from_native_z": {
+          "max_abs": 0.125,
+          "relative_rms": 2.854965761116974e-05
+        },
+        "complex_ipde": {
+          "max_abs": 8.040666580200195e-05,
+          "relative_rms": 0.00024628874684031393,
+          "native_range": [
+            0.26444143056869507,
+            0.2712896466255188
+          ]
+        },
+        "complex_iplddt": {
+          "max_abs": 1.1146068572998047e-05,
+          "relative_rms": 6.615455143632355e-06,
+          "native_range": [
+            0.9850168228149414,
+            0.9857879281044006
+          ]
+        },
+        "complex_pde": {
+          "max_abs": 7.733702659606934e-05,
+          "relative_rms": 0.00016331722514694686,
+          "native_range": [
+            0.2634489834308624,
+            0.27057212591171265
+          ]
+        },
+        "complex_plddt": {
+          "max_abs": 6.67572021484375e-06,
+          "relative_rms": 5.21648718824841e-06,
+          "native_range": [
+            0.9782583117485046,
+            0.980208694934845
+          ]
+        },
+        "iptm": {
+          "max_abs": 6.479024887084961e-05,
+          "relative_rms": 4.5684397472832146e-05,
+          "native_range": [
+            0.9630497694015503,
+            0.9681935906410217
+          ]
+        },
+        "ligand_iptm": {
+          "max_abs": 0.00019794702529907227,
+          "relative_rms": 0.00011587763358229526,
+          "native_range": [
+            0.9568740129470825,
+            0.9621348977088928
+          ]
+        },
+        "pae": {
+          "max_abs": 0.10700798034667969,
+          "relative_rms": 0.00205132824761839,
+          "native_range": [
+            0.25,
+            20.928022384643555
+          ]
+        },
+        "pae_logits": {
+          "max_abs": 0.3125,
+          "relative_rms": 0.002663501727476885,
+          "native_range": [
+            -25.125,
+            32.5
+          ]
+        },
+        "pde": {
+          "max_abs": 0.014131009578704834,
+          "relative_rms": 0.002608981284738309,
+          "native_range": [
+            0.25,
+            1.7611980438232422
+          ]
+        },
+        "pde_logits": {
+          "max_abs": 0.5625,
+          "relative_rms": 0.0027672831931758045,
+          "native_range": [
+            -35.75,
+            70.5
+          ]
+        },
+        "plddt": {
+          "max_abs": 0.00040274858474731445,
+          "relative_rms": 4.352889771819912e-05,
+          "native_range": [
+            0.6790834665298462,
+            0.9899842739105225
+          ]
+        },
+        "plddt_logits": {
+          "max_abs": 0.0625,
+          "relative_rms": 0.0015363423108913049,
+          "native_range": [
+            -13.25,
+            10.0
+          ]
+        },
+        "protein_iptm": {
+          "max_abs": 0.0,
+          "relative_rms": 0.0,
+          "native_range": [
+            0.0,
+            0.0
+          ]
+        },
+        "ptm": {
+          "max_abs": 6.794929504394531e-05,
+          "relative_rms": 5.139295562628487e-05,
+          "native_range": [
+            0.9550613164901733,
+            0.960080087184906
+          ]
+        },
+        "resolved_logits": {
+          "max_abs": 0.0625,
+          "relative_rms": 0.0014798287974731933,
+          "native_range": [
+            -6.6875,
+            10.875
+          ]
+        }
+      },
+      "runtime_s": 9.8,
+      "notes": "",
+      "source": {
+        "git": "9b7aeab",
+        "cpu_affinity": 16,
+        "recorded": "2026-10-01 20:59:19"
+      }
+    },
+    "S6_final": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "input": "native features.npz (upstream featurizer output; core-only)",
+        "msa": "all 8,192 native rows (capture ran subsample_msa=false)",
+        "trunk_dtype": "bfloat16 parameters, float32 pair residual (native bf16-mixed AMP match; parity-subset pin)",
+        "kernels": "attention/triangle/GLU = xla; triangle multiplication = xla",
+        "recycles": 3,
+        "injected_native": "tape.npz only (init/step noise, rotations, translations); trunk is the port's own (S3)",
+        "samples_x_steps": "5 x 200"
+      },
+      "headline": {
+        "metric": "per-sample all-atom / CA RMSD (A), worst sample",
+        "value": "0.1380 / 0.0276"
+      },
+      "metrics": {
+        "samples": 5,
+        "atoms": 1209,
+        "all_atom_rmsd_angstrom": [
+          0.057405280312624186,
+          0.03767899200090709,
+          0.13797166415602552,
+          0.004247986286340537,
+          0.015377686162403653
+        ],
+        "max_unaligned_displacement_angstrom": 2.4563122923055896,
+        "ca_atoms": 90,
+        "ca_rmsd_angstrom": [
+          0.027555082188636837,
+          0.019993004861805462,
+          0.005719942434313259,
+          0.003977850447514247,
+          0.007754871951997329
+        ],
+        "entity_rmsd_angstrom_panel_metric": {
+          "entity=0|mol_type=0|asym=0": [
+            0.07255657482118866,
+            0.047620878690757006,
+            0.1745682135020836,
+            0.0048972572986814445,
+            0.019338638069540334
+          ],
+          "entity=1|mol_type=1|asym=1": [
+            0.003858605803277697,
+            0.00224399853539014,
+            0.0036217364568571445,
+            0.0022041793800163453,
+            0.0022345043608797874
+          ],
+          "entity=2|mol_type=1|asym=2": [
+            0.005150300565328809,
+            0.0036367936210179377,
+            0.0041127553147761444,
+            0.003388597641077824,
+            0.00323930466470575
+          ],
+          "entity=3|mol_type=3|asym=3": [
+            0.008531507677150134,
+            0.0028534684543624067,
+            0.004930886013677898,
+            0.00342085846525979,
+            0.00328935574182788
+          ],
+          "entity=3|mol_type=3|asym=4": [
+            0.007955686786976529,
+            0.013645712350582137,
+            0.006420982787476075,
+            0.005758355888276293,
+            0.007160443411990295
+          ],
+          "entity=3|mol_type=3|asym=5": [
+            0.004692300351727288,
+            0.002818496463225764,
+            0.002960220692078338,
+            0.004035774488743724,
+            0.003882375448881274
+          ]
+        }
+      },
+      "runtime_s": 329.8,
+      "notes": "Runtime includes the trunk (S3).",
+      "source": {
+        "git": "9b7aeab",
+        "cpu_affinity": 16,
+        "recorded": "2026-10-01 20:59:19"
+      }
+    }
+  }
+}
