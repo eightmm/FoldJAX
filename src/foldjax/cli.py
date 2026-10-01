@@ -307,8 +307,9 @@ def _add_predict_arguments(
         default=memory_policy.DEFAULT_CHECK_MODE,
         help="what to do when a model's fitted peak law says the run does not "
         "fit this device: refuse before the weights and the graph (default), "
-        "or warn and let the allocator answer. Boltz-2, OpenFold3 and Protenix "
-        "accept it -- the three that carry a law",
+        "or warn and let the allocator answer. Boltz-2, Protenix, OpenFold3, "
+        "OpenDDE and ESMFold2 carry a law; AlphaFold 3 has none and answers "
+        "'unknown'",
     )
     execution.add_argument(
         "--memory-budget-gib",
