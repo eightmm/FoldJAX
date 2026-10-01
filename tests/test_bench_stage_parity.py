@@ -294,3 +294,29 @@ def test_run_stage_records_a_failure_instead_of_raising() -> None:
     record = sp.run_stage("demo", broken)
     assert record["status"] == "error"
     assert "fixture missing" in record["notes"]
+
+
+def test_native_at_port_width_narrows_only_when_lossless() -> None:
+    import ml_dtypes
+
+    exact = np.array([1.0, 0.5, -3.0], np.float32)
+    narrowed, width = sp.native_at_port_width(exact, ml_dtypes.bfloat16)
+    assert narrowed.dtype == ml_dtypes.bfloat16 and "exact" in width
+    # 1 + 2**-10 has no bf16 representation: kept float32, not rounded.
+    inexact = np.array([1.0 + 2.0**-10], np.float32)
+    kept, width = sp.native_at_port_width(inexact, ml_dtypes.bfloat16)
+    assert kept.dtype == np.float32 and kept[0] == inexact[0]
+    assert "kept wide" in width
+    same, width = sp.native_at_port_width(inexact, np.float32)
+    assert width == "float32" and np.array_equal(same, inexact)
+
+
+def test_bitwise_equal_files_names_the_array_that_moved(tmp_path) -> None:
+    np.savez(tmp_path / "a.npz", x=np.zeros(3, np.float32), y=np.ones(2))
+    np.savez(tmp_path / "b.npz", x=np.zeros(3, np.float32), y=np.ones(2) + 1e-12)
+    record = sp.bitwise_equal_files(tmp_path / "a.npz", tmp_path / "b.npz")
+    assert record == {"all_equal": False, "arrays": {"x": True, "y": False}}
+    # Equal values at another dtype are not the same bytes.
+    np.savez(tmp_path / "c.npz", x=np.zeros(3, np.float64), y=np.ones(2))
+    other = sp.bitwise_equal_files(tmp_path / "a.npz", tmp_path / "c.npz")
+    assert other["arrays"] == {"x": False, "y": True}
