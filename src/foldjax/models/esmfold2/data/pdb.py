@@ -216,7 +216,7 @@ def to_mmcif(
         # first so the structure receives the chains and atoms rather than the
         # empty shell.
         structure.add_model(model)
-        structure.setup_entities()
+        _assign_labels(structure)
         document = structure.make_mmcif_document()
         document.sole_block().name = name
         return document.as_string()
@@ -224,11 +224,50 @@ def to_mmcif(
     structure = gemmi.read_pdb_string(
         to_pdb(coords, features, plddt_per_atom, plddt_scale=plddt_scale)
     )
-    structure.setup_entities()
+    _assign_labels(structure)
     structure.name = name
     document = structure.make_mmcif_document()
     document.sole_block().name = name
     return document.as_string()
+
+
+def _assign_labels(structure) -> None:
+    """Give the label_* columns the values the other five writers give them.
+
+    Gemmi's own `setup_entities` names each subchain after its chain plus a
+    type suffix (`Axp`, `Ex1`), leaves `label_seq_id` unset (`.`) and writes no
+    `_entity_poly_seq`, because it has no sequence to number against. The
+    other writers put the chain name in `label_asym_id`, number polymer
+    residues from 1 in `label_seq_id` and list each polymer's sequence. The
+    auth_* columns are not touched: the bench reads ESMFold2 numbering there.
+    """
+    import gemmi
+
+    for model in structure:
+        for chain in model:
+            # A chain that mixes polymer and het residues needs two subchains;
+            # leave that one to gemmi rather than give both halves one name.
+            if len({residue.het_flag for residue in chain}) == 1:
+                for residue in chain:
+                    residue.subchain = chain.name
+    # `setup_entities`, with the polymer sequences filled in before the
+    # deduplication step so identical chains share one entity as elsewhere.
+    structure.add_entity_types(False)
+    structure.assign_subchains(False)
+    structure.ensure_entities()
+    first_model = structure[0]
+    for entity in structure.entities:
+        if (
+            entity.entity_type == gemmi.EntityType.Polymer
+            and not entity.full_sequence
+            and entity.subchains
+        ):
+            span = first_model.get_subchain(entity.subchains[0])
+            entity.full_sequence = [residue.name for residue in span]
+    structure.deduplicate_entities()
+    structure.assign_label_seq_id(False)
+    for number, entity in enumerate(structure.entities, start=1):
+        entity.name = str(number)
 
 
 def to_pdb_models(
