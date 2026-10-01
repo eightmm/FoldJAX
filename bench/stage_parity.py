@@ -701,6 +701,101 @@ def counted_patch(module: Any, name: str, replacement: Callable[..., Any]):
         setattr(module, name, original)
 
 
+#: Native re-captures that add the trunk, sampler and confidence boundaries
+#: the 2026-09-09 master captures lack (``--capture-stages`` in
+#: ``bench/esmfold2_tape.py`` and ``bench/opendde_closure_capture.py``). Same
+#: command, input, seed and environment as the stored capture; S3-S5 read
+#: their native side from here, S1, S2 and S6 stay on ``--capture``.
+STAGE_CAPTURE_ROOT = Path(
+    "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001"
+)
+STAGE_CAPTURES = {
+    "esmfold2": STAGE_CAPTURE_ROOT / "esmfold2" / "protein_1ubq" / "native-A",
+    "opendde": STAGE_CAPTURE_ROOT / "opendde" / "protein_1ubq" / "native-A",
+}
+
+
+def native_at_port_width(native: Any, port_dtype: Any) -> tuple[np.ndarray, str]:
+    """A native float tensor at the width the port carries at that seam.
+
+    Narrowed only when that is lossless (upstream's autocast leaves
+    bf16-representable values in float32 storage); otherwise it stays float32
+    and the record says so, rather than rounding the injected value.
+    """
+    native = np.asarray(native, np.float32)
+    dtype = np.dtype(port_dtype)
+    if dtype == np.float32:
+        return native, "float32"
+    narrowed = native.astype(dtype)
+    if np.array_equal(narrowed.astype(np.float32), native):
+        return narrowed, f"{dtype} (exact)"
+    return native, f"float32 (not exactly representable in {dtype}; kept wide)"
+
+
+def bitwise_equal_files(left: Path, right: Path) -> dict[str, Any]:
+    """Per-array bitwise equality of two npz files (names, dtypes, bytes)."""
+    a, b = npz(left), npz(right)
+    arrays = {
+        name: bool(
+            name in b
+            and a[name].dtype == b[name].dtype
+            and a[name].shape == b[name].shape
+            and a[name].tobytes() == b[name].tobytes()
+        )
+        for name in sorted(set(a) | set(b))
+    }
+    return {"all_equal": all(arrays.values()), "arrays": arrays}
+
+
+def rerun_agreement(
+    stored: Path,
+    new: Path,
+    *,
+    bitwise: Sequence[str],
+    coordinates: tuple[str, str],
+    values: Mapping[str, Sequence[str]],
+    atom_mask: Any | None = None,
+    ca_mask: Any | None = None,
+) -> dict[str, Any]:
+    """How a native re-capture compares with the stored capture it repeats.
+
+    The tape and inputs must be bitwise equal (the same draws); coordinates and
+    head outputs are GPU reruns and are reported against the stored
+    ``native-A-vs-native-B.json`` rerun floor of the same campaign.
+    """
+    record: dict[str, Any] = {
+        "stored": str(stored),
+        "new": str(new),
+        "bitwise": {
+            name: bitwise_equal_files(stored / name, new / name) for name in bitwise
+        },
+    }
+    file, key = coordinates
+    record["coordinates"] = coordinate_metrics(
+        npz(new / file)[key],
+        npz(stored / file)[key],
+        atom_mask=atom_mask,
+        ca_mask=ca_mask,
+    )
+    record["values_max_abs"] = {}
+    for file, keys in values.items():
+        left, right = npz(new / file), npz(stored / file)
+        for name in keys:
+            record["values_max_abs"][f"{file}:{name}"] = max_abs(
+                left[name], right[name]
+            )
+    floor = stored.parent / "native-A-vs-native-B.json"
+    if floor.is_file():
+        data = json.loads(floor.read_text())
+        coords = data.get("coordinates", {})
+        record["stored_rerun_floor_native_A_vs_B"] = {
+            "file": str(floor),
+            "entity_rmsd": coords.get("entity_rmsd"),
+            "global_rmsd": coords.get("global_rmsd"),
+        }
+    return record
+
+
 # --------------------------------------------------------------------------
 # Protenix
 # --------------------------------------------------------------------------
@@ -1986,12 +2081,6 @@ def run_openfold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
 # ESMFold2
 # --------------------------------------------------------------------------
 
-ESMFOLD2_NO_TRUNK = (
-    "The ESMFold2 capture stores no trunk boundary: tape.npz holds "
-    "initial_pair_state (an input to the trunk) and the remaining tape draws, "
-    "and upstream_confidence.npz / upstream_coords.npz are end-of-run outputs."
-)
-
 
 def confidence_comparison(
     port: Mapping[str, Any], native: Mapping[str, Any], names: Mapping[str, str]
@@ -2019,8 +2108,11 @@ def confidence_comparison(
     return metrics
 
 
-def run_esmfold2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
+def run_esmfold2(
+    capture: Path, stages: set[str], stage_dir: Path | None = None
+) -> dict[str, dict[str, Any]]:
     import jax
+    import jax.numpy as jnp
 
     import tests.parity.test_esmfold2 as parity
 
@@ -2219,14 +2311,340 @@ def run_esmfold2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
             "it is not S5, which needs the native trunk and coordinates injected.",
         )
 
-    for name in ("S3", "S4", "S5"):
-        if name in stages:
-            results[name] = not_captured(
-                ESMFOLD2_NO_TRUNK,
-                needs="a native capture of the folding-trunk output and the "
-                "confidence-head inputs (see MISSING.md).",
+    # -- S3-S5: the stage re-capture ----------------------------------------
+    stage_capture = STAGE_CAPTURES["esmfold2"] if stage_dir is None else stage_dir
+    cache: dict[str, Any] = {}
+
+    def staged() -> dict[str, Any]:
+        """The re-capture's own inputs, tape, LM output and stage tensors."""
+        if "staged" not in cache:
+            if not (stage_capture / "stages.npz").is_file():
+                raise FileNotFoundError(f"no stages.npz in {stage_capture}")
+            weights = parity._weights_directory()
+            cache["staged"] = {
+                "features": npz(stage_capture / "features.npz"),
+                "tape": npz(stage_capture / "tape.npz"),
+                "lm": npz(stage_capture / "upstream_lm.npz")["lm_hidden_states"],
+                "stages": npz(stage_capture / "stages.npz"),
+                "metadata": json.loads((stage_capture / "metadata.json").read_text()),
+                "loaded": parity.load_structure_model(weights),
+                "rerun": rerun_agreement(
+                    capture,
+                    stage_capture,
+                    bitwise=("features.npz", "tape.npz"),
+                    coordinates=("upstream_coords.npz", "coords"),
+                    values={
+                        "upstream_lm.npz": ("lm_hidden_states",),
+                        "upstream_confidence.npz": (
+                            "plddt",
+                            "pae",
+                            "ptm",
+                            "complex_plddt",
+                        ),
+                    },
+                    atom_mask=atom_valid,
+                    ca_mask=ca_mask,
+                ),
+            }
+        return cache["staged"]
+
+    def replay_stage(
+        *, stop_after_trunk: bool = False, representations: tuple[str, ...] = ()
+    ) -> tuple[dict[str, np.ndarray], float]:
+        """One jitted predict on the re-capture's tape, traced afresh.
+
+        A new closure per call so a patched module global is read at this
+        trace and never served from (or left in) another stage's cache.
+        """
+        from bench.esmfold2_lm_encoder_candidate import compiler_control
+        from bench.esmfold2_tape import SEED, _model_features, _replay_settings
+        from foldjax.models.esmfold2.models import model as structure_model
+
+        data = staged()
+        loaded = data["loaded"]
+        settings = _replay_settings(loaded.settings)
+        features = data["features"]
+        n_chains = int(features["asym_id"].max()) + 1
+
+        def program(key, arrays, params, dynamic):
+            output = structure_model.predict(
+                key,
+                arrays,
+                params,
+                settings=settings,
+                n_chains=n_chains,
+                stop_after_trunk=stop_after_trunk,
+                return_representations=representations,
+                **dynamic,
             )
-    runners = {"S1": s1, "S2": s2, "S6": s6}
+            if stop_after_trunk:
+                output = dict(output)
+                output["distogram_logits"] = structure_model._distogram_logits(
+                    output["pair"], params
+                )
+            return output
+
+        arrays = {k: jnp.asarray(v) for k, v in _model_features(features).items()}
+        dynamic = {
+            "lm_hidden_states": jnp.asarray(data["lm"]),
+            **{k: jnp.asarray(v) for k, v in data["tape"].items()},
+        }
+        jitted = jax.jit(program, compiler_options=compiler_control("default"))
+        jax.clear_caches()
+        previous = jax.config.jax_default_matmul_precision
+        jax.config.update("jax_default_matmul_precision", "highest")
+        try:
+            started = time.perf_counter()
+            output = jitted(jax.random.key(SEED), arrays, loaded.parameters, dynamic)
+            output = jax.device_get(jax.block_until_ready(output))
+            seconds = time.perf_counter() - started
+        finally:
+            jax.config.update("jax_default_matmul_precision", previous)
+            jax.clear_caches()
+        return {k: np.asarray(v) for k, v in output.items()}, seconds
+
+    def injections(names: Mapping[str, str]) -> Any:
+        """Counted patches that hand the port the native tensors at its seams.
+
+        ``names`` maps a seam to the stages.npz key it receives. Each value is
+        handed over at the port's own width there when that is lossless.
+        """
+        from foldjax.models.esmfold2.models import model as structure_model
+
+        native = staged()["stages"]
+        widths: dict[str, str] = {}
+        stack = contextlib.ExitStack()
+        counts: dict[str, dict[str, int]] = {}
+
+        def at_width(seam: str, value: Any) -> Any:
+            array, width = native_at_port_width(native[names[seam]], value.dtype)
+            widths[seam] = width
+            if tuple(array.shape) != tuple(value.shape):
+                raise ValueError(
+                    f"{seam}: native {array.shape} vs port {tuple(value.shape)}"
+                )
+            return jnp.asarray(array)
+
+        if "single_inputs" in names:
+            original_inputs = structure_model.inputs_embedding
+
+            def inputs(*args: Any, **kwargs: Any) -> Any:
+                return at_width("single_inputs", original_inputs(*args, **kwargs))
+
+            counts["single_inputs"] = stack.enter_context(
+                counted_patch(structure_model, "inputs_embedding", inputs)
+            )
+        if "relative_position_encoding" in names:
+            original_relpos = structure_model.relative_position_encoding
+
+            def relpos(*args: Any, **kwargs: Any) -> Any:
+                return at_width(
+                    "relative_position_encoding", original_relpos(*args, **kwargs)
+                )
+
+            counts["relative_position_encoding"] = stack.enter_context(
+                counted_patch(structure_model, "relative_position_encoding", relpos)
+            )
+        if "token_bonds_encoding" in names:
+            original_bonds = structure_model._token_bonds_encoding
+
+            def bonds(*args: Any, **kwargs: Any) -> Any:
+                return at_width("token_bonds_encoding", original_bonds(*args, **kwargs))
+
+            counts["token_bonds_encoding"] = stack.enter_context(
+                counted_patch(structure_model, "_token_bonds_encoding", bonds)
+            )
+        if "pair" in names:
+            original_trunk = structure_model.folding_trunk
+            coda = {"n": 0}
+
+            def trunk(x: Any, params: Any, prefix: str, *args: Any, **kwargs: Any):
+                result = original_trunk(x, params, prefix, *args, **kwargs)
+                if prefix != "parcae_coda":
+                    return result
+                coda["n"] += 1
+                return at_width("pair", result)
+
+            stack.enter_context(counted_patch(structure_model, "folding_trunk", trunk))
+            counts["pair"] = coda
+        if "coordinates" in names:
+            coords = np.asarray(native[names["coordinates"]], np.float32)
+            coords = jnp.asarray(coords.reshape(-1, *coords.shape[-2:]))
+            sampler = {"n": 0}
+
+            def sample(*args: Any, **kwargs: Any):
+                sampler["n"] += 1
+                widths["coordinates"] = "float32"
+                return coords, None
+
+            stack.enter_context(
+                counted_patch(structure_model.diffusion, "sample", sample)
+            )
+            counts["coordinates"] = sampler
+        return stack, counts, widths
+
+    def require_fired(counts: Mapping[str, Mapping[str, int]]) -> None:
+        silent = sorted(name for name, count in counts.items() if count["n"] < 1)
+        if silent:
+            raise RuntimeError(f"native injection never fired at {silent}")
+
+    def stage_condition(**extra: Any) -> dict[str, Any]:
+        data = staged()
+        return {
+            **CPU_CONDITION,
+            "stage_capture": str(stage_capture),
+            "input": "re-capture features.npz (bitwise equal to the stored "
+            "capture's: "
+            f"{data['rerun']['bitwise']['features.npz']['all_equal']})",
+            "tape": "re-capture tape.npz (bitwise equal to the stored capture's: "
+            f"{data['rerun']['bitwise']['tape.npz']['all_equal']}) and its own "
+            "upstream_lm.npz (LM not run)",
+            "samples_x_steps": "5 x released schedule",
+            **extra,
+        }
+
+    def s3() -> dict[str, Any]:
+        data = staged()
+        native = data["stages"]
+        port, seconds = replay_stage(
+            stop_after_trunk=True, representations=("single_inputs", "pair")
+        )
+        pairs = {
+            "single_inputs": ("single_inputs", "trunk.s_inputs"),
+            "pair": ("pair", "trunk.z_trunk"),
+            "distogram_logits": ("distogram_logits", "trunk.distogram_logits"),
+        }
+        arrays = {
+            name: {
+                "relative_rms": relative_rms(port[p], native[n]),
+                "max_abs": max_abs(port[p], native[n]),
+                "native_max_abs_value": float(np.abs(native[n]).max()),
+                "native_key": n,
+            }
+            for name, (p, n) in pairs.items()
+        }
+        return stage_record(
+            "measured",
+            condition=stage_condition(
+                trunk_dtype="bfloat16 (native CUDA bf16 autocast; replay settings)",
+                compared_at="the parcae_coda output (upstream's z after "
+                "z.float(), the z_trunk sample() receives), the input embedding "
+                "x_inputs (sample()'s s_inputs) and the distogram logits",
+            ),
+            headline={
+                "metric": "relative RMS s_inputs / pair (z_trunk)",
+                "value": f"{arrays['single_inputs']['relative_rms']:.3e} / "
+                f"{arrays['pair']['relative_rms']:.3e}",
+            },
+            metrics={
+                "arrays": arrays,
+                "native_rerun_vs_stored_capture": data["rerun"],
+            },
+            runtime_s=round(seconds, 1),
+            notes="ESMFold2 has no single trunk output: x_inputs is the input "
+            "embedding the sampler and confidence head read as their single "
+            "input, so its row checks the input stage the trunk starts from.",
+        )
+
+    def s4() -> dict[str, Any]:
+        data = staged()
+        stack, counts, widths = injections(
+            {
+                "single_inputs": "trunk.s_inputs",
+                "pair": "trunk.z_trunk",
+                "relative_position_encoding": "trunk.relative_position_encoding",
+            }
+        )
+        with stack:
+            port, seconds = replay_stage()
+        require_fired(counts)
+        native = data["stages"]["diffusion.sample_atom_coords"].astype(np.float64)
+        record = coordinate_metrics(
+            np.asarray(port["sample_atom_coords"], np.float64).reshape(native.shape),
+            native,
+            atom_mask=atom_valid,
+            ca_mask=ca_mask,
+        )
+        record["injection_calls"] = {k: v["n"] for k, v in counts.items()}
+        record["injected_width"] = widths
+        record["native_rerun_vs_stored_capture"] = data["rerun"]
+        return stage_record(
+            "measured",
+            condition=stage_condition(
+                trunk_dtype="n/a (native trunk injected)",
+                diffusion_dtype="float32 (port default; native sampler runs "
+                "outside the trunk autocast)",
+                injected_native="stages.npz trunk.z_trunk at the parcae_coda "
+                "output, trunk.s_inputs at inputs_embedding, "
+                "trunk.relative_position_encoding at relative_position_encoding; "
+                "tape.npz diffusion initial/churn normals, rotations, translations",
+            ),
+            headline={
+                "metric": "per-sample all-atom / CA RMSD (A), worst sample",
+                "value": f"{max(record['all_atom_rmsd_angstrom']):.4f} / "
+                f"{max(record['ca_rmsd_angstrom']):.4f}",
+            },
+            metrics=record,
+            runtime_s=round(seconds, 1),
+            notes="Reference: the re-capture's own sample_atom_coords (the "
+            "coordinates its sampler returned from the trunk injected here).",
+        )
+
+    def s5() -> dict[str, Any]:
+        data = staged()
+        stack, counts, widths = injections(
+            {
+                "single_inputs": "confidence_in.s_inputs",
+                "pair": "confidence_in.z",
+                "relative_position_encoding": (
+                    "confidence_in.relative_position_encoding"
+                ),
+                "token_bonds_encoding": "confidence_in.token_bonds_encoding",
+                "coordinates": "confidence_in.x_pred",
+            }
+        )
+        with stack:
+            port, seconds = replay_stage()
+        require_fired(counts)
+        native = {
+            name.removeprefix("confidence_out."): value
+            for name, value in data["stages"].items()
+            if name.startswith("confidence_out.")
+        }
+        metrics: dict[str, Any] = confidence_comparison(
+            port, native, {k: k for k in sorted(native)}
+        )
+        metrics["injection_calls"] = {k: v["n"] for k, v in counts.items()}
+        metrics["injected_width"] = widths
+        metrics["native_rerun_vs_stored_capture"] = data["rerun"]
+
+        def value(name: str) -> float:
+            return metrics.get(name, {}).get("max_abs", float("nan"))
+
+        return stage_record(
+            "measured",
+            condition=stage_condition(
+                trunk_dtype="n/a (native trunk injected)",
+                confidence_dtype=str(staged()["loaded"].settings.confidence_dtype)
+                + " (port setting; the native head's own folding trunk runs "
+                "under bf16 autocast)",
+                injected_native="stages.npz confidence_in.{s_inputs, z, "
+                "relative_position_encoding, token_bonds_encoding} at their "
+                "seams; confidence_in.x_pred replaces diffusion.sample",
+            ),
+            headline={
+                "metric": "max |d| pLDDT (0-1) / PAE (A) / pTM",
+                "value": "{:.3g} / {:.3g} / {:.3g}".format(
+                    value("plddt"), value("pae"), value("ptm")
+                ),
+            },
+            metrics=metrics,
+            runtime_s=round(seconds, 1),
+            notes="Reference: the re-capture's confidence_head outputs "
+            "(forward hook), from the inputs injected here.",
+        )
+
+    runners = {"S1": s1, "S2": s2, "S3": s3, "S6": s6, "S4": s4, "S5": s5}
     for name, function in runners.items():
         if name in stages:
             results[name] = run_stage(f"esmfold2 {name}", function)
@@ -2237,14 +2655,10 @@ def run_esmfold2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
 # OpenDDE
 # --------------------------------------------------------------------------
 
-OPENDDE_NO_TRUNK = (
-    "The OpenDDE capture stores no trunk boundary: raw.npz holds only the "
-    "heads' outputs and coordinates, and the native input/derived/tape files "
-    "are trunk inputs."
-)
 
-
-def run_opendde(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
+def run_opendde(
+    capture: Path, stages: set[str], stage_dir: Path | None = None
+) -> dict[str, dict[str, Any]]:
     import jax
     import jax.numpy as jnp
 
@@ -2489,14 +2903,428 @@ def run_opendde(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
             "with raw.npz; it is not S5, which needs the native trunk injected.",
         )
 
-    for name in ("S3", "S4", "S5"):
-        if name in stages:
-            results[name] = not_captured(
-                OPENDDE_NO_TRUNK,
-                needs="a native capture of the pairformer/structural-refiner "
-                "outputs and the confidence-head inputs (see MISSING.md).",
+    # -- S3-S5: the stage re-capture ----------------------------------------
+    stage_capture = STAGE_CAPTURES["opendde"] if stage_dir is None else stage_dir
+    cache: dict[str, Any] = {}
+
+    class CaptureCase:
+        """``case.path`` of the parity loaders over a capture's own layout."""
+
+        def __init__(self, root: Path) -> None:
+            self.root = root
+            self.entry = type(
+                "Entry",
+                (),
+                {
+                    "port": "opendde",
+                    "case": "protein_1ubq",
+                    "tier": "stage re-capture",
+                    "capture_provenance": str(root),
+                },
+            )()
+
+        def path(self, name: str) -> Path:
+            nested = name in ("tape.npz", "msa.npz", "coordinate.npz")
+            return self.root / "torch" / name if nested else self.root / name
+
+    def staged() -> dict[str, Any]:
+        if "staged" not in cache:
+            from foldjax.models.opendde.bridge.weights_io import load_native_weights
+
+            if not (stage_capture / "stages.npz").is_file():
+                raise FileNotFoundError(f"no stages.npz in {stage_capture}")
+            case = CaptureCase(stage_capture)
+            with np.load(case.path("tape.npz"), allow_pickle=False) as archive:
+                tape = {k: np.asarray(archive[k], np.float32) for k in archive.files}
+            stages_npz = npz(stage_capture / "stages.npz")
+            # The same tensors seen at two boundaries must be one value.
+            boundary_identity = {
+                f"{left} == {right}": bool(
+                    np.array_equal(stages_npz[left], stages_npz[right])
+                )
+                for left, right in (
+                    ("structural_trunk.out.s_inputs", "diffusion.in.s_inputs"),
+                    ("structural_trunk.out.s", "diffusion.in.s"),
+                    ("structural_trunk.out.z", "diffusion.in.z"),
+                    ("residue_trunk.out.s_inputs", "confidence.in.s_inputs"),
+                    ("residue_trunk.out.s", "confidence.in.s_trunk"),
+                    ("residue_trunk.out.z", "confidence.in.z_trunk"),
+                    ("diffusion.out.coordinate", "confidence.in.x_pred_coords"),
+                )
+            }
+            cache["staged"] = {
+                "case": case,
+                "features": parity.load_features(case),
+                "cycle_msa": parity.load_cycle_msa(case),
+                "tape": tape,
+                "stages": stages_npz,
+                "boundary_identity": boundary_identity,
+                "params": load_native_weights(parity.weights_path()),
+                "rerun": rerun_agreement(
+                    capture,
+                    stage_capture,
+                    bitwise=(
+                        "native-input.npz",
+                        "native-derived.npz",
+                        "native-identity.npz",
+                        "torch/tape.npz",
+                        "torch/msa.npz",
+                    ),
+                    coordinates=("raw.npz", "coordinate"),
+                    values={
+                        "raw.npz": (
+                            "plddt",
+                            "pae",
+                            "pde",
+                            *(f"summary_confidence.{i}.ptm" for i in range(5)),
+                            *(f"summary_confidence.{i}.plddt" for i in range(5)),
+                        )
+                    },
+                    ca_mask=ca_mask,
+                ),
+            }
+        return cache["staged"]
+
+    def replay_stage(
+        *,
+        stop_after_trunk: bool = False,
+        run_confidence: bool = False,
+        capture_names: tuple[str, ...] = (),
+    ) -> tuple[dict[str, np.ndarray], float]:
+        """The S6 call on the re-capture's inputs and tape (eager, all xla)."""
+        from foldjax.models import _capture
+        from foldjax.models.opendde.models.model import opendde_infer_static
+
+        data = staged()
+        tape = data["tape"]
+        steps, samples = tape["step_noises"].shape[:2]
+        cycle_msa = data["cycle_msa"]
+        started = time.perf_counter()
+        with (
+            highest_precision(),
+            jax.default_matmul_precision(parity.MATMUL_PRECISION),
+            _capture.capturing(capture_names),
+        ):
+            output = opendde_infer_static(
+                data["features"],
+                data["params"],
+                jnp.asarray(tape["noise_schedule"]),
+                key=None,
+                num_samples=samples,
+                num_recycles=len(cycle_msa),
+                run_confidence=run_confidence,
+                stop_after_trunk=stop_after_trunk,
+                cycle_msa_features=cycle_msa,
+                diffusion_attention_backend="xla",
+                trunk_single_attention_backend="xla",
+                trunk_triangle_attention_backend="xla",
+                structural_single_attention_backend="xla",
+                structural_triangle_attention_backend="xla",
+                init_noise=jnp.asarray(tape["init_noise"]),
+                step_noises=tuple(
+                    jnp.asarray(tape["step_noises"][i]) for i in range(steps)
+                ),
+                rotations=jnp.asarray(tape["rotations"]),
+                translations=jnp.asarray(tape["translations"]),
             )
-    runners = {"S1": s1, "S2": s2, "S6": s6}
+            output = jax.device_get(output)
+        seconds = time.perf_counter() - started
+        if run_confidence:
+            from foldjax.models.opendde.postprocess import opendde_confidence_scores
+
+            scores = opendde_confidence_scores(
+                dict(output),
+                data["features"],
+                num_recycles=len(cycle_msa),
+                include_shape_complementarity=False,
+            )
+            output = {**output, **jax.device_get(dict(scores))}
+        return {
+            k: np.asarray(v) for k, v in output.items() if hasattr(v, "shape")
+        }, seconds
+
+    def injections(
+        residue: tuple[str, str, str] | None,
+        structural: tuple[str, str, str] | None,
+        coordinates: str | None,
+    ) -> Any:
+        """Counted module-global patches at the port's trunk/sampler seams.
+
+        ``residue`` replaces ``pairformer_output_from_s_inputs`` (the residue
+        trunk is then not run); ``structural`` replaces the expanded
+        ``s_inputs`` and the refiner's ``s``/``z`` (the refiner is not run;
+        the expander still builds the structural pair features); ``coordinates``
+        replaces ``sample_diffusion``.
+        """
+        from foldjax.models.opendde.models import model as opendde_model
+
+        native = staged()["stages"]
+        stack = contextlib.ExitStack()
+        counts: dict[str, dict[str, int]] = {}
+        widths: dict[str, str] = {}
+
+        def at_width(key: str, like: Any) -> Any:
+            array, width = native_at_port_width(native[key], like.dtype)
+            widths[key] = width
+            if tuple(array.shape) != tuple(like.shape):
+                raise ValueError(f"{key}: native {array.shape} vs port {like.shape}")
+            return jnp.asarray(array)
+
+        if residue is not None:
+
+            def trunk(features: Any, s_inputs: Any, *args: Any, **kwargs: Any):
+                s_key, si_key, z_key = residue[1], residue[0], residue[2]
+                return (
+                    at_width(si_key, s_inputs),
+                    jnp.asarray(np.asarray(native[s_key], np.float32)),
+                    jnp.asarray(np.asarray(native[z_key], np.float32)),
+                )
+
+            counts["residue_trunk"] = stack.enter_context(
+                counted_patch(opendde_model, "pairformer_output_from_s_inputs", trunk)
+            )
+            widths[residue[1]] = widths[residue[2]] = "float32"
+        if structural is not None:
+            original_expand = opendde_model.structural_token_expand
+
+            def expand(*args: Any, **kwargs: Any):
+                s_inputs, s, z, pair_features = original_expand(*args, **kwargs)
+                return at_width(structural[0], s_inputs), s, z, pair_features
+
+            def refine(s: Any, z: Any, *args: Any, **kwargs: Any):
+                return at_width(structural[1], s), at_width(structural[2], z)
+
+            counts["structural_expand"] = stack.enter_context(
+                counted_patch(opendde_model, "structural_token_expand", expand)
+            )
+            counts["structural_refiner"] = stack.enter_context(
+                counted_patch(opendde_model, "structural_refiner_stack", refine)
+            )
+        if coordinates is not None:
+            coords = np.asarray(native[coordinates], np.float32)
+            coords = jnp.asarray(coords.reshape(-1, *coords.shape[-2:]))
+            widths[coordinates] = "float32"
+
+            def sample(*args: Any, **kwargs: Any):
+                return coords
+
+            counts["sample_diffusion"] = stack.enter_context(
+                counted_patch(opendde_model, "sample_diffusion", sample)
+            )
+        return stack, counts, widths
+
+    def require_fired(counts: Mapping[str, Mapping[str, int]]) -> None:
+        silent = sorted(name for name, count in counts.items() if count["n"] < 1)
+        if silent:
+            raise RuntimeError(f"native injection never fired at {silent}")
+
+    def stage_condition(**extra: Any) -> dict[str, Any]:
+        data = staged()
+        bitwise = data["rerun"]["bitwise"]
+        return {
+            **CPU_CONDITION,
+            "stage_capture": str(stage_capture),
+            "input": "re-capture native-input.npz + native-derived.npz (bitwise "
+            "equal to the stored capture's: "
+            f"{bitwise['native-input.npz']['all_equal']} / "
+            f"{bitwise['native-derived.npz']['all_equal']})",
+            "tape": "re-capture torch/tape.npz + torch/msa.npz (bitwise equal to "
+            "the stored capture's: "
+            f"{bitwise['torch/tape.npz']['all_equal']} / "
+            f"{bitwise['torch/msa.npz']['all_equal']})",
+            "kernels": "all attention backends xla",
+            **extra,
+        }
+
+    def s3() -> dict[str, Any]:
+        data = staged()
+        native = data["stages"]
+        port, seconds = replay_stage(
+            stop_after_trunk=True,
+            capture_names=(
+                "single_inputs",
+                "single",
+                "pair",
+                "structural_single_inputs",
+                "structural_single",
+                "structural_pair",
+            ),
+        )
+        pairs = {
+            "single_inputs": ("single_inputs", "residue_trunk.out.s_inputs"),
+            "single": ("single", "residue_trunk.out.s"),
+            "pair": ("pair", "residue_trunk.out.z"),
+            "structural_single_inputs": (
+                "structural_single_inputs",
+                "structural_trunk.out.s_inputs",
+            ),
+            "structural_single": ("structural_single", "structural_trunk.out.s"),
+            "structural_pair": ("structural_pair", "structural_trunk.out.z"),
+        }
+        arrays = {
+            name: {
+                "relative_rms": relative_rms(port[p], native[n]),
+                "max_abs": max_abs(port[p], native[n]),
+                "native_max_abs_value": float(np.abs(native[n]).max()),
+                "native_key": n,
+            }
+            for name, (p, n) in pairs.items()
+        }
+        return stage_record(
+            "measured",
+            condition=stage_condition(
+                trunk_dtype="float32 (port default; native TF32 trunk -> CPU "
+                "highest, see docs/parity-cpu.md)",
+                recycles=len(data["cycle_msa"]),
+            ),
+            headline={
+                "metric": "relative RMS single (s) / pair (z); residue trunk, "
+                "then structural refiner",
+                "value": "{:.3e} / {:.3e}; {:.3e} / {:.3e}".format(
+                    arrays["single"]["relative_rms"],
+                    arrays["pair"]["relative_rms"],
+                    arrays["structural_single"]["relative_rms"],
+                    arrays["structural_pair"]["relative_rms"],
+                ),
+            },
+            metrics={
+                "arrays": arrays,
+                "native_boundary_identity": data["boundary_identity"],
+                "native_rerun_vs_stored_capture": data["rerun"],
+            },
+            runtime_s=round(seconds, 1),
+        )
+
+    def s4() -> dict[str, Any]:
+        data = staged()
+        stack, counts, widths = injections(
+            (
+                "residue_trunk.out.s_inputs",
+                "residue_trunk.out.s",
+                "residue_trunk.out.z",
+            ),
+            ("diffusion.in.s_inputs", "diffusion.in.s", "diffusion.in.z"),
+            None,
+        )
+        with stack:
+            port, seconds = replay_stage()
+        require_fired(counts)
+        native = data["stages"]["diffusion.out.coordinate"].astype(np.float64)
+        coords = port["coordinate"].astype(np.float64)
+        while coords.ndim > 3 and coords.shape[0] == 1:
+            coords = coords[0]
+        record = coordinate_metrics(coords, native, ca_mask=ca_mask)
+        record["injection_calls"] = {k: v["n"] for k, v in counts.items()}
+        record["injected_width"] = widths
+        record["native_boundary_identity"] = data["boundary_identity"]
+        record["native_rerun_vs_stored_capture"] = data["rerun"]
+        tape = data["tape"]
+        return stage_record(
+            "measured",
+            condition=stage_condition(
+                trunk_dtype="n/a (native trunk injected)",
+                diffusion_dtype="float32 (native skip_amp.sample_diffusion=true)",
+                injected_native="stages.npz diffusion.in.{s_inputs, s, z} (the "
+                "structural tensors run_sample_diffusion_stage received) at "
+                "structural_token_expand / structural_refiner_stack; residue "
+                "trunk from residue_trunk.out; torch/tape.npz noise schedule, "
+                "initial/step noise, rotations, translations",
+                samples_x_steps=f"{tape['step_noises'].shape[1]} x "
+                f"{tape['step_noises'].shape[0]}",
+            ),
+            headline={
+                "metric": "per-sample all-atom / CA RMSD (A), worst sample",
+                "value": f"{max(record['all_atom_rmsd_angstrom']):.4f} / "
+                f"{max(record['ca_rmsd_angstrom']):.4f}",
+            },
+            metrics=record,
+            runtime_s=round(seconds, 1),
+            notes="Reference: the re-capture's own sampler output "
+            "(diffusion.out.coordinate), from the tensors injected here.",
+        )
+
+    def s5() -> dict[str, Any]:
+        data = staged()
+        stack, counts, widths = injections(
+            (
+                "confidence.in.s_inputs",
+                "confidence.in.s_trunk",
+                "confidence.in.z_trunk",
+            ),
+            ("diffusion.in.s_inputs", "diffusion.in.s", "diffusion.in.z"),
+            "confidence.in.x_pred_coords",
+        )
+        with stack:
+            port, seconds = replay_stage(run_confidence=True)
+        require_fired(counts)
+        native_stage = data["stages"]
+        raw = npz(stage_capture / "raw.npz")
+        samples = int(data["tape"]["step_noises"].shape[1])
+        native = {
+            "plddt_logits": native_stage["confidence.out.plddt"],
+            "pae_logits": native_stage["confidence.out.pae"],
+            "pde_logits": native_stage["confidence.out.pde"],
+            "resolved_logits": native_stage["confidence.out.resolved"],
+            "atom_plddt": np.stack(
+                [raw[f"full_data.{i}.atom_plddt"] for i in range(samples)]
+            ),
+            "token_pair_pae": np.stack(
+                [raw[f"full_data.{i}.token_pair_pae"] for i in range(samples)]
+            ),
+            "ptm": np.array(
+                [raw[f"summary_confidence.{i}.ptm"] for i in range(samples)]
+            ),
+            "summary_plddt": np.array(
+                [raw[f"summary_confidence.{i}.plddt"] for i in range(samples)]
+            ),
+        }
+        metrics: dict[str, Any] = confidence_comparison(
+            port,
+            native,
+            {
+                "plddt_logits": "plddt",
+                "pae_logits": "pae",
+                "pde_logits": "pde",
+                "resolved_logits": "resolved",
+                "atom_plddt": "atom_plddt",
+                "token_pair_pae": "token_pair_pae",
+                "ptm": "summary_ptm",
+                "summary_plddt": "summary_plddt",
+            },
+        )
+        metrics["port_output_keys"] = sorted(port)
+        metrics["injection_calls"] = {k: v["n"] for k, v in counts.items()}
+        metrics["injected_width"] = widths
+        metrics["native_boundary_identity"] = data["boundary_identity"]
+        metrics["native_rerun_vs_stored_capture"] = data["rerun"]
+
+        def value(name: str) -> float:
+            return metrics.get(name, {}).get("max_abs", float("nan"))
+
+        return stage_record(
+            "measured",
+            condition=stage_condition(
+                trunk_dtype="n/a (native trunk injected)",
+                confidence_dtype="float32 (native skip_amp.confidence_head=true)",
+                injected_native="stages.npz confidence.in.{s_inputs, s_trunk, "
+                "z_trunk} replace pairformer_output_from_s_inputs; "
+                "confidence.in.x_pred_coords replace sample_diffusion; "
+                "summaries vs the re-capture's raw.npz",
+            ),
+            headline={
+                "metric": "max |d| atom pLDDT (0-100) / PAE (A) / pTM",
+                "value": "{:.3g} / {:.3g} / {:.3g}".format(
+                    value("atom_plddt"), value("token_pair_pae"), value("ptm")
+                ),
+            },
+            metrics=metrics,
+            runtime_s=round(seconds, 1),
+            notes="Logits are compared with the re-capture's confidence-head "
+            "outputs; the released summaries with its raw.npz (the port's "
+            "postprocess on the port's logits).",
+        )
+
+    runners = {"S1": s1, "S2": s2, "S3": s3, "S6": s6, "S4": s4, "S5": s5}
     for name, function in runners.items():
         if name in stages:
             results[name] = run_stage(f"opendde {name}", function)
@@ -2548,10 +3376,17 @@ def environment() -> dict[str, Any]:
     return record
 
 
-def run_model(model: str, capture: Path, stages: set[str]) -> dict[str, Any]:
+def run_model(
+    model: str, capture: Path, stages: set[str], stage_capture: Path | None = None
+) -> dict[str, Any]:
     require_cpu()
     started = time.perf_counter()
-    results = MODELS[model](capture, stages)
+    if model in STAGE_CAPTURES:
+        results = MODELS[model](capture, stages, stage_capture)
+    elif stage_capture is not None:
+        raise ValueError(f"{model} takes no --stage-capture")
+    else:
+        results = MODELS[model](capture, stages)
     ordered = {
         f"{key}_{label}": results.get(
             key, stage_record("not_captured", notes="not run")
@@ -2709,6 +3544,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--capture", type=Path)
     parser.add_argument("--out", type=Path)
     parser.add_argument(
+        "--stage-capture",
+        type=Path,
+        help="native re-capture with stages.npz for S3-S5 (ESMFold2, OpenDDE); "
+        "defaults to STAGE_CAPTURES",
+    )
+    parser.add_argument(
         "--stages",
         default=",".join(key for key, _ in STAGES),
         help="comma-separated subset, e.g. S1,S3",
@@ -2731,7 +3572,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     unknown = stages - {key for key, _ in STAGES}
     if unknown:
         parser.error(f"unknown stages {sorted(unknown)}")
-    report = run_model(args.model, args.capture.resolve(), stages)
+    report = run_model(
+        args.model,
+        args.capture.resolve(),
+        stages,
+        None if args.stage_capture is None else args.stage_capture.resolve(),
+    )
     if args.merge and args.out.is_file():
         previous = json.loads(args.out.read_text())
         merged = dict(previous.get("stages", {}))
