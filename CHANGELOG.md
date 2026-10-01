@@ -12,6 +12,27 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **A versioned output contract** (`schema_version` 1.0). Every
+  `confidence.json` keeps the native `scores` and adds a `summary` block:
+  pLDDT on 0-100, pTM, ipTM and the model's ranking score, each with its
+  native source, transform, granularity and population, or null with a
+  reason. AlphaFold 3's pLDDT is the mean of the per-atom pLDDT it writes as
+  B-factors; a single-chain structure's ipTM is null rather than the 0.0
+  several models write. Common fields standardize names and numerical
+  scales. They retain model-specific definitions and calibration and do not
+  establish comparable accuracy probabilities or authorize pooled
+  cross-model ranking. JSON Schemas for `confidence.json` and
+  `foldjax_run.json` ship in `foldjax/schemas/`; a minor version only adds
+  optional fields.
+- **`foldjax.load_results(root)`, `results_table`, `aggregate_table`** and
+  `foldjax show --format csv|json [--aggregate]`: one row per
+  model/input/seed/sample from the canonical files alone, with failures as
+  rows, structure SHA-256 verification and each run's ignored inputs.
+  Aggregation stays within one (input, model, configuration).
+- **`foldjax compare DIR`**: pairwise CA RMSD and coverage between every
+  structure of each input, with the residue correspondence used, as JSON and
+  CSV (`foldjax.compare_directory`, `foldjax.residue_correspondence`).
+
 - **Pallas-Triton kernels for the triangle multiplication and the pair
   transitions** (`foldjax.models._pallas_pair`). Added opt-in; they are now
   the GPU default of Boltz-2 and OpenFold3, and the multiplication is
@@ -714,6 +735,17 @@ unless it says so here, in its own paragraph.
   `ModelConfig(msa_depth=...)`, since padding no longer chooses a depth.
 
 ### Changed
+
+- The sample number is the diffusion index for every model. AlphaFold 3's no
+  longer accumulates across the jobs of a multi-job native file: it restarts
+  per job, and each job's canonical directories nest under `<run>/<job>/`.
+  Protenix and OpenDDE keep their native rank as `native_rank`.
+- Protenix's and OpenDDE's boolean flags (`has_clash`, `has_vdw_clash`) are
+  kept in `scores` as 0/1 instead of dropped; `num_recycles` moves from
+  `scores` to sample metadata and `confidence.json`'s `execution` block.
+- `native_only_features` names every native-only input a port consumes
+  (multi-residue ligands, user CCD, ligand files, pocket and contact
+  constraints, cyclic polymers), not only templates and affinity.
 
 - **A nucleic-acid alignment or a template the backend never reads is
   ignored, as upstream does, instead of refused.** This reverses the default
