@@ -176,32 +176,53 @@ def summarize_features(records: Mapping[str, Mapping[str, Any]]) -> dict[str, An
 
 
 def kabsch_rmsd(
-    mobile: Any, reference: Any, mask: Any | None = None
+    mobile: Any,
+    reference: Any,
+    mask: Any | None = None,
+    measure_mask: Any | None = None,
 ) -> float:
     """RMSD after one proper-rotation least-squares fit of ``mobile`` onto ``reference``.
 
-    The fit and the RMSD use the same atoms (``mask``), which is the
-    conventional all-atom or CA RMSD. Reflections are excluded.
+    The fit uses the atoms in ``mask`` (all atoms when omitted); the RMSD is
+    taken over ``measure_mask`` (the fitted atoms when omitted) *without
+    refitting*, which is the project's convention: one Kabsch transform on all
+    valid system atoms per sample, then RMSD on whichever subset is reported.
+    Reflections are excluded.
     """
-    from bench.structures import rmsd
+    from bench.structures import kabsch
 
     p = np.asarray(mobile, dtype=np.float64)
     q = np.asarray(reference, dtype=np.float64)
     _same_shape(p, q)
     if p.ndim != 2 or p.shape[-1] != 3:
         raise ValueError(f"expected (atoms, 3) coordinates, got {p.shape}")
-    if mask is not None:
-        selected = np.asarray(mask, dtype=bool)
+
+    def selection(value: Any | None) -> np.ndarray:
+        if value is None:
+            return np.ones(p.shape[0], dtype=bool)
+        selected = np.asarray(value, dtype=bool)
         if selected.shape != p.shape[:1]:
             raise ValueError(f"mask {selected.shape} does not match atoms {p.shape[:1]}")
-        p, q = p[selected], q[selected]
-    if len(p) < 3:
-        raise ValueError(f"need at least three atoms for a fit, got {len(p)}")
-    return rmsd(p, q)
+        return selected
+
+    fit = selection(mask)
+    measure = fit if measure_mask is None else selection(measure_mask)
+    if fit.sum() < 3:
+        raise ValueError(f"need at least three atoms for a fit, got {int(fit.sum())}")
+    if not measure.any():
+        raise ValueError("the measured atom set is empty")
+    rotation, p_centre, q_centre = kabsch(p[fit], q[fit])
+    aligned = (p - p_centre) @ rotation.T
+    target = q - q_centre
+    squared = np.sum((aligned[measure] - target[measure]) ** 2, axis=-1)
+    return float(np.sqrt(np.mean(squared)))
 
 
 def per_sample_rmsd(
-    port: Any, native: Any, mask: Any | None = None
+    port: Any,
+    native: Any,
+    mask: Any | None = None,
+    measure_mask: Any | None = None,
 ) -> list[float]:
     """:func:`kabsch_rmsd` for every sample of ``(samples, atoms, 3)`` arrays."""
     left = np.asarray(port, dtype=np.float64)
@@ -209,7 +230,9 @@ def per_sample_rmsd(
     _same_shape(left, right)
     if left.ndim != 3:
         raise ValueError(f"expected (samples, atoms, 3), got {left.shape}")
-    return [kabsch_rmsd(a, b, mask) for a, b in zip(left, right, strict=True)]
+    return [
+        kabsch_rmsd(a, b, mask, measure_mask) for a, b in zip(left, right, strict=True)
+    ]
 
 
 def max_unaligned_displacement(port: Any, native: Any, mask: Any | None = None) -> float:
@@ -231,20 +254,21 @@ def multiset_delta(native_values: Sequence[Any], port_values: Sequence[Any]) -> 
     arithmetic on a value (a fold, a rescale, a lossy cast) moves it. This is a
     mapping-independent check that the converted parameters are the
     checkpoint's numbers and nothing else.
+
+    Only floating-point arrays enter the bags; integer and boolean leaves
+    (layer flags, AMP markers, index buffers) are counted separately, since
+    a converter may legitimately add them.
     """
-    left = np.sort(
-        np.concatenate([np.asarray(v, np.float64).ravel() for v in native_values])
-        if native_values
-        else np.zeros(0)
-    )
-    right = np.sort(
-        np.concatenate([np.asarray(v, np.float64).ravel() for v in port_values])
-        if port_values
-        else np.zeros(0)
-    )
+
+    left, native_other = _float_values(native_values)
+    right, port_other = _float_values(port_values)
+    left.sort()
+    right.sort()
     record: dict[str, Any] = {
         "native_elements": int(left.size),
         "port_elements": int(right.size),
+        "native_non_float_elements": native_other,
+        "port_non_float_elements": port_other,
     }
     if left.size != right.size:
         record["comparable"] = False
@@ -256,6 +280,90 @@ def multiset_delta(native_values: Sequence[Any], port_values: Sequence[Any]) -> 
     finite = np.isfinite(left) & np.isfinite(right)
     record["nonfinite_mismatch"] = int(np.count_nonzero(~finite & (left != right)))
     record["sorted_max_abs"] = float(np.max(np.abs(left[finite] - right[finite])))
+    return record
+
+
+def _float_values(values: Sequence[Any]) -> tuple[np.ndarray, int]:
+    kept, other = [], 0
+    for value in values:
+        array = np.asarray(value)
+        if np.issubdtype(array.dtype, np.floating) or array.dtype.name in (
+            "bfloat16",
+            "float8_e4m3fn",
+            "float8_e5m2",
+        ):
+            kept.append(array.astype(np.float64).ravel())
+        else:
+            other += int(array.size)
+    return (np.concatenate(kept) if kept else np.zeros(0)), other
+
+
+def multiset_containment(
+    checkpoint_values: Sequence[Any], port_values: Sequence[Any]
+) -> dict[str, Any]:
+    """Is every converted float a checkpoint float, independent of the mapping?
+
+    Unlike :func:`multiset_delta` this does not need to know which checkpoint
+    tensors the mapper read: the checkpoint may hold tensors inference never
+    uses (training heads, aliases), so the converted bag is only expected to
+    be *contained* in the checkpoint bag. Reported:
+
+    * ``port_values_absent_from_checkpoint`` -- converted elements whose exact
+      value occurs nowhere in the checkpoint (0 for a pure rearrangement);
+    * ``max_distance_to_nearest_checkpoint_value`` -- for those, how far the
+      nearest checkpoint value is (a lossy cast or a fold shows up here);
+    * ``multiplicity_excess`` -- converted elements beyond the number of times
+      their value occurs in the checkpoint (a tensor used twice shows up here,
+      which is legitimate for shared weights).
+    """
+    checkpoint, checkpoint_other = _float_values(checkpoint_values)
+    port, port_other = _float_values(port_values)
+    record: dict[str, Any] = {
+        "checkpoint_float_elements": int(checkpoint.size),
+        "port_float_elements": int(port.size),
+        "checkpoint_non_float_elements": checkpoint_other,
+        "port_non_float_elements": port_other,
+    }
+    if port.size == 0:
+        record.update(
+            port_values_absent_from_checkpoint=0,
+            max_distance_to_nearest_checkpoint_value=0.0,
+            multiplicity_excess=0,
+        )
+        return record
+    if checkpoint.size == 0:
+        record.update(
+            port_values_absent_from_checkpoint=int(port.size),
+            max_distance_to_nearest_checkpoint_value=float("inf"),
+            multiplicity_excess=int(port.size),
+        )
+        return record
+    reference, reference_counts = np.unique(checkpoint, return_counts=True)
+    del checkpoint
+    values, counts = np.unique(port, return_counts=True)
+    del port
+    position = np.searchsorted(reference, values)
+    clipped = np.clip(position, 0, reference.size - 1)
+    present = reference[clipped] == values
+    # NaN never compares equal; count it as present when both sides hold NaN.
+    nan = np.isnan(values)
+    if nan.any() and np.isnan(reference).any():
+        present |= nan
+    absent = ~present
+    record["port_values_absent_from_checkpoint"] = int(counts[absent].sum())
+    if absent.any():
+        missing = values[absent]
+        index = np.searchsorted(reference, missing)
+        below = reference[np.clip(index - 1, 0, reference.size - 1)]
+        above = reference[np.clip(index, 0, reference.size - 1)]
+        distance = np.minimum(np.abs(missing - below), np.abs(missing - above))
+        record["max_distance_to_nearest_checkpoint_value"] = float(np.nanmax(distance))
+    else:
+        record["max_distance_to_nearest_checkpoint_value"] = 0.0
+    available = np.where(present, reference_counts[clipped], 0)
+    record["multiplicity_excess"] = int(
+        np.maximum(counts[present] - available[present], 0).sum()
+    )
     return record
 
 
@@ -276,7 +384,11 @@ def coordinate_metrics(
     atom_mask: Any | None = None,
     ca_mask: Any | None = None,
 ) -> dict[str, Any]:
-    """Per-sample all-atom and CA RMSD (one Kabsch fit each) plus max |dx|."""
+    """Per-sample all-atom and CA RMSD under one all-atom fit, plus max |dx|.
+
+    Both RMSDs share the sample's single Kabsch fit on all valid atoms; the CA
+    value is that fit measured on the alpha carbons, not a CA-only refit.
+    """
     port = np.asarray(port, np.float64)
     native = np.asarray(native, np.float64)
     atoms = None if atom_mask is None else np.asarray(atom_mask, bool)
@@ -293,8 +405,8 @@ def coordinate_metrics(
         if atoms is not None:
             ca = ca & atoms
         record["ca_atoms"] = int(ca.sum())
-        if ca.sum() >= 3:
-            record["ca_rmsd_angstrom"] = per_sample_rmsd(port, native, ca)
+        if ca.any():
+            record["ca_rmsd_angstrom"] = per_sample_rmsd(port, native, atoms, ca)
     return record
 
 
@@ -499,6 +611,35 @@ def compare_parameter_trees(
     }
 
 
+def weight_value_checks(
+    state: "TrackingState",
+    port_leaves: Sequence[Any],
+    *,
+    ignored: Callable[[str], bool] = lambda key: False,
+) -> dict[str, Any]:
+    """Mapping-independent checks of converted parameters against a checkpoint.
+
+    ``coverage_direct_reads`` counts the tensors the mapper read through the
+    state dict. It is a lower bound when a mapper slices the state with
+    ``items()`` into a plain sub-dict (Boltz-2's confidence Pairformer does),
+    because those reads bypass the tracker; ``value_containment`` does not
+    depend on it.
+    """
+    coverage = checkpoint_coverage(state, ignored=ignored)
+    keys = [k for k in dict.keys(state) if not ignored(k)]
+    checks: dict[str, Any] = {
+        "coverage_direct_reads": coverage,
+        "value_containment_port_in_checkpoint": multiset_containment(
+            [dict.__getitem__(state, k) for k in keys], port_leaves
+        ),
+    }
+    if coverage["tensors_read"] == coverage["checkpoint_tensors"]:
+        checks["value_multiset_checkpoint_vs_port"] = multiset_delta(
+            [dict.__getitem__(state, k) for k in keys], port_leaves
+        )
+    return checks
+
+
 def checkpoint_coverage(
     state: TrackingState, *, ignored: Callable[[str], bool] = lambda key: False
 ) -> dict[str, Any]:
@@ -668,9 +809,8 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         mapped = jax.tree.map(np.asarray, mapped)
         stored = _load_native_numpy_tree(stored_path, prestack=False)
         tree = compare_parameter_trees(stored, mapped)
-        coverage = checkpoint_coverage(tracked)
-        bag = multiset_delta(
-            [dict.__getitem__(tracked, k) for k in sorted(tracked.used)],
+        checks = weight_value_checks(
+            tracked,
             [leaf for _, leaf in tree_leaves_with_paths(stored)],
         )
         return stage_record(
@@ -690,8 +830,7 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
             },
             metrics={
                 "stored_vs_mapped": tree,
-                "coverage": coverage,
-                "value_multiset_read_vs_stored": bag,
+                **checks,
             },
         )
 
@@ -946,7 +1085,7 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
                 "confidence_triangle_attention": "follows trunk (cueq_jit)",
             },
             headline={
-                "metric": "max |d| pLDDT (0-100) / PAE (A) / pTM",
+                "metric": "max |d| atom pLDDT (0-1) / PAE (A) / pTM",
                 "value": "{:.3g} / {:.3g} / {:.3g}".format(
                     metrics["atom_plddt"].get("max_abs", float("nan")),
                     metrics["token_pair_pae_angstrom"].get("max_abs", float("nan")),
@@ -965,11 +1104,1339 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
 
 
 # --------------------------------------------------------------------------
+# Boltz-2
+# --------------------------------------------------------------------------
+
+
+def atom_names_from_onehot(chars: Any) -> np.ndarray:
+    """Decode a ``(..., 4, 64)`` one-hot atom-name array (``chr(i + 32)``)."""
+    index = np.asarray(chars).argmax(-1)
+    flat = index.reshape(-1, index.shape[-1])
+    names = ["".join(chr(int(c) + 32) for c in row).strip() for row in flat]
+    return np.asarray(names).reshape(index.shape[:-1])
+
+
+def rigid_group_max_abs(port: Any, native: Any, groups: Any, mask: Any) -> float:
+    """Max |d| after a separate Kabsch fit per group (e.g. per reference conformer).
+
+    Reference conformers are randomly rotated and translated by the
+    featurizer; when that draw is not replayed, this is the part of the
+    coordinate difference that is not a rigid motion.
+    """
+    p = np.asarray(port, np.float64)
+    q = np.asarray(native, np.float64)
+    labels = np.asarray(groups)
+    valid = np.asarray(mask, bool)
+    worst = 0.0
+    for label in np.unique(labels[valid]):
+        members = valid & (labels == label)
+        a, b = p[members], q[members]
+        if len(a) >= 3:
+            from bench.structures import superpose
+
+            a, b = superpose(a, b)
+        else:
+            a, b = a - a.mean(0), b - b.mean(0)
+        worst = max(worst, float(np.max(np.abs(a - b))) if a.size else 0.0)
+    return worst
+
+
+def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
+    import jax
+    import jax.numpy as jnp
+
+    import tests.parity.test_boltz2 as parity
+
+    # Read at call time by the trunk; the parity subset pins it the same way.
+    os.environ[parity.TRIANGLE_MULTIPLICATION_ENV] = "xla"
+
+    from bench.boltz_amp_report import compare_coordinates
+    from foldjax.models.boltz2.bridge.native import load_params
+    from foldjax.models.boltz2.models.trunk_blocks.trunk import (
+        _cast_trunk_params,
+        boltz2_sample_forward,
+    )
+    from tests.models.boltz2.scripts.parity_matched_tape import (
+        captured_sampler_trunk,
+        load_features,
+        load_tape,
+    )
+
+    results: dict[str, dict[str, Any]] = {}
+    cache: dict[str, Any] = {}
+
+    def case(tier: str):
+        return fixture_case("boltz2", parity.CASE, tier)
+
+    def params() -> Any:
+        if "params" not in cache:
+            cache["params"] = load_params(parity._weights())
+        return cache["params"]
+
+    def meta_effective() -> tuple[dict, dict]:
+        return parity._capture_metadata(case("B"))
+
+    raw_features = npz(capture / "features.npz")
+    atom_valid = raw_features["atom_pad_mask"][0].astype(bool)
+    atom_names = atom_names_from_onehot(raw_features["ref_atom_name_chars"][0])
+    atom_element = raw_features["ref_element"][0].argmax(-1)
+    token_of_atom = raw_features["atom_to_token"][0].argmax(-1)
+    protein_atom = raw_features["mol_type"][0][token_of_atom] == 0
+    ca_mask = (atom_names == "CA") & (atom_element == 6) & protein_atom & atom_valid
+
+    base = {
+        **CPU_CONDITION,
+        "input": "native features.npz (upstream featurizer output; core-only)",
+        "msa": "all 8,192 native rows (capture ran subsample_msa=false)",
+        "trunk_dtype": "bfloat16 parameters, float32 pair residual "
+        "(native bf16-mixed AMP match; parity-subset pin)",
+        "kernels": "attention/triangle/GLU = xla; triangle multiplication = xla",
+        "recycles": 3,
+    }
+
+    def coordinate_record(port: np.ndarray, native: np.ndarray) -> dict[str, Any]:
+        record = coordinate_metrics(port, native, atom_mask=atom_valid, ca_mask=ca_mask)
+        report = compare_coordinates(port, native, raw_features)
+        record["entity_rmsd_angstrom_panel_metric"] = report["entity_rmsd"]
+        return record
+
+    def sample(trunk: Mapping[str, Any]) -> np.ndarray:
+        """The parity subset's tier-B sampler call, with ``trunk`` supplied."""
+        meta, _ = meta_effective()
+        tape = load_tape(case("B").path("tape.npz"), meta)
+        parity._assert_schedule(meta, tape["sigmas"])
+        features = load_features(case("B").path("features.npz"))
+        with highest_precision(), jax.default_matmul_precision("highest"):
+            output = boltz2_sample_forward(
+                params(),
+                features,
+                jax.random.PRNGKey(int(meta["seed"])),
+                trunk=trunk,
+                recycling_steps=int(meta["num_recycles"]),
+                num_sampling_steps=int(meta["num_steps"]),
+                multiplicity=int(meta["num_samples"]),
+                step_scale=float(meta["step_scale"]),
+                gamma_0=float(meta["gamma_0"]),
+                gamma_min=float(meta["gamma_min"]),
+                noise_scale=float(meta["noise_scale"]),
+                sigma_data=float(meta["sigma_data"]),
+                init_noise=jnp.asarray(tape["init_noise"]),
+                step_noises=jnp.asarray(tape["step_noises"]),
+                aug_transforms=(
+                    jnp.asarray(tape["rotations"]),
+                    jnp.asarray(tape["translations"]),
+                ),
+                use_scan=True,
+                compute_dtype=jnp.bfloat16,
+                **parity.SHARED_OPTIONS,
+                **parity.DENOISER_OPTIONS,
+            )
+            return np.asarray(jax.device_get(output["sample_atom_coords"]), np.float64)
+
+    def native_coordinates() -> np.ndarray:
+        return npz(case("B").path("coordinate.npz"))["coordinate"].astype(np.float64)
+
+    def port_trunk() -> dict[str, Any]:
+        if "trunk" not in cache:
+            meta, effective = meta_effective()
+            features = load_features(case("A").path("features.npz"))
+            started = time.perf_counter()
+            with highest_precision(), jax.default_matmul_precision("highest"):
+                trunk = parity._port_trunk(params(), features, meta, effective)
+                jax.block_until_ready(trunk["s"])
+            cache["trunk_seconds"] = time.perf_counter() - started
+            cache["trunk"] = trunk
+        return cache["trunk"]
+
+    # -- S1 ---------------------------------------------------------------
+    def s1() -> dict[str, Any]:
+        from foldjax.models.boltz2.data.featurize import featurize_yaml
+        from foldjax.paths import weights_dir
+
+        provenance = json.loads((capture / "provenance.json").read_text())
+        yaml_path = Path(provenance["requested_settings"]["input"])
+        seed = int(provenance["requested_settings"]["seed"])
+        with tempfile.TemporaryDirectory() as scratch:
+            port, _, _ = featurize_yaml(
+                yaml_path, Path(scratch), weights_dir("boltz2") / "mols", seed=seed
+            )
+        native = raw_features
+        common = sorted(set(port) & set(native))
+        records = {name: array_parity(port[name], native[name]) for name in common}
+        summary = summarize_features(records)
+        rigid = None
+        if records.get("ref_pos", {}).get("shape_equal"):
+            rigid = rigid_group_max_abs(
+                port["ref_pos"][0],
+                native["ref_pos"][0],
+                native["ref_space_uid"][0],
+                native["atom_pad_mask"][0] > 0,
+            )
+        return stage_record(
+            "measured",
+            condition={
+                **CPU_CONDITION,
+                "port_featurizer": "foldjax.models.boltz2.data.featurize.featurize_yaml "
+                "(torch-free), re-run in this checkout",
+                "input_document": str(yaml_path),
+                "seed": seed,
+                "native": "features.npz (upstream boltz b1ebfc4 featurizer)",
+                "name_mapping": "identical names; every key both sides emit",
+                "random_draws": "NOT replayed: upstream's reference-conformer "
+                "augmentation draws (preprocessing-tape.npz) have no port "
+                "injection hook, so ref_pos differs by a rigid motion per conformer",
+            },
+            headline={
+                "metric": "min exact-match fraction (categorical) / max |d| (float)",
+                "value": f"{summary['min_exact_match_fraction']} / "
+                f"{summary['max_float_max_abs']}",
+            },
+            metrics={
+                "summary": summary,
+                "only_in_port": sorted(set(port) - set(native)),
+                "only_in_native": sorted(set(native) - set(port)),
+                "ref_pos_max_abs_after_per_conformer_kabsch": rigid,
+                "arrays": records,
+            },
+        )
+
+    # -- S2 ---------------------------------------------------------------
+    def s2() -> dict[str, Any]:
+        from foldjax.models.boltz2.bridge import export_weights
+        from foldjax.models.boltz2.bridge.checkpoint import load_checkpoint_state_dict
+        from foldjax.paths import foldjax_home
+
+        native_path = foldjax_home() / "downloads" / "boltz2" / "boltz2_conf.ckpt"
+        provenance = json.loads((capture / "provenance.json").read_text())
+        state = TrackingState(load_checkpoint_state_dict(native_path))
+        captured: dict[str, Any] = {}
+
+        def capture_params(tree: Any, path: Any, dtype: Any = None) -> dict:
+            captured["params"] = tree
+            captured["dtype"] = dtype
+            return {"weights_path": str(path)}
+
+        original = (export_weights.load_checkpoint_state_dict, export_weights.save_params)
+        export_weights.load_checkpoint_state_dict = lambda _path: state
+        export_weights.save_params = capture_params
+        try:
+            with tempfile.TemporaryDirectory() as scratch:
+                export_weights.export_confidence(native_path, Path(scratch))
+        finally:
+            export_weights.load_checkpoint_state_dict, export_weights.save_params = (
+                original
+            )
+        mapped = jax.tree.map(np.asarray, captured["params"])
+        stored = jax.tree.map(
+            np.asarray, load_params(parity._weights(), prestack=False)
+        )
+        tree = compare_parameter_trees(stored, mapped)
+        checks = weight_value_checks(
+            state,
+            [leaf for _, leaf in tree_leaves_with_paths(stored)],
+        )
+        return stage_record(
+            "measured",
+            condition={
+                "backend": "cpu (host NumPy; no model run)",
+                "native_checkpoint": str(native_path),
+                "native_sha256": sha256(native_path),
+                "capture_checkpoint_sha256": provenance["checkpoint_sha256"],
+                "converted": str(parity._weights()) + ".safetensors",
+                "mapper": "foldjax.models.boltz2.bridge.export_weights."
+                "export_confidence (writer intercepted, nothing written)",
+                "reader": "foldjax.torch_archive.load (no torch)",
+            },
+            headline={
+                "metric": "max |stored - map(native)| over groups (storage dtype)",
+                "value": tree["max_abs"],
+            },
+            metrics={
+                "stored_vs_mapped": tree,
+                **checks,
+            },
+        )
+
+    # -- S3 ---------------------------------------------------------------
+    def s3() -> dict[str, Any]:
+        trunk = port_trunk()
+        native = npz(case("A").path("trunk.npz"))
+        arrays = {
+            name: {
+                "relative_rms": relative_rms(trunk[name], native[name]),
+                "max_abs": max_abs(trunk[name], native[name]),
+                "native_max_abs_value": float(np.abs(native[name]).max()),
+            }
+            for name in parity.TRUNK_ARRAYS
+        }
+        return stage_record(
+            "measured",
+            condition=base,
+            headline={
+                "metric": "relative RMS single (s) / pair (z)",
+                "value": f"{arrays['s']['relative_rms']:.3e} / "
+                f"{arrays['z']['relative_rms']:.3e}",
+            },
+            metrics={"arrays": arrays},
+            runtime_s=round(cache["trunk_seconds"], 1),
+        )
+
+    # -- S4 ---------------------------------------------------------------
+    def s4() -> dict[str, Any]:
+        trunk = captured_sampler_trunk(npz(case("B").path("trunk.npz")))
+        started = time.perf_counter()
+        port = sample(trunk)
+        runtime = time.perf_counter() - started
+        record = coordinate_record(port, native_coordinates())
+        return stage_record(
+            "measured",
+            condition={
+                **base,
+                "trunk_dtype": "n/a (native trunk injected)",
+                "injected_native": "trunk.npz s/z/s_inputs/relative_position_encoding "
+                "(trunk= argument); tape.npz init/step noise + rotations/translations",
+                "diffusion_dtype": "float32 score model (released island)",
+                "samples_x_steps": "5 x 200",
+            },
+            headline={
+                "metric": "per-sample all-atom / CA RMSD (A), worst sample",
+                "value": f"{max(record['all_atom_rmsd_angstrom']):.4f} / "
+                f"{max(record['ca_rmsd_angstrom']):.4f}",
+            },
+            metrics=record,
+            runtime_s=round(runtime, 1),
+        )
+
+    # -- S5 ---------------------------------------------------------------
+    def s5() -> dict[str, Any]:
+        from foldjax.models.boltz2.models.heads.confidence import (
+            confidence_module_forward,
+        )
+        from foldjax.models.boltz2.models.heads.distogram import distogram_forward
+
+        native_out = npz(capture / "forward-output.npz")
+        trunk = npz(case("B").path("trunk.npz"))
+        features = load_features(case("B").path("features.npz"))
+        coords = native_out["sample_atom_coords"].astype(np.float32)
+        coordinate_file = native_coordinates()
+        compute = jnp.bfloat16
+        head_params = _cast_trunk_params(params()["confidence"], compute)
+        disto_params = {"distogram": _cast_trunk_params(params()["distogram"], compute)}
+        s_inputs = jnp.asarray(trunk["s_inputs"], jnp.float32)
+        s = jnp.asarray(trunk["s"], jnp.float32)
+        z = jnp.asarray(trunk["z"], jnp.float32)
+        native_disto = jnp.asarray(native_out["pdistogram"][:, :, :, 0], jnp.float32)
+        options = {
+            key: parity.SHARED_OPTIONS[key]
+            for key in ("chunk_size", "matmul_precision", "attention_backend",
+                        "triangle_backend", "glu_backend")
+        }
+
+        def one(x_pred: jnp.ndarray) -> dict[str, jnp.ndarray]:
+            return confidence_module_forward(
+                head_params,
+                s_inputs=s_inputs,
+                s=s,
+                z=z,
+                x_pred=x_pred,
+                feats=features,
+                pred_distogram_logits=native_disto,
+                multiplicity=1,
+                use_scan=True,
+                return_pair_chains_iptm=True,
+                **options,
+            )
+
+        started = time.perf_counter()
+        with highest_precision(), jax.default_matmul_precision("highest"):
+            port_disto = np.asarray(
+                jax.device_get(distogram_forward(disto_params, z)), np.float64
+            )
+            program = jax.jit(one)
+            per_sample = [
+                jax.device_get(program(jnp.asarray(coords[i : i + 1])))
+                for i in range(coords.shape[0])
+            ]
+        runtime = time.perf_counter() - started
+        keys = sorted(set(per_sample[0]) & set(native_out))
+        metrics: dict[str, Any] = {
+            "native_coordinates": "forward-output.npz sample_atom_coords",
+            "forward_output_vs_coordinate_npz_max_abs": max_abs(coords, coordinate_file),
+            "distogram_logits_from_native_z": {
+                "max_abs": max_abs(port_disto, native_out["pdistogram"]),
+                "relative_rms": relative_rms(port_disto, native_out["pdistogram"]),
+            },
+        }
+        for key in keys:
+            port_value = np.concatenate(
+                [np.asarray(out[key], np.float64).reshape((1, -1)) for out in per_sample]
+            ).reshape(native_out[key].shape)
+            native_value = native_out[key].astype(np.float64)
+            metrics[key] = {
+                "max_abs": max_abs(port_value, native_value),
+                "relative_rms": relative_rms(port_value, native_value),
+                "native_range": [float(native_value.min()), float(native_value.max())],
+            }
+        return stage_record(
+            "measured",
+            condition={
+                **base,
+                "trunk_dtype": "n/a (native trunk injected)",
+                "confidence_dtype": "bfloat16 parameters (native bf16-mixed AMP; "
+                "confidence runs under autocast upstream)",
+                "injected_native": "trunk.npz s_inputs/s/z; forward-output.npz "
+                "sample_atom_coords and pdistogram[...,0] (pred_distogram_logits)",
+                "confidence_schedule": "one sample at a time "
+                "(run_confidence_sequentially=true upstream)",
+            },
+            headline={
+                "metric": "max |d| pLDDT (0-1) / PAE (A) / pTM",
+                "value": "{:.3g} / {:.3g} / {:.3g}".format(
+                    metrics.get("plddt", {}).get("max_abs", float("nan")),
+                    metrics.get("pae", {}).get("max_abs", float("nan")),
+                    metrics.get("ptm", {}).get("max_abs", float("nan")),
+                ),
+            },
+            metrics=metrics,
+            runtime_s=round(runtime, 1),
+        )
+
+    # -- S6 ---------------------------------------------------------------
+    def s6() -> dict[str, Any]:
+        trunk = port_trunk()
+        started = time.perf_counter()
+        port = sample(trunk)
+        runtime = time.perf_counter() - started + cache["trunk_seconds"]
+        record = coordinate_record(port, native_coordinates())
+        return stage_record(
+            "measured",
+            condition={
+                **base,
+                "injected_native": "tape.npz only (init/step noise, rotations, "
+                "translations); trunk is the port's own (S3)",
+                "samples_x_steps": "5 x 200",
+            },
+            headline={
+                "metric": "per-sample all-atom / CA RMSD (A), worst sample",
+                "value": f"{max(record['all_atom_rmsd_angstrom']):.4f} / "
+                f"{max(record['ca_rmsd_angstrom']):.4f}",
+            },
+            metrics=record,
+            runtime_s=round(runtime, 1),
+            notes="Runtime includes the trunk (S3).",
+        )
+
+    runners = {"S1": s1, "S2": s2, "S3": s3, "S4": s4, "S5": s5, "S6": s6}
+    for name, function in runners.items():
+        if name in stages:
+            if name == "S6" and "trunk" not in cache:
+                port_trunk()
+            results[name] = run_stage(f"boltz2 {name}", function)
+    return results
+
+
+# --------------------------------------------------------------------------
+# OpenFold3 (OpenBind checkpoint)
+# --------------------------------------------------------------------------
+
+
+def run_openfold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
+    import jax
+    import jax.numpy as jnp
+
+    import tests.parity.test_openfold3 as parity
+    from bench.openbind_core_replay import native_trunk_arrays
+    from foldjax.models.openfold3 import inference
+    from foldjax.models.openfold3.bridge.chemistry import representative_atom_table
+
+    results: dict[str, dict[str, Any]] = {}
+    scratch = tempfile.TemporaryDirectory()
+    case_a = fixture_case("openfold3", parity.CASE, "A")
+    case_b = fixture_case("openfold3", parity.CASE, "B")
+    capture_a = parity.capture_shaped_dir(case_a.files, Path(scratch.name) / "a")
+    capture_b = parity.capture_shaped_dir(case_b.files, Path(scratch.name) / "b")
+    checkpoint = parity.resolve_checkpoint()
+    raw_input = npz(capture / "input.npz")
+    atom_valid = raw_input["atom_mask"][0].astype(bool)
+    ca_mask = ca_mask_from_names(
+        raw_input["atom_array.0.annotation.atom_name"],
+        raw_input["atom_array.0.annotation.element"],
+    )
+    base = {
+        **CPU_CONDITION,
+        "input": "native input.npz (upstream featurizer output; core-only)",
+        "msa": "native per-cycle MSA row draws (tape randint/randperm) replayed",
+        "trunk_dtype": "float32 (native 32-true)",
+        "triangle_kernel": "xla (native ran cuEq; no CPU cuEq)",
+        "recycles": 4,
+    }
+
+    def clear() -> None:
+        inference._compiled_predict.clear_cache()
+
+    def run(capture_dir: Path, *, stop_after_trunk: bool, **overrides: Any):
+        """``tests.parity.test_openfold3.run_replay`` with config overrides."""
+        tape, effective, features = parity.native_batch(capture_dir)
+        config = parity.replay_config(
+            features, tape, effective, stop_after_trunk=stop_after_trunk
+        )
+        if overrides:
+            config = config._replace(**overrides)
+        program = inference.compile_predict(
+            config, representative_atom_table(), triangle_kernel="xla"
+        )
+        started = time.perf_counter()
+        with highest_precision():
+            result = jax.device_get(
+                program(
+                    jax.random.key(101),
+                    features,
+                    parity.inference_params(str(checkpoint)),
+                    noise_tape=tape.noise,
+                    augmentation_tape=tape.augmentation(),
+                )
+            )
+        return result, time.perf_counter() - started
+
+    def coordinate_record(port: np.ndarray) -> dict[str, Any]:
+        native = npz(capture_b / "coordinate.npz")["coordinate"].astype(np.float64)
+        record = coordinate_metrics(
+            port, native, atom_mask=atom_valid, ca_mask=ca_mask
+        )
+        record["entity_rmsd_angstrom_panel_metric"] = parity.entity_rmsd(
+            capture_b, port
+        )["entity_rmsd"]
+        return record
+
+    def trunk_patch():
+        native, _ = native_trunk_arrays(capture_a, raw_input["token_mask"].shape[-1])
+        values = tuple(jnp.asarray(x) for x in native)
+        return lambda *args, **kwargs: values
+
+    # -- S1 ---------------------------------------------------------------
+    def s1() -> dict[str, Any]:
+        from foldjax.models.openfold3.data.featurize import featurize_query
+
+        # The capture's predictions/inference_query_set.json is upstream's
+        # rewritten copy (its MSA paths point at upstream's pre-parsed cache),
+        # so the port featurizes the document the native run was given; the
+        # sequences and protein MSA path are checked against the rewritten copy.
+        query = Path(
+            "/home/jaemin/non-project/optimizing/foldjax-bench/"
+            "upstream-default-multimodal-n5-20260904/work/protein_rna_1urn/foldjax/"
+            "openfold3/inputs/openfold3_input.json"
+        )
+        rewritten = json.loads(
+            (capture / "predictions" / "inference_query_set.json").read_text()
+        )
+        original = json.loads(query.read_text())
+        for name, spec in original["queries"].items():
+            mine = [c["sequence"] for c in spec["chains"]]
+            theirs = [c["sequence"] for c in rewritten["queries"][name]["chains"]]
+            if mine != theirs:
+                raise RuntimeError(f"{query} is not the document the capture ran")
+        port = featurize_query(query, seed=101)
+        native = {k: v for k, v in raw_input.items() if not k.startswith("atom_array.")}
+        common = sorted(set(port) & set(native))
+        records = {name: array_parity(port[name], native[name]) for name in common}
+        summary = summarize_features(records)
+        rigid = None
+        if records.get("ref_pos", {}).get("shape_equal"):
+            rigid = rigid_group_max_abs(
+                port["ref_pos"][0],
+                native["ref_pos"][0],
+                native["ref_space_uid"][0],
+                native["atom_mask"][0] > 0,
+            )
+        return stage_record(
+            "measured",
+            condition={
+                **CPU_CONDITION,
+                "port_featurizer": "foldjax.models.openfold3.data.featurize."
+                "featurize_query (vendored NumPy featurizer), re-run in this checkout",
+                "input_document": str(query),
+                "seed": 101,
+                "native": "input.npz (upstream OpenFold3 v0.5.0 batch)",
+                "name_mapping": "identical names; every key both sides emit",
+            },
+            headline={
+                "metric": "min exact-match fraction (categorical) / max |d| (float)",
+                "value": f"{summary['min_exact_match_fraction']} / "
+                f"{summary['max_float_max_abs']}",
+            },
+            metrics={
+                "summary": summary,
+                "only_in_port": sorted(set(port) - set(native)),
+                "only_in_native": sorted(set(native) - set(port)),
+                "ref_pos_max_abs_after_per_conformer_kabsch": rigid,
+                "arrays": records,
+            },
+        )
+
+    # -- S2 ---------------------------------------------------------------
+    def s2() -> dict[str, Any]:
+        from foldjax.models.openfold3.bridge.checkpoint import load_checkpoint
+        from foldjax.models.openfold3.bridge.torch_mapping import (
+            map_inference_params,
+            prune_sample_diffusion_aliases,
+            resolve_model_prefix,
+        )
+
+        state = load_checkpoint(checkpoint)
+        prefix = resolve_model_prefix(state, None)
+        prune_sample_diffusion_aliases(state, prefix=prefix)
+        tracked = TrackingState(state)
+        mapped = jax.tree.map(np.asarray, map_inference_params(tracked, prefix))
+        mapped_leaves = [leaf for _, leaf in tree_leaves_with_paths(mapped)]
+        checks = weight_value_checks(
+            tracked,
+            mapped_leaves,
+            ignored=lambda key: key.endswith("version_tensor"),
+        )
+        containment = checks["value_containment_port_in_checkpoint"]
+        return stage_record(
+            "measured",
+            condition={
+                "backend": "cpu (host NumPy; no model run)",
+                "native_checkpoint": str(checkpoint),
+                "native_sha256": sha256(checkpoint),
+                "converted": "none stored: the runtime maps the .pt in-process "
+                "(.foldjax-conversion.json names the .pt itself), so stored == mapped",
+                "mapper": "foldjax.models.openfold3.bridge.torch_mapping."
+                "map_inference_params (after prune_sample_diffusion_aliases)",
+                "reader": "foldjax.torch_archive via bridge.checkpoint.load_checkpoint",
+            },
+            headline={
+                "metric": "mapped floats absent from checkpoint / max distance "
+                "(no stored file)",
+                "value": f"{containment['port_values_absent_from_checkpoint']} / "
+                f"{containment['max_distance_to_nearest_checkpoint_value']}",
+            },
+            metrics={
+                "mapped_leaves": len(mapped_leaves),
+                **checks,
+            },
+            notes="No converted artifact exists for OpenFold3; the stage reports "
+            "coverage of the checkpoint and that the mapped parameters are a "
+            "rearrangement of the checkpoint values.",
+        )
+
+    # -- S3 ---------------------------------------------------------------
+    def s3() -> dict[str, Any]:
+        clear()
+        prediction, seconds = run(capture_a, stop_after_trunk=True)
+        native, _ = native_trunk_arrays(capture_a, raw_input["token_mask"].shape[-1])
+        port = (prediction.single_inputs, prediction.single, prediction.pair)
+        arrays = {}
+        for name, left, right in zip(
+            ("single_inputs", "single", "pair"), port, native, strict=True
+        ):
+            left = np.asarray(left)
+            arrays[name] = {
+                "relative_rms": relative_rms(left.reshape(right.shape), right),
+                "max_abs": max_abs(left.reshape(right.shape), right),
+                "native_max_abs_value": float(np.abs(right).max()),
+            }
+        arrays_scaled = parity.trunk_residuals(port, native)
+        return stage_record(
+            "measured",
+            condition=base,
+            headline={
+                "metric": "relative RMS single / pair",
+                "value": f"{arrays['single']['relative_rms']:.3e} / "
+                f"{arrays['pair']['relative_rms']:.3e}",
+            },
+            metrics={
+                "arrays": arrays,
+                "parity_subset_metric_max_abs_over_max_native": arrays_scaled,
+            },
+            runtime_s=round(seconds, 1),
+        )
+
+    # -- S6 ---------------------------------------------------------------
+    def s6() -> dict[str, Any]:
+        clear()
+        prediction, seconds = run(capture_b, stop_after_trunk=False)
+        record = coordinate_record(np.asarray(prediction.coordinates, np.float64))
+        return stage_record(
+            "measured",
+            condition={
+                **base,
+                "injected_native": "tape.npz (MSA draws, initial/churn noise, "
+                "augmentation quaternions/translations)",
+                "samples_x_steps": "5 x 200",
+            },
+            headline={
+                "metric": "per-sample all-atom / CA RMSD (A), worst sample",
+                "value": f"{max(record['all_atom_rmsd_angstrom']):.4f} / "
+                f"{max(record['ca_rmsd_angstrom']):.4f}",
+            },
+            metrics=record,
+            runtime_s=round(seconds, 1),
+        )
+
+    # -- S4 ---------------------------------------------------------------
+    def s4() -> dict[str, Any]:
+        clear()
+        try:
+            with counted_patch(inference, "trunk", trunk_patch()) as calls:
+                prediction, seconds = run(capture_b, stop_after_trunk=False)
+        finally:
+            clear()
+        if calls["n"] < 1:
+            raise RuntimeError("the native-trunk injection never fired")
+        record = coordinate_record(np.asarray(prediction.coordinates, np.float64))
+        record["injection_calls"] = calls["n"]
+        return stage_record(
+            "measured",
+            condition={
+                **base,
+                "trunk_dtype": "n/a (native trunk injected)",
+                "injected_native": "trunk-00.npz s_inputs/s/z replace "
+                "inference.trunk; tape.npz noise + augmentation",
+                "diffusion_dtype": "float32",
+                "samples_x_steps": "5 x 200",
+            },
+            headline={
+                "metric": "per-sample all-atom / CA RMSD (A), worst sample",
+                "value": f"{max(record['all_atom_rmsd_angstrom']):.4f} / "
+                f"{max(record['ca_rmsd_angstrom']):.4f}",
+            },
+            metrics=record,
+            runtime_s=round(seconds, 1),
+        )
+
+    # -- S5 ---------------------------------------------------------------
+    def s5() -> dict[str, Any]:
+        raw = npz(capture / "raw-output.npz")
+        native_coords = jnp.asarray(raw["atom_positions_predicted"][0])
+        clear()
+        try:
+            with (
+                counted_patch(inference, "trunk", trunk_patch()) as trunk_calls,
+                counted_patch(
+                    inference, "sample_diffusion", lambda *a, **k: native_coords
+                ) as sampler_calls,
+            ):
+                prediction, seconds = run(
+                    capture_b,
+                    stop_after_trunk=False,
+                    return_plddt_logits=True,
+                    returned_pair_logits=("pae_logits", "pde_logits", "distogram_logits"),
+                )
+        finally:
+            clear()
+        if trunk_calls["n"] < 1 or sampler_calls["n"] < 1:
+            raise RuntimeError(
+                f"injection did not fire: trunk {trunk_calls}, sampler {sampler_calls}"
+            )
+        metrics: dict[str, Any] = {}
+        pairs = {
+            "plddt_logits": (prediction.plddt_logits, raw["plddt_logits"][0]),
+            "pae_logits": (prediction.pae_logits, raw["pae_logits"][0]),
+            "pde_logits": (prediction.pde_logits, raw["pde_logits"][0]),
+            "distogram_logits_from_native_z": (
+                prediction.distogram_logits, raw["distogram_logits"][0, 0],
+            ),
+        }
+        for name, (port, native) in pairs.items():
+            if port is None:
+                metrics[name] = {"missing_from_port_output": True}
+                continue
+            port = np.asarray(port, np.float64).reshape(native.shape)
+            metrics[name] = {
+                "max_abs": max_abs(port, native),
+                "relative_rms": relative_rms(port, native),
+            }
+        # Upstream's own written scores, one JSON per sample (sample_1..5 is
+        # the original sample index; rounded by the writer).
+        written = capture / "predictions" / "protein_rna_1urn" / "seed_101"
+        native_plddt, native_pae, native_ptm, native_iptm = [], [], [], []
+        for index in range(1, 6):
+            stem = written / f"protein_rna_1urn_seed_101_sample_{index}"
+            full = json.loads(Path(f"{stem}_confidences.json").read_text())
+            summary = json.loads(Path(f"{stem}_confidences_aggregated.json").read_text())
+            native_plddt.append(full["plddt"])
+            native_pae.append(full["pae"])
+            native_ptm.append(summary["ptm"])
+            native_iptm.append(summary["iptm"])
+        port_plddt = np.asarray(prediction.plddt, np.float64).reshape(5, -1)
+        native_plddt = np.asarray(native_plddt, np.float64)
+        scale = 100.0 if native_plddt.max() > 1.5 and port_plddt.max() <= 1.5 else 1.0
+        port_plddt = port_plddt[:, : native_plddt.shape[1]] * scale
+        metrics["plddt_written"] = {
+            "max_abs": max_abs(port_plddt, native_plddt),
+            "scale_factor_applied_to_port": scale,
+        }
+        native_pae = np.asarray(native_pae, np.float64)
+        if prediction.pae_logits is not None:
+            from foldjax.models.openfold3.models.confidence import (
+                probs_to_expected_error,
+            )
+
+            # The bins the port's own pTM path is configured with.
+            tape, effective, features = parity.native_batch(capture_b)
+            config = parity.replay_config(
+                features, tape, effective, stop_after_trunk=False
+            )
+            port_pae = np.asarray(
+                probs_to_expected_error(
+                    jax.nn.softmax(jnp.asarray(prediction.pae_logits), axis=-1),
+                    bin_min=0.0,
+                    bin_max=config.pae_bin_max,
+                    no_bins=config.pae_bins,
+                )
+            )
+            metrics["pae_written_angstrom"] = {
+                "max_abs": max_abs(port_pae.reshape(native_pae.shape), native_pae)
+            }
+        metrics["ptm_written"] = {
+            "max_abs": max_abs(np.asarray(prediction.ptm).reshape(5), native_ptm)
+        }
+        metrics["iptm_written"] = {
+            "max_abs": max_abs(np.asarray(prediction.iptm).reshape(5), native_iptm)
+        }
+        metrics["injection_calls"] = {"trunk": trunk_calls["n"], "sampler": sampler_calls["n"]}
+        return stage_record(
+            "measured",
+            condition={
+                **base,
+                "trunk_dtype": "n/a (native trunk injected)",
+                "confidence_dtype": "float32",
+                "injected_native": "trunk-00.npz replaces inference.trunk; "
+                "raw-output.npz atom_positions_predicted replaces sample_diffusion",
+            },
+            headline={
+                "metric": "max |d| pLDDT (0-100) / PAE (A) / pTM, vs written JSON",
+                "value": "{:.3g} / {:.3g} / {:.3g}".format(
+                    metrics["plddt_written"]["max_abs"],
+                    metrics.get("pae_written_angstrom", {}).get("max_abs", float("nan")),
+                    metrics["ptm_written"]["max_abs"],
+                ),
+            },
+            metrics=metrics,
+            runtime_s=round(seconds, 1),
+            notes="Written JSON scores are rounded by upstream's writer; the "
+            "logit rows are the unrounded comparison.",
+        )
+
+    runners = {"S1": s1, "S2": s2, "S3": s3, "S6": s6, "S4": s4, "S5": s5}
+    try:
+        for name, function in runners.items():
+            if name in stages:
+                results[name] = run_stage(f"openfold3 {name}", function)
+    finally:
+        scratch.cleanup()
+    return results
+
+
+# --------------------------------------------------------------------------
+# ESMFold2
+# --------------------------------------------------------------------------
+
+ESMFOLD2_NO_TRUNK = (
+    "The ESMFold2 capture stores no trunk boundary: tape.npz holds "
+    "initial_pair_state (an input to the trunk) and the remaining tape draws, "
+    "and upstream_confidence.npz / upstream_coords.npz are end-of-run outputs."
+)
+
+
+def confidence_comparison(
+    port: Mapping[str, Any], native: Mapping[str, Any], names: Mapping[str, str]
+) -> dict[str, Any]:
+    """max-abs / relative RMS for each ``native name -> port name`` present on both."""
+    metrics: dict[str, Any] = {}
+    for native_name, port_name in names.items():
+        if native_name not in native or port_name not in port:
+            metrics[native_name] = {"missing": True}
+            continue
+        expected = np.asarray(native[native_name], np.float64)
+        value = np.asarray(port[port_name], np.float64)
+        if value.size != expected.size:
+            metrics[native_name] = {
+                "shape_mismatch": [list(value.shape), list(expected.shape)]
+            }
+            continue
+        value = value.reshape(expected.shape)
+        metrics[native_name] = {
+            "port_name": port_name,
+            "max_abs": max_abs(value, expected),
+            "relative_rms": relative_rms(value, expected),
+            "native_range": [float(expected.min()), float(expected.max())],
+        }
+    return metrics
+
+
+def run_esmfold2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
+    import jax
+
+    import tests.parity.test_esmfold2 as parity
+
+    results: dict[str, dict[str, Any]] = {}
+    features = npz(capture / "features.npz")
+    atom_valid = features["atom_attention_mask"][0].astype(bool)
+    names = atom_names_from_onehot(
+        np.eye(64, dtype=np.int8)[np.clip(features["ref_atom_name_chars"][0], 0, 63)]
+    )
+    ca_mask = (names == "CA") & (features["ref_element"][0] == 6) & atom_valid
+
+    # -- S1 ---------------------------------------------------------------
+    def s1() -> dict[str, Any]:
+        from foldjax.models.esmfold2 import inference
+        from foldjax.paths import weights_dir
+
+        document_path = Path(
+            "/home/jaemin/non-project/optimizing/foldjax-bench/jctc-matrix-20260904/"
+            "work/foldjax/esmfold2-protein_1ubq-seed101-cold/inputs/esmfold2_input.json"
+        )
+        document = json.loads(document_path.read_text())
+        # That job's MSA directory is gone; the bench's 1UBQ alignment with the
+        # sha256 OpenDDE's capture recorded for this sequence stands in for it.
+        msa = Path(
+            "/home/jaemin/non-project/optimizing/foldjax-bench/"
+            "upstream-default-multimodal-n5-20260904/data/msa/1ubq_unpaired.a3m"
+        )
+        for entity in document["entities"]:
+            if entity.get("unpaired_msa"):
+                entity["unpaired_msa"] = str(msa)
+        port = inference.build_common_job_features(
+            document,
+            base_dir=document_path.parent,
+            ccd_path=weights_dir("esmfold2") / "ccd.pkl",
+            seed=101,
+        )
+        port = {k: np.asarray(v) for k, v in port.items()}
+        common = sorted(set(port) & set(features))
+        records = {name: array_parity(port[name], features[name]) for name in common}
+        summary = summarize_features(records)
+        return stage_record(
+            "measured",
+            condition={
+                **CPU_CONDITION,
+                "port_featurizer": "foldjax.models.esmfold2.inference."
+                "build_common_job_features (the backend's all-atom path), re-run "
+                "in this checkout",
+                "input_document": str(document_path),
+                "msa": f"{msa} (sha256 {sha256(msa)})",
+                "input_provenance": "INFERRED: the capture records only the "
+                "feature archive's sha256 (core_only_shared_features=true), not "
+                "the document it was built from; this is the JCTC-matrix 1UBQ job "
+                "with the same sequence, its MSA path replaced as noted",
+                "seed": 101,
+                "native": "features.npz (the shared archive the capture ran)",
+            },
+            headline={
+                "metric": "min exact-match fraction (categorical) / max |d| (float)",
+                "value": f"{summary['min_exact_match_fraction']} / "
+                f"{summary['max_float_max_abs']}",
+            },
+            metrics={
+                "summary": summary,
+                "only_in_port": sorted(set(port) - set(features)),
+                "only_in_native": sorted(set(features) - set(port)),
+                "arrays": records,
+            },
+            notes="The native side is the archive the capture ran, but the "
+            "capture does not record which featurizer or document produced it, "
+            "so a mismatch here does not by itself locate a port defect.",
+        )
+
+    # -- S2 ---------------------------------------------------------------
+    def s2() -> dict[str, Any]:
+        from safetensors import safe_open
+
+        weights = parity._weights_directory()
+        loaded = parity.load_structure_model(weights)
+        params = {k: np.asarray(v) for k, v in loaded.parameters.items()}
+        file = weights / "model.safetensors"
+        groups: dict[str, dict[str, Any]] = {}
+        file_keys: set[str] = set()
+        with safe_open(file, framework="numpy") as handle:
+            for name in handle.keys():  # noqa: SIM118
+                file_keys.add(name)
+                if name not in params:
+                    continue
+                native = handle.get_tensor(name)
+                stored = params[name]
+                group = groups.setdefault(
+                    name.split(".", 1)[0],
+                    {"tensors": 0, "elements": 0, "max_abs": 0.0, "dtypes": set()},
+                )
+                group["tensors"] += 1
+                group["elements"] += int(native.size)
+                group["dtypes"].add(f"{native.dtype}->{stored.dtype}")
+                delta = max_abs(stored.astype(native.dtype), native) if native.size else 0.0
+                group["max_abs"] = max(group["max_abs"], delta)
+        for group in groups.values():
+            group["dtypes"] = sorted(group["dtypes"])
+        binding = json.loads((capture / "metadata.json").read_text())["binding"]
+        return stage_record(
+            "measured",
+            condition={
+                "backend": "cpu (host; no model run)",
+                "native_checkpoint": str(file),
+                "native_sha256": sha256(file),
+                "capture_checkpoint_sha256": binding["checkpoint"]["model.safetensors"],
+                "converted": "parameters as the replay loads them: "
+                "foldjax.models.esmfold2.inference.load(dtype='float32', "
+                "language_model=False)",
+                "mapping": "none by design: the port spells parameters as upstream's "
+                "state_dict, so the checkpoint loads by being read",
+            },
+            headline={
+                "metric": "max |loaded - checkpoint| over groups (checkpoint dtype)",
+                "value": max((g["max_abs"] for g in groups.values()), default=0.0),
+            },
+            metrics={
+                "groups": groups,
+                "checkpoint_tensors": len(file_keys),
+                "loaded_tensors": len(params),
+                "checkpoint_tensors_not_loaded": sorted(file_keys - set(params))[:50],
+                "loaded_not_in_checkpoint": sorted(set(params) - file_keys)[:50],
+            },
+            notes="ESM-C (the 25.4 GB language model) is not loaded or compared: "
+            "S6 injects the native LM hidden states.",
+        )
+
+    # -- S6 ---------------------------------------------------------------
+    def s6() -> dict[str, Any]:
+        case = fixture_case("esmfold2", parity.CASE, parity.TIER)
+        weights = parity._weights_directory()
+        loaded = parity.load_structure_model(weights)
+        case.assert_tripwire(parity.observed_schema(weights, loaded.settings))
+        captured: dict[str, Any] = {}
+        original = parity._compiled_predict
+
+        def recording() -> Any:
+            program = original()
+
+            def call(*args: Any, **kwargs: Any) -> Any:
+                output = program(*args, **kwargs)
+                captured["output"] = output
+                return output
+
+            return call
+
+        parity._compiled_predict = recording
+        try:
+            with highest_precision():
+                coords, replay_features, seconds = parity.replay_to_coordinates(
+                    case, loaded
+                )
+        finally:
+            parity._compiled_predict = original
+        native = npz(case.path(parity.FIXTURE_COORDS))["coords"].astype(np.float64)
+        port = np.asarray(coords, np.float64)
+        record = coordinate_metrics(port, native, atom_mask=atom_valid, ca_mask=ca_mask)
+        record["entity_rmsd_angstrom_panel_metric"] = parity.per_sample_rmsd(
+            native, port, replay_features
+        )
+        output = {k: np.asarray(v) for k, v in jax.device_get(captured["output"]).items()}
+        native_conf = npz(capture / "upstream_confidence.npz")
+        record["port_output_keys"] = sorted(output)
+        record["end_to_end_confidence"] = confidence_comparison(
+            output,
+            native_conf,
+            {k: k for k in sorted(native_conf) if k in output},
+        )
+        return stage_record(
+            "measured",
+            condition={
+                **CPU_CONDITION,
+                "input": "native features.npz (shared archive; core-only)",
+                "trunk_dtype": "bfloat16 (native CUDA bf16 autocast; replay settings)",
+                "injected_native": "upstream_lm.npz ESM-C hidden states (LM not run); "
+                "tape.npz: initial_pair_state, LM-encoder dropout masks, MSA "
+                "column/row draws, diffusion initial/churn normals, rotations, "
+                "translations",
+                "samples_x_steps": "5 x released schedule",
+            },
+            headline={
+                "metric": "per-sample all-atom / CA RMSD (A), worst sample",
+                "value": f"{max(record['all_atom_rmsd_angstrom']):.4f} / "
+                f"{max(record['ca_rmsd_angstrom']):.4f}",
+            },
+            metrics=record,
+            runtime_s=round(seconds, 1),
+            notes="end_to_end_confidence compares the replay's own confidence "
+            "outputs (port trunk, port coordinates) with upstream_confidence.npz; "
+            "it is not S5, which needs the native trunk and coordinates injected.",
+        )
+
+    for name in ("S3", "S4", "S5"):
+        if name in stages:
+            results[name] = not_captured(
+                ESMFOLD2_NO_TRUNK,
+                needs="a native capture of the folding-trunk output and the "
+                "confidence-head inputs (see MISSING.md).",
+            )
+    runners = {"S1": s1, "S2": s2, "S6": s6}
+    for name, function in runners.items():
+        if name in stages:
+            results[name] = run_stage(f"esmfold2 {name}", function)
+    return results
+
+
+# --------------------------------------------------------------------------
+# OpenDDE
+# --------------------------------------------------------------------------
+
+OPENDDE_NO_TRUNK = (
+    "The OpenDDE capture stores no trunk boundary: raw.npz holds only the "
+    "heads' outputs and coordinates, and the native input/derived/tape files "
+    "are trunk inputs."
+)
+
+
+def run_opendde(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
+    import jax
+    import jax.numpy as jnp
+
+    import tests.parity.test_opendde as parity
+
+    results: dict[str, dict[str, Any]] = {}
+    identity = npz(capture / "native-identity.npz")
+    ca_mask = ca_mask_from_names(
+        identity["output_atom_name"], identity["output_atom_element"]
+    )
+
+    # -- S1 ---------------------------------------------------------------
+    def s1() -> dict[str, Any]:
+        from bench.protenix_closure_report import flat_features
+        from foldjax.models.opendde.data.featurize_json import (
+            featurize_opendde_json,
+            load_jobs,
+        )
+
+        provenance = json.loads((capture / "provenance.json").read_text())
+        document = Path(
+            "/home/jaemin/non-project/optimizing/foldjax-bench/"
+            "upstream-default-multimodal-n5-20260904/work/protein_1ubq/foldjax/"
+            "opendde/inputs/opendde_input.json"
+        )
+        if sha256(document) != provenance["input_sha256"]:
+            raise RuntimeError("the input document is not the one the capture ran")
+        stored_port = npz(capture.parent / "fj-highest" / "foldjax-input.npz")
+        use_template = any(k.startswith("template_") for k in stored_port)
+        (job,) = load_jobs(document)
+        port = flat_features(
+            featurize_opendde_json(
+                job,
+                base_dir=document.parent,
+                n_queries=32,
+                n_keys=128,
+                max_msa_depth=16384,
+                seed=int(provenance.get("seed", 101)),
+                use_template=use_template,
+            )
+        )
+        native: dict[str, np.ndarray] = {}
+        for name in ("native-input.npz", "native-derived.npz", "native-identity.npz"):
+            native.update(npz(capture / name))
+        common = sorted(set(port) & set(native))
+        records = {name: array_parity(port[name], native[name]) for name in common}
+        summary = summarize_features(records)
+        from bench.entity_parity import compare_feature_dicts
+
+        drift = compare_feature_dicts(port, stored_port)
+        return stage_record(
+            "measured",
+            condition={
+                **CPU_CONDITION,
+                "port_featurizer": "foldjax.models.opendde.data.featurize_json."
+                "featurize_opendde_json, re-run in this checkout "
+                "(n_queries 32, n_keys 128, max_msa_depth 16384)",
+                "input_document": str(document),
+                "input_sha256_matches_capture": True,
+                "use_template": use_template,
+                "native": "native-input.npz + native-derived.npz + native-identity.npz",
+                "name_mapping": "fields both sides spell the same; derived fields "
+                "(relp, MSA mask, counts) are listed as only-in-one-side",
+            },
+            headline={
+                "metric": "min exact-match fraction (categorical) / max |d| (float)",
+                "value": f"{summary['min_exact_match_fraction']} / "
+                f"{summary['max_float_max_abs']}",
+            },
+            metrics={
+                "summary": summary,
+                "only_in_port": sorted(set(port) - set(native)),
+                "only_in_native": sorted(set(native) - set(port)),
+                "arrays": records,
+                "capture_time_input_audit_passed": json.loads(
+                    (capture.parent / "fj-highest" / "input-audit.json").read_text()
+                ).get("gate_passed"),
+                "rerun_vs_capture_time_port_features_equal": drift["equal"],
+                "rerun_vs_capture_time_port_features_value_mismatches": drift[
+                    "value_mismatches"
+                ],
+            },
+        )
+
+    # -- S2 ---------------------------------------------------------------
+    def s2() -> dict[str, Any]:
+        from foldjax import torch_archive
+        from foldjax.models._weights_io import _load_native_numpy_tree
+        from foldjax.models.opendde.bridge.checkpoint import unwrap_state_dict
+        from foldjax.models.opendde.bridge.torch_mapping import (
+            map_opendde_inference_state_dict,
+        )
+        from foldjax.paths import foldjax_home
+
+        native_path = foldjax_home() / "downloads" / "opendde" / "opendde.pt"
+        state = TrackingState(unwrap_state_dict(torch_archive.load(native_path)))
+        mapped = jax.tree.map(np.asarray, map_opendde_inference_state_dict(state))
+        stored = _load_native_numpy_tree(parity.weights_path(), prestack=False)
+        tree = compare_parameter_trees(stored, mapped)
+        checks = weight_value_checks(
+            state,
+            [leaf for _, leaf in tree_leaves_with_paths(stored)],
+        )
+        provenance = json.loads((capture / "provenance.json").read_text())
+        return stage_record(
+            "measured",
+            condition={
+                "backend": "cpu (host NumPy; no model run)",
+                "native_checkpoint": str(native_path),
+                "native_sha256": sha256(native_path),
+                "capture_checkpoint_sha256": provenance.get("checkpoint_sha256"),
+                "converted": str(parity.weights_path()),
+                "mapper": "foldjax.models.opendde.bridge.torch_mapping."
+                "map_opendde_inference_state_dict",
+                "reader": "foldjax.torch_archive.load (no torch)",
+            },
+            headline={
+                "metric": "max |stored - map(native)| over groups (storage dtype)",
+                "value": tree["max_abs"],
+            },
+            metrics={
+                "stored_vs_mapped": tree,
+                **checks,
+            },
+        )
+
+    # -- S6 ---------------------------------------------------------------
+    def s6() -> dict[str, Any]:
+        from foldjax.models.opendde.bridge.weights_io import load_native_weights
+        from foldjax.models.opendde.models.model import opendde_infer_static
+
+        case = fixture_case("opendde", parity.CASE, parity.TIER)
+        case.assert_tripwire(parity.observed_tripwire())
+        features = parity.load_features(case)
+        cycle_msa = parity.load_cycle_msa(case)
+        with np.load(case.path("tape.npz"), allow_pickle=False) as archive:
+            tape = {name: np.asarray(archive[name], np.float32) for name in archive.files}
+        steps, samples = tape["step_noises"].shape[:2]
+        params = load_native_weights(parity.weights_path())
+        started = time.perf_counter()
+        with highest_precision(), jax.default_matmul_precision(parity.MATMUL_PRECISION):
+            output = opendde_infer_static(
+                features,
+                params,
+                jnp.asarray(tape["noise_schedule"]),
+                key=None,
+                num_samples=samples,
+                num_recycles=len(cycle_msa),
+                run_confidence=True,
+                cycle_msa_features=cycle_msa,
+                diffusion_attention_backend="xla",
+                trunk_single_attention_backend="xla",
+                trunk_triangle_attention_backend="xla",
+                structural_single_attention_backend="xla",
+                structural_triangle_attention_backend="xla",
+                init_noise=jnp.asarray(tape["init_noise"]),
+                step_noises=tuple(jnp.asarray(tape["step_noises"][i]) for i in range(steps)),
+                rotations=jnp.asarray(tape["rotations"]),
+                translations=jnp.asarray(tape["translations"]),
+            )
+            output = jax.device_get(output)
+        seconds = time.perf_counter() - started
+        output = {k: np.asarray(v) for k, v in output.items() if hasattr(v, "shape")}
+        port = output["coordinate"].astype(np.float64)
+        while port.ndim > 3 and port.shape[0] == 1:
+            port = port[0]
+        native = parity.native_coordinates(case)
+        record = coordinate_metrics(port, native, ca_mask=ca_mask)
+        record["entity_rmsd_angstrom_panel_metric"] = [
+            {str(k): v for k, v in parity.entity_rmsds(case, port[i], native[i]).items()}
+            for i in range(samples)
+        ]
+        raw = npz(capture / "raw.npz")
+        native_conf = {
+            "plddt_logits": raw["plddt"],
+            "pae_logits": raw["pae"],
+            "pde_logits": raw["pde"],
+            "atom_plddt": np.stack(
+                [raw[f"full_data.{i}.atom_plddt"] for i in range(samples)]
+            ),
+            "token_pair_pae": np.stack(
+                [raw[f"full_data.{i}.token_pair_pae"] for i in range(samples)]
+            ),
+            "ptm": np.array([raw[f"summary_confidence.{i}.ptm"] for i in range(samples)]),
+        }
+        record["port_output_keys"] = sorted(output)
+        record["end_to_end_confidence"] = confidence_comparison(
+            output,
+            native_conf,
+            {
+                "plddt_logits": "plddt",
+                "pae_logits": "pae",
+                "pde_logits": "pde",
+                "atom_plddt": "atom_plddt",
+                "token_pair_pae": "token_pair_pae",
+                "ptm": "summary_ptm",
+            },
+        )
+        return stage_record(
+            "measured",
+            condition={
+                **CPU_CONDITION,
+                "input": "native-input.npz + native-derived.npz (upstream "
+                "featurizer output; core-only)",
+                "trunk_dtype": "float32 (port default; native TF32 trunk -> CPU "
+                "highest, see docs/parity-cpu.md)",
+                "kernels": "all attention backends xla",
+                "injected_native": "tape.npz (noise schedule, initial/churn noise, "
+                "rotations, translations) + msa.npz per-recycle MSA rows",
+                "samples_x_steps": f"{samples} x {steps} (all samples; the parity "
+                "subset replays sample 0 only)",
+                "confidence": "on",
+            },
+            headline={
+                "metric": "per-sample all-atom / CA RMSD (A), worst sample",
+                "value": f"{max(record['all_atom_rmsd_angstrom']):.4f} / "
+                f"{max(record['ca_rmsd_angstrom']):.4f}",
+            },
+            metrics=record,
+            runtime_s=round(seconds, 1),
+            notes="end_to_end_confidence compares the replay's own confidence "
+            "with raw.npz; it is not S5, which needs the native trunk injected.",
+        )
+
+    for name in ("S3", "S4", "S5"):
+        if name in stages:
+            results[name] = not_captured(
+                OPENDDE_NO_TRUNK,
+                needs="a native capture of the pairformer/structural-refiner "
+                "outputs and the confidence-head inputs (see MISSING.md).",
+            )
+    runners = {"S1": s1, "S2": s2, "S6": s6}
+    for name, function in runners.items():
+        if name in stages:
+            results[name] = run_stage(f"opendde {name}", function)
+    return results
+
+
+# --------------------------------------------------------------------------
 # CLI and table
 # --------------------------------------------------------------------------
 
 MODELS: dict[str, Callable[[Path, set[str]], dict[str, dict[str, Any]]]] = {
     "protenix": run_protenix,
+    "boltz2": run_boltz2,
+    "openfold3": run_openfold3,
+    "esmfold2": run_esmfold2,
+    "opendde": run_opendde,
 }
 
 
@@ -987,7 +2454,7 @@ def environment() -> dict[str, Any]:
         record["cpu_affinity"] = None
     try:
         record["git_commit"] = subprocess.run(
-            ["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"],
+            ["git", "-C", str(REPO), "describe", "--always", "--dirty"],
             capture_output=True, text=True, check=True,
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
@@ -1012,10 +2479,18 @@ def run_model(model: str, capture: Path, stages: set[str]) -> dict[str, Any]:
         for key, label in STAGES
         if key in stages
     }
+    env = environment()
+    for record in ordered.values():
+        # Per stage, because --merge combines stages from separate runs.
+        record["source"] = {
+            "git": env.get("git_commit"),
+            "cpu_affinity": env.get("cpu_affinity"),
+            "recorded": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
     return {
         "model": model,
         "capture": str(capture),
-        "environment": environment(),
+        "environment": env,
         "wall_s": round(time.perf_counter() - started, 1),
         "stages": ordered,
     }

@@ -144,17 +144,38 @@ def test_ca_mask_from_names_requires_carbon() -> None:
     ]
 
 
+def test_kabsch_rmsd_measures_a_subset_without_refitting() -> None:
+    rng = np.random.default_rng(6)
+    reference = rng.normal(size=(20, 3)) * 3.0
+    port = reference.copy()
+    port[0] += [2.0, 0.0, 0.0]
+    subset = np.zeros(20, bool)
+    subset[10:] = True
+    # Fitted on all atoms, the outlier tilts the fit, so the untouched subset
+    # is not at zero -- unlike a refit on the subset alone.
+    no_refit = sp.kabsch_rmsd(port, reference, None, subset)
+    refit = sp.kabsch_rmsd(port, reference, subset)
+    assert refit == pytest.approx(0.0, abs=1e-9)
+    assert no_refit > 1e-3
+
+
 def test_coordinate_metrics_reports_ca_and_all_atom() -> None:
     rng = np.random.default_rng(4)
     native = rng.normal(size=(1, 8, 3)) * 3.0
     port = native.copy()
+    shift = np.array([0.3, -0.2, 0.5])
+    port[0] += shift  # a pure translation: zero after the fit
     port[0, 7] += [1.0, 0.0, 0.0]
     ca = np.array([True, False, True, False, True, False, True, False])
     record = sp.coordinate_metrics(port, native, ca_mask=ca)
     assert record["ca_atoms"] == 4
-    assert record["ca_rmsd_angstrom"][0] == pytest.approx(0.0, abs=1e-9)
     assert record["all_atom_rmsd_angstrom"][0] > 0.0
-    assert record["max_unaligned_displacement_angstrom"] == pytest.approx(1.0)
+    # The CA value comes from the same all-atom fit, so the non-CA outlier
+    # still leaves a (smaller) CA residual.
+    assert 0.0 < record["ca_rmsd_angstrom"][0] < record["all_atom_rmsd_angstrom"][0]
+    assert record["max_unaligned_displacement_angstrom"] == pytest.approx(
+        np.linalg.norm(shift + [1.0, 0.0, 0.0])
+    )
 
 
 def test_multiset_delta_forgives_rearrangement_but_not_arithmetic() -> None:
@@ -171,6 +192,35 @@ def test_multiset_delta_forgives_rearrangement_but_not_arithmetic() -> None:
 
     dropped = sp.multiset_delta([weight, bias], [weight])
     assert dropped["comparable"] is False
+
+    # A boolean flag the converter adds is counted, not compared.
+    flagged = sp.multiset_delta([weight, bias], rearranged + [np.ones(3, bool)])
+    assert flagged["comparable"] and flagged["sorted_max_abs"] == 0.0
+    assert flagged["port_non_float_elements"] == 3
+
+
+def test_multiset_containment_allows_unused_checkpoint_tensors() -> None:
+    rng = np.random.default_rng(7)
+    used = rng.normal(size=(5, 4)).astype(np.float32)
+    unused = rng.normal(size=(7,)).astype(np.float32)
+    # Converted = the used tensor, transposed; the checkpoint also holds a
+    # tensor inference never reads.
+    clean = sp.multiset_containment([used, unused], [used.T])
+    assert clean["port_values_absent_from_checkpoint"] == 0
+    assert clean["max_distance_to_nearest_checkpoint_value"] == 0.0
+    assert clean["multiplicity_excess"] == 0
+    assert clean["checkpoint_float_elements"] == 27
+
+    shifted = used.copy()
+    shifted[0, 0] += np.float32(0.5)
+    moved = sp.multiset_containment([used, unused], [shifted])
+    assert moved["port_values_absent_from_checkpoint"] == 1
+    assert 0.0 < moved["max_distance_to_nearest_checkpoint_value"] <= 0.5
+
+    # A tensor used twice is present, but beyond its multiplicity.
+    twice = sp.multiset_containment([used], [used, used])
+    assert twice["port_values_absent_from_checkpoint"] == 0
+    assert twice["multiplicity_excess"] == used.size
 
 
 def test_tracking_state_records_reads_not_membership_tests() -> None:
