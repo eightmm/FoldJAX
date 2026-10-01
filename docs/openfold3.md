@@ -263,7 +263,7 @@ intentionally ephemeral run.
 Raw-array output has an explicit 4 GiB default budget. Before compilation, that
 same budget removes PAE, PDE, or distogram per-bin logits that the writer would
 discard, so large unused arrays do not cross the JIT boundary. Pass
-`-o all_arrays=true` to disable both limits and retain all three distributions
+`--option all_arrays=true` to disable both limits and retain all three distributions
 (`released_config(max_array_bytes=None)` from the Python API). This does not
 include trunk representations, which remain controlled separately by
 `--representations`. At the released five samples and 64 bins, the three pair
