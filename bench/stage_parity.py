@@ -3363,10 +3363,15 @@ def cli_route_comparison(native_dir: Path, port_dir: Path) -> dict[str, Any]:
 
     def sample_files(root: Path) -> dict[int, Path]:
         found: dict[int, Path] = {}
-        for path in sorted(root.rglob("*_model.cif")):
-            for part in path.parts:
-                if part.startswith("seed-") and "_sample-" in part:
-                    found[int(part.rsplit("_sample-", 1)[1])] = path
+        # One structure per `seed-<s>_sample-<n>` directory; both writers
+        # also put a top-ranked copy outside those, which is skipped.
+        for path in sorted(root.rglob("*.cif")):
+            part = path.parent.name
+            if part.startswith("seed-") and "_sample-" in part:
+                index = int(part.rsplit("_sample-", 1)[1])
+                if index in found:
+                    raise ValueError(f"two structures for sample {index} in {root}")
+                found[index] = path
         return found
 
     native, port = sample_files(native_dir), sample_files(port_dir)
