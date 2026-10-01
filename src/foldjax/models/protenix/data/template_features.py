@@ -603,14 +603,14 @@ def _is_empty_slot(
 ) -> bool:
     """True when this slot's four quadratic geometry fields are exactly ``+0.0``.
 
-    No observed atom is *not* sufficient on its own. ``positions * mask`` then
-    keeps the sign of a negative position as ``-0.0``, and mixed-sign zeros
-    carry ``-0.0`` through ``c - ca``, the cross product and ``uv * bb_mask``
-    into ``template_unit_vector``. The positions must also be bitwise ``+0.0``,
-    which the featurizer guarantees for every padded and template-free slot
+    No observed atom is *not* sufficient on its own: ``positions * mask`` turns
+    a non-finite position into ``NaN``, which ``uv * bb_mask`` carries into
+    ``template_unit_vector``, and it keeps a negative position's sign as
+    ``-0.0``. So the positions must also be bitwise ``+0.0``, which the
+    featurizer guarantees for every padded and template-free slot
     (``_fix_to_dense`` zeroes every unobserved atom); from all-``+0.0`` inputs
     every op in :func:`_pseudo_beta`, :func:`_dgram_from_positions` and
-    :func:`_unit_vector` yields ``+0.0``.
+    :func:`_unit_vector` yields ``+0.0``. Anything else is computed, as before.
 
     The restype lookups still run, so an out-of-range ``aatype`` raises here
     exactly as the computation it skips would.
@@ -642,8 +642,7 @@ def _as_protenix_dict(
     num_t, num_res = aatype.shape
     bool_mask = atom_mask.astype(bool)
     empty = [
-        _is_empty_slot(aatype[i], atom_positions[i], bool_mask[i])
-        for i in range(num_t)
+        _is_empty_slot(aatype[i], atom_positions[i], bool_mask[i]) for i in range(num_t)
     ]
     shapes = {
         "template_pseudo_beta_mask": (num_t, num_res, num_res),
