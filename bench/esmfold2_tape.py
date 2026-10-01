@@ -527,6 +527,67 @@ def observe_native_injection(
             handle.remove()
 
 
+@contextmanager
+def observe_native_stages(model, *, enabled=False):
+    """Copy the trunk, sampler and confidence boundaries for stage parity.
+
+    Observation only: the wrapper and the hook pass every argument and result
+    through unchanged and draw nothing, so the tape recorder stays the only RNG
+    observer. Tensors are copied to host at the boundary, before any later
+    in-place use, and each one's dtype there is kept beside the value.
+    """
+    values, dtypes, counts = {}, {}, {"sample": 0, "confidence": 0}
+    if not enabled:
+        yield values, dtypes, counts
+        return
+
+    def keep(name, tensor):
+        dtypes[name] = str(tensor.dtype)
+        tensor = tensor.detach()
+        if tensor.is_floating_point():
+            tensor = tensor.float()
+        values[name] = tensor.cpu().numpy().copy()
+
+    head = model.structure_head
+    owned = "sample" in head.__dict__
+    previous = head.__dict__.get("sample")
+    original = head.sample
+
+    def sample(*args, **kwargs):
+        if args:
+            raise ValueError("stage capture expects keyword-only sample()")
+        counts["sample"] += 1
+        for name in ("z_trunk", "s_inputs", "relative_position_encoding"):
+            keep(f"trunk.{name}", kwargs[name])
+        output = original(**kwargs)
+        keep("diffusion.sample_atom_coords", output["sample_atom_coords"])
+        return output
+
+    def on_confidence(module, args, kwargs, output):
+        if args:
+            raise ValueError("stage capture expects keyword-only confidence_head()")
+        counts["confidence"] += 1
+        for name, value in kwargs.items():
+            if hasattr(value, "detach"):
+                keep(f"confidence_in.{name}", value)
+        for name, value in output.items():
+            if hasattr(value, "detach"):
+                keep(f"confidence_out.{name}", value)
+
+    head.sample = sample
+    handle = model.confidence_head.register_forward_hook(
+        on_confidence, with_kwargs=True
+    )
+    try:
+        yield values, dtypes, counts
+    finally:
+        handle.remove()
+        if owned:
+            head.sample = previous
+        else:
+            del head.sample
+
+
 def predict_with_injection_capture(
     predict, module, *args, capture_msa_inputs=False, capture_coda=False, **kwargs
 ):
@@ -677,6 +738,9 @@ def _capture(args: argparse.Namespace) -> None:
             capture_msa_inputs=getattr(args, "capture_msa_inputs", False),
             capture_coda=getattr(args, "capture_coda", False),
         ) as injection_capture,
+        observe_native_stages(
+            model, enabled=getattr(args, "capture_stages", False)
+        ) as stage_capture,
     ):
         output = model(**device_features, num_diffusion_samples=SAMPLES)
     if len(lm_calls) != 1:
@@ -726,6 +790,29 @@ def _capture(args: argparse.Namespace) -> None:
             "dtypes": {k: str(v.dtype) for k, v in values.items()},
             "scope": "first-loop observed native boundaries; no admission",
         }
+    if getattr(args, "capture_stages", False):
+        values, dtypes, counts = stage_capture
+        if counts != {"sample": 1, "confidence": 1}:
+            raise ValueError(f"native stage boundaries not observed once: {counts}")
+        values["trunk.distogram_logits"] = TorchRecorder._array(
+            output["distogram_logits"]
+        )
+        dtypes["trunk.distogram_logits"] = str(output["distogram_logits"].dtype)
+        path = args.output_dir / "stages.npz"
+        _save_npz(path, values)
+        args.stages_schema = {
+            "filename": path.name,
+            "sha256": _sha256(path),
+            "counts": counts,
+            "dtypes_at_boundary": dtypes,
+            "fields": {
+                name: {"shape": list(value.shape), "stored_dtype": str(value.dtype)}
+                for name, value in values.items()
+            },
+            "scope": "trunk z/s_inputs/relative_position_encoding as passed to "
+            "structure_head.sample, its sample_atom_coords, every tensor keyword "
+            "and output of confidence_head, and the distogram logits",
+        }
     if binding != _run_identity(args):
         raise RuntimeError("source/checkpoint/input changed during capture")
     args.binding = binding
@@ -751,6 +838,11 @@ def _write_metadata(
         or _sha256(args.output_dir / injection["filename"]) != injection["sha256"]
     ):
         raise ValueError("saved injection artifact changed before completion")
+    stages = getattr(args, "stages_schema", None)
+    if stages is not None and (
+        _sha256(args.output_dir / stages["filename"]) != stages["sha256"]
+    ):
+        raise ValueError("saved stage artifact changed before completion")
     if (
         lm_schema is not None
         and _sha256(args.output_dir / lm_schema["filename"]) != lm_schema["sha256"]
@@ -775,6 +867,7 @@ def _write_metadata(
                 "lm_arm": getattr(args, "lm_arm", "legacy_unrecorded_lm"),
                 "lm_schema": getattr(args, "lm_schema", None),
                 "injection_schema": getattr(args, "injection_schema", None),
+                "stages_schema": stages,
                 "native_policy": getattr(args, "native_policy", None),
                 "jax_policy": getattr(args, "jax_policy", None),
                 "repeat_forward": getattr(args, "repeat_forward", None),
@@ -1426,6 +1519,11 @@ def main() -> int:
         item.add_argument("--capture-coda", action="store_true")
         if name == "capture":
             item.add_argument("--upstream-source-root", type=Path, required=True)
+            item.add_argument(
+                "--capture-stages",
+                action="store_true",
+                help="Also save the trunk/sampler/confidence boundaries to stages.npz",
+            )
             item.add_argument(
                 "--deterministic",
                 action="store_true",

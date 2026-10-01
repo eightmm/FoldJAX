@@ -16,7 +16,7 @@ import os
 import resource
 import shutil
 import time
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from functools import wraps
 from pathlib import Path
 from unittest.mock import patch
@@ -31,6 +31,7 @@ def observer_policy(args):
     names = (
         "capture_confidence_boundary", "capture_linear_policy",
         "capture_trunk_boundary", "capture_ffi_policy", "capture_consumed_tape",
+        "capture_stages",
     )
     result = {name: getattr(args, name) for name in names}
     if any(type(value) is not bool for value in result.values()):
@@ -132,6 +133,76 @@ def audit_request(args):
     )
 
 
+#: Native OpenDDE methods whose boundaries stage parity reads, and how each
+#: call's tensors are named in stages.npz: (method, picks from bound
+#: arguments, names for the returned tuple or None for a single tensor).
+STAGE_BOUNDARIES = (
+    ("get_pairformer_output", (), ("s_inputs", "s", "z")),
+    ("expand_to_structural_tokens", (), (None, "s_inputs", "s", "z")),
+    ("run_sample_diffusion_stage", ("s_inputs", "s", "z"), "coordinate"),
+    (
+        "run_confidence_head_stage",
+        ("s_inputs", "s_trunk", "z_trunk", "pair_mask", "x_pred_coords"),
+        ("plddt", "pae", "pde", "resolved"),
+    ),
+)
+STAGE_PREFIX = {
+    "get_pairformer_output": "residue_trunk",
+    "expand_to_structural_tokens": "structural_trunk",
+    "run_sample_diffusion_stage": "diffusion",
+    "run_confidence_head_stage": "confidence",
+}
+
+
+def stage_observers(model_class, saved, dtypes, counts):
+    """Wrap the native stage methods; values are copied at each boundary.
+
+    Pass-through only: no argument or result is changed and nothing is drawn,
+    so the sampler and MSA tapes stay the run's own. ``functools.wraps`` keeps
+    ``inspect.signature`` working for the legacy driver's own wrapper, which
+    binds against whatever sits on the class.
+    """
+
+    def keep(name, value):
+        if value is None:
+            return
+        dtypes[name] = str(value.dtype)
+        value = value.detach()
+        if value.is_floating_point():
+            value = value.float()
+        saved[name] = value.cpu().numpy().copy()
+
+    patches = []
+    for method_name, picks, returned in STAGE_BOUNDARIES:
+        original = getattr(model_class, method_name)
+        prefix = STAGE_PREFIX[method_name]
+
+        def make(original=original, prefix=prefix, picks=picks, returned=returned):
+            signature = inspect.signature(original)
+
+            @wraps(original)
+            def wrapped(self, *a, **kw):
+                counts[prefix] = counts.get(prefix, 0) + 1
+                if counts[prefix] != 1:
+                    raise RuntimeError(f"native stage {prefix} ran more than once")
+                bound = signature.bind(self, *a, **kw).arguments
+                for name in picks:
+                    keep(f"{prefix}.in.{name}", bound[name])
+                result = original(self, *a, **kw)
+                if isinstance(returned, str):
+                    keep(f"{prefix}.out.{returned}", result)
+                else:
+                    for name, value in zip(returned, result, strict=True):
+                        if name is not None:
+                            keep(f"{prefix}.out.{name}", value)
+                return result
+
+            return wrapped
+
+        patches.append(patch.object(model_class, method_name, make()))
+    return patches
+
+
 def require_native_fp32_runner_dtypes(
     *, trunk_dtype, confidence_dtype, diffusion_autocast
 ):
@@ -163,12 +234,15 @@ def main():
     parser.add_argument("--capture-trunk-boundary", action="store_true")
     parser.add_argument("--capture-ffi-policy", action="store_true")
     parser.add_argument("--capture-consumed-tape", action="store_true")
+    parser.add_argument("--capture-stages", action="store_true")
     parser.add_argument(
         "--jax-matmul-precision", choices=("high", "highest"), default="high"
     )
     args = parser.parse_args()
     if args.capture_consumed_tape and args.arm != "foldjax":
         parser.error("--capture-consumed-tape observes the FoldJAX consumer only")
+    if args.capture_stages and args.arm != "native":
+        parser.error("--capture-stages observes the native model only")
     args.out.mkdir(parents=True, exist_ok=False)
     driver = load_module(args.legacy_driver)
     driver.REPO = args.repo
@@ -334,16 +408,39 @@ def main():
 
         from bench.opendde_linear_policy import LinearPolicyObserver
 
-        with (
-            LinearPolicyObserver(args.out)
-            if args.capture_linear_policy
-            else nullcontext(),
-            patch.object(OpenDDE, "forward", captured_forward),
-            patch.object(ConfidenceHead, "forward", captured_confidence),
-        ):
-            status = driver.native(args.input, args.out)
+        stage_values, stage_dtypes, stage_counts = {}, {}, {}
+        with ExitStack() as stage_stack:
+            if args.capture_stages:
+                for stage_patch in stage_observers(
+                    OpenDDE, stage_values, stage_dtypes, stage_counts
+                ):
+                    stage_stack.enter_context(stage_patch)
+            with (
+                LinearPolicyObserver(args.out)
+                if args.capture_linear_policy
+                else nullcontext(),
+                patch.object(OpenDDE, "forward", captured_forward),
+                patch.object(ConfidenceHead, "forward", captured_confidence),
+            ):
+                status = driver.native(args.input, args.out)
         if status:
             raise RuntimeError(f"native lifecycle failed: {status}")
+        if args.capture_stages:
+            if stage_counts != {prefix: 1 for prefix in STAGE_PREFIX.values()}:
+                raise ValueError(f"native stage boundaries incomplete: {stage_counts}")
+            np.savez_compressed(args.out / "stages.npz", **stage_values)
+            provenance["stages"] = {
+                "filename": "stages.npz",
+                "sha256": sha(args.out / "stages.npz"),
+                "counts": stage_counts,
+                "dtypes_at_boundary": stage_dtypes,
+                "shapes": {k: list(v.shape) for k, v in stage_values.items()},
+                "scope": "residue trunk (get_pairformer_output), structural "
+                "trunk after the refiner (expand_to_structural_tokens), the "
+                "sampler's structural inputs and returned coordinate "
+                "(run_sample_diffusion_stage), confidence-head inputs and "
+                "logits (run_confidence_head_stage)",
+            }
         provenance["versions"]["torch"] = torch.__version__
         provenance["cuda"] = torch.version.cuda
         provenance["confidence_calls"] = confidence_calls
