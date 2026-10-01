@@ -22,6 +22,7 @@ from foldjax.alignment import (
     StructureAlignmentError,
     align_predictions,
     align_structures,
+    residue_correspondence,
 )
 from foldjax.api import (
     detect_input_format,
@@ -30,6 +31,7 @@ from foldjax.api import (
     resolve_request,
     resolve_requests,
 )
+from foldjax.compare import compare_directory
 from foldjax.job import (
     Bond,
     Dna,
@@ -46,6 +48,15 @@ from foldjax.registry import (
     capabilities,
     model_info,
     normalize_model_name,
+)
+from foldjax.results import (
+    FailureRecord,
+    ResultsReport,
+    RunRecord,
+    SampleRecord,
+    aggregate_table,
+    load_results,
+    results_table,
 )
 from foldjax.schema import (
     ERROR_POLICIES,
@@ -74,6 +85,7 @@ __all__ = [
     "Bond",
     "CacheWarmResult",
     "Dna",
+    "FailureRecord",
     "InputRequirement",
     "Job",
     "ExecutionConfig",
@@ -93,25 +105,33 @@ __all__ = [
     "PredictionSample",
     "Protein",
     "Rna",
+    "ResultsReport",
     "RigidTransform",
+    "RunRecord",
     "RuntimeInfo",
+    "SampleRecord",
     "StructureAlignment",
     "StructureAlignmentError",
     "Template",
     "assets",
     "align_predictions",
     "align_structures",
+    "aggregate_table",
     "available_models",
     "capabilities",
+    "compare_directory",
     "detect_input_format",
+    "load_results",
     "model_info",
     "normalize_model_name",
     "paths",
     "predict",
     "predict_batch",
     "progress",
+    "residue_correspondence",
     "resolve_request",
     "resolve_requests",
+    "results_table",
     "warm_cache",
 ]
 

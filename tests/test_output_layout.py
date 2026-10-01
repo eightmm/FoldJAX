@@ -638,3 +638,76 @@ def test_best_ties_are_stable_and_report_the_backend_sample_index(
         "structure_path": None,
         "selection": "within-model confidence ranking",
     }
+
+
+def test_several_jobs_restart_the_sample_number_and_get_a_level_each(
+    tmp_path: Path,
+) -> None:
+    """The sample number is the diffusion index, so two jobs both have sample 0."""
+    samples = []
+    for job in ("first", "second"):
+        native = tmp_path / job / "seed-5_sample-0" / "model.cif"
+        native.parent.mkdir(parents=True)
+        native.write_text(CIF, encoding="utf-8")
+        samples.append(
+            PredictionSample(
+                seed=5,
+                structure_path=native,
+                scores={"ranking_score": 0.5 if job == "first" else 0.7},
+                metadata={"job": job, "sample": 0},
+            )
+        )
+    result = PredictionResult(
+        model="alphafold3", samples=tuple(samples), output_dir=tmp_path, raw={}
+    )
+
+    placed = normalize(result, job="ignored")
+
+    paths = [sample.structure_path for sample in placed.samples]
+    assert paths == [
+        tmp_path / "first" / "seed-5_sample-00" / "first_seed-5_sample-00.cif",
+        tmp_path / "second" / "seed-5_sample-00" / "second_seed-5_sample-00.cif",
+    ]
+    for path, job in zip(paths, ("first", "second"), strict=True):
+        confidence = json.loads((path.parent / "confidence.json").read_text())
+        assert (confidence["job"], confidence["sample"]) == (job, 0)
+    assert best_sample(placed)["job"] == "second"
+
+
+def test_one_job_keeps_the_flat_layout(tmp_path: Path) -> None:
+    result = normalize(_result(tmp_path, model="alphafold3"), job="1abc")
+
+    assert result.samples[0].structure_path.parent == tmp_path / "seed-3_sample-00"
+
+
+def test_protenix_style_writers_report_diffusion_index_and_native_rank(
+    tmp_path: Path,
+) -> None:
+    from foldjax.scores import ranked_native_samples
+
+    written = []
+    for job, ranks in (("a", (2, 0, 1)), ("b", (1, 0))):
+        directory = tmp_path / job / "seed_1" / "predictions"
+        directory.mkdir(parents=True)
+        for rank in ranks:
+            cif = directory / f"{job}_sample_{rank}.cif"
+            cif.write_text(CIF, encoding="utf-8")
+            summary = {
+                "ranking_score": 1.0 - rank / 10,
+                "has_clash": True,
+                "num_recycles": 4,
+            }
+            (directory / f"{job}_summary_confidence_sample_{rank}.json").write_text(
+                json.dumps(summary)
+            )
+            written.append(cif)
+
+    records = ranked_native_samples(written)
+
+    identity = [
+        (meta["job"], meta["sample"], meta["native_rank"]) for _, _, meta in records
+    ]
+    assert identity == [("a", 0, 2), ("a", 1, 0), ("a", 2, 1), ("b", 0, 1), ("b", 1, 0)]
+    _path, scores, metadata = records[0]
+    assert scores["has_clash"] == 1.0
+    assert "num_recycles" not in scores and metadata["num_recycles"] == 4

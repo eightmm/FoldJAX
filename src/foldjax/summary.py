@@ -134,7 +134,9 @@ def structure_facts(path: Path | None) -> dict[str, Any] | None:
             return None
         model = structure[0]
         chains = {chain.name for chain in model if len(chain)}
-        factors = [atom.b_iso for chain in model for residue in chain for atom in residue]
+        factors = [
+            atom.b_iso for chain in model for residue in chain for atom in residue
+        ]
     except Exception:  # noqa: BLE001 - an unreadable file only loses the summary
         return None
     mean = math.fsum(factors) / len(factors) if factors else None

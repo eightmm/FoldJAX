@@ -108,16 +108,15 @@ def _replay_backend(model: str, case: Path):
     return Replay, fixture
 
 
-def _run(tmp_path: Path, case_name: str) -> tuple[dict, dict, dict]:
-    case = FIXTURES / case_name
-    model = case_name.split("_", 1)[0]
-    backend, fixture = _replay_backend(model, case)
-    (tmp_path / "job.a3m").write_text(">query\nACD\n")
-    job = tmp_path / "job.json"
+def write_job(directory: Path, name: str) -> Path:
+    """A common-schema job the replay backends accept (its content is unused)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "job.a3m").write_text(">query\nACD\n")
+    job = directory / f"{name}.json"
     job.write_text(
         json.dumps(
             {
-                "name": fixture["job"],
+                "name": name,
                 "entities": [
                     {
                         "type": "protein",
@@ -129,9 +128,25 @@ def _run(tmp_path: Path, case_name: str) -> tuple[dict, dict, dict]:
             }
         )
     )
+    return job
+
+
+def _run(
+    tmp_path: Path,
+    case_name: str,
+    *,
+    out: Path | None = None,
+    job: Path | None = None,
+) -> tuple[dict, dict, dict]:
+    case = FIXTURES / case_name
+    model = case_name.split("_", 1)[0]
+    backend, fixture = _replay_backend(model, case)
+    if job is None:
+        job = write_job(tmp_path, fixture["job"])
+    tmp_path.mkdir(parents=True, exist_ok=True)
     weights = tmp_path / "weights.jax"
     weights.write_bytes(b"replayed")
-    out = tmp_path / "out"
+    out = tmp_path / "out" if out is None else out
     request = PredictionRequest(
         model=model,
         input=job,
@@ -206,7 +221,9 @@ def test_summary_keys_and_scales_per_model(tmp_path: Path, case_name: str) -> No
         assert ranking["value"] == scores[ranking_key]
         assert ranking["scope"] == "within one model run"
         assert ranking["higher_is_better"] is True
-        assert ranking["defined_by"] == ("foldjax" if model == "esmfold2" else "upstream")
+        assert ranking["defined_by"] == (
+            "foldjax" if model == "esmfold2" else "upstream"
+        )
     assert confidence["summary_note"] == COMMON_FIELDS_NOTE
 
 

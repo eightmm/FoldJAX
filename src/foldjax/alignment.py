@@ -14,6 +14,7 @@ between models look smaller than they are.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import math
@@ -425,8 +426,14 @@ def _chain_map(
     return result
 
 
-def _align_sequence(left: str, right: str) -> list[tuple[int, int]]:
-    """Deterministic global alignment, returning residue index pairs."""
+@functools.lru_cache(maxsize=256)
+def _align_sequence(left: str, right: str) -> tuple[tuple[int, int], ...]:
+    """Deterministic global alignment, returning residue index pairs.
+
+    Memoized: it is a pure function of two sequences, it is quadratic in
+    Python, and an all-against-all comparison of one input's predictions asks
+    the same question for every pair.
+    """
     rows, cols = len(left) + 1, len(right) + 1
     score = np.empty((rows, cols), dtype=np.int32)
     trace = np.zeros((rows, cols), dtype=np.int8)
@@ -456,7 +463,7 @@ def _align_sequence(left: str, right: str) -> list[tuple[int, int]]:
         else:
             j -= 1
     pairs.reverse()
-    return pairs
+    return tuple(pairs)
 
 
 def _best_atom(residue: Any, name: str) -> Any | None:
@@ -688,6 +695,52 @@ def align_structures(
         reference_sha256=reference_digest,
         alignments=tuple(records),
     )
+
+
+def residue_correspondence(
+    source: str | os.PathLike[str],
+    reference: str | os.PathLike[str],
+    chain_map: Mapping[str, str],
+) -> list[dict[str, object]]:
+    """The residue pairing `align_structures` fits on, per mapped chain pair.
+
+    ``chain_map`` is an alignment's own (``StructureAlignment.chain_map``), so
+    the answer is the correspondence that alignment used. Residues are named by
+    author sequence number; consecutive pairs are run-length encoded as
+    ``[source_first, reference_first, length]``, because predictions of one
+    input almost always pair residue *n* with residue *n*.
+    """
+    parsed_source = _parse(Path(source))
+    parsed_reference = _parse(Path(reference))
+    out: list[dict[str, object]] = []
+    for left, right in sorted(dict(chain_map).items()):
+        if left not in parsed_source.chains or right not in parsed_reference.chains:
+            raise StructureAlignmentError(
+                f"unknown chain mapping {left!r} -> {right!r}"
+            )
+        pairs = _residue_pairs(
+            parsed_source.chains[left], parsed_reference.chains[right]
+        )
+        runs: list[list[int]] = []
+        for source_residue, reference_residue in pairs:
+            first = int(source_residue.seqid.num)
+            second = int(reference_residue.seqid.num)
+            if runs and runs[-1][0] + runs[-1][2] == first and (
+                runs[-1][1] + runs[-1][2] == second
+            ):
+                runs[-1][2] += 1
+            else:
+                runs.append([first, second, 1])
+        out.append(
+            {
+                "source_chain": left,
+                "reference_chain": right,
+                "kind": parsed_reference.chains[right].kind,
+                "residue_pairs": len(pairs),
+                "runs": runs,
+            }
+        )
+    return out
 
 
 def align_predictions(

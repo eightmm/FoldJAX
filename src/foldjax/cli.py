@@ -415,6 +415,11 @@ def _parser() -> argparse.ArgumentParser:
 
     describe = commands.add_parser("capabilities", help="show what one backend accepts")
     describe.add_argument("--model", required=True)
+    describe.add_argument(
+        "--json",
+        action="store_true",
+        help="print JSON (the only format; accepted so scripts can say so)",
+    )
 
     run = commands.add_parser("predict", help="run one prediction")
     _add_predict_arguments(run)
@@ -447,6 +452,46 @@ def _parser() -> argparse.ArgumentParser:
     )
     show.add_argument("path", type=Path, help="an output directory, or one run's own")
     show.add_argument("--json", action="store_true", help="print the manifests")
+    show.add_argument(
+        "--format",
+        choices=("table", "csv", "json"),
+        default="table",
+        help="table: per-run summary for reading (default). csv/json: one row "
+        "per model/input/seed/sample, failures included, with the common "
+        "summary, native scores, structure path and SHA-256 "
+        "(foldjax.results_table)",
+    )
+    show.add_argument(
+        "--aggregate",
+        action="store_true",
+        help="with --format csv/json: count, median and spread per "
+        "(input, model, configuration) instead of one row per sample; never "
+        "across models",
+    )
+
+    compare = commands.add_parser(
+        "compare",
+        help="pairwise CA RMSD and coverage between every structure for each input",
+        description="Align every structure of each input in a finished output "
+        "directory to every other one (all models, seeds and samples) with "
+        "foldjax.align_structures, and write the RMSD, coverage and the residue "
+        "correspondence used to compare.json and compare.csv. Proteins are fitted "
+        "on CA, nucleic acids on C4'; ligands are carried, not fitted. Cost "
+        "grows with the square of the structure count.",
+    )
+    compare.add_argument("path", type=Path, help="a finished output directory")
+    compare.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="where to write compare.json and compare.csv (default: PATH/compare)",
+    )
+    compare.add_argument(
+        "--samples",
+        choices=("all", "best"),
+        default="all",
+        help="all samples (default), or each run's within-model best only",
+    )
 
     plan = commands.add_parser(
         "plan", help="show the resolved request without running it"
@@ -1379,6 +1424,29 @@ def main(argv: Sequence[str] | None = None) -> int:
                 sort_keys=True,
             )
         )
+        return 0
+    if args.command == "compare":
+        from foldjax.compare import compare_directory
+
+        written = compare_directory(
+            args.path, out=args.out, samples=args.samples
+        )
+        print(json.dumps({key: str(value) for key, value in written.items()}, indent=2))
+        return 0
+    if args.command == "show" and (args.format != "table" or args.aggregate):
+        from foldjax import results
+
+        if args.json:
+            raise ValueError("--json prints manifests; use --format json for rows")
+        if args.format == "table":
+            raise ValueError("--aggregate needs --format csv or --format json")
+        rows = results.results_table(results.load_results(args.path))
+        if args.aggregate:
+            rows = results.aggregate_table(rows)
+        if args.format == "csv":
+            sys.stdout.write(results.to_csv(rows))
+        else:
+            print(json.dumps(rows, indent=2, sort_keys=True, default=str))
         return 0
     if args.command == "show":
         entries = report.read_manifests(args.path)

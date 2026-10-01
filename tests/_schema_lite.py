@@ -42,8 +42,9 @@ _TYPES = {
     "array": lambda value: isinstance(value, list),
     "string": lambda value: isinstance(value, str),
     "integer": lambda value: isinstance(value, int) and not isinstance(value, bool),
-    "number": lambda value: isinstance(value, (int, float))
-    and not isinstance(value, bool),
+    "number": lambda value: (
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+    ),
     "boolean": lambda value: isinstance(value, bool),
     "null": lambda value: value is None,
 }
@@ -81,8 +82,12 @@ def _equal(left: Any, right: Any) -> bool:
     return left == right
 
 
-def errors(instance: Any, schema: dict[str, Any], root: dict[str, Any] | None = None,
-           path: str = "$") -> list[str]:
+def errors(
+    instance: Any,
+    schema: dict[str, Any],
+    root: dict[str, Any] | None = None,
+    path: str = "$",
+) -> list[str]:
     """Every violation of ``schema`` by ``instance``, as readable strings."""
     root = schema if root is None else root
     found: list[str] = []
@@ -92,7 +97,9 @@ def errors(instance: Any, schema: dict[str, Any], root: dict[str, Any] | None = 
             raise ValueError(f"unsupported $ref {reference!r}")
         found += errors(instance, root["$defs"][reference.split("/")[-1]], root, path)
     if "type" in schema:
-        allowed = schema["type"] if isinstance(schema["type"], list) else [schema["type"]]
+        allowed = (
+            schema["type"] if isinstance(schema["type"], list) else [schema["type"]]
+        )
         if not any(_TYPES[name](instance) for name in allowed):
             return found + [f"{path}: {instance!r} is not of type {allowed}"]
     if "const" in schema and not _equal(instance, schema["const"]):
