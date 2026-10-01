@@ -27,7 +27,12 @@ from foldjax.models.opendde.postprocess import (
     opendde_confidence_scores,
     project_generated_output_features,
 )
-from foldjax.models.protenix.data.template_features import dedup_templates
+from foldjax.models.protenix.data.template_features import (
+    ZERO_TEMPLATE_GEOMETRY_MARKER,
+    compact_zero_template_geometry,
+    dedup_templates,
+    has_compact_zero_template_geometry,
+)
 from foldjax.schema import PaddingConfig
 from tests.models.opendde.toy_params import inference_params
 
@@ -107,12 +112,19 @@ def _tree_bytes_signature(tree: Any) -> tuple[str, tuple[tuple[Any, ...], ...]]:
 
 
 def _template_probe_hlo_hash(features: Mapping[str, Any]) -> bytes:
-    def graph_probe(restype, distogram):
-        return jnp.sum(restype) + jnp.sum(distogram[..., 0])
+    # A template-free query reaches the model as the scalar marker rather than
+    # the all-zero geometry, so probe whichever representation is there.
+    if has_compact_zero_template_geometry(features):
+        template = jnp.asarray(features[ZERO_TEMPLATE_GEOMETRY_MARKER])
+    else:
+        template = jnp.asarray(features["template_distogram"])[..., 0]
+
+    def graph_probe(restype, template):
+        return jnp.sum(restype) + jnp.sum(template)
 
     lowered = jax.jit(graph_probe).lower(
         jnp.asarray(features["restype"]),
-        jnp.asarray(features["template_distogram"]),
+        template,
     )
     stablehlo = str(lowered.compiler_ir(dialect="stablehlo"))
     return hashlib.sha256(stablehlo.encode()).digest()
@@ -280,7 +292,7 @@ def test_padded_cli_projection_never_reaches_model_bound_features(
         n_keys=4,
     )
     expected_model = select_opendde_model_features(expected_padded)
-    expected_model = dedup_templates(expected_model)
+    expected_model = compact_zero_template_geometry(dedup_templates(expected_model))
     expected_model = compact_ref_atom_category_storage(expected_model)
     captured: dict[str, Any] = {}
 
@@ -425,7 +437,9 @@ def test_padded_cli_releases_source_intermediates_and_model_before_score(
         assert source_refs and all(reference() is None for reference in source_refs)
         assert sampled_refs and all(reference() is None for reference in sampled_refs)
         assert padded_refs and all(reference() is None for reference in padded_refs)
-        model_refs.append(weakref.ref(model_features["template_distogram"]))
+        # The deduplicated template rows: a template-free query's geometry
+        # reaches the model as a scalar marker, not as an array to track.
+        model_refs.append(weakref.ref(model_features["template_aatype"]))
         n_atom = len(model_features["atom_padding_mask"])
         return {"coordinate": np.zeros((1, n_atom, 3), dtype=np.float32)}
 
