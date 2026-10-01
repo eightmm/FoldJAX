@@ -163,9 +163,9 @@ class Rna(_Polymer):
 class Ligand:
     """A ligand, named either by CCD code or by SMILES.
 
-    Both are accepted here and the pair is refused at materialization, together
-    with the check that the chosen one is a representation the backend takes --
-    OpenFold3 and Boltz do not read the same one.
+    Exactly one of the two is allowed; setting both is refused at
+    materialization. Every backend takes both representations
+    (``foldjax.input._TARGETS``), so the choice is the caller's, not the model's.
     """
 
     id: str | tuple[str, ...]

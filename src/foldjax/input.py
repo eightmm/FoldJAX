@@ -2,9 +2,13 @@
 
 The common schema is deliberately model-neutral: modifications and covalent
 bonds are expressed once here and translated into each backend's own key names.
-A field a backend cannot express is rejected rather than dropped, because
-silently discarding an MSA or a modification changes the science without
-changing the exit code.
+A field a backend cannot express is rejected, because silently discarding an
+MSA or a modification changes the science without changing the exit code. The
+one exception is an input the upstream model itself never reads (a nucleic
+alignment, or a template under ``use_template=false``): it is dropped as
+upstream drops it, with a warning and a record in the manifest's
+``ignored_msas`` / ``ignored_templates``, and ``ignore_nucleic_msa=false`` /
+``ignore_templates=false`` refuse the job instead.
 """
 
 from __future__ import annotations
@@ -1276,6 +1280,53 @@ def common_schema_features(model: str) -> tuple[str, ...]:
     return tuple(sorted(target.features))
 
 
+#: Scientific inputs a model's *native* dialect carries, through FoldJAX's own
+#: port, that the common schema has no field for. Only what the port consumes
+#: is listed; a native field the port refuses (OpenFold3's ``pocket_constraint``
+#: and ``covalent_bonds``, `models/openfold3/data/featurize.py`) is not a
+#: feature of that model here.
+#:
+#: - ``multi_residue_ligand``: one ligand of several CCD components, such as a
+#:   glycan. AlphaFold 3 ``ccdCodes`` lists (common/folding_input.py), Boltz-2
+#:   ``ccd`` lists (data/parse/schema.py), Protenix/OpenDDE ``CCD_A_B``
+#:   strings (protenix/data/featurize_json.py), OpenFold3 ``ccd_codes`` lists
+#:   (core/data/primitives/structure/query.py). The common ``ccd`` is one code.
+#: - ``user_ccd``: a caller-defined chemical component (AlphaFold 3
+#:   ``userCCD``/``userCCDPath``).
+#: - ``ligand_file``: a ligand read from a structure file (Protenix/OpenDDE
+#:   ``FILE_`` ligands, OpenFold3 ``sdf_file_path``).
+#: - ``pocket_constraints`` / ``contact_constraints``: Boltz-2 ``constraints``
+#:   (data/parse/schema.py) and Protenix ``constraint`` (featurize_json.py,
+#:   embedded by trunk_blocks/embedders.py ``constraint_embedder``; a checkpoint
+#:   without constraint weights refuses them). Boltz-2's ``bond`` constraint is
+#:   the common ``bonds`` and is not listed.
+#: - ``cyclic_polymer``: Boltz-2 and OpenFold3 ``cyclic`` chains.
+#:
+#: ESMFold2 has no native dialect: it reads the common document itself.
+_NATIVE_ONLY: dict[str, frozenset[str]] = {
+    "alphafold3": frozenset({"multi_residue_ligand", "user_ccd"}),
+    "boltz2": frozenset(
+        {
+            "multi_residue_ligand",
+            "pocket_constraints",
+            "contact_constraints",
+            "cyclic_polymer",
+        }
+    ),
+    "esmfold2": frozenset(),
+    "opendde": frozenset({"multi_residue_ligand", "ligand_file"}),
+    "openfold3": frozenset({"multi_residue_ligand", "ligand_file", "cyclic_polymer"}),
+    "protenix": frozenset(
+        {
+            "multi_residue_ligand",
+            "ligand_file",
+            "pocket_constraints",
+            "contact_constraints",
+        }
+    ),
+}
+
+
 def native_only_features(
     model: str, capabilities: ModelCapabilities
 ) -> tuple[str, ...]:
@@ -1286,6 +1337,8 @@ def native_only_features(
     field even though the runnable backend supports the feature. Naming that
     gap is the honest half of the answer; a backend whose released runtime
     discards a field must instead report the model-level capability as false.
+    The rest come from `_NATIVE_ONLY`: native fields the port consumes and the
+    common schema has no field for. Reachable only through native input.
     """
     target = _TARGETS.get(model)
     features = target.features if target is not None else frozenset()
@@ -1296,6 +1349,7 @@ def native_only_features(
         unreachable.append("templates")
     if capabilities.supports_affinity and "affinity" not in features:
         unreachable.append("affinity")
+    unreachable.extend(sorted(_NATIVE_ONLY.get(model, frozenset()) - features))
     return tuple(unreachable)
 
 

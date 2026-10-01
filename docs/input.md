@@ -22,9 +22,17 @@ bonds:
 `--input-format auto` decides on content, so native dialects (a Boltz YAML, a
 Protenix job list) pass through untouched. Modifications, covalent bonds and
 `unpaired_msa` have one neutral spelling and are translated where the backend
-supports them; **a field a backend cannot express is rejected, not dropped** — silently
-discarding an alignment would change the science without changing the exit
-code.
+supports them. **A field a backend cannot express is refused, with one
+exception: an input the upstream model itself never reads.** A nucleic-acid
+alignment or a structural template that the backend's upstream ignores (see
+[alignments](#alignments) and
+[templates](#templates-and-binding-affinity) below) is dropped as upstream drops it, but never
+silently: FoldJAX warns and records it in `foldjax_run.json` under
+`ignored_msas` or `ignored_templates`, and `ignore_nucleic_msa=false` /
+`ignore_templates=false` refuse the job instead. Everything else -- chemistry,
+bonds, modifications, affinity, a template form the backend cannot take -- is
+refused, because discarding it would change the science without changing the
+exit code.
 
 The same document can be built in Python instead of written by hand:
 
@@ -196,9 +204,15 @@ Exact checked parity uses native Kalign 3.3.5; newer wrapper builds are not
 assumed alignment-equivalent. Affinity
 reaches Boltz-2 alone — it is the only carried model with that head. OpenFold3
 builds template features from its own pipeline and has no per-job field, so a
-template addressed to it is refused. `foldjax capabilities --model MODEL`
-reports both `common_schema_features` and `native_only_features` for exactly
-this reason.
+template addressed to it is refused. `foldjax capabilities --model MODEL
+[--json]` reports both `common_schema_features` and `native_only_features` for
+exactly this reason, generated from the same translation table the writer uses.
+`native_only_features` also names what only a native input can reach: ligands
+of several CCD components (glycans), AlphaFold 3's user-defined CCD entries,
+ligands read from a file (Protenix, OpenDDE, OpenFold3), pocket and contact
+constraints (Boltz-2, Protenix) and cyclic polymers (Boltz-2, OpenFold3). The
+common schema has no field for any of them; pass the model's native file
+instead.
 
 From a bare sequence the same affinity request is `--affinity-binder CHAIN`,
 naming which chain of the generated job to score. It reaches Boltz-2 alone, for

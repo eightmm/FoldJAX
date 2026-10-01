@@ -16,7 +16,11 @@ produced by any earlier version.
 if they were. Each table is one model's own scores under that model's own names,
 and the "best" column is the score that model ranks with, or nothing at all --
 see `foldjax.output` for why a substitute would be a different claim wearing the
-same word.
+same word. The common names and scales in each `confidence.json` summary do not
+change that: common fields standardize names and numerical scales. They retain
+model-specific definitions and calibration and do not establish comparable
+accuracy probabilities or authorize pooled cross-model ranking. Rows for
+scripts come from `foldjax.results`.
 """
 
 from __future__ import annotations

@@ -156,7 +156,60 @@ heads has no `best`, and OpenFold3 protein inputs report
 disorder term its complete score needs is not derivable in the torch-free
 writer. Ranking is always *within* one model's run: scores from two models are
 different quantities on different scales, and `best_sample` never compares
-them.
+them. The manifest's `best` says so in its own `selection` field
+(`"within-model confidence ranking"`).
+
+## Outputs
+
+Each sample's `confidence.json` keeps `scores` exactly as the model reported
+them and adds a `summary` block with pLDDT on 0-100, pTM, ipTM and the model's
+ranking score, each with its native `source`, `transform`, `granularity` and
+`population`, or `{value: null, reason}` (the field-by-field description, the
+per-model mapping table and the compatibility rules are in
+[the CLI reference](cli.md#outputs)). `foldjax.summary.common_summary` is the
+mapping; `foldjax.summary.load_schema("confidence" | "run")` returns the
+published JSON Schemas.
+
+> Common fields standardize names and numerical scales. They retain
+> model-specific definitions and calibration and do not establish comparable
+> accuracy probabilities or authorize pooled cross-model ranking.
+
+A finished directory reads back without the request that made it:
+
+```python
+import foldjax
+
+report = foldjax.load_results("out/")          # ResultsReport
+for run in report.runs:                        # RunRecord: one manifest
+    print(run.model, run.input, run.configuration, run.ignored_msas)
+    for sample in run.samples:                 # SampleRecord
+        print(sample.seed, sample.sample, sample.summary["plddt"]["value"],
+              sample.structure_path, sample.structure_verified)
+for failure in report.failures:                # FailureRecord
+    print(failure.model, failure.input, failure.error)
+
+rows = foldjax.results_table(report)           # one dict per model/input/seed/sample
+summary = foldjax.aggregate_table(rows)        # per (input, model, configuration)
+```
+
+`load_results` reads `foldjax_run.json`, each sample's `confidence.json` and
+structure, and `foldjax_failures.json`, and never a backend's native side files;
+the per-sample `confidence.json` takes precedence over the manifest's copy of
+its scores. It needs no `PredictionRequest` -- resume's `matches_request` answers
+whether a directory *is* a request, which is a different question. A run written
+before the summary block existed gets one computed from the same mapping
+(`summary_origin == "computed"`). A structure path that resolves outside the
+directory being read is not followed. `results_table` rows are the columns
+`foldjax show --format csv|json` prints; failures are rows with
+`status == "failed"`. `aggregate_table` reports count, median, min, max and
+spread within one (input, model, configuration) only, with `best_within_model`
+labelled as a within-model confidence selection.
+
+`foldjax.compare_directory(root, out=..., samples="all" | "best")` is
+`foldjax compare`: every structure of each input aligned onto every other with
+`align_structures` (CA for proteins, C4' for nucleic acids), written as JSON and
+CSV with the RMSD, coverage and the residue correspondence each fit used
+(`foldjax.residue_correspondence`). No TM-score.
 
 Leave a sampling knob unset and each backend runs its own upstream's released
 default -- which differ, deliberately: matching each upstream is the whole
@@ -234,9 +287,14 @@ does, with a `UserWarning` and a record in the run manifest's
 further describe the *common schema* route: `common_schema_features` is what
 this backend's dialect can carry from a
 FoldJAX job document, and `native_only_features` names abilities the model has
-but the common adapter cannot safely reach. Templates are the case that
-matters: backend support does not imply that every input route honours a
-per-job template.
+but the common adapter cannot safely reach: `templates` and `affinity` where
+the dialect lacks the field, and the native-only inputs the port consumes --
+`multi_residue_ligand` (glycans as several CCD codes; all but ESMFold2),
+`user_ccd` (AlphaFold 3), `ligand_file` (Protenix, OpenDDE, OpenFold3),
+`pocket_constraints` and `contact_constraints` (Boltz-2, Protenix), and
+`cyclic_polymer` (Boltz-2, OpenFold3). These are reachable only through native
+input. Templates are the case that matters: backend support does not imply
+that every input route honours a per-job template.
 Its `input_requirements` mapping distinguishes
 dependencies by input format — for example, OpenFold3's `openfold3-features` archive is JAX-only,
 while its raw `native`, `openfold3`, and `foldjax` formats require the
@@ -253,6 +311,7 @@ coordinates. Violations raise `PredictionOutputError`. A vendored native CLI
 that calls `SystemExit` is converted to `PredictionError` instead of terminating
 the host Python process; diagnosed allocator failures remain `MemoryError`.
 Copied native structures retain their real `.pdb`, `.cif`, or `.mmcif` suffix,
-and multi-job AlphaFold 3 inputs keep separate job names instead of overwriting
-one another. Secret-looking option values and URL credentials are redacted from
+and multi-job AlphaFold 3 inputs keep separate job names and directories
+(`<run>/<job>/seed-<s>_sample-<nn>/`, the sample index restarting per job)
+instead of overwriting one another. Secret-looking option values and URL credentials are redacted from
 plans and run manifests.

@@ -59,7 +59,8 @@ Boltz-2, ESMFold2, and OpenDDE or AlphaFold 3 on a job without `modelSeeds`
 (including every common-schema job) seed nothing by default upstream, so
 FoldJAX draws a seed, prints it and records it; `--resume` reuses a drawn seed
 recorded in the output directory. `foldjax plan` and `foldjax_run.json` show
-the seed and its `seed_source` (`user`, `upstream`, `job` or `random`). Every
+the seed and its `seed_source` (`user`, `upstream`, `job`, `random`, or
+`foldjax` for a backend with no upstream default in the table). Every
 run writes `foldjax_run.json` beside its structures:
 model, input SHA-256, resolved weights and their stat/tree identity, the knobs
 actually used, and each structure's confidence.
@@ -133,6 +134,110 @@ uv run foldjax cache gc --older-than 30 --max-size 20G   # reports; --apply dele
 weights, no GPU and no network. `cache gc` reports by default and deletes only
 with `--apply`: cache entries are pure derived data, but they are still someone's
 disk.
+
+### Outputs
+
+Every model writes the same layout:
+
+```
+<run>/foldjax_run.json                                     the run manifest
+<run>/seed-<seed>_sample-<nn>/<job>_seed-<seed>_sample-<nn>.cif
+<run>/seed-<seed>_sample-<nn>/confidence.json              one per sample
+<batch>/<model>/<input stem>/...                           one run per pair
+<batch>/foldjax_failures.json                              runs that failed
+```
+
+`<nn>` is the **diffusion index** for every model, never a rank. Protenix and
+OpenDDE name their native files by rank; that rank is kept as `native_rank`.
+A native input holding several jobs (an AlphaFold 3 or Protenix job list)
+restarts the index for each job and nests each job's directories one level
+down, under `<run>/<job>/`. A multi-seed run keeps each seed's native files in
+`seed_<s>/` with a manifest of its own. Whatever else a backend writes stays
+where it wrote it; nothing in FoldJAX reads it back.
+
+`confidence.json` (schema `1.x`):
+
+| field | meaning |
+|---|---|
+| `schema_version` | `"1.0"`; see compatibility below |
+| `model`, `seed`, `sample`, `native_rank`, `job` | which structure this is |
+| `scores` | the model's own scalar scores under its own names, unchanged; boolean flags such as `has_clash` as 0/1 |
+| `summary` | `plddt` (0-100), `ptm`, `iptm`, `ranking`: see below |
+| `execution` | how the run executed, where the native summary had it among its scores (`num_recycles`) |
+| `score_notes` | a native writer's own note on its scores, verbatim (ESMFold2's scale note) |
+
+Each `summary` field is `{value, scale, source, transform, granularity,
+population}`, or `{value: null, reason}` when the model does not report it or it
+does not apply: a value is never 0 by default and never taken from a native key
+with a different definition. `ranking` is `{key, value, higher_is_better,
+scope: "within one model run", defined_by}`.
+
+> Common fields standardize names and numerical scales. They retain
+> model-specific definitions and calibration and do not establish comparable
+> accuracy probabilities or authorize pooled cross-model ranking.
+
+| model | `plddt` source | native scale | transform | per | `ranking.key` |
+|---|---|---|---|---|---|
+| AlphaFold 3 | per-atom pLDDT in the structure's B-factors | 0-100 | mean over every atom | atom | `ranking_score` |
+| Boltz-2 | `complex_plddt` | 0-1 | ×100 | token | `confidence_score` |
+| ESMFold2 | `complex_plddt` | 0-1 | ×100 | atom | `plddt` (FoldJAX's choice) |
+| OpenDDE | `plddt` | 0-100 | identity | atom | `ranking_score` |
+| OpenFold3 | `mean_plddt` | 0-100 | identity | atom | `sample_ranking_score` |
+| Protenix | `plddt` | 0-100 | identity | atom | `ranking_score` |
+
+`ptm` and `iptm` are 0-1 for every model. `iptm` is null for a single-chain
+structure, whatever the model wrote (several write 0.0); a ligand in its own
+chain counts as a chain. OpenFold3 on protein input reports only
+`sample_ranking_score_no_disorder`, a different quantity, so its `ranking` is
+null with the reason.
+
+`foldjax_run.json` keeps `schema: 1` (what makes a run safe to resume) and adds
+`schema_version` (this contract). Both files are described by JSON Schemas
+shipped in the package, `foldjax/schemas/confidence.schema.json` and
+`foldjax/schemas/run.schema.json` (`foldjax.summary.load_schema`).
+**Compatibility:** a minor version only adds optional fields, so a reader for
+`1.x` accepts any `1.y` and ignores fields it does not know; removing, renaming
+or reinterpreting a field is a new major version.
+
+Reading a directory back:
+
+```bash
+uv run foldjax show out/                          # per-run table, for reading
+uv run foldjax show out/ --format csv > runs.csv  # one row per model/input/seed/sample
+uv run foldjax show out/ --format json --aggregate
+uv run foldjax compare out/ --out out/compare     # pairwise CA RMSD per input
+```
+
+`--format csv|json` prints one row per model, input, seed and sample, read from
+the manifests, each sample's `confidence.json` and structure, and
+`foldjax_failures.json` -- never from a backend's native side files. A row has
+its identity (status, model, input, configuration digest, seed, sample, job,
+native rank, `best_within_model`), the common summary (`plddt`,
+`plddt_source`, `ptm`, `iptm`, `ranking_key`, `ranking_value`, and
+`summary_missing` with the reason for each empty field), the native scores as
+`score.<name>`, the structure path, its SHA-256 and whether the file still
+matches it (`structure_verified`), and what the model never read
+(`ignored_msas`, `ignored_templates`; empty for a native input, which FoldJAX
+does not inspect). A failed run is a row with `status: failed` and its error;
+a field a backend refused never reaches a structure, so it only ever appears
+there. `--json` alone still prints the manifests.
+
+`--aggregate` reports count, median, minimum, maximum and spread (max - min)
+within one (input, model, configuration) only -- never across models -- and
+`best_within_model`, the top of that model's own confidence ordering: a
+within-model confidence selection, not an accuracy claim.
+
+`foldjax compare DIR` aligns every structure of each input onto every other
+(all models, seeds and samples; `--samples best` keeps each run's best) with
+`foldjax.align_structures`: a rigid Kabsch fit on CA for proteins and C4' for
+nucleic acids, with ligands carried but not fitted. It writes
+`compare.json`, `compare.csv` (one row per ordered pair: RMSD, coverage,
+matched and reference atom counts, chain map, and an id into the residue
+correspondence the fit used, run-length encoded) and `compare_structures.csv`
+(one row per structure with its ignored inputs, so a matched-input panel shows
+what each model actually read). Coverage is matched over reference atoms, so it
+is directional and the matrix is written in full. Cost grows with the square
+of the structure count. There is no TM-score.
 
 ### Optional shape padding
 
