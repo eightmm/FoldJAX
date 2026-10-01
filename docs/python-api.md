@@ -91,9 +91,9 @@ checkpoint. One explicit `weights` path is accepted only when every run uses
 the same canonical model; this prevents handing one model another model's
 checkpoint by accident.
 
-**The fields that are policy rather than science.** Seven request fields
-change how a batch is executed, not what it predicts, and none of them has a
-CLI-only spelling either:
+**The fields that are policy rather than science.** Eight request fields
+change how a batch is executed or recorded, not what it predicts, and none of
+them has a CLI-only spelling either:
 
 | field | default | what it does |
 |---|---|---|
@@ -104,6 +104,7 @@ CLI-only spelling either:
 | `on_error` | `"stop"` | `"continue"` puts a `PredictionFailure` in the result slot instead of raising, so one OOM does not lose the other nineteen jobs |
 | `use_compile_cache` | `True` | off runs without the persistent XLA cache |
 | `cache_dir` | `None` | where that cache lives; the FoldJAX compile-cache directory when unset |
+| `source` | `None` | set by `resolve_requests` for one job of a `{"jobs": [...]}` file: a `JobSource` (file, 0-based `index`, `name`) recorded in the manifest, failures and `plan`; provenance only, never part of the resume identity |
 
 `predict_batch(request)` is the entry point that returns results, skips and
 failures together; `predict` keeps its return type and raises.
