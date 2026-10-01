@@ -1,0 +1,18 @@
+{
+  "job": "e9_8vez",
+  "metadata": {
+    "job": "e9_8vez",
+    "native_sample": 0,
+    "sample": 0
+  },
+  "model": "alphafold3",
+  "scores": {
+    "fraction_disordered": 0.0,
+    "has_clash": 0.0,
+    "iptm": 0.95,
+    "ptm": 0.94,
+    "ranking_score": 0.9501601687416132
+  },
+  "seed": 101,
+  "structure_sha256": "4af21b0288f349ca71aaa92796516904e9e304795551761c23174fb03425f083"
+}

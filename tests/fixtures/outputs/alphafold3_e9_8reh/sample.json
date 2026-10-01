@@ -1,0 +1,17 @@
+{
+  "job": "e9_8reh",
+  "metadata": {
+    "job": "e9_8reh",
+    "native_sample": 0,
+    "sample": 0
+  },
+  "model": "alphafold3",
+  "scores": {
+    "fraction_disordered": 0.0,
+    "has_clash": 0.0,
+    "ptm": 0.92,
+    "ranking_score": 0.9215656273334465
+  },
+  "seed": 101,
+  "structure_sha256": "c2a4fa4e59967ec6976a07de41f9cd4b48a6d62dda302da135d5766ae7696dfa"
+}

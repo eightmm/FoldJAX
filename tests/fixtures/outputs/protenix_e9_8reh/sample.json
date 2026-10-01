@@ -1,0 +1,18 @@
+{
+  "job": "e9_8reh",
+  "metadata": {},
+  "model": "protenix",
+  "native_summary": "e9_8reh_summary_confidence_sample_3.json",
+  "scores": {
+    "disorder": 0.0,
+    "gpde": 0.32123440504074097,
+    "iptm": 0.0,
+    "num_recycles": 10.0,
+    "plddt": 96.99156188964844,
+    "ptm": 0.9661189913749695,
+    "ranking_score": 0.19322380423545837,
+    "ranking_score_vdw_penalized": 0.19322380423545837
+  },
+  "seed": 101,
+  "structure_sha256": "fd6e3196cbf56dd0543ac887a0e20a689488148938e83cbbfdc3b6a891ccc2b6"
+}

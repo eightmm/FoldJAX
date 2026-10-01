@@ -15,6 +15,8 @@ dist/
 # Prediction output. `outputs/` is also where the native Protenix CLI puts its
 # compile cache when no directory is given.
 outputs/
+# the output-contract fixtures are tracked (real samples, ~0.3 MB, no paths)
+!tests/fixtures/outputs/
 foldjax-outputs/
 
 # Model weights, in every format the six backends publish or convert to.

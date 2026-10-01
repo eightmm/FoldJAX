@@ -1,0 +1,21 @@
+{
+  "job": "e9_8reh",
+  "metadata": {},
+  "model": "opendde",
+  "native_summary": "e9_8reh_summary_confidence_sample_1.json",
+  "scores": {
+    "disorder": 0.0,
+    "gpde": 0.4089684784412384,
+    "iptm": 0.0,
+    "num_recycles": 10.0,
+    "plddt": 95.95932006835938,
+    "ptm": 0.9673951268196106,
+    "ranking_score": 0.1934790313243866,
+    "shape_comp_global_pred": 0.0,
+    "shape_comp_pair_mean_pred": 0.0,
+    "shape_comp_pair_topk_mean_pred": 0.0,
+    "shape_comp_valid_pair_frac_pred": 0.0
+  },
+  "seed": 101,
+  "structure_sha256": "8e192371bd29250349fd8d56772f01b04e3e3f2d610dada51c60b7dd5ea757bc"
+}

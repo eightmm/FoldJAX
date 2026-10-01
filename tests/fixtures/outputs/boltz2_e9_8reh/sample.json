@@ -1,0 +1,17 @@
+{
+  "job": "e9_8reh",
+  "metadata": {},
+  "model": "boltz2",
+  "scores": {
+    "complex_iplddt": 0.9823200106620789,
+    "complex_plddt": 0.9823200106620789,
+    "confidence_score": 0.9785747528076172,
+    "iptm": 0.0,
+    "ligand_iptm": 0.0,
+    "mean_plddt": 0.9823200106620789,
+    "protein_iptm": 0.0,
+    "ptm": 0.9635937213897705
+  },
+  "seed": 101,
+  "structure_sha256": "19aef2f98c719c577f6f7408d07a171d39d1c0045acecd098418a05c972f256e"
+}

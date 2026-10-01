@@ -239,10 +239,13 @@ def test_summary_keys_and_scales_per_model(tmp_path: Path, case_name: str) -> No
 
 
 def test_alphafold3_plddt_is_the_mean_of_its_per_atom_plddt(tmp_path: Path) -> None:
-    """Checked against the native `atom_plddts` mean of the same sample (96.1033)."""
+    """The summary is the plain mean of the per-atom B-factors. The fixture's structure is
+    synthetic (AlphaFold 3 predictions are not redistributed): B = 60 + (37 i mod 40) over
+    1,000 atoms, mean 79.5. On the real run the same rule reproduced the native
+    `atom_plddts` mean (96.1033)."""
     confidence, _manifest, _fixture = _run(tmp_path, "alphafold3_e9_8reh")
 
-    assert confidence["summary"]["plddt"]["value"] == pytest.approx(96.1033, abs=1e-3)
+    assert confidence["summary"]["plddt"]["value"] == pytest.approx(79.5, abs=1e-6)
     assert confidence["summary"]["plddt"]["granularity"] == "atom"
 
 

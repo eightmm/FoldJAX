@@ -1,0 +1,14 @@
+{
+  "job": "e9_8reh",
+  "metadata": {},
+  "model": "openfold3",
+  "scores": {
+    "has_clash": 0.0,
+    "iptm": 0.0,
+    "mean_plddt": 95.3273469865322,
+    "ptm": 0.9580866694450378,
+    "sample_ranking_score_no_disorder": 0.1916173338890076
+  },
+  "seed": 101,
+  "structure_sha256": "b0201997c7800db5e1364222807f4f9d69b3f50c8ca37884675351a36370ee59"
+}

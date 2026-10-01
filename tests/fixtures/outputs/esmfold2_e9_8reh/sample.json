@@ -1,0 +1,14 @@
+{
+  "job": "e9_8reh",
+  "metadata": {},
+  "model": "esmfold2",
+  "scores": {
+    "complex_iplddt": 0.0,
+    "complex_plddt": 0.978330135345459,
+    "iptm": 0.0,
+    "plddt": 0.980394721031189,
+    "ptm": 0.9914360642433167
+  },
+  "seed": 101,
+  "structure_sha256": "41df973cde58486437f42ccba4d251a9722d7f1cc9912a476ba8586bbf0eca02"
+}

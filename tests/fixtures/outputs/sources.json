@@ -1,0 +1,36 @@
+{
+  "alphafold3_e9_8reh": {
+    "run": "synthetic",
+    "structure": "boltz2_e9_8reh coordinates with synthetic per-atom pLDDT 60 + (37*i mod 40) in B_iso_or_equiv; AlphaFold 3 predicted structures are not redistributed",
+    "scores": "copied from a FoldJAX AlphaFold 3 run (numbers only)"
+  },
+  "alphafold3_e9_8vez": {
+    "run": "synthetic",
+    "structure": "boltz2_e9_8vez coordinates with synthetic per-atom pLDDT 60 + (37*i mod 40) in B_iso_or_equiv; AlphaFold 3 predicted structures are not redistributed",
+    "scores": "copied from a FoldJAX AlphaFold 3 run (numbers only)"
+  },
+  "boltz2_e9_8reh": {
+    "run": "foldjax-bench/jctc-v2/work/e9_8reh-boltz2-fj-1c-def-s101/cold",
+    "structure": "seed-101_sample-00/e9_8reh_seed-101_sample-00.cif"
+  },
+  "boltz2_e9_8vez": {
+    "run": "foldjax-bench/jctc-v2/work/e9_8vez-boltz2-fj-1c-def-s101/cold",
+    "structure": "seed-101_sample-00/e9_8vez_seed-101_sample-00.cif"
+  },
+  "esmfold2_e9_8reh": {
+    "run": "foldjax-bench/jctc-v2/work/e9_8reh-esmfold2-fj-1c-def-s101/cold",
+    "structure": "seed-101_sample-00/e9_8reh_seed-101_sample-00.cif"
+  },
+  "opendde_e9_8reh": {
+    "run": "foldjax-bench/jctc-v2/work/e9_8reh-opendde-fj-1c-def-s101/cold",
+    "structure": "seed-101_sample-00/e9_8reh_seed-101_sample-00.cif"
+  },
+  "openfold3_e9_8reh": {
+    "run": "foldjax-bench/jctc-v2/work/e9_8reh-openfold3-fj-1c-def-s101/cold",
+    "structure": "seed-101_sample-00/e9_8reh_seed-101_sample-00.cif"
+  },
+  "protenix_e9_8reh": {
+    "run": "foldjax-bench/jctc-v2/work/e9_8reh-protenix-fj-1c-def-s101/cold",
+    "structure": "seed-101_sample-00/e9_8reh_seed-101_sample-00.cif"
+  }
+}

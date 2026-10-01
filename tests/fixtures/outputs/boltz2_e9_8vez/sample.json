@@ -1,0 +1,17 @@
+{
+  "job": "e9_8vez",
+  "metadata": {},
+  "model": "boltz2",
+  "scores": {
+    "complex_iplddt": 0.9576483368873596,
+    "complex_plddt": 0.9578027725219727,
+    "confidence_score": 0.9614406824111938,
+    "iptm": 0.9759921431541443,
+    "ligand_iptm": 0.9759921431541443,
+    "mean_plddt": 0.9578026533126831,
+    "protein_iptm": 0.0,
+    "ptm": 0.9661886692047119
+  },
+  "seed": 101,
+  "structure_sha256": "ecc9b3ec6c5d5b2d916fc20eb547609b6066b495a394d2e2f85b7ebb0a5f72f3"
+}
