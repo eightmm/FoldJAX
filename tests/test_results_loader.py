@@ -287,3 +287,47 @@ def test_compare_best_only_falls_back_for_a_model_that_ranks_nothing(
     (entry,) = document["inputs"]
     flags = {item["model"]: item["best_within_model"] for item in entry["structures"]}
     assert flags == {"boltz2": True, "openfold3": False}
+
+
+def test_an_input_the_model_never_read_reaches_the_row(tmp_path: Path) -> None:
+    """Boltz-2 reads no RNA alignment: dropped, recorded, and shown per row."""
+    from foldjax.summary import load_schema
+    from tests._schema_lite import errors
+
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    (jobs / "job.a3m").write_text(">query\nACD\n")
+    (jobs / "rna.a3m").write_text(">query\nACGU\n")
+    job = jobs / "e9_8reh.json"
+    job.write_text(
+        json.dumps(
+            {
+                "name": "e9_8reh",
+                "entities": [
+                    {
+                        "type": "protein",
+                        "id": "A",
+                        "sequence": "ACD",
+                        "unpaired_msa": "job.a3m",
+                    },
+                    {
+                        "type": "rna",
+                        "id": "B",
+                        "sequence": "ACGU",
+                        "unpaired_msa": "rna.a3m",
+                    },
+                ],
+            }
+        )
+    )
+    out = tmp_path / "batch" / "boltz2" / "e9_8reh"
+    with pytest.warns(UserWarning, match="RNA"):
+        _confidence, manifest, _fixture = _run(
+            tmp_path / "scratch", "boltz2_e9_8reh", out=out, job=job
+        )
+
+    assert errors(manifest, load_schema("run")) == []
+    (row,) = results_table(load_results(tmp_path / "batch"))
+    (ignored,) = row["ignored_msas"]
+    assert ignored["field"] == "unpaired_msa" and ignored["type"] == "rna"
+    assert "ignored_msas" in to_csv([row]).splitlines()[0]
