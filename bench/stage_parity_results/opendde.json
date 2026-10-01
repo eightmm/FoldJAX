@@ -1,12 +1,12 @@
 {
   "model": "opendde",
-  "capture": "/home/jaemin/non-project/optimizing/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A",
+  "capture": "<workspace>/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A",
   "environment": {
     "host": "master",
     "python": "3.13.15",
     "omp_num_threads": "16",
     "jax_platforms": "cpu",
-    "foldjax_home": "/home/jaemin/non-project/optimizing/foldjax/.foldjax",
+    "foldjax_home": "<workspace>/foldjax/.foldjax",
     "cpu_affinity": 16,
     "git_commit": "92779d4-dirty",
     "jax": "0.11.1",
@@ -20,7 +20,7 @@
         "backend": "cpu",
         "matmul_precision": "highest",
         "port_featurizer": "foldjax.models.opendde.data.featurize_json.featurize_opendde_json, re-run in this checkout (n_queries 32, n_keys 128, max_msa_depth 16384)",
-        "input_document": "/home/jaemin/non-project/optimizing/foldjax-bench/upstream-default-multimodal-n5-20260904/work/protein_1ubq/foldjax/opendde/inputs/opendde_input.json",
+        "input_document": "<workspace>/foldjax-bench/upstream-default-multimodal-n5-20260904/work/protein_1ubq/foldjax/opendde/inputs/opendde_input.json",
         "input_sha256_matches_capture": true,
         "use_template": true,
         "native": "native-input.npz + native-derived.npz + native-identity.npz",
@@ -948,10 +948,10 @@
       "status": "measured",
       "condition": {
         "backend": "cpu (host NumPy; no model run)",
-        "native_checkpoint": "/home/jaemin/non-project/optimizing/foldjax/.foldjax/downloads/opendde/opendde.pt",
+        "native_checkpoint": "<workspace>/foldjax/.foldjax/downloads/opendde/opendde.pt",
         "native_sha256": "7b826620390afad877ee2babc6a4d0df81b94d3a0be030959853d6a7da0807cc",
         "capture_checkpoint_sha256": "7b826620390afad877ee2babc6a4d0df81b94d3a0be030959853d6a7da0807cc",
-        "converted": "/home/jaemin/non-project/optimizing/foldjax/.foldjax/weights/opendde/opendde.jax",
+        "converted": "<workspace>/foldjax/.foldjax/weights/opendde/opendde.jax",
         "mapper": "foldjax.models.opendde.bridge.torch_mapping.map_opendde_inference_state_dict",
         "reader": "foldjax.torch_archive.load (no torch)"
       },
@@ -1068,7 +1068,7 @@
       "condition": {
         "backend": "cpu",
         "matmul_precision": "highest",
-        "stage_capture": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
+        "stage_capture": "<workspace>/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
         "input": "re-capture native-input.npz + native-derived.npz (bitwise equal to the stored capture's: True / True)",
         "tape": "re-capture torch/tape.npz + torch/msa.npz (bitwise equal to the stored capture's: True / True)",
         "kernels": "all attention backends xla",
@@ -1128,8 +1128,8 @@
           "diffusion.out.coordinate == confidence.in.x_pred_coords": true
         },
         "native_rerun_vs_stored_capture": {
-          "stored": "/home/jaemin/non-project/optimizing/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A",
-          "new": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
+          "stored": "<workspace>/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A",
+          "new": "<workspace>/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
           "bitwise": {
             "native-input.npz": {
               "all_equal": true,
@@ -1287,7 +1287,7 @@
             "raw.npz:summary_confidence.4.plddt": 0.00016021728515625
           },
           "stored_rerun_floor_native_A_vs_B": {
-            "file": "/home/jaemin/non-project/optimizing/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A-vs-native-B.json",
+            "file": "<workspace>/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A-vs-native-B.json",
             "entity_rmsd": {
               "A": [
                 0.002070975353390085,
@@ -1320,7 +1320,7 @@
       "condition": {
         "backend": "cpu",
         "matmul_precision": "highest",
-        "stage_capture": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
+        "stage_capture": "<workspace>/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
         "input": "re-capture native-input.npz + native-derived.npz (bitwise equal to the stored capture's: True / True)",
         "tape": "re-capture torch/tape.npz + torch/msa.npz (bitwise equal to the stored capture's: True / True)",
         "kernels": "all attention backends xla",
@@ -1375,8 +1375,8 @@
           "diffusion.out.coordinate == confidence.in.x_pred_coords": true
         },
         "native_rerun_vs_stored_capture": {
-          "stored": "/home/jaemin/non-project/optimizing/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A",
-          "new": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
+          "stored": "<workspace>/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A",
+          "new": "<workspace>/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
           "bitwise": {
             "native-input.npz": {
               "all_equal": true,
@@ -1534,7 +1534,7 @@
             "raw.npz:summary_confidence.4.plddt": 0.00016021728515625
           },
           "stored_rerun_floor_native_A_vs_B": {
-            "file": "/home/jaemin/non-project/optimizing/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A-vs-native-B.json",
+            "file": "<workspace>/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A-vs-native-B.json",
             "entity_rmsd": {
               "A": [
                 0.002070975353390085,
@@ -1567,7 +1567,7 @@
       "condition": {
         "backend": "cpu",
         "matmul_precision": "highest",
-        "stage_capture": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
+        "stage_capture": "<workspace>/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
         "input": "re-capture native-input.npz + native-derived.npz (bitwise equal to the stored capture's: True / True)",
         "tape": "re-capture torch/tape.npz + torch/msa.npz (bitwise equal to the stored capture's: True / True)",
         "kernels": "all attention backends xla",
@@ -1706,8 +1706,8 @@
           "diffusion.out.coordinate == confidence.in.x_pred_coords": true
         },
         "native_rerun_vs_stored_capture": {
-          "stored": "/home/jaemin/non-project/optimizing/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A",
-          "new": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
+          "stored": "<workspace>/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A",
+          "new": "<workspace>/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
           "bitwise": {
             "native-input.npz": {
               "all_equal": true,
@@ -1865,7 +1865,7 @@
             "raw.npz:summary_confidence.4.plddt": 0.00016021728515625
           },
           "stored_rerun_floor_native_A_vs_B": {
-            "file": "/home/jaemin/non-project/optimizing/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A-vs-native-B.json",
+            "file": "<workspace>/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A-vs-native-B.json",
             "entity_rmsd": {
               "A": [
                 0.002070975353390085,

@@ -708,9 +708,9 @@ def counted_patch(module: Any, name: str, replacement: Callable[..., Any]):
 #: ``bench/esmfold2_tape.py`` and ``bench/opendde_closure_capture.py``). Same
 #: command, input, seed and environment as the stored capture; S3-S5 read
 #: their native side from here, S1, S2 and S6 stay on ``--capture``.
-STAGE_CAPTURE_ROOT = Path(
-    "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001"
-)
+#: The benchmark workspace holding the native captures and the bench inputs.
+BENCH_ROOT = Path(os.environ.get("FOLDJAX_BENCH_ROOT", "../foldjax-bench")).expanduser()
+STAGE_CAPTURE_ROOT = BENCH_ROOT / "stage-captures-20261001"
 STAGE_CAPTURES = {
     "esmfold2": STAGE_CAPTURE_ROOT / "esmfold2" / "protein_1ubq" / "native-A",
     "opendde": STAGE_CAPTURE_ROOT / "opendde" / "protein_1ubq" / "native-A",
@@ -1752,9 +1752,9 @@ def run_openfold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         # rewritten copy (its MSA paths point at upstream's pre-parsed cache),
         # so the port featurizes the document the native run was given; the
         # sequences and protein MSA path are checked against the rewritten copy.
-        query = Path(
-            "/home/jaemin/non-project/optimizing/foldjax-bench/"
-            "upstream-default-multimodal-n5-20260904/work/protein_rna_1urn/foldjax/"
+        query = (
+            BENCH_ROOT
+            / "upstream-default-multimodal-n5-20260904/work/protein_rna_1urn/foldjax/"
             "openfold3/inputs/openfold3_input.json"
         )
         rewritten = json.loads(
@@ -2131,16 +2131,17 @@ def run_esmfold2(
         from foldjax.models.esmfold2 import inference
         from foldjax.paths import weights_dir
 
-        document_path = Path(
-            "/home/jaemin/non-project/optimizing/foldjax-bench/jctc-matrix-20260904/"
+        document_path = (
+            BENCH_ROOT
+            / "jctc-matrix-20260904/"
             "work/foldjax/esmfold2-protein_1ubq-seed101-cold/inputs/esmfold2_input.json"
         )
         document = json.loads(document_path.read_text())
         # That job's MSA directory is gone; the bench's 1UBQ alignment with the
         # sha256 OpenDDE's capture recorded for this sequence stands in for it.
-        msa = Path(
-            "/home/jaemin/non-project/optimizing/foldjax-bench/"
-            "upstream-default-multimodal-n5-20260904/data/msa/1ubq_unpaired.a3m"
+        msa = (
+            BENCH_ROOT
+            / "upstream-default-multimodal-n5-20260904/data/msa/1ubq_unpaired.a3m"
         )
         for entity in document["entities"]:
             if entity.get("unpaired_msa"):
@@ -2681,9 +2682,9 @@ def run_opendde(
         )
 
         provenance = json.loads((capture / "provenance.json").read_text())
-        document = Path(
-            "/home/jaemin/non-project/optimizing/foldjax-bench/"
-            "upstream-default-multimodal-n5-20260904/work/protein_1ubq/foldjax/"
+        document = (
+            BENCH_ROOT
+            / "upstream-default-multimodal-n5-20260904/work/protein_1ubq/foldjax/"
             "opendde/inputs/opendde_input.json"
         )
         if sha256(document) != provenance["input_sha256"]:
@@ -2885,7 +2886,8 @@ def run_opendde(
                 **CPU_CONDITION,
                 "input": "native-input.npz + native-derived.npz (upstream "
                 "featurizer output; core-only)",
-                "trunk_dtype": "float32 (parity condition; the shipped default is bfloat16; native TF32 trunk -> CPU "
+                "trunk_dtype": "float32 (parity condition; the shipped default "
+                "is bfloat16; native TF32 trunk -> CPU "
                 "highest, see docs/parity-cpu.md)",
                 "kernels": "all attention backends xla",
                 "injected_native": "tape.npz (noise schedule, initial/churn noise, "
@@ -3175,7 +3177,8 @@ def run_opendde(
         return stage_record(
             "measured",
             condition=stage_condition(
-                trunk_dtype="float32 (parity condition; the shipped default is bfloat16; native TF32 trunk -> CPU "
+                trunk_dtype="float32 (parity condition; the shipped default "
+                "is bfloat16; native TF32 trunk -> CPU "
                 "highest, see docs/parity-cpu.md)",
                 recycles=len(data["cycle_msa"]),
             ),

@@ -1,12 +1,12 @@
 {
   "model": "esmfold2",
-  "capture": "/home/jaemin/non-project/optimizing/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A",
+  "capture": "<workspace>/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A",
   "environment": {
     "host": "master",
     "python": "3.13.15",
     "omp_num_threads": "16",
     "jax_platforms": "cpu",
-    "foldjax_home": "/home/jaemin/non-project/optimizing/foldjax/.foldjax",
+    "foldjax_home": "<workspace>/foldjax/.foldjax",
     "cpu_affinity": 16,
     "git_commit": "c20f889",
     "jax": "0.11.1",
@@ -20,8 +20,8 @@
         "backend": "cpu",
         "matmul_precision": "highest",
         "port_featurizer": "foldjax.models.esmfold2.inference.build_common_job_features (the backend's all-atom path), re-run in this checkout",
-        "input_document": "/home/jaemin/non-project/optimizing/foldjax-bench/jctc-matrix-20260904/work/foldjax/esmfold2-protein_1ubq-seed101-cold/inputs/esmfold2_input.json",
-        "msa": "/home/jaemin/non-project/optimizing/foldjax-bench/upstream-default-multimodal-n5-20260904/data/msa/1ubq_unpaired.a3m (sha256 4bf7b489a4eb98c0192cda21f1757feae3fa458bc714fed00aed0730615f5cb7)",
+        "input_document": "<workspace>/foldjax-bench/jctc-matrix-20260904/work/foldjax/esmfold2-protein_1ubq-seed101-cold/inputs/esmfold2_input.json",
+        "msa": "<workspace>/foldjax-bench/upstream-default-multimodal-n5-20260904/data/msa/1ubq_unpaired.a3m (sha256 4bf7b489a4eb98c0192cda21f1757feae3fa458bc714fed00aed0730615f5cb7)",
         "input_provenance": "INFERRED: the capture records only the feature archive's sha256 (core_only_shared_features=true), not the document it was built from; this is the JCTC-matrix 1UBQ job with the same sequence, its MSA path replaced as noted",
         "seed": 101,
         "native": "features.npz (the shared archive the capture ran)"
@@ -410,7 +410,7 @@
       "status": "measured",
       "condition": {
         "backend": "cpu (host; no model run)",
-        "native_checkpoint": "/home/jaemin/non-project/optimizing/foldjax/.foldjax/weights/esmfold2/model.safetensors",
+        "native_checkpoint": "<workspace>/foldjax/.foldjax/weights/esmfold2/model.safetensors",
         "native_sha256": "138fd4350d6892b81ce6be7ff9bf5a93ae9d4d3751f46a27438a3f9f0dcefa0e",
         "capture_checkpoint_sha256": "138fd4350d6892b81ce6be7ff9bf5a93ae9d4d3751f46a27438a3f9f0dcefa0e",
         "converted": "parameters as the replay loads them: foldjax.models.esmfold2.inference.load(dtype='float32', language_model=False)",
@@ -585,7 +585,7 @@
       "condition": {
         "backend": "cpu",
         "matmul_precision": "highest",
-        "stage_capture": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/esmfold2/protein_1ubq/native-A",
+        "stage_capture": "<workspace>/foldjax-bench/stage-captures-20261001/esmfold2/protein_1ubq/native-A",
         "input": "re-capture features.npz (bitwise equal to the stored capture's: True)",
         "tape": "re-capture tape.npz (bitwise equal to the stored capture's: True) and its own upstream_lm.npz (LM not run)",
         "samples_x_steps": "5 x released schedule",
@@ -618,8 +618,8 @@
           }
         },
         "native_rerun_vs_stored_capture": {
-          "stored": "/home/jaemin/non-project/optimizing/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A",
-          "new": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/esmfold2/protein_1ubq/native-A",
+          "stored": "<workspace>/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A",
+          "new": "<workspace>/foldjax-bench/stage-captures-20261001/esmfold2/protein_1ubq/native-A",
           "bitwise": {
             "features.npz": {
               "all_equal": true,
@@ -697,7 +697,7 @@
             "upstream_confidence.npz:complex_plddt": 0.0002434253692626953
           },
           "stored_rerun_floor_native_A_vs_B": {
-            "file": "/home/jaemin/non-project/optimizing/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A-vs-native-B.json",
+            "file": "<workspace>/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A-vs-native-B.json",
             "entity_rmsd": {
               "entity=0|mol_type=0|asym=0": [
                 0.0058887726628031115,
@@ -730,7 +730,7 @@
       "condition": {
         "backend": "cpu",
         "matmul_precision": "highest",
-        "stage_capture": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/esmfold2/protein_1ubq/native-A",
+        "stage_capture": "<workspace>/foldjax-bench/stage-captures-20261001/esmfold2/protein_1ubq/native-A",
         "input": "re-capture features.npz (bitwise equal to the stored capture's: True)",
         "tape": "re-capture tape.npz (bitwise equal to the stored capture's: True) and its own upstream_lm.npz (LM not run)",
         "samples_x_steps": "5 x released schedule",
@@ -772,8 +772,8 @@
           "pair": "bfloat16 (exact)"
         },
         "native_rerun_vs_stored_capture": {
-          "stored": "/home/jaemin/non-project/optimizing/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A",
-          "new": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/esmfold2/protein_1ubq/native-A",
+          "stored": "<workspace>/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A",
+          "new": "<workspace>/foldjax-bench/stage-captures-20261001/esmfold2/protein_1ubq/native-A",
           "bitwise": {
             "features.npz": {
               "all_equal": true,
@@ -851,7 +851,7 @@
             "upstream_confidence.npz:complex_plddt": 0.0002434253692626953
           },
           "stored_rerun_floor_native_A_vs_B": {
-            "file": "/home/jaemin/non-project/optimizing/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A-vs-native-B.json",
+            "file": "<workspace>/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A-vs-native-B.json",
             "entity_rmsd": {
               "entity=0|mol_type=0|asym=0": [
                 0.0058887726628031115,
@@ -884,7 +884,7 @@
       "condition": {
         "backend": "cpu",
         "matmul_precision": "highest",
-        "stage_capture": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/esmfold2/protein_1ubq/native-A",
+        "stage_capture": "<workspace>/foldjax-bench/stage-captures-20261001/esmfold2/protein_1ubq/native-A",
         "input": "re-capture features.npz (bitwise equal to the stored capture's: True)",
         "tape": "re-capture tape.npz (bitwise equal to the stored capture's: True) and its own upstream_lm.npz (LM not run)",
         "samples_x_steps": "5 x released schedule",
@@ -1038,8 +1038,8 @@
           "coordinates": "float32"
         },
         "native_rerun_vs_stored_capture": {
-          "stored": "/home/jaemin/non-project/optimizing/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A",
-          "new": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/esmfold2/protein_1ubq/native-A",
+          "stored": "<workspace>/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A",
+          "new": "<workspace>/foldjax-bench/stage-captures-20261001/esmfold2/protein_1ubq/native-A",
           "bitwise": {
             "features.npz": {
               "all_equal": true,
@@ -1117,7 +1117,7 @@
             "upstream_confidence.npz:complex_plddt": 0.0002434253692626953
           },
           "stored_rerun_floor_native_A_vs_B": {
-            "file": "/home/jaemin/non-project/optimizing/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A-vs-native-B.json",
+            "file": "<workspace>/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A-vs-native-B.json",
             "entity_rmsd": {
               "entity=0|mol_type=0|asym=0": [
                 0.0058887726628031115,

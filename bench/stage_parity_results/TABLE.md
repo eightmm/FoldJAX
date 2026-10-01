@@ -60,25 +60,25 @@ and an uncommitted edit to this preamble on top); the AlphaFold 3 record names
 
 Cases:
 
-* alphafold3: `e9_8reh` (`/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/alphafold3/e9_8reh/harness-native`)
+* alphafold3: `e9_8reh` (`<workspace>/foldjax-bench/stage-captures-20261001/alphafold3/e9_8reh/harness-native`)
   * S6 all-atom RMSD per sample (A): 0.0000, 0.0000
   * CLI route (run_alphafold.py vs foldjax.cli), max |dxyz| per sample (A): 0, 0
   * no CPU parity manifest: the reference is DeepMind's run_alphafold.py run on CPU beside FoldJAX, not a GPU capture
-* boltz2: `protein_dna_ion_1aay` (`/home/jaemin/non-project/optimizing/foldjax-bench/boltz2-master-native-20260909/protein_dna_ion_1aay/native-A`)
+* boltz2: `protein_dna_ion_1aay` (`<workspace>/foldjax-bench/boltz2-master-native-20260909/protein_dna_ion_1aay/native-A`)
   * S6 all-atom RMSD per sample (A): 0.0574, 0.0377, 0.1380, 0.0042, 0.0154
   * manifest tier A (trunk_relative_rmse_max): CPU calibration 0.002736, tolerance 0.005
   * manifest tier B (entity_max_rmsd_angstrom): CPU calibration 0.00188, tolerance 0.01
-* esmfold2: `protein_1ubq` (`/home/jaemin/non-project/optimizing/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A`)
+* esmfold2: `protein_1ubq` (`<workspace>/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A`)
   * S6 all-atom RMSD per sample (A): 0.0258, 0.1414, 0.0140, 0.0136, 0.0170
   * manifest tier B (entity_rmsd_angstrom): CPU calibration 0.01935, tolerance 0.03, excluded samples [1]
-* opendde: `protein_1ubq` (`/home/jaemin/non-project/optimizing/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A`)
+* opendde: `protein_1ubq` (`<workspace>/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A`)
   * S6 all-atom RMSD per sample (A): 0.0018, 0.0118, 0.0016, 0.0018, 0.0039
   * manifest tier B (entity_rmsd_angstrom): CPU calibration 0.001782, tolerance 0.005, excluded samples [1, 2, 3, 4]
-* openfold3: `protein_rna_1urn` (`/home/jaemin/non-project/optimizing/foldjax-bench/openbind-master-native-20260909/protein_rna_1urn/native-cueq`)
+* openfold3: `protein_rna_1urn` (`<workspace>/foldjax-bench/openbind-master-native-20260909/protein_rna_1urn/native-cueq`)
   * S6 all-atom RMSD per sample (A): 0.0149, 0.0189, 0.0554, 0.0246, 0.0290
   * manifest tier A (max_abs_delta_over_native_array_scale): CPU calibration 0.0004979, tolerance 0.001
   * manifest tier B (entity_rmsd_angstrom): CPU calibration 0.03233, tolerance 0.05, excluded samples [2]
-* protenix: `protein_1ubq` (`/home/jaemin/non-project/optimizing/foldjax-bench/protenix-master-native-20260909-9yET4f/protein_1ubq/native-A`)
+* protenix: `protein_1ubq` (`<workspace>/foldjax-bench/protenix-master-native-20260909-9yET4f/protein_1ubq/native-A`)
   * S6 all-atom RMSD per sample (A): 0.0147, 0.1132, 0.0148, 0.0296, 0.0508
   * manifest tier A (relative_rms): CPU calibration 0.01963, tolerance 0.025
   * manifest tier B (rmsd_angstrom): CPU calibration 0.0508, tolerance 0.06, excluded samples [1, 3]

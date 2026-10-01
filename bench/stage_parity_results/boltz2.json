@@ -1,12 +1,12 @@
 {
   "model": "boltz2",
-  "capture": "/home/jaemin/non-project/optimizing/foldjax-bench/boltz2-master-native-20260909/protein_dna_ion_1aay/native-A",
+  "capture": "<workspace>/foldjax-bench/boltz2-master-native-20260909/protein_dna_ion_1aay/native-A",
   "environment": {
     "host": "master",
     "python": "3.13.15",
     "omp_num_threads": "16",
     "jax_platforms": "cpu",
-    "foldjax_home": "/home/jaemin/non-project/optimizing/foldjax/.foldjax",
+    "foldjax_home": "<workspace>/foldjax/.foldjax",
     "cpu_affinity": 16,
     "git_commit": "9b7aeab",
     "jax": "0.11.1",
@@ -20,7 +20,7 @@
         "backend": "cpu",
         "matmul_precision": "highest",
         "port_featurizer": "foldjax.models.boltz2.data.featurize.featurize_yaml (torch-free), re-run in this checkout",
-        "input_document": "/home/jaemin/non-project/optimizing/foldjax-bench/upstream-default-multimodal-n5-20260904/work/protein_dna_ion_1aay/foldjax/boltz2/inputs/boltz2_input.yaml",
+        "input_document": "<workspace>/foldjax-bench/upstream-default-multimodal-n5-20260904/work/protein_dna_ion_1aay/foldjax/boltz2/inputs/boltz2_input.yaml",
         "seed": 101,
         "native": "features.npz (upstream boltz b1ebfc4 featurizer)",
         "name_mapping": "identical names; every key both sides emit",
@@ -1281,10 +1281,10 @@
       "status": "measured",
       "condition": {
         "backend": "cpu (host NumPy; no model run)",
-        "native_checkpoint": "/home/jaemin/non-project/optimizing/foldjax/.foldjax/downloads/boltz2/boltz2_conf.ckpt",
+        "native_checkpoint": "<workspace>/foldjax/.foldjax/downloads/boltz2/boltz2_conf.ckpt",
         "native_sha256": "090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1",
         "capture_checkpoint_sha256": "090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1",
-        "converted": "/home/jaemin/non-project/optimizing/foldjax/.foldjax/weights/boltz2/boltz2_conf.safetensors",
+        "converted": "<workspace>/foldjax/.foldjax/weights/boltz2/boltz2_conf.safetensors",
         "mapper": "foldjax.models.boltz2.bridge.export_weights.export_confidence (writer intercepted, nothing written)",
         "reader": "foldjax.torch_archive.load (no torch)"
       },
