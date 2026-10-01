@@ -41,11 +41,14 @@ def save_config(path, config):
     """Retain the raw schema beside the comparable execution record."""
     raw = config.as_dict()
     record = config_record(config)
-    save(path.with_name(path.stem + "-recording.json"), {
-        "raw_config": raw,
-        "synthesized_fields": sorted(record.keys() - raw.keys()),
-        "recording_policy": "af3-full-run-defaults-v1",
-    })
+    save(
+        path.with_name(path.stem + "-recording.json"),
+        {
+            "raw_config": raw,
+            "synthesized_fields": sorted(record.keys() - raw.keys()),
+            "recording_policy": "af3-full-run-defaults-v1",
+        },
+    )
     save(path, record)
 
 
@@ -90,7 +93,21 @@ def main():
     parser.add_argument("--mode", choices=("audit", "performance"), default="audit")
     parser.add_argument("--warm-repeats", type=int, default=1)
     parser.add_argument("--no-preprocessing-observers", action="store_true")
+    parser.add_argument("--samples", type=int, default=5)
+    parser.add_argument("--recycles", type=int, default=10)
+    parser.add_argument("--attention", choices=("triton", "xla"), default="triton")
+    parser.add_argument(
+        "--cpu",
+        action="store_true",
+        help="CPU check: JAX_PLATFORMS=cpu, XLA attention, no GPU autotune files",
+    )
     args = parser.parse_args()
+    if args.cpu and (
+        os.environ.get("JAX_PLATFORMS") != "cpu" or args.attention != "xla"
+    ):
+        parser.error("--cpu requires JAX_PLATFORMS=cpu and --attention xla")
+    if args.cpu and (args.kernel_manifest or args.xla_autotune_load):
+        parser.error("--cpu takes no GPU kernel or autotune controls")
     if args.no_preprocessing_observers and args.mode != "performance":
         parser.error("disabling preprocessing observers requires performance mode")
     if args.warm_repeats < 1:
@@ -111,7 +128,10 @@ def main():
         raise ValueError(
             "inherited XLA autotuning flags conflict with capture controls"
         )
-    xla_flags += f" --xla_gpu_dump_autotune_results_to={out / 'xla-autotune.textproto'}"
+    if not args.cpu:
+        xla_flags += (
+            f" --xla_gpu_dump_autotune_results_to={out / 'xla-autotune.textproto'}"
+        )
     if args.xla_autotune_load is not None:
         args.xla_autotune_load = args.xla_autotune_load.resolve(strict=True)
         xla_flags += f" --xla_gpu_load_autotune_results_from={args.xla_autotune_load}"
@@ -162,9 +182,9 @@ def main():
     job = jobs[0]
     weights = args.weights.resolve()
     config = runner.make_model_config(
-        num_diffusion_samples=5,
-        num_recycles=10,
-        flash_attention_implementation="triton",
+        num_diffusion_samples=args.samples,
+        num_recycles=args.recycles,
+        flash_attention_implementation=args.attention,
     )
     save_config(out / "config.json", config)
     assert config.global_config.bfloat16 == "all"
@@ -221,7 +241,8 @@ def main():
             ),
             "xla_autotune_extend": args.xla_autotune_extend,
             "separate_executable_cache": True,
-            "attention": "triton",
+            "attention": args.attention,
+            "backend": jax.default_backend(),
             "kernel_selection": "autotune",
             "neutral_padding": False,
             "kernel_deviation": (
@@ -236,9 +257,9 @@ def main():
                 str(p.relative_to(runtime)): sha(p)
                 for p in sorted(runtime.rglob("*.pickle"))
             },
-            "native_recycles": 10,
+            "native_recycles": args.recycles,
             "steps": 200,
-            "samples": 5,
+            "samples": args.samples,
             **kernel_provenance,
         },
     )
@@ -393,12 +414,13 @@ def main():
             for signature, count in draws.items():
                 counts[json.loads(signature)[0]] += count
             save(out / "tape-coverage.json", dict(counts))
+            per_step = 200 * args.samples
             assert counts == {
                 "initial": 1,
-                "churn": 1000,
-                "rotation": 1000,
-                "translation": 1000,
-                "padding_gumbel": 11,
+                "churn": per_step,
+                "rotation": per_step,
+                "translation": per_step,
+                "padding_gumbel": args.recycles + 1,
             }, counts
         return result
 
@@ -417,7 +439,7 @@ def main():
         )
         valid = np.asarray(gather.gather_mask, dtype=bool)
         results = original_extract(self, *pos, **kwargs)
-        assert len(results) == 5
+        assert len(results) == args.samples
         coords, confidence = [], {}
         for i, result in enumerate(results):
             st = result.predicted_structure
@@ -457,7 +479,7 @@ def main():
         np.savez_compressed(
             out / "coordinate.npz",
             coordinate=np.stack(coords),
-            mask=np.broadcast_to(valid, (5, len(valid))),
+            mask=np.broadcast_to(valid, (args.samples, len(valid))),
         )
         np.savez_compressed(out / "confidence.npz", **confidence)
         return results
@@ -553,12 +575,20 @@ def main():
                     seed=job.rng_seeds[0],
                     options={
                         "buckets": list(BUCKETS),
-                        "kernel_autotuning": (
-                            "error" if kernel_overlay is not None else "autotune"
+                        **(
+                            {}
+                            if args.cpu
+                            else {
+                                "kernel_autotuning": (
+                                    "error"
+                                    if kernel_overlay is not None
+                                    else "autotune"
+                                )
+                            }
                         ),
-                        "attention_backend": "triton",
-                        "num_samples": 5,
-                        "num_recycles": 10,
+                        "attention_backend": args.attention,
+                        "num_samples": args.samples,
+                        "num_recycles": args.recycles,
                     },
                 )
             )
@@ -571,10 +601,14 @@ def main():
     if current_source != recorded_source:
         raise RuntimeError("AF3 Python source changed during capture")
     provenance = json.loads((out / "provenance.json").read_text())
-    provenance["xla_autotune_sha256"] = sha(
-        args.xla_autotune_load
-        if args.xla_autotune_load and not args.xla_autotune_extend
-        else out / "xla-autotune.textproto"
+    provenance["xla_autotune_sha256"] = (
+        None
+        if args.cpu
+        else sha(
+            args.xla_autotune_load
+            if args.xla_autotune_load and not args.xla_autotune_extend
+            else out / "xla-autotune.textproto"
+        )
     )
     save(out / "provenance.json", provenance)
     if not args.no_preprocessing_observers:
