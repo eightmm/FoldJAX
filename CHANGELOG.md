@@ -317,6 +317,24 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **The README and reference docs now say what the code does.** One precision
+  table, identical in the README and `docs/engineering-notes.md`, names the
+  four departures from upstream (OpenFold3's partial bfloat16 track, OpenDDE's
+  bfloat16 trunk and confidence Pairformer, Boltz-2's bfloat16 pair residual
+  with `high` matmuls, Protenix's bfloat16 confidence head below 2,560 tokens)
+  and the options that restore each: OpenDDE pins no matmul precision (JAX
+  `DEFAULT`), not `high`; Boltz-2's way back is
+  `pair_residual_dtype=float32` with `matmul_precision=highest`, not
+  `dtype=float32`; OpenDDE also needs `confidence_dtype=fp32`. The README
+  states per model whether PAE reaches `confidence_full.npz`. Corrected
+  option spellings: `foldjax models --for` (not `--for-input`), `--option
+  all_arrays=true` (not `-o`), and AlphaFold 3's `--num-samples` /
+  `--num-recycles` (its `diffusion_samples` / `recycles` are refused through
+  `--option`; FoldJAX's default is 3 recycles, not 10). `deterministic=on`
+  is documented as accepted by all six models, and the `--memory-check` help
+  names the five ports that carry a memory law. The vendored AlphaFold 3 tree
+  carries nine patched files, not eight.
+
 - **A native OpenDDE job's `constraint` is no longer dropped silently.** The
   Protenix featurizer OpenDDE shares built a `constraint_feature` from it that
   no OpenDDE module reads, so the job ran as if the field were absent and said

@@ -225,7 +225,7 @@ Reading a directory back:
 uv run foldjax show out/                          # per-run table, for reading
 uv run foldjax show out/ --format csv > runs.csv  # one row per model/input/seed/sample
 uv run foldjax show out/ --format json --aggregate
-uv run foldjax compare out/ --out out/compare     # pairwise CA RMSD per input
+uv run foldjax compare out/ --out out/compare     # pairwise RMSD per input (CA; C4' for nucleic acids)
 ```
 
 `--format csv|json` prints one row per model, input, seed and sample, read from
