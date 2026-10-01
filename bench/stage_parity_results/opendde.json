@@ -8,11 +8,11 @@
     "jax_platforms": "cpu",
     "foldjax_home": "/home/jaemin/non-project/optimizing/foldjax/.foldjax",
     "cpu_affinity": 16,
-    "git_commit": "4efa1b2",
+    "git_commit": "92779d4-dirty",
     "jax": "0.11.1",
     "jaxlib": "0.11.1"
   },
-  "wall_s": 910.0,
+  "wall_s": 811.5,
   "stages": {
     "S1_features": {
       "status": "measured",
@@ -939,9 +939,9 @@
       "runtime_s": 1.0,
       "notes": "",
       "source": {
-        "git": "4efa1b2",
+        "git": "92779d4-dirty",
         "cpu_affinity": 16,
-        "recorded": "2026-10-01 21:12:31"
+        "recorded": "2026-10-01 22:05:08"
       }
     },
     "S2_weights": {
@@ -1055,51 +1055,842 @@
           "sorted_max_abs": 0.0
         }
       },
-      "runtime_s": 95.3,
+      "runtime_s": 83.6,
       "notes": "",
       "source": {
-        "git": "4efa1b2",
+        "git": "92779d4-dirty",
         "cpu_affinity": 16,
-        "recorded": "2026-10-01 21:12:31"
+        "recorded": "2026-10-01 22:05:08"
       }
     },
     "S3_trunk": {
-      "status": "not_captured",
-      "condition": {},
-      "headline": {},
-      "metrics": {},
-      "runtime_s": null,
-      "notes": "The OpenDDE capture stores no trunk boundary: raw.npz holds only the heads' outputs and coordinates, and the native input/derived/tape files are trunk inputs. Needs: a native capture of the pairformer/structural-refiner outputs and the confidence-head inputs (see MISSING.md).",
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "stage_capture": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
+        "input": "re-capture native-input.npz + native-derived.npz (bitwise equal to the stored capture's: True / True)",
+        "tape": "re-capture torch/tape.npz + torch/msa.npz (bitwise equal to the stored capture's: True / True)",
+        "kernels": "all attention backends xla",
+        "trunk_dtype": "float32 (port default; native TF32 trunk -> CPU highest, see docs/parity-cpu.md)",
+        "recycles": 10
+      },
+      "headline": {
+        "metric": "relative RMS single (s) / pair (z); residue trunk, then structural refiner",
+        "value": "1.942e-04 / 5.500e-04; 1.099e-04 / 2.624e-04"
+      },
+      "metrics": {
+        "arrays": {
+          "single_inputs": {
+            "relative_rms": 9.608045635877294e-05,
+            "max_abs": 0.00021748244762420654,
+            "native_max_abs_value": 1.1251652240753174,
+            "native_key": "residue_trunk.out.s_inputs"
+          },
+          "single": {
+            "relative_rms": 0.0001941844946107007,
+            "max_abs": 0.17047119140625,
+            "native_max_abs_value": 662.153564453125,
+            "native_key": "residue_trunk.out.s"
+          },
+          "pair": {
+            "relative_rms": 0.0005499999302561662,
+            "max_abs": 0.65765380859375,
+            "native_max_abs_value": 547.2071533203125,
+            "native_key": "residue_trunk.out.z"
+          },
+          "structural_single_inputs": {
+            "relative_rms": 3.772342704410893e-05,
+            "max_abs": 0.00021748244762420654,
+            "native_max_abs_value": 2.195190668106079,
+            "native_key": "structural_trunk.out.s_inputs"
+          },
+          "structural_single": {
+            "relative_rms": 0.00010985525539409167,
+            "max_abs": 0.5234375,
+            "native_max_abs_value": 2167.331298828125,
+            "native_key": "structural_trunk.out.s"
+          },
+          "structural_pair": {
+            "relative_rms": 0.00026237692159166733,
+            "max_abs": 1.41455078125,
+            "native_max_abs_value": 4748.5615234375,
+            "native_key": "structural_trunk.out.z"
+          }
+        },
+        "native_boundary_identity": {
+          "structural_trunk.out.s_inputs == diffusion.in.s_inputs": true,
+          "structural_trunk.out.s == diffusion.in.s": true,
+          "structural_trunk.out.z == diffusion.in.z": true,
+          "residue_trunk.out.s_inputs == confidence.in.s_inputs": true,
+          "residue_trunk.out.s == confidence.in.s_trunk": true,
+          "residue_trunk.out.z == confidence.in.z_trunk": true,
+          "diffusion.out.coordinate == confidence.in.x_pred_coords": true
+        },
+        "native_rerun_vs_stored_capture": {
+          "stored": "/home/jaemin/non-project/optimizing/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A",
+          "new": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
+          "bitwise": {
+            "native-input.npz": {
+              "all_equal": true,
+              "arrays": {
+                "asym_id": true,
+                "atom_to_structural_tokatom_idx": true,
+                "atom_to_structural_token_idx": true,
+                "atom_to_tokatom_idx": true,
+                "atom_to_token_idx": true,
+                "bond_mask": true,
+                "deletion_matrix": true,
+                "deletion_mean": true,
+                "deletion_value": true,
+                "distogram_rep_atom_mask": true,
+                "entity_id": true,
+                "entity_mol_id": true,
+                "frame_atom_index": true,
+                "has_deletion": true,
+                "has_frame": true,
+                "inference_seed": true,
+                "is_dna": true,
+                "is_ligand": true,
+                "is_protein": true,
+                "is_rna": true,
+                "modified_res_mask": true,
+                "mol_atom_index": true,
+                "mol_id": true,
+                "msa": true,
+                "msa_mask": true,
+                "next_parent_residue_idx": true,
+                "pae_rep_atom_mask": true,
+                "parent_residue_idx": true,
+                "plddt_m_rep_atom_mask": true,
+                "prev_parent_residue_idx": true,
+                "profile": true,
+                "prot_pair_num_alignments": true,
+                "prot_paired_num_alignments": true,
+                "prot_unpair_num_alignments": true,
+                "prot_unpaired_num_alignments": true,
+                "ref_atom_name_chars": true,
+                "ref_charge": true,
+                "ref_element": true,
+                "ref_mask": true,
+                "ref_pos": true,
+                "ref_space_uid": true,
+                "residue_index": true,
+                "residue_token_group_id": true,
+                "resolution": true,
+                "restype": true,
+                "rna_pair_num_alignments": true,
+                "rna_paired_num_alignments": true,
+                "rna_unpair_num_alignments": true,
+                "rna_unpaired_num_alignments": true,
+                "structural_distogram_rep_atom_mask": true,
+                "structural_frame_atom_index": true,
+                "structural_has_frame": true,
+                "structural_is_polymer": true,
+                "structural_pae_rep_atom_mask": true,
+                "structural_polymer_type": true,
+                "structural_seq_pos": true,
+                "structural_token_index": true,
+                "subtoken_role": true,
+                "subtoken_role_id": true,
+                "sym_id": true,
+                "template_aatype": true,
+                "template_atom_mask": true,
+                "template_atom_positions": true,
+                "template_backbone_frame_mask": true,
+                "template_distogram": true,
+                "template_pseudo_beta_mask": true,
+                "template_unit_vector": true,
+                "token_bonds": true,
+                "token_index": true,
+                "twin_token_idx": true
+              }
+            },
+            "native-derived.npz": {
+              "all_equal": true,
+              "arrays": {
+                "d_lm": true,
+                "pad_info.k_pad_left": true,
+                "pad_info.k_pad_right": true,
+                "pad_info.mask_trunked": true,
+                "pad_info.q_pad": true,
+                "v_lm": true
+              }
+            },
+            "native-identity.npz": {
+              "all_equal": true,
+              "arrays": {
+                "output_atom_chain_id": true,
+                "output_atom_element": true,
+                "output_atom_name": true,
+                "output_atom_res_id": true,
+                "output_atom_res_name": true
+              }
+            },
+            "torch/tape.npz": {
+              "all_equal": true,
+              "arrays": {
+                "init_noise": true,
+                "noise_schedule": true,
+                "rotations": true,
+                "step_noises": true,
+                "translations": true
+              }
+            },
+            "torch/msa.npz": {
+              "all_equal": true,
+              "arrays": {
+                "input_deletion_value": true,
+                "input_has_deletion": true,
+                "input_msa": true,
+                "input_msa_mask": true,
+                "rows": true,
+                "selected_deletion_value": true,
+                "selected_has_deletion": true,
+                "selected_msa": true
+              }
+            }
+          },
+          "coordinates": {
+            "samples": 5,
+            "atoms": 602,
+            "all_atom_rmsd_angstrom": [
+              0.0021296722610245557,
+              0.005899904644330506,
+              0.0019594732133872464,
+              0.002064420056174577,
+              0.0027827459291688995
+            ],
+            "max_unaligned_displacement_angstrom": 0.10537579941821044,
+            "ca_atoms": 76,
+            "ca_rmsd_angstrom": [
+              0.002412569240065699,
+              0.0021468146997103707,
+              0.002529870898930651,
+              0.002505620842772041,
+              0.003832837444315633
+            ]
+          },
+          "values_max_abs": {
+            "raw.npz:plddt": 0.004605293273925781,
+            "raw.npz:pae": 0.011854171752929688,
+            "raw.npz:pde": 0.00487518310546875,
+            "raw.npz:summary_confidence.0.ptm": 4.172325134277344e-07,
+            "raw.npz:summary_confidence.1.ptm": 4.231929779052734e-06,
+            "raw.npz:summary_confidence.2.ptm": 3.2782554626464844e-06,
+            "raw.npz:summary_confidence.3.ptm": 4.291534423828125e-06,
+            "raw.npz:summary_confidence.4.ptm": 5.245208740234375e-06,
+            "raw.npz:summary_confidence.0.plddt": 0.00017547607421875,
+            "raw.npz:summary_confidence.1.plddt": 0.00035858154296875,
+            "raw.npz:summary_confidence.2.plddt": 0.000885009765625,
+            "raw.npz:summary_confidence.3.plddt": 0.00031280517578125,
+            "raw.npz:summary_confidence.4.plddt": 0.00016021728515625
+          },
+          "stored_rerun_floor_native_A_vs_B": {
+            "file": "/home/jaemin/non-project/optimizing/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A-vs-native-B.json",
+            "entity_rmsd": {
+              "A": [
+                0.002070975353390085,
+                0.006316567823634157,
+                0.002115521549282173,
+                0.0019792040895455654,
+                0.0019034006491851722
+              ]
+            },
+            "global_rmsd": [
+              0.002070975353390085,
+              0.006316567823634157,
+              0.002115521549282173,
+              0.0019792040895455654,
+              0.0019034006491851722
+            ]
+          }
+        }
+      },
+      "runtime_s": 88.7,
+      "notes": "",
       "source": {
-        "git": "4efa1b2",
+        "git": "92779d4-dirty",
         "cpu_affinity": 16,
-        "recorded": "2026-10-01 21:12:31"
+        "recorded": "2026-10-01 22:05:08"
       }
     },
     "S4_diffusion": {
-      "status": "not_captured",
-      "condition": {},
-      "headline": {},
-      "metrics": {},
-      "runtime_s": null,
-      "notes": "The OpenDDE capture stores no trunk boundary: raw.npz holds only the heads' outputs and coordinates, and the native input/derived/tape files are trunk inputs. Needs: a native capture of the pairformer/structural-refiner outputs and the confidence-head inputs (see MISSING.md).",
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "stage_capture": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
+        "input": "re-capture native-input.npz + native-derived.npz (bitwise equal to the stored capture's: True / True)",
+        "tape": "re-capture torch/tape.npz + torch/msa.npz (bitwise equal to the stored capture's: True / True)",
+        "kernels": "all attention backends xla",
+        "trunk_dtype": "n/a (native trunk injected)",
+        "diffusion_dtype": "float32 (native skip_amp.sample_diffusion=true)",
+        "injected_native": "stages.npz diffusion.in.{s_inputs, s, z} (the structural tensors run_sample_diffusion_stage received) at structural_token_expand / structural_refiner_stack; residue trunk from residue_trunk.out; torch/tape.npz noise schedule, initial/step noise, rotations, translations",
+        "samples_x_steps": "5 x 200"
+      },
+      "headline": {
+        "metric": "per-sample all-atom / CA RMSD (A), worst sample",
+        "value": "0.0056 / 0.0056"
+      },
+      "metrics": {
+        "samples": 5,
+        "atoms": 602,
+        "all_atom_rmsd_angstrom": [
+          0.001968803315932093,
+          0.005598712832621391,
+          0.0016232967109012684,
+          0.0016541449521155333,
+          0.003943918079760024
+        ],
+        "max_unaligned_displacement_angstrom": 0.10650783302807765,
+        "ca_atoms": 76,
+        "ca_rmsd_angstrom": [
+          0.002057272401699769,
+          0.00224752041110847,
+          0.0019224443246137774,
+          0.001884853346151161,
+          0.005620151268431338
+        ],
+        "injection_calls": {
+          "residue_trunk": 1,
+          "structural_expand": 1,
+          "structural_refiner": 1
+        },
+        "injected_width": {
+          "residue_trunk.out.s": "float32",
+          "residue_trunk.out.z": "float32",
+          "residue_trunk.out.s_inputs": "float32",
+          "diffusion.in.s_inputs": "float32",
+          "diffusion.in.s": "float32",
+          "diffusion.in.z": "float32"
+        },
+        "native_boundary_identity": {
+          "structural_trunk.out.s_inputs == diffusion.in.s_inputs": true,
+          "structural_trunk.out.s == diffusion.in.s": true,
+          "structural_trunk.out.z == diffusion.in.z": true,
+          "residue_trunk.out.s_inputs == confidence.in.s_inputs": true,
+          "residue_trunk.out.s == confidence.in.s_trunk": true,
+          "residue_trunk.out.z == confidence.in.z_trunk": true,
+          "diffusion.out.coordinate == confidence.in.x_pred_coords": true
+        },
+        "native_rerun_vs_stored_capture": {
+          "stored": "/home/jaemin/non-project/optimizing/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A",
+          "new": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
+          "bitwise": {
+            "native-input.npz": {
+              "all_equal": true,
+              "arrays": {
+                "asym_id": true,
+                "atom_to_structural_tokatom_idx": true,
+                "atom_to_structural_token_idx": true,
+                "atom_to_tokatom_idx": true,
+                "atom_to_token_idx": true,
+                "bond_mask": true,
+                "deletion_matrix": true,
+                "deletion_mean": true,
+                "deletion_value": true,
+                "distogram_rep_atom_mask": true,
+                "entity_id": true,
+                "entity_mol_id": true,
+                "frame_atom_index": true,
+                "has_deletion": true,
+                "has_frame": true,
+                "inference_seed": true,
+                "is_dna": true,
+                "is_ligand": true,
+                "is_protein": true,
+                "is_rna": true,
+                "modified_res_mask": true,
+                "mol_atom_index": true,
+                "mol_id": true,
+                "msa": true,
+                "msa_mask": true,
+                "next_parent_residue_idx": true,
+                "pae_rep_atom_mask": true,
+                "parent_residue_idx": true,
+                "plddt_m_rep_atom_mask": true,
+                "prev_parent_residue_idx": true,
+                "profile": true,
+                "prot_pair_num_alignments": true,
+                "prot_paired_num_alignments": true,
+                "prot_unpair_num_alignments": true,
+                "prot_unpaired_num_alignments": true,
+                "ref_atom_name_chars": true,
+                "ref_charge": true,
+                "ref_element": true,
+                "ref_mask": true,
+                "ref_pos": true,
+                "ref_space_uid": true,
+                "residue_index": true,
+                "residue_token_group_id": true,
+                "resolution": true,
+                "restype": true,
+                "rna_pair_num_alignments": true,
+                "rna_paired_num_alignments": true,
+                "rna_unpair_num_alignments": true,
+                "rna_unpaired_num_alignments": true,
+                "structural_distogram_rep_atom_mask": true,
+                "structural_frame_atom_index": true,
+                "structural_has_frame": true,
+                "structural_is_polymer": true,
+                "structural_pae_rep_atom_mask": true,
+                "structural_polymer_type": true,
+                "structural_seq_pos": true,
+                "structural_token_index": true,
+                "subtoken_role": true,
+                "subtoken_role_id": true,
+                "sym_id": true,
+                "template_aatype": true,
+                "template_atom_mask": true,
+                "template_atom_positions": true,
+                "template_backbone_frame_mask": true,
+                "template_distogram": true,
+                "template_pseudo_beta_mask": true,
+                "template_unit_vector": true,
+                "token_bonds": true,
+                "token_index": true,
+                "twin_token_idx": true
+              }
+            },
+            "native-derived.npz": {
+              "all_equal": true,
+              "arrays": {
+                "d_lm": true,
+                "pad_info.k_pad_left": true,
+                "pad_info.k_pad_right": true,
+                "pad_info.mask_trunked": true,
+                "pad_info.q_pad": true,
+                "v_lm": true
+              }
+            },
+            "native-identity.npz": {
+              "all_equal": true,
+              "arrays": {
+                "output_atom_chain_id": true,
+                "output_atom_element": true,
+                "output_atom_name": true,
+                "output_atom_res_id": true,
+                "output_atom_res_name": true
+              }
+            },
+            "torch/tape.npz": {
+              "all_equal": true,
+              "arrays": {
+                "init_noise": true,
+                "noise_schedule": true,
+                "rotations": true,
+                "step_noises": true,
+                "translations": true
+              }
+            },
+            "torch/msa.npz": {
+              "all_equal": true,
+              "arrays": {
+                "input_deletion_value": true,
+                "input_has_deletion": true,
+                "input_msa": true,
+                "input_msa_mask": true,
+                "rows": true,
+                "selected_deletion_value": true,
+                "selected_has_deletion": true,
+                "selected_msa": true
+              }
+            }
+          },
+          "coordinates": {
+            "samples": 5,
+            "atoms": 602,
+            "all_atom_rmsd_angstrom": [
+              0.0021296722610245557,
+              0.005899904644330506,
+              0.0019594732133872464,
+              0.002064420056174577,
+              0.0027827459291688995
+            ],
+            "max_unaligned_displacement_angstrom": 0.10537579941821044,
+            "ca_atoms": 76,
+            "ca_rmsd_angstrom": [
+              0.002412569240065699,
+              0.0021468146997103707,
+              0.002529870898930651,
+              0.002505620842772041,
+              0.003832837444315633
+            ]
+          },
+          "values_max_abs": {
+            "raw.npz:plddt": 0.004605293273925781,
+            "raw.npz:pae": 0.011854171752929688,
+            "raw.npz:pde": 0.00487518310546875,
+            "raw.npz:summary_confidence.0.ptm": 4.172325134277344e-07,
+            "raw.npz:summary_confidence.1.ptm": 4.231929779052734e-06,
+            "raw.npz:summary_confidence.2.ptm": 3.2782554626464844e-06,
+            "raw.npz:summary_confidence.3.ptm": 4.291534423828125e-06,
+            "raw.npz:summary_confidence.4.ptm": 5.245208740234375e-06,
+            "raw.npz:summary_confidence.0.plddt": 0.00017547607421875,
+            "raw.npz:summary_confidence.1.plddt": 0.00035858154296875,
+            "raw.npz:summary_confidence.2.plddt": 0.000885009765625,
+            "raw.npz:summary_confidence.3.plddt": 0.00031280517578125,
+            "raw.npz:summary_confidence.4.plddt": 0.00016021728515625
+          },
+          "stored_rerun_floor_native_A_vs_B": {
+            "file": "/home/jaemin/non-project/optimizing/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A-vs-native-B.json",
+            "entity_rmsd": {
+              "A": [
+                0.002070975353390085,
+                0.006316567823634157,
+                0.002115521549282173,
+                0.0019792040895455654,
+                0.0019034006491851722
+              ]
+            },
+            "global_rmsd": [
+              0.002070975353390085,
+              0.006316567823634157,
+              0.002115521549282173,
+              0.0019792040895455654,
+              0.0019034006491851722
+            ]
+          }
+        }
+      },
+      "runtime_s": 266.4,
+      "notes": "Reference: the re-capture's own sampler output (diffusion.out.coordinate), from the tensors injected here.",
       "source": {
-        "git": "4efa1b2",
+        "git": "92779d4-dirty",
         "cpu_affinity": 16,
-        "recorded": "2026-10-01 21:12:31"
+        "recorded": "2026-10-01 22:05:08"
       }
     },
     "S5_confidence": {
-      "status": "not_captured",
-      "condition": {},
-      "headline": {},
-      "metrics": {},
-      "runtime_s": null,
-      "notes": "The OpenDDE capture stores no trunk boundary: raw.npz holds only the heads' outputs and coordinates, and the native input/derived/tape files are trunk inputs. Needs: a native capture of the pairformer/structural-refiner outputs and the confidence-head inputs (see MISSING.md).",
+      "status": "measured",
+      "condition": {
+        "backend": "cpu",
+        "matmul_precision": "highest",
+        "stage_capture": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
+        "input": "re-capture native-input.npz + native-derived.npz (bitwise equal to the stored capture's: True / True)",
+        "tape": "re-capture torch/tape.npz + torch/msa.npz (bitwise equal to the stored capture's: True / True)",
+        "kernels": "all attention backends xla",
+        "trunk_dtype": "n/a (native trunk injected)",
+        "confidence_dtype": "float32 (native skip_amp.confidence_head=true)",
+        "injected_native": "stages.npz confidence.in.{s_inputs, s_trunk, z_trunk} replace pairformer_output_from_s_inputs; confidence.in.x_pred_coords replace sample_diffusion; summaries vs the re-capture's raw.npz"
+      },
+      "headline": {
+        "metric": "max |d| atom pLDDT (0-100) / PAE (A) / pTM",
+        "value": "0.000221 / 0.0132 / 2.81e-05"
+      },
+      "metrics": {
+        "plddt_logits": {
+          "port_name": "plddt",
+          "max_abs": 0.0034973621368408203,
+          "relative_rms": 0.00017427439314055522,
+          "native_range": [
+            -5.209647178649902,
+            9.300817489624023
+          ]
+        },
+        "pae_logits": {
+          "port_name": "pae",
+          "max_abs": 0.013430595397949219,
+          "relative_rms": 0.00022899539303674831,
+          "native_range": [
+            -3.7261600494384766,
+            13.648001670837402
+          ]
+        },
+        "pde_logits": {
+          "port_name": "pde",
+          "max_abs": 0.004322528839111328,
+          "relative_rms": 0.00019912131995550308,
+          "native_range": [
+            -4.249044895172119,
+            12.183917045593262
+          ]
+        },
+        "resolved_logits": {
+          "port_name": "resolved",
+          "max_abs": 0.0015802383422851562,
+          "relative_rms": 0.00015772652437101415,
+          "native_range": [
+            -4.376829624176025,
+            4.376148700714111
+          ]
+        },
+        "atom_plddt": {
+          "port_name": "atom_plddt",
+          "max_abs": 0.0002206563949584961,
+          "relative_rms": 2.696871819531045e-05,
+          "native_range": [
+            0.7025092244148254,
+            0.9883438944816589
+          ]
+        },
+        "token_pair_pae": {
+          "port_name": "token_pair_pae",
+          "max_abs": 0.013243675231933594,
+          "relative_rms": 0.00032564579911623114,
+          "native_range": [
+            0.27670204639434814,
+            22.300363540649414
+          ]
+        },
+        "ptm": {
+          "port_name": "summary_ptm",
+          "max_abs": 2.8073787689208984e-05,
+          "relative_rms": 2.8021611901529837e-05,
+          "native_range": [
+            0.9458062052726746,
+            0.9459925293922424
+          ]
+        },
+        "summary_plddt": {
+          "port_name": "summary_plddt",
+          "max_abs": 0.00124359130859375,
+          "relative_rms": 9.86135283590514e-06,
+          "native_range": [
+            96.31158447265625,
+            96.3253402709961
+          ]
+        },
+        "port_output_keys": [
+          "atom_plddt",
+          "chain_gpde",
+          "chain_iptm",
+          "chain_pair_gpde",
+          "chain_pair_iptm",
+          "chain_pair_iptm_global",
+          "chain_pair_plddt",
+          "chain_plddt",
+          "chain_ptm",
+          "contact_probs",
+          "coordinate",
+          "disorder",
+          "distogram_logits",
+          "has_clash",
+          "num_recycles",
+          "pae",
+          "pde",
+          "plddt",
+          "ranking_score",
+          "resolved",
+          "summary_gpde",
+          "summary_iptm",
+          "summary_plddt",
+          "summary_ptm",
+          "summary_ranking_score",
+          "token_pair_pae",
+          "token_pair_pde"
+        ],
+        "injection_calls": {
+          "residue_trunk": 1,
+          "structural_expand": 1,
+          "structural_refiner": 1,
+          "sample_diffusion": 1
+        },
+        "injected_width": {
+          "confidence.in.s_trunk": "float32",
+          "confidence.in.z_trunk": "float32",
+          "confidence.in.x_pred_coords": "float32",
+          "confidence.in.s_inputs": "float32",
+          "diffusion.in.s_inputs": "float32",
+          "diffusion.in.s": "float32",
+          "diffusion.in.z": "float32"
+        },
+        "native_boundary_identity": {
+          "structural_trunk.out.s_inputs == diffusion.in.s_inputs": true,
+          "structural_trunk.out.s == diffusion.in.s": true,
+          "structural_trunk.out.z == diffusion.in.z": true,
+          "residue_trunk.out.s_inputs == confidence.in.s_inputs": true,
+          "residue_trunk.out.s == confidence.in.s_trunk": true,
+          "residue_trunk.out.z == confidence.in.z_trunk": true,
+          "diffusion.out.coordinate == confidence.in.x_pred_coords": true
+        },
+        "native_rerun_vs_stored_capture": {
+          "stored": "/home/jaemin/non-project/optimizing/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A",
+          "new": "/home/jaemin/non-project/optimizing/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
+          "bitwise": {
+            "native-input.npz": {
+              "all_equal": true,
+              "arrays": {
+                "asym_id": true,
+                "atom_to_structural_tokatom_idx": true,
+                "atom_to_structural_token_idx": true,
+                "atom_to_tokatom_idx": true,
+                "atom_to_token_idx": true,
+                "bond_mask": true,
+                "deletion_matrix": true,
+                "deletion_mean": true,
+                "deletion_value": true,
+                "distogram_rep_atom_mask": true,
+                "entity_id": true,
+                "entity_mol_id": true,
+                "frame_atom_index": true,
+                "has_deletion": true,
+                "has_frame": true,
+                "inference_seed": true,
+                "is_dna": true,
+                "is_ligand": true,
+                "is_protein": true,
+                "is_rna": true,
+                "modified_res_mask": true,
+                "mol_atom_index": true,
+                "mol_id": true,
+                "msa": true,
+                "msa_mask": true,
+                "next_parent_residue_idx": true,
+                "pae_rep_atom_mask": true,
+                "parent_residue_idx": true,
+                "plddt_m_rep_atom_mask": true,
+                "prev_parent_residue_idx": true,
+                "profile": true,
+                "prot_pair_num_alignments": true,
+                "prot_paired_num_alignments": true,
+                "prot_unpair_num_alignments": true,
+                "prot_unpaired_num_alignments": true,
+                "ref_atom_name_chars": true,
+                "ref_charge": true,
+                "ref_element": true,
+                "ref_mask": true,
+                "ref_pos": true,
+                "ref_space_uid": true,
+                "residue_index": true,
+                "residue_token_group_id": true,
+                "resolution": true,
+                "restype": true,
+                "rna_pair_num_alignments": true,
+                "rna_paired_num_alignments": true,
+                "rna_unpair_num_alignments": true,
+                "rna_unpaired_num_alignments": true,
+                "structural_distogram_rep_atom_mask": true,
+                "structural_frame_atom_index": true,
+                "structural_has_frame": true,
+                "structural_is_polymer": true,
+                "structural_pae_rep_atom_mask": true,
+                "structural_polymer_type": true,
+                "structural_seq_pos": true,
+                "structural_token_index": true,
+                "subtoken_role": true,
+                "subtoken_role_id": true,
+                "sym_id": true,
+                "template_aatype": true,
+                "template_atom_mask": true,
+                "template_atom_positions": true,
+                "template_backbone_frame_mask": true,
+                "template_distogram": true,
+                "template_pseudo_beta_mask": true,
+                "template_unit_vector": true,
+                "token_bonds": true,
+                "token_index": true,
+                "twin_token_idx": true
+              }
+            },
+            "native-derived.npz": {
+              "all_equal": true,
+              "arrays": {
+                "d_lm": true,
+                "pad_info.k_pad_left": true,
+                "pad_info.k_pad_right": true,
+                "pad_info.mask_trunked": true,
+                "pad_info.q_pad": true,
+                "v_lm": true
+              }
+            },
+            "native-identity.npz": {
+              "all_equal": true,
+              "arrays": {
+                "output_atom_chain_id": true,
+                "output_atom_element": true,
+                "output_atom_name": true,
+                "output_atom_res_id": true,
+                "output_atom_res_name": true
+              }
+            },
+            "torch/tape.npz": {
+              "all_equal": true,
+              "arrays": {
+                "init_noise": true,
+                "noise_schedule": true,
+                "rotations": true,
+                "step_noises": true,
+                "translations": true
+              }
+            },
+            "torch/msa.npz": {
+              "all_equal": true,
+              "arrays": {
+                "input_deletion_value": true,
+                "input_has_deletion": true,
+                "input_msa": true,
+                "input_msa_mask": true,
+                "rows": true,
+                "selected_deletion_value": true,
+                "selected_has_deletion": true,
+                "selected_msa": true
+              }
+            }
+          },
+          "coordinates": {
+            "samples": 5,
+            "atoms": 602,
+            "all_atom_rmsd_angstrom": [
+              0.0021296722610245557,
+              0.005899904644330506,
+              0.0019594732133872464,
+              0.002064420056174577,
+              0.0027827459291688995
+            ],
+            "max_unaligned_displacement_angstrom": 0.10537579941821044,
+            "ca_atoms": 76,
+            "ca_rmsd_angstrom": [
+              0.002412569240065699,
+              0.0021468146997103707,
+              0.002529870898930651,
+              0.002505620842772041,
+              0.003832837444315633
+            ]
+          },
+          "values_max_abs": {
+            "raw.npz:plddt": 0.004605293273925781,
+            "raw.npz:pae": 0.011854171752929688,
+            "raw.npz:pde": 0.00487518310546875,
+            "raw.npz:summary_confidence.0.ptm": 4.172325134277344e-07,
+            "raw.npz:summary_confidence.1.ptm": 4.231929779052734e-06,
+            "raw.npz:summary_confidence.2.ptm": 3.2782554626464844e-06,
+            "raw.npz:summary_confidence.3.ptm": 4.291534423828125e-06,
+            "raw.npz:summary_confidence.4.ptm": 5.245208740234375e-06,
+            "raw.npz:summary_confidence.0.plddt": 0.00017547607421875,
+            "raw.npz:summary_confidence.1.plddt": 0.00035858154296875,
+            "raw.npz:summary_confidence.2.plddt": 0.000885009765625,
+            "raw.npz:summary_confidence.3.plddt": 0.00031280517578125,
+            "raw.npz:summary_confidence.4.plddt": 0.00016021728515625
+          },
+          "stored_rerun_floor_native_A_vs_B": {
+            "file": "/home/jaemin/non-project/optimizing/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A-vs-native-B.json",
+            "entity_rmsd": {
+              "A": [
+                0.002070975353390085,
+                0.006316567823634157,
+                0.002115521549282173,
+                0.0019792040895455654,
+                0.0019034006491851722
+              ]
+            },
+            "global_rmsd": [
+              0.002070975353390085,
+              0.006316567823634157,
+              0.002115521549282173,
+              0.0019792040895455654,
+              0.0019034006491851722
+            ]
+          }
+        }
+      },
+      "runtime_s": 3.7,
+      "notes": "Logits are compared with the re-capture's confidence-head outputs; the released summaries with its raw.npz (the port's postprocess on the port's logits).",
       "source": {
-        "git": "4efa1b2",
+        "git": "92779d4-dirty",
         "cpu_affinity": 16,
-        "recorded": "2026-10-01 21:12:31"
+        "recorded": "2026-10-01 22:05:08"
       }
     },
     "S6_final": {
@@ -1240,12 +2031,12 @@
           }
         }
       },
-      "runtime_s": 807.0,
+      "runtime_s": 359.6,
       "notes": "end_to_end_confidence compares the replay's own confidence with raw.npz; it is not S5, which needs the native trunk injected.",
       "source": {
-        "git": "4efa1b2",
+        "git": "92779d4-dirty",
         "cpu_affinity": 16,
-        "recorded": "2026-10-01 21:12:31"
+        "recorded": "2026-10-01 22:05:08"
       }
     }
   }
