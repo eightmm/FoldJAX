@@ -46,7 +46,7 @@ dagger until the current route is re-measured.
 Those historical upstream rows also left `--use_templates=true` despite having
 no template input, so their wall times include avoidable template/CCD
 initialization. Current runs pass `--use_templates false`; the old timings stay
-labelled historical rather than being rewritten. The retained 3,012-token cell
+labeled historical rather than being rewritten. The retained 3,012-token cell
 also disables the preset's confidence-head host offload, a measured harness
 variant that changed 6,782 s/81.0 GiB to 6,722 s/83.2 GiB.
 
@@ -191,7 +191,7 @@ row pins fp32. What that run produces is a separate question from whether it
 fits: all five samples report a clash and a mean pLDDT near 42, where Protenix
 on the same input reports 86.9. The memory result does not endorse the
 prediction. The lever is model-specific rather than general: on Protenix at
-this size serialising the samples moves the peak by 1 MiB, and Protenix-v2's
+this size serializing the samples moves the peak by 1 MiB, and Protenix-v2's
 failing request stays at 117.78 GiB to two decimal places, because their
 owning buffer is the pair stack and OpenFold3's is not. OpenDDE is past levers
 entirely: its own preflight puts 4,100 tokens at 7,876 structural tokens
@@ -282,7 +282,7 @@ Correcting for it also removes the gap that made AlphaFold 3 look like a
 different class of implementation. Warm, it is 90 s at 1,003 tokens against
 Protenix's 66 and Boltz-2's 94, and 247 s at 2,096 against Protenix's 240. Its
 growth exponent reads 2.17 between 2,096 and 3,012 rather than the 1.60 the
-tuned rows gave, which is the same band as its neighbours -- a fixed cost added
+tuned rows gave, which is the same band as its neighbors -- a fixed cost added
 to every point flattens a curve, and this one was not even fixed.
 
 **OpenFold3's memory moved too, and not uniformly.** Its times are unchanged to
@@ -313,7 +313,7 @@ are linked from the sections below and from the README. The upstream columns
 are the unchanged runs already on record.
 Re-running them is not free — OpenFold3's 3,012-token row alone is 6,722 s — so
 new FoldJAX measurements are compared with that pinned reference rather than
-silently relabelling every old cell as current. The 2026-08-24 measurement was
+silently relabeling every old cell as current. The 2026-08-24 measurement was
 taken in a private worktree with its own virtualenv, because the first attempt
 shared a checkout with other work and lost its CUDA jaxlib to a concurrent
 `uv sync` halfway through; JAX prints one line and continues on the CPU, so the

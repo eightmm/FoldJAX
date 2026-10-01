@@ -73,7 +73,7 @@ triangle-attention backend changed and the block rule was re-derived — so read
 These figures are the size of each step, not a current reading.
 
 **Eager arithmetic between compiled blocks is not free.** Measured on the Chai
-port, which has since been removed, but the shape generalises to any trunk run
+port, which has since been removed, but the shape generalizes to any trunk run
 as many small programs so XLA can release MSA intermediates between them: the
 residual `a + b` joining those programs dispatches its own executable, with all
 three buffers live. On an MSA representation that is three copies of the largest
@@ -160,13 +160,13 @@ boundary being measured. At 2,096 tokens on 5DEI:
 
 | stopped after | what has run | peak |
 |---|---|---|
-| `inputs` | featurisation, no language model | **1,388.6 MiB** |
+| `inputs` | featurization, no language model | **1,388.6 MiB** |
 | `trunk` | + language model + folding trunk | **17,336.5 MiB** |
 
 The scale-row full run at the same size is 46,041.8 MiB. That is a different
 harness -- a bench row rather than a direct `predict` -- so the two are not
 subtractable to the byte, but the order of magnitude is not in doubt: **the
-folding trunk everyone has been optimising is about a third of this port's
+folding trunk everyone has been optimizing is about a third of this port's
 peak, and the structure module and confidence head together are the rest.**
 Which is why seven arms of trunk-side levers all reported the same number.
 
@@ -581,7 +581,7 @@ The only autocast in upstream is the one inside `self.esmc`, and
 model really is bfloat16 on both sides. The trunk is not: float32 there,
 bfloat16 here.
 
-The row it emitted then labelled itself `"trunk_dtype": "bfloat16 (autocast)"`
+The row it emitted then labeled itself `"trunk_dtype": "bfloat16 (autocast)"`
 — a **hardcoded string**, not a reading of the model it had just built. So the
 harness reported a controlled variable by writing down the value it expected
 rather than the one it had, which is the failure mode that makes a comparison
@@ -597,7 +597,7 @@ string literal is the weakest proxy there is.
 
 Matmul precision is independent of width, and moves structures far less. Boltz-2
 at 499 tokens (`L250_3dha`), the `highest` it pins against the `high` its
-neighbours use:
+neighbors use:
 
 | | median CA RMSD |
 |---|---|
@@ -708,13 +708,13 @@ jumps, and it jumps at the same occupancy in every model that reaches it:
 
 Around half the pool the exponent is ~3.0; near 90% it is 3.7-4.3.
 
-**This note first said that was XLA rematerialising. That was asserted rather
+**This note first said that was XLA rematerializing. That was asserted rather
 than measured, and it is wrong.** Protenix was re-run at both occupancies under
 `TF_CPP_VMODULE=hlo_rematerialization=2`, which makes the pass report itself on
 stderr: **zero lines at 49% and zero at 88%**. The detector is not vacuous --
 the same string appears in this project's own OOM logs, where
 `hlo_rematerialization.cc:3297` reports the budget it could not meet. A first
-attempt to count rematerialisation by grepping the dumped HLO returned zero for
+attempt to count rematerialization by grepping the dumped HLO returned zero for
 a worse reason: the string never appears in the dump at all, so that counter
 could not tell "did not happen" from "is not named that".
 
@@ -723,11 +723,11 @@ a 300 W Max-Q part whose SM clock falls to about half its 3,090 MHz ceiling
 under load, so the first thing a reviewer proposed was that longer runs sit hot
 longer and manufacture an exponent. Logged per run: the 3,012-token run
 averaged 1,358.8 MHz, the 4,100-token run **1,658.3 MHz**. The larger job ran at
-the *higher* clock. Normalising wall time by mean clock therefore raises the
+the *higher* clock. Normalizing wall time by mean clock therefore raises the
 exponent rather than lowering it, from 3.84 to **4.48**.
 
 So the correlation with occupancy is real and reproducible, and the mechanism
-is unidentified. It is not rematerialisation and not throttling. The untested
+is unidentified. It is not rematerialization and not throttling. The untested
 candidate is that the working set outruns the cache hierarchy at that
 footprint, which would surface as effective bandwidth rather than as anything
 XLA reports. Do not restate the original claim without measuring it.
@@ -741,20 +741,20 @@ does not.
 
 **Four levers were measured against this. One works, on one model.**
 
-*Serialising the diffusion sample axis rescues OpenFold3 and nothing else.* At
+*Serializing the diffusion sample axis rescues OpenFold3 and nothing else.* At
 4,100 tokens its default route asks for a single 107.85 GiB block against a
 95.0 GiB card and fails in 336 s. With `diffusion_chunk_size=1` it completes:
 3,290.6 s at 76.4 GiB, 89% of the pool. The same option moved Protenix's peak
 from 77,158.2 MiB to 77,157.2 -- one mebibyte -- and cost 16% in time. The two
 models' peaks sit in different places: Protenix's is the trunk's pair stack,
 which the sample axis does not touch, and OpenFold3's is on the
-sample-expanded path, where serialising deletes the offending block outright.
+sample-expanded path, where serializing deletes the offending block outright.
 A lever measured as inert on one model is not evidence about the next.
 
 Protenix-v2 answers the same way its base model does, and the control says so
 exactly: chunked and unchunked it asks for **117.78 GiB**, the same number to
 two decimal places. Its peak is the same pair stack with `c_z` doubled, so
-there was nothing on the sample axis to serialise.
+there was nothing on the sample axis to serialize.
 
 *OpenDDE is not a lever problem at this size.* Its own preflight said so
 before it allocated anything: 4,100 tokens is 7,876 structural tokens, which
@@ -795,7 +795,7 @@ buys 6.6 points of occupancy (88.1% to 81.5%) and rescues nothing.
 tracks `XLA_CLIENT_MEM_FRACTION` exactly -- 85.47 GiB at 0.90 and 90.22 GiB at
 0.95, read off the device rather than computed. Both failures were retried at
 0.95 and both still failed: Protenix at 4,926 needs one contiguous 87.93 GiB
-block, and OpenDDE at 4,100 has a program whose own rematerialisation
+block, and OpenDDE at 4,100 has a program whose own rematerialization
 report -- one of the few places the pass does speak -- puts it at 88.77 GiB
 against a 90.22 GiB pool. A pool with 1.45 GiB of slack cannot lay
 out that program's co-live set whatever its total says.
@@ -853,7 +853,7 @@ same knobs were re-measured against no chunking at all, on the fused trunk:
 tokens and 3.5% less wall at 3,012 on two draws, with coordinates at the
 auto-versus-auto floor. Protenix's `auto` now resolves the five trunk knobs to
 no chunking up to 3,012 tokens (`PROTENIX_MEASURED_CHUNK_SIZE_THRESHOLDS`);
-OpenDDE keeps upstream's table because its blocked triangle path honours the
+OpenDDE keeps upstream's table because its blocked triangle path honors the
 widths. Above 3,012 the upstream value stays, unmeasured on that side. The
 ledger is `docs/scale-rows-master-2026-09-10.md`, "Chunk budgets are inert on
 the fused paths".
@@ -920,7 +920,7 @@ and the structural refiner runs on sub-residue tokens with three times the
 heads of the trunk, so its score tensor — `[946, 12, q, 946]` on a 488-residue
 job — is what sizes the peak. Protenix's chunk policy maps a token count to a
 chunk size and was written for that four-head trunk, so its 256 still left
-10.5 GiB materialised, twice over. FoldJAX blocks that branch by bytes instead.
+10.5 GiB materialized, twice over. FoldJAX blocks that branch by bytes instead.
 The budget was then swept rather than guessed:
 
 | structural score budget | peak | warm | pLDDT |
@@ -987,7 +987,7 @@ disagreed together, which points at their shared input -- the trunk -- rather
 than at any head.
 
 MSA depth, MSA policy, trunk dtype, upstream's fused layer norm, the recycling
-initialisation and the entire pTM computation were each ruled out by
+initialization and the entire pTM computation were each ruled out by
 measurement without finding it. What found it was running both trunks stage by
 stage on the same feature tensors:
 

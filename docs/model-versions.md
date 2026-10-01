@@ -69,7 +69,7 @@ Precision classification correction (2026-09-06): ESMFold2's released FP32
 checkpoint is not FP32-only GPU inference. The pinned publisher forward
 explicitly enables BF16 autocast for trunk and selected conditioning/confidence
 operations. See the [upstream-first protocol](precision-selection-protocol-2026-09-06.md).
-Historical reports labelling its loader dtype as native compute precision
+Historical reports labeling its loader dtype as native compute precision
 must not be used to admit a lower-precision mode.
 
 The later [5SAK boundary diagnosis](boltz-5sak-boundary-followup-2026-09-05.md)

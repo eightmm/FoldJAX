@@ -86,7 +86,7 @@ of padding: a 2,096-token Protenix job landed on 3,072 and measured +97% wall
 and +44% peak against its exact shape (376 s / 30.6 GiB versus 191 s / 21.2
 GiB), with the deposited structure unchanged. It now lands on 2,304. The price
 is 32 executables per model to bake rather than 11, which `cache warm`
-amortises: a bucket is baked once and then hit by every job in its 256-token
+amortizes: a bucket is baked once and then hit by every job in its 256-token
 band, which is what lets a deployment pre-bake per bucket and run padded by
 default.
 

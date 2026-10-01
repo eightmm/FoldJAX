@@ -232,7 +232,7 @@ over-budget estimate refuses by default; see
 ## Alignments are selected by filename
 
 OpenFold3 identifies an alignment's source from the file's **stem** and ignores
-a name it does not recognise, and the stem also chooses the row cap:
+a name it does not recognize, and the stem also chooses the row cap:
 `colabfold_main` keeps 16,384 rows, `colabfold_paired` 8,192, `uniref90_hits`
 10,000, `mgnify_hits` 5,000 (`dataset_config_components.py:80`).
 
@@ -245,7 +245,7 @@ instead, one directory per chain so two chains cannot claim the same name:
 <output>/inputs/msa/A/colabfold_main.a3m -> /path/to/t0128.a3m
 ```
 
-An alignment that already carries a recognised stem is passed through untouched,
+An alignment that already carries a recognized stem is passed through untouched,
 since upstream then knows its row cap. `tests/test_input_openfold3.py` covers
 both, plus the two-chain collision and the suffix.
 
@@ -394,7 +394,7 @@ not an unsupported-checkpoint gate.
 
 The checked-in benchmark table still contains historical OpenFold3 0.3.1/p1
 rows with a 5 / 200 / 10 schedule. They remain real time/memory records rather
-than being relabelled as v0.5. The current harness now drives the v0.5.0 worktree
+than being relabeled as v0.5. The current harness now drives the v0.5.0 worktree
 and OpenBind file, so new measurements cannot accidentally extend that old
 series. The historical rows have a hardware qualification: 0.3.1's accelerated
 attention paths do not run on this host's sm_120 GPU, so the timing uses plain

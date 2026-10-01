@@ -372,7 +372,7 @@ with the fused triangle kernels the five chunk knobs bound nothing that still
 exists, the peak is identical to the mebibyte with chunking off, and off is
 3.5% faster at 3,012 (two draws). Above 3,012 the upstream width (32) stays,
 unmeasured on that side. OpenDDE keeps upstream's whole table because its
-blocked triangle path honours the widths; there, past 2,560 tokens,
+blocked triangle path honors the widths; there, past 2,560 tokens,
 `--option token_q_chunk_size=512` and its four siblings take 2.1 GiB off the
 peak and cost no time.
 [Details](engineering-notes.md#the-chunk-width-above-2560-tokens-costs-memory-rather-than-saving-it).
@@ -397,7 +397,7 @@ it is an extrapolation and it refused a Boltz-2 run that had finished.
 
 Two of the five are shaped differently enough to be worth naming.
 
-**OpenDDE has one law per realised trunk dtype, and both are keyed on the
+**OpenDDE has one law per realized trunk dtype, and both are keyed on the
 structural token count rather than the residue count.** This port folds in
 structural-token space and the ratio to residues drifts with composition --
 1.896 at 1,003 residues, 1.945 at 1,531 and at 4,100 -- so a law keyed on
@@ -535,7 +535,7 @@ Three things stay wide, each for its own reason. The four output projections
 stay float32 because their logits feed softmaxes, which is the one rounding
 this port has measured as harmful elsewhere. The distance bins stay float32
 because they are compared against float32 distances, never multiplied by them.
-The two distance projections and the outer-sum initialiser `linear_s1`/
+The two distance projections and the outer-sum initializer `linear_s1`/
 `linear_s2` narrow their own operands instead of inheriting a dtype, because
 what reaches them is float32 geometry rather than a trunk representation.
 
@@ -545,7 +545,7 @@ tokens on Protenix, and the narrow arm is the shape AlphaFold 3 ships. What
 does not yet exist is an OpenDDE-specific GPU row for it, so `fp32` remains a
 supported pin rather than a fallback. The value joins the compilation-cache
 identity, so a run that narrows the head never receives the executable built
-without it, and an unrecognised width is refused naming `fp32` and `bf16`
+without it, and an unrecognized width is refused naming `fp32` and `bf16`
 rather than falling back. It is independent of `--trunk-dtype`: OpenDDE
 widens every trunk output to float32 before its heads, so this flag casts the
 head's activations itself and `--trunk-dtype fp32
@@ -586,7 +586,7 @@ policies on the same inputs produces bitwise-identical coordinates, which the
 test suite pins.
 
 What narrows is the head's re-embedding: `input_strunk_ln`, the Pairformer
-blocks, the two distance projections and the outer-sum initialiser
+blocks, the two distance projections and the outer-sum initializer
 `linear_s1`/`linear_s2`. The four output projections and the distance bins
 stay float32 under every value, because upstream runs that block inside
 `autocast(enabled=False)` at 76 tokens and at 3,012 alike. `s_inputs` reaches
@@ -607,7 +607,7 @@ savings are the two-stage arm's; `auto` narrows one stage and takes the
 smaller share. **There is no GPU row for the confidence-only change below
 2,560 tokens yet.**
 
-The policy is realised only under a bfloat16 trunk. Upstream's `skip_amp`
+The policy is realized only under a bfloat16 trunk. Upstream's `skip_amp`
 flags choose whether a stage *leaves* the ambient autocast context, and under
 `--trunk-dtype fp32` there is no context to leave, so both stages run float32
 whatever the policy says and `--amp-policy bf16` is not a way around it. This
@@ -638,7 +638,7 @@ and the guard that change forces stops widening two norms inside the denoiser:
 
 The accuracy column is per chain against the deposited coordinates under a
 permutation-aware chain assignment — 6ZTX is a homotetramer, and scoring it
-chain-for-chain by label reads a relabelling as a large displacement.
+chain-for-chain by label reads a relabeling as a large displacement.
 
 **The 3,012-token outlier is the target's, not the dtype's.** Fitting on the
 catalase core (residues 122–753) and reading the N-terminal arm (27–121)
@@ -847,7 +847,7 @@ whose meaning inverted is worth an error, not a silent reinterpretation; the
 error names both replacements.
 
 The width is part of the compilation-cache identity, and the identity records
-the width the trunk *realised*, never the spelling that asked for it -- so
+the width the trunk *realized*, never the spelling that asked for it -- so
 omitting the option, `auto` and `bfloat16` are one namespace and one retained
 runner on the released trunk. It is recorded even when it is float32, because
 runs recorded before this change omit the key whichever arm they ran, and
@@ -884,13 +884,13 @@ carry is.
 
 #### Two backends that now diverge further
 
-Three normalisations do change width, all of them because upstream's own code
+Three normalizations do change width, all of them because upstream's own code
 is written to follow the input dtype at exactly those points. Triangle
 attention's entry LayerNorm takes the bfloat16-input exception upstream writes
 for itself (`boltz/model/layers/triangular_attention/primitives.py:139-147`)
 and returns bfloat16. cuEquivariance's fused input norm does the same by
 construction -- measured here, `layer_norm_transpose` returns the dtype it is
-given -- so on the released `triangle_backend=cueq` the pair normalisation
+given -- so on the released `triangle_backend=cueq` the pair normalization
 inside triangle multiplication runs in bfloat16. The plain XLA triangle
 multiplication does *not* follow suit: it uses `nn.LayerNorm` semantics, which
 autocast excludes, so it promotes to float32 whatever it is handed.
@@ -898,7 +898,7 @@ autocast excludes, so it promotes to float32 whatever it is handed.
 The two triangle backends therefore compute different things at that point,
 and they now do so **by default** rather than only under an opt-in. If you are
 comparing `triangle_backend=cueq` against `triangle_backend=xla`, that
-normalisation is one of the differences you are measuring, and
+normalization is one of the differences you are measuring, and
 `--option pair_residual_dtype=float32` removes it from both.
 
 #### Upstream, and the way this could have lost
@@ -922,8 +922,8 @@ The named way this could have lost, and did not: nothing the program receives
 or returns changes width, so every byte it saves is a temp, and temps get
 repacked. Against that, one widening that is free in float32 becomes real in
 bfloat16 -- PairWeightedAveraging widens the pair tensor at `msa.py:464` and
-normalises it through a pinned CUDA kernel (`amp_layer_norm`), and a custom
-call's operand cannot be fused, so each MSA layer was expected to materialise
+normalizes it through a pinned CUDA kernel (`amp_layer_norm`), and a custom
+call's operand cannot be fused, so each MSA layer was expected to materialize
 a float32 pair copy that the wide arm gets for nothing. That could have made the knob a net loss in the MSA stack
 even while it paid in the Pairformer stack. It did not bite at either size
 measured. The mechanism is written down because it is the reason this could
@@ -1214,7 +1214,7 @@ conditioning projections, the decoder's coordinate update, Algorithm 20's
 single projection, and all four conditioner projections. The eleventh is
 OpenDDE's own -- the projection that compresses the 384-channel trunk pair
 representation to 128 channels before conditioning -- and Protenix has no
-equivalent, so OpenDDE does not simply reuse Protenix's realisation. Every
+equivalent, so OpenDDE does not simply reuse Protenix's realization. Every
 per-head pair bias delivers its result in float32 while still multiplying in
 bfloat16, inherited from a Protenix measurement on 5DEI and unmeasured here.
 The sampler's state, its noise schedule and its rigid augmentation stay
@@ -1260,9 +1260,9 @@ Offered on Boltz-2 and Protenix, and it names the body each step of the
 two-dimensional triangle-attention ring evaluates its local tile with. `xla`
 is the two-pass global-maximum ring; `tokamax` is a fused Pallas/Triton
 attention per tile whose tiles are combined by a softmax-statistics merge, so
-the tile never materialises its score tensor. The two are a **different
+the tile never materializes its score tensor. The two are a **different
 program and different arithmetic**, not two spellings of one -- one rotation
-instead of two, and each tile normalised against its own maximum.
+instead of two, and each tile normalized against its own maximum.
 `docs/context_parallel.md` has the mechanism, the gates, and the measured
 rows.
 
@@ -1289,7 +1289,7 @@ off the GPU backend, and `tokamax` without the package. An omitted option is
 resolved on the host instead, so an ordinary CPU or one-dimensional run never
 fails on a word nobody typed.
 
-The realised body -- not the spelling -- forks the compilation-cache
+The realized body -- not the spelling -- forks the compilation-cache
 namespace, so an omitted run on a GPU grid shares its entry with an explicit
 `tokamax` and an explicit `xla` there has its own. The value travels in a
 `ContextVar`, which no `jax.jit` cache key carries, so the retained
@@ -1299,7 +1299,7 @@ in-process runner does **not** fork on it: one value per process.
 
 `ring` (the default) is the released rotation described above.
 `gather` replaces it: for each block of local pair rows, every device gathers
-those rows at full width along its grid row, and one normalising attention
+those rows at full width along its grid row, and one normalizing attention
 runs on them. On a GPU that attention is cuEquivariance's triangle-attention
 kernel, and on any other platform it is an XLA reference body with the same
 data movement. **Opt-in and unmeasured on a card.**
@@ -1355,7 +1355,7 @@ decides the kernel and the label does not say which one ran. The token site is
 pinned to tokamax's Triton implementation and raises off a GPU. Neither site's
 wall time, peak, or effect on a deposited structure has been measured. The
 trunk-side sibling, `triangle_attention_ring_kernel` above, no longer shares
-that status: it has its four-card rows and is what an omitted option realises
+that status: it has its four-card rows and is what an omitted option realizes
 on a Boltz-2 grid. What is proved here is the wiring: the fused callable is
 reached at the named site and nowhere else, the option-on program matches the
 option-off program on asymmetric per-rank inputs at 2x2 and 3x3, an empty
@@ -1469,7 +1469,7 @@ the same namespace an omitted option does.
 Boltz-2's transitions and its triangle-multiplication gate compute
 `activation(x @ w_gate) * (x @ w_value)`. Written as two matmuls and a
 product, XLA writes the widened gate and value tensors out before multiplying
-them; the fused Triton kernel runs the same arithmetic and never materialises
+them; the fused Triton kernel runs the same arithmetic and never materializes
 them. This is the released default. `--option glu_backend=xla` restores the
 previous arithmetic exactly and gets its own compile-cache namespace.
 
@@ -1483,7 +1483,7 @@ file and schedule on both arms, released `xla` -> `tokamax`:
 | 3,012 | 806.01 -> 803.94 | 40,844 -> 40,749 |
 
 Read the memory column honestly. The 26.9% saving at 1,003 tokens is a
-small-input effect and does not generalise: what the kernel removes is the
+small-input effect and does not generalize: what the kernel removes is the
 transition's pre-gate intermediate, which stops being the peak's largest
 tenant once the pair arena dominates above roughly 760 tokens, which is why
 the two larger sizes save 0.1% and 0.2%. The durable claim is the wall-time
@@ -1614,8 +1614,8 @@ Where each default is decided:
 - **ESMFold2:** unchanged; it refuses `glu_backend=pallas`.
 
 What gets recorded is what ran. The compile-cache namespace writes the
-realised `glu_backend` and OpenFold3's realised `triangle_kernel`, and
-Boltz-2's retained-runner identity writes the realised multiplication. An
+realized `glu_backend` and OpenFold3's realized `triangle_kernel`, and
+Boltz-2's retained-runner identity writes the realized multiplication. An
 omitted option on a GPU therefore shares the namespace of an explicit
 `pallas`, which the opt-in runs already warmed. An explicit released value
 (`glu_backend=tokamax` on Boltz-2, `xla` on OpenFold3) keeps the namespace
@@ -1624,7 +1624,7 @@ no cache key, as it never was; JAX keys the executables on the program itself.
 The run manifests of all three ports record `models/_pallas_pair.py` and
 `models/_glu.py` as implementation sources (Protenix's released transition
 runs through the latter), so a result from before the flip does not resume.
-`foldjax_run.json` records the options as spelled, not the realised backends;
+`foldjax_run.json` records the options as spelled, not the realized backends;
 there is no field for them yet.
 
 The multiplication is split in two parts. One kernel applies the LayerNorm,
@@ -1760,7 +1760,7 @@ Limits:
 - **Context parallelism.** Under a mesh, the multiplication resolves to the
   XLA einsum, as `cueq` does. `glu_backend=pallas` is refused under context
   parallelism, because a fused kernel cannot be partitioned.
-- **Compile cache.** The realised GLU value is part of the compile-cache
+- **Compile cache.** The realized GLU value is part of the compile-cache
   identity, so a `pallas` run never receives an executable built without it.
 
 ### `--option deterministic=on`
@@ -1948,9 +1948,9 @@ output words, at 3.1e-07 on values of order 1. Inputs at or below the block
 width are untouched: that path short-circuits to the single-shot program and
 is bit-identical.
 
-Only the XLA attention path honours the block. A fused attention kernel
+Only the XLA attention path honors the block. A fused attention kernel
 ignores it -- `attention_kernel=tokamax`, or a `diffusion_attention_backend`
-that resolves to one -- because those kernels never materialise the score
+that resolves to one -- because those kernels never materialize the score
 buffer in the first place, and so does the 2-D context-parallel layout, which
 splits both pair axes across devices instead. `null` is the same as leaving
 the option unset.
@@ -1978,7 +1978,7 @@ every released number describes; the option is opt-in on this port for the
 same reason it is on Boltz-2, which spells it the same way.
 
 What it removes is the `2 * hidden` projection each of those blocks
-materialises before gating -- temporary traffic, once per block per denoising
+materializes before gating -- temporary traffic, once per block per denoising
 step. What it does not touch is ESMFold2's peak, which is a folding-trunk
 arena quadratic in tokens and carrying no sample axis at all; expect this
 option to buy time, not headroom, and do not reach for it to fit a longer
@@ -2038,7 +2038,7 @@ which is why this is the safest dtype change the port offers.
 
 What it narrows: the five projections that build the pair from the single
 input, the distance-bin embedding gather, and the residual stream those feed
-into the head's own trunk. What stays float32: both entry normalisations, the
+into the head's own trunk. What stays float32: both entry normalizations, the
 representative coordinates and the distances built from them, the comparison
 that picks a distance bin, every mask, and everything past the trunk -- the
 row-attention pooling and all four output heads. Two of those are load-bearing

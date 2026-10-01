@@ -175,7 +175,7 @@ cannot overwrite one another's mesh or leak a topology into an unrelated JIT
 trace. Its layout, shard count, grid shape, and mesh-axis names form an explicit
 compilation identity.
 
-Model parameters and unrecognised inputs remain replicated. A conservative,
+Model parameters and unrecognized inputs remain replicated. A conservative,
 name-based registry places only known pair features directly on the pair mesh
 when both semantic axes divide evenly. Boltz-2 may additionally place explicitly
 whitelisted linear atom features directly on CP-row shards. Dense coupled
@@ -198,7 +198,7 @@ warm` compose `--xla_gpu_nccl_termination_timeout_seconds=600` into
 number, a negative value declines the bound, and a value already in
 `XLA_FLAGS` is kept.
 
-The flag is read once, when the backend initialises. A run that reaches
+The flag is read once, when the backend initializes. A run that reaches
 `context_parallel` with a backend already up -- the Python API, and the native
 `--cp-devices` command lines, which load weights first -- cannot be given the
 bound from inside the process; it is warned instead, and the fix is
@@ -248,7 +248,7 @@ program the ring lowered to before blocking existed.
 
 ## The ring tile kernel (GPU only; Boltz-2's grid default as of this commit)
 
-**Boltz-2: what an omitted option realises on a GPU 2-D grid, as of this
+**Boltz-2: what an omitted option realizes on a GPU 2-D grid, as of this
 commit.** `xla` everywhere else -- serial, `1d`, CPU, no tokamax -- and an
 explicit `xla` keeps the two-pass ring on the grid. **Protenix: still
 opt-in.** Measured on the node, with the whole ring fused (`b87731f`; rows
@@ -287,18 +287,18 @@ the 2x2 grid. The ring's per-step tile, though, is a *local* attention over
 `--option triangle_attention_ring_kernel=tokamax` (Boltz-2 and Protenix)
 replaces the tile with tokamax's Pallas/Triton attention, called with
 `normalize_output=False` and `return_residuals=True` so it hands back the
-tile's unnormalised numerator together with the softmax maximum and
+tile's unnormalized numerator together with the softmax maximum and
 denominator. Those three are exactly what a statistics merge needs, so the
-tiles combine without the tile ever materialising its score tensor -- which is
-also what the ring's two-pass body could not do, because a kernel normalises
+tiles combine without the tile ever materializing its score tensor -- which is
+also what the ring's two-pass body could not do, because a kernel normalizes
 its tile before the ring gets to see it.
 
 It is a **different program and different arithmetic**, not a faster spelling
 of the two-pass body:
 
-- one rotation rather than two, with `V` travelling with `K` from the first
+- one rotation rather than two, with `V` traveling with `K` from the first
   step, because there is no global maximum to fix in advance;
-- each tile is normalised against its own maximum and rescaled onto the
+- each tile is normalized against its own maximum and rescaled onto the
   running one, which is the repeated rescaling the two-pass body was written
   to remove. The Neumaier compensation on both the numerator and the
   denominator is carried across the merge;
@@ -338,7 +338,7 @@ half is refused while planning). An *omitted* option never reaches those --
 resolving it to `xla` is a default, not a silent fallback, and refusing there
 would fail an ordinary CPU grid run on a word nobody typed.
 
-The compilation-cache namespace forks on the **realised** body, not the
+The compilation-cache namespace forks on the **realized** body, not the
 spelling. On a GPU grid an omitted option therefore shares its entry with an
 explicit `tokamax`, and an explicit `xla` there keeps the entry absence has
 always written. Absence still means the XLA tile everywhere -- serial, 1-D,
@@ -461,7 +461,7 @@ at the local width (64 at 2,096 tokens, 49 at 6,568), and
 | full-width bias rows `b[I_c, :]`, f32 | 33.5 | 329.1 |
 | complete local attention output | 268.1 | 2,633.0 |
 
-A full-width pair materialised for *all* local rows would be about 5.14 GiB at
+A full-width pair materialized for *all* local rows would be about 5.14 GiB at
 6,568 tokens. The row block exists to prevent that, and whether compiled
 liveness actually does is a GPU measurement. The XLA reference body forms an
 `[R, H, L, N]` f32 score tile, `side` times the ring's. That buffer is part of
@@ -585,10 +585,10 @@ with context_parallel(4, layout="2d"), triangle_attention_grid_scope("gather"):
     out = boltz2_model_call(...)
 ```
 
-The cache namespace forks on the realised algorithm: `ring` spelled shares
+The cache namespace forks on the realized algorithm: `ring` spelled shares
 omission's entry, and `gather` has its own. Under `gather` no ring body is
 recorded, even on a GPU grid where an omitted ring kernel would otherwise
-realise `tokamax`. An explicit `triangle_attention_ring_kernel=tokamax`
+realize `tokamax`. An explicit `triangle_attention_ring_kernel=tokamax`
 beside `gather` is refused (Boltz-2, Protenix), because no ring would run it.
 OpenFold3's in-process pool key, `_PredictGraphIdentity`, also records the
 algorithm (read from the scope while tracing), so one process never hands a
@@ -626,7 +626,7 @@ measurable, on its own.
 attention is window-local: a window's 32 queries meet the 128 keys
 `single_to_keys_local` has already exchanged into this shard, with the bias row
 and key mask that belong to them. The kernel therefore sees no operand a
-neighbour owns, and the collective that made that true ran before it. The site
+neighbor owns, and the collective that made that true ran before it. The site
 runs `tokamax.dot_product_attention` with tokamax's own implementation order --
 the call the *serial* released `diffusion_attention_backend` already makes
 there. It cannot use the scoped `triton` spelling, which requires bfloat16
@@ -639,7 +639,7 @@ That one is *not* a ring and shares none of the ring's rotation: a single grid
 transpose puts one key tile on each column device, and `pmax`/`psum` over
 `cp_col` finish the softmax. So the fused arm replaces only the local tile --
 the ring's own `normalize_output=False, return_residuals=True` adapter, which
-hands back the tile's unnormalised numerator with its maximum and denominator
+hands back the tile's unnormalized numerator with its maximum and denominator
 -- and the merge is the collective itself: `pmax` for the global row maximum,
 the same rescale `merge_softmax_statistics` uses to put this tile onto it,
 `psum` of the rescaled pair. The transpose, the ownership, the collectives and
@@ -659,7 +659,7 @@ CPU gate reads the result on each column replica and asserts bit-equality.
 An empty column tile is not an empty global row. Tokamax masks with
 `finfo.min` rather than `-inf`, so a tile whose every key is masked away comes
 back with a finite maximum over absent keys; the tile adapter forces it to
-`(-inf, 0, 0)` so it contributes nothing and a neighbouring tile that *does*
+`(-inf, 0, 0)` so it contributes nothing and a neighboring tile that *does*
 have keys is the whole answer. A row with no valid key anywhere is zeros.
 
 Refused, never downgraded. `foldjax plan` refuses a spelling outside the
@@ -730,7 +730,7 @@ and write the other bridge them explicitly:
   projects its own pair tile to head logits, masks them *there* -- on the rank
   that owns the key block, so the gathered value is the logit the serial
   softmax is fed -- and `all-gather`s those logits along the column axis. The
-  softmax then normalises over the complete key axis. The widened values ride
+  softmax then normalizes over the complete key axis. The widened values ride
   a `collective-permute` ring along the row axis, which keeps the alignment
   shard fixed; after `t` hops a rank holds token block `(r - t) % side` and
   contracts it against that block of the gathered weights. Nothing is summed
@@ -882,7 +882,7 @@ arm the released CP path takes, because the adapter resolves an omitted
 ignored without a mesh, and the internal keyword it threads through
 `atom_attention_encoder`, `atom_attention_decoder` and
 `diffusion_module_f_forward` defaults to *off* -- because the request has to be
-resolved against the shapes before it is honoured, and only a model entry point
+resolved against the shapes before it is honored, and only a model entry point
 knows them. A direct caller of those functions therefore gets the replicated
 program rather than a `require_atom_windows` failure.
 
@@ -1021,7 +1021,7 @@ persisted.
 - pair-biased attention uses an exact `-inf` key mask, so a globally all-masked
   query returns a finite zero output rather than a uniform distribution;
 - a mean whose numerator and denominator are reduced across shards is
-  normalised after the reduction, never averaged from locally normalised
+  normalized after the reduction, never averaged from locally normalized
   means, and its output bias is added once;
 - token padding introduced to divide a mesh is masked one penalty level below
   a masked real position, so an all-masked query row stays a distribution over

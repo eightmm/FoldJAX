@@ -1,9 +1,9 @@
-# Licences and parameter terms
+# Licenses and parameter terms
 
-Per model: the code licence FoldJAX vendors under, and the terms the
+Per model: the code license FoldJAX vendors under, and the terms the
 published parameters carry, which are not always the same thing.
 
-| model | vendored at | code licence | parameters / additional terms | upstream |
+| model | vendored at | code license | parameters / additional terms | upstream |
 |---|---|---|---|---|
 | `alphafold3` | `foldjax.models.alphafold3` | Apache-2.0 | [AlphaFold 3 Model Parameters Terms](https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md): non-commercial use by/for non-commercial organizations; must be received directly from Google; redistribution restricted | [google-deepmind/alphafold3](https://github.com/google-deepmind/alphafold3) |
 | `boltz2` | `foldjax.models.boltz2` | MIT | MIT, code and weights; academic and commercial use | [jwohlwend/boltz](https://github.com/jwohlwend/boltz) |
@@ -14,4 +14,4 @@ published parameters carry, which are not always the same thing.
 
 These are publisher summaries, not legal advice. Review the linked current
 terms before use; third-party chemistry assets, sequence databases and other
-referenced data retain their own licences and terms.
+referenced data retain their own licenses and terms.

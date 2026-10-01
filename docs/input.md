@@ -101,7 +101,7 @@ uv run foldjax predict --model boltz2 protenix --input jobs.yaml --msa none
 
 It runs exactly as a directory holding `kinase.json` and `kinase_atp.json`
 would: each job into `<out>/<model>/<job name>`, the same native input, the
-same `--resume` and `--keep-going` behaviour, one `foldjax_run.json` per run.
+same `--resume` and `--keep-going` behavior, one `foldjax_run.json` per run.
 Each job is written to `$FOLDJAX_HOME/runtime/jobs/split/<digest>/<name>.json`
 and run from there, with its relative `unpaired_msa`, `paired_msa` and template
 paths made absolute against the jobs file's directory, so they name the files
@@ -149,7 +149,7 @@ and AlphaFold 3 search for an alignment. The search is not FoldJAX's default
 because it sends the sequence to a server, so the error names the three ways
 on: `--msa auto`, an `unpaired_msa` path on the entity, or `--msa single` to
 fold from the single sequence on purpose, which says so once per run.
-ESMFold2 keeps its upstream behaviour and folds the chain alone with the same
+ESMFold2 keeps its upstream behavior and folds the chain alone with the same
 warning. Until 2026-09-30 every model folded it alone by default.
 
 ```bash

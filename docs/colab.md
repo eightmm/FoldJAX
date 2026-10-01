@@ -42,6 +42,6 @@ and their resume manifests across VM replacement. Compilation writes only to a
 restored from and synchronized to a private Drive archive capped globally at
 2.5 GiB with 30-day LRU retention. TPU execution remains experimental until
 every model has real-TPU parity evidence. The notebook shows checkpoint
-source/licence/size before downloading and keeps its short
+source/license/size before downloading and keeps its short
 1-sample/20-step/1-recycle tutorial schedule clearly separated from every
 model's released defaults.

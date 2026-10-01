@@ -150,7 +150,7 @@ tie keeps the sample the sampler produced first:
 | `openfold3` | `sample_ranking_score` | upstream's released ranking score |
 | `protenix` | `ranking_score` | upstream's released ranking score |
 
-ESMFold2 is the exception, and it is labelled as one on purpose: upstream emits
+ESMFold2 is the exception, and it is labeled as one on purpose: upstream emits
 a single structure and therefore publishes no ranking at all. Drawing several
 samples is this port's design, so **the order of ESMFold2's samples is
 FoldJAX's, not ESMFold2's.** The key is `plddt`, the confidence head's
@@ -214,7 +214,7 @@ directory being read is not followed. `results_table` rows are the columns
 `foldjax show --format csv|json` prints; failures are rows with
 `status == "failed"`. `aggregate_table` reports count, median, min, max and
 spread within one (input, model, configuration) only, with `best_within_model`
-labelled as a within-model confidence selection.
+labeled as a within-model confidence selection.
 
 `foldjax.compare_directory(root, out=..., samples="all" | "best")` is
 `foldjax compare`: every structure of each input aligned onto every other with
@@ -280,7 +280,7 @@ rule, and its 20-loop default is also overridden; the released file wins.
 The benchmark pins the five AlphaFold-3-shaped models to one schedule
 (5 / 200 / 10) precisely because these defaults differ; set `num_recycles=10`
 on Boltz-2 and you are asking more of it than `boltz predict` does. The main
-table retains two explicitly labelled ESMFold2 point measurements under that
+table retains two explicitly labeled ESMFold2 point measurements under that
 common schedule, but the shared scaling figure omits them: it has no
 evolutionary trunk or comparable native schedule, so drawing a two-point line
 on the same axes would compare a different question. `bench/esmfold2_compare.py`
@@ -308,7 +308,7 @@ the dialect lacks the field, and the native-only inputs the port consumes --
 `pocket_constraints` and `contact_constraints` (Boltz-2, Protenix), and
 `cyclic_polymer` (Boltz-2, OpenFold3). These are reachable only through native
 input. Templates are the case that matters: backend support does not imply
-that every input route honours a per-job template.
+that every input route honors a per-job template.
 Its `input_requirements` mapping distinguishes
 dependencies by input format — for example, OpenFold3's `openfold3-features` archive is JAX-only,
 while its raw `native`, `openfold3`, and `foldjax` formats require the

@@ -28,7 +28,7 @@ featurize suites and in the native-input audits described in `PROJECT.md`.
 
 **A third implementation, not the panel.** Every residual recorded in a GPU
 panel is a GPU port -- cuEq triangle kernels, bf16 where the port uses it --
-against a GPU native run. CPU XLA has no tensor-core bf16 and materialises
+against a GPU native run. CPU XLA has no tensor-core bf16 and materializes
 converts that the GPU fuses, and fusion decisions are backend-specific. A CPU
 replay is therefore a third implementation of the same arithmetic, and its
 residual against the same stored capture is its own number. Tolerances in the

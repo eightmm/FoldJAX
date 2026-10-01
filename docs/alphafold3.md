@@ -65,7 +65,7 @@ PYTHONPATH=/path/to/alphafold3/src:$PYTHONPATH \
 
 Without that explicit option FoldJAX uses the runner matching its vendored
 source. The former `ALPHAFOLD3_SOURCE` ambient environment switch is not
-honoured. Do not install upstream's JAX dependency over FoldJAX's CUDA-specific
+honored. Do not install upstream's JAX dependency over FoldJAX's CUDA-specific
 JAX environment.
 
 ## Weights
@@ -86,7 +86,7 @@ look. `--weights` still works if you keep them somewhere else.
 
 ## MSAs
 
-AlphaFold 3 refuses to featurise a protein or RNA chain whose MSA is *absent*:
+AlphaFold 3 refuses to featurize a protein or RNA chain whose MSA is *absent*:
 it assumes its own genetic-search pipeline will produce one, which needs
 hundreds of gigabytes of databases. A protein chain with no alignment is
 therefore refused by default. With `--msa single`, FoldJAX writes an **empty**
@@ -153,7 +153,7 @@ what the persisted store removes, and why AlphaFold 3 rows measured before
 | `--option attention_kernel=xla` | skip the Triton attention kernel entirely (the native spelling `attention_backend=xla` also works) |
 
 Explicit external AlphaFold 3 sources, unverifiable managed assets, CPU runs,
-and `--no-cache` keep Tokamax 0.0.13's process-local behaviour on the
+and `--no-cache` keep Tokamax 0.0.13's process-local behavior on the
 process-default first local GPU. A new persistent measurement is made only on
 that device; an identical GPU selected by another ordinal may read an existing
 result. Regardless of whether persistence is eligible, an autotune miss on a
