@@ -643,7 +643,7 @@ def _result_from_manifest(
 
     samples: list[PredictionSample] = []
     restored_structures: set[tuple[int, int]] = set()
-    restored_slots: set[tuple[int, int]] = set()
+    restored_slots: set[tuple[str, int, int]] = set()
     for entry in sample_records:
         if not isinstance(entry, Mapping):
             return None
@@ -702,7 +702,8 @@ def _result_from_manifest(
         except (OSError, ValueError):
             return None
         structure_identity = (structure_info.st_dev, structure_info.st_ino)
-        slot = (seed, sample_number)
+        # The sample number restarts per job of a multi-job native input.
+        slot = (str(metadata.get("job") or ""), seed, sample_number)
         if structure_identity in restored_structures or slot in restored_slots:
             return None
         restored_structures.add(structure_identity)

@@ -381,6 +381,7 @@ def test_best_names_the_score_it_ranked_by(tmp_path: Path) -> None:
         "seed": 1,
         "sample": 1,
         "structure_path": None,
+        "selection": "within-model confidence ranking",
     }
 
 
@@ -456,6 +457,7 @@ def test_boltz2_is_ranked_by_the_score_upstream_ranks_by(tmp_path: Path) -> None
         "seed": 3,
         "sample": 1,
         "structure_path": None,
+        "selection": "within-model confidence ranking",
     }
 
     tied = PredictionResult(
@@ -502,6 +504,7 @@ def test_esmfold2_is_ranked_by_mean_plddt_as_foldjax_choice(tmp_path: Path) -> N
         "seed": 11,
         "sample": 1,
         "structure_path": None,
+        "selection": "within-model confidence ranking",
     }
 
     tied = PredictionResult(
@@ -633,4 +636,5 @@ def test_best_ties_are_stable_and_report_the_backend_sample_index(
         "seed": 7,
         "sample": 12,
         "structure_path": None,
+        "selection": "within-model confidence ranking",
     }

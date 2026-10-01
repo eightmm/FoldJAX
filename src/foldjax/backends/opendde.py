@@ -32,7 +32,7 @@ from foldjax.schema import (
     PredictionSample,
     _strict_boolean,
 )
-from foldjax.scores import sample_summary_scores
+from foldjax.scores import ranked_native_samples
 
 # Every environment variable the native CLI assigns. Asserted against its
 # source in tests/test_native_contracts.py so a new export cannot escape.
@@ -606,11 +606,13 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
             PredictionSample(
                 seed=request.seed,
                 structure_path=path,
-                scores=sample_summary_scores(path),
-                metadata=confidence_arrays.sample_metadata(path),
+                scores=scores,
+                metadata={
+                    **metadata,
+                    **confidence_arrays.sample_metadata(path),
+                },
             )
-            for path in written
-            if path.suffix == ".cif"
+            for path, scores, metadata in ranked_native_samples(written)
         )
         shape_profile = _shape_profile(
             padding_profiles,

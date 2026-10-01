@@ -33,7 +33,7 @@ from foldjax.schema import (
     PredictionSample,
     _strict_boolean,
 )
-from foldjax.scores import sample_summary_scores
+from foldjax.scores import ranked_native_samples
 
 _CLI_OPTIONS = {
     # Distribute the diffusion atom graph over CP rows. Released default on:
@@ -1277,11 +1277,13 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             PredictionSample(
                 seed=request.seed,
                 structure_path=path,
-                scores=sample_summary_scores(path),
-                metadata=confidence_arrays.sample_metadata(path),
+                scores=scores,
+                metadata={
+                    **metadata,
+                    **confidence_arrays.sample_metadata(path),
+                },
             )
-            for path in written
-            if path.suffix == ".cif"
+            for path, scores, metadata in ranked_native_samples(written)
         )
         shape_profile = None
         if padding_plans:

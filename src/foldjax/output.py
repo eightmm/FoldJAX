@@ -17,11 +17,20 @@ in the order a person means; and the directory is the same shape for all six.
 Whatever else the backend wrote is left exactly where it wrote it -- the parity
 scripts and upstream tooling that read those names keep working.
 
-**Confidence is not comparable across models, and nothing here pretends it is.**
-Each `confidence.json` records the model's own scores under the model's own
-names, plus which model produced them. A pLDDT from one model and a ranking
-score from another are different quantities on different scales; averaging or
-ranking across models would invent a number none of them computed.
+A run whose native input holds several jobs (an AlphaFold 3 or Protenix job
+list) nests each job's directories one level down, under ``<output_dir>/<job>/``,
+because the sample number restarts for every job: it is always the diffusion
+index, never a rank and never a running count across jobs.
+
+**Each `confidence.json` keeps the model's own scores under the model's own
+names** (``scores``), plus a ``summary`` block (`foldjax.summary`) that maps
+pLDDT, pTM, ipTM and the model's ranking score onto one name and one scale,
+saying for each which native number it came from and what was done to it.
+Common fields standardize names and numerical scales. They retain
+model-specific definitions and calibration and do not establish comparable
+accuracy probabilities or authorize pooled cross-model ranking. A pLDDT from
+one model and a ranking score from another are still different quantities;
+averaging or ranking across models would invent a number none of them computed.
 """
 
 from __future__ import annotations
@@ -39,6 +48,13 @@ from pathlib import Path
 
 from foldjax import confidence_arrays
 from foldjax.schema import PredictionOutputError, PredictionResult, PredictionSample
+from foldjax.scores import EXECUTION_FIELDS
+from foldjax.summary import (
+    COMMON_FIELDS_NOTE,
+    SCHEMA_VERSION,
+    SCORE_NOTES,
+    common_summary,
+)
 
 #: The score each model ranks its own samples by, best first. Used only to name
 #: a `best` sample within one model's run -- never to compare two models.
@@ -132,18 +148,64 @@ def _normalize_cif(path: Path, *, job: str, model: str, seed: int, index: int) -
     document.write_file(str(path))
 
 
-def _write_confidence(
-    path: Path, sample: PredictionSample, *, model: str, index: int
-) -> None:
-    payload = {
+def confidence_payload(
+    sample: PredictionSample,
+    *,
+    model: str,
+    index: int,
+    structure: Path | None = None,
+) -> dict[str, object]:
+    """The `confidence.json` document for one sample (schema 1.x).
+
+    ``scores`` is unchanged native output; ``summary`` is the common block. See
+    `foldjax.summary` for the mapping and `foldjax/schemas/confidence.schema.json`
+    for the contract.
+    """
+    metadata = sample.metadata or {}
+    scores = dict(sample.scores or {})
+    rank = metadata.get("native_rank")
+    payload: dict[str, object] = {
+        "schema_version": SCHEMA_VERSION,
         "model": model,
         "seed": sample.seed,
+        # The diffusion index, for every model.
         "sample": index,
+        # The rank a native writer encoded in its own file name (Protenix and
+        # OpenDDE), so a native side file can still be matched; None elsewhere.
+        "native_rank": (
+            int(rank) if isinstance(rank, int) and not isinstance(rank, bool) else None
+        ),
         # Named exactly as the model reports them. See this module's docstring:
         # these do not mean the same thing from one model to the next.
-        "scores": dict(sample.scores or {}),
+        "scores": scores,
         "scores_are_model_specific": True,
+        "summary": common_summary(model, scores, structure=structure),
+        "summary_note": COMMON_FIELDS_NOTE,
+        # How the run executed, which a native summary reported among its
+        # scores (`foldjax.scores.EXECUTION_FIELDS`).
+        "execution": {
+            key: metadata[key] for key in sorted(EXECUTION_FIELDS) if key in metadata
+        },
     }
+    if metadata.get("job"):
+        payload["job"] = str(metadata["job"])
+    notes = SCORE_NOTES.get(model)
+    if notes:
+        payload["score_notes"] = dict(notes)
+    return payload
+
+
+def _write_confidence(
+    path: Path,
+    sample: PredictionSample,
+    *,
+    model: str,
+    index: int,
+    structure: Path | None = None,
+) -> None:
+    payload = confidence_payload(
+        sample, model=model, index=index, structure=structure
+    )
     with tempfile.TemporaryDirectory(
         prefix=".foldjax-confidence-", dir=path.parent
     ) as scratch:
@@ -195,10 +257,23 @@ def normalize(
     output_dir = Path(root) if root is not None else Path(result.output_dir)
     root_resolved = output_dir.resolve()
     job = safe_job_name(job)
+    jobs = {
+        str((sample.metadata or {}).get("job"))
+        for sample in result.samples
+        if (sample.metadata or {}).get("job")
+    }
     samples = []
     for position, sample in enumerate(result.samples):
         index = _index(sample, position)
-        directory = sample_directory(output_dir, sample.seed, index)
+        sample_job_name = (sample.metadata or {}).get("job")
+        # One job keeps the flat layout. Several get a level each, because the
+        # sample number restarts for every job.
+        parent = (
+            output_dir / safe_job_name(str(sample_job_name))
+            if len(jobs) > 1 and sample_job_name
+            else output_dir
+        )
+        directory = sample_directory(parent, sample.seed, index)
         source = sample.structure_path
 
         if source is None or not Path(source).is_file():
@@ -255,7 +330,11 @@ def normalize(
                 # upstream's to fix, and the file is already where it belongs.
                 pass
         _write_confidence(
-            directory / "confidence.json", sample, model=result.model, index=index
+            directory / "confidence.json",
+            sample,
+            model=result.model,
+            index=index,
+            structure=target,
         )
         sample = confidence_arrays.place(sample, directory)
         samples.append(replace(sample, structure_path=target))
@@ -286,10 +365,16 @@ def best_sample(result: PredictionResult) -> dict[str, object] | None:
 
     # ``max`` keeps the first item on a tie, preserving diffusion/sample order.
     position, winner, value = max(ranked, key=lambda item: item[2])
-    return {
+    best: dict[str, object] = {
         "score": key,
         "value": value,
         "seed": winner.seed,
         "sample": _index(winner, position),
         "structure_path": str(winner.structure_path) if winner.structure_path else None,
+        # The top of this model's own confidence ordering within this run: not
+        # the most accurate structure, and never a pick across models.
+        "selection": "within-model confidence ranking",
     }
+    if (winner.metadata or {}).get("job"):
+        best["job"] = str(winner.metadata["job"])
+    return best

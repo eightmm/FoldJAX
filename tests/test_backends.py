@@ -1395,8 +1395,12 @@ def test_alphafold3_adapter_routes_padding_through_native_inference(
     assert result.samples[0].structure_path is not None
 
 
-def test_alphafold3_jobs_receive_unique_common_sample_slots(tmp_path: Path) -> None:
-    """Native AF3 files may contain several jobs whose local samples restart at 0."""
+def test_alphafold3_sample_index_restarts_per_job(tmp_path: Path) -> None:
+    """The sample number is the diffusion index, so it restarts for each job.
+
+    The job name, not a running count, is what keeps two jobs' samples apart;
+    `foldjax.output.normalize` gives each job its own directory level.
+    """
     inference_result = SimpleNamespace(metadata={"ranking_score": 0.91})
     results = (SimpleNamespace(seed=5, inference_results=(inference_result,)),)
     samples = []
@@ -1407,16 +1411,9 @@ def test_alphafold3_jobs_receive_unique_common_sample_slots(tmp_path: Path) -> N
         prefix = f"{job_name}_seed-5_sample-0"
         (sample_dir / f"{prefix}_model.cif").write_text("data_result\n#\n")
         (sample_dir / f"{prefix}_summary_confidences.json").write_text("{}")
-        samples.extend(
-            _samples(
-                results,
-                job_dir,
-                job_name,
-                sample_offset=len(samples),
-            )
-        )
+        samples.extend(_samples(results, job_dir, job_name))
 
-    assert [sample.metadata["sample"] for sample in samples] == [0, 1]
+    assert [sample.metadata["sample"] for sample in samples] == [0, 0]
     assert [sample.metadata["job"] for sample in samples] == ["first", "second"]
 
 

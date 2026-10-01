@@ -1369,14 +1369,7 @@ class AlphaFold3Backend(Backend):
                     if request.padding is not None:
                         assert resolved_plan is not None
                         padding_plans.append(resolved_plan.summary())
-                    samples.extend(
-                        _samples(
-                            results,
-                            job_dir,
-                            job_name,
-                            sample_offset=len(samples),
-                        )
-                    )
+                    samples.extend(_samples(results, job_dir, job_name))
             shape_profile = _public_shape_profile(request, padding_plans)
             native_raw = tuple(all_results)
             result = PredictionResult(
@@ -1413,14 +1406,16 @@ def _samples(
     results: Any,
     job_dir: Path,
     job_name: str,
-    *,
-    sample_offset: int = 0,
 ) -> list[PredictionSample]:
     """Normalize AlphaFold 3 ``ResultsForSeed`` values into common samples.
 
     The sample layout is reconstructed from the runner's own naming rather than
     globbed, so every structure keeps the seed and ranking score that produced
     it instead of an arbitrary directory order.
+
+    ``sample`` is the diffusion index within this job and seed, as for every
+    model; it restarts for each job of a multi-job native file, and
+    `foldjax.output.normalize` gives each job its own directory level.
     """
     samples = []
     for results_for_seed in results:
@@ -1437,7 +1432,7 @@ def _samples(
                 scores["ranking_score"] = float(metadata["ranking_score"])
             placed = structure_path if structure_path.is_file() else None
             arrays = _write_confidence_arrays(
-                result, placed, sample=sample_offset + len(samples)
+                result, placed, sample=index
             )
             samples.append(
                 PredictionSample(
@@ -1447,7 +1442,7 @@ def _samples(
                     metadata={
                         "job": job_name,
                         "native_sample": index,
-                        "sample": sample_offset + len(samples),
+                        "sample": index,
                         **({"confidence_arrays": arrays} if arrays else {}),
                     },
                 )
