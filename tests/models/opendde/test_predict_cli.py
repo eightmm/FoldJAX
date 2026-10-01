@@ -376,3 +376,79 @@ def test_predict_cli_module_does_not_import_torch() -> None:
 
 def test_empty_model_seeds_use_release_default() -> None:
     assert predict_runner._job_seeds({"modelSeeds": []}, None) == [101]
+
+
+@pytest.mark.parametrize("padded", [False, True], ids=["unpadded", "padded"])
+def test_a_template_free_query_reaches_the_model_as_the_zero_geometry_marker(
+    tmp_path, monkeypatch, padded
+) -> None:
+    """OpenDDE's trunk is Protenix's, so it takes the same scalar marker.
+
+    The four quadratic geometry tensors of a template-free query are bitwise
+    zero; the runner must hand the model the marker instead, and must add it
+    after the padded selection, which keeps only ``template_*`` names.
+    """
+    from foldjax.models.opendde.data.featurize_json import featurize_opendde_json
+    from foldjax.models.protenix.data.template_features import (
+        ZERO_TEMPLATE_GEOMETRY_FIELDS,
+        ZERO_TEMPLATE_GEOMETRY_MARKER,
+    )
+    from foldjax.schema import PaddingConfig
+
+    job = {
+        "name": "tiny",
+        "modelSeeds": [101],
+        "sequences": [{"proteinChain": {"sequence": "ACDEFGHIK", "count": 2}}],
+    }
+    input_path = tmp_path / "tiny.json"
+    input_path.write_text(json.dumps([job]), encoding="utf-8")
+    weights_path = tmp_path / "opendde.jax"
+    weights_path.write_bytes(b"native fixture")
+    features = featurize_opendde_json(job, n_queries=2, n_keys=4, seed=101)
+    n_token = int(features["restype"].shape[0])
+    calls = []
+
+    monkeypatch.setattr(predict_runner, "_load_jobs", lambda path: [job])
+    monkeypatch.setattr(predict_runner, "_featurize", lambda value, **kw: features)
+    monkeypatch.setattr(
+        predict_runner, "_load_prepared_params", lambda path, dtype: _params_double()
+    )
+
+    def fake_predict(value, model_params, **kwargs):
+        calls.append(value)
+        return {"coordinate": np.zeros((1, 3, 3), dtype=np.float32)}
+
+    monkeypatch.setattr(predict_runner, "_predict", fake_predict)
+    monkeypatch.setattr(predict_runner, "_score", lambda output, value, **kw: output)
+    monkeypatch.setattr(
+        predict_runner, "_write", lambda root, **kw: [tmp_path / "tiny.cif"]
+    )
+
+    predict_impl.main(
+        [
+            "--input-json",
+            str(input_path),
+            "--weights",
+            str(weights_path),
+            "--out",
+            str(tmp_path / "out"),
+            "--n-sample",
+            "1",
+            "--n-step",
+            "2",
+            "--n-cycle",
+            "1",
+            "--n-queries",
+            "2",
+            "--n-keys",
+            "4",
+        ],
+        padding=PaddingConfig(tokens=n_token + 5) if padded else None,
+    )
+
+    (model_features,) = calls
+    assert ZERO_TEMPLATE_GEOMETRY_MARKER in model_features
+    for name in ZERO_TEMPLATE_GEOMETRY_FIELDS:
+        assert name not in model_features, name
+    # Two distinct survivors: the all-gap row and the zero-padded rows.
+    assert np.asarray(model_features["template_aatype"]).shape[0] == 2
