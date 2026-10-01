@@ -2,7 +2,9 @@
 
 The long-form record of how the ports got to their current peaks and parity --
 moved out of the README when it grew past reading length. Each section is kept
-verbatim from when it was written; `EXPERIMENT_LOG.md` in the repository root
+as it was written, except
+[Which precision each model runs](#which-precision-each-model-runs), which
+tracks the current defaults; `EXPERIMENT_LOG.md` in the repository root
 carries the day-by-day version with the measurements inline.
 
 ### Memory
@@ -317,33 +319,45 @@ activations are stored and computed in; **matmul precision** is how XLA
 executes the float32 matmuls that remain. A model can be bfloat16 and
 `highest`, or float32 and TF32, and Boltz-2 upstream is the first of those.
 
-| model | element width | matmul precision | knob |
-|---|---|---|---|
-| AlphaFold 3 | bfloat16 | — | none; upstream is `bfloat16: 'all'` |
-| Boltz-2 | bfloat16 | `high` (TF32) | `--option dtype=float32` |
-| Protenix / v2 | bfloat16 | `high` (TF32) | `--option dtype=float32` |
-| OpenDDE | **bfloat16** | `high` (TF32) | `--option dtype=float32` |
-| OpenFold3 | **bfloat16** partial track | `high` (TF32) | `--option dtype=float32` restores publisher FP32 |
-| ESMFold2 | **bfloat16** trunk, float32 sampler | — | none |
+This table is the one statement of FoldJAX's precision departures; the README
+carries the same table.
 
-The matmul column names the model-level scope. A fused backend can own the
-precision of its internal contractions: OpenFold3's cuEquivariance triangle
-path explicitly pins `lax.Precision.DEFAULT`, which is why its shipped GPU
-route has a separate numerical envelope from the strict `highest`/XLA gate.
-Boltz-2's triangle attention owns its own in the same way, and there the two
-**do** disagree: its four projections take an explicit `precision=` from a
+| model | FoldJAX default | upstream | float32 matmuls in FoldJAX | to run upstream's precision |
+|---|---|---|---|---|
+| AlphaFold 3 | upstream's own code: bfloat16 (`bfloat16: 'all'`) | the same | not pinned (JAX `DEFAULT`) | nothing to change |
+| Boltz-2 | bfloat16 trunk with a **bfloat16 pair residual**; matmul scope **`high`** | bf16-mixed with a float32 pair residual; `highest` | `high` | `--option pair_residual_dtype=float32 --option matmul_precision=highest` |
+| ESMFold2 | bfloat16 trunk under the released fork's autocast region | the same (Biohub fork `ef32577`) | not pinned (JAX `DEFAULT`) | nothing to change |
+| OpenDDE | **bfloat16 trunk** and bfloat16 confidence Pairformer | float32 | not pinned (JAX `DEFAULT`) | `--option dtype=float32 --option confidence_dtype=fp32` |
+| OpenFold3 | **bfloat16 partial token/pair track** (the confidence head follows it) | `32-true` | `high` | `--option dtype=float32` |
+| Protenix | bfloat16 trunk; **confidence head bfloat16 at every size** | confidence head float32 up to 2,560 tokens (v1 profiles; `protenix-v2` runs it bfloat16 at every size) | `high` | `--option amp_policy=upstream` |
+
+Bold marks a departure from upstream. Each was kept because the structures
+held under measurement, not because the arithmetic matches upstream's. "Not
+pinned" means the port opens no matmul-precision scope of its own and runs at
+JAX's `DEFAULT`; on the GPU this repository measures on, `DEFAULT` and `high`
+both execute float32 matmuls as TF32. `--option matmul_precision=highest`
+asks any of the six for full float32 matmuls.
+
+The matmul column names the model-level scope: Boltz-2
+(`models/boltz2/api.py` `MATMUL_PRECISION`), Protenix
+(`models/protenix/models/predict.py`, the `matmul_precision` argument) and
+OpenFold3 (`models/openfold3/inference.py` `_MATMUL_PRECISION`) each pin
+`high` through `foldjax.execution.resolved_matmul_precision`; OpenDDE, ESMFold2
+and AlphaFold 3 call it nowhere (`backends/opendde.py` and
+`backends/esmfold2.py` say so beside their `compile_options`). A fused backend
+can own the precision of its internal contractions: OpenFold3's cuEquivariance
+triangle path explicitly pins `lax.Precision.DEFAULT`, which is why its shipped
+GPU route has a separate numerical envelope from the strict `highest`/XLA
+gate. Boltz-2's triangle attention owns its own in the same way, and there the
+two **do** disagree: its four projections take an explicit `precision=` from a
 string `api.predict` never sets, so they stay `highest` while the scope ships
 `high`. That is inert at the released bfloat16 trunk, where the operands are
 too narrow for the attribute to act on, and live under `dtype=float32`. See
 `docs/cli.md`.
 
 Read against upstream, **four rows diverge from what their publisher ships**,
-and three of them were decisions. The two that match: AlphaFold 3
-`model_config.py:34` and Protenix `configs_base.py:135`. OpenFold3 matched
-until 2026-09-12 — `entry_points/validator.py:127` runs `32-true`, its
-`bf16-mixed` YAMLs being training configs rather than inference, and it
-additionally pins the confidence Pairformer wide with a `pairformer_dtype`
-defaulting to `torch.float32` (`heads/prediction_heads.py:192`).
+and all four were decisions. AlphaFold 3 (`model_config.py:34`) and ESMFold2
+match.
 
 **Boltz-2** is a declared departure, from 2026-09-11, on two axes. Upstream is
 `main.py:1262` (`precision="bf16-mixed"`) with `main.py:1096` asking for
@@ -361,117 +375,62 @@ residual now defaults to bfloat16 (`pair_residual_dtype`), where torch's
 autocast keeps a float32 residual around bfloat16 GEMMs. At 3,012 tokens the
 two levers together take the run from 781.5 s / 40,748 MiB to 717.5 s /
 29,416 MiB, with per-chain deposited RMSD 0.34-0.40 Å on both arms.
+`--option dtype=float32` is not the way back: it makes the whole trunk
+float32, which upstream never runs.
 
-**OpenDDE** is the other declared one: upstream runs float32
-(`opendde/config/model_base.py:37`), FoldJAX ships bfloat16 since 2026-08-28,
-and the rest of this section is the measurement that justified it.
+**OpenDDE**: upstream runs float32 (`opendde/config/model_base.py:37`),
+FoldJAX ships a bfloat16 trunk since 2026-08-28, and
+[What the width costs, measured](#what-the-width-costs-measured) below is the
+measurement that justified it. Its confidence head's re-embedding Pairformer
+is a separate knob (`confidence_dtype`, bfloat16 by default since 2026-09-11,
+independent of the trunk), so `--option dtype=float32` alone leaves that head
+narrow; upstream's precision is `dtype=float32` plus `confidence_dtype=fp32`.
 
-OpenFold3 now defaults its partial token/pair track to bfloat16;
-`--option dtype=float32` restores the publisher's FP32 inference precision.
-A 28-row, three-target panel measured bfloat16 faster and smaller at every
-size with per-chain deposited RMSD the same on both arms at every size. Since
-2026-09-14 it is smaller again -- 24,676.7 MiB at 3,012 tokens against the
-panel's 34,893 -- because the layer-norm affine is excluded from the narrowing
-and the `x.dtype` guard that forces stops widening two norms inside the
-denoiser; `models/openfold3/dtype.py` carries the six-seed acceptance. Its
-one 3,012-token outlier appears in **both** dtypes, one seed of six each, and
-the catalase core folds correctly in all twelve arms — so the miss is the
-target's and not the width's. Six seeds do not estimate a rate, and the
-mechanism is not measured. See
+**OpenFold3** defaults its partial token/pair track to bfloat16 where
+`entry_points/validator.py:127` runs `32-true` (its `bf16-mixed` YAMLs are
+training configs rather than inference); `--option dtype=float32` restores the
+publisher's inference precision, and the confidence head's `confidence_dtype`
+follows `dtype` unless set. A 28-row, three-target panel measured bfloat16
+faster and smaller at every size with per-chain deposited RMSD the same on both
+arms at every size. Since 2026-09-14 it is smaller again -- 24,676.7 MiB at
+3,012 tokens against the panel's 34,893 -- because the layer-norm affine is
+excluded from the narrowing and the `x.dtype` guard that forces stops widening
+two norms inside the denoiser; `models/openfold3/dtype.py` carries the
+six-seed acceptance. Its one 3,012-token outlier appears in **both** dtypes,
+one seed of six each, and the catalase core folds correctly in all twelve arms
+— so the miss is the target's and not the width's. Six seeds do not estimate a
+rate, and the mechanism is not measured. See
 [the OpenFold3 evidence note](openfold3-bf16-default-evidence-2026-09-12.md)
 for the protocol, the per-arm table and the limits. Earlier accounts that read
 the 3,012-token result as a bfloat16 drift are superseded: they scored one arm
 against the other, which cannot say which arm moved.
 
-**Historical source scope, superseded for the current pin (2026-09-09):**
-The following August ESMFold2 account does not describe the currently pinned
-native source. It has separate CUDA BF16 autocast regions for confidence,
-language-model execution and diffusion pair conditioning. Do not use the old
-single-autocast claim or rounded-score timings as current precision admission.
-See `esmfold2-msa-entry-observer-2026-09-09.md` for the matched-tape corrections.
+**Protenix** runs its confidence head under the bfloat16 autocast at every
+size (`--option amp_policy=auto`, the default). Upstream's
+`runner/inference.py:492` `update_inference_configs` keeps that head float32
+up to 2,560 tokens, except for `protenix-v2`, whose head it narrows at every
+size; the diffusion half of the same gate (float32 up to 3,840 tokens) is
+unchanged here. `--option amp_policy=upstream` reproduces upstream's gate at
+every size. `models/protenix/amp_policy.py` states both tables, and
+`docs/cli.md` the measurements either side of the change.
 
 **ESMFold2 (corrected 2026-10-01): no departure.** An earlier version of this
 note read the generic `transformers` package, whose ESMFold2 has one autocast
 around the language model only (`transformers/models/esmfold2/modeling_esmfold2.py:2021`),
 and concluded that the port's bfloat16 trunk diverged. The release the port
-follows and the benchmark runs is the Biohub fork (`transformers-esmfold2`).
-That fork wraps the input embedder through the coda in one CUDA bfloat16
-autocast region (`modeling_esmfold2.py`, the `torch.amp.autocast("cuda", ...)`
-block in the trunk forward), and its runs record bfloat16 trunk inputs on every
-loop. The port's bfloat16 trunk reproduces that region.
+follows and the benchmark runs is the Biohub fork (`transformers-esmfold2` at
+`ef32577`). That fork wraps the input embedder through the coda in one CUDA
+bfloat16 autocast region (`modeling_esmfold2.py:936`, the
+`torch.amp.autocast("cuda", ...)` block in the trunk forward), and its runs
+record bfloat16 trunk inputs on every loop. The port's bfloat16 trunk
+reproduces that region.
 
-| model | element width | matmul precision | knob |
-|---|---|---|---|
-| AlphaFold 3 | bfloat16 | — | none; upstream is `bfloat16: 'all'` |
-| Boltz-2 | bfloat16 | `high` (TF32) | `--option dtype=float32` |
-| Protenix / v2 | bfloat16 | `high` (TF32) | `--option dtype=float32` |
-| OpenDDE | **bfloat16** | `high` (TF32) | `--option dtype=float32` |
-| OpenFold3 | **bfloat16** partial track | `high` (TF32) | `--option dtype=float32` restores publisher FP32 |
-| ESMFold2 | **bfloat16** trunk, float32 sampler | — | none |
+#### Superseded: the 2026-08-28 ESMFold2 reading
 
-The matmul column names the model-level scope. A fused backend can own the
-precision of its internal contractions: OpenFold3's cuEquivariance triangle
-path explicitly pins `lax.Precision.DEFAULT`, which is why its shipped GPU
-route has a separate numerical envelope from the strict `highest`/XLA gate.
-Boltz-2's triangle attention owns its own in the same way, and there the two
-**do** disagree: its four projections take an explicit `precision=` from a
-string `api.predict` never sets, so they stay `highest` while the scope ships
-`high`. That is inert at the released bfloat16 trunk, where the operands are
-too narrow for the attribute to act on, and live under `dtype=float32`. See
-`docs/cli.md`.
-
-Read against upstream, **four rows diverge from what their publisher ships**,
-and three of them were decisions. The two that match: AlphaFold 3
-`model_config.py:34` and Protenix `configs_base.py:135`. OpenFold3 matched
-until 2026-09-12 — `entry_points/validator.py:127` runs `32-true`, its
-`bf16-mixed` YAMLs being training configs rather than inference, and it
-additionally pins the confidence Pairformer wide with a `pairformer_dtype`
-defaulting to `torch.float32` (`heads/prediction_heads.py:192`).
-
-**Boltz-2** is a declared departure, from 2026-09-11, on two axes. Upstream is
-`main.py:1262` (`precision="bf16-mixed"`) with `main.py:1096` asking for
-`highest` matmuls, and this port followed until then. It now ships `high`,
-because the criterion for a default here is accuracy equivalence rather than
-agreement with upstream's configuration: -7.2% wall at 1,003 tokens and -4.5%
-at 2,096, both against same-snapshot controls, no change in peak at either
-size, and a 5DEI residual between the two arms of 0.038 Å median against a
-0.238 Å within-arm spread. The saving shrinks with length where
-`pair_residual_dtype`'s grows, so the two levers on this port scale in
-opposite directions. `docs/cli.md` carries the full row, including why
-an earlier reading of it credited this change with the fused GLU's memory
-saving. The second axis is storage rather than arithmetic: the trunk pair
-residual now defaults to bfloat16 (`pair_residual_dtype`), where torch's
-autocast keeps a float32 residual around bfloat16 GEMMs. At 3,012 tokens the
-two levers together take the run from 781.5 s / 40,748 MiB to 717.5 s /
-29,416 MiB, with per-chain deposited RMSD 0.34-0.40 Å on both arms.
-
-**OpenDDE** is the other declared one: upstream runs float32
-(`opendde/config/model_base.py:37`), FoldJAX ships bfloat16 since 2026-08-28,
-and the rest of this section is the measurement that justified it.
-
-OpenFold3 now defaults its partial token/pair track to bfloat16;
-`--option dtype=float32` restores the publisher's FP32 inference precision.
-A 28-row, three-target panel measured bfloat16 faster and smaller at every
-size with per-chain deposited RMSD the same on both arms at every size. Since
-2026-09-14 it is smaller again -- 24,676.7 MiB at 3,012 tokens against the
-panel's 34,893 -- because the layer-norm affine is excluded from the narrowing
-and the `x.dtype` guard that forces stops widening two norms inside the
-denoiser; `models/openfold3/dtype.py` carries the six-seed acceptance. Its
-one 3,012-token outlier appears in **both** dtypes, one seed of six each, and
-the catalase core folds correctly in all twelve arms — so the miss is the
-target's and not the width's. Six seeds do not estimate a rate, and the
-mechanism is not measured. See
-[the OpenFold3 evidence note](openfold3-bf16-default-evidence-2026-09-12.md)
-for the protocol, the per-arm table and the limits. Earlier accounts that read
-the 3,012-token result as a bfloat16 drift are superseded: they scored one arm
-against the other, which cannot say which arm moved.
-
-**Historical source scope, superseded for the current pin (2026-09-09):**
-The following August ESMFold2 account does not describe the currently pinned
-native source. It has separate CUDA BF16 autocast regions for confidence,
-language-model execution and diffusion pair conditioning. Do not use the old
-single-autocast claim or rounded-score timings as current precision admission.
-See `esmfold2-msa-entry-observer-2026-09-09.md` for the matched-tape corrections.
+Kept for the record; the correction above replaces it. It read the generic
+`transformers` package rather than the Biohub fork, and its last paragraph
+predates the `dtype` knobs Boltz-2 and OpenFold3 now carry. See
+`esmfold2-msa-entry-observer-2026-09-09.md` for the matched-tape corrections.
 
 **ESMFold2 is the undeclared one, found 2026-08-28.** It diverges on element
 width rather than matmul precision; the matmul column has no entry for it.
