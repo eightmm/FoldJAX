@@ -223,6 +223,27 @@ TEMPLATE_FIELDS = (
 )
 
 
+def broadcast_scalar(array: np.ndarray) -> np.generic | None:
+    """The one stored element of a non-empty all-zero-stride array, else ``None``.
+
+    :func:`_as_protenix_dict` emits a template-free query's quadratic geometry
+    as such views, so each N^2 field costs one float32 word instead of
+    ``4 x N^2 x C`` bytes (30 GB at 6,568 tokens). Every element of the view
+    *is* this element, so a consumer can answer a whole-array question from it
+    and rebuild the result at a new shape with :func:`broadcast_like`, instead
+    of materialising the view through ``np.pad``, fancy indexing or a
+    full-size comparison.
+    """
+    if array.size == 0 or array.ndim == 0 or any(array.strides):
+        return None
+    return array[(0,) * array.ndim]
+
+
+def broadcast_like(value: np.generic, shape: tuple[int, ...]) -> np.ndarray:
+    """A read-only zero-stride view of ``value`` at ``shape``, dtype preserved."""
+    return np.broadcast_to(np.asarray(value), shape)
+
+
 def dedup_templates(features: Mapping[str, Any]) -> Mapping[str, Any]:
     """Keep one copy of each distinct template, with how many it stands for.
 
@@ -304,14 +325,29 @@ def dedup_templates(features: Mapping[str, Any]) -> Mapping[str, Any]:
     # gigabytes of distogram are ever compared. Measured at 3012 tokens: 7 us
     # to reject, against 185 ms if every field had to be walked.
     ordered = sorted(present.items(), key=lambda item: item[1].nbytes)
+    # A zero-stride field's rows all alias its one element, so any two rows are
+    # equal exactly when that element equals itself (False only for NaN, as
+    # ``np.array_equal`` would say). Answered once rather than by walking a
+    # broadcast N^2 row per comparison.
+    scalars = {name: broadcast_scalar(array) for name, array in present.items()}
+    uniform_rows_equal = {
+        name: bool(value == value)
+        for name, value in scalars.items()
+        if value is not None
+    }
+
+    def rows_equal(name: str, array: np.ndarray, left: int, right: int) -> bool:
+        if name in uniform_rows_equal:
+            return uniform_rows_equal[name]
+        return np.array_equal(array[left], array[right])
 
     keep: list[int] = []
     multiplicity: list[int] = []
     for index in range(n_templates):
         for slot, representative in enumerate(keep):
             if all(
-                np.array_equal(array[representative], array[index])
-                for _name, array in ordered
+                rows_equal(name, array, representative, index)
+                for name, array in ordered
             ):
                 multiplicity[slot] += 1
                 break
@@ -324,7 +360,13 @@ def dedup_templates(features: Mapping[str, Any]) -> Mapping[str, Any]:
 
     out = dict(features)
     for name, array in present.items():
-        out[name] = array[keep]
+        scalar = scalars[name]
+        if scalar is None:
+            out[name] = array[keep]
+        else:
+            # ``array[keep]`` would materialise the survivors of a view that
+            # stands for 15 GB of zeros at 6,568 tokens.
+            out[name] = broadcast_like(scalar, (len(keep), *array.shape[1:]))
     out["template_multiplicity"] = np.asarray(multiplicity, dtype=np.float32)
     return out
 
@@ -556,18 +598,75 @@ def _pseudo_beta(
     return pb_pos, pb_mask
 
 
+def _is_empty_slot(
+    aatype: np.ndarray, atom_positions: np.ndarray, bool_mask: np.ndarray
+) -> bool:
+    """True when this slot's four quadratic geometry fields are exactly ``+0.0``.
+
+    No observed atom is *not* sufficient on its own. ``positions * mask`` then
+    keeps the sign of a negative position as ``-0.0``, and mixed-sign zeros
+    carry ``-0.0`` through ``c - ca``, the cross product and ``uv * bb_mask``
+    into ``template_unit_vector``. The positions must also be bitwise ``+0.0``,
+    which the featurizer guarantees for every padded and template-free slot
+    (``_fix_to_dense`` zeroes every unobserved atom); from all-``+0.0`` inputs
+    every op in :func:`_pseudo_beta`, :func:`_dgram_from_positions` and
+    :func:`_unit_vector` yields ``+0.0``.
+
+    The restype lookups still run, so an out-of-range ``aatype`` raises here
+    exactly as the computation it skips would.
+    """
+    _PSEUDOBETA_INDEX[aatype]
+    _BACKBONE_FRAME[aatype]
+    if bool_mask.any():
+        return False
+    return not (np.any(atom_positions) or np.any(np.signbit(atom_positions)))
+
+
 def _as_protenix_dict(
     aatype: np.ndarray, atom_positions: np.ndarray, atom_mask: np.ndarray
 ) -> dict[str, np.ndarray]:
-    """torch ``Templates.as_protenix_dict``."""
+    """torch ``Templates.as_protenix_dict``.
+
+    A slot with no observed atom and bitwise ``+0.0`` positions -- every
+    padded slot and every template-free chain, see :func:`_is_empty_slot` --
+    has geometry that is exactly ``+0.0`` in all four quadratic fields, so it
+    is not computed. When every slot is such a slot, which is every
+    template-free query, each field is a zero-stride view (one float32 word;
+    see :func:`broadcast_scalar`) rather than ``4 x 44 x 4 B x N^2`` -- 30 GB
+    at 6,568 tokens, which the device never even receives, since
+    :func:`compact_zero_template_geometry` replaces it with a scalar marker.
+    Otherwise the fields are dense and the empty slots are left as allocated
+    zeros.
+    """
 
     num_t, num_res = aatype.shape
-    pb_masks = np.empty((num_t, num_res, num_res), dtype=np.float32)
-    dgrams = np.empty((num_t, num_res, num_res, _DGRAM_NUM_BINS), dtype=np.float32)
-    unit_vectors = np.empty((num_t, num_res, num_res, 3), dtype=np.float32)
-    bb_masks = np.empty((num_t, num_res, num_res), dtype=np.float32)
     bool_mask = atom_mask.astype(bool)
+    empty = [
+        _is_empty_slot(aatype[i], atom_positions[i], bool_mask[i])
+        for i in range(num_t)
+    ]
+    shapes = {
+        "template_pseudo_beta_mask": (num_t, num_res, num_res),
+        "template_distogram": (num_t, num_res, num_res, _DGRAM_NUM_BINS),
+        "template_unit_vector": (num_t, num_res, num_res, 3),
+        "template_backbone_frame_mask": (num_t, num_res, num_res),
+    }
+    if num_t and all(empty):
+        geometry = {
+            name: broadcast_like(np.float32(0.0), shape)
+            for name, shape in shapes.items()
+        }
+    else:
+        geometry = {
+            name: np.zeros(shape, dtype=np.float32) for name, shape in shapes.items()
+        }
+    pb_masks = geometry["template_pseudo_beta_mask"]
+    dgrams = geometry["template_distogram"]
+    unit_vectors = geometry["template_unit_vector"]
+    bb_masks = geometry["template_backbone_frame_mask"]
     for i in range(num_t):
+        if empty[i]:
+            continue
         pos = atom_positions[i] * bool_mask[i][..., None]
         pb_pos, pb_mask = _pseudo_beta(aatype[i], pos, bool_mask[i])
         pb_mask_2d = pb_mask[:, None] * pb_mask[None, :]
@@ -782,8 +881,14 @@ def compact_zero_template_geometry(features: Mapping[str, Any]) -> Mapping[str, 
     # Compare the raw float32 words, so -0.0 and every NaN payload are rejected
     # rather than compared equal to the exact +0.0 the featurizer emits. Scan
     # the small masks before the quadratic fields, which are multiple GiB at
-    # serving sizes.
+    # serving sizes. A zero-stride view (what the featurizer emits for a
+    # template-free query) holds one word, so that word is the whole check.
     for array in sorted(arrays.values(), key=lambda value: value.nbytes):
+        scalar = broadcast_scalar(array)
+        if scalar is not None:
+            if np.asarray(scalar).view(np.uint32) != 0:
+                return out
+            continue
         if not array.flags["C_CONTIGUOUS"]:
             return out
         if np.any(array.view(np.uint32)):

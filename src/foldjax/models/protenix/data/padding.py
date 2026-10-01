@@ -13,7 +13,11 @@ from typing import Any
 
 import numpy as np
 
-from foldjax.models.protenix.data.template_features import TEMPLATE_FIELDS
+from foldjax.models.protenix.data.template_features import (
+    TEMPLATE_FIELDS,
+    broadcast_like,
+    broadcast_scalar,
+)
 from foldjax.models.protenix.relative_position import (
     COMPACT_RELP_MARKER,
     normalize_relative_position_storage,
@@ -191,7 +195,11 @@ def pad_protenix_features(
         raise ValueError(
             "template_pseudo_beta_mask must have [N_template, N_token, N_token]"
         )
-    template_row_mask = np.any(template_mask != 0, axis=(1, 2))
+    template_scalar = broadcast_scalar(template_mask)
+    if template_scalar is None:
+        template_row_mask = np.any(template_mask != 0, axis=(1, 2))
+    else:
+        template_row_mask = np.full(storage_template, bool(template_scalar != 0))
     _require_real_prefix(template_row_mask, "template mask rows")
     actual_template = int(np.count_nonzero(template_row_mask))
 
@@ -488,6 +496,21 @@ def _pad_templates(
                 )
             widths[1] = (0, target_token - storage_token)
         constant = 31 if name == "template_aatype" else 0
+        scalar = broadcast_scalar(value)
+        if scalar is not None and (
+            np.asarray(scalar).tobytes()
+            == np.asarray(constant, dtype=value.dtype).tobytes()
+        ):
+            # A template-free query's geometry is one +0.0 word broadcast, and
+            # padding it with the +0.0 constant changes no element: rebuild the
+            # view at the padded shape instead of materialising 4 x N^2 x 44
+            # floats through ``np.pad``.
+            shape = tuple(
+                size + before + after
+                for size, (before, after) in zip(value.shape, widths, strict=True)
+            )
+            output[name] = broadcast_like(scalar, shape)
+            continue
         output[name] = _pad_array(value, tuple(widths), constant=constant)
 
 
