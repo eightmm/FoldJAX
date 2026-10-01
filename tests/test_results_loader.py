@@ -289,6 +289,36 @@ def test_compare_best_only_falls_back_for_a_model_that_ranks_nothing(
     assert flags == {"boltz2": True, "openfold3": False}
 
 
+def test_confidence_array_records_validate_and_reach_the_row(tmp_path: Path) -> None:
+    """The I4 manifest fields, in the shape that worker writes them."""
+    from foldjax.summary import load_schema
+    from tests._schema_lite import errors
+
+    root = _batch(tmp_path, ("boltz2",))
+    manifest_path = root / "boltz2" / "e9_8reh" / "foldjax_run.json"
+    manifest = json.loads(manifest_path.read_text())
+    assert results_table(load_results(root))[0]["confidence_arrays"] is None
+    manifest["confidence_arrays"] = {
+        "file": "confidence_full.npz",
+        "schema_version": 1,
+        "samples": 1,
+        "arrays": ["pae", "plddt"],
+        "unavailable": {"pde": "not written by this backend"},
+    }
+    manifest["samples"][0]["metadata"]["confidence_arrays"] = {
+        "file": "confidence_full.npz",
+        "schema_version": 1,
+        "arrays": ["pae", "plddt"],
+        "index_arrays": ["token_chain"],
+        "unavailable": {"pde": "not written by this backend"},
+    }
+    manifest_path.write_text(json.dumps(manifest))
+
+    assert errors(manifest, load_schema("run")) == []
+    (row,) = results_table(load_results(root))
+    assert row["confidence_arrays"] == ["pae", "plddt"]
+
+
 def test_an_input_the_model_never_read_reaches_the_row(tmp_path: Path) -> None:
     """Boltz-2 reads no RNA alignment: dropped, recorded, and shown per row."""
     from foldjax.summary import load_schema

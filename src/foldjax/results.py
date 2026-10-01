@@ -72,6 +72,9 @@ class SampleRecord:
     job: str | None = None
     native_rank: int | None = None
     is_best: bool = False
+    #: The sample's `confidence_full.npz` record from the manifest (which
+    #: arrays it holds and why others are unavailable), when one was written.
+    confidence_arrays: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,6 +282,11 @@ def _sample_record(
             else None
         ),
         is_best=is_best,
+        confidence_arrays=(
+            dict(metadata["confidence_arrays"])
+            if isinstance(metadata.get("confidence_arrays"), Mapping)
+            else None
+        ),
     )
 
 
@@ -451,6 +459,13 @@ def results_table(
                 "sample": sample.sample,
                 "job": sample.job,
                 "native_rank": sample.native_rank,
+                # Names of the arrays in this sample's confidence_full.npz;
+                # None when the run wrote none.
+                "confidence_arrays": (
+                    list(sample.confidence_arrays.get("arrays") or [])
+                    if sample.confidence_arrays is not None
+                    else None
+                ),
                 "best_within_model": sample.is_best,
                 "plddt": _field_value(summary, "plddt"),
                 "plddt_source": plddt.get("source"),

@@ -88,10 +88,27 @@
     "cost": {"type": ["object", "null"]},
     "memory": {"type": ["object", "null"]},
     "shape_profile": {"type": "object"},
+    "confidence_arrays": {
+      "description": "The run's per-sample confidence_full.npz record (file, schema_version, samples, arrays, unavailable), or null when none was written.",
+      "oneOf": [{"$ref": "#/$defs/confidence_arrays"}, {"type": "null"}]
+    },
     "samples": {"type": "array", "items": {"$ref": "#/$defs/sample"}},
     "best": {"oneOf": [{"$ref": "#/$defs/best"}, {"type": "null"}]}
   },
   "$defs": {
+    "confidence_arrays": {
+      "description": "Where a sample's confidence arrays (PAE, chain-pair matrices, per-token or per-atom pLDDT) are, which are present, and why others are unavailable. Written by foldjax.confidence_arrays.",
+      "type": "object",
+      "required": ["file", "schema_version", "arrays"],
+      "properties": {
+        "file": {"type": "string"},
+        "schema_version": {"type": "integer"},
+        "samples": {"type": "integer"},
+        "arrays": {"type": "array", "items": {"type": "string"}},
+        "index_arrays": {"type": "array", "items": {"type": "string"}},
+        "unavailable": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    },
     "ignored": {
       "type": "object",
       "required": ["field", "reason"],
@@ -115,7 +132,8 @@
             "sample": {"type": "integer", "minimum": 0},
             "native_rank": {"type": "integer", "minimum": 0},
             "job": {"type": "string"},
-            "num_recycles": {"type": "number"}
+            "num_recycles": {"type": "number"},
+            "confidence_arrays": {"$ref": "#/$defs/confidence_arrays"}
           }
         }
       }
