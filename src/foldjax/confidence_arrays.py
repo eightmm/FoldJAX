@@ -374,8 +374,18 @@ def write(
             handle.close()
             staged.unlink(missing_ok=True)
             raise
+    # `NamedTemporaryFile` creates the staging file 0600; give the archive the mode an
+    # ordinary write would (``0666 & ~umask``), like `confidence.json` beside it, so a
+    # shared results directory stays readable to the group that reads the rest.
+    os.chmod(staged, 0o666 & ~_umask())
     os.replace(staged, path)
     return record(path, meta)
+
+
+def _umask() -> int:
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
 
 
 def staged_path(structure_path: str | Path) -> Path:

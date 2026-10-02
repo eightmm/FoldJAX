@@ -651,3 +651,20 @@ def test_opendde_writer_names_its_own_model(tmp_path: Path) -> None:
     loaded = load_confidence_arrays(confidence_arrays.staged_path(cif))
     assert loaded.model == "opendde"
     assert "include_raw" in loaded.unavailable["pae"]
+
+
+def test_the_archive_gets_the_mode_an_ordinary_write_would(tmp_path):
+    import os
+    import stat
+
+    from foldjax import confidence_arrays
+
+    mask = os.umask(0o022)
+    try:
+        path = tmp_path / "confidence_full.npz"
+        import numpy as np
+
+        confidence_arrays.write(path, model="boltz2", arrays={"pae": np.zeros((2, 2), np.float32)})
+        assert stat.S_IMODE(path.stat().st_mode) == 0o644
+    finally:
+        os.umask(mask)
