@@ -664,7 +664,8 @@ def test_the_archive_gets_the_mode_an_ordinary_write_would(tmp_path):
         path = tmp_path / "confidence_full.npz"
         import numpy as np
 
-        confidence_arrays.write(path, model="boltz2", arrays={"pae": np.zeros((2, 2), np.float32)})
+        pae = np.zeros((2, 2), np.float32)
+        confidence_arrays.write(path, model="boltz2", arrays={"pae": pae})
         assert stat.S_IMODE(path.stat().st_mode) == 0o644
     finally:
         os.umask(mask)
