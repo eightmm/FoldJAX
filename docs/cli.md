@@ -449,6 +449,19 @@ OpenFold3 used to reject it, because it had a cheaper configuration of the
 same prediction to fall back to; it no longer selects between configurations,
 so an over-budget estimate there is a refusal like anywhere else.
 
+**Off profile is one-sided.** The laws were fitted at each port's released
+dtype and precision, unpadded. A run configured to need *less* than that --
+fewer samples, a mesh, an inputs-only or trunk-only graph -- keeps its
+estimate and loses the refusal, because the estimate reads high. A run
+configured to need *more* keeps its refusal, but a `fits` from it is recorded
+and warned as `unknown`, because its estimate is a lower bound: measured,
+padded runs and runs with a precision option exceeded the upper estimate by up
+to 1.69x. Those configurations are `--padding` on every port, `dtype=float32`
+on OpenFold3, and a float32 pair residual stream or `matmul_precision=highest`
+on Boltz-2. The manifest's `memory` block names them under `exceeds_profile`,
+beside `off_profile`. OpenDDE's float32 trunk is not one of them: it has its
+own fitted law.
+
 `--memory-budget-gib` plans against a stated ceiling instead of the one this
 card reports, and the smaller of the two wins. It is how you ask whether a job
 would fit a card you are not on, and every port accepts it.

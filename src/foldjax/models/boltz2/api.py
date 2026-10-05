@@ -33,7 +33,7 @@ import numpy as np
 
 from foldjax import memory_policy
 from foldjax.cache import PERSISTENT_CACHE_MIN_COMPILE_SECS
-from foldjax.execution import auto_diffusion_chunk_size
+from foldjax.execution import auto_diffusion_chunk_size, resolved_matmul_precision
 from foldjax.models import _capture, _representations
 from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models._output_validation import require_finite_coordinates
@@ -1181,6 +1181,27 @@ def predict(
                 )
                 if active
             ),
+        ),
+        # Each of these needs *more* than the law, which was fitted at the
+        # released bf16 pair stream, `high` matmuls and no serving padding:
+        # measured, such runs exceeded the upper estimate by up to 1.69x. A
+        # refusal still binds; a "fits" is recorded as unknown.
+        exceeds_profile=tuple(
+            reason
+            for reason, active in (
+                ("serving padding", padding is not None),
+                # The resolved stream, so `compute_dtype="float32"` under the
+                # default "auto" counts too.
+                (
+                    "a float32 pair residual stream",
+                    resolved_pair_residual_dtype == "float32",
+                ),
+                (
+                    "matmul_precision=highest",
+                    resolved_matmul_precision(MATMUL_PRECISION) == "highest",
+                ),
+            )
+            if active
         ),
     )
 

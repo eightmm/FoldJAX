@@ -857,6 +857,9 @@ def _run(
     # run loses the refusal, and on the default path that would switch
     # admission off for every run.
     off_profile = memory_policy.off_profile_reason(num_samples=config.num_samples)
+    # Serving padding needs *more* than the law, which was fitted unpadded: a
+    # refusal still binds, and a "fits" is recorded as unknown.
+    exceeds_profile = ("serving padding",) if padding_config is not None else ()
     for job in jobs:
         job_features = job["features"]
         msa = job_features.get("msa")
@@ -873,6 +876,7 @@ def _run(
                 "the same one in less memory",
             ),
             off_profile=off_profile,
+            exceeds_profile=exceeds_profile,
         )
 
     # ESM/ISM conditioning is fully materialised in each job's compact

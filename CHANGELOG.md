@@ -10,6 +10,20 @@ unless it says so here, in its own paragraph.
 
 ## Unreleased
 
+### Fixed
+
+- **Memory admission no longer reports `fits` for a run whose estimate is a
+  lower bound.** The peak laws were fitted at each port's released dtype and
+  precision without `--padding`, and padded runs and runs with a precision
+  option (OpenFold3 `dtype=float32`; Boltz-2 `pair_residual_dtype=float32` or
+  `matmul_precision=highest`) measured up to 1.69x the upper estimate while
+  the manifest said `fits`. Such a run now proceeds as `unknown`, with one
+  warning naming the options, and the manifest's `memory` block lists them
+  under `exceeds_profile`. An over-budget estimate still refuses under
+  `--memory-check refuse`, and `off_profile` -- runs that need less than the
+  law -- is unchanged. OpenFold3 under `--padding` is now admitted once, at
+  the padded shape, rather than first at the unpadded one.
+
 ## 0.4.0 (2026-10-02)
 
 ### Added

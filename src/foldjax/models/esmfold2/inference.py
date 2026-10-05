@@ -600,6 +600,10 @@ def predict(
     #: device nor hears about it. `backends/esmfold2.py` is what fills it in.
     memory_budget: memory_policy.MemoryBudget | None = None,
     memory_check: str = memory_policy.DEFAULT_CHECK_MODE,
+    #: Whether ``features`` carry serving padding. Read only by admission:
+    #: the law was fitted unpadded, so for a padded run its estimate is a
+    #: lower bound and a "fits" is recorded as unknown.
+    padded: bool = False,
 ) -> dict[str, jnp.ndarray]:
     """One forward over already-built features.
 
@@ -712,6 +716,7 @@ def predict(
                     if active
                 ),
             ),
+            exceeds_profile=("serving padding",) if padded else (),
         )
     # Resolve the process-wide escape hatch before choosing a bounded JIT
     # owner. The same integer is passed into the graph and pins every atom

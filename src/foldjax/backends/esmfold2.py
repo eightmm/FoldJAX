@@ -1381,6 +1381,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                         model,
                         language_model_tokens=lm_target,
                         preserve_prefix_rng=request.padding is not None,
+                        padded=request.padding is not None,
                         return_distogram_logits=False,
                         **managed_output_kwargs,
                         **lm_input,

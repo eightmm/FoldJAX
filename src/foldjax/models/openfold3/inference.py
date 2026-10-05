@@ -557,6 +557,7 @@ def resolve_pair_chunk_size(
     budget: memory_policy.MemoryBudget | None,
     mode: str = memory_policy.DEFAULT_CHECK_MODE,
     off_profile: Sequence[str] = (),
+    exceeds_profile: Sequence[str] = (),
 ) -> int | None:
     """Block the pair-stack row loop, and admit the run that will do it.
 
@@ -580,7 +581,9 @@ def resolve_pair_chunk_size(
     ``"warn"``, ``unknown`` warned once where no law covers the size -- above
     4,888 tokens, and below 1,003 where the blocked arm has no measurement
     either. ``off_profile`` names what about this run the law was not fitted
-    at, which downgrades a refusal to a warning.
+    at, which downgrades a refusal to a warning. ``exceeds_profile`` names
+    what needs more than the law describes, which keeps a refusal binding and
+    turns a ``fits`` into ``unknown``.
 
     ``budget`` of ``None`` means the caller is not asking: the width, silently.
     That is what ``released_config`` does for every caller that is not about to
@@ -607,6 +610,7 @@ def resolve_pair_chunk_size(
                 ),
             ),
             off_profile=off_profile,
+            exceeds_profile=exceeds_profile,
         )
     return _blocked_width(n_token)
 
@@ -1558,6 +1562,7 @@ def released_config(
     dtype: str = DEFAULT_DTYPE,
     confidence_dtype: str | None = None,
     max_array_bytes: int | None = DEFAULT_ARRAY_BUDGET_BYTES,
+    padded: bool = False,
 ) -> InferenceConfig:
     """Return the released OpenFold3 architecture settings.
 
@@ -1583,7 +1588,9 @@ def released_config(
     pins a width has chosen a configuration no law here was fitted at, so it
     is run as asked rather than estimated. ``pair_chunk_size=0`` is how the
     unblocked loop is spelled explicitly; its own estimate is
-    :data:`memory_policy.OPENFOLD3_UNCHUNKED_PEAK`.
+    :data:`memory_policy.OPENFOLD3_UNCHUNKED_PEAK`. ``padded`` says the
+    features carry serving padding; it reaches only admission, where the
+    unpadded law is then a lower bound, and is not part of the config.
 
     Verify against the checkpoint before trusting this: read its block counts
     with :func:`~foldjax.models.openfold3.bridge.checkpoint.count_blocks` and
@@ -1631,6 +1638,17 @@ def released_config(
                     )
                     if active
                 ),
+            ),
+            # Each of these needs *more* than the law, which was fitted
+            # unpadded at the released bfloat16 trunk: a refusal still binds,
+            # and a "fits" is recorded as unknown.
+            exceeds_profile=tuple(
+                reason
+                for reason, active in (
+                    ("serving padding", padded),
+                    ("a float32 trunk", dtype == "float32"),
+                )
+                if active
             ),
         )
         if isinstance(pair_chunk_size, str)

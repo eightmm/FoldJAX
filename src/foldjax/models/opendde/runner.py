@@ -862,6 +862,12 @@ def run_prediction(
                             _BF16_TRUNK_LEVER if bf16_trunk else _FP32_TRUNK_LEVER,
                         ),
                         off_profile=off_profile,
+                        # Serving padding needs *more* than either law, both
+                        # fitted unpadded. The fp32 trunk is not here: it has
+                        # its own fitted law, so it is in profile.
+                        exceeds_profile=(
+                            ("serving padding",) if padding is not None else ()
+                        ),
                         token_label="structural tokens",
                     )
                 output = _predict(

@@ -604,6 +604,8 @@ def test_padded_split_path_requests_managed_outputs(tmp_path, monkeypatch) -> No
         "num_recycles": 3,
         "language_model_tokens": None,
         "preserve_prefix_rng": True,
+        # Admission's own flag: the unpadded law is a lower bound here.
+        "padded": True,
         "return_distogram_logits": False,
         "return_auxiliary_outputs": False,
         "precomputed_lm_states": None,

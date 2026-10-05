@@ -37,7 +37,7 @@ from __future__ import annotations
 import warnings
 from collections.abc import Sequence
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from foldjax import oom
@@ -441,6 +441,36 @@ class MemoryDecision:
     reason: str
 
 
+def exceeding_profile(
+    decision: MemoryDecision, exceeds_profile: Sequence[str] = ()
+) -> MemoryDecision:
+    """The decision as it stands for a run that needs more than the law says.
+
+    The mirror of :func:`off_profile_reason`, and deliberately not the same
+    mechanism. A run configured *below* the fitted profile -- fewer samples,
+    a split arena -- keeps its estimate and loses the refusal, because the
+    estimate reads high. A run configured *above* it -- serving padding, a
+    float32 trunk or pair stream, float32 matmuls -- has an estimate that
+    reads low: measured, those runs exceeded the upper estimate by up to
+    1.69x. So its refusal still binds, but a ``fits`` is an underestimate
+    clearing the threshold, which guarantees nothing, and becomes
+    ``unknown``. Idempotent, so every layer that reports the decision can
+    apply it.
+    """
+    if decision.state != "fits" or not exceeds_profile:
+        return decision
+    return replace(
+        decision,
+        state="unknown",
+        selected=None,
+        reason=(
+            f"{decision.reason}, but that estimate is a lower bound for this "
+            "run, which uses " + "; ".join(exceeds_profile) + " -- the law was "
+            "fitted without them, so clearing the threshold is not a guarantee"
+        ),
+    )
+
+
 def resolve_memory_policy(
     *,
     model: str,
@@ -670,6 +700,7 @@ def check_message(
     levers: Sequence[str] = (),
     off_profile: Sequence[str] = (),
     token_label: str = "tokens",
+    exceeds_profile: Sequence[str] = (),
 ) -> str:
     """Say what was estimated, what it was compared with, and what to change.
 
@@ -679,7 +710,10 @@ def check_message(
     so a message that called them "tokens" would name a number the user never
     typed. ``n_token`` of ``None`` is a port with no law at all -- see
     :func:`admit_unmeasured` -- where there is no shape to report.
+    ``exceeds_profile`` is applied as :func:`exceeding_profile` describes.
     """
+    raw_state = decision.state
+    decision = exceeding_profile(decision, exceeds_profile)
     shape = None if n_token is None else f"{n_token} {token_label}"
     if shape is not None and msa_rows is not None:
         shape += f", {msa_rows} processed MSA rows"
@@ -709,7 +743,11 @@ def check_message(
             + "."
         )
     if decision.state == "unknown":
-        lines.append("The run proceeds without the check.")
+        lines.append(
+            "The run proceeds; the allocator will answer."
+            if raw_state == "fits"
+            else "The run proceeds without the check."
+        )
         return " ".join(lines)
     lines.append("Levers: " + "; ".join((_FRACTION_LEVER, *levers)) + ".")
     if mode == "refuse" and not off_profile:
@@ -732,6 +770,7 @@ def enforce(
     levers: Sequence[str] = (),
     off_profile: Sequence[str] = (),
     token_label: str = "tokens",
+    exceeds_profile: Sequence[str] = (),
 ) -> None:
     """Raise, warn, or say nothing, according to the state and the mode.
 
@@ -740,11 +779,16 @@ def enforce(
     run with no readable budget still says that nothing was checked.
     ``over_budget`` raises under "refuse" and warns under "warn"; an
     off-calibration run warns whatever the mode, because the estimate that
-    would justify the refusal does not describe it.
+    would justify the refusal does not describe it. A ``fits`` under a
+    non-empty ``exceeds_profile`` is ``unknown`` (:func:`exceeding_profile`)
+    and warns once per model on its own key, so an unreadable ceiling earlier
+    in the process does not silence it.
     """
     if mode not in CHECK_MODES:
         raise ValueError(f"memory_check must be one of {CHECK_MODES}; got {mode!r}")
-    if decision.state == "fits":
+    demoted = decision.state == "fits" and bool(exceeds_profile)
+    state = exceeding_profile(decision, exceeds_profile).state
+    if state == "fits":
         return
     message = check_message(
         decision,
@@ -756,11 +800,13 @@ def enforce(
         levers=levers,
         off_profile=off_profile,
         token_label=token_label,
+        exceeds_profile=exceeds_profile,
     )
-    if decision.state == "unknown":
+    if state == "unknown":
         # Once per model per process. A run with no readable ceiling says so,
         # and a multi-seed request does not say it five times.
-        if not _first_time(f"unknown:{model}"):
+        key = f"exceeds_profile:{model}" if demoted else f"unknown:{model}"
+        if not _first_time(key):
             return
     elif mode == "refuse" and not off_profile:
         raise MemoryError(message)
@@ -808,8 +854,14 @@ def record(
     calibration_id: str | None,
     mode: str,
     off_profile: Sequence[str] = (),
+    exceeds_profile: Sequence[str] = (),
 ) -> None:
-    """Keep this decision for the run manifest. JSON-native values only."""
+    """Keep this decision for the run manifest. JSON-native values only.
+
+    The state recorded is the one :func:`exceeding_profile` leaves, so a
+    manifest never says ``fits`` for a run whose estimate was a lower bound.
+    """
+    decision = exceeding_profile(decision, exceeds_profile)
     _RECORDED.set(
         {
             "model": model,
@@ -835,6 +887,7 @@ def record(
             "mem_fraction": oom.mem_fraction(),
             "memory_check": mode,
             "off_profile": list(off_profile),
+            "exceeds_profile": list(exceeds_profile),
         }
     )
 
@@ -860,8 +913,15 @@ def admit(
     levers: Sequence[str] = (),
     off_profile: Sequence[str] = (),
     token_label: str = "tokens",
+    exceeds_profile: Sequence[str] = (),
 ) -> MemoryDecision:
-    """Resolve, record and enforce in one call: what a port's wiring needs."""
+    """Resolve, record and enforce in one call: what a port's wiring needs.
+
+    ``off_profile`` names what about this run needs *less* than the law
+    describes; ``exceeds_profile`` names what needs *more*. See
+    :func:`off_profile_reason` and :func:`exceeding_profile`. The decision
+    returned is the one recorded and enforced.
+    """
     decision = resolve_memory_policy(
         model=model,
         n_token=n_token,
@@ -883,6 +943,7 @@ def admit(
         ),
         mode=mode,
         off_profile=off_profile,
+        exceeds_profile=exceeds_profile,
     )
     enforce(
         decision,
@@ -894,8 +955,9 @@ def admit(
         levers=levers,
         off_profile=off_profile,
         token_label=token_label,
+        exceeds_profile=exceeds_profile,
     )
-    return decision
+    return exceeding_profile(decision, exceeds_profile)
 
 
 def admit_unmeasured(

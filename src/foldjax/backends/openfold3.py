@@ -885,7 +885,23 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         )
         array_budget_bytes = None if retain_pair_arrays else _MANAGED_ARRAY_BUDGET_BYTES
         overrides["max_array_bytes"] = array_budget_bytes
-        config = inference.released_config(n_token=n_token, n_atom=n_atom, **overrides)
+        # Under padding this config is provisional: it is rebuilt below at the
+        # padded shape, and that rebuild is the one admitted. Admitting here
+        # too would warn or refuse about a token count the program never
+        # compiles, and the padded size is never smaller.
+        config = inference.released_config(
+            n_token=n_token,
+            n_atom=n_atom,
+            **(
+                overrides
+                if request.padding is None
+                else {
+                    key: value
+                    for key, value in overrides.items()
+                    if key != "memory_budget"
+                }
+            ),
+        )
         features = data.prepare_msa_cycle_features(
             features,
             config.msa_depth,
@@ -940,6 +956,7 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             config = inference.released_config(
                 n_token=n_token,
                 n_atom=n_atom,
+                padded=True,
                 **{**overrides, "msa_depth": padding_plan.target["msa"]},
             )
         features, n_chain = data.normalize_asym_ids(features)

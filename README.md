@@ -268,6 +268,9 @@ first compile whether a run fits the device. `--memory-check refuse` (the
 default) stops a run that does not fit and names the levers;
 `--memory-check warn` prints the same message and runs anyway;
 `--memory-budget-gib` plans against a smaller card than the one you are on.
+A run that needs more than its law was fitted at (`--padding`, or a float32
+precision option) is still refused when over budget, but is never called a
+fit: its estimate is a lower bound, so it proceeds as `unknown`.
 AlphaFold 3 has no law and answers `unknown` when asked. Nothing is narrowed
 automatically to make a job fit. `--mem-fraction` (default 0.9) sets how much
 of the device JAX preallocates. Details: [docs/cli.md](docs/cli.md#memory).

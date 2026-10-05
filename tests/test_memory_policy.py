@@ -398,6 +398,114 @@ def test_an_unknown_check_mode_is_rejected() -> None:
 
 
 # --------------------------------------------------------------------------
+# A run configured to need more than the law describes
+# --------------------------------------------------------------------------
+
+
+def test_a_fit_from_an_underestimate_is_recorded_as_unknown() -> None:
+    """Padded and float32 runs exceeded the upper estimate by up to 1.69x, so
+    their estimate clearing the threshold guarantees nothing."""
+    with pytest.warns(RuntimeWarning, match="lower bound") as caught:
+        decision = memory_policy.admit(
+            model="boltz2",
+            n_token=1003,
+            msa_rows=None,
+            candidates=(("released", BOLTZ2_PEAK),),
+            budget=_budget(90 * _GIB, card=96 * _GIB),
+            exceeds_profile=("serving padding", "matmul_precision=highest"),
+        )
+    assert decision.state == "unknown"
+    assert decision.selected is None
+    message = str(caught[0].message)
+    assert "serving padding; matmul_precision=highest" in message
+    assert "the allocator will answer" in message
+    block = memory_policy.recorded()
+    assert block["state"] == "unknown"
+    assert block["selected"] is None
+    assert block["exceeds_profile"] == ["serving padding", "matmul_precision=highest"]
+    assert block["off_profile"] == []
+    # The estimate is kept, and so is the law it came from.
+    assert [estimate["fits"] for estimate in block["estimates"]] == [True]
+    assert block["calibration_id"] == BOLTZ2_PEAK.calibration_id
+
+
+def test_a_run_that_exceeds_its_profile_is_still_refused_when_over_budget() -> None:
+    budget = resolve_budget(
+        pool_bytes=16 * _GIB, card_bytes=18 * _GIB, override_gib=None
+    )
+    with pytest.raises(MemoryError, match="--memory-check=warn"):
+        memory_policy.admit(
+            model="protenix",
+            n_token=3012,
+            msa_rows=17542,
+            candidates=(("released", PROTENIX_PEAK),),
+            budget=budget,
+            levers=_protenix_levers(),
+            exceeds_profile=("serving padding",),
+        )
+    block = memory_policy.recorded()
+    assert block["state"] == "over_budget"
+    assert block["exceeds_profile"] == ["serving padding"]
+    with pytest.warns(RuntimeWarning, match="Running anyway"):
+        decision = memory_policy.admit(
+            model="protenix",
+            n_token=3012,
+            msa_rows=17542,
+            candidates=(("released", PROTENIX_PEAK),),
+            budget=budget,
+            mode="warn",
+            exceeds_profile=("serving padding",),
+        )
+    assert decision.state == "over_budget"
+
+
+def test_an_empty_exceeds_profile_changes_nothing() -> None:
+    kwargs = dict(
+        model="boltz2",
+        n_token=1003,
+        msa_rows=None,
+        candidates=(("released", BOLTZ2_PEAK),),
+        budget=_budget(90 * _GIB, card=96 * _GIB),
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        plain = memory_policy.admit(**kwargs)
+        plain_block = memory_policy.recorded()
+        empty = memory_policy.admit(**kwargs, exceeds_profile=())
+    assert empty == plain
+    assert empty.state == "fits"
+    assert memory_policy.recorded() == plain_block
+    assert plain_block["exceeds_profile"] == []
+    assert memory_policy.exceeding_profile(plain, ()) is plain
+
+
+def test_an_unreadable_ceiling_does_not_silence_an_underestimate() -> None:
+    """Both are `unknown`, for different reasons; each warns once."""
+    with pytest.warns(RuntimeWarning) as caught:
+        for _ in range(2):
+            memory_policy.admit(
+                model="boltz2",
+                n_token=2096,
+                msa_rows=None,
+                candidates=(("released", BOLTZ2_PEAK),),
+                budget=_budget(None),
+                exceeds_profile=("serving padding",),
+            )
+            memory_policy.admit(
+                model="boltz2",
+                n_token=2096,
+                msa_rows=None,
+                candidates=(("released", BOLTZ2_PEAK),),
+                budget=_budget(90 * _GIB, card=96 * _GIB),
+                exceeds_profile=("serving padding",),
+            )
+    messages = [str(warning.message) for warning in caught]
+    assert len(messages) == 2
+    assert "proceeds without the check" in messages[0]
+    assert "lower bound" in messages[1]
+
+
+# --------------------------------------------------------------------------
 # What the policy is not allowed to do
 # --------------------------------------------------------------------------
 
@@ -603,6 +711,128 @@ def test_an_omitted_option_and_an_explicit_unblocked_run_stay_distinguishable() 
     )
     assert explicit.pair_chunk_size == 0
     assert explicit != inside
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({"padded": True}, ["serving padding"]),
+        ({"dtype": "float32"}, ["a float32 trunk"]),
+        ({"padded": True, "dtype": "float32"}, ["serving padding", "a float32 trunk"]),
+    ],
+)
+def test_a_padded_or_float32_openfold3_run_is_not_called_a_fit(
+    kwargs, expected
+) -> None:
+    """`released_config` is the OpenFold3 layer that admits, so it is where a
+    padded request and the float32 trunk have to reach the recorded decision.
+    """
+    plenty = _budget(90 * _GIB, card=96 * _GIB)
+    with pytest.warns(RuntimeWarning, match="lower bound"):
+        config = inference.released_config(
+            n_token=3012, n_atom=3012 * 24, memory_budget=plenty, **kwargs
+        )
+    assert config.pair_chunk_size == inference.RESOLVED_PAIR_CHUNK_SIZE
+    block = memory_policy.recorded()
+    assert block["state"] == "unknown"
+    assert block["exceeds_profile"] == expected
+    # The flag reaches admission only, never the config the program is keyed on.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        unpadded = inference.released_config(
+            n_token=3012,
+            n_atom=3012 * 24,
+            memory_budget=plenty,
+            dtype=kwargs.get("dtype", inference.DEFAULT_DTYPE),
+        )
+    if "padded" in kwargs:
+        assert config == unpadded
+
+
+def test_an_unpadded_bfloat16_openfold3_run_still_fits() -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        inference.released_config(
+            n_token=3012,
+            n_atom=3012 * 24,
+            memory_budget=_budget(90 * _GIB, card=96 * _GIB),
+        )
+    block = memory_policy.recorded()
+    assert block["state"] == "fits"
+    assert block["exceeds_profile"] == []
+
+
+def test_the_openfold3_adapter_admits_a_padded_run_once_at_its_padded_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under padding the adapter builds the config twice. Only the rebuild at
+    the padded shape is admitted, and it is told the run is padded; the first
+    would otherwise warn or refuse about a token count never compiled."""
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from foldjax.backends import openfold3 as adapter
+
+    features = {
+        "token_mask": np.ones((1, 8), dtype=np.float32),
+        "atom_mask": np.ones((1, 16), dtype=np.float32),
+    }
+    calls: list[dict] = []
+
+    class _StopError(Exception):
+        pass
+
+    def released_config(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("padded"):
+            raise _StopError
+        return SimpleNamespace(msa_depth=1024, num_recycles=4, num_samples=5)
+
+    plan = SimpleNamespace(
+        target={"tokens": 16, "atoms": 32, "templates": 4, "msa": 1024}
+    )
+    modules = {
+        "foldjax.models.openfold3.data": SimpleNamespace(
+            featurize_query_with_metadata=lambda *args, **kwargs: (features, None),
+            prepare_msa_cycle_features=lambda batch, depth, **kwargs: batch,
+            collapse_identical_templates=lambda batch: batch,
+            has_atomized_tokens=lambda batch: False,
+            pad_features=lambda batch, **kwargs: batch,
+        ),
+        "foldjax.models.openfold3.inference": SimpleNamespace(
+            released_config=released_config
+        ),
+        "foldjax.models.openfold3.output": SimpleNamespace(),
+        "foldjax.models.openfold3.bridge.chemistry": SimpleNamespace(),
+        "foldjax.models.openfold3.bridge.checkpoint": SimpleNamespace(),
+        "foldjax.models.openfold3.bridge.torch_mapping": SimpleNamespace(),
+        "jax": SimpleNamespace(),
+    }
+    budget = _budget(90 * _GIB, card=96 * _GIB)
+    monkeypatch.setattr(adapter, "import_module", lambda name: modules[name])
+    monkeypatch.setattr(adapter, "_padding_plan", lambda *args, **kwargs: plan)
+    monkeypatch.setattr(
+        memory_policy, "device_memory_budget", lambda **kwargs: budget
+    )
+    weights = tmp_path / "openfold3.pt"
+    weights.write_bytes(b"native")
+    with pytest.raises(_StopError):
+        adapter.OpenFold3Backend().predict(
+            PredictionRequest(
+                model="openfold3",
+                input=_job(tmp_path),
+                weights=weights,
+                output_dir=tmp_path / "out",
+                padding=True,
+            )
+        )
+    first, rebuilt = calls
+    assert "memory_budget" not in first
+    assert not first.get("padded", False)
+    assert rebuilt["memory_budget"] is budget
+    assert rebuilt["padded"] is True
+    assert rebuilt["n_token"] == 16
 
 
 def test_two_budgets_share_one_cache_profile_and_one_program(
