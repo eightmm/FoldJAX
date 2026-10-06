@@ -185,6 +185,91 @@ def _discovery_lowering() -> Iterator[None]:
         _HLO_PAYLOAD_SUPPRESSED.reset(token)
 
 
+# ---------------------------------------------------------------------------
+# Tokamax's heuristic GLU tile on small-shared-memory GPUs.
+#
+# On a cache miss under `kernel_autotuning=heuristics`, Tokamax sizes its
+# Pallas-Triton GLU tile for a data-centre GPU: block 128 x 64, block_k 32,
+# four pipeline stages. On sm_120 (RTX PRO 6000 Blackwell, 99 KiB of shared
+# memory per block) that tile asks for 108 KiB (`alphafold3._tokamax_kernel_
+# fallback`) and the launch fails with RESOURCE_EXHAUSTED after compiling,
+# which is why the backend's default is to autotune -- and autotuning is most
+# of the cold compile. The pipeline holds up to `num_stages` copies of one x
+# tile and two weight tiles; fewer stages hold fewer. Clamping the stage count
+# (then the tile) until that bound fits leaves `block_k`, the K step every
+# output accumulates over, where it was: only the schedule changes. That the
+# bound is conservative enough, and the result unchanged, is what the GPU
+# check in foldjax-bench/v011-perf-check measures; the default stays autotune.
+# ---------------------------------------------------------------------------
+
+#: Opt-in shared memory per block by compute-capability major, for the GPUs
+#: whose budget is below what Tokamax's heuristics assume. sm_120/121 (consumer
+#: and workstation Blackwell): 99 KiB.
+_SMALL_SHARED_MEMORY_BYTES = {12: 99 * 1024}
+
+
+def _glu_stage_bytes(config: Any, itemsize: int) -> int:
+    x_tile = config.block_m * config.block_k
+    weight_tiles = 2 * config.block_k * config.block_n
+    return (x_tile + weight_tiles) * itemsize
+
+
+def clamp_glu_config(config: Any, *, itemsize: int, budget_bytes: int) -> Any:
+    """Fewest changes to ``config`` that fit ``num_stages`` tiles in the budget."""
+
+    stages = config.num_stages
+    while stages > 1 and stages * _glu_stage_bytes(config, itemsize) > budget_bytes:
+        stages -= 1
+    config = dataclasses.replace(config, num_stages=stages)
+    while config.num_stages * _glu_stage_bytes(config, itemsize) > budget_bytes:
+        if config.block_n > 32:
+            config = dataclasses.replace(config, block_n=config.block_n // 2)
+        elif config.block_m > 32:
+            config = dataclasses.replace(config, block_m=config.block_m // 2)
+        else:
+            break
+    return config
+
+
+def _shared_memory_budget(device: Any) -> int | None:
+    try:
+        major = int(float(str(getattr(device, "compute_capability", ""))))
+    except ValueError:
+        return None
+    return _SMALL_SHARED_MEMORY_BYTES.get(major)
+
+
+@contextmanager
+def glu_heuristics_within_shared_memory(device: Any) -> Iterator[None]:
+    """Clamp Tokamax's heuristic GLU tile to ``device``'s shared memory."""
+
+    budget = _shared_memory_budget(device)
+    if budget is None:
+        yield
+        return
+    try:
+        from tokamax._src.ops.gated_linear_unit import pallas_triton
+    except ImportError:
+        yield
+        return
+    glu_op = pallas_triton.PallasTritonGatedLinearUnit
+    original = glu_op.__dict__.get("_get_heuristics_config")
+    if original is None:
+        yield
+        return
+
+    def clamped(self: Any, ba: Any) -> Any:
+        config = original(self, ba)
+        itemsize = int(getattr(ba.args[0].dtype, "itemsize", 4))
+        return clamp_glu_config(config, itemsize=itemsize, budget_bytes=budget)
+
+    glu_op._get_heuristics_config = clamped
+    try:
+        yield
+    finally:
+        glu_op._get_heuristics_config = original
+
+
 def _canonical_json(value: Any) -> str:
     return json.dumps(
         value,

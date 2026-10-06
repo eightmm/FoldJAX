@@ -32,6 +32,9 @@ from foldjax.backends._tokamax_autotune import create_store as _create_tokamax_s
 from foldjax.backends._tokamax_autotune import (
     ensure_safe_autotuning_route as _ensure_safe_tokamax_route,
 )
+from foldjax.backends._tokamax_autotune import (
+    glu_heuristics_within_shared_memory as _glu_heuristics_within_shared_memory,
+)
 from foldjax.backends._tokamax_autotune import install_store as _install_tokamax_store
 from foldjax.backends._tokamax_autotune import (
     without_tokamax_hlo_payload as _without_tokamax_hlo_payload,
@@ -1361,6 +1364,9 @@ class AlphaFold3Backend(Backend):
                 _tokamax_kernel_fallback(kernel_fallback),
                 _model_device(device),
                 _without_tokamax_hlo_payload(),
+                # Only reached under `kernel_autotuning=heuristics` (or a
+                # store miss falling back to it): a tile that fits the card.
+                _glu_heuristics_within_shared_memory(device),
             ):
                 tokamax_store_installed = False
                 if tokamax_store is not None:
