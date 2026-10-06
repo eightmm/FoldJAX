@@ -16,3 +16,16 @@
   constant); `1.0` files still validate and still resume, since resume gates on
   the integer `schema`. A contract test now fails on any written key the
   schemas do not name.
+- **OpenFold3 `triangle_kernel=auto` is the omitted default.** It pinned
+  `cueq` (attention only), which no omitted run selects; it now resolves as
+  omitting the knob does -- `cueq-pallas` on a GPU, `cueq-full` elsewhere,
+  `xla` under context parallelism -- and shares that cache namespace.
+- **`triangle_kernel=cueq-pallas` is requestable** through the neutral knob on
+  OpenFold3, the kernel its omitted GPU run selects; Boltz-2 and Protenix
+  refuse it by name.
+- **Width values have one vocabulary.** `bf16`/`bfloat16` and
+  `fp32`/`float32`/`f32` are accepted in `dtype` and every `*_dtype` option on
+  every port and rewritten to the port's own spelling, so `trunk_dtype=bf16`
+  on OpenFold3 and `confidence_dtype=float32` on OpenDDE are no longer
+  refused. Manifests still record options as typed, so `--resume` treats two
+  spellings of one width as different requests.

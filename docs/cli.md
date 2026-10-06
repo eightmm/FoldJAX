@@ -54,6 +54,9 @@ through. Where a section below names a port's own flag (`--amp-policy`,
 that is the spelling of the port's native CLI (`protenix-jax-predict`,
 `opendde-jax-predict`); through `foldjax predict` the same setting is
 `--option` with underscores, for example `--option amp_policy=upstream`.
+A width is one value whatever the option or port: `bf16`/`bfloat16` and
+`fp32`/`float32`/`f32` are accepted in `dtype` and in every `*_dtype` option,
+and rewritten to the spelling that port takes.
 An option a backend does not accept is refused by name, and `foldjax plan`
 checks a spelling without running anything or writing into the store (with or
 without `--json` and `--shard`). Seeds fan out the same way — `--seeds 0 1 2` (or `--seed 0
@@ -1806,8 +1809,11 @@ What an omitted setting runs, and how to name either side:
 
 `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=pallas`,
 `PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=pallas`,
-`OPENFOLD3_TRIANGLE_BACKEND=cueq-pallas` and `--option glu_backend=pallas`
-still name the kernels explicitly; off a GPU they refuse to run.
+`OPENFOLD3_TRIANGLE_BACKEND=cueq-pallas` (or `--option
+triangle_kernel=cueq-pallas`) and `--option glu_backend=pallas` still name the
+kernels explicitly; off a GPU they refuse to run. On OpenFold3,
+`triangle_kernel=auto` is the omitted default in every column above -- and
+`xla` under context parallelism -- not a fixed kernel.
 
 Where each default is decided:
 

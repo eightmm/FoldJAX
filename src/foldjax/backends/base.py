@@ -178,9 +178,12 @@ class Backend(ABC):
         change how many structures come back without changing the exit code.
         """
         options = execution.translate(
-            execution.normalize(
-                dict(request.options),
-                native={name for name, _ in self.execution_options.values()},
+            execution.spell_dtypes(
+                execution.normalize(
+                    dict(request.options),
+                    native={name for name, _ in self.execution_options.values()},
+                ),
+                self.execution_options,
             ),
             self.execution_options,
             model=self.name,

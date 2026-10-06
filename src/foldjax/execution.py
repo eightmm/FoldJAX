@@ -78,10 +78,53 @@ from typing import Any
 KNOBS: dict[str, tuple[str, ...]] = {
     "dtype": ("float32", "bfloat16"),
     "matmul_precision": ("highest", "high"),
-    "triangle_kernel": ("auto", "cueq", "cueq-full", "xla"),
+    "triangle_kernel": ("auto", "cueq", "cueq-full", "cueq-pallas", "xla"),
     "attention_kernel": ("auto", "tokamax", "xla"),
     "deterministic": ("off", "on"),
 }
+
+#: A native value meaning "pass nothing": the backend's own omitted default
+#: decides. For an `auto` whose answer depends on the platform or the device
+#: count, which a fixed native value cannot say -- so `auto` and omitting the
+#: knob are one run, not two.
+BACKEND_DEFAULT: Any = object()
+
+#: Every spelling of a width the ports accept, to its neutral name. Protenix
+#: and OpenDDE spell their native widths `fp32`/`bf16`, the other ports
+#: `float32`/`bfloat16`; a caller should not need to know which.
+DTYPE_SPELLINGS: dict[str, str] = {
+    "float32": "float32",
+    "fp32": "float32",
+    "f32": "float32",
+    "bfloat16": "bfloat16",
+    "bf16": "bfloat16",
+}
+
+
+def _is_dtype_option(name: str) -> bool:
+    return name == "dtype" or name.endswith("_dtype")
+
+
+def spell_dtypes(
+    options: dict[str, Any], table: dict[str, tuple[str, dict[str, Any]]]
+) -> dict[str, Any]:
+    """Rewrite every width spelling to the one its destination accepts.
+
+    The neutral `dtype` takes the neutral vocabulary; a backend's own
+    `*_dtype` options take that backend's, read from its `dtype` entry in
+    `table` (the neutral spelling where it has none). Values that are not a
+    width spelling -- `auto`, a typo -- pass through for the backend to judge.
+    """
+    native = (table.get("dtype") or (None, {}))[1]
+    out = dict(options)
+    for name, value in options.items():
+        if not _is_dtype_option(name) or not isinstance(value, str):
+            continue
+        neutral = DTYPE_SPELLINGS.get(value.strip().lower())
+        if neutral is None:
+            continue
+        out[name] = neutral if name == "dtype" else native.get(neutral, neutral)
+    return out
 
 #: The `deterministic` entry a backend puts in its `execution_options`, in the
 #: two shapes the ports need.
@@ -215,7 +258,8 @@ def translate(
                 f"{knob} and the native option {native_name!r} were both set "
                 f"for {model}; pass one of them"
             )
-        out[native_name] = native_value
+        if native_value is not BACKEND_DEFAULT:
+            out[native_name] = native_value
     return out
 
 
