@@ -314,8 +314,7 @@ this backend's dialect can carry from a
 FoldJAX job document, and `native_only_features` names abilities the model has
 but the common adapter cannot safely reach: `templates` and `affinity` where
 the dialect lacks the field, and the native-only inputs the port consumes --
-`user_ccd` (AlphaFold 3), `ligand_file` (Protenix, OpenDDE),
-`contact_constraints` (Boltz-2, Protenix), and
+`user_ccd` (AlphaFold 3), `ligand_file` (Protenix, OpenDDE), and
 `cyclic_polymer` (Boltz-2, OpenFold3). These are reachable only through native
 input. Templates are the case that matters: backend support does not imply
 that every input route honors a per-job template. `pocket_constraints` is a
@@ -325,7 +324,13 @@ common `constraints` field, `max_distance=None` takes each model's upstream
 default, and the manifest's `constraints` records the value used
 (`docs/input.md`, "Pocket constraints"). On OpenDDE it is dropped and recorded
 under `ignored_constraints` like a native constraint; AlphaFold 3 and ESMFold2
-refuse it. `multi_residue_ligand` is a common feature for every model but
+refuse it. `contact_constraints` is a common feature for Boltz-2 and
+Protenix: `Job(..., contacts=[Contact(("A", 2), ("B", 3), max_distance=8.0)])`
+writes a `contact` item into the same `constraints` list, `max_distance=None`
+takes Boltz-2's upstream 6.0 and is refused by Protenix, which has no
+default, and a contact on a ligand is refused (`docs/input.md`, "Contact
+constraints"). OpenDDE drops and records it like a pocket; AlphaFold 3,
+ESMFold2 and OpenFold3 refuse it. `multi_residue_ligand` is a common feature for every model but
 OpenFold3, whose v0.5.0 release raises on more than one code:
 `Ligand("G", ccd=("NAG", "NAG", "BMA"))` writes a `ccd` list, one chain of
 three residues that `Bond`s number 1, 2, 3 (`docs/input.md`, "Multi-residue

@@ -31,7 +31,7 @@ silently: FoldJAX warns and records it in `foldjax_run.json` under
 `ignored_msas` or `ignored_templates`, and `ignore_nucleic_msa=false` /
 `ignore_templates=false` refuse the job instead. A constraint OpenDDE's
 upstream inference build never reads -- a native job's `constraint`, or a
-common job's pocket `constraints` -- follows the same rule (below). Everything else -- chemistry, bonds, modifications, affinity, a
+common job's pocket or contact `constraints` -- follows the same rule (below). Everything else -- chemistry, bonds, modifications, affinity, a
 template form the backend cannot take -- is refused, because discarding it
 would change the science without changing the exit code.
 
@@ -290,10 +290,11 @@ nucleic-acid chain, is refused: OpenFold3 reads one source per protein chain.
 exactly this reason, generated from the same translation table the writer uses.
 `native_only_features` also names what only a native input can reach:
 AlphaFold 3's user-defined CCD entries, ligands read from a file (Protenix,
-OpenDDE), contact constraints (Boltz-2, Protenix) and cyclic polymers (Boltz-2,
-OpenFold3). The common schema has no field for any of them; pass the model's
-native file instead. Pocket constraints and ligands of several CCD components
-are common fields ([pocket constraints](#pocket-constraints),
+OpenDDE) and cyclic polymers (Boltz-2, OpenFold3). The common schema has no
+field for any of them; pass the model's native file instead. Pocket and
+contact constraints and ligands of several CCD components are common fields
+([pocket constraints](#pocket-constraints),
+[contact constraints](#contact-constraints),
 [multi-residue ligands](#multi-residue-ligands-glycans)).
 
 OpenDDE is absent from that constraint list on purpose. It shares Protenix's
@@ -306,8 +307,8 @@ silently: the featurizer drops the field before the shared Protenix code can
 build a `constraint_feature` from it, warns, and the run manifest lists the job
 under `ignored_constraints` (an empty list when no job had one, null for every
 other backend). `--option ignore_constraints=false` refuses such a job
-instead, at `plan` as well as `predict`. A common job's pocket `constraints`
-follows the same rule on OpenDDE ([below](#pocket-constraints)). Covalent
+instead, at `plan` as well as `predict`. A common job's pocket or contact
+`constraints` follows the same rule on OpenDDE ([below](#pocket-constraints)). Covalent
 links reach OpenDDE through `covalent_bonds` (the common `bonds`), as upstream
 says.
 
@@ -423,6 +424,41 @@ In Python: `Job(..., pockets=[Pocket("L", [("A", 2), ("A", 5)])])`.
 | Protenix | `constraint.pocket` by entity/copy; one pocket; only weights with a constraint embedder read it, so the released default profile refuses it as it refuses a native one | none upstream: required |
 | OpenDDE | dropped as upstream drops a constraint, with a warning and an `ignored_constraints` record; `ignore_constraints=false` refuses | — |
 | AlphaFold 3, ESMFold2 | refused: no such field upstream | — |
+
+### Contact constraints
+
+```yaml
+entities:
+  - {type: protein, id: [A], sequence: ACDEFGHIK, unpaired_msa: a.a3m}
+  - {type: protein, id: [B], sequence: MKVLS, unpaired_msa: b.a3m}
+constraints:
+  - contact: {token1: [A, 2], token2: [B, 3], max_distance: 8.0}
+```
+
+A contact asks for two residues to lie within `max_distance` (Å) of each
+other. Each token is `[chain_id, residue_index]`, 1-based as in `bonds`, and
+is checked against the chain's length (a ligand's length is its number of CCD
+codes). `max_distance` is optional; omitted, the model runs its own upstream
+default, and `foldjax_run.json` records each contact under `constraints`
+(`kind: contact`, `token1`, `token2`, `max_distance`, `max_distance_source`).
+Pockets and contacts may share one `constraints` list. In Python:
+`Job(..., contacts=[Contact(("A", 2), ("B", 3), max_distance=8.0)])`.
+
+A contact on a ligand is refused everywhere. Boltz-2 addresses a ligand in a
+contact by an atom name of its first residue, never by residue
+(`parse/schema.py` `token_spec_to_ids`), and Protenix, for a residue that
+spans several tokens -- every ligand residue, and a modified polymer residue
+-- uses one token drawn at random with `torch.randint`
+(`constraint_featurizer.py` `ContactFeaturizer.generate_spec_constraint`),
+which a common job cannot reproduce. Write such a contact, or Boltz-2's
+`force`, in the model's native input.
+
+| model | what the contact becomes | omitted `max_distance` |
+|---|---|---|
+| Boltz-2 | `constraints: - contact: {token1, token2, max_distance}`; several allowed, within one chain too | 6.0 (`parse/schema.py`) |
+| Protenix | `constraint.contact` entries `{entity1, copy1, position1, entity2, copy2, position2, max_distance}` (a token contact); the two residues must be on different chains and not modified, as upstream requires; only weights with a constraint embedder read it, so the released default profile refuses it, as it refuses a pocket | none upstream: required |
+| OpenDDE | dropped as upstream drops a constraint, with a warning and an `ignored_constraints` record (`keys`, `contacts`); `ignore_constraints=false` refuses | — |
+| AlphaFold 3, ESMFold2, OpenFold3 | refused: no contact field upstream (OpenFold3 v0.5.0's query has only `pocket_constraint`) | — |
 
 ### Multi-residue ligands (glycans)
 

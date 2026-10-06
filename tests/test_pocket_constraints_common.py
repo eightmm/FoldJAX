@@ -259,9 +259,8 @@ def test_the_capability_record_moves_pockets_to_the_common_schema() -> None:
         )
     for model in ("alphafold3", "esmfold2", "opendde"):
         assert "pocket_constraints" not in common_schema_features(model), model
-    assert "contact_constraints" in native_only_features(
-        "boltz2", capabilities("boltz2")
-    )
+    # Contacts are common too now (tests/test_contact_constraints_common.py).
+    assert "contact_constraints" in common_schema_features("boltz2")
 
 
 def test_job_builder_round_trips_pockets() -> None:

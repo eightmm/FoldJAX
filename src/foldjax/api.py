@@ -1165,8 +1165,9 @@ def _predict_once(
     # What `templates="auto"` searched, per chain; None when nothing was asked
     # to search, so the manifest keeps "not searched" apart from "found none".
     template_search: list[dict[str, Any]] | None = None
-    # A common job's pocket constraints: each as written into the native input,
-    # with the distance it runs at, and any dropped as upstream drops them.
+    # A common job's pocket and contact constraints: each as written into
+    # the native input, with the distance it runs at, and any dropped as
+    # upstream drops them.
     constraints: list[dict[str, Any]] | None = None
     common_ignored_constraints: list[dict[str, Any]] = []
     if request.input_format == "foldjax":
@@ -1220,9 +1221,9 @@ def _predict_once(
         )
     # A constraint the backend's upstream never reads: a native one is dropped
     # by the featurizer with a warning and recorded from the caller's input;
-    # a common job's pocket was dropped by the translation above. A native
-    # `ignore_constraints=false` was already refused by `validate_request`, a
-    # common one by the translation.
+    # a common job's constraints were dropped by the translation above. A
+    # native `ignore_constraints=false` was already refused by
+    # `validate_request`, a common one by the translation.
     if asked.input_format != "foldjax":
         ignored_constraints = native_ignored_constraints(asked.input, backend.name)
     elif accepts_ignore_constraints(backend.name):

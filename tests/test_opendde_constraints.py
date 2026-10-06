@@ -186,9 +186,8 @@ def test_native_only_features_say_where_a_constraint_is_read() -> None:
     protenix = native_only_features("protenix", capabilities("protenix"))
     assert "contact_constraints" not in opendde
     assert "pocket_constraints" not in opendde
-    # Protenix's pocket is the common `constraints` field now; contact stays
-    # native-only.
-    assert "contact_constraints" in protenix
+    # Protenix's pocket and contact are the common `constraints` field now.
+    assert "contact_constraints" not in protenix
     assert "pocket_constraints" not in protenix
     assert "ligand_file" in opendde
     # A glycan is the common `ccd` list now (CCD_A_B in this dialect).

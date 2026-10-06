@@ -10,7 +10,7 @@ reference atoms, so it is directional and the matrix is written in full rather
 than as a mirrored triangle. There is no TM-score.
 
 Each structure row carries what its model never read (``ignored_msas``,
-``ignored_templates``, ``ignored_constraints``) and the pocket
+``ignored_templates``, ``ignored_constraints``) and the pocket and contact
 ``constraints`` it ran with, with each ``max_distance`` and whether it came
 from the job or the model's own default: a "matched-input" panel is only
 matched in what the models were given, and those columns say where it was

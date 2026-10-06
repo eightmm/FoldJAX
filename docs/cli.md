@@ -249,8 +249,8 @@ matches it (`structure_verified`), and what the model never read
 (`ignored_msas`, `ignored_templates`; empty for a native input, which FoldJAX
 does not inspect, except a native OpenDDE job's `templatesPath` or RNA
 `unpairedMsaPath` that its released defaults drop; and `ignored_constraints`,
-a native OpenDDE job's `constraint` or a common job's pocket `constraints`,
-which upstream never reads). A failed run is a row with `status: failed` and its error;
+a native OpenDDE job's `constraint` or a common job's `constraints`, which
+upstream never reads). A failed run is a row with `status: failed` and its error;
 a field a backend refused never reaches a structure, so it only ever appears
 there. `--json` alone still prints the manifests.
 

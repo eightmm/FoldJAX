@@ -35,6 +35,7 @@ from foldjax.compare import compare_directory
 from foldjax.confidence_arrays import ConfidenceArrays, load_confidence_arrays
 from foldjax.job import (
     Bond,
+    Contact,
     Dna,
     Job,
     Ligand,
@@ -89,6 +90,7 @@ __all__ = [
     "BatchReport",
     "Bond",
     "CacheWarmResult",
+    "Contact",
     "ConfidenceArrays",
     "Dna",
     "FailureRecord",

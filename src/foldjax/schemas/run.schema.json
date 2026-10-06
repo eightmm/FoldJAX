@@ -74,23 +74,38 @@
       "items": {"$ref": "#/$defs/ignored"}
     },
     "ignored_constraints": {
-      "description": "Constraints the backend never reads (OpenDDE) and that the run went without: a native job's constraint, or a common job's pocket constraints; null where the backend has no such gate. Optional: absent from manifests written before it existed.",
+      "description": "Constraints the backend never reads (OpenDDE) and that the run went without: a native job's constraint, or a common job's pocket and contact constraints; null where the backend has no such gate. Optional: absent from manifests written before it existed.",
       "type": ["array", "null"],
       "items": {"$ref": "#/$defs/ignored"}
     },
     "constraints": {
-      "description": "A common job's pocket constraints as the native input carries them: binder chain, [chain, residue] contacts, the max_distance (angstrom) the model runs at, and max_distance_source, 'job' or 'upstream' (the model's own default when the job omitted it). null for native input. Optional: absent from manifests written before it existed.",
+      "description": "A common job's pocket and contact constraints as the native input carries them: a pocket's binder chain and [chain, residue] contacts, or a contact's token1 and token2 ([chain, residue] each); the max_distance (angstrom) the model runs at, and max_distance_source, 'job' or 'upstream' (the model's own default when the job omitted it). null for native input. Optional: absent from manifests written before it existed.",
       "type": ["array", "null"],
       "items": {
-        "type": "object",
-        "required": ["kind", "binder", "contacts", "max_distance", "max_distance_source"],
-        "properties": {
-          "kind": {"const": "pocket"},
-          "binder": {"type": "string"},
-          "contacts": {"description": "[chain_id, residue_index] pairs.", "type": "array", "items": {"type": "array"}},
-          "max_distance": {"type": "number"},
-          "max_distance_source": {"enum": ["job", "upstream"]}
-        }
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["kind", "binder", "contacts", "max_distance", "max_distance_source"],
+            "properties": {
+              "kind": {"const": "pocket"},
+              "binder": {"type": "string"},
+              "contacts": {"description": "[chain_id, residue_index] pairs.", "type": "array", "items": {"type": "array"}},
+              "max_distance": {"type": "number"},
+              "max_distance_source": {"enum": ["job", "upstream"]}
+            }
+          },
+          {
+            "type": "object",
+            "required": ["kind", "token1", "token2", "max_distance", "max_distance_source"],
+            "properties": {
+              "kind": {"const": "contact"},
+              "token1": {"description": "[chain_id, residue_index].", "type": "array"},
+              "token2": {"description": "[chain_id, residue_index].", "type": "array"},
+              "max_distance": {"type": "number"},
+              "max_distance_source": {"enum": ["job", "upstream"]}
+            }
+          }
+        ]
       }
     },
     "weights": {

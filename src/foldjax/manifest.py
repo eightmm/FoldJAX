@@ -1214,13 +1214,14 @@ def describe_run(
     ``ignored_templates`` does the same for templates (``ignore_templates``;
     OpenDDE's native ``templatesPath`` under ``use_template=false``).
     ``ignored_constraints`` lists native jobs whose ``constraint`` the backend
-    never reads (``ignore_constraints``), or a common job's pocket constraint
+    never reads (``ignore_constraints``), or a common job's constraints
     dropped for the same reason; ``None`` where the backend has no such gate.
     ``template_search`` is what ``templates="auto"`` searched, per chain:
     where the hits came from, the date cutoff applied and where it comes from,
     and each template kept; ``None`` when no search was asked for.
-    ``constraints`` lists the common job's pocket constraints as the native
-    input carries them, with the ``max_distance`` each runs at and whether it
+    ``constraints`` lists the common job's pocket and contact constraints
+    (``kind``) as the native input carries them, with the ``max_distance``
+    each runs at and whether it
     came from the job or the upstream default; ``None`` for native input.
     """
     from foldjax import __version__, confidence_arrays

@@ -258,7 +258,7 @@ class Backend(ABC):
             input_format=request.input_format,
         )
 
-        # Governs a native ``constraint`` and a common job's pocket
+        # Governs a native ``constraint`` and a common job's pocket and contact
         # ``constraints`` alike. ``false`` on native input is checked here,
         # where `foldjax plan` sees it; on a common job the translation
         # (`foldjax.input._validate_pocket_constraints`) refuses it.

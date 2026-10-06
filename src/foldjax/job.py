@@ -40,6 +40,7 @@ from typing import Any
 
 __all__ = [
     "Bond",
+    "Contact",
     "Dna",
     "Job",
     "Ligand",
@@ -114,6 +115,35 @@ class Pocket:
         if self.max_distance is not None:
             body["max_distance"] = self.max_distance
         return {"pocket": body}
+
+
+@dataclass(frozen=True, slots=True)
+class Contact:
+    """A contact restraint: two residues within ``max_distance`` (Å).
+
+    Each token is ``(chain_id, residue_index)`` in the 1-based numbering of
+    modifications and bonds. ``max_distance`` left ``None`` takes the model's
+    own upstream default, which the run manifest records. Which models can
+    apply it, and to which residues, is decided at materialization; see
+    ``docs/input.md``.
+    """
+
+    token1: tuple[str, int]
+    token2: tuple[str, int]
+    max_distance: float | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "token1", tuple(self.token1))
+        object.__setattr__(self, "token2", tuple(self.token2))
+
+    def to_document(self) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "token1": list(self.token1),
+            "token2": list(self.token2),
+        }
+        if self.max_distance is not None:
+            body["max_distance"] = self.max_distance
+        return {"contact": body}
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,11 +268,14 @@ class Job:
     affinity_binder: str | None = None
     #: Pocket restraints, the common ``constraints`` field.
     pockets: tuple[Pocket, ...] = ()
+    #: Contact restraints, written after the pockets in ``constraints``.
+    contacts: tuple[Contact, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "entities", tuple(self.entities))
         object.__setattr__(self, "bonds", tuple(self.bonds))
         object.__setattr__(self, "pockets", tuple(self.pockets))
+        object.__setattr__(self, "contacts", tuple(self.contacts))
 
     def to_document(self) -> dict[str, Any]:
         """The mapping a job file holds. Not validated -- see the module docstring."""
@@ -256,8 +289,10 @@ class Job:
             document["properties"] = [
                 {"affinity": {"binder": self.affinity_binder}}
             ]
-        if self.pockets:
-            document["constraints"] = [pocket.to_document() for pocket in self.pockets]
+        if self.pockets or self.contacts:
+            document["constraints"] = [
+                item.to_document() for item in (*self.pockets, *self.contacts)
+            ]
         return document
 
     def write(self, path: str | Path) -> Path:
@@ -326,6 +361,7 @@ class Job:
             _POLYMER_KEYS,
             _affinity_binder,
             _bonds,
+            _contact_constraints,
             _ids,
             _modifications,
             _normalize_sequence,
@@ -446,12 +482,30 @@ class Job:
             )
             for pocket in _pocket_constraints(document, kinds, lengths)
         )
+        residues = {
+            chain: (
+                (len(entity.ccd) if isinstance(entity.ccd, tuple) else 1)
+                if isinstance(entity, Ligand)
+                else len(entity.sequence)
+            )
+            for entity in entities
+            for chain in (entity.id if isinstance(entity.id, tuple) else (entity.id,))
+        }
+        contacts = tuple(
+            Contact(
+                contact["token1"],
+                contact["token2"],
+                max_distance=contact["max_distance"],
+            )
+            for contact in _contact_constraints(document, kinds, residues)
+        )
         return cls(
             str(document.get("name", "")),
             tuple(entities),
             bonds,
             affinity_binder=_affinity_binder(document, chains),
             pockets=pockets,
+            contacts=contacts,
         )
 
     @classmethod

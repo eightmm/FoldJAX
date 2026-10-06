@@ -38,14 +38,15 @@ def test_native_only_features_name_constraints_where_the_port_consumes_them(
         reported[model] = set(described["native_only_features"])
         common[model] = set(described["common_schema_features"])
 
-    assert "contact_constraints" in reported["boltz2"]
-    assert "contact_constraints" in reported["protenix"]
-    # A pocket is the common `constraints` field for the three that read one;
-    # OpenFold3 applies it as pocket-guided sampling and has no contact
-    # constraint.
+    # A pocket is the common `constraints` field for the three that read one,
+    # and a contact for Boltz-2 and Protenix; OpenFold3 applies a pocket as
+    # pocket-guided sampling and has no contact constraint.
     for model in ("boltz2", "protenix", "openfold3"):
         assert "pocket_constraints" in common[model]
         assert "pocket_constraints" not in reported[model]
+    for model in ("boltz2", "protenix"):
+        assert "contact_constraints" in common[model]
+        assert "contact_constraints" not in reported[model]
     assert "contact_constraints" not in reported["openfold3"]
     # ESMFold2 reads the common document itself: nothing is native-only.
     assert reported["esmfold2"] == set()

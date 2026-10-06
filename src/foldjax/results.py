@@ -100,11 +100,12 @@ class RunRecord:
     schema_version: str | None
     manifest: Mapping[str, Any] = field(repr=False, default_factory=dict)
     #: Constraints the backend never read (OpenDDE): a native job's
-    #: ``constraint`` or a common job's pocket ``constraints``; None where the
+    #: ``constraint`` or a common job's ``constraints``; None where the
     #: backend has no such gate or the manifest predates the field.
     ignored_constraints: tuple[Mapping[str, Any], ...] | None = None
-    #: A common job's pocket constraints as the model ran them, each with its
-    #: ``max_distance`` and ``max_distance_source`` (``job`` or ``upstream``);
+    #: A common job's pocket and contact constraints as the model ran them,
+    #: each with its ``max_distance`` and ``max_distance_source`` (``job``
+    #: or ``upstream``);
     #: None for native input or a manifest that predates the field.
     constraints: tuple[Mapping[str, Any], ...] | None = None
 
@@ -438,8 +439,8 @@ def results_table(
     (``ignored_msas``, ``ignored_templates``; None for a native input, which
     is not inspected, except OpenDDE's, whose dropped native templates and RNA
     alignments are listed; and ``ignored_constraints``, an OpenDDE job's native
-    constraint or common pocket constraint), the pocket ``constraints`` a
-    common job ran with (``max_distance`` and its ``max_distance_source``),
+    constraint or common constraints), the pocket and contact ``constraints``
+    a common job ran with (``max_distance`` and its ``max_distance_source``),
     and for a failure its error. ``best_within_model``
     marks the top of that model's own confidence ordering within its run.
     """

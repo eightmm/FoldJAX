@@ -63,6 +63,22 @@ unless it says so here, in its own paragraph.
   `common_schema_features` for the five that translate it. See
   [docs/input.md](docs/input.md#multi-residue-ligands-glycans).
 
+- **A common-schema contact constraint:** `constraints: [{contact: {token1:
+  [A, 2], token2: [B, 3], max_distance}}]` (Python: `Job(contacts=[Contact(...)])`),
+  in the same list as pockets. Boltz-2 receives its own `contact` constraint
+  with upstream's default 6.0 Å when `max_distance` is omitted; Protenix a
+  token `constraint.contact` by entity, copy and position, with
+  `max_distance` required and the two residues on different chains, as
+  upstream requires, read only by weights with a constraint embedder. A
+  contact on a ligand residue is refused (Boltz-2 addresses a ligand by atom
+  name; Protenix, like for a modified residue, draws a random atom token).
+  OpenDDE drops and records it under `ignored_constraints` like a pocket;
+  AlphaFold 3, ESMFold2 and OpenFold3 refuse it. The manifest's
+  `constraints` records each contact (`kind: contact`) with its distance and
+  source, and results and compare carry it. `contact_constraints` moves from
+  `native_only_features` to `common_schema_features` for Boltz-2 and
+  Protenix. See [docs/input.md](docs/input.md#contact-constraints).
+
 ### Changed
 
 - **A Boltz-2 template's `chain_id` now names the author chain, as it does for
