@@ -11,7 +11,8 @@ mesh and keeps resolving from the sample count without one.
 Three kinds of gate, and they answer different questions:
 
 * the **resolution rule** -- which automatic answer an omitted option gets,
-  that an explicit one always wins, and that a serial run is untouched;
+  that an explicit one always wins, and that a serial run is untouched up
+  to the largest measured serial size;
 * the **identity rule** -- the compile profile records the width the run
   resolves to, so the chunked mesh program and the unchunked rollout cannot
   share one cache namespace and an explicitly spelled width that *is* the
@@ -34,10 +35,12 @@ from pathlib import Path
 
 import pytest
 
+from foldjax import memory_policy
 from foldjax.api import resolve_cache_dir
 from foldjax.backends.openfold3 import OpenFold3Backend
 from foldjax.models.openfold3.inference import (
     CP_DIFFUSION_CHUNK_SIZE,
+    SERIAL_DIFFUSION_CHUNK_ABOVE_TOKENS,
     released_config,
     resolve_diffusion_chunk_size,
 )
@@ -111,6 +114,32 @@ def test_the_resolver_takes_the_sentinel_and_nothing_else() -> None:
     # branch is what makes the two one program, and folding here would make
     # the config claim a width the caller did not ask for.
     assert resolve_diffusion_chunk_size(9, num_samples=5, cp_shards=4) == 9
+
+
+def test_serial_auto_width_chunks_above_the_measured_domain() -> None:
+    """Serially the omitted width reads the token count, and only above 4,888.
+
+    4,888 is the largest serial unchunked rollout that has completed, so it and
+    everything below keep the whole sample axis; one token more denoises one
+    sample at a time. An explicit width, ``None`` included, still wins.
+    """
+
+    top = SERIAL_DIFFUSION_CHUNK_ABOVE_TOKENS
+    assert top == memory_policy.OPENFOLD3_CHUNKED_PEAK.domain_tokens[1]
+    resolve = resolve_diffusion_chunk_size
+    assert resolve("auto", num_samples=5, cp_shards=1, n_token=top) is None
+    assert resolve("auto", num_samples=6, cp_shards=1, n_token=top) == 5
+    assert (
+        resolve("auto", num_samples=5, cp_shards=1, n_token=top + 1)
+        == CP_DIFFUSION_CHUNK_SIZE
+    )
+    assert resolve(None, num_samples=5, cp_shards=1, n_token=6568) is None
+    assert resolve(3, num_samples=5, cp_shards=1, n_token=6568) == 3
+    assert (
+        released_config(n_token=6568, n_atom=6568 * 8).diffusion_chunk_size
+        == CP_DIFFUSION_CHUNK_SIZE
+    )
+    assert released_config(n_token=top, n_atom=top * 8).diffusion_chunk_size is None
 
 
 def _request(tmp_path: Path, **options) -> PredictionRequest:

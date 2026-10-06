@@ -40,11 +40,37 @@ def _require_original_fp32(params) -> None:
         raise ValueError("native autocast requires original FP32 parameters")
 
 
+@jax.jit
+def _bf16_device_leaves(leaves: tuple) -> tuple:
+    return tuple(leaf.astype(jnp.bfloat16) for leaf in leaves)
+
+
+def _narrow_leaves(leaves: list, dtype=jnp.bfloat16) -> list:
+    """``leaf.astype(dtype)`` for each leaf, the device ones as one program.
+
+    Cast one at a time, a parameter tree's device leaves compile one
+    ``convert_element_type`` program per distinct shape -- 26 per Protenix
+    process, none slow enough to reach the persistent cache. Grouped, they are
+    one program doing the same elementwise convert, so the bits are the same.
+    Host (NumPy) leaves keep their own host rounding.
+    """
+    grouped = jnp.dtype(dtype) == jnp.dtype(jnp.bfloat16)
+    device = [
+        i for i, leaf in enumerate(leaves) if grouped and isinstance(leaf, jax.Array)
+    ]
+    out = [leaf if i in device else leaf.astype(dtype) for i, leaf in enumerate(leaves)]
+    if device:
+        cast = _bf16_device_leaves(tuple(leaves[i] for i in device))
+        for i, value in zip(device, cast, strict=True):
+            out[i] = value
+    return out
+
+
 def _autocast_linear(value: LinearParams) -> AutocastLinearParams:
-    return AutocastLinearParams(
-        value.weight.astype(jnp.bfloat16),
-        None if value.bias is None else value.bias.astype(jnp.bfloat16),
+    weight, *bias = _narrow_leaves(
+        [value.weight, *(() if value.bias is None else (value.bias,))]
     )
+    return AutocastLinearParams(weight, bias[0] if bias else None)
 
 
 def _autocast_linears(params):
@@ -57,13 +83,25 @@ def _autocast_linears(params):
     reproduces from the *input* dtype. Narrowing the stored affine would be the
     same arithmetic; leaving it FP32 keeps one representation of it.
     """
-    return jax.tree.map(
-        lambda value: (
-            _autocast_linear(value) if isinstance(value, LinearParams) else value
-        ),
-        params,
-        is_leaf=lambda x: isinstance(x, (LinearParams, LayerNormParams)),
-    )
+    is_node = lambda x: isinstance(x, (LinearParams, LayerNormParams))  # noqa: E731
+    nodes, treedef = jax.tree.flatten(params, is_leaf=is_node)
+    operands = [
+        operand
+        for node in nodes
+        if isinstance(node, LinearParams)
+        for operand in (node.weight, node.bias)
+        if operand is not None
+    ]
+    narrowed = iter(_narrow_leaves(operands))
+    rebuilt = [
+        AutocastLinearParams(
+            next(narrowed), None if node.bias is None else next(narrowed)
+        )
+        if isinstance(node, LinearParams)
+        else node
+        for node in nodes
+    ]
+    return jax.tree.unflatten(treedef, rebuilt)
 
 
 def _narrow_arrays(params, dtype=jnp.bfloat16):
@@ -72,14 +110,17 @@ def _narrow_arrays(params, dtype=jnp.bfloat16):
     This is the trunk's realisation: with BF16 activations an ordinary BF16
     weight already gives a BF16 matmul, so no node needs to change type.
     """
-    return jax.tree.map(
-        lambda value: (
-            value.astype(dtype)
-            if hasattr(value, "dtype") and jnp.issubdtype(value.dtype, jnp.floating)
-            else value
-        ),
-        params,
-    )
+    leaves, treedef = jax.tree.flatten(params)
+    floating = [
+        i
+        for i, value in enumerate(leaves)
+        if hasattr(value, "dtype") and jnp.issubdtype(value.dtype, jnp.floating)
+    ]
+    for i, cast in zip(
+        floating, _narrow_leaves([leaves[i] for i in floating], dtype), strict=True
+    ):
+        leaves[i] = cast
+    return jax.tree.unflatten(treedef, leaves)
 
 
 def native_input_autocast_params(params):

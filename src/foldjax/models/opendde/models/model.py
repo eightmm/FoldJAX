@@ -9,6 +9,7 @@ from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from foldjax.models import _capture
 from foldjax.models._compile_policy import policy_pools, select
@@ -430,8 +431,12 @@ def _validate_static_structural_features(
             + ", ".join(missing)
         )
 
-    restype = jnp.asarray(features["restype"])
-    ref_pos = jnp.asarray(features["ref_pos"])
+    # Concrete features are checked on the host: every check below is an
+    # integer or boolean comparison, so NumPy gives the same answer without
+    # compiling a small device program per shape. Traced features keep `jnp`.
+    xp = np if check_values else jnp
+    restype = xp.asarray(features["restype"])
+    ref_pos = xp.asarray(features["ref_pos"])
     if restype.ndim != 2 or restype.shape[-1] != 32:
         raise ValueError(
             "OpenDDE static inference requires unbatched restype [N_residue, 32]"
@@ -443,8 +448,8 @@ def _validate_static_structural_features(
     n_residue = int(restype.shape[0])
     n_atom = int(ref_pos.shape[0])
 
-    parent = jnp.asarray(features["parent_residue_idx"])
-    role = jnp.asarray(features["subtoken_role_id"])
+    parent = xp.asarray(features["parent_residue_idx"])
+    role = xp.asarray(features["subtoken_role_id"])
     if parent.ndim != 1 or role.ndim != 1:
         raise ValueError(
             "OpenDDE static inference currently supports unbatched structural metadata"
@@ -483,7 +488,7 @@ def _validate_static_structural_features(
         {name: shape for name, shape in optional_shapes.items() if name in features}
     )
     for name, expected in expected_shapes.items():
-        actual = tuple(jnp.asarray(features[name]).shape)
+        actual = tuple(np.shape(features[name]))
         if actual != expected:
             raise ValueError(f"{name} expected shape {expected}, got {actual}")
 
@@ -502,7 +507,7 @@ def _validate_static_structural_features(
         "atom_to_tokatom_idx",
     )
     for name in integer_indices:
-        if not jnp.issubdtype(jnp.asarray(features[name]).dtype, jnp.integer):
+        if not jnp.issubdtype(xp.asarray(features[name]).dtype, jnp.integer):
             raise TypeError(f"{name} must have an integer dtype")
 
     def has_out_of_range(
@@ -515,8 +520,7 @@ def _validate_static_structural_features(
             # concrete features before tracing instead; see
             # `opendde_infer_compiled`.
             return False
-        invalid = jnp.any((value < 0) | (value >= upper_bound))
-        return bool(jax.device_get(invalid))
+        return bool(np.any((value < 0) | (value >= upper_bound)))
 
     if has_out_of_range(parent, n_residue):
         raise ValueError("parent_residue_idx contains an out-of-range residue index")
@@ -526,44 +530,34 @@ def _validate_static_structural_features(
     ):
         raise ValueError("subtoken_role_id contains an unsupported structural role")
     if has_out_of_range(
-        jnp.asarray(features["atom_to_structural_token_idx"]),
+        xp.asarray(features["atom_to_structural_token_idx"]),
         n_structural,
     ):
         raise ValueError(
             "atom_to_structural_token_idx contains an out-of-range token index"
         )
-    residue_atom_map = jnp.asarray(features["atom_to_token_idx"])
+    residue_atom_map = xp.asarray(features["atom_to_token_idx"])
     if has_out_of_range(residue_atom_map, n_residue):
         raise ValueError("atom_to_token_idx contains an out-of-range residue index")
 
     if require_residue_confidence_mask and check_values:
-        token_mask = jnp.asarray(
-            features.get(
-                "token_padding_mask",
-                jnp.ones((n_residue,), dtype=bool),
-            )
+        token_mask = np.asarray(
+            features.get("token_padding_mask", np.ones((n_residue,), dtype=bool))
         ).astype(bool)
-        atom_mask = jnp.asarray(
-            features.get(
-                "atom_padding_mask",
-                jnp.ones((n_atom,), dtype=bool),
-            )
+        atom_mask = np.asarray(
+            features.get("atom_padding_mask", np.ones((n_atom,), dtype=bool))
         ).astype(bool)
         representative_mask = (
-            jnp.asarray(features["distogram_rep_atom_mask"]).astype(bool) & atom_mask
+            np.asarray(features["distogram_rep_atom_mask"]).astype(bool) & atom_mask
         )
-        representative_counts = (
-            jnp.zeros(
-                (n_residue,),
-                dtype=jnp.int32,
-            )
-            .at[residue_atom_map]
-            .add(representative_mask.astype(jnp.int32))
+        representative_counts = np.zeros((n_residue,), dtype=np.int32)
+        np.add.at(
+            representative_counts,
+            np.asarray(residue_atom_map),
+            representative_mask.astype(np.int32),
         )
         valid_counts = bool(
-            jax.device_get(
-                jnp.all(representative_counts == token_mask.astype(jnp.int32))
-            )
+            np.all(representative_counts == token_mask.astype(np.int32))
         )
         if not valid_counts:
             raise ValueError(

@@ -27,7 +27,7 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
-from foldjax import memory_policy
+from foldjax import memory_policy, progress
 from foldjax.models import _representations
 from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models.protenix.amp_policy import (
@@ -619,16 +619,17 @@ def _run(
                 # once per job.
                 embeddings: dict[tuple[Any, ...], np.ndarray] = {}
                 for seed in _resolve_seeds(config, job.get("modelSeeds")):
-                    features = featurize_protein_json(
-                        job,
-                        base_dir=config.input_json.parent,
-                        n_queries=config.n_queries,
-                        n_keys=config.n_keys,
-                        max_msa_depth=config.max_msa_depth,
-                        use_rna_msa=config.use_rna_msa,
-                        use_template=config.use_template,
-                        seed=seed,
-                    )
+                    with progress.part("featurize"):
+                        features = featurize_protein_json(
+                            job,
+                            base_dir=config.input_json.parent,
+                            n_queries=config.n_queries,
+                            n_keys=config.n_keys,
+                            max_msa_depth=config.max_msa_depth,
+                            use_rna_msa=config.use_rna_msa,
+                            use_template=config.use_template,
+                            seed=seed,
+                        )
                     language_model_profile = None
                     if esm_provider is not None and padding_config is not None:
                         from foldjax.padding import (
@@ -688,13 +689,14 @@ def _run(
                                 target_length=language_model_target,
                             )
 
-                        features = add_esm_embeddings(
-                            esm_features,
-                            job,
-                            provider=_memoized_embedding(
-                                provider, embeddings, language_model_profile
-                            ),
-                        )
+                        with progress.part("language model"):
+                            features = add_esm_embeddings(
+                                esm_features,
+                                job,
+                                provider=_memoized_embedding(
+                                    provider, embeddings, language_model_profile
+                                ),
+                            )
                         features["residue_index"] = esm_features["residue_index"] + 1
                         # ``dict(features)`` shares every dense atom-category array.
                         # The loop's final temporary would otherwise retain them
@@ -816,13 +818,15 @@ def _run(
                 )
                 print(f"{job['name']}: {padding_plan.message('protenix')}")
                 if on_padding_plan is not None:
-                    valid_tokens = jnp.asarray(features["token_padding_mask"]).astype(
+                    # Host NumPy: an integer count, so nothing to round, and
+                    # no small device program compiled per padded shape.
+                    valid_tokens = np.asarray(features["token_padding_mask"]).astype(
                         bool
                     )
-                    valid_asym = jnp.asarray(features["asym_id"])[valid_tokens]
+                    valid_asym = np.asarray(features["asym_id"])[valid_tokens]
                     on_padding_plan(
                         padding_plan,
-                        {"chains": int(jnp.max(valid_asym)) + 1},
+                        {"chains": int(np.max(valid_asym)) + 1},
                     )
             # A query with fewer than four template hits is padded up to four,
             # and the embedder runs the whole pairformer stack once per row.
@@ -915,14 +919,15 @@ def _run(
     # calls. A mini ESM/ISM provider is reconstructed per native invocation;
     # keeping the structure tree would overlap it on the next seed.
     params_loader = _prepared_params_loader or _load_prepared_params
-    if _prepared_params_loader is None:
-        params = params_loader(config.weights, config.trunk_dtype)
-    else:
-        params = params_loader(
-            config.weights,
-            config.trunk_dtype,
-            not used_esm_provider,
-        )
+    with progress.part("weight load"):
+        if _prepared_params_loader is None:
+            params = params_loader(config.weights, config.trunk_dtype)
+        else:
+            params = params_loader(
+                config.weights,
+                config.trunk_dtype,
+                not used_esm_provider,
+            )
     # A JSON job was featurized once per seed and carries that one seed; a
     # static feature archive has no featurization to repeat.
     job_seeds = [

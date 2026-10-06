@@ -969,3 +969,77 @@ def test_flock_recheck_allows_only_one_cross_process_builder(tmp_path: Path) -> 
 
     assert builders.value == 1
     assert {results.get(timeout=2) for _ in processes} == {b"complete"}
+
+
+def _glu_model():
+    """A jitted ``(params, rng_key, batch)`` callable holding one Tokamax op."""
+
+    tokamax = pytest.importorskip("tokamax")
+
+    def forward(params, rng_key, batch):
+        del batch
+        return tokamax.gated_linear_unit(
+            params, rng_key, activation=jax.nn.silu, implementation="xla"
+        )
+
+    x = jax.numpy.ones((4, 16, 8), jax.numpy.float32)
+    w = jax.numpy.ones((8, 2, 32), jax.numpy.float32)
+    return tokamax, jax.jit(forward), x, w
+
+
+def test_executed_program_drops_the_tokamax_payload_that_discovery_reads() -> None:
+    tokamax, forward, x, w = _glu_model()
+
+    class _ColdStore:
+        compatibility_key = ("cold",)
+
+        def call(self, *, rng_key, batch, lower, invoke):
+            self.discovered = lower()
+            return invoke()
+
+    store = _ColdStore()
+    runner = SimpleNamespace(_model=functools.partial(forward, x))
+    assert persistent.install_store(runner, store)
+    with persistent.without_tokamax_hlo_payload():
+        # A cold process: discovery lowers first, then the model executes.
+        runner._model(w, None)
+        executed = forward.lower(x, w, None)
+    discovered = store.discovered.as_text()
+    assert "xla_metadata_payload" in discovered
+    assert len(tokamax.autotuning.get_bound_args(store.discovered)) == 1
+    # The executed trace is not the one discovery made, and so carries no
+    # payload for XLA to serialise into the persistent-cache entry.
+    assert "xla_metadata_payload" not in executed.as_text()
+    assert "metadata_payload" not in executed.compile().as_text()
+    # Outside the block a fresh trace is Tokamax's own, payload included.
+    shipped = _glu_model()[1].lower(x, w, None)
+    assert "xla_metadata_payload" in shipped.as_text()
+
+
+def test_glu_heuristic_tile_is_clamped_to_sm120_shared_memory() -> None:
+    tile = pytest.importorskip("tokamax._src.ops.gated_linear_unit.pallas_triton")
+    budget = persistent._SMALL_SHARED_MEMORY_BYTES[12]
+    # Tokamax's heuristic for AlphaFold 3's f32 transition GLU (m=6144, n=256).
+    asked = tile.Config(block_m=128, block_n=64, block_k=32, num_warps=4, num_stages=4)
+    assert asked.num_stages * persistent._glu_stage_bytes(asked, 4) > budget
+    fitted = persistent.clamp_glu_config(asked, itemsize=4, budget_bytes=budget)
+    assert fitted.num_stages * persistent._glu_stage_bytes(fitted, 4) <= budget
+    # Fewest changes: one stage less, same tile and the same K step.
+    assert fitted == dataclasses.replace(asked, num_stages=3)
+    # A bf16 tile that already fits is left alone.
+    assert persistent.clamp_glu_config(asked, itemsize=2, budget_bytes=budget) == asked
+    # With one stage left, the tile shrinks rather than overflowing.
+    tight = persistent.clamp_glu_config(asked, itemsize=4, budget_bytes=16 * 1024)
+    assert tight.num_stages == 1 and tight.block_k == 32
+    assert persistent._glu_stage_bytes(tight, 4) <= 16 * 1024
+
+
+def test_glu_clamp_applies_only_to_small_shared_memory_devices() -> None:
+    tile = pytest.importorskip("tokamax._src.ops.gated_linear_unit.pallas_triton")
+    op = tile.PallasTritonGatedLinearUnit
+    original = op.__dict__["_get_heuristics_config"]
+    for capability, patched in (("12.0", True), ("9.0", False), (None, False)):
+        device = SimpleNamespace(compute_capability=capability)
+        with persistent.glu_heuristics_within_shared_memory(device):
+            assert (op.__dict__["_get_heuristics_config"] is not original) is patched
+        assert op.__dict__["_get_heuristics_config"] is original

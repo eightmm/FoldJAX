@@ -32,7 +32,7 @@ from typing import Any
 
 import numpy as np
 
-from foldjax import memory_policy
+from foldjax import memory_policy, progress
 from foldjax.cache import PERSISTENT_CACHE_MIN_COMPILE_SECS, trusted_compile_cache_dir
 from foldjax.execution import auto_diffusion_chunk_size, resolved_matmul_precision
 from foldjax.models import _capture, _representations
@@ -367,22 +367,23 @@ def featurize(
                 use_msa_server=use_msa_server,
             )
         )
-    feats, manifest, struct_dir = featurize_yaml(
-        Path(input),
-        work,
-        Path(mols),
-        use_msa_server=use_msa_server,
-        msa_server_url=msa_server_url,
-        msa_pairing_strategy=msa_pairing_strategy,
-        msa_server_username=msa_server_username,
-        msa_server_password=msa_server_password,
-        msa_api_key_header=msa_api_key_header,
-        msa_api_key_value=msa_api_key_value,
-        cache_dir=Path(feature_cache) if feature_cache is not None else None,
-        max_msa_depth=max_msa_depth,
-        msa_deletions=msa_deletions,
-        seed=seed,
-    )
+    with progress.part("featurize"):
+        feats, manifest, struct_dir = featurize_yaml(
+            Path(input),
+            work,
+            Path(mols),
+            use_msa_server=use_msa_server,
+            msa_server_url=msa_server_url,
+            msa_pairing_strategy=msa_pairing_strategy,
+            msa_server_username=msa_server_username,
+            msa_server_password=msa_server_password,
+            msa_api_key_header=msa_api_key_header,
+            msa_api_key_value=msa_api_key_value,
+            cache_dir=Path(feature_cache) if feature_cache is not None else None,
+            max_msa_depth=max_msa_depth,
+            msa_deletions=msa_deletions,
+            seed=seed,
+        )
     if manifest is not None:
         record_id = manifest.records[0].id
     else:
@@ -1009,16 +1010,17 @@ def predict(
     )
     if _runtime is not None:
         _runtime.prepare(affinity_requested=affinity_requested)
-    params = (
-        load_params(confidence_weights)
-        if _runtime is None
-        else _runtime.load_params(
-            "primary",
-            confidence_weights,
-            load_params,
-            placement=parameter_identity,
+    with progress.part("weight load"):
+        params = (
+            load_params(confidence_weights)
+            if _runtime is None
+            else _runtime.load_params(
+                "primary",
+                confidence_weights,
+                load_params,
+                placement=parameter_identity,
+            )
         )
-    )
     affinity_model_params = None
     if affinity_requested:
         affinity_path = (

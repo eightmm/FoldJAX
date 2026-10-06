@@ -347,7 +347,7 @@ def test_native_cli_pads_after_sampling_and_reports_profile(
 
     cycles = seen["cycle_msa_features"]
     assert len(cycles) == 2
-    assert all(cycle["msa"].shape == (64, 256) for cycle in cycles)
+    assert all(cycle["msa"].shape == (64, 128) for cycle in cycles)
     assert seen["preserve_prefix_rng"] is True
     for name in ("init_noise", "step_noises", "rotations", "translations"):
         assert name not in seen
@@ -366,10 +366,10 @@ def test_native_cli_pads_after_sampling_and_reports_profile(
                 "structural_tokens": 3,
             },
             "target": {
-                "tokens": 256,
-                "atoms": 6144,
+                "tokens": 128,
+                "atoms": 3072,
                 "msa": 64,
-                "structural_tokens": 512,
+                "structural_tokens": 256,
             },
             "changed": True,
             "static": {"chains": 1},
@@ -468,7 +468,7 @@ def test_native_cli_falls_back_to_materialized_tapes_for_other_prngs(
         "num_samples": 1,
         "num_steps": 1,
         "actual_atom": 3,
-        "target_atom": 6144,
+        "target_atom": 3072,
     }
 
 

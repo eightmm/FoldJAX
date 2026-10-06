@@ -18,7 +18,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from foldjax import memory_policy
+from foldjax import memory_policy, progress
 from foldjax.cache import PERSISTENT_CACHE_MIN_COMPILE_SECS, trusted_compile_cache_dir
 from foldjax.models import _representations
 from foldjax.models._feature_storage import compact_msa_storage
@@ -113,7 +113,8 @@ def _load_jobs(path: Path) -> list[dict[str, Any]]:
 def _featurize(job: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     from foldjax.models.opendde.data.featurize_json import featurize_opendde_json
 
-    return featurize_opendde_json(job, **kwargs)
+    with progress.part("featurize"):
+        return featurize_opendde_json(job, **kwargs)
 
 
 def _load_weights(path: Path) -> Any:
@@ -685,10 +686,11 @@ def run_prediction(
         # The callback is backend-internal. It receives the parser-validated
         # weight path and compute dtype; direct callers keep the native loader.
         params_loader = _prepared_params_loader or _load_prepared_params
-        if _prepared_params_loader is None:
-            params = params_loader(config.weights, config.trunk_dtype)
-        else:
-            params = params_loader(config.weights, config.trunk_dtype, True)
+        with progress.part("weight load"):
+            if _prepared_params_loader is None:
+                params = params_loader(config.weights, config.trunk_dtype)
+            else:
+                params = params_loader(config.weights, config.trunk_dtype, True)
         if confidence_dtype is not None:
             # After the loader on purpose: `cast_confidence_params` refuses an
             # already-narrowed tree, and the trunk cast never reaches the

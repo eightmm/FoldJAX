@@ -682,8 +682,23 @@ def _blocked_width(n_token: int) -> int | None:
 #: nearest number for this knob is Boltz-2's +33% at 3k tokens
 #: (`docs/scale-rows-master-2026-09-10.md`). A caller who has the room says so
 #: -- any width at or above the sample count, or ``None`` through the Python
-#: API, is the unchunked rollout -- and serial runs are untouched.
+#: API, is the unchunked rollout -- and serial runs keep the whole axis up to
+#: :data:`SERIAL_DIFFUSION_CHUNK_ABOVE_TOKENS`.
 CP_DIFFUSION_CHUNK_SIZE = 1
+
+#: The largest token count a serial run keeps the whole sample axis at when the
+#: width is omitted; above it the rollout denoises one sample at a time.
+#:
+#: It is the top of :data:`memory_policy.OPENFOLD3_CHUNKED_PEAK`'s domain, the
+#: largest size a serial unchunked rollout has completed on one card (59,214.8
+#: MiB at 4,888 tokens), so every measured serial run keeps the program it
+#: had. Above it nothing unchunked has completed: the widest value is the
+#: diffusion pair conditioning ``f32[5, N, N, 128]`` -- 57 GiB at 4,888 and
+#: 102.9 GiB at 6,568, where the jctc-v2 run asked the allocator for 102.90 GiB
+#: and failed -- and one sample at a time is a fifth of it, the lever the OOM
+#: message has always named. The price is wall time in the denoiser, which is
+#: what the v011-perf-check job measures at 4,888 and 6,568.
+SERIAL_DIFFUSION_CHUNK_ABOVE_TOKENS = 4888
 
 
 def resolve_diffusion_chunk_size(
@@ -691,22 +706,27 @@ def resolve_diffusion_chunk_size(
     *,
     num_samples: int,
     cp_shards: int,
+    n_token: int | None = None,
 ) -> int | None:
     """Turn ``requested`` into the width the rollout will run.
 
     ``"auto"`` is the omitted spelling and the only one that resolves: under a
-    mesh to :data:`CP_DIFFUSION_CHUNK_SIZE`, and serially to
+    mesh to :data:`CP_DIFFUSION_CHUNK_SIZE`; serially to the same width above
+    :data:`SERIAL_DIFFUSION_CHUNK_ABOVE_TOKENS` tokens (when ``n_token`` is
+    given), and otherwise to
     :func:`~foldjax.execution.auto_diffusion_chunk_size`'s width from the
     sample count, which is ``None`` at every released schedule. Anything else
     is the caller's own and is returned as written, ``None`` included -- so an
-    explicit ``None`` still asks for the unchunked rollout under a mesh, and is
-    a different config, a different compiled program and a different cache
-    namespace from having said nothing.
+    explicit ``None`` still asks for the unchunked rollout under a mesh or
+    above the threshold, and is a different config, a different compiled
+    program and a different cache namespace from having said nothing.
     """
 
     if requested != "auto":
         return requested
     if cp_shards > 1:
+        return CP_DIFFUSION_CHUNK_SIZE
+    if n_token is not None and n_token > SERIAL_DIFFUSION_CHUNK_ABOVE_TOKENS:
         return CP_DIFFUSION_CHUNK_SIZE
     return auto_diffusion_chunk_size(num_samples)
 
@@ -1867,6 +1887,7 @@ def released_config(
             diffusion_chunk_size,
             num_samples=num_samples,
             cp_shards=cp_shards,
+            n_token=n_token,
         ),
         msa_depth=msa_depth,
         cp_shards=cp_shards,

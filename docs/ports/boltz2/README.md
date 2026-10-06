@@ -204,7 +204,7 @@ foldjax cache warm \
   --cache-dir outputs/compile_cache
 ```
 
-`--padding` puts the job on the shared 256-token grid, so one executable serves
+`--padding` puts the job on the shared token grid, so one executable serves
 every target in its band. Repeat for the token/atom/MSA capacities the
 deployment expects and for profiles whose sample count, steps, recycles,
 backends, confidence, guidance, or affinity mode differ. The command runs one

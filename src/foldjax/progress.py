@@ -24,9 +24,11 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, TextIO
 
 _ENV = "FOLDJAX_PROGRESS"
@@ -102,6 +104,9 @@ class Timeline:
 
     def __init__(self) -> None:
         self._phases: dict[str, float] = {}
+        self._parts: dict[str, float] = {}
+        self._counts: dict[str, int] = {}
+        self._lock = threading.Lock()
 
     @contextmanager
     def stage(self, label: str, *, detail: str = "") -> Iterator[None]:
@@ -121,5 +126,135 @@ class Timeline:
     def summary(self) -> dict[str, Any]:
         return {label: round(value, 2) for label, value in self._phases.items()}
 
+    @contextmanager
+    def recording(self) -> Iterator[None]:
+        """Attribute :func:`part` blocks and JAX compile events to this run.
 
-__all__ = ["Timeline", "disable", "enable", "enabled", "header", "message"]
+        The parts nest inside the top-level phases rather than beside them, so
+        they are kept apart from :meth:`summary`, whose phases sum to the run.
+        """
+        _install_jax_listeners()
+        token = _ACTIVE.set(self)
+        try:
+            yield
+        finally:
+            _ACTIVE.reset(token)
+
+    def _add_part(self, label: str, seconds: float) -> None:
+        with self._lock:
+            self._parts[label] = self._parts.get(label, 0.0) + seconds
+
+    def _count(self, label: str) -> None:
+        with self._lock:
+            self._counts[label] = self._counts.get(label, 0) + 1
+
+    def breakdown(self) -> dict[str, Any] | None:
+        """Where the time inside the phases went, or None if nothing was seen.
+
+        ``seconds`` holds what was measured directly: the parts a backend
+        marked with :func:`part` (weight load, featurize, language model) and
+        the compiler's own events -- ``trace``, ``lower``, ``compile`` (XLA's
+        compile time with the persistent-cache reads taken out) and ``cache
+        restore`` (those reads). ``execute and host`` is the ``predict`` phase
+        less every part recorded inside it: device execution plus whatever host
+        work no part names. It is derived, not measured.
+        """
+        with self._lock:
+            parts = dict(self._parts)
+            counts = dict(self._counts)
+        if not parts and not counts:
+            return None
+        compile_total = parts.pop(_COMPILE_OR_RESTORE, 0.0)
+        if compile_total:
+            parts["compile"] = max(0.0, compile_total - parts.get("cache restore", 0.0))
+        seconds = {label: round(value, 2) for label, value in parts.items()}
+        predict = self._phases.get("predict")
+        if predict is not None:
+            inside = sum(parts.values())
+            seconds["execute and host"] = round(max(0.0, predict - inside), 2)
+        return {"seconds": seconds, "counts": counts}
+
+
+#: The timeline :func:`part` and the JAX listeners report into, if any.
+_ACTIVE: ContextVar[Timeline | None] = ContextVar("foldjax_timeline", default=None)
+
+#: XLA's compile event spans the persistent-cache read too; the listener files
+#: it here and :meth:`Timeline.breakdown` splits the read back out.
+_COMPILE_OR_RESTORE = "_compile_or_restore"
+
+#: JAX monitoring event -> breakdown label, for durations and for counts.
+_JAX_DURATIONS = {
+    "/jax/core/compile/jaxpr_trace_duration": "trace",
+    "/jax/core/compile/jaxpr_to_mlir_module_duration": "lower",
+    "/jax/core/compile/backend_compile_duration": _COMPILE_OR_RESTORE,
+    "/jax/compilation_cache/cache_retrieval_time_sec": "cache restore",
+}
+_JAX_COUNTS = {
+    "/jax/compilation_cache/cache_hits": "cache hits",
+    "/jax/compilation_cache/cache_misses": "cache misses",
+}
+_listeners_lock = threading.Lock()
+_listeners_installed = False
+
+
+#: Whether a :func:`part` is open in this context. A compile inside one (the
+#: conversion programs a weight loader builds, say) is already inside that
+#: part's time, so it is counted but not timed again: parts stay disjoint and
+#: the ``execute and host`` remainder is not subtracted twice.
+_IN_PART: ContextVar[bool] = ContextVar("foldjax_in_part", default=False)
+
+
+def _on_duration(event: str, seconds: float, **_kwargs: Any) -> None:
+    label = _JAX_DURATIONS.get(event)
+    timeline = _ACTIVE.get()
+    if label is None or timeline is None:
+        return
+    if label == _COMPILE_OR_RESTORE:
+        timeline._count("programs")
+    if not _IN_PART.get():
+        timeline._add_part(label, float(seconds))
+
+
+def _on_event(event: str, **_kwargs: Any) -> None:
+    label = _JAX_COUNTS.get(event)
+    timeline = _ACTIVE.get()
+    if label is not None and timeline is not None:
+        timeline._count(label)
+
+
+def _install_jax_listeners() -> None:
+    """Register the two process-wide listeners once.
+
+    They are inert outside :meth:`Timeline.recording`: an event is filed under
+    the timeline active in the thread that compiled and dropped when there is
+    none, so compiles a backend runs on its own worker threads go unattributed
+    rather than attributed to the wrong run.
+    """
+    global _listeners_installed
+    with _listeners_lock:
+        if _listeners_installed:
+            return
+        from jax import monitoring
+
+        monitoring.register_event_duration_secs_listener(_on_duration)
+        monitoring.register_event_listener(_on_event)
+        _listeners_installed = True
+
+
+@contextmanager
+def part(label: str) -> Iterator[None]:
+    """Time one named part of a phase, when a recording timeline is active."""
+    timeline = _ACTIVE.get()
+    if timeline is None or _IN_PART.get():
+        yield
+        return
+    token = _IN_PART.set(True)
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        timeline._add_part(label, time.perf_counter() - started)
+        _IN_PART.reset(token)
+
+
+__all__ = ["Timeline", "disable", "enable", "enabled", "header", "message", "part"]

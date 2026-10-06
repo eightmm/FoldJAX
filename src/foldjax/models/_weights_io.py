@@ -273,7 +273,7 @@ def _host_narrow_batch(values: list[np.ndarray], dtype: jnp.dtype) -> list[Any]:
     host_values = [value.astype(dtype, copy=False) for value in values]
     device_values: list[Any] = []
     try:
-        device_values = [jnp.asarray(value) for value in host_values]
+        device_values = [jax.device_put(value) for value in host_values]
         for value in device_values:
             value.block_until_ready()
     except Exception:
@@ -289,7 +289,7 @@ def _device_narrow_batch(values: list[np.ndarray], dtype: jnp.dtype) -> list[Any
     wide_values: list[Any] = []
     narrowed_values: list[Any] = []
     try:
-        wide_values = [jnp.asarray(value) for value in values]
+        wide_values = [jax.device_put(value) for value in values]
         narrowed_values = [
             value if value.dtype == dtype else value.astype(dtype)
             for value in wide_values
@@ -322,6 +322,10 @@ def _leaf_to_numpy(value: Any) -> Any:
 
 
 def _leaf_to_jax(value: Any) -> Any:
+    # `device_put`, not `jnp.asarray`: the latter is a traced operation and
+    # compiles one `jit(stage)` program per distinct leaf shape and dtype (102
+    # in a CPU Protenix process), none slow enough to reach the persistent
+    # cache. The transfer canonicalises dtypes identically and is bit-exact.
     if isinstance(value, np.ndarray):
-        return jnp.asarray(value)
+        return jax.device_put(value)
     return value
