@@ -137,11 +137,15 @@ def process_input(
     msa_server_password: str | None = None,
     api_key_header: str | None = None,
     api_key_value: str | None = None,
+    max_msa_seqs: int = 8192,
 ) -> None:
     """Parse a single input file and dump its processed structure/record tree.
 
     Protein chains with no explicit MSA are sent to the configured server when
     ``use_msa_server`` is true; ``msa: empty`` remains single-sequence mode.
+    ``max_msa_seqs`` is upstream's parse cap of the same name (``main.py``
+    ``process_input``, ``--max_msa_seqs``, released 8192): how many rows of
+    each alignment file are read at all, before the featurizer's own cap.
     """
     # Parse data
     if path.suffix.lower() in (".fa", ".fas", ".fasta"):
@@ -204,11 +208,11 @@ def process_input(
             if msa_path.suffix == ".a3m":
                 from foldjax.models.boltz2.data.parse.a3m import parse_a3m
 
-                msa = parse_a3m(msa_path, taxonomy=None, max_seqs=8192)
+                msa = parse_a3m(msa_path, taxonomy=None, max_seqs=max_msa_seqs)
             elif msa_path.suffix == ".csv":
                 from foldjax.models.boltz2.data.parse.csv import parse_csv
 
-                msa = parse_csv(msa_path, max_seqs=8192)
+                msa = parse_csv(msa_path, max_seqs=max_msa_seqs)
             else:
                 msg = f"MSA file {msa_path} not supported, only a3m or csv."
                 raise RuntimeError(msg)
@@ -250,6 +254,7 @@ def process_inputs(
     msa_server_password: str | None = None,
     api_key_header: str | None = None,
     api_key_value: str | None = None,
+    max_msa_seqs: int = 8192,
 ) -> Manifest:
     """Process the input data, writing the ``processed/`` tree + manifest.
 
@@ -347,6 +352,7 @@ def _process_into(
         msa_server_password=msa_server_password,
         api_key_header=api_key_header,
         api_key_value=api_key_value,
+        max_msa_seqs=max_msa_seqs,
         processed_msa_dir=processed_msa_dir,
         processed_constraints_dir=processed_constraints_dir,
         processed_templates_dir=processed_templates_dir,

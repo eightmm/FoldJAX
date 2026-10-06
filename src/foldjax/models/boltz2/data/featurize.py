@@ -24,6 +24,26 @@ from foldjax.models.boltz2.data.types import Manifest, StructureV2
 _FEATURE_CACHE_SCHEMA = "structures-without-pickle"
 
 
+#: Upstream's released ``--max_msa_seqs``: the rows of each alignment file its
+#: preprocessing reads at all (``main.py`` ``process_input``).
+UPSTREAM_PARSE_CAP = 8192
+
+
+def parse_cap(max_msa_depth: int | None) -> int:
+    """How many rows of an alignment file preprocessing reads.
+
+    Upstream's released 8192, raised to ``max_msa_depth`` when that is
+    larger: the featurizer cap (released 16384) can only keep rows the parse
+    kept, so without this a deeper ``max_msa_depth`` would change nothing.
+    A smaller ``max_msa_depth`` leaves the parse at 8192 and is applied by the
+    featurizer, as before.
+    """
+
+    if max_msa_depth is None:
+        return UPSTREAM_PARSE_CAP
+    return max(UPSTREAM_PARSE_CAP, int(max_msa_depth))
+
+
 def _cache_opts(
     use_msa_server: bool,
     msa_server_url: str,
@@ -163,6 +183,7 @@ def featurize_yaml(
         api_key_header=msa_api_key_header,
         api_key_value=msa_api_key_value,
         boltz2=True,
+        max_msa_seqs=parse_cap(max_msa_depth),
     )
 
     processed = out_dir / "processed"
