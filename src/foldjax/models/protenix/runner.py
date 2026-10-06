@@ -799,13 +799,15 @@ def _run(
                 )
                 print(f"{job['name']}: {padding_plan.message('protenix')}")
                 if on_padding_plan is not None:
-                    valid_tokens = jnp.asarray(features["token_padding_mask"]).astype(
+                    # Host NumPy: an integer count, so nothing to round, and
+                    # no small device program compiled per padded shape.
+                    valid_tokens = np.asarray(features["token_padding_mask"]).astype(
                         bool
                     )
-                    valid_asym = jnp.asarray(features["asym_id"])[valid_tokens]
+                    valid_asym = np.asarray(features["asym_id"])[valid_tokens]
                     on_padding_plan(
                         padding_plan,
-                        {"chains": int(jnp.max(valid_asym)) + 1},
+                        {"chains": int(np.max(valid_asym)) + 1},
                     )
             # A query with fewer than four template hits is padded up to four,
             # and the embedder runs the whole pairformer stack once per row.

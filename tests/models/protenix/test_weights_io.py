@@ -235,7 +235,8 @@ def test_device_narrow_batch_releases_wide_buffers_only_after_completion(
         wide_values.append(wide)
         return wide
 
-    monkeypatch.setattr(weights_impl.jnp, "asarray", fake_asarray)
+    # The upload is a `device_put` transfer (no per-shape staging program).
+    monkeypatch.setattr(weights_impl.jax, "device_put", fake_asarray)
 
     narrowed = _device_narrow_batch(
         [np.zeros(1, dtype=np.float32), np.ones(1, dtype=np.float32)],

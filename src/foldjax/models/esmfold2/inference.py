@@ -734,8 +734,12 @@ def predict(
         features,
         compact_token_bond_encoding=compact_token_bond_encoding,
     )
+    # `device_put` for host arrays: the same bits and dtype canonicalisation
+    # as `jnp.asarray`, without one staging program per feature shape.
     arrays = {
-        name: jnp.asarray(value)
+        name: jax.device_put(value)
+        if isinstance(value, np.ndarray)
+        else jnp.asarray(value)
         for name, value in model_features.items()
         if name not in all_atom_featurisation.OUTPUT_METADATA_FEATURES
     }

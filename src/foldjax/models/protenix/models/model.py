@@ -7,6 +7,7 @@ from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from foldjax.models import _capture
 from foldjax.models._compile_policy import policy_pools, select
@@ -914,11 +915,12 @@ def protenix_infer_compiled(
     # The confidence scores size their per-chain loops by the chain count,
     # which they read off `asym_id`. That is a value, so it is resolved here on
     # the concrete features and travels as a static argument.
-    asym_id = jnp.asarray(input_feature_dict["asym_id"])
+    # Host NumPy: an integer read, so no device program per token count.
+    asym_id = np.asarray(input_feature_dict["asym_id"])
     token_padding_mask = input_feature_dict.get("token_padding_mask")
     if token_padding_mask is not None:
-        asym_id = asym_id[jnp.asarray(token_padding_mask).astype(bool)]
-    kwargs.setdefault("n_chain", int(jnp.max(asym_id)) + 1)
+        asym_id = asym_id[np.asarray(token_padding_mask).astype(bool)]
+    kwargs.setdefault("n_chain", int(np.max(asym_id)) + 1)
     compact_requested = bool(kwargs.get("compact_confidence_distance_bins", True))
     distance_params = getattr(
         getattr(params, "confidence", None), "distance_embedding", None
