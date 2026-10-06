@@ -41,8 +41,15 @@ SERIAL_DIFFUSION_LOWERING_SHA256 = (
 
 #: Mesh arms. 96 atoms over 12 tokens with a 4/8 block divides a 1-D four-way
 #: split, a 2x2 grid and a 3x3 grid, and the 1-D layout is exercised as well
-#: because it is the one ``cp_layout="auto"`` selects.
-MESH_ARMS = ((4, "1d"), (4, "2d"), (9, "2d"))
+#: because it is the one ``cp_layout="auto"`` selects. The 2x2 grid runs
+#: nightly (``slow``): pull requests keep the 1-D arm and the 3x3 grid, whose
+#: odd side tells a ring hop's direction apart -- on a side of two, a step
+#: either way reaches the same neighbour.
+MESH_ARMS = (
+    (4, "1d"),
+    pytest.param(4, "2d", marks=pytest.mark.slow),
+    (9, "2d"),
+)
 
 #: Real-atom arms. 90 of 96 leaves the last two query blocks shifted off their
 #: own atoms; 60 of 96 leaves nine blocks reading atoms 52..59, three whole
