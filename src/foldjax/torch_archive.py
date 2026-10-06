@@ -378,7 +378,7 @@ def _prefetch_stored_members(
             return info.filename, buffer
 
         located.sort(key=lambda item: -item[0].file_size)
-        workers = max(1, min(len(os.sched_getaffinity(0)), _PREFETCH_MAX_WORKERS))
+        workers = max(1, min(os.process_cpu_count() or 1, _PREFETCH_MAX_WORKERS))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             return dict(pool.map(read, located))
     finally:

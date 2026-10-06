@@ -36,3 +36,7 @@
   device at run time and from the `platform` option or JAX's default backend
   in the cache namespace, so an omitted CPU run shares the explicit `xla`
   namespace.
+- **Checkpoint loading no longer needs `os.sched_getaffinity`**, which macOS
+  lacks: the torch-archive prefetch and the ESMC cast-on-load size their
+  thread pools with `os.process_cpu_count()` (the CPUs this process may use,
+  Python 3.13+).

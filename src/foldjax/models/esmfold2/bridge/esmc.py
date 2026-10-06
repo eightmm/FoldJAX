@@ -181,7 +181,7 @@ class _CastBatches:
     def __enter__(self) -> _CastBatches:
         if self._extents:
             self._fd = os.open(self._shard, os.O_RDONLY)
-            workers = min(len(os.sched_getaffinity(0)), 16)
+            workers = min(os.process_cpu_count() or 1, 16)
             self._pool = ThreadPoolExecutor(max_workers=max(workers, 1))
         return self
 

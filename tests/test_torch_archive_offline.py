@@ -41,6 +41,17 @@ def test_reads_the_checked_in_archive_without_torch() -> None:
         assert got.tobytes() == bytes.fromhex(spec["bytes"]), key
 
 
+def test_reads_where_the_os_has_no_cpu_affinity(monkeypatch) -> None:
+    """macOS has no `os.sched_getaffinity`; the parallel prefetch must not need it."""
+    import os
+
+    # As macOS's `os` is: no affinity call, and `process_cpu_count` falls
+    # back to `cpu_count` (Linux's own reads the attribute removed here).
+    monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+    monkeypatch.setattr(os, "process_cpu_count", os.cpu_count)
+    test_reads_the_checked_in_archive_without_torch()
+
+
 @pytest.mark.parametrize(
     ("offset", "size", "stride", "message"),
     [
