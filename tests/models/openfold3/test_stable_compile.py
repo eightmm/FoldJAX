@@ -843,8 +843,10 @@ def test_retargeted_cache_symlink_is_repopulated_on_memory_hit(
     inference._compiled_predict.clear_cache()
     first = tmp_path / "cache-a"
     second = tmp_path / "cache-b"
-    first.mkdir()
-    second.mkdir()
+    # Owner-only, as the compile-cache trust check requires: under a
+    # group-writable umask (0002) a plain mkdir() makes a directory it refuses.
+    first.mkdir(mode=0o700)
+    second.mkdir(mode=0o700)
     scope = tmp_path / "cache"
     scope.symlink_to(first, target_is_directory=True)
     args = (
