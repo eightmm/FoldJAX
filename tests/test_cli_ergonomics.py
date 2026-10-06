@@ -266,6 +266,7 @@ def test_doctor_reports_a_missing_raw_preprocess_distribution(
 ) -> None:
     from foldjax import doctor
 
+    monkeypatch.setattr(doctor, "_installed_from_checkout", lambda: True)
     installed_version = doctor._distribution_version
     monkeypatch.setattr(
         doctor,
@@ -281,12 +282,115 @@ def test_doctor_reports_a_missing_raw_preprocess_distribution(
     assert readiness["ready"] is False
     assert readiness["missing_distributions"] == ["biotite"]
     assert "biotite" in readiness["reason"]
-    assert readiness["setup"] == ["uv sync --extra openfold3-preprocess"]
+    assert readiness["setup"] == ["uv sync --inexact --extra openfold3-preprocess"]
+
+
+@pytest.mark.parametrize(
+    ("direct_url", "expected"),
+    [
+        # An editable install is a checkout, managed with uv. `--inexact`,
+        # because a bare `uv sync --extra X` uninstalls every other extra.
+        (
+            '{"url": "file:///src/foldjax", "dir_info": {"editable": true}}',
+            "uv sync --inexact --extra templates",
+        ),
+        # A wheel from an index (no direct_url.json) or a local wheel file is
+        # a pip-style install, extended with pip.
+        (None, "pip install 'foldjax[templates]'"),
+        (
+            '{"url": "file:///dist/foldjax.whl", "archive_info": {}}',
+            "pip install 'foldjax[templates]'",
+        ),
+        ("not json", "pip install 'foldjax[templates]'"),
+    ],
+)
+def test_install_hints_match_how_foldjax_was_installed(
+    monkeypatch, direct_url, expected
+) -> None:
+    from importlib import metadata
+
+    from foldjax import doctor
+
+    class Distribution:
+        def read_text(self, name):
+            assert name == "direct_url.json"
+            return direct_url
+
+    monkeypatch.setattr(metadata, "distribution", lambda name: Distribution())
+    assert doctor.install_command("templates") == expected
+
+
+def test_a_source_tree_on_the_path_is_a_checkout(monkeypatch) -> None:
+    from importlib import metadata
+
+    from foldjax import doctor
+
+    def absent(name):
+        raise metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(metadata, "distribution", absent)
+    assert doctor.install_command("cuda13") == "uv sync --inexact --extra cuda13"
+
+
+def test_doctor_reports_template_search_by_its_own_variables(
+    monkeypatch, capsys
+) -> None:
+    """FoldJAX's search reads FOLDJAX_TEMPLATE_*; Protenix's native lines say so."""
+    import importlib.util
+
+    from foldjax import doctor
+
+    monkeypatch.setattr(doctor, "_installed_from_checkout", lambda: False)
+    monkeypatch.setenv("FOLDJAX_TEMPLATE_MMCIF_DIR", "/mirror/mmcif")
+    monkeypatch.delenv("FOLDJAX_TEMPLATE_COMMAND", raising=False)
+    real = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *args, **kwargs: (
+            None if name == "kalign" else real(name, *args, **kwargs)
+        ),
+    )
+
+    assert main(["doctor", "--json"]) == 0
+    lines = json.loads(capsys.readouterr().out)["templates"]
+
+    assert any(line.startswith("realignment   unavailable") for line in lines)
+    assert "              pip install 'foldjax[templates]'" in lines
+    assert "  FOLDJAX_TEMPLATE_MMCIF_DIR '/mirror/mmcif'" in lines
+    assert "  FOLDJAX_TEMPLATE_COMMAND unset" in lines
+    # The native pipeline is configured through its own options, never an
+    # environment variable the caller is told to set.
+    assert not any("PROTENIX_TEMPLATE_MMCIF_DIR" in line for line in lines)
+    native = [line for line in lines if line.startswith("protenix-native ")]
+    assert len(native) == 3
+    others = [line for line in lines if line not in native]
+    assert not any(
+        "PROTENIX_KALIGN_BINARY" in line or "release_date_cache" in line
+        for line in others
+    )
+
+
+def test_doctor_flags_stale_editable_metadata(monkeypatch, capsys) -> None:
+    from foldjax import __version__, doctor
+
+    installed_version = doctor._distribution_version
+    monkeypatch.setattr(
+        doctor,
+        "_distribution_version",
+        lambda name: "0.3.0" if name == "foldjax" else installed_version(name),
+    )
+
+    assert main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    assert f"foldjax   {__version__}" in out
+    assert "installed metadata says 0.3.0" in out
 
 
 def test_doctor_reports_incompatible_extra_versions(monkeypatch, capsys) -> None:
     from foldjax import doctor
 
+    monkeypatch.setattr(doctor, "_installed_from_checkout", lambda: True)
     monkeypatch.setattr(doctor, "_distribution_version", lambda _name: "0.0.0")
 
     assert main(["doctor", "--json"]) == 0
@@ -304,7 +408,7 @@ def test_doctor_reports_incompatible_extra_versions(monkeypatch, capsys) -> None
     assert (
         "dm-haiku 0.0.0 (requires ==0.0.17)" in alphafold["incompatible_distributions"]
     )
-    assert openfold["setup"] == ["uv sync --extra openfold3-preprocess"]
+    assert openfold["setup"] == ["uv sync --inexact --extra openfold3-preprocess"]
 
 
 def test_cache_gc_reports_before_it_removes(tmp_path: Path, capsys) -> None:
@@ -886,6 +990,9 @@ def test_a_missing_optional_package_names_its_extra(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     import foldjax.cli as cli
+    from foldjax import doctor
+
+    monkeypatch.setattr(doctor, "_installed_from_checkout", lambda: True)
 
     def missing(request):
         raise ModuleNotFoundError("No module named 'biotite'", name="biotite")
@@ -897,7 +1004,7 @@ def test_a_missing_optional_package_names_its_extra(
     with pytest.raises(SystemExit):
         cli.entrypoint()
 
-    assert "uv sync --extra openfold3-preprocess" in capsys.readouterr().err
+    assert "uv sync --inexact --extra openfold3-preprocess" in capsys.readouterr().err
 
 
 def test_the_cli_reports_its_version(capsys) -> None:

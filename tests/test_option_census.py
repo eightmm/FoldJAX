@@ -46,7 +46,7 @@ removed on its own leaves the case untested rather than passing.
 Where a disagreement is legitimate it is an entry in an explicit allow-list
 with the code that justifies it, never a softened assertion -- and an entry
 whose justification could not be verified says so, the way
-`OUTSIDE_THE_IDENTITY` in the seed records that AlphaFold 3's
+`outside_the_identity` in the seed records that AlphaFold 3's
 `kernel_autotuning` exemption rests on a comment rather than a measurement.
 """
 
@@ -438,7 +438,7 @@ def test_a_declared_knob_forks_the_compile_identity(name: str, native: str) -> N
 def test_the_precision_knob_provably_changes_the_program() -> None:
     """The measurement the xfail reason above rests on, run here.
 
-    The seed test's `OUTSIDE_THE_IDENTITY` entry records that AlphaFold 3's
+    The seed test's `outside_the_identity` entry records that AlphaFold 3's
     `kernel_autotuning` exemption is a comment and not a measurement, and
     leaves it a deferral. This one does not have to be: the two values differ
     in lowered StableHLO on CPU, in this process, in milliseconds. A
@@ -703,7 +703,7 @@ def test_spelling_a_released_default_selects_the_namespace_omitting_it_selects(
 #:
 #: Four categories, and each entry says which evidence it rests on. Where the
 #: justification could not be verified the entry says so rather than being
-#: quietly dropped, the way the seed's `OUTSIDE_THE_IDENTITY` records that
+#: quietly dropped, the way the seed's `outside_the_identity` records that
 #: AlphaFold 3's `kernel_autotuning` exemption is a comment.
 _WHY_NO_STRIP_ENTRY = {
     "alphafold3": {

@@ -94,6 +94,9 @@ def test_a_run_records_model_weights_schedule_and_seed(tmp_path: Path) -> None:
     assert len(manifest["input"]["sha256"]) == 64
     assert manifest["samples"][0]["scores"] == {"ptm": 0.5}
     assert manifest["foldjax"] == foldjax.__version__
+    source = manifest["foldjax_source"]
+    assert source["version"] == foldjax.__version__
+    assert source["git_describe"] is None or isinstance(source["git_describe"], str)
     assert manifest["runtime"]["jax"]
 
 
@@ -755,3 +758,75 @@ def test_an_unseeded_request_draws_where_upstream_seeds_nothing(
     assert (planned.seed, planned.seed_source) == (None, "random")
     with pytest.raises(ValueError, match="not resolved"):
         planned.resolved_seeds
+
+
+def _fake_git(monkeypatch, *, toplevel: Path, described: str = "v0.1.0-3-gabc1234"):
+    """Answer the two git calls `source_describe` makes, recording each."""
+    import subprocess
+
+    from foldjax import manifest
+
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs["env"]))
+        output = str(toplevel) if "rev-parse" in command else described
+        return subprocess.CompletedProcess(command, 0, stdout=output + "\n")
+
+    monkeypatch.setattr(manifest.shutil, "which", lambda name: "/usr/bin/git")
+    monkeypatch.setattr(manifest.subprocess, "run", run)
+    return calls
+
+
+@pytest.fixture
+def _fresh_source_describe():
+    from foldjax import manifest
+
+    manifest.source_describe.cache_clear()
+    yield
+    manifest.source_describe.cache_clear()
+
+
+def test_a_checkout_records_its_git_describe(monkeypatch, _fresh_source_describe):
+    from foldjax import manifest
+
+    package = Path(manifest.__file__).resolve().parent
+    calls = _fake_git(monkeypatch, toplevel=package.parents[1])
+
+    assert manifest.source_describe() == "v0.1.0-3-gabc1234"
+    assert calls[1][0][-3:] == ["describe", "--always", "--dirty"]
+    # `--dirty` refreshes the index unless optional locks are off, and the
+    # checkout may be shared with other processes.
+    assert all(env["GIT_OPTIONAL_LOCKS"] == "0" for _command, env in calls)
+
+
+def test_an_enclosing_unrelated_repository_lends_no_revision(
+    monkeypatch, tmp_path: Path, _fresh_source_describe
+) -> None:
+    """A venv inside some other checkout must not report that checkout."""
+    from foldjax import manifest
+
+    calls = _fake_git(monkeypatch, toplevel=tmp_path)
+
+    assert manifest.source_describe() is None
+    assert len(calls) == 1
+
+
+def test_no_git_or_a_failing_git_records_none(
+    monkeypatch, _fresh_source_describe
+) -> None:
+    import subprocess
+
+    from foldjax import manifest
+
+    monkeypatch.setattr(manifest.shutil, "which", lambda name: None)
+    assert manifest.source_describe() is None
+
+    manifest.source_describe.cache_clear()
+    monkeypatch.setattr(manifest.shutil, "which", lambda name: "/usr/bin/git")
+
+    def fail(command, **kwargs):
+        raise subprocess.CalledProcessError(128, command)
+
+    monkeypatch.setattr(manifest.subprocess, "run", fail)
+    assert manifest.source_describe() is None

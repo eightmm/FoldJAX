@@ -544,7 +544,8 @@ def test_setup_all_takes_the_models_held_back_for_their_size(
     assert "foldjax runtime prepare --model alphafold3" in out
     # The two modalities that need no weights still need an answer.
     assert "msa" in out and "ColabFold" in out
-    assert "PROTENIX_TEMPLATE_MMCIF_DIR" in out
+    assert "FOLDJAX_TEMPLATE_MMCIF_DIR" in out
+    assert "protenix-native mmCIF     --option template_mmcif_dir=DIR" in out
 
 
 def test_setup_converts_a_placed_protenix_v2_checkpoint(

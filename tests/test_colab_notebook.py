@@ -4,6 +4,7 @@ import ast
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -114,7 +115,7 @@ def test_colab_notebook_installs_the_detected_accelerator_runtime() -> None:
     install = _cell_source("install-foldjax")
     all_source = "\n".join(_source(cell) for cell in _code_cells())
 
-    assert 'FOLDJAX_REF = "d21757f14cb199b9ead7fa298076ad68119a0dc7"' in install
+    assert 'FOLDJAX_REF = "v0.1.0"' in install
     assert 'install_extras = ["cuda12"] if ACCELERATOR_KIND == "gpu" else []' in install
     assert 'install_extras.append("alphafold3")' in install
     assert 'install_extras.append("openfold3-preprocess")' in install
@@ -142,6 +143,35 @@ def test_colab_notebook_installs_the_detected_accelerator_runtime() -> None:
         assert f'"{package}": "{version}"' in all_source
     assert 'device.platform == ACCELERATOR_KIND' in all_source
     assert 'required_packages.add("libtpu")' in all_source
+
+
+def test_colab_installs_from_a_release_tag() -> None:
+    """The notebook installs a named release, not a bare development commit."""
+    match = re.search(
+        r'^FOLDJAX_REF = "([^"]+)"$', _cell_source("install-foldjax"), re.MULTILINE
+    )
+    assert match is not None
+    pin = match.group(1)
+    assert re.fullmatch(r"v\d+\.\d+\.\d+", pin), pin
+
+    git = shutil.which("git")
+    if git is None or not (ROOT / ".git").exists():
+        pytest.skip("git or the repository metadata is unavailable")
+    listed = subprocess.run(
+        [git, "-C", str(ROOT), "tag", "--list", pin],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if listed.returncode != 0 or listed.stdout.strip() != pin:
+        pytest.skip(f"tag {pin} is not present in this checkout")
+    resolved = subprocess.run(
+        [git, "-C", str(ROOT), "rev-parse", "--verify", f"refs/tags/{pin}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert resolved.returncode == 0, resolved.stderr
 
 
 def test_colab_install_stops_before_pip_on_wrong_python(monkeypatch) -> None:
@@ -2598,8 +2628,10 @@ def test_readme_links_to_the_colab_workflow_and_the_doc_explains_it() -> None:
         "https://colab.research.google.com/github/eightmm/FoldJAX/blob/"
         "main/notebooks/FoldJAX_Colab.ipynb"
     ) in readme
-    assert "[Colab notebook](notebooks/FoldJAX_Colab.ipynb)" in readme
-    assert "[docs/colab.md](docs/colab.md)" in readme
+    # Absolute, because PyPI renders this file too (test_distribution.py).
+    blob = "https://github.com/eightmm/FoldJAX/blob/main/"
+    assert f"[Colab notebook]({blob}notebooks/FoldJAX_Colab.ipynb)" in readme
+    assert f"[docs/colab.md]({blob}docs/colab.md)" in readme
     # The one worked example the front page keeps is the multi-model one:
     # running several models over a single input is what FoldJAX does that no
     # publisher's own code does.

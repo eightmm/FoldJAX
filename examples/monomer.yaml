@@ -1,6 +1,12 @@
 # A single protein chain, in the common FoldJAX schema.
 #
-#   foldjax predict --model boltz2 --input examples/monomer.yaml
+#   foldjax predict --model boltz2 --input examples/monomer.yaml --msa auto
+#
+# The chain names no alignment, so every model but ESMFold2 needs an `--msa`
+# choice; the default `none` refuses the job. `--msa auto` searches the ColabFold
+# MMseqs2 server, which sends the sequence off this machine; `--msa single`
+# folds from the sequence alone, offline. complex_with_ligand.json takes the
+# same flag.
 #
 # Any of the six models accepts this file unchanged; that is the point of the
 # common schema. Nothing here is model-specific.

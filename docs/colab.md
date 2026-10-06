@@ -26,7 +26,8 @@ interactive structure selector keeps every model, seed, and sample in one
 viewer. The final ZIP contains the common input, batch report, score table,
 structures, confidence artifacts, and reproducibility manifests for every run.
 
-The notebook installs and verifies the stack for the detected runtime before
+The notebook installs FoldJAX from the `v0.1.0` release tag (`FOLDJAX_REF`)
+and verifies the stack for the detected runtime before
 showing the biomolecule form and prediction stages. A matching install marker,
 verified managed-weight state, and finished prediction manifests make **Run
 all** idempotent: later runs skip work that is already complete. Its cache

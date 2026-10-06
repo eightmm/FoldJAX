@@ -38,7 +38,7 @@ would change the science without changing the exit code.
 The same document can be built in Python instead of written by hand:
 
 ```python
-from foldjax import Job, Ligand, Modification, PredictionRequest, Protein
+from foldjax import Bond, Job, Ligand, Modification, PredictionRequest, Protein
 
 job = Job(
     "example",
@@ -47,12 +47,14 @@ job = Job(
                 modifications=[Modification("SEP", 3)]),
         Ligand("L", ccd="ATP"),
     ],
+    bonds=[Bond(("A", 3, "OG"), ("L", 1, "PA"))],
 )
 request = PredictionRequest(model="protenix", input=job.write("job.json"))
 ```
 
-`Job.write` emits exactly the document above; `Job.read` takes either format
-back.
+`Job.write` emits the document above as JSON, bonds included; a chain id given
+as a string is written as one (`"id": "A"`), which reads the same as `[A]`
+(pass `("A",)` to get the list spelling). `Job.read` takes either format back.
 
 Sequences are normalized where the document is validated: whitespace is
 removed, not trimmed, so a YAML block scalar (`sequence: |`) works; letters are
@@ -331,7 +333,8 @@ sequence to the ColabFold MMseqs2 server** (`FOLDJAX_MSA_SERVER_URL` points at
 your own). For every protein chain that names no `templates`, it reads the
 PDB70 hits (`pdb70.m8`) of the server's ordinary MSA job, as OpenFold3 v0.5.0
 does, downloads each hit's mmCIF from RCSB by PDB id, realigns the query to
-the hit chain with Kalign (the `openfold3-preprocess` extra's `kalign-python`),
+the hit chain with Kalign (`kalign-python`, in the `templates` extra and in
+`openfold3-preprocess`),
 and attaches what the selected model's released inference would keep:
 
 | model | release-date cutoff (default) | selection | form |
@@ -351,6 +354,13 @@ which has no template input, refuses it outright -- both at `foldjax plan`
 already. So is `--templates auto` on a native document, which is passed to
 the backend untouched and so would search nothing; the search applies to
 FoldJAX-format jobs. A chain that names its own templates keeps exactly those.
+
+`--templates auto` is a convenience: a search that cannot run, or a chain whose
+hits are all dropped, warns and folds without searched templates, and the
+manifest's `template_search` records why. `--templates required`
+(`templates="required"`) searches the same way and fails the run instead --
+what a batch script wants, since the fallback it guards against is a
+successful template-free run. It also refuses a job with no protein chain.
 AlphaFold 3 also skips a hit whose author chain spans several polymer chains,
 since its template file must hold exactly one.
 

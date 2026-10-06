@@ -230,7 +230,7 @@ def main(
     parser.add_argument(
         "--kalign-binary",
         type=Path,
-        help="Kalign 3.3.5 executable used for exact template realignment",
+        help="Kalign executable (3.3.5 or newer) used for template realignment",
     )
     # This port's own fitted peak law against the ceiling the allocator
     # reports, in place of the arena preflight that used to warn here and

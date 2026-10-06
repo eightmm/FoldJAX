@@ -3,13 +3,14 @@
 #   foldjax predict --model protenix --input examples/with_alignment.yaml
 #
 # `unpaired_msa` is a path to an .a3m, relative to this file. Every backend
-# translates it into its own dialect: Boltz reads the .a3m directly, Chai gets
-# a sha256-addressed `.aligned.pqt` written for it, and the Protenix-family
-# models get `unpairedMsaPath`. Holding one alignment fixed across models is
-# what makes their results comparable.
+# translates it into its own dialect: Boltz reads the .a3m directly, and
+# AlphaFold 3 and the Protenix-family models get `unpairedMsaPath`. Holding one
+# alignment fixed across models is what makes their results comparable.
 #
-# The stem matters. OpenFold3 selects alignment files by stem and refuses any
-# other name, so `uniref90_hits` is a name every backend accepts.
+# OpenFold3 reads an alignment's source from its file stem. A database stem it
+# knows, such as `uniref90_hits`, is passed through as that source (with that
+# source's row cap); any other name is linked in as `colabfold_main`, whose cap
+# is the highest (16,384 rows, against 10,000 for `uniref90_hits`).
 entities:
   - type: protein
     id: [A]

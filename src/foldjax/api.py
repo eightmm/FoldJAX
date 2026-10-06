@@ -1174,7 +1174,7 @@ def _predict_once(
         ignored_msas = []
         ignored_templates = []
         constraints = []
-        if request.templates == "auto":
+        if request.templates != "none":
             template_search = []
         with timeline.stage("prepare input"):
             try:

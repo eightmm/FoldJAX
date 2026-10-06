@@ -11,46 +11,29 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # These graphs take minutes to compile and the runner has no GPU, so nothing
-  # here should try. Keeping it explicit also stops a stray CUDA plugin from
-  # changing what the suite exercises.
   JAX_PLATFORMS: cpu
   UV_PYTHON: "3.13"
 
+# Runners are pinned (`ubuntu-24.04`, not `ubuntu-latest`): the label moves to a
+# new release on its own schedule, and a toolchain change underneath the
+# AlphaFold 3 extension build should arrive as a reviewed edit, not a red run.
 jobs:
-  check:
-    name: lint + tests (CPU)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  lint:
+    name: lint + lockfile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10
         with:
           version: "0.10.3"
           enable-cache: true
           python-version: "3.13"
 
-      # A clean runner has no sibling checkouts, which is the whole point: an
-      # `openfold3` extra once resolved to `../openfold3_jax` and made this
-      # command fail for everyone but the machine it was written on. That port
-      # is vendored now, along with the shared MSA search and the real-target
-      # loader, so nothing outside this repository is named here. AlphaFold 3
-      # source is vendored too; only its separately licensed parameters stay
-      # outside the distribution. This job is the regression test
-      # for all of it: uv resolves every extra to build the lockfile, so a path
-      # dependency that exists on one machine breaks `uv sync` on every other.
-      #
-      # `--no-default-groups --group dev` rather than a bare `--group dev`: the
-      # `gpu` group is enabled by default so that a bare `uv sync` produces a
-      # working GPU environment, and a GPU-less runner has no use for 3.3 GB of
-      # CUDA wheels.
       - name: Install
-        run: >
-          uv sync --no-default-groups --group dev --frozen
-          --extra alphafold3
-          --extra openfold3-preprocess
+        run: uv sync --no-default-groups --group dev --frozen
 
       - name: Lockfile is current
         run: uv lock --check
@@ -58,35 +41,25 @@ jobs:
       - name: Lint
         run: uv run --no-sync ruff check .
 
-      # No CUDA extra: the CPU wheel is what a GPU-less runner can install, and
-      # it still collects every test that does not need a device. The GPU
-      # suites and the torch-parity gates skip themselves.
-      #
-      # The coverage gate lives here rather than in addopts: it only means
-      # anything on a full run, and in addopts it made every focused local
-      # invocation exit 1. It covers the orchestration layer only — the
-      # vendored ports were built against upstream torch parity rather than
-      # line coverage, so holding them to a line number would measure the
-      # wrong thing.
-      #
-      # RCSB deposition checks are a separately marked integration surface.
-      # Running them here made the otherwise hermetic gate depend on an
-      # external service and its 120-second request timeout.
-      - name: Tests
-        run: >
-          uv run --no-sync pytest -q
-          -m 'not network'
-          --cov=foldjax --cov-report=term-missing --cov-fail-under=80
+  # Everything except `slow` (end-to-end and heavy-compile tests) and `network`;
+  # those run in `nightly.yml`. The 80% coverage gate is enforced over the
+  # combined shards.
+  tests:
+    uses: ./.github/workflows/tests.yml
+    with:
+      markers: not network and not slow
+      coverage: true
+
 
   imports:
     name: every backend registers
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10
         with:
           version: "0.10.3"
           enable-cache: true

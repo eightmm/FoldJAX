@@ -7,15 +7,15 @@ all carried inside the package:
 
 | model | ported upstream target | license | upstream |
 |---|---|---|---|
-| `alphafold3` | [3.0.4 (`85c4d20`)](docs/model-versions.md#alphafold-3) | Apache-2.0 code; parameters under DeepMind's own terms | [google-deepmind/alphafold3](https://github.com/google-deepmind/alphafold3) |
-| `boltz2` | [2.2.1 metadata (`b1ebfc4`)](docs/model-versions.md#boltz-2) | MIT | [jwohlwend/boltz](https://github.com/jwohlwend/boltz) |
-| `esmfold2` | [Biohub snapshot (`ef32577`)](docs/model-versions.md#esmfold2) | MIT + Biohub acceptable-use policy | [biohub/ESMFold2](https://huggingface.co/biohub/ESMFold2) |
-| `opendde` | [1.1.1 (`ddfa1df`); base + ABAG](docs/model-versions.md#opendde) | Apache-2.0 | [aurekaresearch/OpenDDE](https://huggingface.co/aurekaresearch/OpenDDE#license) |
-| `openfold3` | [0.5.0/OpenBind (`c477165`)](docs/model-versions.md#openfold3) | Apache-2.0 | [aqlaboratory/openfold-3](https://github.com/aqlaboratory/openfold-3) |
-| `protenix` | [2.0.0 metadata (`4c355be`); five weight profiles](docs/model-versions.md#protenix) | Apache-2.0 code and v1.x weights; v2 weights proprietary | [bytedance/Protenix](https://github.com/bytedance/Protenix#license) |
+| `alphafold3` | [3.0.4 (`85c4d20`)](https://github.com/eightmm/FoldJAX/blob/main/docs/model-versions.md#alphafold-3) | Apache-2.0 code; parameters under DeepMind's own terms | [google-deepmind/alphafold3](https://github.com/google-deepmind/alphafold3) |
+| `boltz2` | [2.2.1 metadata (`b1ebfc4`)](https://github.com/eightmm/FoldJAX/blob/main/docs/model-versions.md#boltz-2) | MIT | [jwohlwend/boltz](https://github.com/jwohlwend/boltz) |
+| `esmfold2` | [Biohub snapshot (`ef32577`)](https://github.com/eightmm/FoldJAX/blob/main/docs/model-versions.md#esmfold2) | MIT + Biohub acceptable-use policy | [biohub/ESMFold2](https://huggingface.co/biohub/ESMFold2) |
+| `opendde` | [1.1.1 (`ddfa1df`); base + ABAG](https://github.com/eightmm/FoldJAX/blob/main/docs/model-versions.md#opendde) | Apache-2.0 | [aurekaresearch/OpenDDE](https://huggingface.co/aurekaresearch/OpenDDE#license) |
+| `openfold3` | [0.5.0/OpenBind (`c477165`)](https://github.com/eightmm/FoldJAX/blob/main/docs/model-versions.md#openfold3) | Apache-2.0 | [aqlaboratory/openfold-3](https://github.com/aqlaboratory/openfold-3) |
+| `protenix` | [2.0.0 metadata (`4c355be`); five weight profiles](https://github.com/eightmm/FoldJAX/blob/main/docs/model-versions.md#protenix) | Apache-2.0 code and v1.x weights; v2 weights proprietary | [bytedance/Protenix](https://github.com/bytedance/Protenix#license) |
 
 These are fixed implementation targets, not aliases for upstream `latest`.
-[The version and validation ledger](docs/model-versions.md) records the full
+[The version and validation ledger](https://github.com/eightmm/FoldJAX/blob/main/docs/model-versions.md) records the full
 source commits, checkpoint revisions and hashes, the support boundary of every
 profile, and the stage-level parity of each port against its upstream.
 
@@ -34,13 +34,13 @@ installs PyTorch, Lightning or TorchMetrics.
 
 ESMFold2 is the odd one out: no evolutionary trunk, a 25 GB **ESMC-6B**
 language model underneath, and *random at inference by design*, so two seeds
-give genuinely different structures. Read [docs/esmfold2.md](docs/esmfold2.md)
+give genuinely different structures. Read [docs/esmfold2.md](https://github.com/eightmm/FoldJAX/blob/main/docs/esmfold2.md)
 before using it.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/benchmark-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/benchmark-light.png">
-  <img alt="FoldJAX vs upstream: wall time and peak GPU memory at 499, 1,003, 1,354, 2,096, 3,012, 4,100 and 4,926 tokens" src="docs/benchmark-dark.png">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/eightmm/FoldJAX/main/docs/benchmark-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/eightmm/FoldJAX/main/docs/benchmark-light.png">
+  <img alt="FoldJAX vs upstream: wall time and peak GPU memory at 499, 1,003, 1,354, 2,096, 3,012, 4,100 and 4,926 tokens" src="https://raw.githubusercontent.com/eightmm/FoldJAX/main/docs/benchmark-dark.png">
 </picture>
 
 *Each port against the repository it came from — same job, nominal schedule,
@@ -48,7 +48,7 @@ measurement, and precision on both sides.* Across the 20
 implementation/checkpoint pairs where both sides complete in that sweep,
 FoldJAX holds a **1.08x to 4.53x** lower peak and runs at **0.94x to 4.85x** the
 speed. Numbers, method, and the caveats that belong with them (including the
-one row FoldJAX loses on time) are in [docs/benchmark.md](docs/benchmark.md).
+one row FoldJAX loses on time) are in [docs/benchmark.md](https://github.com/eightmm/FoldJAX/blob/main/docs/benchmark.md).
 
 ## Installation
 
@@ -57,15 +57,38 @@ cuEquivariance JAX/CUDA packages for reproducible CPU and GPU environments.
 
 ```bash
 uv sync                                       # CUDA 13 runtime + test tools
-uv sync --no-default-groups --group dev       # CPU-only machine instead
 uv run foldjax setup                          # fetch and convert the public weights
 ```
 
+On a CPU-only machine, opt out of the default `gpu` group for the whole shell,
+not just one command: every `uv run` re-syncs the default groups first, so a
+one-off `uv sync --no-default-groups` is undone by the next `uv run`.
+
+```bash
+export UV_NO_DEFAULT_GROUPS=1                 # or pass --no-default-groups to every uv command
+uv sync --group dev
+```
+
 A CUDA 12 machine and mixed CUDA generations are covered in
-[docs/install.md](docs/install.md). Two models want an extra:
+[docs/install.md](https://github.com/eightmm/FoldJAX/blob/main/docs/install.md). Some features want an extra:
 `--extra alphafold3` (its compiled half and CCD tables build themselves on
-first use) and `--extra openfold3-preprocess` (only to featurize raw OpenFold3
-jobs; predicting from a feature `.npz` needs nothing).
+first use), `--extra openfold3-preprocess` (only to featurize raw OpenFold3
+jobs; predicting from a feature `.npz` needs nothing) and `--extra templates`
+(the Kalign realignment behind `--templates auto`). **A `uv sync` removes every
+extra it is not given**, so name them all each time:
+`uv sync --extra alphafold3 --extra openfold3-preprocess --extra templates`.
+
+Without uv, pip installs the same package with the same extras, resolved from
+the version ranges in `pyproject.toml` rather than from the lockfile:
+
+```bash
+pip install 'foldjax[cuda13]'                 # or [cuda12]; no extra for CPU
+pip install 'foldjax[cuda13,alphafold3,templates]'
+```
+
+FoldJAX is not on PyPI yet; until it is, install from GitHub, pinned to a
+release: `pip install 'foldjax[cuda13] @ git+https://github.com/eightmm/FoldJAX@v0.1.0'`.
+A container image recipe is in [docs/install.md](https://github.com/eightmm/FoldJAX/blob/main/docs/install.md#docker).
 
 Weights are never redistributed: each file comes from its own publisher, under
 that project's terms. `foldjax setup` fetches, verifies and converts the default
@@ -78,7 +101,7 @@ Protenix v2's (`--profile v2`), because upstream declares them proprietary and
 not to be transferred without the rights holder's written consent. FoldJAX
 converts a `protenix-v2.pt` you place in its directory, and fetches the
 Protenix release and other public checkpoints as before
-([docs/cli.md](docs/cli.md#weights-and-setup)).
+([docs/cli.md](https://github.com/eightmm/FoldJAX/blob/main/docs/cli.md#weights-and-setup)).
 `foldjax doctor` reports what is installed and what is missing.
 
 ## Quick start
@@ -95,18 +118,20 @@ uv run foldjax predict --model protenix --input job.yaml
 uv run foldjax plan --model openfold3 --input job.yaml
 ```
 
+Ready-made jobs to start from are in [examples/](https://github.com/eightmm/FoldJAX/tree/main/examples/).
+
 Without `--msa`, a protein chain with no alignment is refused (ESMFold2, which
 folds without one upstream, is exempt). `--msa auto` searches and caches an
 alignment, and **sends the sequence to the public ColabFold MMseqs2 server**
 unless `FOLDJAX_MSA_SERVER_URL` points at your own. `--templates auto` does the
 same for structural templates, with each model's released date cutoff and
-selection ([input](docs/input.md#searching-for-templates)).
+selection ([input](https://github.com/eightmm/FoldJAX/blob/main/docs/input.md#searching-for-templates)).
 
-The [Colab notebook](notebooks/FoldJAX_Colab.ipynb) runs one input through
+The [Colab notebook](https://github.com/eightmm/FoldJAX/blob/main/notebooks/FoldJAX_Colab.ipynb) runs one input through
 several models from a form, detecting the accelerator and installing the
 matching JAX stack itself. What it caches, how it handles checkpoints, and why
 its tutorial schedule is not any model's released one:
-[docs/colab.md](docs/colab.md).
+[docs/colab.md](https://github.com/eightmm/FoldJAX/blob/main/docs/colab.md).
 
 ## One job, many models
 
@@ -167,7 +192,7 @@ jobs:
 It runs exactly as a directory holding one file per job would, and each run's
 `foldjax_run.json` records which file and job it came from under
 `input.source`. In Python it is a batch input: `inputs=("jobs.yaml",)`.
-Details: [docs/input.md](docs/input.md#several-jobs-in-one-file).
+Details: [docs/input.md](https://github.com/eightmm/FoldJAX/blob/main/docs/input.md#several-jobs-in-one-file).
 
 ## Outputs
 
@@ -226,7 +251,7 @@ Both files are described by JSON Schemas shipped in the package,
 `foldjax/schemas/confidence.schema.json` and `foldjax/schemas/run.schema.json`
 (`foldjax.summary.load_schema`). A minor schema version only adds optional
 fields; removing, renaming or reinterpreting a field is a new major version.
-The full field tables are in [docs/cli.md](docs/cli.md#outputs).
+The full field tables are in [docs/cli.md](https://github.com/eightmm/FoldJAX/blob/main/docs/cli.md#outputs).
 
 ## Reading results back
 
@@ -248,7 +273,8 @@ one model's own confidence ordering within one run.
 `foldjax compare` (`foldjax.compare_directory`) aligns every structure of each
 input to every other one, across models, seeds and samples -- proteins on CA,
 nucleic acids on C4' -- and writes RMSD, coverage and the residue
-correspondence to `compare.json` and `compare.csv`.
+correspondence to `compare.json` and `compare.csv`, with one row per
+structure in `compare_structures.csv`.
 
 ## Screening many inputs
 
@@ -259,7 +285,7 @@ spends most of its time compiling unless the shapes repeat.
   bucket), so jobs in one band share one compiled executable. It is off by
   default, because exact shapes are what the published results were run at;
   padding never changes which alignment rows a model reads.
-  [Profiles and pinning](docs/token-padding-profiles.md).
+  [Profiles and pinning](https://github.com/eightmm/FoldJAX/blob/main/docs/token-padding-profiles.md).
 - The persistent compile cache is on by default (`foldjax home --path
   compile_cache`); `--cache-dir` moves it, `--no-cache` skips it.
   `foldjax cache warm` runs a representative job once to populate it, and
@@ -280,7 +306,7 @@ precision option) is still refused when over budget, but is never called a
 fit: its estimate is a lower bound, so it proceeds as `unknown`.
 AlphaFold 3 has no law and answers `unknown` when asked. Nothing is narrowed
 automatically to make a job fit. `--mem-fraction` (default 0.9) sets how much
-of the device JAX preallocates. Details: [docs/cli.md](docs/cli.md#memory).
+of the device JAX preallocates. Details: [docs/cli.md](https://github.com/eightmm/FoldJAX/blob/main/docs/cli.md#memory).
 
 ## Precision
 
@@ -301,24 +327,24 @@ under measurement, not because the arithmetic matches upstream's. On the GPU
 this repository measures on, `DEFAULT` and `high` both execute float32
 matmuls as TF32; `--option matmul_precision=highest` asks any model for full
 float32. The measurements behind each row are in
-[docs/engineering-notes.md](docs/engineering-notes.md#which-precision-each-model-runs).
+[docs/engineering-notes.md](https://github.com/eightmm/FoldJAX/blob/main/docs/engineering-notes.md#which-precision-each-model-runs).
 
 ## Reference
 
 | | |
 |---|---|
-| [Input](docs/input.md) | every format FoldJAX reads, what each backend accepts, and how alignments, templates and binding affinity are supplied |
-| [Command line](docs/cli.md) | the complete `foldjax` surface: prediction, batches, the output contract, padding, memory knobs, native options, weights, compile cache |
-| [Python API](docs/python-api.md) | requests, results, sessions, and the structured events the CLI renders |
-| [Common model interface](docs/model-interface.md) | `foldjax.get_model(name)` with `embed`, `encode` and `predict` stages, `ModelConfig` and `ExecutionConfig` |
-| [Benchmark](docs/benchmark.md) | the numbers above, their method, and what each one does not say |
-| [Version and validation ledger](docs/model-versions.md) | exact upstream targets and the parity evidence for each port |
-| [Engineering notes](docs/engineering-notes.md) | how the ports reached their current memory, speed and precision defaults |
+| [Input](https://github.com/eightmm/FoldJAX/blob/main/docs/input.md) | every format FoldJAX reads, what each backend accepts, and how alignments, templates and binding affinity are supplied |
+| [Command line](https://github.com/eightmm/FoldJAX/blob/main/docs/cli.md) | the complete `foldjax` surface: prediction, batches, the output contract, padding, memory knobs, native options, weights, compile cache |
+| [Python API](https://github.com/eightmm/FoldJAX/blob/main/docs/python-api.md) | requests, results, sessions, and the structured events the CLI renders |
+| [Common model interface](https://github.com/eightmm/FoldJAX/blob/main/docs/model-interface.md) | `foldjax.get_model(name)` with `embed`, `encode` and `predict` stages, `ModelConfig` and `ExecutionConfig` |
+| [Benchmark](https://github.com/eightmm/FoldJAX/blob/main/docs/benchmark.md) | the numbers above, their method, and what each one does not say |
+| [Version and validation ledger](https://github.com/eightmm/FoldJAX/blob/main/docs/model-versions.md) | exact upstream targets and the parity evidence for each port |
+| [Engineering notes](https://github.com/eightmm/FoldJAX/blob/main/docs/engineering-notes.md) | how the ports reached their current memory, speed and precision defaults |
 
-Per-model notes: [AlphaFold 3](docs/alphafold3.md) ·
-[OpenFold3](docs/openfold3.md) · [ESMFold2](docs/esmfold2.md) ·
-[alignments](docs/alignment.md) ·
-[context parallelism](docs/context_parallel.md)
+Per-model notes: [AlphaFold 3](https://github.com/eightmm/FoldJAX/blob/main/docs/alphafold3.md) ·
+[OpenFold3](https://github.com/eightmm/FoldJAX/blob/main/docs/openfold3.md) · [ESMFold2](https://github.com/eightmm/FoldJAX/blob/main/docs/esmfold2.md) ·
+[alignments](https://github.com/eightmm/FoldJAX/blob/main/docs/alignment.md) ·
+[context parallelism](https://github.com/eightmm/FoldJAX/blob/main/docs/context_parallel.md)
 
 ## Tests
 
@@ -335,15 +361,19 @@ JAX_PLATFORMS=cpu uv run pytest -q \
     --cov=foldjax --cov-report=term-missing --cov-fail-under=80
 ```
 
-The CPU suite and the 80% orchestration coverage gate run in CI. Each vendored
-port brought its own suite to `tests/models/<name>/`. Clean runtime tests
+CI runs the CPU suite in parallel shards (`.github/workflows/tests.yml`) and
+enforces the 80% orchestration coverage gate over their combined coverage;
+tests marked `slow` (end-to-end runs, multi-minute compiles) and `network`
+(RCSB) run nightly instead (`nightly.yml`), and `-m 'not slow'` skips them
+locally too. Each vendored port brought its own suite to
+`tests/models/<name>/`. Clean runtime tests
 hard-block external Torch, Lightning, TorchMetrics and fair-esm imports. Tests
 on real depositions skip without `biotite` (`--extra openfold3-preprocess`).
 
 `tests/parity/` is a CPU replay of stored native captures, deselected by
 default and selected with `--run-cpu-parity`. It needs released weights and
 fixtures that are fetched by digest rather than committed, so it does not run
-in the CI job; [docs/parity-cpu.md](docs/parity-cpu.md) has the tiers, the
+in CI; [docs/parity-cpu.md](https://github.com/eightmm/FoldJAX/blob/main/docs/parity-cpu.md) has the tiers, the
 manifest schema, and what a passing run does and does not certify.
 
 ## Licenses
@@ -353,13 +383,13 @@ data intake through model output. Each keeps its upstream module layout,
 `LICENSE` and `NOTICE`, so it stays diffable against the repository it came
 from; the top-level `NOTICE` lists every upstream, its license, and where its
 port lives. The parameter terms per model, which are not always the code
-license, are in [docs/licences.md](docs/licences.md) -- publisher summaries,
+license, are in [docs/licences.md](https://github.com/eightmm/FoldJAX/blob/main/docs/licences.md) -- publisher summaries,
 not legal advice. Model weights are never redistributed here; AlphaFold 3's
 must be requested from Google DeepMind under its
 [model parameters terms](https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md).
 
 Each port's original experiment log and gates live in
-[docs/ports/](docs/ports/): history rather than instructions, but the record of
+[docs/ports/](https://github.com/eightmm/FoldJAX/tree/main/docs/ports/): history rather than instructions, but the record of
 why each default was chosen.
 
 ## Citing

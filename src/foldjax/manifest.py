@@ -15,11 +15,14 @@ its presence also means the run finished.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
 import re
+import shutil
 import stat
+import subprocess
 import tempfile
 import warnings
 from collections.abc import Callable, Mapping
@@ -40,6 +43,44 @@ MANIFEST_NAME = "foldjax_run.json"
 #: made.
 MANIFEST_SCHEMA = 1
 _UNVERIFIABLE = object()
+
+
+@functools.lru_cache(maxsize=1)
+def source_describe() -> str | None:
+    """``git describe --always --dirty`` of the checkout FoldJAX runs from.
+
+    ``None`` for an installed wheel, without git, or on any git failure. The
+    package version alone cannot tell two development snapshots apart, and an
+    editable install's distribution metadata keeps whatever version the last
+    sync recorded. Only a repository whose ``src/foldjax`` is this package
+    counts: an environment that merely sits inside some other checkout must
+    not lend it that checkout's revision. ``GIT_OPTIONAL_LOCKS=0`` keeps
+    ``--dirty`` from refreshing (and so writing) a shared index. Cached for the
+    process, so a checkout edited mid-process reports its state at first use.
+    """
+    git = shutil.which("git")
+    if git is None:
+        return None
+    package = Path(__file__).resolve().parent
+    environment = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
+
+    def run(*arguments: str) -> str:
+        return subprocess.run(
+            [git, *arguments],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=environment,
+            check=True,
+        ).stdout.strip()
+
+    try:
+        toplevel = Path(run("-C", str(package), "rev-parse", "--show-toplevel"))
+        if toplevel.resolve() / "src" / "foldjax" != package:
+            return None
+        return run("-C", str(toplevel), "describe", "--always", "--dirty") or None
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def _stat_fields(info: os.stat_result) -> tuple[int, ...]:
@@ -1271,6 +1312,7 @@ def describe_run(
             "manifest-relative" if directory is not None else "absolute"
         ),
         "foldjax": __version__,
+        "foldjax_source": {"version": __version__, "git_describe": source_describe()},
         "finished": datetime.now(UTC).isoformat(timespec="seconds"),
         "model": request.model,
         "input": input_record,

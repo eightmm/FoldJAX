@@ -79,7 +79,7 @@ A run reports its stages on stderr and its results as a table on stdout:
   predict             6m18s
   write                0.3s
 
-model     protenix        weights  protenix-v0.5.0
+model     protenix        weights  protenix_base_default_v1.0.0.jax
 samples   15              time     6m21s     peak  18.4 GiB
 seeds     101, 102, 103   msa      auto
 best      seed 102 / sample 01     ranking_score 0.873
@@ -148,7 +148,9 @@ with `--apply`: cache entries are pure derived data, but they are still someone'
 disk.
 
 `--msa auto` searches alignments and `--templates auto` structural templates
-for chains that arrived without them; `--template-max-date YYYY-MM-DD`
+for chains that arrived without them (`--templates required` fails the run
+rather than folding without when the search cannot run or keeps nothing);
+`--template-max-date YYYY-MM-DD`
 replaces the model's released template cutoff. Both searches send the sequence
 to the ColabFold MMseqs2 server unless `FOLDJAX_MSA_COMMAND` /
 `FOLDJAX_TEMPLATE_COMMAND` names a local one; what each model keeps, and why,
@@ -1826,7 +1828,7 @@ therefore not expected to agree bit for bit with each other); AlphaFold 3's
 model runner, where the promise is XLA-emitted operations plus the pinned
 tokamax kernel store (the attention kernel has an XLA fallback, the GLU does
 not). Eager routes have no executable to put it on, so `--no-graph-jit`,
-`--no-compile`, Boltz-2 steering and the like are refused with the option
+OpenFold3's `--option no_compile=true`, Boltz-2 steering and the like are refused with the option
 rather than run without it. Custom-call kernels (cuEquivariance, tokamax,
 Pallas) sit outside the flag's reach; their repeatability is observed, not
 documented. The option changes rounding routes (Triton GEMMs move to cuBLAS),
@@ -1926,7 +1928,6 @@ arrays, but they are separate compile-cache and feature-cache namespaces, so a
 effect on coordinates has not been measured; treat `restored` as an experiment
 until it has been. Background and the reproduction:
 [docs/boltz2-upstream-msa-deletion-regression-2026-09-10.md](boltz2-upstream-msa-deletion-regression-2026-09-10.md).
-The native Boltz-2 predict script spells the same choice `--msa-deletions`.
 
 ### `--option diffusion_chunk_size=N`
 

@@ -1,0 +1,19 @@
+# `pre-commit install` once per clone; hooks then run on the staged files.
+# The Ruff pin matches uv.lock, so the hook and `uv run ruff` agree.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.21
+    hooks:
+      - id: ruff-check
+
+  # Not the stock `ruff-format` hook: most of the tree predates `ruff format`,
+  # and that hook would reformat every line of any file a commit touches.
+  # This one formats only the staged hunks (scripts/ruff_format_changed_lines.py).
+  - repo: local
+    hooks:
+      - id: ruff-format-changed-lines
+        name: ruff format (changed lines)
+        entry: python scripts/ruff_format_changed_lines.py
+        language: python
+        additional_dependencies: ["ruff==0.15.21"]
+        types_or: [python, pyi]

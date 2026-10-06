@@ -555,6 +555,9 @@ _CONTEXT_PARALLEL_PROBE = textwrap.dedent(
 )
 
 
+# Compiles the 96-token program again in a fresh four-device subprocess, which
+# is what stalled CI's runner: nightly (`slow`).
+@pytest.mark.slow
 def test_the_scanned_embedding_holds_up_on_four_cpu_devices() -> None:
     """Context parallelism must not pay a collective for the moved embedding.
 

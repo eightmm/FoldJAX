@@ -3,7 +3,7 @@
 `tests/parity/` replays stored native captures on CPU, so that a change to a
 port's core is caught by a test rather than by the next GPU panel. This
 document says what that certifies, what it does not, where the fixtures live,
-and why the subset does not run in the CI job that exists today.
+and why the subset does not run in CI or in the nightly workflow.
 
 Five port cases ship with the scaffold (2026-09-10), one stored capture each,
 calibrated on this host's CPU (8 pinned cores): Protenix protein_1ubq (tier A
@@ -152,25 +152,38 @@ sizes before hashing anything (a capture directory also holds checkpoints and
 listing every file it could not find. The resolver verifies size and sha256
 again before any path reaches a test.
 
-## CI placement is the maintainer's decision
+## CI placement: not on hosted runners
 
 Stated plainly, because the honest answer is that no home for this exists yet:
 
-- The shipped CI job (`.github/workflows/ci.yml`) is a single 30-minute
-  ubuntu-latest job that runs `pytest -q -m 'not network'` with coverage, on a
-  runner that has **no model weights**; recent runs use 19-21 minutes of the 30.
+- CI (`.github/workflows/ci.yml`) runs the CPU suite in parallel shards
+  (`tests.yml`) with `-m 'not network and not slow'` and the coverage gate;
+  the nightly workflow (`nightly.yml`) runs the same shards with `slow`
+  included, and the `network` tests. Both use GitHub-hosted runners with **no
+  model weights**.
 - Every tier needs released weights (Boltz-2 4.1 GB, OpenDDE 2.6 GB, Protenix
   1.5 GB, OpenFold3 4.6 GB, ESMFold2 1.4 GB plus 25.4 GB of ESM-C unless the
-  language-model embedding is injected from the capture).
+  language-model embedding is injected from the capture) -- about 14 GB before
+  ESM-C, beyond the 10 GB a repository's Actions cache holds.
+- The fixtures exist only in the capture host's store; nothing publishes them
+  for a runner to fetch by digest.
 - `PROJECT.md` forbids implicit weight downloads, so the weights would have to
   be a deliberate, cached step of whatever job runs this.
 
-So the subset can only live in a **second job, a nightly, or a self-hosted
-runner** with a weights cache. Which of those, and who pays for it, is a
-maintainer call and is not decided here. Until it is decided, the subset runs
-locally on demand, and the guarantee the repository actually carries is the
-one `test_gate.py` enforces in the default job: the subset is still there, and
-its manifests still validate.
+So the nightly workflow does not run it, and the subset can only live on a
+**self-hosted runner** that keeps both the weights and the fixtures. Until one
+exists the subset runs on demand, on a machine with the store:
+
+```
+FOLDJAX_HOME=/path/to/store FOLDJAX_PARITY_FIXTURES=/path/to/parity-fixtures \
+JAX_PLATFORMS=cpu XLA_PYTHON_CLIENT_PREALLOCATE=false \
+    uv run pytest -q --run-cpu-parity tests/parity
+```
+
+`JAX_PLATFORMS=cpu` matters: without it the replay starts a GPU backend, and
+the subset is calibrated on CPU XLA. The guarantee the repository carries in CI
+is the one `test_gate.py` enforces: the subset is still there, and its
+manifests still validate.
 
 Two further unknowns, so they are not discovered later: the 4-vCPU GitHub
 runner multiplier over this 144-core host is unmeasured (plausibly 2-3x), and
