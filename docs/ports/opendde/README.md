@@ -307,7 +307,16 @@ This is a working inference port, but it is not a bundled data pipeline:
   on this hardware;
 - GPU validation covers one FP32 publisher-parity sample and five-sample BF16
   memory A/Bs on one RTX PRO 6000 Blackwell Max-Q. Other accelerators and
-  multi-GPU scaling are not yet measured.
+  multi-GPU scaling are not yet measured;
+- the native writer emits each sample's CIF and
+  `<name>_summary_confidence_sample_<rank>.json` but not upstream's
+  `<name>_full_data_sample_<rank>.json`, which upstream writes by default
+  (`--need_atom_confidence true`, `runner/dumper.py:328-335`). Its token-pair
+  arrays (PAE, PDE, contact probabilities) are program outputs only under
+  `--option include_raw=true`, so writing it by default would add quadratic
+  outputs to every run. The per-atom pLDDT is in the CIF B-factors, and with
+  `include_raw=true` the pair arrays are in `confidence_full.npz` and
+  `raw_output.npz`.
 
 Missing assets and unsupported input contracts fail explicitly rather than
 silently changing chemistry.
