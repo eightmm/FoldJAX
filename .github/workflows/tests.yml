@@ -1,0 +1,191 @@
+name: Tests
+
+# The CPU suite, split into parallel shards. Called by `ci.yml` (every push and
+# pull request: no `slow` tests, coverage gate) and by `nightly.yml` (the whole
+# suite including `slow`, no gate). One definition, so the two cannot drift.
+#
+# Why shards: the suite needs roughly 75-90 minutes on one 4-vCPU runner and the
+# single job it used to be had a 30-minute limit, so from 2026-09-11 it never
+# finished. Measured on 4 pinned cores of the development host (no coverage),
+# the vendored port suites are 3.6-8.6 minutes each and everything outside
+# `tests/models` is under 3 minutes once AlphaFold 3's compiled runtime exists.
+# A runner is slower than that host; the 60-minute limit leaves room for that and,
+# on a cache miss, for building AlphaFold 3's runtime in the core shard.
+#
+# The last matrix row is a catch-all: it runs `tests/models` minus the port
+# directories the other rows name, so a new port's suite lands somewhere
+# without anyone remembering to add it here.
+
+on:
+  workflow_call:
+    inputs:
+      markers:
+        description: pytest -m expression
+        required: true
+        type: string
+      coverage:
+        description: collect coverage per shard and enforce the 80% gate
+        required: false
+        default: false
+        type: boolean
+      timeout-minutes:
+        required: false
+        default: 60
+        type: number
+
+env:
+  # These graphs take minutes to compile and the runner has no GPU, so nothing
+  # here should try. Keeping it explicit also stops a stray CUDA plugin from
+  # changing what the suite exercises.
+  JAX_PLATFORMS: cpu
+  UV_PYTHON: "3.13"
+
+jobs:
+  shard:
+    name: tests (${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: core
+            paths: tests --ignore=tests/models
+          - shard: boltz2
+            paths: tests/models/boltz2
+          - shard: protenix
+            paths: tests/models/protenix
+          - shard: openfold3
+            paths: tests/models/openfold3
+          - shard: esmfold2-alphafold3
+            paths: tests/models/esmfold2 tests/models/alphafold3
+          - shard: opendde-shared
+            paths: >-
+              tests/models
+              --ignore=tests/models/alphafold3
+              --ignore=tests/models/boltz2
+              --ignore=tests/models/esmfold2
+              --ignore=tests/models/openfold3
+              --ignore=tests/models/protenix
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          version: "0.10.3"
+          enable-cache: true
+          python-version: "3.13"
+
+      # A clean runner has no sibling checkouts, which is the whole point: an
+      # `openfold3` extra once resolved to `../openfold3_jax` and made this
+      # command fail for everyone but the machine it was written on. Everything
+      # is vendored now; only AlphaFold 3's separately licensed parameters stay
+      # outside the distribution.
+      #
+      # `--no-default-groups --group dev` rather than a bare `--group dev`: the
+      # `gpu` group is enabled by default so that a bare `uv sync` produces a
+      # working GPU environment, and a GPU-less runner has no use for 3.3 GB of
+      # CUDA wheels.
+      - name: Install
+        run: >
+          uv sync --no-default-groups --group dev --frozen
+          --extra alphafold3
+          --extra openfold3-preprocess
+          --extra templates
+
+      # AlphaFold 3 compiles its C++ extension (abseil, libcifpp, dssp fetched
+      # by CMake) and generates its CCD tables on first use. Several tests
+      # outside `tests/models` reach that runtime, and building it inside the
+      # first one of them made a single test take most of a job. Build it once
+      # per lockfile + vendored source, keyed like the runtime's own identity
+      # (`foldjax.models.alphafold3.build.runtime_key`), and save it as soon as
+      # it exists so a failing test later in the job does not discard it.
+      - name: Restore the AlphaFold 3 runtime
+        id: af3-runtime
+        if: matrix.shard == 'core'
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/foldjax/runtime/alphafold3
+          key: af3-runtime-${{ runner.os }}-${{ hashFiles('uv.lock', 'src/foldjax/models/alphafold3/**') }}
+
+      # libcifpp's CMake needs the zlib headers; without them configuration
+      # fails in seconds and every AlphaFold 3 test retries the whole build.
+      - name: Build the AlphaFold 3 runtime
+        if: matrix.shard == 'core' && steps.af3-runtime.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zlib1g-dev
+          uv run --no-sync foldjax runtime prepare --model alphafold3
+
+      - name: Save the AlphaFold 3 runtime
+        if: matrix.shard == 'core' && steps.af3-runtime.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/foldjax/runtime/alphafold3
+          key: ${{ steps.af3-runtime.outputs.cache-primary-key }}
+
+      # No CUDA extra: the CPU wheel is what a GPU-less runner can install, and
+      # it still collects every test that does not need a device. The GPU
+      # suites and the torch-parity gates skip themselves.
+      #
+      # Coverage is collected per shard and combined below. It covers the
+      # orchestration layer only (`[tool.coverage.run] omit`): the vendored
+      # ports were built against upstream torch parity rather than line
+      # coverage, so holding them to a line number would measure the wrong
+      # thing.
+      #
+      # RCSB deposition checks (`network`) run nightly: here they would make the
+      # otherwise hermetic gate depend on an external service.
+      - name: Tests
+        env:
+          COVERAGE_FILE: .coverage.${{ matrix.shard }}
+        run: >
+          uv run --no-sync pytest -q
+          -m '${{ inputs.markers }}'
+          --durations=25
+          ${{ inputs.coverage && '--cov=foldjax --cov-report=' || '' }}
+          ${{ matrix.paths }}
+
+      # Hidden files are excluded from artifacts by default since
+      # upload-artifact v4.4; without the flag this uploads nothing.
+      - name: Upload coverage data
+        if: inputs.coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ matrix.shard }}
+          path: .coverage.${{ matrix.shard }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 3
+
+  coverage:
+    name: coverage gate (80%, orchestration layer)
+    needs: shard
+    if: inputs.coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          version: "0.10.3"
+          enable-cache: true
+          python-version: "3.13"
+
+      - name: Install
+        run: uv sync --no-default-groups --group dev --frozen
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+
+      # The gate only means anything over the whole suite, which is why it is
+      # here rather than in `addopts` (see pyproject.toml).
+      - name: Combine and enforce
+        run: |
+          uv run --no-sync coverage combine
+          uv run --no-sync coverage report --show-missing --fail-under=80

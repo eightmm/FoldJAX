@@ -1262,6 +1262,8 @@ _DEPLOYMENT_GEOMETRY_PROBE = _FIXTURE + textwrap.dedent(
 )
 
 
+# 193 s on four pinned cores, most of it compiling: nightly (`slow`), not CI.
+@pytest.mark.slow
 def test_the_grid_matches_the_unsharded_trunk_at_deployed_token_counts() -> None:
     """2,096 and 3,012 tokens, where the row blocks are not a no-op.
 

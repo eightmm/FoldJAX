@@ -1,0 +1,57 @@
+name: Nightly
+
+# What CI leaves out to stay inside its time limit: the `slow` tests (end-to-end
+# runs and the multi-minute context-parallel compiles), and the `network` tests
+# that reach RCSB. Nightly runs the whole suite, slow included, in the same
+# shards as CI (`tests.yml`), without the coverage gate.
+#
+# The CPU parity subset (`tests/parity`, `--run-cpu-parity`) is not here: it
+# needs released weights (about 14 GB before ESM-C) that exceed what the hosted
+# Actions cache holds, and fixtures that exist only on the capture host.
+# `docs/parity-cpu.md` ("Running it", "CI placement") says how to run it.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JAX_PLATFORMS: cpu
+  UV_PYTHON: "3.13"
+
+jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+    with:
+      markers: not network
+      timeout-minutes: 90
+
+  network:
+    name: network tests (RCSB)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          version: "0.10.3"
+          enable-cache: true
+          python-version: "3.13"
+
+      # The same extras as the shards: selection by marker still imports every
+      # test module, and some import an optional runtime at module scope.
+      - name: Install
+        run: >
+          uv sync --no-default-groups --group dev --frozen
+          --extra alphafold3
+          --extra openfold3-preprocess
+          --extra templates
+
+      - name: Tests
+        run: uv run --no-sync pytest -q -m network tests

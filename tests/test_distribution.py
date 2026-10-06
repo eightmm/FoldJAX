@@ -38,7 +38,11 @@ def test_supported_python_and_accelerator_runtime_are_consistent() -> None:
     dependencies = project["dependencies"]
     extras = project["optional-dependencies"]
     lock = tomllib.loads((ROOT / "uv.lock").read_text())
-    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    workflows = {
+        path.name: path.read_text()
+        for path in sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+    }
+    assert {"ci.yml", "tests.yml", "nightly.yml"} <= set(workflows)
 
     assert sys.version_info[:2] == (3, 13)
     assert project["requires-python"] == ">=3.13,<3.14"
@@ -46,8 +50,14 @@ def test_supported_python_and_accelerator_runtime_are_consistent() -> None:
     assert document["tool"]["ruff"]["target-version"] == "py313"
     assert (ROOT / ".python-version").read_text().strip() == "3.13"
     assert lock["requires-python"] == "==3.13.*"
-    assert 'UV_PYTHON: "3.13"' in workflow
-    assert workflow.count('python-version: "3.13"') == 2
+    for name, workflow in workflows.items():
+        assert 'UV_PYTHON: "3.13"' in workflow, name
+        # Every uv setup step names the interpreter, whatever it is called.
+        setups = workflow.count("uses: astral-sh/setup-uv@")
+        assert workflow.count('python-version: "3.13"') == setups, name
+        # A moving runner label changes the toolchain under the AlphaFold 3
+        # extension build without a commit to show for it.
+        assert "runs-on: ubuntu-latest" not in workflow, name
 
     assert "jax==0.11.1" in dependencies
     assert "cuequivariance==0.11.1" in dependencies
@@ -77,13 +87,82 @@ def test_supported_python_and_accelerator_runtime_are_consistent() -> None:
     # Every CPU-only install in CI must opt out of that default group. A runner
     # that silently gained 3.3 GB of CUDA wheels still passes, until it does
     # not, so this covers steps nobody has written yet rather than a count.
+    # The Docker image is a CPU-or-CUDA choice made by its build argument, so
+    # it opts out of the default groups the same way.
+    sources = [*workflows.values(), (ROOT / "Dockerfile").read_text()]
     sync_commands = [
         line.strip()
-        for line in workflow.splitlines()
+        for source in sources
+        for line in source.splitlines()
         if "uv sync" in line and not line.strip().startswith("#")
     ]
     assert sync_commands
     assert all("--no-default-groups" in command for command in sync_commands)
+
+
+def test_ci_shards_cover_the_whole_suite_and_keep_the_coverage_gate() -> None:
+    """Every test directory lands in exactly one CI shard, and the gate holds.
+
+    The catch-all row runs `tests/models` minus the port directories the other
+    rows name, so a new port's suite is picked up without editing the matrix;
+    this asserts the two lists agree, which is what makes that true.
+    """
+    import yaml
+
+    workflows = ROOT / ".github" / "workflows"
+    tests = yaml.safe_load((workflows / "tests.yml").read_text())
+    rows = tests["jobs"]["shard"]["strategy"]["matrix"]["include"]
+    arguments = {row["shard"]: row["paths"].split() for row in rows}
+
+    assert arguments.pop("core") == ["tests", "--ignore=tests/models"]
+    (catch_all,) = [name for name, args in arguments.items() if "tests/models" in args]
+    ignored = {
+        arg.removeprefix("--ignore=")
+        for arg in arguments.pop(catch_all)
+        if arg.startswith("--ignore=")
+    }
+    named = [path for args in arguments.values() for path in args]
+    assert len(named) == len(set(named))
+    assert set(named) == ignored
+    assert all((ROOT / path).is_dir() for path in named)
+
+    ci = yaml.safe_load((workflows / "ci.yml").read_text())
+    call = ci["jobs"]["tests"]
+    assert call["uses"] == "./.github/workflows/tests.yml"
+    assert call["with"]["coverage"] is True
+    assert "not slow" in call["with"]["markers"]
+    assert "--fail-under=80" in (workflows / "tests.yml").read_text()
+    nightly = yaml.safe_load((workflows / "nightly.yml").read_text())
+    assert "slow" not in nightly["jobs"]["tests"]["with"]["markers"]
+
+
+def test_readme_links_survive_being_rendered_off_github() -> None:
+    """PyPI renders README.md as the project page, where a relative link
+    resolves against pypi.org and every image breaks. Each repository link is
+    therefore absolute, and each still names a path that exists here.
+    """
+    import re
+
+    readme = (ROOT / "README.md").read_text()
+    targets = re.findall(r"\]\(([^)\s]+)\)", readme)
+    targets += re.findall(r'(?:src|srcset)="([^"]+)"', readme)
+    relative = [
+        target for target in targets if not re.match(r"^(https?:|mailto:|#)", target)
+    ]
+    assert relative == []
+
+    prefixes = (
+        "https://github.com/eightmm/FoldJAX/blob/main/",
+        "https://github.com/eightmm/FoldJAX/tree/main/",
+        "https://raw.githubusercontent.com/eightmm/FoldJAX/main/",
+    )
+    for target in targets:
+        for prefix in prefixes:
+            if target.startswith(prefix):
+                path = target.removeprefix(prefix).partition("#")[0]
+                assert (ROOT / path).exists(), target
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    assert project["readme"] == "README.md"
 
 
 def test_alphafold3_uv_build_uses_the_active_python(

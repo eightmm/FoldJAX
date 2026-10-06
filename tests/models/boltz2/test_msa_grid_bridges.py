@@ -752,6 +752,8 @@ def _run_probe(devices: int) -> str:
 
 #: Four devices are the smallest grid the 2-D layout accepts; nine are the
 #: smallest that can tell a ring hop from its reverse.
+#: 46 s and 52 s on four pinned cores, nearly all compile: nightly (`slow`).
+@pytest.mark.slow
 @pytest.mark.parametrize("devices", [4, 9])
 def test_the_msa_stack_splits_its_depth_over_the_grid_columns(devices: int) -> None:
     """Both bridges, both dtypes, uneven padding, empty masks, the census."""
