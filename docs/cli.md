@@ -271,7 +271,149 @@ correspondence the fit used, run-length encoded) and `compare_structures.csv`
 (one row per structure with its ignored inputs, so a matched-input panel shows
 what each model actually read). Coverage is matched over reference atoms, so it
 is directional and the matrix is written in full. Cost grows with the square
-of the structure count. There is no TM-score.
+of the structure count. The pairwise matrix has no TM-score; scoring against a
+deposited structure is `--reference` (below).
+
+### Analysis and workflow commands
+
+Everything here reads only the canonical outputs (mmCIF, `confidence.json`,
+`confidence_full.npz`, `foldjax_run.json`). Numbers FoldJAX derives are
+labelled `derived` and kept apart from the model's own `scores`; nothing pools
+or ranks confidence across models.
+
+```bash
+uv run foldjax report out/                         # out/foldjax_report.html
+uv run foldjax interfaces out/ [--format csv|json] # ipSAE, pDockQ, pDockQ2, LIS
+uv run foldjax show out/ --format csv --interfaces # the same, as columns per sample
+uv run foldjax compare out/ --reference 8xyz.cif --metrics lddt,tm,dockq,lig_rmsd
+uv run foldjax jobs expand --target target.json --ligands lib.smi --affinity --out screen.json
+uv run foldjax jobs pulldown --baits baits.fasta --candidates cands.fasta --out ppi.json
+uv run foldjax show out/ --screen                  # per-job score/affinity, ranked within each model
+uv run foldjax check out/                          # PoseBusters (optional extra)
+uv run foldjax predict ... --structure-format both # .pdb beside each .cif
+uv run foldjax predict --input screen.json --shard auto ...
+uv run foldjax plan --model boltz2 --input job.json --json   # adds a "slurm" block
+```
+
+**`report DIR [--out FILE]`** writes one static HTML page with no external
+script, stylesheet or font: per input, one card per model side by side with
+the run metadata (model, weights, seeds and their source, sampling, options,
+MSA and template policy, configuration digest), warnings (memory admission,
+ignored MSAs/templates/constraints, a structure that changed since the run),
+a per-sample table of the model's own scores, a per-residue pLDDT plot (from
+`token_plddt` or `atom_plddt`; the mmCIF B-factor column, labelled as such,
+when the run wrote neither) and a PAE heatmap of the best sample where the
+model wrote PAE -- otherwise the card says why there is none.
+
+**`interfaces DIR`** computes, per sample and chain pair, ipSAE (Dunbrack,
+bioRxiv 2025.02.10.637595) with its d0chn/d0dom variants and the PAE-only
+ipTM, pDockQ (Bryant et al. 2022), pDockQ2 (Zhu et al. 2023) and LIS (Kim et
+al. 2024), as defined by the reference `ipsae.py` v4 (DunbrackLab/IPSAE):
+one token per polymer residue (ligand tokens dropped), CB distances (CA for
+Gly, C3' for nucleotides), pDockQ's pLDDT at the CB atom, d0 floored at L=27
+for d0chn/d0dom and at 26 for d0res. `--pae-cutoff` defaults to 10 A;
+`--dist-cutoff` only changes the `dist1`/`dist2` interface-residue counts.
+Each ordered pair is an `asym` row and each unordered pair a `max` row
+(ipsae.py's rule: max of directions, LIS their mean). The model's own
+chain-pair ipTM sits beside them as `native.chain_pair_iptm` where the model
+returns one (AlphaFold 3, OpenDDE, OpenFold3, Protenix). Every score needs
+PAE: Boltz-2 and AlphaFold 3 write it by default, OpenDDE with
+`--option include_raw=true`, Protenix with `--option output_format=both`; a
+sample without it is listed with the reason. On a FoldJAX AlphaFold 3 sample
+of 8REN (four chains) and on the synthetic test complex, every score agrees
+with `ipsae.py` to the precision it prints. `show --format csv|json
+--interfaces` folds the `max` rows into per-sample columns
+`derived.<metric>.<A>-<B>` and `native.chain_pair_iptm.<A>-<B>`.
+
+**`compare DIR --reference X.cif [--metrics ...]`** also scores every structure
+against a deposited one -- accuracy, which unlike confidence *is* comparable
+across models. Chains are assigned homomer-aware: every injective map between
+same-kind chains with at least 90% residue identity is tried and the lowest
+complex CA RMSD wins; residues pair by `label_seq_id` (falling back to a
+sequence alignment). Metrics: `lddt` (all heavy polymer atoms, inter-residue
+pairs under 15 A, symmetric side chains resolved as OpenStructure does),
+`lddt_ca`, `tm` (protein CA, the TM-score program's search on the fixed
+correspondence, normalized by the reference's protein residues), `rmsd_ca`,
+`dockq` (DockQ v2, mean over native interfaces under DockQ's own chain map) and
+`lig_rmsd` (ligand heavy-atom RMSD after a 10 A pocket CA fit, minimized over
+graph automorphisms and reference copies); the default is
+`lddt,lddt_ca,tm,rmsd_ca`. Each structure gets a `reference:<name>` row in
+`compare.csv` and the same columns in `compare_structures.csv`, with
+`accuracy_chain_map` and `accuracy_errors`. Against the jctc-v3 benchmark's
+own scorers on its FoldJAX outputs, TM-score and CA-lDDT/all-atom lDDT/CA RMSD
+agree with US-align `-TMscore 1` and the benchmark's lDDT on 45 samples, DockQ
+on 20 and ligand RMSD on 36, all to the fourth decimal those tables carry.
+DockQ 2.1.3 pins `numpy<2`, so it cannot be installed beside FoldJAX; install
+it as a tool (`uv tool install --python 3.12 DockQ==2.1.3`) or point
+`FOLDJAX_DOCKQ` at an executable. Without it, `dockq` is empty and
+`accuracy_errors` says how to get it.
+
+**`jobs expand --target T --ligands LIB [--affinity]`** writes a
+`{"jobs": [...]}` file with one job per ligand (`.smi` lines of `SMILES
+[name]`, or `.sdf` with the record title as the name; coordinates are not
+carried). Job names are `<target>__<ligand>` and do not depend on library
+order -- an unnamed record is named from its canonical SMILES -- so a grown
+or reordered library keeps every finished directory. The target's alignment
+paths are made absolute, so every job reuses them; `--affinity` adds the
+Boltz-2 affinity property for the new ligand chain; unreadable records are
+refused unless `--skip-invalid`. **Run a screen with `--padding` and the
+persistent compile cache** (the default): jobs that differ only in their
+ligand land in a few token buckets, so the screen compiles once per bucket
+rather than once per ligand. `foldjax show out/ --screen` then prints one row
+per model and job from the sample that model ranks first, with Boltz-2's
+`affinity_pred_value` / `affinity_probability_binary`, ranked within each
+model (by affinity where present, else the model's ranking score) and never
+across models.
+
+**`jobs pulldown --baits A.fasta --candidates B.fasta [--all-vs-all]`** writes
+one two-chain job per bait x candidate (or every unordered pair of all
+proteins), named `<first>__<second>` from the FASTA ids; `--msa-dir DIR`
+takes `DIR/<id>.a3m` as a chain's alignment, otherwise run with `--msa auto`,
+which caches per sequence.
+
+**`--structure-format {cif,pdb,both}`** (predict) writes a `.pdb` beside each
+canonical mmCIF; the mmCIF is always kept because the manifest's SHA-256 and
+`confidence_full.npz`'s atom axis refer to it. gemmi would silently write
+hybrid-36 serials and shifted columns past PDB's limits, so FoldJAX refuses
+instead: more than 99,999 atoms, chain ids longer than one character, residue
+names longer than three (newer five-character CCD codes) or atom names longer
+than four, residue numbers outside -999..9999. `pdb` checks the job before
+running and exits 2 after the batch if a structure still does not fit; `both`
+warns and skips that PDB.
+
+**`check DIR`** runs PoseBusters (`uv sync --extra posebusters`) on every
+ligand of every sample, `dock` configuration (ligand alone and against the
+predicted protein): `pb_valid` (every check passed; a check PoseBusters could
+not compute counts as not passed and is listed in `pb_not_computed`),
+`pb_failed`, and one `pb.<check>` column per test. Bond orders come from the
+ligand's CCD definition in the managed `components.cif`, else a SMILES the
+mmCIF records (AlphaFold 3 writes one), else perception from coordinates;
+a ligand none of these can type is reported, not guessed.
+
+**`--shard I/N`** (predict, plan) runs every N-th unit of a batch from I
+(0-based), where a unit is a plain input or one job of a multi-job file. Each
+unit lands in the directory the unsharded batch would give it, with the same
+generated job document and therefore the same resume identity, so shards
+can run as a Slurm array and be resumed independently. `--shard auto` reads
+`SLURM_ARRAY_TASK_ID` relative to `SLURM_ARRAY_TASK_MIN` and the count from
+`SLURM_ARRAY_TASK_COUNT`; `auto/N` names the count:
+
+```bash
+#SBATCH --array=0-7
+uv run foldjax predict --model boltz2 --input screen.json --padding --resume \
+    --output-dir out --shard auto
+```
+
+**`plan --json`** adds a `slurm` block per run: `gres` (`gpu:<cp_devices>`)
+and `min_device_memory_gib`, the model's fitted peak law upper estimate
+over the 0.9 admission fraction, with the law's profile and fitted token
+range. Tokens are estimated from the common job (one per residue, one per
+SMILES heavy atom; CCD ligands and per-atom modified residues are listed as
+not counted). It is `unknown`, with the reason, outside a law's fitted range
+(it never extrapolates), for AlphaFold 3 (no law), OpenDDE (keyed on
+structural tokens) and Protenix (needs the processed MSA row count). `mem` is
+left `null`: the laws describe device memory and no host-memory law is
+calibrated.
 
 ### Optional shape padding
 

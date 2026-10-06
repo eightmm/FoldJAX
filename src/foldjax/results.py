@@ -428,8 +428,13 @@ def _field_value(summary: Mapping[str, Any], name: str) -> float | None:
 
 def results_table(
     report: ResultsReport | str | os.PathLike[str],
-) -> list[dict[str, Any]]:
+    *,
+    as_frame: bool = False,
+) -> Any:
     """One row per model / input / seed / sample, and one per failure.
+
+    ``as_frame=True`` returns the same rows as a pandas DataFrame, columns in
+    the CSV order (pandas is imported only then).
 
     Columns: identity (status, model, input, configuration, seed, sample, job,
     native rank, run directory), the common summary (``plddt`` on 0-100 with
@@ -542,7 +547,20 @@ def results_table(
                 "error": failure.error,
             }
         )
+    if as_frame:
+        return to_frame(rows)
     return rows
+
+
+def to_frame(rows: Sequence[Mapping[str, Any]]) -> Any:
+    """Rows as a pandas DataFrame, columns in the CSV order."""
+    try:
+        import pandas
+    except ImportError as error:  # pragma: no cover - pandas is a base dependency
+        raise ModuleNotFoundError(
+            "as_frame=True needs pandas (`pip install pandas`)", name="pandas"
+        ) from error
+    return pandas.DataFrame(list(rows), columns=_columns(rows))
 
 
 def _columns(rows: Iterable[Mapping[str, Any]]) -> list[str]:
