@@ -183,6 +183,21 @@ def test_constraint_embedder_rejects_feature_without_matching_weights() -> None:
         constraint_embedder({"contact": jnp.ones((2, 2, 1), dtype=jnp.float32)}, params)
 
 
+def test_constraint_embedder_names_every_unweighted_channel_in_order() -> None:
+    params = ConstraintEmbedderParams(
+        pocket_z=None,
+        contact_z=None,
+        contact_atom_z=None,
+        substructure_z=None,
+    )
+    features = {
+        "contact": jnp.ones((2, 2, 2), dtype=jnp.float32),
+        "pocket": jnp.ones((2, 2, 1), dtype=jnp.float32),
+    }
+    with pytest.raises(ValueError, match=r"'pocket', 'contact' have no matching"):
+        constraint_embedder(features, params)
+
+
 def test_constraint_embedder_uses_only_present_weighted_channels() -> None:
     params = ConstraintEmbedderParams(
         pocket_z=LinearParams(weight=jnp.ones((2, 1)), bias=None),

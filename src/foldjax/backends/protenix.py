@@ -653,6 +653,75 @@ def _extra_cli_args(value: Any) -> tuple[str, ...]:
     return arguments
 
 
+#: The one released model whose checkpoint carries the constraint embedder:
+#: upstream enables its pocket, contact, contact-atom and substructure
+#: projections for this name alone (Protenix ``configs/configs_model_type.py:
+#: 117-130``; the base default leaves all four off, ``configs_base.py:283``).
+_CONSTRAINT_MODEL_NAMES = frozenset({"protenix_base_constraint_v0.5.0"})
+
+
+def _constraint_channels(request: PredictionRequest) -> list[str]:
+    """The constraint channels the request's input carries, in a fixed order.
+
+    A common job's pocket restraint becomes Protenix ``constraint.pocket``
+    (`foldjax.input`); a native job carries ``constraint.pocket`` and
+    ``constraint.contact`` itself. An unreadable input carries nothing here:
+    reading it is the translation's job, which reports it properly.
+    """
+    from foldjax.input import read_job_document
+
+    try:
+        document = read_job_document(Path(request.input))
+    except (OSError, ValueError):
+        return []
+    found: set[str] = set()
+    if request.input_format == "foldjax":
+        constraints = (
+            document.get("constraints") if isinstance(document, Mapping) else None
+        )
+        if isinstance(constraints, list) and any(
+            isinstance(item, Mapping) and item.get("pocket") for item in constraints
+        ):
+            found.add("pocket")
+    else:
+        jobs = document if isinstance(document, list) else [document]
+        for job in jobs:
+            constraint = job.get("constraint") if isinstance(job, Mapping) else None
+            if isinstance(constraint, Mapping):
+                found.update(
+                    key for key in ("pocket", "contact") if constraint.get(key)
+                )
+    return [channel for channel in ("pocket", "contact") if channel in found]
+
+
+def _refuse_constraint_without_embedder(request: PredictionRequest) -> None:
+    """Refuse a constraint the weights cannot read, before featurization.
+
+    Only weights known by name are judged: an explicit ``model_name``, else
+    the one read off the weight file as the runner reads it. A checkpoint
+    neither names is left to the constraint embedder's own refusal.
+    """
+    channels = _constraint_channels(request)
+    if not channels:
+        return
+    model_name = request.options.get("model_name", "auto")
+    if model_name == "auto":
+        model_name = runtime_policy.infer_model_name_from_path(request.weights)
+    if (
+        model_name not in runtime_policy.KNOWN_MODEL_NAMES
+        or model_name in _CONSTRAINT_MODEL_NAMES
+    ):
+        return
+    raise ValueError(
+        f"protenix: the input carries a {' and a '.join(channels)} constraint, "
+        f"but {model_name} has no constraint embedder to read it; upstream "
+        "enables one only for "
+        f"{', '.join(sorted(_CONSTRAINT_MODEL_NAMES))}. Remove the constraint, "
+        "or run that checkpoint with --option model_name="
+        f"{next(iter(sorted(_CONSTRAINT_MODEL_NAMES)))}"
+    )
+
+
 class _NativeInvocation(NamedTuple):
     """One resolved request in both of the spellings the native run needs.
 
@@ -822,6 +891,12 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         return managed_memory_lease(
             "protenix_external_ccd", _release_external_ccd_cache
         )
+
+    def validate_request(self, request: PredictionRequest) -> None:
+        super().validate_request(request)
+        # Here, where `foldjax plan` sees it, rather than at the embedder,
+        # which only answers after featurization and the weights load.
+        _refuse_constraint_without_embedder(request)
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
         _extra_cli_args(options.get("cli_args", ()))

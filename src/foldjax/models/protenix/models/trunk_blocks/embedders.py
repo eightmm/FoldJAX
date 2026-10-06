@@ -393,11 +393,19 @@ def constraint_embedder(
     present_channels = set(constraint_feature_dict) & set(supported)
     if not present_channels:
         return None
-    for channel in present_channels:
-        if supported[channel] is None:
-            raise ValueError(
-                f"constraint channel {channel!r} has no matching embedder weights"
-            )
+    # In `supported`'s order, every one named: iterating the set named one
+    # arbitrary channel when several had no weights.
+    missing = [
+        channel
+        for channel in supported
+        if channel in present_channels and supported[channel] is None
+    ]
+    if missing:
+        raise ValueError(
+            f"constraint channel(s) {', '.join(map(repr, missing))} have no "
+            "matching embedder weights; upstream enables the constraint "
+            "embedder only for protenix_base_constraint_v0.5.0"
+        )
 
     z_constraint = None
     if "pocket" in constraint_feature_dict:

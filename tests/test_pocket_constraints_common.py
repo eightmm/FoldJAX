@@ -359,3 +359,76 @@ def test_results_and_compare_carry_the_constraints_record(tmp_path) -> None:
     (entry,) = compare_rows(root)["inputs"]
     (structure,) = entry["structures"]
     assert structure["constraints"] == [dict(record)]
+
+
+def _protenix_request(tmp_path: Path, source: Path, weights_name: str, **options):
+    from foldjax.api import resolve_request
+
+    weights = tmp_path / weights_name
+    weights.write_bytes(b"not really weights")
+    return lambda: resolve_request(
+        PredictionRequest(
+            model="protenix",
+            input=source,
+            weights=weights,
+            output_dir=tmp_path / "out",
+            seed=1,
+            msa="none",
+            use_compile_cache=False,
+            options=options,
+        )
+    )
+
+
+def test_protenix_refuses_a_pocket_its_weights_cannot_read_while_planning(
+    tmp_path,
+) -> None:
+    source = _job(tmp_path, {**_POCKET, "max_distance": 6.0})
+    plan = _protenix_request(tmp_path, source, "protenix_base_default_v1.0.0.jax")
+    with pytest.raises(ValueError, match="pocket constraint.*no constraint embedder"):
+        plan()
+    # The released name spelled out is the same model.
+    with pytest.raises(ValueError, match="no constraint embedder"):
+        _protenix_request(
+            tmp_path,
+            source,
+            "renamed.jax",
+            model_name="protenix_base_default_v1.0.0",
+        )()
+    # The constraint checkpoint reads it, and an unnamed checkpoint is left to
+    # the embedder, which is the only thing that can see its weights.
+    _protenix_request(tmp_path, source, "protenix_base_constraint_v0.5.0.jax")()
+    _protenix_request(tmp_path, source, "renamed.jax", model_name="unknown")()
+
+
+def test_protenix_refuses_a_native_contact_its_weights_cannot_read(tmp_path) -> None:
+    source = tmp_path / "native.json"
+    source.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "native",
+                    "sequences": [
+                        {"proteinChain": {"sequence": "ACDEFGHIK", "count": 1}},
+                        {"proteinChain": {"sequence": "MKVLA", "count": 1}},
+                    ],
+                    "constraint": {
+                        "contact": [
+                            {
+                                "entity1": 1,
+                                "copy1": 1,
+                                "position1": 2,
+                                "entity2": 2,
+                                "copy2": 1,
+                                "position2": 3,
+                                "max_distance": 8.0,
+                            }
+                        ]
+                    },
+                }
+            ]
+        )
+    )
+    plan = _protenix_request(tmp_path, source, "protenix_base_default_v1.0.0.jax")
+    with pytest.raises(ValueError, match="contact constraint.*no constraint embedder"):
+        plan()
