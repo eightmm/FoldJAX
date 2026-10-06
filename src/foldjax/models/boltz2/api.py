@@ -1563,7 +1563,14 @@ def predict(
         # dict can always take the pruning.
         affinity_feats = _graph_features(affinity_feats_np, place=False)
         affinity_kwargs = {
-            **predict_kwargs,
+            # Without the dense chain-pair capacity: the affinity program reads
+            # no chain-pair score, and leaving the key out keeps its kwargs --
+            # and so its retained-runner identity -- exactly as before.
+            **{
+                key: value
+                for key, value in predict_kwargs.items()
+                if key != "pair_chains_capacity"
+            },
             "recycling_steps": 5,
             "num_sampling_steps": affinity_num_steps,
             "steering_args": None,
@@ -1575,8 +1582,6 @@ def predict(
             ),
             "run_bfactor": "bfactor" in affinity_model_params,
             "confidence_sequentially": affinity_num_samples > 1,
-            # The affinity program reads no chain-pair score; keep it as it was.
-            "pair_chains_capacity": None,
             "recompute_nonpolymer_frames": True,
             "affinity_mw_correction": affinity_mw_correction,
             "use_template": (

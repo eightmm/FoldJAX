@@ -47,4 +47,6 @@
   against `confidence_full.npz` and filled only where a writer left something
   else (all six native writers already write it). The outcome is recorded per
   sample under `metadata.confidence_arrays.exports`. At 3,012 tokens the JSON is
-  about 50 MB per sample.
+  up to 57 MiB per sample and takes about 1.3 s to write (CPU, measured on a
+  random matrix); OpenFold3's host-side RASA adds about 3.6 s for five samples
+  of ~23,000 protein atoms.
