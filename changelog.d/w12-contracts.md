@@ -55,3 +55,8 @@
   `cueq_jit`, which also traces the triangle multiplication, where an omitted
   run leaves the trunk triangle attention to the runner; `auto` now passes
   nothing and shares the omitted cache namespace.
+- **Checkpoint loading no longer needs `os.preadv`.** CPython 3.13 removes it
+  from `os` on macOS before 11 (`posixmodule.c` drops `preadv`/`pwritev` when
+  the macOS 11 runtime check fails), which python.org 3.13 builds still
+  support; the torch-archive prefetch and the ESMC cast fall back to
+  `os.pread` there (`foldjax.torch_archive.pread_into`).

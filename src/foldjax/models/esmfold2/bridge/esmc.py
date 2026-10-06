@@ -34,6 +34,7 @@ import numpy as np
 from safetensors import safe_open
 
 from foldjax.models.esmfold2.models.esmc import ESMCSettings, settings_from_config
+from foldjax.torch_archive import pread_into
 
 INDEX_NAME = "model.safetensors.index.json"
 WEIGHTS_NAME = "model.safetensors"
@@ -216,7 +217,7 @@ class _CastBatches:
         source = buffer[:count]
         view, done = memoryview(source).cast("B"), 0
         while done < view.nbytes:
-            read = os.preadv(self._fd, [view[done:]], offset + done)
+            read = pread_into(self._fd, view[done:], offset + done)
             if read <= 0:
                 raise OSError(f"short read from {self._shard} at byte {offset + done}")
             done += read

@@ -95,6 +95,14 @@ def test_the_cast_on_load_needs_no_cpu_affinity(checkpoint, monkeypatch) -> None
     test_the_dtype_cast_happens_on_load(checkpoint)
 
 
+def test_the_cast_on_load_needs_no_preadv(checkpoint, monkeypatch) -> None:
+    """CPython removes `os.preadv` on macOS before 11; `os.pread` must do."""
+    import os
+
+    monkeypatch.delattr(os, "preadv", raising=False)
+    test_the_dtype_cast_happens_on_load(checkpoint)
+
+
 def test_device_transfer_casts_on_host_without_staging(
     checkpoint, monkeypatch: Any
 ) -> None:

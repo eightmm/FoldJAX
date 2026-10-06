@@ -52,6 +52,14 @@ def test_reads_where_the_os_has_no_cpu_affinity(monkeypatch) -> None:
     test_reads_the_checked_in_archive_without_torch()
 
 
+def test_reads_where_the_os_has_no_preadv(monkeypatch) -> None:
+    """CPython removes `os.preadv` on macOS before 11; `os.pread` must do."""
+    import os
+
+    monkeypatch.delattr(os, "preadv", raising=False)
+    test_reads_the_checked_in_archive_without_torch()
+
+
 @pytest.mark.parametrize(
     ("offset", "size", "stride", "message"),
     [
