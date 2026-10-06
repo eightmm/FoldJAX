@@ -27,8 +27,19 @@
   `fp32`/`float32`/`f32` are accepted in `dtype` and every `*_dtype` option on
   every port and rewritten to the port's own spelling, so `trunk_dtype=bf16`
   on OpenFold3 and `confidence_dtype=float32` on OpenDDE are no longer
-  refused. Manifests still record options as typed, so `--resume` treats two
-  spellings of one width as different requests.
+  refused.
+- **Switch values have one vocabulary.** `true`/`false`, `yes`/`no`,
+  `on`/`off`, `1`/`0` (any case) and real booleans reach every port as a
+  `bool` in each option it declares in the new `Backend.boolean_options`, and
+  as `on`/`off` in `deterministic`. Previously most ports took only a real
+  `bool` and Protenix/OpenDDE only `true`/`false` text. Only declared switches
+  are rewritten; other spellings still reach the port's validator and are
+  refused there.
+- **`--resume` compares options as the backend reads them.** Both the
+  recorded and the requested options go through `Backend.canonical_options`
+  (alias keys, width and switch spellings, `auto`), so `bf16` vs `bfloat16`
+  or `trunk_dtype` vs `compute_dtype` no longer forces a rerun; manifests from
+  earlier runs, which recorded options as typed, resume the same way.
 - **AlphaFold 3 runs off a GPU with the default attention.** An omitted
   attention (or `attention_kernel=auto`) was upstream's `triton`, which
   tokamax refuses with `NotImplementedError` on a CPU (and TPU). It is now

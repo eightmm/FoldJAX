@@ -394,6 +394,13 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
     # already carries upstream's own 1024; the knob narrows a setting the model
     # has rather than imposing one it lacks.
     sampling_options = SAMPLING_OPTIONS
+    boolean_options = frozenset(
+        {
+            "all_arrays",
+            "cp_atom_windows",
+            "no_compile",
+        }
+    )
     # OpenFold3 selects its triangle kernel from an environment variable rather
     # than an argument, because the switch has to reach every triangle attention
     # in the model -- the template stack and the confidence head included --

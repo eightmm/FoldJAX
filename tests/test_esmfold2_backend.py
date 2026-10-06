@@ -387,7 +387,7 @@ def test_the_sequential_sampler_option_refuses_text(tmp_path, monkeypatch) -> No
     request = PredictionRequest(
         model="esmfold2",
         input=_job(tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACD"}]),
-        options={"structure_sample_sequential": "true"},
+        options={"structure_sample_sequential": "maybe"},
     )
     with pytest.raises(
         ValueError, match="structure_sample_sequential must be a boolean"

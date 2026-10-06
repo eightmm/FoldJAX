@@ -885,6 +885,12 @@ class AlphaFold3Backend(Backend):
     # made AlphaFold 3 the one backend that could not be held to the same
     # schedule as the others, and so could not be benchmarked against them.
     sampling_options = SAMPLING_OPTIONS
+    boolean_options = frozenset(
+        {
+            "return_distogram",
+            "return_embeddings",
+        }
+    )
     # AlphaFold 3 runs `bfloat16: 'all'` inside the model it ships, so there is
     # no dtype for a caller to choose here; the knob would be a lie.
     execution_options: dict[str, tuple[str, dict[str, Any]]] = {

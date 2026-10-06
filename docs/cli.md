@@ -56,7 +56,12 @@ that is the spelling of the port's native CLI (`protenix-jax-predict`,
 `--option` with underscores, for example `--option amp_policy=upstream`.
 A width is one value whatever the option or port: `bf16`/`bfloat16` and
 `fp32`/`float32`/`f32` are accepted in `dtype` and in every `*_dtype` option,
-and rewritten to the spelling that port takes.
+and rewritten to the spelling that port takes. A switch is one value too:
+`true`/`false`, `yes`/`no`, `on`/`off`, `1`/`0` (any case) and real booleans
+all reach the port as a boolean, in every option a backend declares a switch
+(`Backend.boolean_options`) and in `deterministic`. `--resume` reads both
+manifests' options the same way, so `bf16` and `bfloat16`, an old option name
+and its new one, or `auto` and omitting the knob are one request.
 An option a backend does not accept is refused by name, and `foldjax plan`
 checks a spelling without running anything or writing into the store (with or
 without `--json` and `--shard`). Seeds fan out the same way — `--seeds 0 1 2` (or `--seed 0

@@ -321,6 +321,14 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
     padding_axes = ("tokens", "atoms", "msa", "structural_tokens")
     native_options = frozenset(_CLI_OPTIONS | {"include_raw"})
     sampling_options = SAMPLING_OPTIONS
+    boolean_options = frozenset(
+        {
+            "cp_atom_windows",
+            "include_raw",
+            "use_rna_msa",
+            "use_template",
+        }
+    )
     # OpenDDE has no triangle-kernel option of its own -- it drives Protenix's
     # trunk but exposes only the chunk sizes -- so `triangle_kernel` is absent
     # here and asking for it is an error rather than a silent no-op.

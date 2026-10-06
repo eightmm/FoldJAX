@@ -409,3 +409,89 @@ def test_the_option_is_part_of_every_port_s_compile_identity(
     the program built without them.
     """
     assert native in get_backend(model).compile_options
+
+
+_SWITCH_SPELLINGS = {
+    True: (True, 1, "true", "TRUE", "1", "yes", "Yes", "on"),
+    False: (False, 0, "false", "False", "0", "no", "NO", "off"),
+}
+
+
+@pytest.mark.parametrize(
+    ("model", "option"),
+    [
+        (model, option)
+        for model in available_models()
+        for option in sorted(get_backend(model).boolean_options)
+    ],
+)
+def test_every_switch_spelling_reaches_every_port_as_a_bool(
+    tmp_path, model: str, option: str
+) -> None:
+    """One vocabulary for a switch, whatever the port's own validator takes.
+
+    `_strict_boolean` took only a real `bool` and the Protenix/OpenDDE rules
+    only `true`/`false`; now every spelling lands as a `bool`, which both
+    accept, so the request also validates.
+    """
+    job = tmp_path / "job.json"
+    job.write_text("{}")
+    weights = tmp_path / "w"
+    weights.write_bytes(b"x")
+    backend = get_backend(model)
+    for switch, spellings in _SWITCH_SPELLINGS.items():
+        for spelling in spellings:
+            request = PredictionRequest(
+                model=model,
+                input=job,
+                input_format="foldjax",
+                weights=weights,
+                output_dir=tmp_path / "out",
+                options={option: spelling},
+            )
+            value = backend.apply_sampling(request)[option]
+            assert value is switch, spelling
+            backend.validate_request(request)
+
+
+def test_only_a_declared_switch_is_rewritten(request_with) -> None:
+    """`"1"` is a count elsewhere, and an unknown spelling is the port's to refuse."""
+    protenix = get_backend("protenix")
+    options = protenix.apply_sampling(
+        request_with(diffusion_chunk_size="1", use_template="maybe")
+    )
+    assert options["diffusion_chunk_size"] == "1"
+    assert options["use_template"] == "maybe"
+
+
+def test_the_deterministic_knob_takes_the_switch_spellings(request_with) -> None:
+    assert get_backend("boltz2").apply_sampling(request_with(deterministic="yes"))[
+        "deterministic"
+    ] is True
+    assert get_backend("protenix").apply_sampling(request_with(deterministic=False))[
+        "deterministic_ops"
+    ] == "off"
+
+
+def test_every_native_switch_is_declared_as_one() -> None:
+    """A native option whose released default is a `bool` is a switch.
+
+    Read off the backend module's default tables rather than its validators,
+    so a switch added later -- with its released default named the way every
+    port names one -- fails here until it joins `boolean_options`.
+    """
+    import importlib
+
+    for model in available_models():
+        backend = get_backend(model)
+        module = importlib.import_module(type(backend).__module__)
+        native = set(backend.native_options or ())
+        defaulted = {
+            key
+            for name, table in vars(module).items()
+            if "DEFAULT" in name and isinstance(table, dict)
+            for key, value in table.items()
+            if isinstance(key, str) and isinstance(value, bool) and key in native
+        }
+        assert defaulted <= backend.boolean_options, (model, defaulted)
+        assert backend.boolean_options <= native, model

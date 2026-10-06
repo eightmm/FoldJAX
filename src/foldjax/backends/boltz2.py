@@ -728,6 +728,14 @@ class Boltz2Backend(Backend):
         }
     )
     sampling_options = SAMPLING_OPTIONS
+    boolean_options = frozenset(
+        {
+            "affinity_mw_correction",
+            "cp_atom_windows",
+            "return_confidence_logits",
+            "use_msa_server",
+        }
+    )
     # Neutral knob -> (this port's name, {neutral value: its value}). Boltz-2
     # already spells the values the neutral way; the names are its own.
     execution_options: dict[str, tuple[str, dict[str, Any]]] = {

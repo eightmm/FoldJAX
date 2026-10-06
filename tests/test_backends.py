@@ -1066,7 +1066,7 @@ def test_opendde_adapter_rejects_unknown_and_mistyped_options(tmp_path: Path) ->
     with pytest.raises(ValueError, match="unsupported OpenDDE options"):
         OpenDDEBackend().predict(_request(tmp_path, "opendde", nonsense=1))
     with pytest.raises(ValueError, match="include_raw must be a boolean"):
-        OpenDDEBackend().predict(_request(tmp_path, "opendde", include_raw="false"))
+        OpenDDEBackend().predict(_request(tmp_path, "opendde", include_raw="maybe"))
 
 
 def test_opendde_adapter_requires_native_weight_file(tmp_path: Path) -> None:
@@ -1095,7 +1095,7 @@ def test_esmfold2_rejects_text_for_boolean_native_options(
 
     with pytest.raises(ValueError, match="no_language_model must be a boolean"):
         ESMFold2Backend().predict(
-            _request(tmp_path, "esmfold2", no_language_model="false")
+            _request(tmp_path, "esmfold2", no_language_model="maybe")
         )
 
 
@@ -1176,7 +1176,7 @@ def test_alphafold3_rejects_duplicate_job_directories_before_prediction(
 
 @pytest.mark.parametrize(
     ("option", "value"),
-    [("return_embeddings", "false"), ("return_distogram", 1)],
+    [("return_embeddings", "maybe"), ("return_distogram", 2)],
 )
 def test_alphafold3_requires_real_booleans_for_output_options(
     tmp_path: Path, monkeypatch, option: str, value: object

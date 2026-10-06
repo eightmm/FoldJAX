@@ -819,6 +819,15 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         }
     )
     sampling_options = SAMPLING_OPTIONS
+    boolean_options = frozenset(
+        {
+            "cp_atom_windows",
+            "full_depth_msa",
+            "strict_token_limit",
+            "use_rna_msa",
+            "use_template",
+        }
+    )
     # Protenix spells both the names and the values its own way: `bf16` for the
     # dtype, and `_jit` suffixes on the kernels for the traced variants.
     execution_options = {

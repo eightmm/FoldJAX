@@ -105,6 +105,50 @@ def _is_dtype_option(name: str) -> bool:
     return name == "dtype" or name.endswith("_dtype")
 
 
+#: Every spelling of a switch, to the real `bool` every port's validator
+#: takes: `_strict_boolean` takes nothing else, and the Protenix/OpenDDE
+#: option rules take a `bool` as readily as their `true`/`false` strings.
+BOOLEAN_SPELLINGS: dict[str, bool] = {
+    "true": True,
+    "1": True,
+    "yes": True,
+    "on": True,
+    "false": False,
+    "0": False,
+    "no": False,
+    "off": False,
+}
+
+
+def spell_booleans(
+    options: dict[str, Any], switches: frozenset[str] | set[str]
+) -> dict[str, Any]:
+    """Rewrite every spelling of a switch to a real `bool`.
+
+    ``switches`` is the backend's `boolean_options`; the neutral
+    `deterministic` takes `on`/`off` and gets those instead. Only the option's
+    declared type licenses the rewrite -- `"1"` is a count elsewhere -- and an
+    unrecognised spelling passes through for the port to refuse by name.
+    """
+    out = dict(options)
+    for name, value in options.items():
+        if name not in switches and name != "deterministic":
+            continue
+        if isinstance(value, bool):
+            switch = value
+        elif isinstance(value, int) and value in (0, 1):
+            switch = bool(value)
+        elif isinstance(value, str) and value.strip().lower() in BOOLEAN_SPELLINGS:
+            switch = BOOLEAN_SPELLINGS[value.strip().lower()]
+        else:
+            continue
+        if name == "deterministic":
+            out[name] = "on" if switch else "off"
+        else:
+            out[name] = switch
+    return out
+
+
 def spell_dtypes(
     options: dict[str, Any], table: dict[str, tuple[str, dict[str, Any]]]
 ) -> dict[str, Any]:
