@@ -562,6 +562,30 @@ def test_boltz_keeps_a_supplied_alignment(tmp_path) -> None:
     assert document["sequences"][0]["protein"]["msa"].endswith("hits.a3m")
 
 
+@pytest.mark.parametrize("name", ["hits.csv", "hits.CSV"])
+def test_boltz_refuses_a_csv_unpaired_msa_it_would_pair(
+    tmp_path: Path, job: dict, name: str
+) -> None:
+    """Boltz pairs a CSV by its key column; the common job asked for unpaired."""
+    (tmp_path / name).write_text("key,sequence\n1,ACD\n2,ACE\n")
+    job["entities"][0]["unpaired_msa"] = name
+    source = _write(tmp_path / "job.json", job)
+
+    with pytest.raises(ValueError, match="native Boltz YAML") as refused:
+        _materialize(source, "boltz2", tmp_path / "out")
+    assert "a .csv unpaired_msa" in str(refused.value)
+
+    # The same alignment as an .a3m is an ordinary unpaired MSA.
+    job["entities"][0]["unpaired_msa"] = "hits.a3m"
+    source = _write(tmp_path / "job.json", job)
+    native = yaml.safe_load(_materialize(source, "boltz2", tmp_path / "ok").read_text())
+    assert native["sequences"][0]["protein"]["msa"] == str(tmp_path / "hits.a3m")
+    # Only Boltz reads the key column, so the others still take the file.
+    job["entities"][0]["unpaired_msa"] = name
+    source = _write(tmp_path / "job.json", job)
+    _materialize(source, "alphafold3", tmp_path / "af3")
+
+
 _BARE_PROTEIN = {
     "name": "bare",
     "entities": [

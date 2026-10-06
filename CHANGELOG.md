@@ -87,6 +87,12 @@ unless it says so here, in its own paragraph.
   featurizer never applies them) instead of a pointer to the native format,
   which refuses them too.
 
+- **A common job's `.csv` `unpaired_msa` is refused for Boltz-2.** Boltz
+  reads a CSV alignment by suffix and pairs its rows by the `key` column, so
+  the "unpaired" alignment was paired -- the input the common job refuses as
+  `paired_msa` for Boltz-2. Give an `.a3m`, or a native Boltz YAML for a
+  paired CSV.
+
 ## 0.1.0 (2026-10-06)
 
 ### Added

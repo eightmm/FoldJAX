@@ -881,6 +881,23 @@ def _validate(
                 raise ValueError(f"{feature} must be a non-empty path string")
             if value is not None and feature not in target.features:
                 _reject(model, feature, f"remove it from entity {_ids(entity)[0]!r}")
+            if (
+                value is not None
+                and model == "boltz2"
+                and Path(value.strip()).suffix.lower() == ".csv"
+            ):
+                # Boltz dispatches on the suffix and pairs a CSV's rows by its
+                # `key` column (`data/parse/csv.py`), so this "unpaired"
+                # alignment would be paired after all -- the input refused just
+                # above as paired_msa.
+                _reject(
+                    model,
+                    "a .csv unpaired_msa",
+                    f"entity {_ids(entity)[0]!r} names {value.strip()!r}, and "
+                    "Boltz pairs a CSV alignment's rows by its key column. Give "
+                    "an .a3m here, or put a paired CSV in a native Boltz YAML "
+                    "msa field",
+                )
             if value is not None and model in _USE_RNA_MSA_MODELS and kind == "rna":
                 if feature == "paired_msa":
                     _reject(
