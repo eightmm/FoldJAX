@@ -1838,8 +1838,14 @@ def _write_affinity_summary(
         return None
     dest.mkdir(parents=True, exist_ok=True)
     path = dest / f"affinity_{record_id}.json"
-    # Upstream's own serialization: `json.dumps(summary, indent=4)`.
-    path.write_text(json.dumps(summary, indent=4), encoding="utf-8")
+    # Upstream's own serialization: `json.dumps(summary, indent=4)`. Staged in
+    # a private directory and moved into place, so a killed run leaves no
+    # truncated summary and an existing symlink is replaced, not followed;
+    # `write_text` gives the staged file the umask's mode.
+    with tempfile.TemporaryDirectory(prefix=".foldjax-affinity-", dir=dest) as scratch:
+        staged = Path(scratch) / path.name
+        staged.write_text(json.dumps(summary, indent=4), encoding="utf-8")
+        os.replace(staged, path)
     return path
 
 

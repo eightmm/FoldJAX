@@ -61,10 +61,26 @@ def ordinary_file_mode() -> int:
     For files staged through `tempfile`, which creates them ``0600``: chmod
     the staged file to this before ``os.replace`` so a published result stays
     readable to whoever reads the directory around it.
+
+    The umask is read from ``/proc/self/status`` where the kernel reports it
+    (Linux 4.7+), because the only portable way to read it -- set it and put
+    it back -- briefly leaves the process at ``0`` for any thread creating a
+    file meanwhile. Elsewhere it falls back to that set-and-restore.
     """
+    return 0o666 & ~_current_umask()
+
+
+def _current_umask() -> int:
+    try:
+        with open("/proc/self/status", encoding="ascii") as status:
+            for line in status:
+                if line.startswith("Umask:"):
+                    return int(line.split()[1], 8)
+    except (OSError, ValueError, IndexError):
+        pass
     mask = os.umask(0)
     os.umask(mask)
-    return 0o666 & ~mask
+    return mask
 
 
 def nonempty_file(path: Path) -> bool:
