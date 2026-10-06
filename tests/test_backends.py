@@ -1,5 +1,6 @@
 import builtins
 import dataclasses
+import datetime
 import json
 import os
 import subprocess
@@ -1233,8 +1234,9 @@ def test_alphafold3_adapter_invokes_cloned_runner(tmp_path: Path, monkeypatch) -
     inference_result = SimpleNamespace(metadata={"ranking_score": 0.91})
     results = (SimpleNamespace(seed=5, inference_results=(inference_result,)),)
 
-    def predict_structure(fold_input, model_runner, *, buckets):
+    def predict_structure(fold_input, model_runner, *, buckets, **upstream):
         seen["fold_input"] = fold_input
+        seen["upstream"] = upstream
         seen["active_device"] = active_devices[-1] if active_devices else None
         return results
 
@@ -1285,11 +1287,47 @@ def test_alphafold3_adapter_invokes_cloned_runner(tmp_path: Path, monkeypatch) -
     assert seen["active_device"] == selected_device
     assert active_devices == []
     assert seen["fold_input"].rng_seeds == (5,)
+    # run_alphafold.py passes its max_template_date default here (:1065).
+    assert seen["upstream"] == {"ref_max_modified_date": datetime.date(2021, 9, 30)}
     assert result.raw == results
     sample = result.samples[0]
     assert sample.structure_path.name == "job_seed-5_sample-0_model.cif"
     assert sample.seed == 5
     assert sample.scores == {"ptm": 0.7, "iptm": 0.5, "ranking_score": 0.91}
+
+
+def test_alphafold3_passes_the_upstream_cli_ref_max_modified_date() -> None:
+    """The vendored runner takes run_alphafold.py's own default, not None."""
+    import ast
+
+    from foldjax.backends.alphafold3 import _predict_structure_kwargs
+
+    tree = ast.parse(VENDORED_RUNNER.read_text())
+    flag = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "max_template_date"
+    )
+    default = datetime.date.fromisoformat(ast.literal_eval(flag.args[1]))
+    predict = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "predict_structure"
+    )
+    assert "ref_max_modified_date" in {arg.arg for arg in predict.args.kwonlyargs}
+
+    def current(fold_input, model_runner, *, buckets, ref_max_modified_date=None):
+        pass
+
+    def older(fold_input, model_runner, *, buckets):
+        pass
+
+    assert _predict_structure_kwargs(current) == {"ref_max_modified_date": default}
+    # An external checkout without the parameter is not handed one.
+    assert _predict_structure_kwargs(older) == {}
 
 
 def test_alphafold3_adapter_routes_padding_through_native_inference(

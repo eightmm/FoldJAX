@@ -183,6 +183,53 @@ def test_common_archive_crops_padding_and_skips_structure_extraction(
             )
 
 
+def test_unpadded_representation_featurization_takes_the_cli_date(
+    tmp_path: Path, monkeypatch
+):
+    """Featurized here, the job gets run_alphafold.py's ref_max_modified_date."""
+    import datetime
+    import sys
+    from types import ModuleType
+
+    (tmp_path / "input.json").write_text("{}")
+    request = PredictionRequest(
+        model="alphafold3",
+        input=tmp_path / "input.json",
+        output_dir=tmp_path,
+        stop_after="inputs",
+        representations=("single_inputs",),
+    )
+    calls = []
+
+    def featurise_input(**kwargs):
+        calls.append(kwargs)
+        return [{"seq_length": np.array(3)}]
+
+    data = ModuleType("alphafold3.data")
+    data.featurisation = SimpleNamespace(featurise_input=featurise_input)
+    constants = ModuleType("alphafold3.constants")
+    constants.chemical_components = SimpleNamespace(Ccd=lambda **kwargs: {})
+    monkeypatch.setitem(sys.modules, "alphafold3", ModuleType("alphafold3"))
+    monkeypatch.setitem(sys.modules, "alphafold3.data", data)
+    monkeypatch.setitem(sys.modules, "alphafold3.constants", constants)
+
+    _predict_common_representations(
+        SimpleNamespace(rng_seeds=(0,), name="job", user_ccd=None),
+        None,
+        SimpleNamespace(
+            run_inference=lambda batch, key: {
+                "representations": {"single_inputs": np.ones((3, 4))}
+            }
+        ),
+        SimpleNamespace(),
+        request=request,
+        wanted=("single_inputs",),
+        buckets=None,
+    )
+    (call,) = calls
+    assert call["ref_max_modified_date"] == datetime.date(2021, 9, 30)
+
+
 def test_external_runtime_cannot_claim_common_representations(tmp_path: Path):
     (tmp_path / "input.json").write_text("{}")
     request = PredictionRequest(

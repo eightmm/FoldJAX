@@ -100,6 +100,15 @@ unless it says so here, in its own paragraph.
   had been accepted. A ligand counts as one residue. Atom names are still
   checked by each backend, whose chemistry decides which atoms a residue has.
 
+- **AlphaFold 3 featurizes with `run_alphafold.py`'s `ref_max_modified_date`,
+  2021-09-30.** FoldJAX called the runner and featurisation without it, so a
+  chemical component whose RDKit conformer failed and whose CCD entry has no
+  ideal coordinates reached the model-coordinate fallback with `None` and
+  failed comparing a date with it (`model/features.py:1530`), where upstream's
+  CLI uses the coordinates of components modified before that date. An
+  external `source` runner whose `predict_structure` has no such parameter is
+  called as before.
+
 ## 0.1.0 (2026-10-06)
 
 ### Added

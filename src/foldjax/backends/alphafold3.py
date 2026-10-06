@@ -10,9 +10,11 @@ only when the request explicitly selects its ``source``.
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import functools
 import hashlib
 import importlib.util
+import inspect
 import json
 import re
 import sys
@@ -422,6 +424,30 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
 }
 _MANAGED_CONFIG_DEFAULTS = frozenset({"num_steps", "max_msa_depth"})
 
+#: The CCD release cutoff below which a component's model coordinates may stand
+#: in for a conformer RDKit could not generate. ``run_alphafold.py`` passes its
+#: ``max_template_date`` flag, default 2021-09-30 (``run_alphafold.py:295-297``,
+#: passed at ``:1065``); featurisation's own default is None, and that fallback
+#: then compares a date with None (``model/features.py:1530``) and fails.
+_REF_MAX_MODIFIED_DATE = datetime.date(2021, 9, 30)
+
+
+def _predict_structure_kwargs(predict_structure: Any) -> dict[str, Any]:
+    """The upstream CLI defaults ``predict_structure`` would otherwise lack.
+
+    An external ``source`` runner is called by signature: a checkout whose
+    ``predict_structure`` has no ``ref_max_modified_date`` cannot take one.
+    """
+    try:
+        parameters = inspect.signature(predict_structure).parameters
+    except (TypeError, ValueError):
+        return {}
+    accepts = "ref_max_modified_date" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    return {"ref_max_modified_date": _REF_MAX_MODIFIED_DATE} if accepts else {}
+
 
 def _validated_buckets(value: Any) -> tuple[int, ...]:
     """Normalize the legacy AF3 bucket option without deferring shape errors.
@@ -543,6 +569,7 @@ def _featurize_padded_structure(
         buckets=buckets,
         ccd=chemical_components.Ccd(user_ccd=fold_input.user_ccd),
         verbose=True,
+        ref_max_modified_date=_REF_MAX_MODIFIED_DATE,
         **crop,
     )
     plans: list[PaddingPlan] = []
@@ -674,6 +701,7 @@ def _predict_common_representations(
             buckets=buckets,
             ccd=chemical_components.Ccd(user_ccd=fold_input.user_ccd),
             verbose=True,
+            ref_max_modified_date=_REF_MAX_MODIFIED_DATE,
         )
     if len(examples) != 1 or len(fold_input.rng_seeds) != 1:
         raise ValueError("AlphaFold3 representations require exactly one seed")
@@ -1361,7 +1389,12 @@ class AlphaFold3Backend(Backend):
                     else:
                         with matmul_precision():
                             results = runner.predict_structure(
-                                fold_input, model_runner, buckets=buckets
+                                fold_input,
+                                model_runner,
+                                buckets=buckets,
+                                **_predict_structure_kwargs(
+                                    runner.predict_structure
+                                ),
                             )
                     if request.stop_after == "full":
                         runner.write_outputs(results, job_dir, job_name)

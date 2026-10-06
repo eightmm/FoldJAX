@@ -296,6 +296,11 @@ def test_af3_padded_featurizer_routes_msa_depth_to_pipeline(
         16384 if msa_depth is None else msa_depth
     )
     assert config_seen[0].buckets == (8,)
+    # run_alphafold.py's CLI default; featurisation's own None fails the CCD
+    # model-coordinate fallback (model/features.py:1530).
+    import datetime
+
+    assert config_seen[0].ref_max_modified_date == datetime.date(2021, 9, 30)
     assert examples == [example]
     assert plan.summary()["target"]["tokens"] == 8
 
