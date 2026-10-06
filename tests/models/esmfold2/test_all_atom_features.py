@@ -277,7 +277,12 @@ def test_all_atom_msa_keeps_unpaired_and_duplicate_query_hits(
     assert np.all(built["msa"][0, 1, 2:] != MSA_GAP_TOKEN_ID)
 
 
-def test_all_atom_entity_identity_is_chemical_and_symmetry_is_global(fake_ccd) -> None:
+def test_all_atom_entity_identity_is_the_sequence_and_symmetry_is_global(
+    fake_ccd,
+) -> None:
+    # Biohub keys an entity on its type and sequence alone
+    # (`prepare_input._get_sequence_key`), so a modified copy of a sequence is
+    # the same entity as the plain copies, and the copies count up across all.
     built = all_atom.build_job_features(
         {
             "entities": [
@@ -289,6 +294,7 @@ def test_all_atom_entity_identity_is_chemical_and_symmetry_is_global(fake_ccd) -
                 },
                 {"type": "protein", "id": "A", "sequence": "AS"},
                 {"type": "protein", "id": "B", "sequence": "AS"},
+                {"type": "protein", "id": "C", "sequence": "AG"},
             ]
         },
         base_dir=".",
@@ -299,12 +305,9 @@ def test_all_atom_entity_identity_is_chemical_and_symmetry_is_global(fake_ccd) -
     asym = built["asym_id"][0]
     entity = built["entity_id"][0]
     symmetry = built["sym_id"][0]
-    assert np.unique(entity[asym == 0]).tolist() == [0]
-    assert np.unique(entity[asym == 1]).tolist() == [1]
-    assert np.unique(entity[asym == 2]).tolist() == [1]
-    assert np.unique(symmetry[asym == 0]).tolist() == [0]
-    assert np.unique(symmetry[asym == 1]).tolist() == [0]
-    assert np.unique(symmetry[asym == 2]).tolist() == [1]
+    for chain, (entity_id, sym_id) in enumerate(((0, 0), (0, 1), (0, 2), (1, 0))):
+        assert np.unique(entity[asym == chain]).tolist() == [entity_id], chain
+        assert np.unique(symmetry[asym == chain]).tolist() == [sym_id], chain
 
 
 def test_all_atom_msa_applies_the_requested_native_row_cap(

@@ -129,21 +129,19 @@ def _ccd_codes(entity: Mapping[str, Any]) -> list[str]:
 
 
 def _entity_key(entity: Mapping[str, Any]) -> tuple[object, ...]:
-    """Biohub's canonical chemical identity, independent of common input index."""
+    """Biohub's entity identity, independent of common input index.
+
+    A polymer is keyed on its type and sequence alone, as Biohub's
+    ``_get_sequence_key`` keys it (``prepare_input.py:675-687``): two chains
+    with one sequence and different modifications are one entity there.
+    """
 
     kind = str(entity["type"])
     if kind == "ligand":
         if entity.get("ccd"):
             return ("NONPOLYMER", None, tuple(_ccd_codes(entity)))
         return ("NONPOLYMER", entity.get("smiles"), ())
-    return (
-        kind.upper(),
-        str(entity["sequence"]),
-        frozenset(
-            (int(item["position"]) - 1, str(item["ccd"]).upper(), None)
-            for item in entity.get("modifications", ())
-        ),
-    )
+    return (kind.upper(), str(entity["sequence"]))
 
 
 def _element(atom_name: str) -> str:
