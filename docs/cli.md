@@ -2308,6 +2308,36 @@ Only the diffusion token transformer is fused. The atom encoder and decoder
 feed-forwards inside the same denoiser, the trunk's SwiGLU and transition
 layers, and the ESMC language model's MLP all stay on XLA.
 
+### Upstream run options (`--option`)
+
+Each upstream CLI's own run options that FoldJAX had no spelling for. An
+omitted option runs upstream's value; every one joins the compilation-cache
+identity, so a departing value never reuses an entry built without it, and
+spelling the upstream value selects the namespace omitting it selects.
+
+| model | option | upstream | default | notes |
+|---|---|---|---|---|
+| Boltz-2 | `step_scale=FLOAT` | `--step_scale` (`main.py:876-888`) | `1.5` | sampler step size; lower values diversify samples; affinity stage inherits it |
+| Boltz-2 | `subsample_msa=true` | `--subsample_msa` (`main.py:1021-1026`) | `false` | a click flag, so `boltz predict` does not subsample; `true` redraws rows each trunk pass; refused with `--padding` |
+| Boltz-2 | `num_subsampled_msa=N` | `--num_subsampled_msa` (`main.py:1027-1031`) | `1024` | rows per pass when subsampling |
+| Boltz-2 | `method=NAME` | `--method` (`main.py:979-984`) | none | method conditioning, case-insensitive, one of `const.method_types_ids`; also keys the feature cache; affinity keeps `other` |
+| Boltz-2 | `use_potentials=true` | `--use_potentials` (`main.py:969-972,1309-1311`) | `false` | Feynman-Kac steering and physical guidance on top of contact guidance; eager, so refused with `steering_args`, `--padding`, `deterministic=on` and `cp_devices>1` |
+| Protenix | `use_tfg_guidance=true` | `--use_tfg_guidance` (`batch_inference.py:697-702,410`) | `false` | training-free guidance with `configs_base.py`'s default mapping, unrolled eager sampler; refused with `--padding`, `deterministic=on` and `cp_devices>1`; native CLI `--use-tfg-guidance` |
+| OpenDDE | `use_tfg_guidance=true` | `--use_tfg_guidance` (`batch_inference.py:848-853,487`) | `false` | the same mapping on Protenix's TFG port (OpenDDE's `tfg` is Protenix's plus Fold-CP plumbing); eager entry point; the same refusals; native CLI `--use-tfg-guidance true` |
+| AlphaFold 3 | `resolve_msa_overlaps=false` | `--resolve_msa_overlaps` (`run_alphafold.py:286-294`) | `true` | keep a hand-built unpaired MSA exactly as given |
+| AlphaFold 3 | `fix_standalone_glycans=true` | `--fix_standalone_glycans` (`run_alphafold.py:312-319`) | `false` | outside the trained regime, as upstream warns |
+| AlphaFold 3 | `conformer_max_iterations=N` | `--conformer_max_iterations` (`run_alphafold.py:305-311`) | RDKit's | `N >= 0` |
+| ESMFold2 | `lm_mask_pct=FLOAT` | `forward(lm_mask_pct=)` (`modeling_esmfold2.py:880`) | `0.0` | fraction of residues masked before ESMC, never BOS/EOS/PAD; drawn off the seed, over the natural LM length |
+| ESMFold2 | `msa_column_mask_rate=FLOAT` | `forward(msa_column_mask_rate=)` (`:882`) | `0.1` | inference-time MSA column mask |
+| ESMFold2 | `full_depth_msa=true` | `forward(msa_subsample_at_inference=False)` (`:883`) | `false` | every loop reads the whole alignment; refused with `max_msa_depth` |
+
+AlphaFold 3's `ref_max_modified_date`, the CCD cutoff below which a
+component's model coordinates may stand in for a failed RDKit conformer,
+follows `--template-max-date` when one is set, as `run_alphafold.py` derives
+both from `--max_template_date`; otherwise it stays 2021-09-30. An external
+`source` runner whose `predict_structure` cannot take a spelled featurisation
+option is refused rather than run without it.
+
 ### Weights and setup
 
 Upstreams publish several formats. `foldjax weights` downloads public files,
