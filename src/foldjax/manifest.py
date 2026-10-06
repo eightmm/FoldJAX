@@ -520,6 +520,66 @@ def native_input_dependency_paths(input_path: Path) -> dict[str, Path] | None:
     return {f"reference-{index:04d}": path for index, path in enumerate(paths)}
 
 
+def _cached_alignment_paths(request: PredictionRequest) -> list[Path] | None:
+    """The MSA-cache files a searched common job reads, or None if any would search.
+
+    Each protein chain without an alignment maps to one cache entry, keyed by
+    its sequence and the configured search (`foldjax.search.msa`). Present,
+    the entry's alignments and its ``provenance.json`` (which records their
+    SHA-256) are what preprocessing reads; absent, the run would search. RNA
+    with a local search configured, and OpenFold3's one-search complex
+    pairing, have cache entries this does not follow, so they stay
+    unverifiable.
+    """
+    try:
+        from foldjax.input import read_job_document
+        from foldjax.msa_search import (
+            _COMPLEX_PAIRING,
+            _msa_pipeline,
+            _rna_msa_pipeline,
+        )
+        from foldjax.search.msa import _normalize_sequence
+
+        document = read_job_document(request.input)
+        entities = [
+            entity for entity in document["entities"] if isinstance(entity, Mapping)
+        ]
+        proteins = [
+            _normalize_sequence(str(entity.get("sequence") or ""))
+            for entity in entities
+            if entity.get("type") == "protein"
+        ]
+        bare = [
+            _normalize_sequence(str(entity.get("sequence") or ""))
+            for entity in entities
+            if entity.get("type") == "protein" and not entity.get("unpaired_msa")
+        ]
+        bare_rna = any(
+            entity.get("type") == "rna" and not entity.get("unpaired_msa")
+            for entity in entities
+        )
+        if bare_rna and _rna_msa_pipeline() is not None:
+            return None
+        if request.model in _COMPLEX_PAIRING and len(set(proteins)) > 1:
+            return None
+        pipeline = _msa_pipeline() if bare else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    paths: list[Path] = []
+    for sequence in dict.fromkeys(bare):
+        key, _identity = pipeline._identity(sequence)
+        entry = Path(pipeline.cache_dir) / key
+        files = [entry / name for name in ("provenance.json", *_CACHED_ALIGNMENTS)]
+        if not all(path.is_file() for path in files):
+            return None
+        paths.extend(files)
+    return paths
+
+
+#: The alignment files of one protein MSA-cache entry.
+_CACHED_ALIGNMENTS = ("non_pairing.a3m", "pairing.a3m")
+
+
 def _native_input_paths(request: PredictionRequest) -> list[Path] | None:
     dependencies = native_input_dependency_paths(request.input)
     return None if dependencies is None else list(dependencies.values())
@@ -945,12 +1005,17 @@ def _input_dependencies(
         if common is None:
             return {"verifiable": False, "artifacts": []}
         common_paths, missing_alignment = common
-        # A search result depends on mutable remote databases and service state,
-        # neither of which a local run manifest can prove unchanged. A non-none
-        # policy is still deterministic when every searchable chain supplied an
-        # explicit alignment and preprocessing therefore performs no search.
-        if request.msa != "none" and missing_alignment:
-            return {"verifiable": False, "artifacts": []}
+        # `single` searches nothing, like `none`. A search result depends on
+        # mutable remote databases and service state, which a manifest cannot
+        # prove unchanged -- but a searched chain whose alignment is already
+        # in the MSA cache is read from there, not searched again, so the
+        # cached files are recorded like any other input and a finished run
+        # stays reusable for as long as they are unchanged.
+        if request.msa not in ("none", "single") and missing_alignment:
+            cached = _cached_alignment_paths(request)
+            if cached is None:
+                return {"verifiable": False, "artifacts": []}
+            paths.extend(cached)
         paths.extend(common_paths)
     elif request.input_format != "openfold3-features":
         native_paths = _native_input_paths(request)
@@ -1121,10 +1186,21 @@ def matches_request(
     Raises :class:`ValueError` when the manifest records an option this build
     removed; see :data:`_RETIRED_OPTIONS` for why that is not a mismatch.
     """
+    return request_mismatch(document, request, seed=seed) is None
+
+
+def request_mismatch(
+    document: Mapping[str, Any], request: PredictionRequest, *, seed: int
+) -> str | None:
+    """Why ``document`` does not prove it is this request, or None when it does.
+
+    `matches_request` with the reason kept, so ``--resume`` can say why it
+    reruns a directory that already holds a finished run. Raises like it.
+    """
     if document.get("schema") != MANIFEST_SCHEMA:
-        return False
+        return "it was written by a FoldJAX with another manifest schema"
     if document.get("artifact_paths") != "manifest-relative":
-        return False
+        return "its artifact paths are not manifest-relative"
     retired = _RETIRED_OPTIONS.get(str(document.get("model")), {})
     recorded = document.get("options")
     if retired and isinstance(recorded, Mapping):
@@ -1135,31 +1211,39 @@ def matches_request(
     input_record = document.get("input")
     weights_record = document.get("weights")
     if not isinstance(input_record, Mapping) or not isinstance(weights_record, Mapping):
-        return False
+        return "it records no input or weights"
 
     input_digest = _digest(request.input)
     if input_digest is None or request.weights is None:
-        return False
+        return "the input or weights cannot be read"
     try:
         from foldjax.cache import weight_identity
 
         _label, weights_identity = weight_identity(request.weights)
     except (OSError, ValueError):
-        return False
+        return "the weights cannot be identified"
 
     options = public_options(request.options)
     if not _public_options_are_complete(request, options):
-        return False
+        return "this request has options the manifest cannot record (redacted)"
     if document.get("options_verifiable") is not True:
-        return False
+        return "its options could not be recorded completely (redacted)"
     recorded_dependencies = document.get("input_dependencies")
     if not isinstance(recorded_dependencies, Mapping):
-        return False
+        return "it records no input dependencies"
     if recorded_dependencies.get("verifiable") is not True:
-        return False
+        return (
+            "its input dependencies could not be recorded (an alignment was "
+            "searched and not cached, or a native input names files FoldJAX "
+            "cannot follow)"
+        )
     current_dependencies = _input_dependencies(request)
     if current_dependencies.get("verifiable") is not True:
-        return False
+        return (
+            "this request's input dependencies cannot be verified (msa='auto' "
+            "would search: no cached alignment for a chain, or an RNA/complex "
+            "search; or a native input names files FoldJAX cannot follow)"
+        )
 
     expected_padding = (
         request.padding.summary() if request.padding is not None else None
@@ -1181,16 +1265,16 @@ def matches_request(
         "input_dependencies",
     }
     if not required.issubset(document):
-        return False
+        return "it lacks fields this build checks"
     if not {"path", "resolved_path", "format", "sha256"}.issubset(input_record):
-        return False
+        return "its input record is incomplete"
     if not {
         "identity",
         "profile",
         "kind",
         "stat_signature",
     }.issubset(weights_record):
-        return False
+        return "its weights record is incomplete"
     if not stat_identity_matches(
         request.weights,
         {
@@ -1198,33 +1282,72 @@ def matches_request(
             "stat_signature": weights_record["stat_signature"],
         },
     ):
-        return False
+        return "the weights changed on disk"
 
-    return all(
+    checks = (
+        (_exact_value(document["model"], request.model), "the model differs"),
         (
-            _exact_value(document["model"], request.model),
             _exact_value(input_record["path"], str(request.input)),
+            "the input path differs",
+        ),
+        (
             _exact_value(input_record["resolved_path"], _resolved_path(request.input)),
+            "the input resolves to another file",
+        ),
+        (
             _exact_value(input_record["format"], request.input_format),
-            _exact_value(input_record["sha256"], input_digest),
+            "the input format differs",
+        ),
+        (_exact_value(input_record["sha256"], input_digest), "the input changed"),
+        (
             _exact_value(recorded_dependencies, current_dependencies),
+            "a file the input names (alignment, template, CCD, weights asset or "
+            "model source) changed",
+        ),
+        (
             _exact_value(weights_record["identity"], weights_identity),
+            "the weights differ",
+        ),
+        (
             _exact_value(weights_record["profile"], request.profile),
-            _exact_value(document["seeds"], [seed]),
-            _exact_value(document["msa"], request.msa),
-            # Absent from manifests written before template search existed,
-            # which all ran without it.
+            "the weight profile differs",
+        ),
+        (_exact_value(document["seeds"], [seed]), "the seed differs"),
+        (_exact_value(document["msa"], request.msa), "the msa policy differs"),
+        # Absent from manifests written before template search existed,
+        # which all ran without it.
+        (
             _exact_value(document.get("templates", "none"), request.templates),
+            "the templates policy differs",
+        ),
+        (
             _exact_value(document.get("template_max_date"), request.template_max_date),
+            "the template date cutoff differs",
+        ),
+        (
             _exact_value(document["sampling"], request.sampling),
-            _exact_value(document["options"], options),
+            "the sampling settings differ",
+        ),
+        (_exact_value(document["options"], options), "the options differ"),
+        (
             _exact_value(document["padding"], expected_padding),
+            "the padding differs",
+        ),
+        (
             _exact_value(
                 document["requested_representations"], expected_representations
             ),
+            "the requested representations differ",
+        ),
+        (
             _exact_value(document["stop_after"], request.stop_after),
-        )
+            "stop_after differs",
+        ),
     )
+    for matched, reason in checks:
+        if not matched:
+            return reason
+    return None
 
 
 def describe_run(

@@ -46,7 +46,7 @@ from foldjax.manifest import (
     MANIFEST_NAME,
     device_peak_bytes,
     file_content_digest,
-    matches_request,
+    request_mismatch,
     stat_identity_matches,
 )
 from foldjax.manifest import write as write_manifest
@@ -687,6 +687,7 @@ def _result_from_manifest(
     *,
     seed: int,
     allowed_root: Path,
+    reasons: list[str] | None = None,
 ) -> PredictionResult | None:
     """Rebuild a finished run's result from the manifest it left behind.
 
@@ -694,16 +695,42 @@ def _result_from_manifest(
     one result per requested run whether or not this invocation produced it.
     ``raw`` is absent by construction: model-specific arrays were never written
     to the manifest, and inventing them would be worse than their absence.
+    ``reasons``, when given, receives why a manifest that exists was not
+    reused; a directory without one is not news and adds nothing.
     """
     path = Path(directory) / MANIFEST_NAME
+    if not path.is_file():
+        return None
+    reasons = [] if reasons is None else reasons
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
+        reasons.append(f"its {MANIFEST_NAME} cannot be read")
         return None
-    if not isinstance(document, Mapping) or not matches_request(
-        document, request, seed=seed
-    ):
+    if not isinstance(document, Mapping):
+        reasons.append(f"its {MANIFEST_NAME} is not a run manifest")
         return None
+    mismatch = request_mismatch(document, request, seed=seed)
+    if mismatch is not None:
+        reasons.append(mismatch)
+        return None
+    restored = _restore_from_manifest(
+        document, directory, request, seed=seed, allowed_root=allowed_root
+    )
+    if restored is None:
+        reasons.append("a recorded structure or representation is missing or changed")
+    return restored
+
+
+def _restore_from_manifest(
+    document: Mapping[str, Any],
+    directory: Path,
+    request: PredictionRequest,
+    *,
+    seed: int,
+    allowed_root: Path,
+) -> PredictionResult | None:
+    """The result a matching manifest records, or None if its files disagree."""
     representations, valid_representations = _representations_from_manifest(
         document,
         request,
@@ -1024,12 +1051,19 @@ def _attempt(
                 # validation and ``observe_resumed`` could bind the reused
                 # seed to generation A and the active session to generation B.
                 backend.validate_session(request)
+            reasons: list[str] = []
             reused = _result_from_manifest(
                 directory,
                 request,
                 seed=seed,
                 allowed_root=layout_root or directory,
+                reasons=reasons,
             )
+            if reasons:
+                progress._write(
+                    f"[foldjax] not reusing the finished run in {directory}: "
+                    f"{reasons[0]}; running it again"
+                )
             if reused is not None:
                 if backend is not None:
                     backend.observe_resumed(request)
