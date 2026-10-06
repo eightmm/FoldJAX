@@ -115,7 +115,7 @@ def test_a_changed_cached_alignment_forces_a_rerun_and_says_why(
         cached.write_text(f">query\n{SEQUENCE}\n>other\n{SEQUENCE}\n")
         foldjax.predict_batch(dataclasses.replace(request, resume=True))
     assert len(calls) == 2
-    assert "not reusing the finished run" in messages.getvalue()
+    assert "not resumable: the finished run" in messages.getvalue()
     assert "changed" in messages.getvalue()
 
 
@@ -125,7 +125,7 @@ def test_a_fresh_directory_is_not_reported(
     request = _request(tmp_path, resume=True)
     with _backends([]):
         foldjax.predict_batch(request)
-    assert "not reusing" not in messages.getvalue()
+    assert "not resumable" not in messages.getvalue()
 
 
 def test_request_mismatch_names_the_difference(tmp_path: Path) -> None:

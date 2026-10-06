@@ -9,8 +9,9 @@ import json
 import os
 import sys
 import time
-from collections.abc import Sequence
-from contextlib import redirect_stdout
+import warnings
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -1303,7 +1304,7 @@ def _run_cache(args: argparse.Namespace) -> int:
     # Native runners are allowed to print human progress (OpenDDE reports its
     # output path, for example). Keep that useful text visible, but never let
     # it corrupt the machine-readable cache report on stdout.
-    with redirect_stdout(sys.stderr):
+    with _stdout_to_stderr():
         result = warm_cache(request)
     results = result if isinstance(result, tuple) else (result,)
     for item in results:
@@ -1543,6 +1544,69 @@ def _render_predictions(results: list[PredictionResult]) -> str:
     )
 
 
+@contextmanager
+def _stdout_to_stderr() -> Iterator[None]:
+    """Send everything written to stdout, from Python or from C, to stderr.
+
+    ``redirect_stdout`` alone covers ``print``; a native extension writes to
+    file descriptor 1 directly, so that is pointed at stderr too, and restored
+    afterwards. Where stdout has no descriptor (an embedding host, a test
+    capture) only the Python-level redirect applies.
+    """
+    saved: int | None = None
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (AttributeError, OSError, ValueError):
+            pass
+    try:
+        # Descriptors 1 and 2 themselves, not ``sys.stdout.fileno()``: native
+        # code writes to 1 whatever Python object stands in for stdout.
+        os.fstat(1)
+        os.fstat(2)
+        saved = os.dup(1)
+        os.dup2(2, 1)
+    except OSError:
+        if saved is not None:
+            os.close(saved)
+        saved = None
+    try:
+        with redirect_stdout(sys.stderr):
+            yield
+    finally:
+        if saved is not None:
+            try:
+                sys.stderr.flush()
+            except (OSError, ValueError):
+                pass
+            os.dup2(saved, 1)
+            os.close(saved)
+
+
+def _format_warnings() -> None:
+    """Print each warning once per command as ``foldjax: warning: <message>``.
+
+    Python's default shows the warning's source file and the line that raised
+    it, which in a terminal reads as a crash report, and repeats it for every
+    seed. Installed by `entrypoint`, for the command's own process only and
+    never on import: a library must not decide how its host shows warnings.
+    """
+    seen: set[tuple[type[Warning], str]] = set()
+
+    def show(message, category, filename, lineno, file=None, line=None) -> None:
+        text = str(message).strip()
+        key = (category, text)
+        if key in seen:
+            return
+        seen.add(key)
+        try:
+            print(f"foldjax: warning: {text}", file=file or sys.stderr, flush=True)
+        except (OSError, ValueError):
+            pass
+
+    warnings.showwarning = show
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     # Importing or embedding the CLI for discovery/plan commands must not
@@ -1672,9 +1736,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if not args.quiet:
         progress.enable()
-    request = _request(args)
-    plural = request.models is not None or request.inputs is not None
-    outcome = _run_predictions(request)
+    # Stdout carries the result and nothing else: anything a backend or a
+    # native library prints while the request resolves and runs goes to stderr,
+    # so `foldjax predict ... > out.json` stays valid JSON.
+    with _stdout_to_stderr():
+        request = _request(args)
+        plural = request.models is not None or request.inputs is not None
+        outcome = _run_predictions(request)
     results = list(outcome.results)
     if args.json or not sys.stdout.isatty():
         summaries = [result.summary() for result in results]
@@ -1751,6 +1819,7 @@ _USER_ERRORS = (
 
 
 def entrypoint() -> None:
+    _format_warnings()
     try:
         raise SystemExit(main())
     except KeyboardInterrupt:

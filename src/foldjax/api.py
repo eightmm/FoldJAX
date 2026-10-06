@@ -1061,7 +1061,7 @@ def _attempt(
             )
             if reasons:
                 progress._write(
-                    f"[foldjax] not reusing the finished run in {directory}: "
+                    f"[foldjax] not resumable: the finished run in {directory}: "
                     f"{reasons[0]}; running it again"
                 )
             if reused is not None:
