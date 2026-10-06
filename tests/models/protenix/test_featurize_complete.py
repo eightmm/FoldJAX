@@ -725,6 +725,16 @@ def test_unknown_nucleotides_are_one_token_with_one_c1_prime(
     )
 
 
+def test_a_token_without_one_representative_atom_is_refused(monkeypatch) -> None:
+    """The confidence head would pad the missing atom with atom 0 silently."""
+    # A purine's C4 does not exist on the base-less N: zero representatives.
+    monkeypatch.setattr(
+        featurize_impl, "_PURINE_CODES", featurize_impl._PURINE_CODES | {"N"}
+    )
+    with pytest.raises(ValueError, match=r"exactly one representative atom.*'N'"):
+        featurize_protein_json(_job({"rnaSequence": {"sequence": "GN", "id": ["R"]}}))
+
+
 def test_molecule_ids_follow_native_inference_without_merging_ligand_bonds() -> None:
     features = featurize_protein_json(
         _job(

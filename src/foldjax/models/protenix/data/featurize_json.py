@@ -469,6 +469,23 @@ def featurize_protein_json(
     constraint_feature = _build_constraint_features(
         job.get("constraint", {}), state, n_token=n_token
     )
+    # The confidence head gathers one representative atom per token with
+    # `jnp.nonzero(size=n_token)` (models/heads/confidence.py), which pads a
+    # missing one with atom 0 rather than failing; OpenDDE's model refuses
+    # the same miscount (models/opendde/models/model.py). Refuse it here, where
+    # the residue that lacks one can still be named.
+    representative_counts = np.bincount(
+        atom_to_token[np.asarray(distogram_rep_atom_mask, dtype=bool)],
+        minlength=n_token,
+    )
+    if not np.all(representative_counts == 1):
+        wrong = np.flatnonzero(representative_counts != 1)
+        codes = [str(state["token_ccd_codes"][int(token)]) for token in wrong[:5]]
+        raise ValueError(
+            "distogram_rep_atom_mask must select exactly one representative atom "
+            f"per token; tokens {wrong[:5].tolist()} ({codes}) have "
+            f"{representative_counts[wrong[:5]].tolist()}"
+        )
     out = {
         "atom_to_token_idx": atom_to_token,
         "ref_pos": ref_pos_arr,
