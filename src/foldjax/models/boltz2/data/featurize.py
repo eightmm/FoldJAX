@@ -51,6 +51,7 @@ def _cache_opts(
     max_msa_depth: int | None,
     msa_deletions: str,
     seed: int,
+    method: str | None = None,
 ) -> tuple:
     """Everything besides the input files that changes the features produced.
 
@@ -65,6 +66,9 @@ def _cache_opts(
 
     `seed` draws the reference-conformer augmentation in `ref_pos`, so one
     seed's entry would answer another seed's run with the wrong input.
+
+    `method` sets every token's `method_feature`. It joins the key only when
+    spelled, so entries written before the option existed keep their digest.
 
     The schema token retires entries whose cached structures stored the
     absent `pocket` as a pickled `None`, which the pickle-free loader refuses.
@@ -82,6 +86,7 @@ def _cache_opts(
         max_msa_depth,
         msa_deletions,
         int(seed),
+        *(() if method is None else (("method", method),)),
     )
     cap = parse_cap(max_msa_depth)
     if cap != UPSTREAM_PARSE_CAP:
@@ -143,6 +148,7 @@ def featurize_yaml(
     cache_dir: Path | None = None,
     max_msa_depth: int | None = None,
     msa_deletions: str = "released",
+    method: str | None = None,
     seed: int = 0,
 ) -> tuple[dict[str, np.ndarray], object, Path]:
     """Run preprocessing + featurization for one YAML.
@@ -164,6 +170,7 @@ def featurize_yaml(
         max_msa_depth,
         msa_deletions,
         seed,
+        method,
     )
     cache_entry = None
     if cache_dir is not None:
@@ -204,6 +211,7 @@ def featurize_yaml(
         constraints_dir=processed / "constraints",
         template_dir=processed / "templates",
         extra_mols_dir=processed / "mols",
+        override_method=method,
         max_msa_seqs=max_msa_depth,
         msa_deletions=msa_deletions,
         seed=seed,

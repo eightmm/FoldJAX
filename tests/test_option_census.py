@@ -742,6 +742,9 @@ _WHY_NO_STRIP_ENTRY = {
         # override writes both and a flat strip entry could not express
         # either.
         "diffusion_chunk_size": "resolved into every profile",
+        # models/boltz2/api.py `predict(method=None)`: `None` is the
+        # featurizer's own choice, which `boltz predict` also leaves unset.
+        "method": "no released default a request can spell",
     },
     "esmfold2": {
         # Injected into every effective request at backends/esmfold2.py:875,
