@@ -43,11 +43,9 @@ averaging or ranking across models would invent a number none of them computed.
 from __future__ import annotations
 
 import errno
-import hashlib
 import json
 import math
 import os
-import re
 import shutil
 import tempfile
 import warnings
@@ -58,6 +56,7 @@ from pathlib import Path
 import numpy as np
 
 from foldjax import confidence_arrays
+from foldjax._fsutil import safe_job_name
 from foldjax.schema import PredictionOutputError, PredictionResult, PredictionSample
 from foldjax.scores import EXECUTION_FIELDS
 from foldjax.summary import (
@@ -102,8 +101,6 @@ _RANKING_SCORE = {
     "protenix": "ranking_score",
 }
 
-_UNSAFE_NAME = re.compile(r"[^\w.-]+", flags=re.UNICODE)
-
 #: The AlphaFold-DB-schema PAE file in each canonical sample directory.
 PAE_JSON = "predicted_aligned_error.json"
 
@@ -125,19 +122,6 @@ MAX_PREDICTED_ALIGNED_ERROR = {
 
 #: Rounding the writers apply to the B-factor column (two decimals at most).
 _B_FACTOR_TOLERANCE = 0.01
-
-
-def safe_job_name(name: str, *, limit: int = 120) -> str:
-    """Return a readable filename component that cannot escape its run root."""
-    original = str(name).strip()
-    safe = _UNSAFE_NAME.sub("_", original.replace("/", "_").replace("\\", "_"))
-    safe = safe.strip("._") or "prediction"
-    if len(safe.encode("utf-8")) <= limit:
-        return safe
-    digest = hashlib.sha256(original.encode()).hexdigest()[:8]
-    prefix_bytes = safe.encode("utf-8")[: limit - len(digest) - 1]
-    prefix = prefix_bytes.decode("utf-8", errors="ignore").rstrip("._-")
-    return f"{prefix or 'prediction'}-{digest}"
 
 
 def sample_directory(output_dir: Path, seed: int, index: int) -> Path:

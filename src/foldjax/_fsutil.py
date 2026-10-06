@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from pathlib import Path
 
 #: Read size for streamed hashing. Large enough that hashing a multi-GB
@@ -89,3 +90,26 @@ def nonempty_file(path: Path) -> bool:
         return path.is_file() and path.stat().st_size > 0
     except OSError:
         return False
+
+
+_UNSAFE_NAME = re.compile(r"[^\w.-]+", flags=re.UNICODE)
+
+
+def safe_job_name(name: str, *, limit: int = 120) -> str:
+    """Return a readable filename component that cannot escape its run root.
+
+    The one rule every writer that turns a job name into a path follows --
+    FoldJAX's common layout, Protenix/OpenDDE's original-style tree and
+    OpenFold3's native files -- so one job lands under one name whichever
+    model wrote it. A name of ASCII letters, digits, ``_``, ``.`` and ``-``
+    that neither starts nor ends with ``.``/``_`` comes back unchanged.
+    """
+    original = str(name).strip()
+    safe = _UNSAFE_NAME.sub("_", original.replace("/", "_").replace("\\", "_"))
+    safe = safe.strip("._") or "prediction"
+    if len(safe.encode("utf-8")) <= limit:
+        return safe
+    digest = hashlib.sha256(original.encode()).hexdigest()[:8]
+    prefix_bytes = safe.encode("utf-8")[: limit - len(digest) - 1]
+    prefix = prefix_bytes.decode("utf-8", errors="ignore").rstrip("._-")
+    return f"{prefix or 'prediction'}-{digest}"

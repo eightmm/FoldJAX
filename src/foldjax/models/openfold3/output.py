@@ -24,6 +24,7 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
+from foldjax._fsutil import safe_job_name
 from foldjax.models._output_validation import require_finite_coordinates
 
 # Upstream's 32-token residue vocabulary, in order; ``restype`` is a one-hot over
@@ -65,19 +66,16 @@ _GEMMI_MISSING = (
 
 
 def _safe_output_name(name: str) -> str:
-    """Require one portable filename component for a prediction label."""
-    if (
-        not isinstance(name, str)
-        or not name
-        or name in {".", ".."}
-        or "/" in name
-        or "\\" in name
-        or any(ord(character) < 32 or ord(character) == 127 for character in name)
-    ):
-        raise ValueError(
-            "OpenFold3 output name must be one non-empty filename component"
-        )
-    return name
+    """One portable filename component for a prediction label.
+
+    FoldJAX's one job-name rule (`foldjax._fsutil.safe_job_name`): the name
+    comes from a query id or an input stem, so a separator in it is sanitized
+    like every other model's rather than failing a finished prediction at the
+    writer.
+    """
+    if not isinstance(name, str):
+        raise ValueError("OpenFold3 output name must be a string")
+    return safe_job_name(name)
 
 
 def _output_path(root: Path, filename: str) -> Path:

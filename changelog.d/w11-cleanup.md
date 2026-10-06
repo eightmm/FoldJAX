@@ -11,3 +11,16 @@
   shared search client already applies. A body that breaks off mid-transfer is
   retried like a failed request, and a refused or failed download leaves no
   partial archive to be reused.
+
+### Changed
+
+- **One job-name rule for every output path.** FoldJAX's layout, the
+  Protenix/OpenDDE original-style tree and OpenFold3's native files each
+  sanitized a job name their own way; all three now use
+  `foldjax._fsutil.safe_job_name`. A name of ASCII letters, digits, `_`, `.`
+  and `-` is written exactly as before. What moves: Protenix and OpenDDE keep
+  non-ASCII letters (a Korean or Greek job name used to collapse to
+  `prediction`, so two such jobs shared one directory) and shorten names over
+  120 bytes with a digest; OpenFold3 sanitizes a name with a separator,
+  whitespace or a control character instead of failing the finished
+  prediction at the writer.
