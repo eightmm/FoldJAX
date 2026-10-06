@@ -19,6 +19,12 @@ from typing import Any
 
 from foldjax._fsutil import sha256_file as _sha256_file
 from foldjax.redaction import redact
+from foldjax.search.msa import (
+    cache_key_lock,
+    publish_directory,
+    quarantine_entry,
+    staging_directory,
+)
 
 from ..template_features import PROTEIN_3TO1
 from .msa import SearchError
@@ -158,25 +164,45 @@ class TemplateSearchPipeline:
         canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
         cache_key = hashlib.sha256(canonical.encode()).hexdigest()
         directory = self.cache_dir / cache_key
-        provenance_path = directory / "provenance.json"
-        if directory.exists():
-            if not provenance_path.is_file():
-                raise SearchError(f"template cache is incomplete: {directory}")
-            provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
-            if provenance.get("cache_key") != cache_key:
-                raise SearchError(f"template cache key mismatch: {provenance_path}")
-            artifact = directory / provenance["artifact"]["name"]
-            if not artifact.is_file():
-                raise SearchError(f"template cache artifact is missing: {artifact}")
-            if _sha256_file(artifact) != provenance["artifact"]["sha256"]:
-                raise SearchError(f"template cache artifact hash mismatch: {artifact}")
-            return {"templatesPath": str(artifact.resolve())}
+        with cache_key_lock(self.cache_dir, cache_key):
+            try:
+                cached = self._cached(directory, cache_key)
+            except (SearchError, KeyError, TypeError, ValueError) as error:
+                quarantine_entry(directory, cache_key, error)
+                cached = None
+            if cached is not None:
+                return cached
+            return self._materialize(directory, cache_key, identity, sequence, msa)
 
+    @staticmethod
+    def _cached(directory: Path, cache_key: str) -> dict[str, str] | None:
+        provenance_path = directory / "provenance.json"
+        if not directory.exists():
+            return None
+        if not provenance_path.is_file():
+            raise SearchError(f"template cache is incomplete: {directory}")
+        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+        if provenance.get("cache_key") != cache_key:
+            raise SearchError(f"template cache key mismatch: {provenance_path}")
+        artifact = directory / provenance["artifact"]["name"]
+        if not artifact.is_file():
+            raise SearchError(f"template cache artifact is missing: {artifact}")
+        if _sha256_file(artifact) != provenance["artifact"]["sha256"]:
+            raise SearchError(f"template cache artifact hash mismatch: {artifact}")
+        return {"templatesPath": str(artifact.resolve())}
+
+    def _materialize(
+        self,
+        directory: Path,
+        cache_key: str,
+        identity: Mapping[str, Any],
+        sequence: str,
+        msa: Path,
+    ) -> dict[str, str]:
         payload = self.backend.search(sequence, msa)
         if payload.suffix not in (".a3m", ".hhr"):
             raise SearchError(f"unsupported template artifact suffix: {payload.suffix}")
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        temporary = Path(tempfile.mkdtemp(prefix=f".{cache_key}.", dir=self.cache_dir))
+        temporary = staging_directory(self.cache_dir, cache_key)
         try:
             artifact = temporary / f"templates{payload.suffix}"
             raw = payload.content.encode()
@@ -195,11 +221,11 @@ class TemplateSearchPipeline:
                 json.dumps(redact(provenance), indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            try:
-                temporary.rename(directory)
-            except FileExistsError:
-                shutil.rmtree(temporary)
-                return self.search(sequence, msa)
+            if not publish_directory(temporary, directory):
+                cached = self._cached(directory, cache_key)
+                if cached is None:
+                    raise AssertionError("template cache disappeared")
+                return cached
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
             raise

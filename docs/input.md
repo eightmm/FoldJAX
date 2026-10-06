@@ -172,6 +172,12 @@ Server URLs (this one, `--msa-remote-url`, Boltz-2's MSA server and
 accepted for loopback hosts, and elsewhere only with
 `FOLDJAX_ALLOW_INSECURE_HTTP=1`. A server that redirects is refused rather than
 followed, so a credential or API-key header never reaches another host.
+Concurrent runs on one sequence search once: the first holds a lock on the
+cache entry and the rest read what it published. An entry whose files no
+longer match their recorded hashes is moved aside as `.<key>.damaged`, with a
+warning naming it, and searched again. Entries are written with the process
+umask, so a group can share `$FOLDJAX_HOME/msa/`; the hashes detect damage,
+not a hostile writer, so a shared cache trusts everyone who can write it.
 For sequences that must not leave the machine — and for RNA, which no public
 endpoint answers — point FoldJAX at a locally installed search instead:
 

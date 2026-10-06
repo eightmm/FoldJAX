@@ -24,6 +24,7 @@ dependency cycle.
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import http.client
 import io
@@ -38,7 +39,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -226,6 +228,102 @@ def _validate_payload(sequence: str, payload: MsaPayload) -> None:
             )
 
 
+# Cache entries: one directory per key, published by renaming a staged sibling
+# into place. A shared store sees concurrent runs and the occasional damaged
+# entry, and the helpers below are what every search cache does about both.
+# The content hashes in provenance.json catch damage, not a hostile writer:
+# a cache other accounts can write is trusted by everyone who reads it.
+
+
+@contextmanager
+def cache_key_lock(cache_dir: Path, cache_key: str) -> Iterator[None]:
+    """Serialize work on one cache entry across processes, best effort.
+
+    Two runs on one sequence used to search twice and race to publish. Held
+    around check, search and publish, the lock makes the second run wait and
+    then read the first one's entry. It is advisory: where ``flock`` is not
+    honoured (some network filesystems) the publish below still resolves the
+    race, so a lock that cannot be taken is never a failure.
+    """
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - POSIX only
+        yield
+        return
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        handle = os.open(
+            cache_dir / f".{cache_key}.lock",
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0),
+            0o666,
+        )
+    except OSError:
+        yield
+        return
+    try:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        except OSError:
+            pass
+        yield
+    finally:
+        os.close(handle)
+
+
+def staging_directory(cache_dir: Path, cache_key: str) -> Path:
+    """A fresh hidden sibling to build an entry in, with the umask's mode.
+
+    ``tempfile.mkdtemp`` makes it 0700, which the published entry kept, so a
+    store shared by a group could not be read by the rest of it.
+    """
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    while True:
+        path = cache_dir / f".{cache_key}.{os.urandom(6).hex()}"
+        try:
+            os.mkdir(path)
+        except FileExistsError:
+            continue
+        return path
+
+
+def publish_directory(staged: Path, directory: Path) -> bool:
+    """Rename ``staged`` to ``directory``; ``False`` when another run got there.
+
+    Renaming onto an existing *non-empty* directory fails with ``ENOTEMPTY``,
+    not ``FileExistsError``, so the loser of a race used to fail its run.
+    """
+    try:
+        staged.rename(directory)
+    except OSError as exc:
+        if exc.errno not in (errno.EEXIST, errno.ENOTEMPTY):
+            raise
+        shutil.rmtree(staged, ignore_errors=True)
+        return False
+    return True
+
+
+def quarantine_entry(directory: Path, cache_key: str, reason: object) -> None:
+    """Move a damaged entry aside so the next lookup searches again.
+
+    A hash mismatch or a missing file used to fail every later run of that
+    sequence. The entry is kept, once, as ``.<key>.damaged`` for inspection.
+    """
+    import warnings
+
+    aside = directory.parent / f".{cache_key}.damaged"
+    shutil.rmtree(aside, ignore_errors=True)
+    try:
+        directory.rename(aside)
+    except OSError:
+        shutil.rmtree(directory, ignore_errors=True)
+    warnings.warn(
+        f"search cache entry {directory} was damaged ({reason}); moved aside to "
+        f"{aside.name} and searching again",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
 class MsaSearchPipeline:
     """Cache backend results by sequence plus immutable search provenance."""
 
@@ -304,8 +402,7 @@ class MsaSearchPipeline:
         payload: MsaPayload,
     ) -> dict[str, str]:
         _validate_payload(sequence, payload)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        temp_dir = Path(tempfile.mkdtemp(prefix=f".{cache_key}.", dir=self.cache_dir))
+        temp_dir = staging_directory(self.cache_dir, cache_key)
         try:
             files: dict[str, dict[str, Any]] = {}
             for filename, content in (
@@ -326,10 +423,7 @@ class MsaSearchPipeline:
                 json.dumps(redact(provenance), indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            try:
-                temp_dir.rename(directory)
-            except FileExistsError:
-                shutil.rmtree(temp_dir)
+            if not publish_directory(temp_dir, directory):
                 cached = self._cached(directory, sequence, cache_key)
                 if cached is None:
                     raise AssertionError("cache disappeared during materialization")
@@ -339,6 +433,16 @@ class MsaSearchPipeline:
             raise
         return self._paths(directory)
 
+    def _usable(
+        self, directory: Path, sequence: str, cache_key: str
+    ) -> dict[str, str] | None:
+        """The cached entry, or ``None`` after moving a damaged one aside."""
+        try:
+            return self._cached(directory, sequence, cache_key)
+        except (SearchError, UnicodeDecodeError) as error:
+            quarantine_entry(directory, cache_key, error)
+            return None
+
     def search(self, sequences: Sequence[str]) -> list[dict[str, str]]:
         normalized = [_normalize_sequence(sequence) for sequence in sequences]
         if not normalized:
@@ -347,14 +451,15 @@ class MsaSearchPipeline:
         for sequence in dict.fromkeys(normalized):
             cache_key, identity = self._identity(sequence)
             directory = self.cache_dir / cache_key
-            cached = self._cached(directory, sequence, cache_key)
-            resolved[sequence] = cached or self._materialize(
-                directory,
-                sequence,
-                cache_key,
-                identity,
-                self.backend.search(sequence),
-            )
+            with cache_key_lock(self.cache_dir, cache_key):
+                cached = self._usable(directory, sequence, cache_key)
+                resolved[sequence] = cached or self._materialize(
+                    directory,
+                    sequence,
+                    cache_key,
+                    identity,
+                    self.backend.search(sequence),
+                )
         return [resolved[sequence] for sequence in normalized]
 
     @property
@@ -388,11 +493,19 @@ class MsaSearchPipeline:
         canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
         cache_key = _sha256(canonical.encode())
         directory = self.cache_dir / cache_key
-        paths = self._complex_cached(
-            directory, unique, cache_key
-        ) or self._complex_materialize(
-            directory, unique, cache_key, identity, self.backend.search_complex(unique)
-        )
+        with cache_key_lock(self.cache_dir, cache_key):
+            try:
+                paths = self._complex_cached(directory, unique, cache_key)
+            except (SearchError, UnicodeDecodeError) as error:
+                quarantine_entry(directory, cache_key, error)
+                paths = None
+            paths = paths or self._complex_materialize(
+                directory,
+                unique,
+                cache_key,
+                identity,
+                self.backend.search_complex(unique),
+            )
         by_sequence = dict(zip(unique, paths, strict=True))
         return [by_sequence[sequence] for sequence in normalized]
 
@@ -464,8 +577,7 @@ class MsaSearchPipeline:
                     "paired MSA query does not match requested protein sequence: "
                     f"expected {sequence!r}, got {query!r}"
                 )
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        temp_dir = Path(tempfile.mkdtemp(prefix=f".{cache_key}.", dir=self.cache_dir))
+        temp_dir = staging_directory(self.cache_dir, cache_key)
         try:
             files: dict[str, dict[str, Any]] = {}
             for index, content in enumerate(payload.paired):
@@ -483,10 +595,7 @@ class MsaSearchPipeline:
                 json.dumps(redact(provenance), indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            try:
-                temp_dir.rename(directory)
-            except FileExistsError:
-                shutil.rmtree(temp_dir)
+            if not publish_directory(temp_dir, directory):
                 cached = self._complex_cached(directory, sequences, cache_key)
                 if cached is None:
                     raise AssertionError("cache disappeared during materialization")
@@ -617,10 +726,7 @@ class RnaMsaSearchPipeline:
         payload: RnaMsaPayload,
     ) -> dict[str, str]:
         _validate_rna_payload(sequence, payload)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        temporary = Path(
-            tempfile.mkdtemp(prefix=f".{cache_key}.", dir=self.cache_dir)
-        )
+        temporary = staging_directory(self.cache_dir, cache_key)
         try:
             raw = payload.unpaired.encode()
             (temporary / "rna_msa.a3m").write_bytes(raw)
@@ -637,10 +743,7 @@ class RnaMsaSearchPipeline:
                 json.dumps(redact(provenance), indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            try:
-                temporary.rename(directory)
-            except FileExistsError:
-                shutil.rmtree(temporary)
+            if not publish_directory(temporary, directory):
                 cached = self._cached(directory, sequence, cache_key)
                 if cached is None:
                     raise AssertionError("RNA MSA cache disappeared")
@@ -658,14 +761,19 @@ class RnaMsaSearchPipeline:
         for sequence in dict.fromkeys(normalized):
             cache_key, identity = self._identity(sequence)
             directory = self.cache_dir / cache_key
-            cached = self._cached(directory, sequence, cache_key)
-            resolved[sequence] = cached or self._materialize(
-                directory,
-                sequence,
-                cache_key,
-                identity,
-                self.backend.search(sequence),
-            )
+            with cache_key_lock(self.cache_dir, cache_key):
+                try:
+                    cached = self._cached(directory, sequence, cache_key)
+                except SearchError as error:
+                    quarantine_entry(directory, cache_key, error)
+                    cached = None
+                resolved[sequence] = cached or self._materialize(
+                    directory,
+                    sequence,
+                    cache_key,
+                    identity,
+                    self.backend.search(sequence),
+                )
         return [resolved[sequence] for sequence in normalized]
 
 

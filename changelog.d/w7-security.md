@@ -20,6 +20,18 @@
   progress line instead of sitting silent, a timeout names the server, and the
   one-hour ceiling is `FOLDJAX_MSA_MAX_WAIT_SECONDS`.
 
+- **Search caches survive concurrent runs and damaged entries.** Two runs on
+  one sequence raced to publish, and the loser failed: renaming onto a
+  non-empty directory raises `ENOTEMPTY`, which was not caught. Publishing
+  now reads the winner's entry, and an advisory lock per cache key makes the
+  second run wait and reuse the first one's search instead of asking the
+  server again. An MSA, RNA-MSA or template-hits entry that fails its hash or
+  completeness check used to fail every later run of that sequence; it is now
+  moved aside as `.<key>.damaged` with a warning naming it, and searched
+  again. Entries are published with the umask's mode instead of 0700, so a
+  group-shared cache is readable by the group, and a failed mmCIF download no
+  longer leaves its staging file behind.
+
 ### Security
 
 - **Boltz-2 loads its processed arrays and molecule pickles without arbitrary
