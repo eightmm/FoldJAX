@@ -587,15 +587,20 @@ def test_reference_wrapper_meets_the_local_search_contract(
 
 
 def test_wrapper_without_colabfold_says_which_interpreter(tmp_path: Path):
+    import importlib.util
+    import os
+
     from foldjax.search import colabfold_local
 
+    if importlib.util.find_spec("colabfold") is not None:
+        pytest.skip("ColabFold is installed in this interpreter")
     fasta = tmp_path / "q.fasta"
     fasta.write_text(f">q\n{SEQUENCE}\n")
     completed = subprocess.run(
         [sys.executable, colabfold_local.__file__, "--db", str(tmp_path),
          "--input", str(fasta), "--output", str(tmp_path / "o")],
         capture_output=True, text=True, check=False,
-        env={"PATH": "/usr/bin:/bin"},
+        env={**os.environ},
     )
     assert completed.returncode == 2
     assert "pip install colabfold" in completed.stderr
