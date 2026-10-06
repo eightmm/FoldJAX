@@ -233,6 +233,58 @@ labeled as a within-model confidence selection.
 CSV with the RMSD, coverage and the residue correspondence each fit used
 (`foldjax.residue_correspondence`). No TM-score.
 
+`results_table(report, as_frame=True)` returns the same rows as a pandas
+DataFrame, columns in the CSV order (pandas is a base dependency).
+
+### Analysis and workflow helpers
+
+Each is a plain module; the CLI commands in [cli.md](cli.md#analysis-and-workflow-commands)
+are thin wrappers. All of them read only the canonical outputs.
+
+```python
+import json
+
+import foldjax
+from foldjax import accuracy, html_report, interfaces, job_generators, slurm
+from foldjax.compare import compare_directory
+
+html_report.write_report("out/")                  # out/foldjax_report.html
+
+rows = interfaces.interface_rows("out/", pae_cutoff=10.0)
+one = interfaces.sample_interfaces("out/boltz2/pair/seed-1_sample-00")
+one["native"]["chain_pair_iptm"]    # what the model returned, or None + reason
+one["derived"]["pairs"]             # ipSAE, pDockQ, pDockQ2, LIS per chain pair
+
+scored = accuracy.score_structure(
+    "pred.cif", "8xyz.cif", metrics=("lddt", "lddt_ca", "tm", "rmsd_ca", "lig_rmsd")
+)
+scored["chain_map"], scored["tm"], scored["errors"]
+compare_directory("out/", reference="8xyz.cif", metrics="lddt,tm,dockq")
+
+jobs, summary = job_generators.expand_ligands("target.json", "lib.smi", affinity=True)
+pairs, summary = job_generators.pulldown("baits.fasta", "cands.fasta")
+job_generators.write_jobs(jobs, "screen.json")
+job_generators.screen_table(foldjax.results_table("out/"))
+
+index, count = slurm.parse_shard("auto")          # from SLURM_ARRAY_TASK_ID
+slurm.plan_resources("boltz2", json.load(open("job.json")))  # gres, min card memory
+```
+
+- `interfaces` keeps the model's own chain-pair ipTM under `native` and the
+  scores FoldJAX derives under `derived`, with the method, cutoffs and
+  citations; a sample without PAE is returned with `skipped` set to the
+  reason. Its definitions are a port of `ipsae.py` v4 and reproduce that
+  script's output.
+- `accuracy.score_structure` assigns chains homomer-aware (every injective
+  same-sequence map, lowest complex CA RMSD), then scores; one metric that
+  cannot run (DockQ absent, no ligand) lands in `errors` without hiding the
+  others. `accuracy.tm_score(mobile, target, length=...)` is the TM-score
+  program's search on a fixed correspondence.
+- `foldjax.checks.check_directory(root)` needs the `posebusters` extra and
+  raises `ModuleNotFoundError` naming it otherwise.
+- `foldjax.structure_format.convert(cif)` writes a PDB copy and raises
+  `StructureFormatError` past the PDB format's limits.
+
 Leave a sampling knob unset and each backend runs its own upstream's released
 default -- which differ, deliberately: matching each upstream is the whole
 point of the ports. What `None` means per model:

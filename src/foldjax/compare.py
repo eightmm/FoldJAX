@@ -7,7 +7,15 @@ map and the residue correspondence the fit used. Proteins are fitted on CA and
 nucleic acids on C4' (``selection="representative"``); ligands move with the
 fit but do not drive it. Coverage is matched reference atoms over all
 reference atoms, so it is directional and the matrix is written in full rather
-than as a mirrored triangle. There is no TM-score.
+than as a mirrored triangle. The pairwise matrix has no TM-score.
+
+With ``reference=`` (``--reference X.cif``) every structure is also scored
+against that deposited structure with `foldjax.accuracy` -- lDDT, CA-lDDT,
+TM-score, CA RMSD and, on request, DockQ and ligand RMSD, under a homomer-aware
+chain assignment -- and each score lands as a ``reference:<name>`` row of
+compare.csv and as columns of compare_structures.csv. Those are accuracy
+measurements against one external answer, so unlike confidence scores they are
+comparable across models.
 
 Each structure row carries what its model never read (``ignored_msas``,
 ``ignored_templates``, ``ignored_constraints``) and the pocket
@@ -102,8 +110,46 @@ def _structures(rows: Sequence[Mapping[str, Any]], root: Path, samples: str):
     return groups
 
 
+#: The accuracy columns `--reference` adds, in order.
+ACCURACY_COLUMNS = (
+    "lddt",
+    "lddt_ca",
+    "tm",
+    "rmsd_ca",
+    "dockq",
+    "lig_rmsd",
+    "accuracy_chain_map",
+    "accuracy_errors",
+)
+
+
+def _accuracy(
+    path: Path, reference: Path, metrics: Any, parsed: Any
+) -> dict[str, Any]:
+    from foldjax import accuracy
+
+    try:
+        scored = accuracy.score_structure(
+            path, reference, metrics=metrics, reference_parsed=parsed
+        )
+    except accuracy.AccuracyError as error:
+        return {"accuracy_errors": {"all": str(error)}}
+    record = {name: scored.get(name) for name in accuracy.METRICS if name in metrics}
+    record["accuracy_chain_map"] = scored.get("chain_map")
+    record["accuracy_errors"] = scored.get("errors")
+    if "dockq_interfaces" in scored:
+        record["dockq_interfaces"] = scored["dockq_interfaces"]
+    if "ligands" in scored:
+        record["ligands"] = scored["ligands"]
+    return record
+
+
 def compare_rows(
-    root: str | os.PathLike[str], *, samples: str = "all"
+    root: str | os.PathLike[str],
+    *,
+    samples: str = "all",
+    reference: str | os.PathLike[str] | None = None,
+    metrics: Any = None,
 ) -> dict[str, Any]:
     """The comparison as a JSON-ready document (see this module's docstring)."""
     if samples not in {"all", "best"}:
@@ -112,6 +158,25 @@ def compare_rows(
     report = load_results(root)
     rows = results_table(report)
     groups = _structures(rows, report.root, samples)
+    accuracy_info = None
+    reference_parsed = None
+    if reference is not None:
+        from foldjax import accuracy
+
+        reference = Path(reference)
+        if not reference.is_file():
+            raise FileNotFoundError(f"no reference structure at {reference}")
+        metrics = accuracy.parse_metrics(metrics)
+        reference_parsed = accuracy.read_structure(reference, reference=True)
+        accuracy_info = {
+            "reference": str(reference),
+            "metrics": list(metrics),
+            "definitions": accuracy.describe(),
+        }
+    elif metrics is not None:
+        raise ValueError(
+            "--metrics scores against a deposited structure; give --reference"
+        )
     inputs = []
     for (input_path, job), members in sorted(
         groups.items(), key=lambda item: (item[0][0], item[0][1] or "")
@@ -177,6 +242,19 @@ def compare_rows(
                     }
                 )
                 pairs.append(record)
+        scored: dict[str, dict[str, Any]] = {}
+        if reference is not None:
+            label = f"reference:{reference.stem}"
+            for key, path in paths.items():
+                scored[key] = _accuracy(path, reference, metrics, reference_parsed)
+                pairs.append(
+                    {
+                        "reference": label,
+                        "mobile": key,
+                        "rmsd_angstrom": scored[key].get("rmsd_ca"),
+                        **scored[key],
+                    }
+                )
         inputs.append(
             {
                 "input": input_path,
@@ -196,6 +274,7 @@ def compare_rows(
                         "ignored_templates": member.get("ignored_templates"),
                         "ignored_constraints": member.get("ignored_constraints"),
                         "constraints": member.get("constraints"),
+                        **scored.get(member["key"], {}),
                     }
                     for member in members
                 ],
@@ -210,6 +289,7 @@ def compare_rows(
         "selection": "representative",
         "atoms": _ATOMS,
         "metrics": _METRICS,
+        "accuracy": accuracy_info,
         "inputs": inputs,
     }
 
@@ -239,9 +319,14 @@ def compare_directory(
     *,
     out: str | os.PathLike[str] | None = None,
     samples: str = "all",
+    reference: str | os.PathLike[str] | None = None,
+    metrics: Any = None,
 ) -> dict[str, Path]:
     """Write compare.json, compare.csv (pairs) and compare_structures.csv."""
-    document = compare_rows(root, samples=samples)
+    document = compare_rows(
+        root, samples=samples, reference=reference, metrics=metrics
+    )
+    extra = ACCURACY_COLUMNS if document.get("accuracy") else ()
     target = Path(out) if out is not None else Path(document["root"]) / "compare"
     target.mkdir(parents=True, exist_ok=True)
     pair_rows = []
@@ -268,6 +353,7 @@ def compare_directory(
                             "chain_map",
                             "correspondence",
                             "error",
+                            *extra,
                         )
                     },
                 }
@@ -302,6 +388,7 @@ def compare_directory(
                 "chain_map",
                 "correspondence",
                 "error",
+                *extra,
             ),
         ),
         encoding="utf-8",
@@ -325,6 +412,7 @@ def compare_directory(
                 "constraints",
                 "structure_path",
                 "structure_sha256",
+                *extra,
             ),
         ),
         encoding="utf-8",

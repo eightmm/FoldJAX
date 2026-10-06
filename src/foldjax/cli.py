@@ -24,6 +24,7 @@ from foldjax import (
     paths,
     progress,
     report,
+    tools_cli,
 )
 from foldjax.api import predict_batch, resolve_requests
 from foldjax.input import is_jobs_file
@@ -611,6 +612,7 @@ def _parser() -> argparse.ArgumentParser:
         "and static options.",
     )
     _add_predict_arguments(warm, allow_no_cache=False, cache_warm=True)
+    tools_cli.register(commands, show=show, compare=compare, run=run, plan=plan)
 
     return parser
 
@@ -765,6 +767,7 @@ def _request(args: argparse.Namespace) -> PredictionRequest:
     single_input = len(inputs) == 1 and not (
         args.input_format in ("auto", "foldjax") and is_jobs_file(inputs[0])
     )
+    single_input = single_input and not getattr(args, "_plural_inputs", False)
     if args.seed is not None and args.seeds:
         raise ValueError("--seed and --seeds are mutually exclusive")
     padding_values = {
@@ -1424,6 +1427,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         _skip_release_reclaim()
     elif args.command == "plan":
         _validate_mem_fraction(args.mem_fraction)
+    tools_cli.prepare(args)
+    handled = tools_cli.dispatch(args)
+    if handled is not None:
+        return handled
     if args.command == "models":
         if args.for_input is not None:
             return _run_models_for(args)
@@ -1534,9 +1541,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print(_render_predictions(results))
+    formatted = tools_cli.finish_predict(args, results)
     # A batch that lost some of its runs is neither a success nor the same
     # failure as one that could not start; 3 says "partial" without pretending.
-    return 3 if outcome.failures else 0
+    return 3 if outcome.failures else formatted
 
 
 #: Optional dependencies, and the extra that supplies each one. A missing
