@@ -833,6 +833,37 @@ def test_template_indices_are_zero_based_and_reach_alphafold3_verbatim(
         _native(negative, "alphafold3")
 
 
+@pytest.mark.parametrize("model", ["alphafold3", "openfold3"])
+def test_a_negative_template_index_is_refused(tmp_path, model):
+    """Python would read -1 as the chain's last residue, without a word."""
+    source = _templated(tmp_path, query_indices=[0], template_indices=[-1])
+    with pytest.raises(ValueError, match="0-based and must not be negative"):
+        _native(source, model)
+
+
+@pytest.mark.parametrize("given", ["query_indices", "template_indices"])
+@pytest.mark.parametrize("model", ["alphafold3", "openfold3"])
+def test_half_a_template_map_is_refused(tmp_path, model, given):
+    """One index list alone is not a map; dropping it would fold unmapped."""
+    source = _templated(tmp_path, chain_id="X", **{given: [2]})
+    with pytest.raises(ValueError, match="go together"):
+        _native(source, model)
+
+
+def test_openfold3_refuses_a_template_index_one_past_the_chain(tmp_path):
+    """2abc's chain X has 30 residues: index 29 is its last, 30 is outside."""
+    last = _templated(tmp_path, chain_id="X", query_indices=[2], template_indices=[29])
+    query = json.loads(_native(last, "openfold3").read_text())["queries"]["t"]
+    (chain,) = query["chains"]
+    with np.load(chain["template_alignment_file_path"]) as archive:
+        entries = json.loads(str(archive["entries_json"]))
+    assert entries["2abc_A"]["idx_map"] == [[3, 30]]
+
+    past = _templated(tmp_path, chain_id="X", query_indices=[2], template_indices=[30])
+    with pytest.raises(ValueError, match="template index 30 is outside chain 'X'"):
+        _native(past, "openfold3")
+
+
 def test_openfold3_translates_common_templates_in_both_forms(tmp_path):
     mapped = _templated(
         tmp_path, chain_id="X", query_indices=[2, 3], template_indices=[2, 3]
