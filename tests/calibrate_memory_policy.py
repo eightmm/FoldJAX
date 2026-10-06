@@ -381,6 +381,55 @@ def fit_all() -> dict[str, dict]:
     return fits
 
 
+#: Below-domain checks, not fit points: completed serial runs of the jctc-v3
+#: campaign (`foldjax-bench/jctc-v3/tables/M-admission.csv`, released
+#: defaults, unpadded, cold and warm passes; peak = `peak_bytes_in_use`, the
+#: higher pass per size). They set a law's `admits_from`: every row from there
+#: up to the domain sits under `upper`. Listed are the six closest to `upper`
+#: and the smallest size -- the rows that decide whether the band holds.
+#: OpenFold3: 146 rows over 50 sizes, 129-996 tokens.
+OF3_BELOW_DOMAIN_CHECK = (
+    (996, None, 7068.7),  # e9_8rye, 576 MiB under upper
+    (976, None, 6744.1),  # e9_9joa
+    (928, None, 6208.5),  # e9_8ren
+    (774, None, 4672.5),  # e9_9b7d
+    (766, None, 4599.8),  # e9_8vxk
+    (129, None, 1791.0),  # e9_8reh, the smallest
+)
+#: OpenDDE bf16: 144 rows over 50 sizes, 246-1,820 structural tokens.
+OPENDDE_BF16_BELOW_DOMAIN_CHECK = (
+    (263, None, 2393.1),  # e9_8vez, 3,128 MiB under upper
+    (613, None, 3790.8),  # e9_8xyf
+    (614, None, 3792.9),  # e9_9edv
+    (246, None, 2243.6),  # e9_8reh, the smallest
+    (359, None, 2556.9),  # e9_8yk8
+    (571, None, 3495.9),  # e9_9f32
+)
+#: Boltz-2, Protenix and ESMFold2 get no band: below their domains the same
+#: table has runs above `upper` (Boltz-2 by 414 MiB at 565 tokens, Protenix by
+#: 603 MiB at 249 tokens and 5,785 rows, ESMFold2 by 9.5 GiB at 244 tokens).
+#:
+#: OpenDDE at 4,040 structural tokens (L2000_5dei), measured on the shipped
+#: program at 0.9 of the pool: two jobs on 2026-09-24
+#: (docs/opendde-2k-single-card-2026-09-24.md) and the jctc-v3 snapshot.
+OPENDDE_BF16_MEASURED = (
+    (4040, None, 78588.0),
+    (4040, None, 78616.0),
+    (4040, None, 77112.8),
+)
+
+
+def measured_upper_mib(points, n_token: int) -> float:
+    """The highest measurement at ``n_token`` plus its same-snapshot spread.
+
+    The spread is taken over the two 2026-09-24 jobs (28 MiB); the jctc-v3
+    reading is lower and from another snapshot, so it bounds nothing upward.
+    """
+    same_snapshot = [peak for n, _m, peak in points[:2] if n == n_token]
+    highest = max(peak for n, _m, peak in points if n == n_token)
+    return highest + (max(same_snapshot) - min(same_snapshot))
+
+
 #: The ceiling this host reports at the CLI's own 0.9 fraction, for the
 #: admission table below: ``bytes_limit`` = 91,779,760,128 B.
 _HOST_POOL_MIB = 91_779_760_128 / 2**20

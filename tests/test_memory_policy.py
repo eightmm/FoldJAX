@@ -173,7 +173,9 @@ def test_openfold3_is_estimated_over_the_blocked_arms_own_domain() -> None:
     assert OPENFOLD3_UNCHUNKED_PEAK.domain_tokens == (1003, 3012)
     huge = 200 * _GIB
     for n_token, state in (
-        (1002, "unknown"),
+        (128, "unknown"),
+        # Below the fitted domain, inside the checked band (`admits_from`).
+        (1002, "fits"),
         (1003, "fits"),
         (3013, "fits"),
         (4888, "fits"),
@@ -1128,6 +1130,65 @@ def test_no_measured_completed_run_is_refused() -> None:
             assert decision.state == "fits", (law.model, n_token, decision.reason)
 
 
+def _calibration():
+    sys.path.insert(0, str(Path(__file__).parent))
+    try:
+        import calibrate_memory_policy as calibration
+    finally:
+        sys.path.pop(0)
+    return calibration
+
+
+def test_a_below_domain_band_admits_every_checked_run() -> None:
+    """``admits_from`` turns measured small runs from unknown into fits."""
+
+    calibration = _calibration()
+    pool = 91_779_760_128
+    for law, points in (
+        (OPENFOLD3_CHUNKED_PEAK, calibration.OF3_BELOW_DOMAIN_CHECK),
+        (OPENDDE_BF16_PEAK, calibration.OPENDDE_BF16_BELOW_DOMAIN_CHECK),
+    ):
+        assert law.admits_from == min(n for n, _m, _p in points)
+        for n_token, msa_rows, peak in points:
+            assert not law.covers(n_token) and law.bounds(n_token)
+            assert law.upper(n_token, msa_rows) >= peak * 2**20, (law.model, n_token)
+            assert _decide(law, n_token, pool).state == "fits", (law.model, n_token)
+        assert _decide(law, law.admits_from - 1, pool).state == "unknown"
+
+
+def test_a_below_domain_band_never_refuses() -> None:
+    """Checked there, not fitted: an over-estimate is not trusted to refuse."""
+
+    for law, n_token in ((OPENFOLD3_CHUNKED_PEAK, 996), (OPENDDE_BF16_PEAK, 263)):
+        tiny = law.upper(n_token) // 2
+        decision = _decide(law, n_token, tiny)
+        assert decision.state == "unknown"
+        assert decision.estimates and decision.estimates[0].fits is False
+        assert "below the fitted range" in decision.reason
+        # Inside the domain the same comparison still refuses.
+        low = law.domain_tokens[0]
+        assert _decide(law, low, law.upper(low) // 2).state == "over_budget"
+
+
+def test_the_measured_opendde_size_is_admitted_and_its_neighbours_are_not() -> None:
+    """4,040 structural tokens completed at 78.6 GiB; the law reads 80.9 GiB."""
+
+    calibration = _calibration()
+    pool = 91_779_760_128
+    bound = calibration.measured_upper_mib(calibration.OPENDDE_BF16_MEASURED, 4040)
+    assert OPENDDE_BF16_PEAK.measured_upper(4040) == round(bound * 2**20)
+    for n_token, _m, peak in calibration.OPENDDE_BF16_MEASURED:
+        assert OPENDDE_BF16_PEAK.upper(n_token) >= peak * 2**20
+    decision = _decide(OPENDDE_BF16_PEAK, 4040, pool)
+    assert decision.state == "fits"
+    margin = decision.threshold - decision.estimates[0].upper_bytes
+    assert 0 < margin < 140 * 2**20
+    assert "measured at this size" in decision.reason
+    for neighbour in (4034, 4039, 4041):
+        assert OPENDDE_BF16_PEAK.measured_upper(neighbour) is None
+        assert _decide(OPENDDE_BF16_PEAK, neighbour, pool).state == "over_budget"
+
+
 def test_every_law_names_the_sample_count_it_was_fitted_at() -> None:
     """Boltz-2's released default is one sample, not the five every law was
     measured at, so this is the fact that decides whether its admission binds.
@@ -1223,7 +1284,7 @@ def test_the_opendde_laws_are_keyed_on_structural_tokens_and_split_by_dtype() ->
     assert not OPENDDE_FP32_PEAK.needs_msa_rows
 
 
-@pytest.mark.parametrize("n_token", [1901, 7877])
+@pytest.mark.parametrize("n_token", [245, 7877])
 def test_a_structural_token_count_outside_the_opendde_domain_is_unknown(
     n_token: int,
 ) -> None:

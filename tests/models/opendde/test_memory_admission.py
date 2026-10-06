@@ -156,11 +156,18 @@ def test_a_size_below_the_fitted_domain_is_unknown_and_never_refused(pool):
     run on, and `covers` is what keeps it from being used as one.
     """
     for n_structural in (257, 948):
-        for trunk_dtype in (None, BF16):
-            memory_policy.reset_warnings()
-            with pytest.warns(RuntimeWarning, match="outside the fitted range"):
-                decision = _admit(n_structural, trunk_dtype)
-            assert decision.state == "unknown"
+        memory_policy.reset_warnings()
+        with pytest.warns(RuntimeWarning, match="outside the fitted range"):
+            decision = _admit(n_structural, None)
+        assert decision.state == "unknown"
+        # The bf16 law was checked against 144 completed runs down to 246
+        # structural tokens (`admits_from`), so it may say "fits" there -- and
+        # still never refuses: a budget it does not fit is `unknown`.
+        assert _admit(n_structural, BF16).state == "fits"
+    assert memory_policy.OPENDDE_BF16_PEAK.admits_from == 246
+    memory_policy.reset_warnings()
+    with pytest.warns(RuntimeWarning, match="outside the fitted range"):
+        assert _admit(245, BF16).state == "unknown"
 
 
 def test_a_mesh_run_is_warned_rather_than_refused(pool, monkeypatch, tmp_path):

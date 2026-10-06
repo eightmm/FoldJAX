@@ -101,6 +101,16 @@ class PeakLaw:
     domain_tokens: tuple[int, int]
     allowance_bytes: int
     calibration_id: str
+    #: Below the fitted domain, the smallest token count from which every
+    #: measured completed run is bounded by :meth:`upper`. In that band a
+    #: ``fits`` is reported and nothing is refused: the law was checked against
+    #: outcomes there, not fitted, so it may say "fits" but its over-estimates
+    #: are not trusted to say "will not fit" (:func:`resolve_memory_policy`).
+    admits_from: int | None = None
+    #: ``(n_token, upper bytes)`` for sizes measured on the shipped program:
+    #: there :meth:`upper` is the measured peak plus its repeat spread instead
+    #: of the law's, which can read high or low at one size. Exact sizes only.
+    measured_uppers: tuple[tuple[int, int], ...] = ()
 
     @property
     def needs_msa_rows(self) -> bool:
@@ -111,6 +121,17 @@ class PeakLaw:
         """Whether ``n_token`` is inside the range this law was fitted over."""
         low, high = self.domain_tokens
         return low <= n_token <= high
+
+    def bounds(self, n_token: int) -> bool:
+        """Whether admission may estimate ``n_token``: the domain or the band
+        below it (``admits_from``) where it was checked against measurements."""
+        low, high = self.domain_tokens
+        start = low if self.admits_from is None else min(low, self.admits_from)
+        return start <= n_token <= high
+
+    def measured_upper(self, n_token: int) -> int | None:
+        """The measured upper bytes at exactly ``n_token``, if there is one."""
+        return dict(self.measured_uppers).get(n_token)
 
     def estimate(self, n_token: int, msa_rows: int | None = None) -> int:
         """The fitted peak in bytes. Raises when a needed input is missing."""
@@ -132,7 +153,13 @@ class PeakLaw:
         return max(0, round(max(phases) * _MIB))
 
     def upper(self, n_token: int, msa_rows: int | None = None) -> int:
-        """The estimate plus this law's allowance: what admission compares."""
+        """The estimate plus this law's allowance: what admission compares.
+
+        At a size listed in ``measured_uppers`` it is that measured bound.
+        """
+        measured = self.measured_upper(n_token)
+        if measured is not None:
+            return measured
         return self.estimate(n_token, msa_rows) + self.allowance_bytes
 
 
@@ -234,6 +261,12 @@ OPENFOLD3_CHUNKED_PEAK = PeakLaw(
     domain_tokens=(1003, 4888),
     allowance_bytes=3103 * _MIB,
     calibration_id=f"openfold3-chunked-{_CALIBRATION_ALIGNED}",
+    # Checked, not fitted: 146 completed serial jctc-v3 runs at 129-996 tokens
+    # (released defaults, unpadded, cold and warm) all sit under `upper`, the
+    # closest 576 MiB under it at 996 tokens (7,069 MiB measured). So below
+    # 1,003 a run can be called a fit, and is never refused
+    # (`tests/calibrate_memory_policy.OF3_BELOW_DOMAIN_CHECK`).
+    admits_from=129,
 )
 
 #: OpenFold3 with the row loop unblocked: 6194.6/22967/45363 MiB at
@@ -311,6 +344,18 @@ OPENDDE_BF16_PEAK = PeakLaw(
     domain_tokens=(1902, 7876),
     allowance_bytes=1171 * _MIB,
     calibration_id=f"opendde-bf16-{_CALIBRATION_STRUCTURAL}",
+    # Checked, not fitted: 144 completed serial jctc-v3 runs at 246-1,820
+    # structural tokens all sit under `upper`, the closest 3,128 MiB under it.
+    admits_from=246,
+    # 4,040 structural tokens (L2000_5dei, 2,096 residues) has been measured
+    # completing on the shipped program: 78,588-78,616 MiB across two jobs
+    # (docs/opendde-2k-single-card-2026-09-24.md) and 77,112.8 on the jctc-v3
+    # snapshot. The law reads 80.9 GiB there and refused it. The bound is the
+    # highest measurement plus the same-snapshot repeat spread (28 MiB):
+    # 78,644 MiB, 131 MiB under the 78,775 MiB threshold of the 0.9 pool on the
+    # 95.6 GiB card it ran on. Only this exact size: 4,034 and 4,041 still read
+    # the law and are refused there.
+    measured_uppers=((4040, (78616 + 28) * _MIB),),
 )
 
 #: OpenDDE with the trunk pinned to float32, which since 2026-09-11 is a
@@ -503,7 +548,7 @@ def resolve_memory_policy(
                 f"candidate {name!r} carries a {law.model} law, not {model}"
             )
 
-    outside = [name for name, law in candidates if not law.covers(n_token)]
+    outside = [name for name, law in candidates if not law.bounds(n_token)]
     missing = [
         name for name, law in candidates if law.needs_msa_rows and msa_rows is None
     ]
@@ -548,6 +593,21 @@ def resolve_memory_policy(
                     f"{_gib(threshold)} threshold"
                 ),
             )
+    below = [name for name, law in candidates if not law.covers(n_token)]
+    if below:
+        # Below the fitted domain the law was checked against completed runs
+        # and only ever read high there: trusted to admit, not to refuse.
+        return MemoryDecision(
+            state="unknown",
+            selected=None,
+            estimates=estimates,
+            threshold=threshold,
+            reason=(
+                f"{n_token} tokens is below the fitted range of "
+                f"{', '.join(below)}, where its estimate bounds the measured "
+                "runs but is not used to refuse one"
+            ),
+        )
     return MemoryDecision(
         state="over_budget",
         selected=None,
@@ -589,6 +649,12 @@ def _candidate(
 
 def _render(candidate: CandidateEstimate) -> str:
     allowance = candidate.upper_bytes - candidate.estimate_bytes
+    if allowance < 0:
+        # A `measured_uppers` size, where the measured bound replaced the law's.
+        return (
+            f"{_gib(candidate.upper_bytes)} measured at this size (the law "
+            f"reads {_gib(candidate.estimate_bytes)})"
+        )
     return f"{_gib(candidate.estimate_bytes)} + {_gib(allowance)} allowance"
 
 
