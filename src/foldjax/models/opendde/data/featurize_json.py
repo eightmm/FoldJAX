@@ -142,9 +142,14 @@ _NUCLEIC_BACKBONE_ATOMS = frozenset(
 )
 _PURINE_RESTYPE_INDICES = frozenset({21, 22, 26, 27})
 _PYRIMIDINE_RESTYPE_INDICES = frozenset({23, 24, 28, 29})
-_CONCRETE_PROTEIN_ALPHABET = frozenset("ARNDCQEGHILKMFPSTWYV")
-_CONCRETE_DNA_ALPHABET = frozenset("ACGT")
-_CONCRETE_RNA_ALPHABET = frozenset("ACGU")
+#: The letters upstream documents (docs/infer_json_format.md): the standard
+#: residues plus the unknowns, protein ``X`` -> UNK and nucleic ``N``/``X`` ->
+#: N (RNA) or DN (DNA), as its ``json_parser.py`` ``*_1to3`` tables map them.
+#: Its parser maps a few more (DNA ``I``/``U``, RNA ``I``) that the format
+#: document does not list; those stay refused.
+_DOCUMENTED_PROTEIN_ALPHABET = frozenset("ARNDCQEGHILKMFPSTWYVX")
+_DOCUMENTED_DNA_ALPHABET = frozenset("ACGTNX")
+_DOCUMENTED_RNA_ALPHABET = frozenset("ACGUNX")
 
 
 def load_jobs(path: str | Path) -> list[dict[str, Any]]:
@@ -234,6 +239,13 @@ def _prepare_job(
         kind, info = next(iter(entry.items()))
         if not isinstance(info, dict):
             continue
+        sequence = info.get("sequence")
+        if kind in {"dnaSequence", "rnaSequence"} and isinstance(sequence, str):
+            # Upstream reads a nucleic ``X`` as it reads ``N`` (json_parser.py
+            # ``DNA_1to3``/``RNA_1to3``: both DN, both N), and every alignment
+            # alphabet already encodes the two alike; the shared featurizer
+            # knows only ``N``.
+            info["sequence"] = sequence.upper().replace("X", "N")
         path_keys = {
             "proteinChain": (
                 "pairedMsaPath",
@@ -403,15 +415,16 @@ def _validate_supported_polymers(job: Mapping[str, Any]) -> None:
         if not isinstance(sequence, str):
             continue
         alphabet = {
-            "proteinChain": _CONCRETE_PROTEIN_ALPHABET,
-            "dnaSequence": _CONCRETE_DNA_ALPHABET,
-            "rnaSequence": _CONCRETE_RNA_ALPHABET,
+            "proteinChain": _DOCUMENTED_PROTEIN_ALPHABET,
+            "dnaSequence": _DOCUMENTED_DNA_ALPHABET,
+            "rnaSequence": _DOCUMENTED_RNA_ALPHABET,
         }[kind]
         unsupported = sorted(set(sequence.upper()) - alphabet)
         if unsupported:
             raise NotImplementedError(
-                f"{kind} contains residue(s) without an exact vendored "
-                f"reference conformer: {unsupported}"
+                f"{kind} contains residue letter(s) {unsupported} outside the "
+                f"alphabet OpenDDE documents ({''.join(sorted(alphabet))}); "
+                "spell a modified or unusual residue as a CCD modification"
             )
 
 
@@ -455,7 +468,10 @@ def _add_open_dde_metadata(features: dict[str, Any]) -> dict[str, Any]:
     ligand_parent = token_polymer_type == 0
     if np.any(standard_polymer_parent & ~polymer_parent):
         raise ValueError("only polymer tokens may be marked as standard polymer")
-    if np.any(~np.isin(restype_index, np.r_[0:20, 20, 21:25, 26:30])):
+    # Every residue type but the gap: 20 is UNK, 25 the unknown ribonucleotide
+    # N and 30 the unknown deoxyribonucleotide DN, which upstream's tokenizer
+    # treats as standard residues (`STD_RESIDUES`, data/constants.py).
+    if np.any(~np.isin(restype_index, np.r_[0:31])):
         raise ValueError("unsupported residue-token restype in OpenDDE metadata")
 
     parent_atoms = [np.flatnonzero(atom_to_parent == i) for i in range(n_parent)]

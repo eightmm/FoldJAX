@@ -509,6 +509,63 @@ def test_modified_dna_and_rna_keep_polymer_identity_with_atom_roles(
     np.testing.assert_array_equal(rna["next_parent_residue_idx"], -1)
 
 
+#: Upstream OpenDDE 1.1.1 (ddfa1df) features of `_UNKNOWN_LETTERS_JOB`, captured
+#: on CPU by `scripts/capture_upstream_features.py` with the released defaults.
+_UPSTREAM_UNKNOWN_LETTERS = (
+    Path(__file__).parent / "data" / "upstream_unknown_residues.npz"
+)
+_UNKNOWN_LETTERS_JOB = {
+    "name": "xn",
+    "modelSeeds": [101],
+    "sequences": [
+        {"proteinChain": {"sequence": "AXGX", "count": 1}},
+        {"dnaSequence": {"sequence": "GNXA", "count": 1}},
+        {"rnaSequence": {"sequence": "GNXA", "count": 1}},
+    ],
+}
+
+
+def test_documented_unknown_letters_match_upstream_features() -> None:
+    """Protein X, and nucleic N and X, featurize exactly as upstream's do.
+
+    Upstream maps them to UNK, DN and N (json_parser.py `*_1to3`) and treats
+    those as standard residues: UNK splits into backbone and CB/CG side-chain
+    tokens, N and DN stay one backbone token, C1' represents them in the
+    distogram, and their reference conformers come from the same CCD cache as
+    the standard ones. Every array the two featurizers share is compared, the
+    reference positions bit for bit.
+    """
+    upstream = np.load(_UPSTREAM_UNKNOWN_LETTERS)
+    features = featurize_opendde_json(json.loads(json.dumps(_UNKNOWN_LETTERS_JOB)))
+
+    shared = sorted(set(upstream.files) & set(features))
+    assert len(shared) == 60
+    for name in shared:
+        expected = upstream[name]
+        actual = np.broadcast_to(np.asarray(features[name]), expected.shape)
+        if expected.dtype.kind == "U":
+            np.testing.assert_array_equal(actual.astype(str), expected, err_msg=name)
+        else:
+            np.testing.assert_array_equal(
+                actual.astype(np.float64), expected.astype(np.float64), err_msg=name
+            )
+    residues = np.asarray(features["output_atom_res_name"])
+    assert {"UNK", "DN", "N"} <= set(residues.tolist())
+
+
+@pytest.mark.parametrize(
+    ("kind", "sequence"),
+    [("proteinChain", "AUG"), ("dnaSequence", "GIA"), ("rnaSequence", "GIA")],
+)
+def test_undocumented_letters_stay_refused(kind: str, sequence: str) -> None:
+    with pytest.raises(NotImplementedError, match="alphabet OpenDDE documents"):
+        featurize_opendde_json(
+            {"sequences": [{kind: {"sequence": sequence}}]},
+            n_queries=2,
+            n_keys=4,
+        )
+
+
 def test_featurizer_does_not_import_torch_or_upstream_opendde() -> None:
     script = r"""
 import builtins

@@ -1253,7 +1253,14 @@ def _emit_nucleic_tokens(chain: dict[str, Any], state: dict[str, Any]) -> None:
         ]
         names = entry["names"]
         is_first = pos == 1
-        rep = "C4" if code in _PURINE_CODES else "C2"
+        # The unknown nucleotides have no base, so upstream represents them by
+        # C1' (Protenix data/core/parser.py add_distogram_rep_atom_mask).
+        if code in _PURINE_CODES:
+            rep = "C4"
+        elif code in _PYRIMIDINE_CODES:
+            rep = "C2"
+        else:
+            rep = "C1'"
         canonical_code = {"N": "C", "DN": "DC"}.get(code, code)
         canonical_names = np.asarray(
             _ccd_nucleotides()[canonical_code]["names"]

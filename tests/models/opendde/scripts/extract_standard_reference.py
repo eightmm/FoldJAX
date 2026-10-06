@@ -39,6 +39,10 @@ STANDARD_CODES = (
     "DC",
     "DG",
     "DT",
+    # The unknowns upstream's documented ``X``/``N`` letters map to.
+    "UNK",
+    "N",
+    "DN",
 )
 
 

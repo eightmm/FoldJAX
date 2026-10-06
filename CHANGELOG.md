@@ -66,6 +66,16 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **OpenDDE accepts the unknown-residue letters upstream documents.** Protein
+  `X`, and DNA and RNA `N` and `X`, were refused with `NotImplementedError`;
+  they now become UNK, DN and N as upstream's parser maps them, with
+  upstream's reference conformers (added to the vendored table from the same
+  CCD cache), structural tokens and C1' distogram atom. The features of a
+  mixed `X`/`N` job match upstream OpenDDE 1.1.1's bit for bit. Letters the
+  format document does not list stay refused. The C1' distogram atom for N and
+  DN is fixed in the featurizer Protenix shares too, which had marked no
+  representative atom for them.
+
 - **Memory admission no longer reports `fits` for a run whose estimate is a
   lower bound.** The peak laws were fitted at each port's released dtype and
   precision without `--padding`, and padded runs and runs with a precision
