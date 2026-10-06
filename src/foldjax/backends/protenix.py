@@ -301,6 +301,51 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
 #: namespace has to name the program that ran.
 _CP_DIFFUSION_ATTENTION_BACKEND = "xla_jit"
 
+#: What an omitted `diffusion_attention_backend` runs off a GPU, where
+#: tokamax's fused kernel is not implemented: the same traced XLA path.
+_OFF_GPU_ATTENTION_BACKEND = "xla_jit"
+
+#: Attention options whose `tokamax` value runs a GPU-only fused kernel.
+_TOKAMAX_ATTENTION_OPTIONS = (
+    "diffusion_attention_backend",
+    "trunk_single_attention_backend",
+    "trunk_triangle_attention_backend",
+    "confidence_triangle_attention_backend",
+)
+
+
+def _gpu_process() -> bool:
+    """Whether this process's default JAX backend is a GPU (imports JAX)."""
+
+    from foldjax.models._pallas_pair import gpu_process
+
+    return gpu_process()
+
+
+def _refuse_gpu_only_kernels(options: Mapping[str, Any]) -> None:
+    """Refuse a spelled `tokamax` attention before featurization, off a GPU.
+
+    Otherwise tokamax raises ``NotImplementedError`` from inside the first
+    trace, under some two hundred lines of JAX traceback.
+    """
+
+    named = [
+        key
+        for key in _TOKAMAX_ATTENTION_OPTIONS
+        if str(options.get(key, "")).strip().lower() == "tokamax"
+    ]
+    if not named or _gpu_process():
+        return
+    import jax
+
+    spelled = ", ".join(f"{key}=tokamax" for key in named)
+    raise ValueError(
+        f"{spelled} runs tokamax's fused attention, which needs a GPU, and this "
+        f"process's JAX backend is {jax.default_backend()!r}; omit the option "
+        f"(off a GPU it resolves to {_OFF_GPU_ATTENTION_BACKEND}) or pass "
+        f"--option {named[0]}={_OFF_GPU_ATTENTION_BACKEND}"
+    )
+
 #: Every `PredictionConfig` field's own parser default, so a resolved request
 #: becomes the configuration the run takes without parsing the argv this
 #: adapter renders back into one.
@@ -989,15 +1034,28 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         `trunk_single_attention_backend` needs none of this: it ships `xla_jit`
         at the parser, the wrapper signature and the table below, so nothing
         resolves it into the kernel the guard rejects.
+
+        Off a GPU the omitted knob resolves the same way, for a different
+        reason: tokamax implements its fused attention for GPUs only and
+        raised ``NotImplementedError: Not supported on cpu`` from the first
+        denoiser trace, so a CPU host could not run the released defaults at
+        all. The probe is the one `base.realised_glu_backend` reads (the
+        Boltz-2 GLU default resolves off-GPU through it too), and the resolved
+        value reaches the cache profile and the rendered argv. A spelled
+        `tokamax` off a GPU is refused by `_refuse_gpu_only_kernels`.
         """
 
         options = super().apply_sampling(request)
         if (
             "diffusion_attention_backend" not in options
             and _RELEASED_COMPILE_DEFAULTS["diffusion_attention_backend"] == "tokamax"
-            and _strict_cp_devices(options.get("cp_devices", 1)) > 1
         ):
-            options["diffusion_attention_backend"] = _CP_DIFFUSION_ATTENTION_BACKEND
+            if _strict_cp_devices(options.get("cp_devices", 1)) > 1:
+                options["diffusion_attention_backend"] = (
+                    _CP_DIFFUSION_ATTENTION_BACKEND
+                )
+            elif not _gpu_process():
+                options["diffusion_attention_backend"] = _OFF_GPU_ATTENTION_BACKEND
         return options
 
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
@@ -1208,6 +1266,7 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         )
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
+        _refuse_gpu_only_kernels(self.apply_sampling(request))
         invocation = self._native_invocation(request)
         argv = invocation.argv
         wanted = invocation.representations

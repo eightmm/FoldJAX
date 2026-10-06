@@ -31,6 +31,17 @@ from foldjax.schema import PredictionRequest
 from .test_model import _toy_features, _toy_params
 
 
+@pytest.fixture(autouse=True)
+def _released_namespace_is_the_gpu_one(monkeypatch) -> None:
+    """These tests pin the namespaces of the released (GPU) configuration.
+
+    Off a GPU an omitted denoiser attention resolves to `xla_jit` and a
+    spelled `tokamax` is refused; that arm is
+    `test_off_gpu_attention.py`'s. Nothing here executes the fused kernel.
+    """
+    monkeypatch.setattr(backend_impl, "_gpu_process", lambda: True)
+
+
 class _DefaultsCapturedError(Exception):
     pass
 
