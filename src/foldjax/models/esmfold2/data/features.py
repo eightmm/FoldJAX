@@ -22,7 +22,8 @@ no-alignment case against `prepare_protein_features` tensor for tensor.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
+from itertools import islice
 from pathlib import Path
 
 import numpy as np
@@ -468,11 +469,18 @@ def build_msa(
     chain and is a gap over the others -- the unpaired arrangement, which is
     what a per-chain a3m can honestly support. Pairing rows across chains would
     claim the alignments were searched together, and they were not.
+
+    ``msa_depth`` caps the total row count, query included. The rows below the
+    query are shared out across the aligned chains one at a time, so a deep
+    first chain cannot starve the next one of every row; each chain's rows
+    keep their file order, and chains keep theirs.
     """
     n_token = len(res_type)
     rows: list[list[int]] = [list(res_type)]
     deletions: list[list[float]] = [[0.0] * n_token]
+    budget = None if msa_depth is None else max(0, msa_depth - 1)
 
+    per_chain: list[tuple[int, Iterable[tuple[str, list[int]]]]] = []
     for start, end, entity in chain_spans:
         path = alignments.get(entity)
         if path is None:
@@ -481,7 +489,36 @@ def build_msa(
             chemistry.RES_TYPE_TO_LETTER.get(value, "X")
             for value in res_type[start:end]
         )
-        for sequence, counts in _iter_a3m(path, query=query):
+        if budget is None:
+            # Uncapped: stream, so no chain's alignment is held twice.
+            per_chain.append((start, _iter_a3m(path, query=query)))
+        else:
+            # No chain can be given more than the whole budget, so reading
+            # past it would only hold rows that are dropped below.
+            per_chain.append(
+                (start, list(islice(_iter_a3m(path, query=query), budget)))
+            )
+
+    if budget is not None:
+        quotas = [0] * len(per_chain)
+        remaining = budget
+        while remaining > 0:
+            granted = False
+            for index, (_, hits) in enumerate(per_chain):
+                if remaining == 0:
+                    break
+                if quotas[index] < len(hits):
+                    quotas[index] += 1
+                    remaining -= 1
+                    granted = True
+            if not granted:
+                break
+        per_chain = [
+            (start, hits[:quota]) for (start, hits), quota in zip(per_chain, quotas)
+        ]
+
+    for start, hits in per_chain:
+        for sequence, counts in hits:
             row = [chemistry.MSA_GAP_TOKEN_ID] * n_token
             deletion = [0.0] * n_token
             for offset, (letter, count) in enumerate(zip(sequence, counts)):
@@ -498,8 +535,6 @@ def build_msa(
                 deletion[start + offset] = float(count)
             rows.append(row)
             deletions.append(deletion)
-            if msa_depth is not None and len(rows) >= msa_depth:
-                break
 
     msa = np.asarray(rows, dtype=np.int64)
     values = np.asarray(deletions, dtype=np.float32)
