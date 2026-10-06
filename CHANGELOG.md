@@ -10,7 +10,7 @@ unless it says so here, in its own paragraph.
 
 ## Unreleased
 
-## 0.4.0 (2026-10-02)
+## 0.1.0 (2026-10-06)
 
 ### Added
 
@@ -5671,7 +5671,7 @@ unless it says so here, in its own paragraph.
   meant writing to whatever stderr *was*, which could fail a prediction that
   was otherwise fine.
 
-## 0.3.0
+## Pre-release development
 
 FoldJAX became one standalone package: AlphaFold 3, Boltz-2, ESMFold2, OpenDDE,
 OpenFold3 and Protenix inference with no sibling repository, plus opt-in
