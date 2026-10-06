@@ -174,10 +174,11 @@ finite number, and the components of a ranking score are never combined here to
 stand in for it. That is deliberate rather than a fallback: a "best" chosen by a
 different quantity than the model ranks by is a different claim wearing the same
 word. So a run stopped before its confidence
-heads has no `best`, and OpenFold3 protein inputs report
-`sample_ranking_score_no_disorder` for inspection and no `best`, because the
-disorder term its complete score needs is not derivable in the torch-free
-writer. Ranking is always *within* one model's run: scores from two models are
+heads has no `best`. OpenFold3 protein inputs rank by the full
+`sample_ranking_score`, whose disorder term is computed on the host with
+biotite (the `openfold3-preprocess` extra); without biotite, or without
+decodable atom identities, they report `sample_ranking_score_no_disorder` for
+inspection, the reason in `disorder_unavailable`, and no `best`. Ranking is always *within* one model's run: scores from two models are
 different quantities on different scales, and `best_sample` never compares
 them. The manifest's `best` says so in its own `selection` field
 (`"within-model confidence ranking"`).

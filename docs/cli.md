@@ -211,9 +211,11 @@ scope: "within one model run", defined_by}`.
 
 `ptm` and `iptm` are 0-1 for every model. `iptm` is null for a single-chain
 structure, whatever the model wrote (several write 0.0); a ligand in its own
-chain counts as a chain. OpenFold3 on protein input reports only
-`sample_ranking_score_no_disorder`, a different quantity, so its `ranking` is
-null with the reason.
+chain counts as a chain. OpenFold3 on protein input computes its disorder
+term on the host with biotite (the `openfold3-preprocess` extra) and ranks by
+the full `sample_ranking_score`; without biotite, or without decodable atom
+identities, it reports only `sample_ranking_score_no_disorder`, a different
+quantity, so its `ranking` is null with the reason in `disorder_unavailable`.
 
 `confidence_full.npz` holds the per-sample arrays the model computes (PAE,
 chain-pair matrices, per-token or per-atom pLDDT) with their index maps, units

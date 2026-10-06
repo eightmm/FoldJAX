@@ -260,8 +260,12 @@ Not every upstream function belongs in a JAX inference port, and guessing wrong
 here would waste effort:
 
 - `compute_disorder` needs Biotite structure arrays and a SASA calculation — data
-  pipeline, not array math. `sample_ranking_score` defaults its `disorder` term to
-  zero, which is what upstream does when RASA is unavailable.
+  pipeline, not array math — so it stays out of the JAX program. The writer
+  computes it on the host instead (`models/openfold3/rasa.py`, the same biotite
+  SASA, ProtOr radii, smoothing and threshold as upstream) when biotite is
+  installed (the `openfold3-preprocess` extra); without it,
+  `sample_ranking_score` is reported as `sample_ranking_score_no_disorder` and
+  `disorder_unavailable` says why.
 - `has_frame` comes from the featurizer/structure module, so the confidence
   functions take it as an argument rather than deriving it.
 - MSA subsampling (`subsample_main_msa` / `subsample_all_msa`) is random
