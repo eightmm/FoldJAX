@@ -235,16 +235,21 @@ def prepare(args: argparse.Namespace) -> None:
         # layout even when it holds a single input.
         args._plural_inputs = True
     if args.command == "predict" and getattr(args, "structure_format", "cif") == "pdb":
+        from foldjax.cli import _FASTA_SUFFIXES
         from foldjax.input import read_job_document
+        from foldjax.job import Job
         from foldjax.structure_format import preflight
 
         documents = []
         for path in args.input or []:
             path = Path(path)
-            if (
-                path.suffix.lower() not in {".json", ".yaml", ".yml"}
-                or not path.is_file()
-            ):
+            if not path.is_file():
+                continue
+            if path.suffix.lower() in _FASTA_SUFFIXES:
+                # A header such as ">AB" becomes a two-character chain id.
+                documents.append(Job.from_fasta(path).to_document())
+                continue
+            if path.suffix.lower() not in {".json", ".yaml", ".yml"}:
                 continue
             try:
                 document = read_job_document(path)

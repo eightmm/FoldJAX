@@ -112,7 +112,7 @@ def write_cif(
             residue = gemmi.Residue()
             residue.name = residue_name
             residue.seqid = gemmi.SeqId(index, " ")
-            polymer = residue_name != "BNZ"
+            polymer = residue_name in _THREE.values()
             residue.het_flag = "A" if polymer else "H"
             residue.entity_type = (
                 gemmi.EntityType.Polymer if polymer else gemmi.EntityType.NonPolymer

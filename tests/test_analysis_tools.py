@@ -132,6 +132,37 @@ def test_pdockq_reads_plddt_at_the_cb_atom(tmp_path: Path) -> None:
     )
 
 
+def test_atom_token_index_places_pae_like_the_residue_maps(tmp_path: Path) -> None:
+    # Protenix, OpenDDE and OpenFold3 write atom_token_index; Boltz-2 and
+    # AlphaFold 3 only the token maps. Both routes must pick the same tokens.
+    chains = complex_coordinates(ligand=True)
+    maps = token_maps(chains)
+    owners, token = [], 0
+    for residues in chains.values():
+        for name, atoms in residues:
+            if name == "BNZ":
+                owners += list(range(token, token + len(atoms)))
+                token += len(atoms)
+            else:
+                owners += [token] * len(atoms)
+                token += 1
+    n = len(maps["token_chain_id"])
+    rng = np.random.default_rng(0)
+    pae = rng.uniform(1.0, 20.0, size=(n, n))
+    results = []
+    for label, extra in (("maps", {}), ("atoms", {"atom_token_index": owners})):
+        directory = tmp_path / label
+        structure = write_cif(directory / "x.cif", chains)
+        confidence_arrays.write(
+            directory / confidence_arrays.FILENAME,
+            model="protenix",
+            arrays={**maps, **extra, "pae": pae, "token_plddt": np.full(n, 80.0)},
+            scales={"token_plddt": "0-100"},
+        )
+        results.append(interfaces.sample_interfaces(directory, structure))
+    assert results[0]["derived"]["pairs"] == results[1]["derived"]["pairs"]
+
+
 def test_a_sample_without_pae_is_skipped_with_the_reason(tmp_path: Path) -> None:
     root = _batch(tmp_path, with_pae=False)
     rows = interfaces.interface_rows(root)
@@ -250,6 +281,26 @@ def test_ligand_rmsd_resolves_ring_symmetry_and_measures_a_shift(
     assert accuracy.score_structure(moved, reference, metrics=("lig_rmsd",))[
         "lig_rmsd"
     ] == pytest.approx(1.5, abs=1e-6)
+
+
+def test_a_smiles_ligand_matches_a_ccd_reference_by_graph(tmp_path: Path) -> None:
+    # A SMILES ligand comes back under another residue name and non-CCD atom
+    # names: the composition finds the copy, the bond graph the atom map.
+    chains = complex_coordinates(ligand=True)
+    reference = write_cif(tmp_path / "r.cif", chains)
+    ring = list(chains["L"][0][1].values())
+    renamed = {f"CX{k + 1}": ring[(k + 2) % 6] for k in range(6)}
+    predicted = write_cif(tmp_path / "p.cif", {**chains, "L": [("UNL", renamed)]})
+    scored = accuracy.score_structure(predicted, reference, metrics=("lig_rmsd",))
+    (ligand,) = scored["ligands"]
+    assert ligand["atom_map"] == "graph" and ligand["reference"].endswith("BNZ1")
+    assert scored["lig_rmsd"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_shard_passes_structure_inputs_through(tmp_path: Path) -> None:
+    deposited = Path("structure:/data/8xyz.cif")
+    selected, summary = slurm.shard_inputs([deposited], 0, 1)
+    assert selected == [deposited] and summary["units_total"] == 1
 
 
 def test_dockq_without_the_tool_names_how_to_get_it(
@@ -463,6 +514,14 @@ def test_structure_format_pdb_refuses_before_running(tmp_path: Path) -> None:
             }
         )
     )
+    fasta = tmp_path / "wide.fasta"
+    fasta.write_text(f">AB\n{SEQUENCE_A}\n")
+    with pytest.raises(ValueError, match="'AB' is longer"):
+        _predict(
+            tmp_path,
+            ["--structure-format", "pdb", "--output-dir", str(tmp_path / "f")],
+            inputs=[fasta],
+        )
     with pytest.raises(ValueError, match="cannot hold this job"):
         _predict(
             tmp_path,
