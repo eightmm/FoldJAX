@@ -760,19 +760,6 @@ _PROTENIX_V2_CHECKPOINT = SuppliedFile(
     size=1_859_785_497,
 )
 
-#: Verified by download on 2026-08-25: the publisher serves no checksum, so
-#: this is FoldJAX's own hash of the file at that URL, the same way the release
-#: checkpoint's was recorded.
-_PROTENIX_BASE_20250630 = Download(
-    name="protenix.pt",
-    url=(
-        "https://protenix.tos-cn-beijing.volces.com/checkpoint/"
-        "protenix_base_20250630_v1.0.0.pt"
-    ),
-    sha256="e850a6b16b3d254ba9a7f67cefd9b59e111fb2036ae036d2703d050aff6ab611",
-    size=1_475_945_945,
-)
-
 _PROTENIX_VARIANTS = {
     PROTENIX_MINI_ESM_PROFILE: _ProtenixVariant(
         profile=PROTENIX_MINI_ESM_PROFILE,
