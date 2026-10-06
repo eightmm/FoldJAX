@@ -82,9 +82,20 @@ _PER_CHAIN_PAIRING = frozenset({"alphafold3"})
 #: OpenDDE pair by the species `featurize_json._species_id` reads from each
 #: header, and a ColabFold header carries none; their writer gives each row
 #: the species upstream Protenix's ColabFold mode gives it, its row number
-#: (`foldjax.input.row_species_a3m`). AlphaFold 3 is refused
+#: (`foldjax.input.row_species_a3m`) -- for OpenDDE only when asked
+#: (`_MODEL_PAIRS_BY_SPECIES`). AlphaFold 3 is refused
 #: ``greedy``/``complete``: a complex-paired block would reach it unpaired.
 _ROW_PAIRED = frozenset({"boltz2", "openfold3", "opendde", "protenix"})
+
+#: Backends whose ``msa_pairing="model"`` delivers the complex search's blocks
+#: with the server's own headers, as their released upstream does, so the
+#: species re-pairing pairs no row beyond the query; the rows still join each
+#: chain's unpaired stack (``msa_pair_as_unpair``). Upstream OpenDDE writes
+#: the ``pairgreedy`` blocks as they come (msa_service_client.py:406-410,
+#: ``_write_query_leading_a3m``) and its ``_UNIREF_REGEX`` (msa_utils.py:33)
+#: reads no species from them. An explicit ``greedy``/``complete`` opts into
+#: the row-number rewrite.
+_MODEL_PAIRS_BY_SPECIES = frozenset({"opendde"})
 
 #: Set on an entity whose ``paired_msa`` is one block of a complex search, so
 #: row *i* of every chain's block is one paired row. The search sets it after
@@ -100,7 +111,9 @@ def resolve_pairing(model: str, pairing: str = "model") -> dict[str, Any]:
     ``paircomplete`` alignment) or ``none`` (no paired alignment delivered).
     ``paired_by`` is how the model joins chains' rows: ``row`` (row *i* of
     every block), ``species`` (re-paired by each header's UniProt species,
-    which a ColabFold header does not carry) or None.
+    which a ColabFold header does not carry, so no row beyond the query is
+    paired: AlphaFold 3's per-chain alignment and OpenDDE's default, as their
+    upstreams) or None.
     """
     from foldjax.schema import MSA_PAIRINGS
     from foldjax.search.msa import (
@@ -131,6 +144,8 @@ def resolve_pairing(model: str, pairing: str = "model") -> dict[str, Any]:
     paired_by = {"greedy": "row", "complete": "row", "per_chain": "species"}.get(
         resolved
     )
+    if pairing == "model" and model in _MODEL_PAIRS_BY_SPECIES:
+        paired_by = "species"
     return {
         "requested": pairing,
         "resolved": resolved,
@@ -346,6 +361,7 @@ def _search_alignments(
                 policy=policy,
                 model=model,
                 mode=None if mode == COMPLEX_PAIRING_MODE else mode,
+                by_row=resolved["paired_by"] == "row",
             )
     if rna and rna_pipeline is not None:
         searched.extend(_run_search(rna_pipeline, rna, policy=policy, paired=False))
@@ -423,12 +439,16 @@ def _pair_complex(
     policy: str,
     model: str,
     mode: str | None = None,
+    by_row: bool = True,
 ) -> None:
     """Pair the whole complex in one search, as OpenFold3 v0.5.0, Boltz-2,
     Protenix and OpenDDE do.
 
     ``mode`` None is the backend's own (``pairgreedy-env``, OpenFold3's);
     otherwise `resolve_pairing`'s mode for the model and strategy.
+    ``by_row`` marks the blocks for the row-number rewrite
+    (`ROW_PAIRED_MSA`); without it they reach the writer as the server wrote
+    them.
 
     Upstream submits one ColabFold ``pairgreedy-env`` job per query, over its
     distinct protein sequences, and only when there is more than one of them
@@ -510,7 +530,8 @@ def _pair_complex(
     records = {record["chain"]: record for record in searched}
     for entity, result in zip(proteins, found, strict=True):
         entity["paired_msa"] = result["pairedMsaPath"]
-        entity[ROW_PAIRED_MSA] = True
+        if by_row:
+            entity[ROW_PAIRED_MSA] = True
         record = records.get(_ids(entity)[0])
         if record is not None:
             record["paired_msa"] = result["pairedMsaPath"]

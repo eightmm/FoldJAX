@@ -178,15 +178,22 @@ the species their featurizer reads from each header. A ColabFold
 to `msa/entity_NNNN_pairing.a3m` the way upstream Protenix's ColabFold mode
 writes its `pairing.a3m` (`web_service/colab_request_utils.py`): the query as
 `>query` and every hit as `>UniRef100_<accession>_<row>/...`, so the species is
-the row number and row *i* of every chain is paired. Upstream OpenDDE submits
-the same search but keeps the server's headers, so its released code pairs no
-rows; FoldJAX gives OpenDDE Protenix's reading. A complex search whose blocks
+the row number and row *i* of every chain is paired. That is Protenix's
+default. **OpenDDE's default pairs nothing, as upstream OpenDDE does:** it
+submits the same `pairgreedy` search but writes the blocks with the server's
+headers (`msa_service_client.py` `search_and_build_msa`), so its species
+re-pairing pairs only the query row and the block's rows join each chain's
+unpaired stack (`msa_pair_as_unpair`). FoldJAX passes OpenDDE the blocks as
+the server wrote them under `model` (`paired_by: species` in the manifest);
+`--msa-pairing greedy` or `complete` opts OpenDDE into Protenix's row reading
+(`paired_by: row`), a departure from its released behaviour that has not been
+measured for accuracy. A complex search whose blocks
 differ in depth is refused before it is cached (`required` fails, `auto` folds
 without the pairing and warns), and a local wrapper, which cannot pair a
 complex, delivers no pairing alignment to any of these four models. A
-`paired_msa` you supply is passed through untouched. AlphaFold 3
-re-pairs by the UniProt species in each header and has no upstream reader of
-ColabFold output, so `greedy`/`complete` is refused for it, and its per-chain
+`paired_msa` you supply is passed through untouched. AlphaFold 3 follows its
+upstream, which has no reader of ColabFold output: it re-pairs by the UniProt
+species in each header, so `greedy`/`complete` is refused for it, and its per-chain
 alignment pairs no rows of a heteromer either (only the query row); DeepMind's
 advice for a pre-paired alignment is `unpairedMsa` with an empty `pairedMsa`
 (`docs/input.md`, "MSA Pairing"). `none` delivers no paired alignment and
@@ -194,10 +201,12 @@ skips the per-chain pairing ticket (a local wrapper is told so with
 `FOLDJAX_MSA_PAIRING=none`). The pairing is part of the MSA cache key (`model`
 keeps every existing per-chain entry) and of `foldjax_run.json`
 (`msa_pairing`: requested, resolved, ColabFold mode, and `paired_by`, `row` or
-`species`); `--resume` reruns a run asked under another pairing. A monomer or
-homomer is never complex-paired, as upstream OpenFold3, Boltz and Protenix's
-ColabFold mode do not pair one; Protenix and OpenDDE therefore no longer read
-a per-chain pairing alignment for it.
+`species`, where `species` means no row beyond the query is paired);
+`--resume` reruns a run asked under another pairing. A monomer or homomer is
+never complex-paired, as upstream OpenFold3, Boltz, Protenix's ColabFold mode
+and OpenDDE do not pair one (the last two write a query-only `pairing.a3m`);
+Protenix and OpenDDE therefore no longer read a per-chain pairing alignment
+for it.
 
 **Alignment depth and Neff.** Every common-schema run records, per chain, the
 rows of the alignment the model reads (`depth`, query included, before the

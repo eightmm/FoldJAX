@@ -1,10 +1,13 @@
 """W15: a ColabFold pairing alignment pairs the chains of a heteromer.
 
 The server's headers (``>UniRef100_<accession>\\t<scores>``) carry no species,
-so a model that pairs by species pairs none of them. Protenix and OpenDDE now
-take the complex search their upstreams submit and read its rows by number,
-as Protenix's ColabFold mode writes them; AlphaFold 3 is pinned at what it
-does. Nothing here reaches the network: searches are stubs or a fake transport.
+so a model that pairs by species pairs none of them. Protenix now takes the
+complex search its upstream submits and reads its rows by number, as
+Protenix's ColabFold mode writes them; OpenDDE's default runs the same search
+with the server's headers and pairs nothing, as upstream OpenDDE does, and an
+explicit greedy/complete opts it into the rewrite; AlphaFold 3 is pinned at
+what it does. Nothing here reaches the network: searches are stubs or a fake
+transport.
 """
 
 from __future__ import annotations
@@ -204,9 +207,15 @@ def _chains(native: Any) -> list[dict[str, Any]]:
     return [entry["proteinChain"] for entry in native[0]["sequences"]]
 
 
-@pytest.mark.parametrize("model", ["protenix", "opendde"])
-def test_model_pairing_pairs_the_heteromer_by_row(tmp_path: Path, stub, model):
-    path = _materialize(_job(tmp_path, SEQUENCE, OTHER), model, tmp_path / "out")
+@pytest.mark.parametrize(
+    ("model", "pairing"), [("protenix", "model"), ("opendde", "greedy")]
+)
+def test_the_complex_search_pairs_the_heteromer_by_row(
+    tmp_path: Path, stub, model, pairing
+):
+    path = _materialize(
+        _job(tmp_path, SEQUENCE, OTHER), model, tmp_path / "out", msa_pairing=pairing
+    )
     assert stub.complex_calls == [([SEQUENCE, OTHER], "pairgreedy")]
     chains = _chains(json.loads(path.read_text()))
     texts = [Path(chain["pairedMsaPath"]).read_text() for chain in chains]
@@ -220,11 +229,33 @@ def test_model_pairing_pairs_the_heteromer_by_row(tmp_path: Path, stub, model):
     # kept beside chain A's hit.
     assert a["msa_all_seq"].shape[0] == b["msa_all_seq"].shape[0] == 3
     assert (b["msa_all_seq"][2] == pj._GAP_IDX).all()
-    assert msa_search.resolve_pairing(model) == {
-        "requested": "model",
+    assert msa_search.resolve_pairing(model, pairing) == {
+        "requested": pairing,
         "resolved": "greedy",
         "mode": "pairgreedy",
         "paired_by": "row",
+    }
+
+
+def test_opendde_default_runs_upstreams_search_and_pairs_nothing(tmp_path: Path, stub):
+    """Upstream OpenDDE writes the pairgreedy blocks with the server's headers.
+
+    Its species regex reads none, so only the query row is paired; the rows
+    still join each chain's unpaired stack (msa_pair_as_unpair).
+    """
+    path = _materialize(_job(tmp_path, SEQUENCE, OTHER), "opendde", tmp_path / "out")
+    assert stub.complex_calls == [([SEQUENCE, OTHER], "pairgreedy")]
+    chains = _chains(json.loads(path.read_text()))
+    assert not (tmp_path / "out" / "msa").exists()
+    texts = [Path(chain["pairedMsaPath"]).read_text() for chain in chains]
+    assert texts[0] == _colabfold_block(SEQUENCE, [SEQUENCE, "A" * len(SEQUENCE)])
+    a, b = _pair(texts, [SEQUENCE, OTHER])
+    assert a["msa_all_seq"].shape[0] == b["msa_all_seq"].shape[0] == 1
+    assert msa_search.resolve_pairing("opendde") == {
+        "requested": "model",
+        "resolved": "greedy",
+        "mode": "pairgreedy",
+        "paired_by": "species",
     }
 
 
