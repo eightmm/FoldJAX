@@ -1208,9 +1208,11 @@ def describe_run(
     nothing about which job produced the directory.
 
     ``ignored_msas`` lists alignments the common job named that the native
-    input left out (``ignore_nucleic_msa``); ``None`` when the job was not
-    common-schema input, whose alignments FoldJAX does not inspect.
-    ``ignored_templates`` does the same for templates (``ignore_templates``).
+    input left out (``ignore_nucleic_msa``), or a native OpenDDE job's RNA
+    ``unpairedMsaPath`` its released ``use_rna_msa=false`` drops; ``None`` when
+    the job was other native input, whose alignments FoldJAX does not inspect.
+    ``ignored_templates`` does the same for templates (``ignore_templates``;
+    OpenDDE's native ``templatesPath`` under ``use_template=false``).
     ``ignored_constraints`` lists native jobs whose ``constraint`` the backend
     never reads (``ignore_constraints``), or a common job's pocket constraint
     dropped for the same reason; ``None`` where the backend has no such gate.

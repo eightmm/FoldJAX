@@ -322,3 +322,93 @@ def test_other_backends_record_no_constraint_gate(tmp_path) -> None:
         )
     manifest = json.loads((tmp_path / "out" / MANIFEST_NAME).read_text())
     assert manifest["ignored_constraints"] is None
+
+
+def _native_with_dropped_inputs(tmp_path: Path) -> Path:
+    (tmp_path / "rna.a3m").write_text(">query\nACGU\n")
+    (tmp_path / "templates.json").write_text("[]")
+    path = tmp_path / "dropped.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "dropped",
+                    "modelSeeds": [3],
+                    "sequences": [
+                        {
+                            "proteinChain": {
+                                "sequence": "ACDEF",
+                                "count": 1,
+                                "id": ["A"],
+                                "templatesPath": "templates.json",
+                            }
+                        },
+                        {
+                            "rnaSequence": {
+                                "sequence": "ACGU",
+                                "count": 1,
+                                "unpairedMsaPath": "rna.a3m",
+                            }
+                        },
+                        # Empty: nothing to drop, so nothing is recorded.
+                        {"rnaSequence": {"sequence": "GG", "unpairedMsaPath": ""}},
+                    ],
+                }
+            ]
+        )
+    )
+    return path
+
+
+def test_a_native_job_records_the_templates_and_rna_msas_it_drops(
+    tmp_path: Path,
+) -> None:
+    """The featurizer drops them under the released defaults; the manifest says so."""
+    from foldjax.input import _NATIVE_IGNORED_FIELDS
+
+    # The record and the drop are one rule, kept in two modules.
+    assert {
+        kind: tuple(field for field, *_ in fields)
+        for kind, fields in _NATIVE_IGNORED_FIELDS["opendde"].items()
+    } == {
+        kind: tuple(field for field, _ in fields)
+        for kind, fields in fj._OPENDDE_IGNORED_FIELDS.items()
+    }
+    weights = tmp_path / "weights.jax"
+    weights.write_bytes(b"not really weights")
+    native = _native_with_dropped_inputs(tmp_path)
+    seen: list = []
+
+    def run(out: str, **options) -> dict:
+        foldjax.predict(
+            PredictionRequest(
+                model="opendde",
+                input=native,
+                weights=weights,
+                output_dir=tmp_path / out,
+                seed=3,
+                msa="none",
+                options=options,
+                use_compile_cache=False,
+            )
+        )
+        return json.loads((tmp_path / out / MANIFEST_NAME).read_text())
+
+    with backend_override("opendde", _recorder(seen)):
+        released = run("released")
+        opted_in = run("opted-in", use_template=True, use_rna_msa=True)
+
+    (template,) = released["ignored_templates"]
+    assert template["job"] == "dropped"
+    assert (template["entity"], template["chains"]) == (1, ["A"])
+    assert (template["type"], template["field"]) == ("protein", "templatesPath")
+    assert template["path"] == "templates.json"
+    assert "use_template=true" in template["reason"]
+    (alignment,) = released["ignored_msas"]
+    assert (alignment["entity"], alignment["chains"]) == (2, [])
+    assert (alignment["type"], alignment["field"]) == ("rna", "unpairedMsaPath")
+    assert alignment["path"] == "rna.a3m"
+    assert "use_rna_msa=true" in alignment["reason"]
+    # Read under the opt-ins, so nothing was dropped: inspected, empty.
+    assert opted_in["ignored_templates"] == []
+    assert opted_in["ignored_msas"] == []

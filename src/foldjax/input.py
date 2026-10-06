@@ -291,6 +291,78 @@ def native_ignored_constraints(path: Path, model: str) -> list[dict[str, Any]] |
     return records
 
 
+#: Native fields a backend's released defaults never read and its featurizer
+#: drops with a warning (OpenDDE ``featurize_json._OPENDDE_IGNORED_FIELDS``):
+#: entity kind -> (field, the option that reads it, manifest record list).
+_NATIVE_IGNORED_FIELDS: dict[str, dict[str, tuple[tuple[str, str, str], ...]]] = {
+    "opendde": {
+        "proteinChain": (("templatesPath", "use_template", "templates"),),
+        "rnaSequence": (("unpairedMsaPath", "use_rna_msa", "msas"),),
+    },
+}
+
+
+def native_ignored_inputs(
+    path: Path, model: str, options: Mapping[str, Any]
+) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]] | None]:
+    """``(ignored_msas, ignored_templates)`` for a native document's drops.
+
+    The records of what the featurizer drops, as ``native_ignored_constraints``
+    records a dropped constraint: a template or RNA alignment the released
+    ``use_template=false`` / ``use_rna_msa=false`` never reads. ``(None, None)``
+    when ``model`` drops nothing from native input. An empty path carries
+    nothing and is not recorded, as the featurizer drops it without a word.
+    """
+    fields = _NATIVE_IGNORED_FIELDS.get(model)
+    if fields is None:
+        return None, None
+    records: dict[str, list[dict[str, Any]]] = {"msas": [], "templates": []}
+    try:
+        document = read_job_document(Path(path))
+    except (OSError, ValueError):
+        return records["msas"], records["templates"]
+    jobs = document if isinstance(document, list) else [document]
+    for index, job in enumerate(jobs):
+        if not isinstance(job, Mapping):
+            continue
+        sequences = job.get("sequences")
+        if not isinstance(sequences, list):
+            continue
+        for number, entry in enumerate(sequences, start=1):
+            if not isinstance(entry, Mapping) or len(entry) != 1:
+                continue
+            kind, info = next(iter(entry.items()))
+            if not isinstance(info, Mapping):
+                continue
+            for field, option, bucket in fields.get(kind, ()):
+                value = info.get(field)
+                if options.get(option) is True or not value:
+                    continue
+                chains = info.get("id")
+                records[bucket].append(
+                    {
+                        "job": str(job.get("name") or index),
+                        "entity": number,
+                        "chains": (
+                            [chains]
+                            if isinstance(chains, str)
+                            else list(chains)
+                            if isinstance(chains, list)
+                            else []
+                        ),
+                        "type": "protein" if kind == "proteinChain" else "rna",
+                        "field": field,
+                        "path": str(value),
+                        "reason": (
+                            f"{model} reads {kind}.{field} only with "
+                            f"{option}=true, and upstream's released default is "
+                            "false; ignored, as upstream does"
+                        ),
+                    }
+                )
+    return records["msas"], records["templates"]
+
+
 def refuse_ignored_constraints(path: Path, model: str) -> None:
     """Refuse a native job whose constraint ``model`` would discard."""
     records = native_ignored_constraints(path, model) or []

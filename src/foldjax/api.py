@@ -39,6 +39,7 @@ from foldjax.input import (
     is_jobs_file,
     materialize_native_input,
     native_ignored_constraints,
+    native_ignored_inputs,
     read_job_document,
 )
 from foldjax.manifest import (
@@ -1228,6 +1229,12 @@ def _predict_once(
         ignored_constraints = common_ignored_constraints
     else:
         ignored_constraints = None
+    # Likewise a native template or RNA alignment the released defaults never
+    # read (OpenDDE): the featurizer drops it with a warning; this records it.
+    if asked.input_format != "foldjax":
+        ignored_msas, ignored_templates = native_ignored_inputs(
+            asked.input, backend.name, asked.options
+        )
     # Consumed by the translation above; no native runner takes it. `asked`
     # keeps it, so the manifest's options still record the choice.
     consumed = {IGNORE_NUCLEIC_MSA, IGNORE_TEMPLATES, IGNORE_CONSTRAINTS}

@@ -64,12 +64,12 @@
     },
     "input_dependencies": {"type": "object"},
     "ignored_msas": {
-      "description": "Alignments the common job named that the native input left out; null when the input was native (not inspected).",
+      "description": "Alignments the common job named that the native input left out, or a native OpenDDE job's RNA unpairedMsaPath that use_rna_msa=false drops; null when the input was other native input (not inspected).",
       "type": ["array", "null"],
       "items": {"$ref": "#/$defs/ignored"}
     },
     "ignored_templates": {
-      "description": "Templates the common job named that the native input left out; null when the input was native (not inspected).",
+      "description": "Templates the common job named that the native input left out, or a native OpenDDE job's templatesPath that use_template=false drops; null when the input was other native input (not inspected).",
       "type": ["array", "null"],
       "items": {"$ref": "#/$defs/ignored"}
     },

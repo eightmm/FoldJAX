@@ -436,7 +436,8 @@ def results_table(
     them is empty), the native scores as ``score.<name>``, the structure path,
     its SHA-256 and whether it still matches, what the model never read
     (``ignored_msas``, ``ignored_templates``; None for a native input, which
-    is not inspected; and ``ignored_constraints``, an OpenDDE job's native
+    is not inspected, except OpenDDE's, whose dropped native templates and RNA
+    alignments are listed; and ``ignored_constraints``, an OpenDDE job's native
     constraint or common pocket constraint), the pocket ``constraints`` a
     common job ran with (``max_distance`` and its ``max_distance_source``),
     and for a failure its error. ``best_within_model``

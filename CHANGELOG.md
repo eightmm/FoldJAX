@@ -109,6 +109,14 @@ unless it says so here, in its own paragraph.
   external `source` runner whose `predict_structure` has no such parameter is
   called as before.
 
+- **A native OpenDDE job's dropped `templatesPath` and RNA `unpairedMsaPath`
+  are recorded in the run manifest.** Under the released `use_template=false`
+  and `use_rna_msa=false` the featurizer drops them with a warning, as
+  upstream ignores them, but `ignored_templates` and `ignored_msas` stayed
+  null, as for an uninspected input. They now list each dropped field (job,
+  entity, chains, path), as `ignored_constraints` lists a dropped
+  `constraint`, and are empty lists when nothing was dropped.
+
 ## 0.1.0 (2026-10-06)
 
 ### Added
