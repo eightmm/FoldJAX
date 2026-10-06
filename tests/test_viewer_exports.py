@@ -256,3 +256,51 @@ def test_no_pae_means_no_json(tmp_path) -> None:
     assert not (tmp_path / "seed-2_sample-00" / PAE_JSON).exists()
     exports = placed.samples[0].metadata["confidence_arrays"]["exports"]
     assert exports == {"pae_json": None, "plddt_b_factor": "native"}
+
+
+def test_interfaces_read_the_new_esmfold2_arrays_through_normalize(tmp_path) -> None:
+    """`foldjax interfaces` consumes the PAE and chain-pair matrix as written."""
+    from foldjax.interfaces import sample_interfaces
+    from foldjax.models.esmfold2.data import features
+    from foldjax.models.esmfold2.output import write_prediction_outputs
+
+    built = features.build_features([("ACDKLM", "A", 0, 0), ("GHKWYV", "B", 0, 1)])
+    n_atom = int(np.asarray(built["atom_attention_mask"]).sum())
+    rng = np.random.default_rng(2)
+    coords = rng.normal(scale=4.0, size=(1, n_atom, 3)).astype(np.float32)
+    output = {
+        "sample_atom_coords": coords,
+        "plddt": np.full((1, 12), 0.8),
+        "plddt_per_atom": np.full((1, n_atom), 0.8),
+        "ptm": np.asarray([0.5]),
+        "pae": rng.uniform(0, 12, size=(1, 12, 12)).astype(np.float32),
+        "pde": rng.uniform(0, 12, size=(1, 12, 12)).astype(np.float32),
+        "pair_chains_iptm": np.asarray([[[0.9, 0.4], [0.3, 0.8]]], np.float32),
+    }
+    written = write_prediction_outputs(output, built, tmp_path / "native", name="j")
+    cif = written["structures"][0]
+    result = PredictionResult(
+        model="esmfold2",
+        samples=(
+            PredictionSample(
+                seed=0,
+                structure_path=cif,
+                metadata=confidence_arrays.sample_metadata(cif),
+            ),
+        ),
+        output_dir=tmp_path,
+    )
+    placed = normalize(result, job="j")
+    directory = tmp_path / "seed-0_sample-00"
+
+    report = sample_interfaces(directory)
+    assert report["skipped"] is None
+    native = {
+        (row["chain1"], row["chain2"]): row["value"]
+        for row in report["native"]["chain_pair_iptm"]
+    }
+    assert native == pytest.approx({("A", "B"): 0.4, ("B", "A"): 0.3})
+    assert report["derived"]
+    exports = placed.samples[0].metadata["confidence_arrays"]["exports"]
+    assert exports["pae_json"] == PAE_JSON
+    assert exports["plddt_b_factor"] == "native"
