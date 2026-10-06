@@ -100,7 +100,8 @@ def test_processed_arrays_load_without_pickle(tmp_path: Path) -> None:
                 assert data[name].dtype != object, (path, name)
     with np.load(out / "processed" / "structures" / "boltz2_input.npz") as data:
         assert "pocket" not in data.files
-    assert StructureV2.load(out / "processed/structures/boltz2_input.npz").pocket is None
+    loaded = StructureV2.load(out / "processed/structures/boltz2_input.npz")
+    assert loaded.pocket is None
 
 
 def test_a_pickled_object_field_is_refused(tmp_path: Path) -> None:
