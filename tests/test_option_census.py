@@ -622,6 +622,19 @@ def test_every_neutral_value_survives_the_port_s_own_validator(
 # ---------------------------------------------------------------------------
 
 
+#: Values a profile resolves that no request can spell, by design, and why.
+#: Only a process whose JAX backend is a GPU resolves these, so a CPU run never
+#: meets them; they are exempt where they occur, not asserted to occur.
+_UNSPELLABLE_BY_DESIGN = {
+    # An omitted OpenFold3 kernel on a serial GPU process realises
+    # `cueq-pallas` (`_openfold3_compile._serial_default_kernel`, commit
+    # 0dd0cea). The neutral `triangle_kernel` vocabulary has no such value; it
+    # is named only by `OPENFOLD3_TRIANGLE_BACKEND=cueq-pallas`
+    # (docs/cli.md, "What an omitted setting runs").
+    ("openfold3", "triangle_kernel", "cueq-pallas"),
+}
+
+
 @pytest.mark.parametrize("name", BACKENDS)
 def test_spelling_the_value_the_profile_already_resolved_changes_nothing(
     name: str, profile_of
@@ -645,6 +658,8 @@ def test_spelling_the_value_the_profile_already_resolved_changes_nothing(
     unspellable = []
     for option, value in sorted(omitted.items()):
         spelling, why = spelling_for(backend, option, value)
+        if spelling is None and (name, option, value) in _UNSPELLABLE_BY_DESIGN:
+            continue
         if spelling is None:
             # Collected rather than skipped: `pytest.skip` here would abandon
             # the whole port on its first unspellable option and report a
