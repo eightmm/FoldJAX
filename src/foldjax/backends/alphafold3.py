@@ -19,7 +19,7 @@ import json
 import sys
 import time
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -46,11 +46,7 @@ from foldjax.backends.base import (
     Backend,
     validate_memory_policy_options,
 )
-from foldjax.cache import (
-    PERSISTENT_CACHE_MIN_COMPILE_SECS,
-    device_key,
-    trusted_compile_cache_dir,
-)
+from foldjax.cache import compilation_cache_scope, device_key
 from foldjax.execution import DETERMINISTIC_API_OPTION
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
@@ -1136,6 +1132,7 @@ class AlphaFold3Backend(Backend):
             else None
         )
 
+        cache_scope = ExitStack()
         try:
             runner_path = _runner_path(options)
             runner = _load_runner(runner_path)
@@ -1162,15 +1159,13 @@ class AlphaFold3Backend(Backend):
                     "AlphaFold3 common representations require one native job "
                     "per request; split multi-job inputs into separate requests"
                 )
-            if (
-                request.cache_dir is not None
-                and trusted_compile_cache_dir(request.cache_dir) is not None
-            ):
-                jax.config.update("jax_compilation_cache_dir", str(request.cache_dir))
-                jax.config.update(
-                    "jax_persistent_cache_min_compile_time_secs",
-                    PERSISTENT_CACHE_MIN_COMPILE_SECS,
-                )
+            if request.cache_dir is not None:
+                # Scoped, not latched: a direct `predict` caller gets its own
+                # JAX config back, and an untrusted directory compiles without
+                # a cache rather than leaving the host's in force. Nested
+                # inside `api.predict`'s scope for the same directory, this is
+                # the same setting.
+                cache_scope.enter_context(compilation_cache_scope(request.cache_dir))
             # Selecting from the default backend keeps a CPU-only host usable
             # for smoke runs while still resolving the GPU on an accelerator.
             platform = options.pop("platform", None)
@@ -1439,6 +1434,8 @@ class AlphaFold3Backend(Backend):
             if isinstance(error, Exception) and managed_weights is not None:
                 self._anchor_assets(managed_weights)
             raise
+        finally:
+            cache_scope.close()
 
         if managed_weights is not None:
             self._anchor_assets(managed_weights)

@@ -33,11 +33,7 @@ from typing import Any
 import numpy as np
 
 from foldjax import memory_policy, progress
-from foldjax.cache import (
-    PERSISTENT_CACHE_MIN_COMPILE_SECS,
-    device_key,
-    trusted_compile_cache_dir,
-)
+from foldjax.cache import compilation_cache_scope, device_key
 from foldjax.execution import auto_diffusion_chunk_size, resolved_matmul_precision
 from foldjax.models import _capture, _representations
 from foldjax.models._feature_storage import compact_msa_storage
@@ -281,6 +277,28 @@ def _pinned_matmul_precision(function):
         with jax.default_matmul_precision(
             resolved_matmul_precision(MATMUL_PRECISION)
         ):
+            return function(*args, **kwargs)
+
+    return wrapper
+
+
+def _scoped_compile_cache(function):
+    """Select ``compile_cache`` for the call, through the shared trusted scope.
+
+    `predict` used to `jax.config.update` the directory and leave it set for
+    the rest of the process, and skipped an untrusted directory by leaving
+    whatever cache the host had in force. `foldjax.cache.compilation_cache_scope`
+    applies the trust check, compiles without a cache it refuses, and gives
+    the caller its config back. An omitted ``compile_cache`` leaves the host's
+    setting alone, as it did.
+    """
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        directory = kwargs.get("compile_cache")
+        if directory is None:
+            return function(*args, **kwargs)
+        with compilation_cache_scope(Path(directory).expanduser().resolve()):
             return function(*args, **kwargs)
 
     return wrapper
@@ -607,6 +625,7 @@ def _carries_guidance_constraints(feats: Mapping[str, object]) -> bool:
 
 
 @_pinned_matmul_precision
+@_scoped_compile_cache
 def predict(
     *,
     input: str | Path | None = None,
@@ -965,15 +984,11 @@ def predict(
     # the storage passes below compact it.
     confidence_index = _confidence_index(feats_np, struct_dir / f"{record_id}.npz")
 
+    # Selected for the whole call by `_scoped_compile_cache`; the resolved
+    # path is still part of the session identity below.
     cache = None
     if compile_cache is not None:
         cache = Path(compile_cache).expanduser().resolve()
-        if trusted_compile_cache_dir(cache) is not None:
-            jax.config.update("jax_compilation_cache_dir", str(cache))
-            jax.config.update(
-                "jax_persistent_cache_min_compile_time_secs",
-                PERSISTENT_CACHE_MIN_COMPILE_SECS,
-            )
 
     if compute_dtype not in COMPUTE_DTYPES:
         raise ValueError(

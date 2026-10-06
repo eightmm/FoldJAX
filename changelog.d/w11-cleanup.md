@@ -45,6 +45,14 @@
   non-protein token is now admitted as `unknown` with that reason named, the
   way a padded or float32 run already was; a refusal still binds.
 
+- **AlphaFold 3, Boltz-2 and OpenDDE select their compile cache through the
+  shared scope.** Each set `jax_compilation_cache_dir` with a raw
+  `jax.config.update` that stayed in force after the call, and on a directory
+  the trust check refused left the host's cache in place rather than
+  compiling without one. All three now enter `compilation_cache_scope` for the
+  run, as Protenix and OpenFold3 already did, so a direct caller gets its JAX
+  config back and an untrusted directory is never read.
+
 ### Changed
 
 - **One job-name rule for every output path.** FoldJAX's layout, the

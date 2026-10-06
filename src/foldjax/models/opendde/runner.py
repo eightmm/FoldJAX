@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from foldjax import memory_policy, progress
-from foldjax.cache import PERSISTENT_CACHE_MIN_COMPILE_SECS, trusted_compile_cache_dir
+from foldjax.cache import compilation_cache_scope
 from foldjax.models import _representations
 from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models.opendde.data.compact_categories import (
@@ -524,6 +525,31 @@ def run_prediction(
     padding_profiles: list[dict[str, Any]] | None = None,
     _prepared_params_loader: Callable[[Path, str, bool], Any] | None = None,
 ) -> list[Path]:
+    """Run the prediction inside the shared compilation-cache scope.
+
+    The same arrangement as Protenix's `run_prediction`: the scope covers the
+    whole run and gives an in-process caller -- the FoldJAX backend, tests --
+    its JAX cache config back, where a raw ``jax.config.update`` left it
+    overwritten.
+    """
+    with ExitStack() as cache_scope:
+        return _run(
+            config,
+            cache_scope=cache_scope,
+            padding=padding,
+            padding_profiles=padding_profiles,
+            _prepared_params_loader=_prepared_params_loader,
+        )
+
+
+def _run(
+    config: PredictionConfig,
+    *,
+    cache_scope: ExitStack,
+    padding: PaddingConfig | None = None,
+    padding_profiles: list[dict[str, Any]] | None = None,
+    _prepared_params_loader: Callable[[Path, str, bool], Any] | None = None,
+) -> list[Path]:
 
     if padding is not None:
         unsupported = sorted(
@@ -592,15 +618,9 @@ def run_prediction(
         os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
     if config.compile_cache is not None:
-        import jax
-
-        cache = trusted_compile_cache_dir(config.compile_cache.expanduser().resolve())
-        if cache is not None:
-            jax.config.update("jax_compilation_cache_dir", str(cache))
-            jax.config.update(
-                "jax_persistent_cache_min_compile_time_secs",
-                PERSISTENT_CACHE_MIN_COMPILE_SECS,
-            )
+        cache_scope.enter_context(
+            compilation_cache_scope(config.compile_cache.expanduser().resolve())
+        )
 
     # Returned so a caller knows which files *this* run produced. FoldJAX used
     # to recover them by globbing the output tree, which cannot tell a
