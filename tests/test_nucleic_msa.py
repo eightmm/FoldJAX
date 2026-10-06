@@ -226,11 +226,15 @@ def test_alphafold3_does_not_take_the_option(tmp_path: Path) -> None:
         input_format="foldjax",
         options={IGNORE_NUCLEIC_MSA: True},
     )
-    with pytest.raises(ValueError, match=f"unsupported alphafold3 options: {IGNORE_NUCLEIC_MSA}"):
+    with pytest.raises(
+        ValueError, match=f"unsupported alphafold3 options: {IGNORE_NUCLEIC_MSA}"
+    ):
         get_backend("alphafold3").validate_request(request)
 
 
-@pytest.mark.parametrize("model", ["boltz2", "esmfold2", "opendde", "openfold3", "protenix"])
+@pytest.mark.parametrize(
+    "model", ["boltz2", "esmfold2", "opendde", "openfold3", "protenix"]
+)
 def test_the_option_is_checked_while_planning(tmp_path: Path, model: str) -> None:
     job = _job(tmp_path, None)
     backend = get_backend(model)
