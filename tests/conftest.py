@@ -72,6 +72,14 @@ _JAX_CACHE_CONFIG = (
 )
 
 
+#: pytest's own record of the running phase; it changes on every test.
+_PYTEST_PHASE = "PYTEST_CURRENT_TEST"
+
+
+def _environment() -> dict[str, str]:
+    return {name: value for name, value in os.environ.items() if name != _PYTEST_PHASE}
+
+
 def _jax_cache_config() -> dict[str, object] | None:
     # Read only once something else imported JAX: several tests assert that a
     # code path does not import it, which an import here would decide for them.
@@ -104,7 +112,7 @@ def _restore_process_state() -> Iterator[None]:
     """
     from foldjax import memory_policy, progress
 
-    environment = dict(os.environ)
+    environment = _environment()
     progress_state = (progress._enabled, progress._stream)
     warned = set(memory_policy._WARNED)
     recorded = memory_policy._RECORDED.get()
@@ -115,9 +123,12 @@ def _restore_process_state() -> Iterator[None]:
     try:
         yield
     finally:
-        if dict(os.environ) != environment:
+        if _environment() != environment:
+            phase = os.environ.get(_PYTEST_PHASE)
             os.environ.clear()
             os.environ.update(environment)
+            if phase is not None:
+                os.environ[_PYTEST_PHASE] = phase
         progress._enabled, progress._stream = progress_state
         memory_policy._WARNED.clear()
         memory_policy._WARNED.update(warned)
