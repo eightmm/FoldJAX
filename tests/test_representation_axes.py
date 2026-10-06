@@ -144,3 +144,21 @@ def test_the_archive_is_written_and_read_without_pickle(tmp_path) -> None:
             {},
             model="boltz2",
         )
+
+
+def test_the_archive_gets_the_mode_an_ordinary_write_would(tmp_path) -> None:
+    import os
+    import stat
+
+    mask = os.umask(0o022)
+    try:
+        archive = _representations.save(
+            tmp_path,
+            {"pair": np.zeros((7, 7, 3), dtype=np.float32)},
+            _specs(),
+            model="boltz2",
+        )
+    finally:
+        os.umask(mask)
+    assert archive is not None
+    assert stat.S_IMODE(archive.stat().st_mode) == 0o644

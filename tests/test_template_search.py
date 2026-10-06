@@ -360,6 +360,23 @@ def test_a_compressed_divided_mirror_is_read_and_unpacked_once(tmp_path):
     assert other.path("3abc").read_text() == STRUCTURES["3abc"]
 
 
+def test_a_cached_template_gets_the_mode_an_ordinary_write_would(tmp_path):
+    import gzip
+    import stat
+
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    (mirror / "2abc.cif.gz").write_bytes(gzip.compress(STRUCTURES["2abc"].encode()))
+    mask = os.umask(0o022)
+    try:
+        downloaded = StructureStore(tmp_path / "cache", transport=_rcsb()).path("3abc")
+        unpacked = StructureStore(tmp_path / "cache", local_dir=mirror).path("2abc")
+    finally:
+        os.umask(mask)
+    assert stat.S_IMODE(downloaded.stat().st_mode) == 0o644
+    assert stat.S_IMODE(unpacked.stat().st_mode) == 0o644
+
+
 def test_template_structure_reads_author_label_and_observed_residues(tmp_path):
     path = tmp_path / "2abc.cif"
     path.write_text(STRUCTURES["2abc"])

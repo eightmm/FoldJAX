@@ -38,6 +38,8 @@ from typing import Any
 
 import numpy as np
 
+from foldjax._fsutil import ordinary_file_mode
+
 #: The roles every model in this package fills, in the order they are built.
 CANONICAL_NAMES: tuple[str, ...] = ("single_inputs", "single", "pair")
 
@@ -288,6 +290,9 @@ def save(
                 with destination.open(f"{name}.npy", "w", force_zip64=True) as member:
                     np.lib.format.write_array(member, value, allow_pickle=False)
                 del value
+        # `NamedTemporaryFile` staged it 0600; publish it with the mode the
+        # manifest written beside it gets.
+        staged.chmod(ordinary_file_mode())
         staged.replace(archive)
     finally:
         staged.unlink(missing_ok=True)

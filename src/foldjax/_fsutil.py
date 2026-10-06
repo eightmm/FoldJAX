@@ -30,6 +30,7 @@ for equality, so unifying them is an on-disk schema change.
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 
 #: Read size for streamed hashing. Large enough that hashing a multi-GB
@@ -52,6 +53,18 @@ def sha256_file(path: Path) -> str:
         while chunk := handle.read(_HASH_CHUNK_BYTES):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def ordinary_file_mode() -> int:
+    """The mode an ordinary ``open(..., "w")`` would give: ``0o666 & ~umask``.
+
+    For files staged through `tempfile`, which creates them ``0600``: chmod
+    the staged file to this before ``os.replace`` so a published result stays
+    readable to whoever reads the directory around it.
+    """
+    mask = os.umask(0)
+    os.umask(mask)
+    return 0o666 & ~mask
 
 
 def nonempty_file(path: Path) -> bool:
