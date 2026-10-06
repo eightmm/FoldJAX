@@ -94,8 +94,8 @@ def test_padding_plan_reports_real_storage_and_standard_targets() -> None:
     assert plan.actual == {"tokens": 4, "atoms": 7, "msa": 2, "templates": 1}
     assert plan.storage == plan.actual
     assert plan.target == {
-        "tokens": 256,
-        "atoms": 6144,
+        "tokens": 128,
+        "atoms": 3072,
         "msa": 1024,
         "templates": 4,
     }

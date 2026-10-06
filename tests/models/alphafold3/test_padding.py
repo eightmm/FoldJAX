@@ -99,7 +99,7 @@ def test_af3_reports_the_concrete_selected_token_shape() -> None:
     assert plan.summary() == {
         "actual": {"tokens": 300},
         "storage": {"tokens": 300},
-        "target": {"tokens": 512},
+        "target": {"tokens": 384},
         "changed": True,
     }
 

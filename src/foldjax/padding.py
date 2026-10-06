@@ -7,14 +7,14 @@ sizes in one consistent way.
 
 Two policies live here rather than in any one port.  The first is the token
 grid, whose rule is a bound on waste rather than a list of sizes: it steps by
-256 from 256 to 8,192, so a bucket costs at most one step of padded work --
-256 tokens, <=12.5% at 2k -- over the exact shape.  A geometric grid has no
-such bound, and the gap it left between 2,048 and 3,072 was the whole cost of
+128 from 128 to 1,024 and by 256 from there to 8,192, so a bucket costs at most
+one step of padded work -- 256 tokens, <=12.5% at 2k -- over the exact shape.
+A geometric grid has no such bound, and the gap it left between 2,048 and 3,072 was the whole cost of
 padding: a 2,096-token Protenix job landed on 3,072 and paid +97% wall and
 +44% peak against its exact shape for padding nobody asked for.  The price of
-the constant step is more executables to bake, 32 per model rather than 11,
+the constant step is more executables to bake, 36 per model rather than 11,
 which ``cache warm`` amortises -- a bucket is baked once and then hit by every
-job in its 256-token band, which is what makes padding the normal way to run
+job in its band, which is what makes padding the normal way to run
 rather than a shape-normalising option.
 
 The grid ends at 8,192 rather than at what one card folds because context
@@ -35,10 +35,10 @@ and a misaligned one keeps its existing outcome of a warning and a replicated
 atom graph rather than silently becoming a different shape.
 
 Alignment is the one thing that can move an automatic target off the grid, and
-it mostly does not have to: a bucket ``256 * k`` already divides every
-power-of-two row count, and its derived atom target ``6,144 * k`` divides
-``32 * rows`` for every ``rows`` that divides 192, so two, three, four, six
-and eight rows leave a bucket's own atom target alone.  A row count with an odd
+it mostly does not have to: a bucket ``128 * k`` already divides every
+power-of-two row count up to 128, and its derived atom target ``3,072 * k``
+divides ``32 * rows`` for every ``rows`` that divides 96, so two, three, four,
+six and eight rows leave a bucket's own atom target alone.  A row count with an odd
 factor the bucket index lacks does round the token target past its bucket, by
 at most ``rows - 1`` tokens: three rows take 2,048 to 2,049 but leave 2,304
 (``256 * 9``) alone.  The one-step bound above is therefore a statement about
@@ -58,7 +58,11 @@ OPENDDE_MSA_PROFILE_DEPTH = 1280
 
 #: A constant 256-token step to 8,192, so no job pays more than one step of
 #: padded work; the docstring explains why the step beats a geometric grid.
-TOKEN_BUCKETS = tuple(range(256, 8192 + 1, 256))
+#: Below 1,024 the step is 128: there a 256 step is up to 2x the tokens (129 ->
+#: 256) and, through the derived axes, up to 2x the structural tokens and 4x
+#: the atoms -- OpenDDE's 8RG4 ran 373 -> 512 tokens and 720 -> 1,024
+#: structural tokens at 1.62x the unpadded wall (jctc-v3 E9-padding).
+TOKEN_BUCKETS = (*range(128, 1024, 128), *range(1024, 8192 + 1, 256))
 ATOM_BUCKETS = (
     256,
     512,

@@ -81,7 +81,7 @@ def test_neutral_padding_resolves_all_three_compile_shape_axes() -> None:
 
     assert plan.actual == {"tokens": 3, "atoms": 4, "msa": 2}
     assert plan.storage == {"tokens": 3, "atoms": 4, "msa": 2}
-    assert plan.target == {"tokens": 256, "atoms": 6144, "msa": 1024}
+    assert plan.target == {"tokens": 128, "atoms": 3072, "msa": 1024}
 
 
 def test_neutral_padding_honours_exact_axis_targets() -> None:
@@ -214,7 +214,7 @@ def test_token_profile_reuses_atom_and_msa_shapes_for_different_inputs():
     second = resolve_padding_plan(
         _features(tokens=7, atoms=200, msa=100), PaddingConfig()
     )
-    assert first.target == second.target == {"tokens": 256, "atoms": 6144, "msa": 1024}
+    assert first.target == second.target == {"tokens": 128, "atoms": 3072, "msa": 1024}
     capped = resolve_padding_plan(_features(msa=2), PaddingConfig(), max_msa_depth=128)
     assert capped.target["msa"] == 128
     with pytest.raises(ValueError, match="deeper than max_msa_depth=128"):

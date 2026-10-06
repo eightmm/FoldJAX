@@ -81,7 +81,7 @@ def test_request_rejects_unknown_padding_fields(tmp_path: Path) -> None:
 
 def test_resolve_axis_selects_standard_pinned_and_overflow_targets() -> None:
     automatic = PaddingConfig()
-    assert resolve_axis(300, automatic, "tokens") == 512
+    assert resolve_axis(300, automatic, "tokens") == 384
     assert resolve_axis(300, PaddingConfig(tokens=768), "tokens") == 768
     assert resolve_axis(9000, PaddingConfig(overflow="exact"), "tokens") == 9000
     with pytest.raises(ValueError, match="largest standard bucket 8192"):
@@ -411,7 +411,7 @@ def test_token_grid_reaches_past_one_card_and_still_refuses_above_it() -> None:
 
     from foldjax.padding import TOKEN_BUCKETS
 
-    assert TOKEN_BUCKETS[0] == 256
+    assert TOKEN_BUCKETS[0] == 128
     assert TOKEN_BUCKETS[-1] == 8192
     assert list(TOKEN_BUCKETS) == sorted(set(TOKEN_BUCKETS))
     automatic = PaddingConfig()
@@ -437,17 +437,22 @@ def test_a_token_bucket_costs_at_most_one_256_token_step() -> None:
 
     from foldjax.padding import TOKEN_BUCKETS
 
-    assert len(TOKEN_BUCKETS) == 32
-    assert {
-        later - earlier for earlier, later in zip(TOKEN_BUCKETS, TOKEN_BUCKETS[1:])
-    } == {256}
+    assert len(TOKEN_BUCKETS) == 36
+    steps = {
+        earlier: later - earlier
+        for earlier, later in zip(TOKEN_BUCKETS, TOKEN_BUCKETS[1:])
+    }
+    # 128 below 1,024, where a 256 step is up to a doubling; 256 from there.
+    assert {step for start, step in steps.items() if start < 1024} == {128}
+    assert {step for start, step in steps.items() if start >= 1024} == {256}
     automatic = PaddingConfig()
     assert resolve_axis(2096, automatic, "tokens") == 2304
     assert resolve_axis(3012, automatic, "tokens") == 3072
     assert resolve_axis(4888, automatic, "tokens") == 5120
     # The bound itself, over every size the grid accepts.
     for actual in range(1, TOKEN_BUCKETS[-1] + 1):
-        assert resolve_axis(actual, automatic, "tokens") - actual < 256
+        step = 128 if actual <= 1024 else 256
+        assert resolve_axis(actual, automatic, "tokens") - actual < step
     # ... and the worst case at 2k is one step of quadratic work, not a
     # doubling: 12.5% of 2,048 rather than 50%.
     assert (resolve_axis(2049, automatic, "tokens") - 2048) / 2048 == 0.125
