@@ -917,6 +917,13 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         # Here, where `foldjax plan` sees it, rather than at the embedder,
         # which only answers after featurization and the weights load.
         _refuse_constraint_without_embedder(request)
+        # The runner's own refusal (`runner.py`, "padding with TFG guidance"),
+        # raised here too so `foldjax plan` reaches it.
+        if request.padding is not None and request.options.get("use_tfg_guidance"):
+            raise ValueError(
+                "padding with TFG guidance is not yet supported; drop "
+                "use_tfg_guidance or --padding"
+            )
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
         _extra_cli_args(options.get("cli_args", ()))
@@ -1172,16 +1179,6 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             },
             padding_axes=self.padding_axes,
         )
-
-    def validate_request(self, request: PredictionRequest) -> None:
-        super().validate_request(request)
-        # The runner's own refusal (`runner.py`, "padding with TFG guidance"),
-        # raised here too so `foldjax plan` reaches it.
-        if request.padding is not None and request.options.get("use_tfg_guidance"):
-            raise ValueError(
-                "padding with TFG guidance is not yet supported; drop "
-                "use_tfg_guidance or --padding"
-            )
 
     def _native_invocation(self, request: PredictionRequest) -> _NativeInvocation:
         """Resolve one request into the native run, in both spellings at once.
