@@ -1796,15 +1796,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("\n\n".join(blocks))
         return 0
 
+    # Progress is on for this command, not for the host process: `main` is also
+    # called in-process (tests, notebooks), and a caller that never asked for
+    # stderr lines kept getting them after it returned.
+    host_progress = (progress._enabled, progress._stream)
     if not args.quiet:
         progress.enable()
-    # Stdout carries the result and nothing else: anything a backend or a
-    # native library prints while the request resolves and runs goes to stderr,
-    # so `foldjax predict ... > out.json` stays valid JSON.
-    with _stdout_to_stderr():
-        request = _request(args)
-        plural = request.models is not None or request.inputs is not None
-        outcome = _run_predictions(request)
+    try:
+        # Stdout carries the result and nothing else: anything a backend or a
+        # native library prints while the request resolves and runs goes to
+        # stderr, so `foldjax predict ... > out.json` stays valid JSON.
+        with _stdout_to_stderr():
+            request = _request(args)
+            plural = request.models is not None or request.inputs is not None
+            outcome = _run_predictions(request)
+    finally:
+        progress._enabled, progress._stream = host_progress
     results = list(outcome.results)
     if args.json or not sys.stdout.isatty():
         summaries = [result.summary() for result in results]
