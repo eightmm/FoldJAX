@@ -1178,7 +1178,7 @@ def _run_weights(args: argparse.Namespace) -> int:
         return 0
 
     spec = assets.assets_for(args.model, profile=args.profile)
-    public_model = assets._public_model_name(spec.model)
+    public_model, profile = assets.public_target(spec, args.profile)
     print(f"{public_model}: {len(spec.downloads)} file(s) from {spec.source}")
     for item in spec.supplied:
         print(f"  plus {item.name}, supplied by you: {item.target(spec.model)}")
@@ -1187,7 +1187,7 @@ def _run_weights(args: argparse.Namespace) -> int:
     try:
         result = assets.fetch(
             public_model,
-            profile=args.profile,
+            profile=profile,
             on_progress=reporter.progress,
             on_event=reporter.event,
             convert=not args.download_only,

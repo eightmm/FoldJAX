@@ -843,6 +843,16 @@ def _public_model_name(model: str) -> str:
     return model if internal is None else internal[0]
 
 
+def public_target(spec: ModelAssets, profile: str | None) -> tuple[str, str | None]:
+    """The (public model, profile) pair that selects ``spec`` again.
+
+    A storage root such as ``protenix-v2`` *is* a profile, so its own profile
+    replaces ``profile``; dropping it would resolve the public model's release.
+    """
+    internal = _INTERNAL_ASSET_ROOTS.get(spec.model)
+    return (spec.model, profile) if internal is None else internal
+
+
 def _stage_esmfold2(
     model: str,
     source: Path,

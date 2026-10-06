@@ -2277,6 +2277,39 @@ def test_protenix_v2_fetch_without_the_file_requests_nothing(
     assert "proprietary" in captured.out, "the licence line names the terms"
 
 
+@pytest.mark.parametrize(
+    ("root", "public", "profile"),
+    [
+        ("protenix-v2", "protenix", "v2"),
+        ("protenix-mini-esm", "protenix", "mini-esm-v0.5.0"),
+        ("opendde-abag", "opendde", "abag"),
+    ],
+)
+def test_weights_fetch_by_storage_root_fetches_that_profile(
+    tmp_path: Path, monkeypatch, capsys, root: str, public: str, profile: str
+) -> None:
+    """`--model protenix-v2` alone must not fetch the Protenix release.
+
+    The header was printed for the root's profile while `fetch` received the
+    public model with no profile, i.e. the release: two different bundles
+    named by one command.
+    """
+    from foldjax.cli import main
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    calls = []
+    monkeypatch.setattr(
+        assets,
+        "fetch",
+        lambda name, **kw: calls.append((name, kw["profile"])) or tmp_path,
+    )
+
+    assert main(["weights", "fetch", "--model", root]) == 0
+    assert main(["weights", "fetch", "--model", root, "--profile", profile]) == 0
+    assert calls == [(public, profile), (public, profile)]
+    assert capsys.readouterr().out.startswith(f"{public}: ")
+
+
 def test_protenix_v2_resolution_says_where_the_file_goes(
     tmp_path: Path, monkeypatch
 ) -> None:
