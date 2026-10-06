@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from foldjax.redaction import redact
 from foldjax.search.msa import (
     MAX_REMOTE_BYTES,
     HttpTransport,
@@ -323,7 +324,7 @@ class TemplateHitsPipeline:
                 "files": {HITS_MEMBER: {"sha256": _sha256(raw), "bytes": len(raw)}},
             }
             (temporary / "provenance.json").write_text(
-                json.dumps(provenance, indent=2, sort_keys=True) + "\n",
+                json.dumps(redact(provenance), indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
             try:

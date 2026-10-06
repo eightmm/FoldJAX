@@ -39,6 +39,13 @@
   host it named, `http://` included, and requests strips only `Authorization`.
   A server job id must be `[A-Za-z0-9_-]+` before it is put in a URL, and one
   response or result-archive member is capped at 1 GiB.
+- **Search provenance and `foldjax doctor` redact the search setup.** A local
+  search command's argv (`FOLDJAX_MSA_COMMAND`, `FOLDJAX_TEMPLATE_COMMAND`)
+  and a server URL were written verbatim to the MSA and template caches'
+  `provenance.json`, to `template_search.json` and the run manifest's
+  `template_search`, and printed by `doctor`; a `--password`/`--api-key`
+  argument or URL userinfo now reads `[REDACTED]` there. Cache identities keep
+  the raw values, so existing cache entries still hit.
 - **A weight download stops at its registered size.** A server that sent more
   than the registry's byte count was written to disk until it stopped; the
   download now fails at the first byte past it and discards the prefix.

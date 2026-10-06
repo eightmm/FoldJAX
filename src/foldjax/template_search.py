@@ -34,6 +34,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from foldjax.redaction import redact
+
 #: A locally installed template search, for sequences that must not leave the
 #: machine. Called as ``<command> --input query.fasta --output DIR``; writes
 #: ``DIR/pdb70.m8`` (BLAST-tabular hits named ``<pdb id>_<author chain>``).
@@ -293,7 +295,16 @@ def template_search_backend() -> dict[str, Any]:
     from foldjax.msa_search import _DEFAULT_MSA_SERVER, _MSA_SERVER_ENV
 
     command = _local_command(_TEMPLATE_COMMAND_ENV)
-    return {
+    try:
+        structures = _structure_store().describe()
+    except ValueError as error:  # e.g. a plain-http structure URL
+        structures = {
+            "local_dir": os.environ.get(_TEMPLATE_MMCIF_DIR_ENV, "").strip() or None,
+            "url": None,
+            "cache_dir": None,
+            "error": str(error),
+        }
+    report = {
         "hits": (
             {"kind": "local", "command": command}
             if command
@@ -302,13 +313,15 @@ def template_search_backend() -> dict[str, Any]:
                 "host": os.environ.get(_MSA_SERVER_ENV, _DEFAULT_MSA_SERVER),
             }
         ),
-        "structures": _structure_store().describe(),
+        "structures": structures,
         "aligner": (
             "kalign-python"
             if importlib.util.find_spec("kalign") is not None
             else "unavailable (install the openfold3-preprocess extra)"
         ),
     }
+    # Printed by `foldjax doctor`: a command's argv or a URL can carry a secret.
+    return redact(report)
 
 
 # --------------------------------------------------------------------------
@@ -774,8 +787,10 @@ def search_templates(
         sequence = str(entity["sequence"])
         record: dict[str, Any] = {
             "chains": chains,
-            "source": source,
-            "structures": store.describe(),
+            # Written to template_search.json and the run manifest: a search
+            # command's argv or a server URL can carry a credential.
+            "source": redact(source),
+            "structures": redact(store.describe()),
             "cutoff": cutoff_record,
             "selection": policy.selection_source,
         }

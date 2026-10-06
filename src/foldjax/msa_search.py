@@ -114,9 +114,14 @@ def _rna_msa_pipeline() -> Any | None:
 
 
 def msa_search_backend() -> dict[str, Any]:
-    """What a search would use right now, for `foldjax doctor` to report."""
+    """What a search would use right now, for `foldjax doctor` to report.
+
+    Redacted: a command's argv or a server URL can carry a credential.
+    """
+    from foldjax.redaction import redact
+
     protein_command = _local_command(_MSA_COMMAND_ENV)
-    return {
+    report = {
         "protein": (
             {"kind": "local", "command": protein_command}
             if protein_command
@@ -131,6 +136,7 @@ def msa_search_backend() -> dict[str, Any]:
             else {"kind": "unavailable", "setup": _RNA_MSA_COMMAND_ENV}
         ),
     }
+    return redact(report)
 
 
 def _search_alignments(

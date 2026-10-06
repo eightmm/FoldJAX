@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from foldjax._fsutil import sha256_file as _sha256_file
+from foldjax.redaction import redact
 
 from ..template_features import PROTEIN_3TO1
 from .msa import SearchError
@@ -191,7 +192,7 @@ class TemplateSearchPipeline:
                 },
             }
             (temporary / "provenance.json").write_text(
-                json.dumps(provenance, indent=2, sort_keys=True) + "\n",
+                json.dumps(redact(provenance), indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
             try:

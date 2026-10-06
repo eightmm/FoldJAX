@@ -42,6 +42,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from foldjax.redaction import redact
+
 
 class SearchError(RuntimeError):
     """An MSA provider returned an unusable or incomplete result."""
@@ -320,7 +322,7 @@ class MsaSearchPipeline:
                 "files": files,
             }
             (temp_dir / "provenance.json").write_text(
-                json.dumps(provenance, indent=2, sort_keys=True) + "\n",
+                json.dumps(redact(provenance), indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
             try:
@@ -477,7 +479,7 @@ class MsaSearchPipeline:
                 "files": files,
             }
             (temp_dir / "provenance.json").write_text(
-                json.dumps(provenance, indent=2, sort_keys=True) + "\n",
+                json.dumps(redact(provenance), indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
             try:
@@ -631,7 +633,7 @@ class RnaMsaSearchPipeline:
                 },
             }
             (temporary / "provenance.json").write_text(
-                json.dumps(provenance, indent=2, sort_keys=True) + "\n",
+                json.dumps(redact(provenance), indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
             try:
