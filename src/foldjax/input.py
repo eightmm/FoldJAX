@@ -1670,20 +1670,36 @@ def _protenix_observed_template(
     if not polymer:
         return text, list(mapping)
 
-    entity = polymer[0].entity_id
+    block = gemmi.cif.read_string(original)[0]
+    # Atoms need not carry label_entity_id; the chain's _struct_asym row then
+    # names its entity, as `template_search._read_template_structure` reads it.
+    asym_entity = {
+        row.str(0): row.str(1)
+        for row in block.find("_struct_asym.", ["id", "entity_id"])
+    }
+
+    def entity_of(residue: Any) -> str:
+        return residue.entity_id or asym_entity.get(residue.subchain, "")
+
+    entity = entity_of(polymer[0])
+    rows = list(block.find("_entity_poly_seq.", ["entity_id", "num"]))
     numbers: dict[int, int] = {}
-    for row in gemmi.cif.read_string(original)[0].find(
-        "_entity_poly_seq.", ["entity_id", "num"]
-    ):
+    for row in rows:
         if row.str(0) == entity:
             numbers.setdefault(int(row.str(1)), len(numbers))
+    if rows and not numbers:
+        raise ValueError(
+            f"template chain {selected!r} of {source} has no _entity_poly_seq rows "
+            f"(entity {entity or 'unknown'!r}), so its template indices have no "
+            "full sequence to count"
+        )
     if not numbers:
-        # No declared sequence: what the chain resolves is all of it.
+        # No declared sequence at all: what the chain resolves is all of it.
         for number in sorted({residue.label_seq for residue in polymer}):
             numbers[number] = len(numbers)
     ordinals: dict[int, int] = {}
     for ordinal, residue in enumerate(residues):
-        if residue.label_seq is None or residue.entity_id != entity:
+        if residue.label_seq is None or entity_of(residue) != entity:
             continue
         position = numbers.get(residue.label_seq)
         if position is not None:

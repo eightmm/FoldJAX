@@ -657,17 +657,28 @@ _TEMPLATE_CHAINS = (
 )
 
 
-def _structure_cif(tmp_path: Path, chains=_TEMPLATE_CHAINS, ligand=True) -> Path:
-    """A small mmCIF with unresolved residues and a ligand in the last chain."""
+def _structure_cif(
+    tmp_path: Path, chains=_TEMPLATE_CHAINS, ligand=True, atom_entities=True
+) -> Path:
+    """A small mmCIF with unresolved residues and a ligand in the last chain.
+
+    Without ``atom_entities`` the atoms carry no ``label_entity_id``, and the
+    entities are declared through ``_struct_asym`` alone.
+    """
     lines = ["data_template", "_entry.id template", "#", "loop_"]
     lines += [f"_entity_poly_seq.{key}" for key in ("entity_id", "num", "mon_id")]
     for _, _, entity, sequence, _ in chains:
         lines += [f"{entity} {num} {name}" for num, name in enumerate(sequence, 1)]
+    if not atom_entities:
+        lines += ["#", "loop_", "_struct_asym.id", "_struct_asym.entity_id"]
+        lines += [f"{label} {entity}" for _, label, entity, _, _ in chains]
     keys = (
         "group_PDB id type_symbol label_atom_id label_alt_id label_comp_id "
         "label_asym_id label_entity_id label_seq_id Cartn_x Cartn_y Cartn_z "
         "occupancy B_iso_or_equiv auth_seq_id auth_asym_id pdbx_PDB_model_num"
     ).split()
+    if not atom_entities:
+        keys.remove("label_entity_id")
     lines += ["#", "loop_"] + [f"_atom_site.{key}" for key in keys]
     serial = 0
     for index, (auth, label, entity, sequence, resolved) in enumerate(chains):
@@ -676,11 +687,14 @@ def _structure_cif(tmp_path: Path, chains=_TEMPLATE_CHAINS, ligand=True) -> Path
                 serial += 1
                 # Distinct coordinates per chain, residue and atom.
                 x, y, z = 20.0 * index + position, 1.5 * position, 0.7 * offset
+                column = f"{entity} " if atom_entities else ""
                 lines.append(
                     f"ATOM {serial} {atom[0]} {atom} . {sequence[position]} "
-                    f"{label} {entity} {position + 1} {x:.3f} {y:.3f} {z:.3f} "
+                    f"{label} {column}{position + 1} {x:.3f} {y:.3f} {z:.3f} "
                     f"1.0 10.0 {position + 1} {auth} 1"
                 )
+    if ligand and not atom_entities:
+        raise ValueError("the ligand row is written with an entity column")
     if ligand:
         auth, label = chains[-1][0], chains[-1][1] + "L"
         lines.append(
@@ -796,6 +810,46 @@ def test_protenix_reads_the_named_template_chain_at_alphafold3s_indices(
     aatype = features["template_aatype"]
     assert aatype[0] != aatype[3]
     assert aatype[1] == aatype[len(SEQUENCE) - 1]  # an unmapped query: a gap
+
+
+def test_entities_declared_only_in_struct_asym_still_count_the_sequence(
+    tmp_path: Path,
+) -> None:
+    """No label_entity_id on the atoms: the entity comes from _struct_asym.
+
+    Counting resolved residues instead would shift every index past chain B's
+    unresolved position 0 by one residue.
+    """
+    template = _structure_cif(tmp_path, ligand=False, atom_entities=False)
+    source = _mapped_job(
+        tmp_path,
+        template,
+        chain_id="B",
+        query_indices=[0, 1, 2],
+        template_indices=[1, 3, 5],
+    )
+    (entry,) = _protenix_payload(source, tmp_path / "px")
+    # Chain B resolves positions 1, 3, 4, 5: ordinals 0, 1, 3.
+    assert (entry["queryIndices"], entry["templateIndices"]) == ([0, 1, 2], [0, 1, 3])
+
+
+def test_a_sequence_declared_for_other_entities_only_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Rows exist, none for this chain: there is no full sequence to count."""
+    chains = (
+        ("A", "A", "1", ("ALA", "GLY", "SER"), (0, 1, 2)),
+        ("B", "B", "2", ("LEU", "ILE"), (0, 1)),
+    )
+    template = _structure_cif(tmp_path, chains, ligand=False, atom_entities=False)
+    text = template.read_text()
+    # Chain B's struct_asym row names an entity with no _entity_poly_seq rows.
+    template.write_text(text.replace("\nB 2\n", "\nB 7\n"))
+    source = _mapped_job(
+        tmp_path, template, chain_id="B", query_indices=[0], template_indices=[0]
+    )
+    with pytest.raises(ValueError, match="no _entity_poly_seq rows"):
+        _protenix_payload(source, tmp_path / "px")
 
 
 def test_an_observed_chain_file_keeps_its_map(tmp_path: Path) -> None:
