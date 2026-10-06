@@ -542,6 +542,9 @@ def test_setup_all_takes_the_models_held_back_for_their_size(
         ("protenix", "base-20250630"),
         ("protenix", "mini-esm-v0.5.0"),
         ("protenix", "mini-ism-v0.5.0"),
+        ("protenix", "base-constraint-v0.5.0"),
+        ("protenix", "mini-default-v0.5.0"),
+        ("protenix", "tiny-default-v0.5.0"),
     ], "every published bundle, every profile of it included"
     assert "alphafold3  manual" in out, "a licence is not a size"
     assert "protenix/v2 manual" in out, "nor is a proprietary checkpoint"

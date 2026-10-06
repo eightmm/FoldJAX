@@ -106,7 +106,7 @@ statistics below are historical only and are excluded from this parity gate.
 | `esmfold2` | untagged Biohub Transformers snapshot `ef32577f55da19a4989cd7b22e004dc43a4998cb` | ESMFold2 revision `8fc3ff471022fdce52c77030685eb775de0c00a3` plus ESMC-6B revision `45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a` | JAX structure, ESMC inference, and all-biomolecule common preprocessing |
 | `opendde` | OpenDDE `1.1.1`, commit `ddfa1df8aff1babf1fddac4247b7d2351bd0ce9f` | `released` (`opendde.pt`) and opt-in `abag` (`opendde_abag.pt`) at Hugging Face revision `eddd563ce96571f784012edd8f045181c8f8627d` | full JAX inference and preprocessing, including the 1.1.1 OXT/ion behavior and opt-in RNA-MSA/template paths |
 | `openfold3` | OpenFold3 `v0.5.0`, commit `c4771653c5d0a3ebb0b3af71b05efd64bc44ee86` | managed OpenBind `of3-ob-2025-06-30-174k.pt` | v0.5/OpenBind-only JAX inference and portable preprocessing; legacy p1/p2 rejected |
-| `protenix` | package metadata `2.0.0`, commit `4c355be4553512f72453ecbfb65e69f4c35d1413` | `released`, `base-20250630`, `v2`, `mini-esm-v0.5.0`, and `mini-ism-v0.5.0` profiles | full JAX inference and preprocessing |
+| `protenix` | package metadata `2.0.0`, commit `4c355be4553512f72453ecbfb65e69f4c35d1413` | `released`, `base-20250630`, `v2`, `mini-esm-v0.5.0`, `mini-ism-v0.5.0`, `base-constraint-v0.5.0`, `mini-default-v0.5.0`, and `tiny-default-v0.5.0` profiles | full JAX inference and preprocessing |
 
 The commit is authoritative even when an upstream also publishes a semantic
 version. ESMFold2 is the one untagged source target; its source and both model
@@ -503,9 +503,18 @@ versions and do not change that source identity:
 | `v2` | `protenix-v2.pt` (user-supplied, never downloaded) | `8f931f9774a396b67033d0e58628e1834f4a1448165e04254b40a780b0c0d599` |
 | `mini-esm-v0.5.0` | `protenix_mini_esm_v0.5.0.pt` | `1301bba9ad322518eace60fd244ded7904439f55317e90d402cc7a0c06026664` |
 | `mini-ism-v0.5.0` | `protenix_mini_ism_v0.5.0.pt` | `a90d3040cdb2c84430878ea724ad817698ee68cc8b12f802a91dac3b081521a2` |
+| `base-constraint-v0.5.0` | `protenix_base_constraint_v0.5.0.pt` | `5358025b20b2212853ad75579be04387859557915f398a1d60f6a1a9a0c8c887` |
+| `mini-default-v0.5.0` | `protenix_mini_default_v0.5.0.pt` | `3803340c5d9958c038e799ddd2b53b532db21855f261592ad455a5f003791f81` |
+| `tiny-default-v0.5.0` | `protenix_tiny_default_v0.5.0.pt` | `7ad252e023d61f94572f51ab60c2a58f3a12205271898fe581fa38d20de9566b` |
 
-The mini profiles additionally pin their matching ESM2-3B or ISM encoder in
-the asset registry. The `v2` checkpoint is never downloaded: upstream declares
+The mini ESM/ISM profiles additionally pin their matching ESM2-3B or ISM
+encoder in the asset registry. The three other v0.5.0 profiles stage no
+encoder: `mini-default` and `tiny-default` have no language model, and
+`base-constraint`, whose upstream config enables ESM, ships no
+`input_embedder.linear_esm` and upstream zero-initialises that projection
+(`protenix/model/modules/embedders.py:62-66`), so its ESM term is exactly
+zero. Their hashes were recorded from one download each on 2026-10-06; the
+publisher serves none. The `v2` checkpoint is never downloaded: upstream declares
 the v2 weights proprietary, so the user places `protenix-v2.pt` in the
 profile's weight directory and FoldJAX converts it only if it matches the
 SHA-256 above ([docs/cli.md](cli.md#weights-and-setup)). Protenix v2 is a

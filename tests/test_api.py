@@ -249,6 +249,9 @@ def test_opendde_abag_profile_resolves_the_isolated_managed_checkpoint(
         ("protenix_base_default_v1.0.0", "released"),
         ("protenix_mini_esm_v0.5.0", "mini-esm-v0.5.0"),
         ("protenix_mini_ism_v0.5.0", "mini-ism-v0.5.0"),
+        ("protenix_base_constraint_v0.5.0", "base-constraint-v0.5.0"),
+        ("protenix_mini_default_v0.5.0", "mini-default-v0.5.0"),
+        ("protenix_tiny_default_v0.5.0", "tiny-default-v0.5.0"),
     ],
 )
 def test_protenix_request_resolution_selects_variant_managed_assets(

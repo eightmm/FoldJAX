@@ -148,6 +148,9 @@ _PROFILE_MODEL_NAMES = {
     "base-20250630": "protenix_base_20250630_v1.0.0",
     "mini-esm-v0.5.0": "protenix_mini_esm_v0.5.0",
     "mini-ism-v0.5.0": "protenix_mini_ism_v0.5.0",
+    "base-constraint-v0.5.0": "protenix_base_constraint_v0.5.0",
+    "mini-default-v0.5.0": "protenix_mini_default_v0.5.0",
+    "tiny-default-v0.5.0": "protenix_tiny_default_v0.5.0",
 }
 #: Options the native CLI takes as a bare switch rather than a value. Passing
 #: `--strict-token-limit true` makes argparse reject the whole command, and

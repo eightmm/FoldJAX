@@ -841,6 +841,9 @@ def test_protenix_profiles_publish_isolated_structure_and_encoder_bundles() -> N
         "base-20250630",
         "mini-esm-v0.5.0",
         "mini-ism-v0.5.0",
+        "base-constraint-v0.5.0",
+        "mini-default-v0.5.0",
+        "tiny-default-v0.5.0",
     )
     expected = {
         "mini-esm-v0.5.0": (
@@ -2236,6 +2239,63 @@ def test_protenix_base_20250630_is_its_own_bundle_without_an_encoder() -> None:
     assert applied == {"model_name": "protenix_base_20250630_v1.0.0"}, (
         "no esm_checkpoint_dir: this model has no encoder beside it"
     )
+
+
+@pytest.mark.parametrize(
+    ("profile", "model_name", "sha256", "size"),
+    [
+        (
+            "base-constraint-v0.5.0",
+            "protenix_base_constraint_v0.5.0",
+            "5358025b20b2212853ad75579be04387859557915f398a1d60f6a1a9a0c8c887",
+            1_475_206_741,
+        ),
+        (
+            "mini-default-v0.5.0",
+            "protenix_mini_default_v0.5.0",
+            "3803340c5d9958c038e799ddd2b53b532db21855f261592ad455a5f003791f81",
+            537_049_294,
+        ),
+        (
+            "tiny-default-v0.5.0",
+            "protenix_tiny_default_v0.5.0",
+            "7ad252e023d61f94572f51ab60c2a58f3a12205271898fe581fa38d20de9566b",
+            443_171_586,
+        ),
+    ],
+)
+def test_protenix_v0_5_0_checkpoints_are_their_own_bundles(
+    profile: str, model_name: str, sha256: str, size: int
+) -> None:
+    """Upstream's other three v0.5.0 checkpoints, pinned by one download each.
+
+    None stages an encoder: the two small models have no language model, and
+    the constraint model's ESM projection is absent from its checkpoint and
+    zero-initialised upstream, so its ESM term is zero.
+    """
+    from foldjax.backends.protenix import apply_managed_profile, managed_asset_profile
+
+    spec = assets.assets_for("protenix", profile=profile)
+    release = assets.assets_for("protenix")
+
+    assert spec.model not in {release.model, "protenix-base-20250630"}
+    assert spec.native == f"{model_name}.jax"
+    assert spec.requires == (spec.native,), "no encoder beside it"
+    assert not spec.in_default_setup
+    checkpoint = spec.downloads[0]
+    assert checkpoint.url == (
+        f"https://protenix.tos-cn-beijing.volces.com/checkpoint/{model_name}.pt"
+    )
+    assert (checkpoint.sha256, checkpoint.size) == (sha256, size)
+    assert spec.conversion_sources == (checkpoint.name,)
+    assert {item.name for item in spec.downloads if item.shared} == {
+        item.name for item in release.downloads if item.shared
+    }
+    assert assets.assets_for(spec.model, profile=profile) == spec
+    assert apply_managed_profile({}, profile, weights=Path("/w/x.jax")) == {
+        "model_name": model_name
+    }
+    assert managed_asset_profile({"model_name": model_name}) == profile
 
 
 def _no_network(monkeypatch) -> None:

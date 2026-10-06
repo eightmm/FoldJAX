@@ -497,7 +497,13 @@ intentional. Padding can substantially increase quadratic token work, so a
 For Protenix, `mini-esm-v0.5.0` and `mini-ism-v0.5.0` select the matching mini
 structure model and the ESM/ISM checkpoint staged beside it, so callers do not
 need to know `model_name` or `esm_checkpoint_dir`. The Python API uses the same
-field: `PredictionRequest(..., profile="mini-esm-v0.5.0")`.
+field: `PredictionRequest(..., profile="mini-esm-v0.5.0")`. Upstream's three
+other v0.5.0 checkpoints are profiles too, each its own bundle with no encoder
+staged: `base-constraint-v0.5.0` (the base model with pocket, contact,
+substructure and atom-contact constraint embedders), `mini-default-v0.5.0` and
+`tiny-default-v0.5.0` (the small models without a language model, on
+upstream's 5-step, 4-cycle sampler). Their SHA-256 pins are in
+[model versions](model-versions.md#protenix).
 
 To choose a model before downloading anything, use `foldjax models --json`.
 It reports each canonical name, accepted inputs and execution knobs, whether

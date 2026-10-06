@@ -55,6 +55,12 @@ PROTENIX_V2_PROFILE = "v2"
 PROTENIX_BASE_20250630_PROFILE = "base-20250630"
 PROTENIX_MINI_ESM_PROFILE = "mini-esm-v0.5.0"
 PROTENIX_MINI_ISM_PROFILE = "mini-ism-v0.5.0"
+#: Upstream's three other public v0.5.0 checkpoints
+#: (`configs/configs_model_type.py:111-249`): the constraint-conditioned base
+#: model and the two small models without a language model.
+PROTENIX_BASE_CONSTRAINT_PROFILE = "base-constraint-v0.5.0"
+PROTENIX_MINI_DEFAULT_PROFILE = "mini-default-v0.5.0"
+PROTENIX_TINY_DEFAULT_PROFILE = "tiny-default-v0.5.0"
 OPENDDE_ABAG_PROFILE = "abag"
 
 
@@ -287,6 +293,9 @@ PORTS: Mapping[str, PortSpec] = {
             PROTENIX_BASE_20250630_PROFILE,
             PROTENIX_MINI_ESM_PROFILE,
             PROTENIX_MINI_ISM_PROFILE,
+            PROTENIX_BASE_CONSTRAINT_PROFILE,
+            PROTENIX_MINI_DEFAULT_PROFILE,
+            PROTENIX_TINY_DEFAULT_PROFILE,
         ),
         asset_profile_providers={
             PROTENIX_V2_PROFILE: "foldjax.assets:_protenix_v2_assets",
@@ -295,6 +304,15 @@ PORTS: Mapping[str, PortSpec] = {
             ),
             PROTENIX_MINI_ESM_PROFILE: "foldjax.assets:_protenix_variant_assets",
             PROTENIX_MINI_ISM_PROFILE: "foldjax.assets:_protenix_variant_assets",
+            PROTENIX_BASE_CONSTRAINT_PROFILE: (
+                "foldjax.assets:_protenix_plain_checkpoint_assets"
+            ),
+            PROTENIX_MINI_DEFAULT_PROFILE: (
+                "foldjax.assets:_protenix_plain_checkpoint_assets"
+            ),
+            PROTENIX_TINY_DEFAULT_PROFILE: (
+                "foldjax.assets:_protenix_plain_checkpoint_assets"
+            ),
         },
         asset_staging=(StagingSpec(".foldjax-protenix-native-*"),),
         manifest_sources=(
