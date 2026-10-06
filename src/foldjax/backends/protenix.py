@@ -663,9 +663,9 @@ _CONSTRAINT_MODEL_NAMES = frozenset({"protenix_base_constraint_v0.5.0"})
 def _constraint_channels(request: PredictionRequest) -> list[str]:
     """The constraint channels the request's input carries, in a fixed order.
 
-    A common job's pocket restraint becomes Protenix ``constraint.pocket``
-    (`foldjax.input`); a native job carries ``constraint.pocket`` and
-    ``constraint.contact`` itself. An unreadable input carries nothing here:
+    A common job's pocket and contact restraints become Protenix
+    ``constraint.pocket`` and ``constraint.contact`` (`foldjax.input`); a
+    native job carries those itself. An unreadable input carries nothing here:
     reading it is the translation's job, which reports it properly.
     """
     from foldjax.input import read_job_document
@@ -679,10 +679,12 @@ def _constraint_channels(request: PredictionRequest) -> list[str]:
         constraints = (
             document.get("constraints") if isinstance(document, Mapping) else None
         )
-        if isinstance(constraints, list) and any(
-            isinstance(item, Mapping) and item.get("pocket") for item in constraints
-        ):
-            found.add("pocket")
+        if isinstance(constraints, list):
+            for item in constraints:
+                if isinstance(item, Mapping):
+                    found.update(
+                        key for key in ("pocket", "contact") if item.get(key)
+                    )
     else:
         jobs = document if isinstance(document, list) else [document]
         for job in jobs:

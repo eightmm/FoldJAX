@@ -401,6 +401,34 @@ def test_protenix_refuses_a_pocket_its_weights_cannot_read_while_planning(
     _protenix_request(tmp_path, source, "renamed.jax", model_name="unknown")()
 
 
+def test_protenix_refuses_a_common_contact_its_weights_cannot_read(tmp_path) -> None:
+    source = tmp_path / "contact.json"
+    source.write_text(
+        json.dumps(
+            {
+                "name": "contact",
+                "entities": [
+                    {"type": "protein", "id": "A", "sequence": "ACDEFGHIK"},
+                    {"type": "protein", "id": "B", "sequence": "MKVLA"},
+                ],
+                "constraints": [
+                    {
+                        "contact": {
+                            "token1": ["A", 2],
+                            "token2": ["B", 3],
+                            "max_distance": 8.0,
+                        }
+                    }
+                ],
+            }
+        )
+    )
+    plan = _protenix_request(tmp_path, source, "protenix_base_default_v1.0.0.jax")
+    with pytest.raises(ValueError, match="contact constraint.*no constraint embedder"):
+        plan()
+    _protenix_request(tmp_path, source, "protenix_base_constraint_v0.5.0.jax")()
+
+
 def test_protenix_refuses_a_native_contact_its_weights_cannot_read(tmp_path) -> None:
     source = tmp_path / "native.json"
     source.write_text(
