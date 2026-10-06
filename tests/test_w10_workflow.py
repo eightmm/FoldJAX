@@ -254,9 +254,9 @@ def test_none_pairing_delivers_no_paired_alignment(tmp_path: Path, stub: _Stub):
 
 def test_model_pairing_is_unchanged_per_model(tmp_path: Path, stub: _Stub):
     native = json.loads(
-        _materialize(_job(tmp_path, SEQUENCE), "protenix", tmp_path / "p").read_text()
+        _materialize(_job(tmp_path, SEQUENCE), "alphafold3", tmp_path / "p").read_text()
     )
-    assert "pairedMsaPath" in native[0]["sequences"][0]["proteinChain"]
+    assert "pairedMsaPath" in native["sequences"][0]["protein"]
     assert stub.complex_calls == []
     # Boltz-2's own choice is upstream's one greedy complex search.
     _materialize(_job(tmp_path, SEQUENCE, OTHER), "boltz2", tmp_path / "b")
@@ -303,10 +303,10 @@ def test_boltz2_greedy_pairing_writes_upstreams_keyed_csv(tmp_path: Path, stub: 
     assert all("paired_msa" in record for record in records)
 
 
-@pytest.mark.parametrize("model", ["alphafold3", "protenix", "opendde"])
-def test_species_pairing_backends_refuse_a_complex_pairing(tmp_path: Path, model):
+def test_species_pairing_backend_refuses_a_complex_pairing(tmp_path: Path):
+    # Protenix and OpenDDE read a complex search by row (tests/test_w15_msa_pairing.py).
     with pytest.raises(ValueError, match="species"):
-        _materialize(_job(tmp_path, SEQUENCE, OTHER), model, tmp_path / "o",
+        _materialize(_job(tmp_path, SEQUENCE, OTHER), "alphafold3", tmp_path / "o",
                      msa_pairing="greedy")
 
 
@@ -318,6 +318,7 @@ def test_pairing_needs_a_search_and_a_reader(tmp_path: Path):
         msa_search.refuse_msa_pairing("esmfold2", "complete")
     assert msa_search.resolve_pairing("openfold3") == {
         "requested": "model", "resolved": "greedy", "mode": "pairgreedy-env",
+        "paired_by": "row",
     }
     assert msa_search.resolve_pairing("boltz2")["resolved"] == "greedy"
     assert msa_search.resolve_pairing("esmfold2")["resolved"] == "none"
@@ -350,7 +351,7 @@ def test_manifest_records_pairing_and_resume_compares_it(tmp_path: Path):
         request, result, directory=request.output_dir, msa_stats=[]
     )
     assert document["msa_pairing"] == {
-        "requested": "none", "resolved": "none", "mode": None,
+        "requested": "none", "resolved": "none", "mode": None, "paired_by": None,
     }
     assert document["msa_stats"]["chains"] == []
     assert manifest.matches_request(document, request, seed=7)

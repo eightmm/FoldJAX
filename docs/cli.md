@@ -163,24 +163,38 @@ and for Protenix or OpenDDE without `--option use_template=true`.
 **`--msa-pairing {model,greedy,complete,none}`** (with `--msa auto` or
 `required`) chooses how a searched alignment pairs the chains of a complex.
 `model`, the default, is each model's own: OpenFold3 and Boltz-2 one ColabFold
-`pairgreedy-env` search over the complex's distinct sequences, as their
-upstreams submit it; AlphaFold 3, Protenix and OpenDDE each chain's own
-`paircomplete` alignment; ESMFold2 no paired alignment. `greedy` and `complete` run that one
-complex search with ColabFold's greedy or complete strategy
-(`pairgreedy-env` / `paircomplete-env`) and are accepted by the two models that
-read its rows as paired: OpenFold3, and Boltz-2, which receives the keyed CSV
-upstream Boltz builds from the same search (`boltz/main.py` `compute_msa`:
-paired rows keep their row number as `key`, unpaired rows follow with -1).
-AlphaFold 3, Protenix and OpenDDE re-pair a paired alignment by the species in
-each row's UniProt header, which a ColabFold pairing search's
-`>UniRef100_<accession>` headers do not carry, so `greedy`/`complete` is
-refused for them rather than delivered unpaired. `none` delivers no paired
-alignment and skips the per-chain pairing ticket (a local wrapper is told so
-with `FOLDJAX_MSA_PAIRING=none`). The pairing is part of the MSA cache key
-(`model` keeps every existing entry) and of `foldjax_run.json` (`msa_pairing`:
-requested, resolved, ColabFold mode); `--resume` reruns a run asked under
-another pairing. A homomer is never complex-paired, as upstream OpenFold3 and
-Boltz do not pair one.
+`pairgreedy-env` search over the complex's distinct sequences, Protenix and
+OpenDDE one `pairgreedy` search (no environmental databases), as their
+upstreams submit it; AlphaFold 3 each chain's own `paircomplete` alignment;
+ESMFold2 no paired alignment. `greedy` and `complete` run that one complex
+search with ColabFold's greedy or complete strategy (`pairgreedy-env` /
+`paircomplete-env`; `pairgreedy` / `paircomplete` for Protenix and OpenDDE)
+and are accepted by the models that read its rows as paired: OpenFold3;
+Boltz-2, which receives the keyed CSV upstream Boltz builds from the same
+search (`boltz/main.py` `compute_msa`: paired rows keep their row number as
+`key`, unpaired rows follow with -1); and Protenix and OpenDDE, which pair by
+the species their featurizer reads from each header. A ColabFold
+`>UniRef100_<accession>` header carries none, so each chain's block is written
+to `msa/entity_NNNN_pairing.a3m` the way upstream Protenix's ColabFold mode
+writes its `pairing.a3m` (`web_service/colab_request_utils.py`): the query as
+`>query` and every hit as `>UniRef100_<accession>_<row>/...`, so the species is
+the row number and row *i* of every chain is paired. Upstream OpenDDE submits
+the same search but keeps the server's headers, so its released code pairs no
+rows; FoldJAX gives OpenDDE Protenix's reading. Blocks of different depths are
+refused. A `paired_msa` you supply is passed through untouched. AlphaFold 3
+re-pairs by the UniProt species in each header and has no upstream reader of
+ColabFold output, so `greedy`/`complete` is refused for it, and its per-chain
+alignment pairs no rows of a heteromer either (only the query row); DeepMind's
+advice for a pre-paired alignment is `unpairedMsa` with an empty `pairedMsa`
+(`docs/input.md`, "MSA Pairing"). `none` delivers no paired alignment and
+skips the per-chain pairing ticket (a local wrapper is told so with
+`FOLDJAX_MSA_PAIRING=none`). The pairing is part of the MSA cache key (`model`
+keeps every existing per-chain entry) and of `foldjax_run.json`
+(`msa_pairing`: requested, resolved, ColabFold mode, and `paired_by`, `row` or
+`species`); `--resume` reruns a run asked under another pairing. A monomer or
+homomer is never complex-paired, as upstream OpenFold3, Boltz and Protenix's
+ColabFold mode do not pair one; Protenix and OpenDDE therefore no longer read
+a per-chain pairing alignment for it.
 
 **Alignment depth and Neff.** Every common-schema run records, per chain, the
 rows of the alignment the model reads (`depth`, query included, before the

@@ -129,7 +129,18 @@ COMPLEX_PAIRING_MODE = "pairgreedy-env"
 #: Greedy pairs any subset of chains with a hit in one taxon; complete pairs a
 #: row only when every chain has one.
 COMPLETE_PAIRING_MODE = "paircomplete-env"
-COMPLEX_PAIRING_MODES = (COMPLEX_PAIRING_MODE, COMPLETE_PAIRING_MODE)
+#: The same two strategies without the environmental databases: how Protenix
+#: 2.0.0's ColabFold mode (``use_env`` forced off for a pairing ticket,
+#: web_service/colab_request_utils.py:184-192) and OpenDDE
+#: (``use_env=False``, msa_service_client.py:390-400) pair a complex.
+PLAIN_GREEDY_PAIRING_MODE = "pairgreedy"
+PLAIN_COMPLETE_PAIRING_MODE = "paircomplete"
+COMPLEX_PAIRING_MODES = (
+    COMPLEX_PAIRING_MODE,
+    COMPLETE_PAIRING_MODE,
+    PLAIN_GREEDY_PAIRING_MODE,
+    PLAIN_COMPLETE_PAIRING_MODE,
+)
 
 
 def _split_colabfold_a3m(text: str, label: str) -> dict[int, str]:
@@ -1319,8 +1330,9 @@ class RemoteMMseqs2Client:
 
         The sequences are submitted together as queries 101, 102, ... and the
         returned ``pair.a3m`` is split back into one block per query. ``mode``
-        is ``pairgreedy-env`` (OpenFold3's and Boltz-2's default) or
-        ``paircomplete-env``.
+        is ``pairgreedy-env`` (OpenFold3's and Boltz-2's default),
+        ``paircomplete-env``, or either without ``-env`` (Protenix's and
+        OpenDDE's).
         """
         if mode not in COMPLEX_PAIRING_MODES:
             raise ValueError(f"unknown complex pairing mode {mode!r}")

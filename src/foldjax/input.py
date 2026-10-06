@@ -1834,6 +1834,98 @@ def _a3m_rows(text: str) -> list[str]:
     return rows
 
 
+def row_species_a3m(paired: str) -> str:
+    """One chain's block of a complex pairing search, as Protenix's ColabFold
+    mode writes its ``pairing.a3m``.
+
+    Upstream (web_service/colab_request_utils.py:313-345) names the query
+    ``>query`` and suffixes every hit's accession with its row number,
+    ``>UniRef100_<accession>_<row>/<rest>``, so the species its featurizer
+    reads (``_UNIREF_REGEX``, ``^UniRef100_[^_]+_([^_/]+)``) is the row: rows
+    with one number are paired across chains, which is how the server aligned
+    them. Two departures, neither changing a row that upstream pairs: the row
+    is the record's position, where upstream numbers a dict keyed by header
+    text that would shift every later row past a repeated header; and a
+    header without the ``UniRef100_`` prefix gets it, with ``_`` and ``/``
+    in the accession replaced so the regex cannot read another field.
+    """
+    out: list[str] = []
+    for index, (header, row) in enumerate(_a3m_records(paired)):
+        if index == 0:
+            out.append(f">query\n{row}\n")
+            continue
+        accession, tab, rest = header.partition("\t")
+        accession = accession.split()[0] if accession.split() else ""
+        accession = accession.removeprefix("UniRef100_")
+        accession = accession.replace("_", "-").replace("/", "-") or "hit"
+        out.append(f">UniRef100_{accession}_{index}/{tab}{rest}\n{row}\n")
+    return "".join(out)
+
+
+def _a3m_records(text: str) -> list[tuple[str, str]]:
+    """An A3M's (header without ``>``, sequence) records, as `_a3m_rows` reads them."""
+    records: list[tuple[str, str]] = []
+    header: str | None = None
+    current: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith(">"):
+            if header is not None:
+                records.append((header, "".join(current)))
+            header, current = line[1:], []
+        elif header is not None:
+            current.append(line)
+    if header is not None:
+        records.append((header, "".join(current)))
+    return records
+
+
+def _protenix_row_paired(
+    job: dict[str, Any], base: Path, destination: Path
+) -> dict[int, str]:
+    """Write each searched complex block as `row_species_a3m`; entity index -> path.
+
+    Every block of one complex has the same rows -- the server pads a chain
+    with no hit in a row with gaps -- and pairing by row number is only right
+    if that holds, so a block of another depth is refused rather than paired
+    off by one.
+    """
+    from foldjax.msa_search import ROW_PAIRED_MSA
+
+    marked = [
+        (index, entity)
+        for index, entity in enumerate(job["entities"])
+        if entity.get(ROW_PAIRED_MSA) and entity.get("paired_msa")
+    ]
+    if not marked:
+        return {}
+    texts = {
+        index: Path(_path(entity["paired_msa"], base)).read_text(encoding="utf-8")
+        for index, entity in marked
+    }
+    depths = {index: len(_a3m_records(text)) for index, text in texts.items()}
+    if len(set(depths.values())) > 1:
+        raise ValueError(
+            "a complex pairing search returned blocks of different depths "
+            f"({sorted(set(depths.values()))} rows), so its rows cannot be "
+            "paired by number"
+        )
+    msa_root = destination / "msa"
+    if msa_root.is_symlink():
+        raise ValueError(f"generated MSA directory is a symlink: {msa_root}")
+    msa_root.mkdir(parents=True, exist_ok=True)
+    if not msa_root.resolve().is_relative_to(destination.resolve()):
+        raise ValueError(f"generated MSA directory escapes output root: {msa_root}")
+    paths: dict[int, str] = {}
+    for index, text in texts.items():
+        target = msa_root / f"entity_{index:04d}_pairing.a3m"
+        _write_text_atomic(target, row_species_a3m(text))
+        paths[index] = str(target.resolve())
+    return paths
+
+
 def boltz_server_msa_csv(paired: str, unpaired: str) -> str:
     """Upstream Boltz's per-entity CSV from a paired and an unpaired A3M.
 
@@ -2262,6 +2354,9 @@ def _protenix(
     # Protenix addresses covalent bonds by 1-based entity number and copy index
     # rather than by chain id, and derives both from this sequences list.
     endpoints: dict[str, tuple[int, int]] = {}
+    # A searched complex block is written as upstream's ColabFold mode writes
+    # it, so its rows pair by number; a caller's paired_msa passes untouched.
+    row_paired = _protenix_row_paired(job, base, destination)
     for entity_number, entity in enumerate(job["entities"], start=1):
         kind = entity["type"]
         ids = _ids(entity)
@@ -2280,7 +2375,9 @@ def _protenix(
             body["sequence"] = str(entity["sequence"])
             if entity.get("unpaired_msa"):
                 body["unpairedMsaPath"] = _path(entity["unpaired_msa"], base)
-            if entity.get("paired_msa"):
+            if entity_number - 1 in row_paired:
+                body["pairedMsaPath"] = row_paired[entity_number - 1]
+            elif entity.get("paired_msa"):
                 body["pairedMsaPath"] = _path(entity["paired_msa"], base)
             # Protenix requires the CCD_ prefix on modification types.
             modifications = _modifications(entity)
