@@ -172,6 +172,9 @@ Server URLs (this one, `--msa-remote-url`, Boltz-2's MSA server and
 accepted for loopback hosts, and elsewhere only with
 `FOLDJAX_ALLOW_INSECURE_HTTP=1`. A server that redirects is refused rather than
 followed, so a credential or API-key header never reaches another host.
+A busy server is waited out -- a rate-limited submission is resubmitted, and a
+5xx or dropped connection retried with backoff -- for at most
+`FOLDJAX_MSA_MAX_WAIT_SECONDS` (default 3600) per search.
 Concurrent runs on one sequence search once: the first holds a lock on the
 cache entry and the rest read what it published. An entry whose files no
 longer match their recorded hashes is moved aside as `.<key>.damaged`, with a
