@@ -729,6 +729,132 @@ def test_cache_gc_root_swap_cannot_escape_the_pinned_directory(
     assert victim.read_bytes() == b"must survive"
 
 
+def test_a_dash_leading_name_is_told_how_to_attach_it(capsys) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(["plan", "--model", "protenix", "--sequence", "MKTA", "--name", "-x"])
+
+    assert exit_info.value.code == 2
+    assert "--name=-dash" in capsys.readouterr().err
+
+
+def _backdate(path: Path, seconds: float = 3600.0) -> None:
+    import os
+    import time
+
+    then = time.time() - seconds
+    os.utime(path, (then, then))
+
+
+def test_cache_gc_verify_selects_only_settled_undecodable_entries(capsys) -> None:
+    """A cut-short entry is found by decoding it with JAX's own codec.
+
+    `LRUCache.put` returns early when the file exists, so an entry JAX cannot
+    decompress is warned about and recompiled on every run, never replaced.
+    """
+    from jax._src.compilation_cache import compress_executable
+
+    from foldjax import paths
+
+    directory = paths.compile_cache_dir() / "protenix" / "w" / "ns"
+    directory.mkdir(parents=True)
+    whole = compress_executable(b"\x00\x00\x00\x07" + bytes(range(256)) * 64)
+    good = directory / "jit_good-1-cache"
+    cut = directory / "jit_cut-2-cache"
+    garbage = directory / "jit_garbage-3-cache"
+    writing = directory / "jit_writing-4-cache"
+    other = directory / "not-an-entry.bin"
+    good.write_bytes(whole)
+    cut.write_bytes(whole[: len(whole) // 2])
+    garbage.write_bytes(b"\x00" * 100)
+    writing.write_bytes(whole[:10])
+    other.write_bytes(b"not compressed at all")
+    for path in (good, cut, garbage, other):
+        _backdate(path)
+
+    assert main(["cache", "gc", "--verify"]) == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["verify"] == {
+        "checked_files": 3,
+        "corrupt_files": 2,
+        "corrupt_bytes": cut.stat().st_size + garbage.stat().st_size,
+        "skipped_recent_files": 1,
+        "unreadable_files": 0,
+    }
+    assert payload["planned_removed_files"] == 2
+    assert "2 undecodable" in captured.err
+    assert all(path.exists() for path in (good, cut, garbage, writing, other))
+
+    assert main(["cache", "gc", "--verify", "--apply"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["removed_files"] == 2
+    assert not cut.exists() and not garbage.exists()
+    # A healthy entry, one perhaps still being written, and a file that is not
+    # a JAX entry at all are left alone.
+    assert good.read_bytes() == whole
+    assert writing.exists() and other.exists()
+
+
+def test_cache_gc_verify_lets_jax_replace_a_corrupt_entry(tmp_path: Path) -> None:
+    """The premise and the repair, against the installed JAX itself."""
+    import warnings
+
+    import jax
+    import jax.numpy as jnp
+    from jax.experimental.compilation_cache import compilation_cache
+
+    from foldjax import cache_gc, paths
+
+    cache = paths.compile_cache_dir() / "probe"
+    names = (
+        "jax_compilation_cache_dir",
+        "jax_persistent_cache_min_compile_time_secs",
+        "jax_persistent_cache_min_entry_size_bytes",
+    )
+    original = {name: getattr(jax.config, name) for name in names}
+
+    def gc_verify_probe(x):
+        return jnp.sin(x) * 3.0 + 1.0
+
+    def compile_once() -> None:
+        compilation_cache.reset_cache()
+        jax.clear_caches()
+        jax.jit(gc_verify_probe)(jnp.ones((7,))).block_until_ready()
+
+    try:
+        cache.mkdir(parents=True)
+        jax.config.update("jax_compilation_cache_dir", str(cache))
+        jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+        jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+        compile_once()
+        (entry,) = cache.glob("jit_gc_verify_probe-*-cache")
+        whole = entry.read_bytes()
+        entry.write_bytes(whole[: len(whole) // 3])
+        _backdate(entry)
+
+        with warnings.catch_warnings(record=True) as seen:
+            warnings.simplefilter("always")
+            compile_once()
+        assert any("persistent compilation cache" in str(w.message) for w in seen)
+        assert entry.stat().st_size == len(whole) // 3, "JAX does not replace it"
+
+        assert main(["cache", "gc", "--verify", "--apply"]) == 0
+        assert not entry.exists()
+
+        compile_once()
+        # Rewritten whole; the leading compile time differs from the first write.
+        with entry.open("rb") as handle:
+            assert cache_gc._entry_decodes(handle.fileno())
+    finally:
+        compilation_cache.reset_cache()
+        for name, value in original.items():
+            jax.config.update(name, value)
+
+
+def test_cache_gc_verify_alone_is_enough_to_ask_for() -> None:
+    assert main(["cache", "gc", "--verify"]) == 0
+
+
 def test_cache_gc_needs_to_be_told_what_to_reclaim() -> None:
     with pytest.raises(ValueError, match="--older-than"):
         main(["cache", "gc"])

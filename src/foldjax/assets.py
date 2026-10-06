@@ -2895,6 +2895,38 @@ def fetch(
         return spec.native_path()
 
 
+def _converted_weights_damage(spec: ModelAssets) -> str | None:
+    """Why a converted checkpoint that is present is still not usable, if known.
+
+    "No converted weights" sends someone looking for a file that is right
+    there. A conversion record names the size it produced, so a short file --
+    a copy or download cut off part way -- can be told apart from an absent
+    one; anything else stays with the generic message.
+    """
+    native = spec.native_path()
+    try:
+        if not native.is_file():
+            return None
+        size = native.stat().st_size
+    except OSError:
+        return None
+    if size == 0:
+        return "unreadable: the file is empty (0 bytes)"
+    try:
+        recorded = json.loads(
+            (weights_dir(spec.model) / _NATIVE_MANIFEST).read_text(encoding="utf-8")
+        )
+        expected = recorded["native"]["size"]
+    except (OSError, TypeError, KeyError, ValueError):
+        return None
+    if isinstance(expected, bool) or not isinstance(expected, int):
+        return None
+    if size != expected:
+        state = "truncated" if size < expected else "unreadable"
+        return f"{state}: {size} bytes where their conversion wrote {expected}"
+    return None
+
+
 def resolve_weights(model: str, *, profile: str | None = None) -> Path:
     """Return weights ready for the selected managed profile.
 
@@ -2927,6 +2959,14 @@ def resolve_weights(model: str, *, profile: str | None = None) -> Path:
         else f" --profile {profile}"
     )
     public_model = _public_model_name(spec.model)
+    damaged = _converted_weights_damage(spec)
+    if damaged is not None:
+        raise FileNotFoundError(
+            f"{spec.model} weights at {native} are {damaged}. Run "
+            f"`foldjax weights fetch --model {public_model}{profile_flag}` to "
+            "convert them again, or supply PredictionRequest.weights / "
+            "`foldjax predict --weights PATH`."
+        )
     raise FileNotFoundError(
         f"no converted {spec.model} weights at {native}. Run "
         f"`foldjax weights fetch --model {public_model}{profile_flag}`, or "

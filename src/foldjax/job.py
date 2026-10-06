@@ -564,12 +564,21 @@ class Job:
         polymer = {"protein": Protein, "dna": Dna, "rna": Rna}.get(kind)
         if polymer is None:
             raise ValueError(f"FASTA chains must be protein, dna or rna; got {kind!r}")
+        from foldjax.input import read_utf8_text
+
         path = Path(path)
-        records = parse_fasta(path.read_text(encoding="utf-8"))
+        records = parse_fasta(read_utf8_text(path, what="FASTA"))
         if not records:
             raise ValueError(f"no FASTA records in {path}")
         entities: list[Entity] = []
         for header, sequence in records:
+            if kind == "protein" and sequence.endswith("*"):
+                # The translation stop that UniProt and every translator write;
+                # it is not a residue. Only the trailing one: an internal `*`
+                # still reaches the residue check and is refused there.
+                sequence = sequence[:-1]
+                if not sequence:
+                    raise ValueError(f"FASTA record {header!r} has no sequence")
             entities.append(polymer(_chain_from_header(header, entities), sequence))
         return cls(path.stem, tuple(entities))
 

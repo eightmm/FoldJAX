@@ -102,9 +102,12 @@ def test_the_model_name_must_be_known_or_explicitly_waived(tmp_path) -> None:
         "--sigma-data", "4.0", "--cpu-only", "--diffusion-attention-backend", "xla_jit",
     ]
 
-    with pytest.raises(SystemExit, match="cannot tell which Protenix model"):
+    with pytest.raises(SystemExit, match="cannot tell which Protenix model") as stop:
         main(argv)
     assert not out_path.exists()
+    # The same runner serves `foldjax predict`, where the knob is an option.
+    assert "--option model_name=NAME" in str(stop.value)
+    assert "--model-name NAME" in str(stop.value)
 
     # Waiving it is one flag, and then the same run proceeds normally.
     main([*argv, "--model-name", "unknown"])

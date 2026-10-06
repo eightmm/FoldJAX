@@ -398,9 +398,11 @@ def _run(
             raise SystemExit(
                 f"cannot tell which Protenix model {config.weights.name!r} is, "
                 "and the name selects the sampler schedule, the ESM/ISM "
-                "conditioning, and the token limit. Pass --model-name with one "
-                f"of: {', '.join(KNOWN_MODEL_NAMES)}; or --model-name unknown "
-                "to accept the base-model schedule with no ESM conditioning."
+                "conditioning, and the token limit. Name it with one of: "
+                f"{', '.join(KNOWN_MODEL_NAMES)}; or `unknown` to accept the "
+                "base-model schedule with no ESM conditioning -- "
+                "`--option model_name=NAME` to `foldjax predict`, "
+                "`--model-name NAME` to the native Protenix CLI."
             )
     if model_name == "unknown":
         model_name = None

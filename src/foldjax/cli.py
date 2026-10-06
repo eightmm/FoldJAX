@@ -13,7 +13,7 @@ import warnings
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from foldjax import (
     assets,
@@ -382,12 +382,25 @@ def _model_help() -> str:
     return "one of " + ", ".join(names)
 
 
+class _Parser(argparse.ArgumentParser):
+    """argparse, with the one refusal whose fix it does not say."""
+
+    def error(self, message: str) -> NoReturn:
+        # `--name -dash` reads the value as an option; argparse only says the
+        # value is missing. Subcommand parsers inherit this class.
+        if message.startswith("argument --name: expected one argument"):
+            message += (
+                "; a name that starts with '-' is attached with '=': --name=-dash"
+            )
+        super().error(message)
+
+
 def _parser() -> argparse.ArgumentParser:
     from foldjax import __version__
 
     model_help = _model_help()
 
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="foldjax",
         description="Biomolecular structure prediction in JAX: one job file in, "
         "structures and confidence out.",
@@ -619,7 +632,7 @@ def _parser() -> argparse.ArgumentParser:
     cache_commands = cache.add_subparsers(dest="cache_command", required=True)
     collect = cache_commands.add_parser(
         "gc",
-        help="remove old compile-cache entries",
+        help="remove old or corrupt compile-cache entries",
         description="Report what could be reclaimed from the compilation cache, "
         "and remove it only when --apply is given. Entries are keyed by "
         "accelerator, runtime, weights and shapes, so a deleted one costs one "
@@ -635,6 +648,15 @@ def _parser() -> argparse.ArgumentParser:
         "--max-size",
         metavar="SIZE",
         help="keep the newest entries within SIZE (for example 20G, 500M)",
+    )
+    collect.add_argument(
+        "--verify",
+        action="store_true",
+        help="decompress every JAX entry and select the ones that do not decode "
+        "(a write cut short by a full disk or a kill). JAX only warns about such "
+        "an entry and never replaces it, so every run recompiles that program. "
+        "Entries written in the last 10 minutes are skipped: one may still be "
+        "being written",
     )
     collect.add_argument(
         "--apply",

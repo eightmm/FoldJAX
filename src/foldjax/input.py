@@ -2588,6 +2588,23 @@ def compatibility(
     return None
 
 
+def read_utf8_text(path: Path, *, what: str) -> str:
+    """A user's input file as text, with a UTF-8 byte-order mark removed.
+
+    Windows editors write the mark, and `json` refuses it as an unexpected
+    character at line 1. A file in another encoding is refused naming the file:
+    the bare codec message gives a byte offset but not which input it was in.
+    """
+    path = Path(path)
+    try:
+        return path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError as error:
+        raise ValueError(
+            f"{path} is not UTF-8 text ({error.reason} at byte {error.start}); "
+            f"save the {what} file as UTF-8"
+        ) from error
+
+
 def read_job_document(path: Path) -> Any:
     """Load a job file as JSON or YAML.
 
@@ -2596,7 +2613,7 @@ def read_job_document(path: Path) -> Any:
     parsed in safe mode, so a job file can never construct Python objects.
     """
     path = Path(path)
-    text = path.read_text(encoding="utf-8")
+    text = read_utf8_text(path, what="job")
     if path.suffix.lower() in {".yaml", ".yml"}:
         import yaml
 

@@ -19,6 +19,7 @@ from foldjax.input import (
     compatibility,
     materialize_native_input,
     native_only_features,
+    read_job_document,
 )
 from foldjax.job import Job, parse_fasta
 from foldjax.registry import capabilities
@@ -717,6 +718,67 @@ def test_a_fasta_job_names_its_chains_and_keeps_the_file_stem(tmp_path: Path) ->
     assert job.name == "target"
     # A short header is the writer naming the chain; a UniProt description is not.
     assert [entity.id for entity in job.entities] == ["A", "B"]
+
+
+def test_a_byte_order_mark_does_not_hide_the_first_fasta_header(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "bom.fasta"
+    path.write_bytes(b"\xef\xbb\xbf>A\nMKTAYIAK\n")
+
+    job = Job.from_fasta(path)
+
+    assert [(entity.id, entity.sequence) for entity in job.entities] == [
+        ("A", "MKTAYIAK")
+    ]
+
+
+def test_a_byte_order_mark_does_not_make_a_json_job_unreadable(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "bom.json"
+    document = {"entities": [{"type": "protein", "id": "A", "sequence": "MKTA"}]}
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps(document).encode())
+
+    assert read_job_document(path) == document
+
+
+def test_a_fasta_in_another_encoding_names_the_file(tmp_path: Path) -> None:
+    path = tmp_path / "latin1.fasta"
+    path.write_bytes(">A caf\xe9\nMKTAYIAK\n".encode("latin-1"))
+
+    with pytest.raises(ValueError, match="latin1.fasta is not UTF-8 text") as error:
+        Job.from_fasta(path)
+    assert not isinstance(error.value, UnicodeDecodeError)
+
+
+def test_a_trailing_stop_codon_is_dropped_from_a_fasta_protein(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "stop.fasta"
+    path.write_text(">A\nMKTAYIAK*\n>B\nGGSG\n", encoding="utf-8")
+
+    job = Job.from_fasta(path)
+
+    assert [entity.sequence for entity in job.entities] == ["MKTAYIAK", "GGSG"]
+
+
+def test_an_internal_stop_codon_is_still_refused(tmp_path: Path) -> None:
+    path = tmp_path / "internal.fasta"
+    path.write_text(">A\nMKTA*YIAK\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"unsupported residue '\*' at position 5"):
+        _materialize(
+            Job.from_fasta(path).write(tmp_path / "job.json"), "protenix", tmp_path
+        )
+
+
+def test_a_stop_codon_alone_is_not_a_sequence(tmp_path: Path) -> None:
+    path = tmp_path / "stop_only.fasta"
+    path.write_text(">A\n*\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="has no sequence"):
+        Job.from_fasta(path)
 
 
 def test_a_fasta_without_a_header_is_refused() -> None:

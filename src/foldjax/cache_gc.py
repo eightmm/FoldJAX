@@ -21,6 +21,7 @@ import json
 import math
 import os
 import sys
+import zlib
 from pathlib import Path
 
 from foldjax import paths
@@ -236,6 +237,145 @@ def _cache_gc_entries(
     )
 
 
+#: JAX names an executable entry ``<key>-cache`` (`jax._src.lru_cache`).
+_JAX_ENTRY_SUFFIX = "-cache"
+#: The big-endian compile time JAX prefixes to every decompressed entry
+#: (`compilation_cache._TIME_BYTES`); a decoded entry no longer than it holds
+#: no executable.
+_JAX_TIME_BYTES = 4
+#: `LRUCache.put` writes an entry onto its final name with `Path.write_bytes`,
+#: not through a temporary, so an entry another process is still writing is
+#: byte for byte a truncated one. Only entries untouched this long are judged.
+_VERIFY_GRACE_SECONDS = 600
+_VERIFY_CHUNK_BYTES = 1 << 20
+
+
+@dataclasses.dataclass(frozen=True)
+class _CacheVerification:
+    corrupt: tuple[_CacheGcEntry, ...]
+    checked_files: int
+    skipped_recent_files: int
+    unreadable_files: int
+
+    def summary(self) -> dict[str, int]:
+        return {
+            "checked_files": self.checked_files,
+            "corrupt_files": len(self.corrupt),
+            "corrupt_bytes": sum(item[2] for item in self.corrupt),
+            "skipped_recent_files": self.skipped_recent_files,
+            "unreadable_files": self.unreadable_files,
+        }
+
+
+def _jax_entry_decoder():
+    """A streaming decoder for the codec this environment's JAX reads entries with.
+
+    The same order `jax._src.compilation_cache` picks it in -- `compression.zstd`
+    (Python 3.14+), then `zstandard`, then zlib -- without importing JAX. An
+    entry this decoder cannot read is one JAX warns about on every lookup and,
+    because `LRUCache.put` returns early when the file exists, never replaces.
+    """
+    try:
+        from compression import zstd  # type: ignore[import-not-found]
+    except ImportError:
+        zstd = None
+    if zstd is not None:
+        return zstd.ZstdDecompressor()
+    try:
+        import zstandard
+    except ImportError:
+        return zlib.decompressobj()
+    return zstandard.ZstdDecompressor().decompressobj()
+
+
+def _entry_decodes(file_fd: int) -> bool:
+    """Whether one open entry decompresses to a complete frame with a payload."""
+    decoder = _jax_entry_decoder()
+    produced = 0
+    try:
+        while not decoder.eof:
+            chunk = os.read(file_fd, _VERIFY_CHUNK_BYTES)
+            if not chunk:
+                break
+            produced += len(decoder.decompress(chunk))
+    except OSError:
+        raise
+    except Exception:  # noqa: BLE001 - each codec raises its own error type
+        return False
+    return bool(decoder.eof) and produced > _JAX_TIME_BYTES
+
+
+def _verify_cache_entries(
+    root_fd: int, entries: list[_CacheGcEntry], *, now: float
+) -> _CacheVerification:
+    """Decode every settled JAX executable entry; return the ones JAX cannot read.
+
+    Opened through the pinned walk's directory descriptors without following
+    links, and judged only while the open file is still the scanned identity.
+    Tokamax autotuning files are not JAX entries and are never judged here.
+    """
+    import stat
+
+    candidates = {
+        item[0]: item
+        for item in entries
+        if item[0].name.endswith(_JAX_ENTRY_SUFFIX)
+        and _TOKAMAX_AUTOTUNE_DIRECTORIES.isdisjoint(item[0].parent.parts)
+    }
+    corrupt: list[_CacheGcEntry] = []
+    checked = 0
+    recent = 0
+    unreadable = 0
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    for directory, _directories, names, directory_fd in os.fwalk(
+        ".",
+        topdown=True,
+        onerror=_raise_cache_gc_walk_error,
+        follow_symlinks=False,
+        dir_fd=root_fd,
+    ):
+        parent = Path(directory)
+        for name in names:
+            item = candidates.get(parent / name)
+            if item is None:
+                continue
+            _relative, mtime, size, device, inode, mtime_ns, _lock = item
+            if now - mtime < _VERIFY_GRACE_SECONDS:
+                recent += 1
+                continue
+            try:
+                file_fd = os.open(name, flags, dir_fd=directory_fd)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                unreadable += 1
+                continue
+            try:
+                info = os.fstat(file_fd)
+                if not stat.S_ISREG(info.st_mode) or (
+                    info.st_dev,
+                    info.st_ino,
+                    info.st_mtime_ns,
+                    info.st_size,
+                ) != (device, inode, mtime_ns, size):
+                    # Replaced or still growing since the scan: not this pass's.
+                    recent += 1
+                    continue
+                checked += 1
+                if not _entry_decodes(file_fd):
+                    corrupt.append(item)
+            except OSError:
+                unreadable += 1
+            finally:
+                os.close(file_fd)
+    return _CacheVerification(
+        corrupt=tuple(corrupt),
+        checked_files=checked,
+        skipped_recent_files=recent,
+        unreadable_files=unreadable,
+    )
+
+
 def _apply_cache_gc(
     root: Path,
     root_fd: int,
@@ -350,8 +490,12 @@ def run_cache_gc(args: argparse.Namespace) -> int:
     """
     from foldjax.cli import _format_bytes
 
-    if args.older_than is None and args.max_size is None:
-        raise ValueError("cache gc needs --older-than DAYS, --max-size SIZE, or both")
+    verify = bool(getattr(args, "verify", False))
+    if args.older_than is None and args.max_size is None and not verify:
+        raise ValueError(
+            "cache gc needs --older-than DAYS, --max-size SIZE, --verify, or a "
+            "combination"
+        )
     # Parsed before the store is inspected, so a typo is reported the same way
     # whether or not a cache happens to exist yet.
     budget = None if args.max_size is None else _parse_size(args.max_size)
@@ -379,6 +523,11 @@ def run_cache_gc(args: argparse.Namespace) -> int:
                     "changed_files": 0,
                     "remaining_bytes": 0,
                     "budget_satisfied": True if budget is not None else None,
+                    **(
+                        {"verify": _CacheVerification((), 0, 0, 0).summary()}
+                        if verify
+                        else {}
+                    ),
                 }
             )
         )
@@ -405,6 +554,13 @@ def run_cache_gc(args: argparse.Namespace) -> int:
                     over.append(item)
             chosen = {item[0] for item in doomed}
             doomed.extend(item for item in over if item[0] not in chosen)
+        verification = None
+        if verify:
+            verification = _verify_cache_entries(root_fd, entries, now=time.time())
+            chosen = {item[0] for item in doomed}
+            doomed.extend(
+                item for item in verification.corrupt if item[0] not in chosen
+            )
 
         planned_removed_files = len(doomed)
         planned_removed_bytes = sum(item[2] for item in doomed)
@@ -437,6 +593,21 @@ def run_cache_gc(args: argparse.Namespace) -> int:
         outcome += f" ({already_absent_files} already absent)"
     if args.apply and changed_files:
         outcome += f" ({changed_files} changed since planning; kept)"
+    if verification is not None:
+        found = verification.summary()
+        note = (
+            f"[cache] verified {found['checked_files']} entr(ies): "
+            f"{found['corrupt_files']} undecodable, "
+            f"{_format_bytes(found['corrupt_bytes'])}"
+        )
+        if found["skipped_recent_files"]:
+            note += (
+                f"; {found['skipped_recent_files']} written in the last "
+                f"{_VERIFY_GRACE_SECONDS // 60} min left for a later pass"
+            )
+        if found["unreadable_files"]:
+            note += f"; {found['unreadable_files']} could not be read"
+        print(note, file=sys.stderr)
     print(
         f"[cache] {action} {outcome} of "
         f"{_format_bytes(scan.total_bytes)} under {root}"
@@ -462,6 +633,11 @@ def run_cache_gc(args: argparse.Namespace) -> int:
                 "remaining_bytes": remaining_bytes,
                 "budget_satisfied": (
                     None if budget is None else remaining_bytes <= budget
+                ),
+                **(
+                    {"verify": verification.summary()}
+                    if verification is not None
+                    else {}
                 ),
             },
             indent=2,
