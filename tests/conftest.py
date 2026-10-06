@@ -123,12 +123,15 @@ def _restore_process_state() -> Iterator[None]:
     try:
         yield
     finally:
-        if _environment() != environment:
-            phase = os.environ.get(_PYTEST_PHASE)
-            os.environ.clear()
-            os.environ.update(environment)
-            if phase is not None:
-                os.environ[_PYTEST_PHASE] = phase
+        # Only what changed, never clear-and-refill: XLA and numba threads
+        # still running read the C environment, and emptying it under them
+        # segfaulted the Boltz-2 suite.
+        current = _environment()
+        for name in current.keys() - environment.keys():
+            del os.environ[name]
+        for name, value in environment.items():
+            if current.get(name) != value:
+                os.environ[name] = value
         progress._enabled, progress._stream = progress_state
         memory_policy._WARNED.clear()
         memory_policy._WARNED.update(warned)
