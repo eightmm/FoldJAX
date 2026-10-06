@@ -396,12 +396,15 @@ def test_alphafold3_nondefault_and_type_routes_keep_distinct_cache_namespaces(
 
 
 def test_alphafold3_omitted_attention_off_a_gpu_is_the_xla_namespace(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Off a GPU an omitted attention runs `xla`, so it is `xla`'s namespace.
 
     And not the released `triton`'s, which is a different program there.
     """
+    import jax
+
+    monkeypatch.setattr(jax, "default_backend", lambda: "cpu")
     backend = AlphaFold3Backend()
     omitted = dataclasses.replace(
         _request(tmp_path), model="alphafold3", input_format="native"
