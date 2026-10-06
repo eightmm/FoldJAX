@@ -105,9 +105,9 @@
   it up front, naming the channel. The embedder's own refusal now names every
   unweighted channel in a fixed order instead of one arbitrary one.
 
-- **`representations.npz` and cached template mmCIFs are written with the
-  umask mode,** not `tempfile`'s owner-only `0600`, as `confidence_full.npz`
-  already was.
+- **`representations.npz` is written with the umask mode,** not `tempfile`'s
+  owner-only `0600`, as `confidence_full.npz` and the template mmCIF cache
+  already were.
 
 - **The OpenDDE port notes say its native writer has no
   `full_data_sample_*.json`.** Upstream writes one by default; its pair

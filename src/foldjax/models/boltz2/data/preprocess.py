@@ -286,6 +286,7 @@ def process_inputs(
             msa_server_password=msa_server_password,
             api_key_header=api_key_header,
             api_key_value=api_key_value,
+            max_msa_seqs=max_msa_seqs,
         )
         processed = out_dir / "processed"
         if processed.is_symlink() or processed.is_file():
@@ -314,6 +315,7 @@ def _process_into(
     msa_server_password: str | None,
     api_key_header: str | None,
     api_key_value: str | None,
+    max_msa_seqs: int,
 ) -> Manifest:
     records_dir = processed / "records"
     structure_dir = processed / "structures"
