@@ -610,87 +610,106 @@ def _run(
                     from foldjax.models.protenix.data.search import apply_rna_msa_paths
 
                     job = apply_rna_msa_paths(job, rna_msa_pipeline)
-                features = featurize_protein_json(
-                    job,
-                    base_dir=config.input_json.parent,
-                    n_queries=config.n_queries,
-                    n_keys=config.n_keys,
-                    max_msa_depth=config.max_msa_depth,
-                    use_rna_msa=config.use_rna_msa,
-                    use_template=config.use_template,
-                )
-                language_model_profile = None
-                if esm_provider is not None and padding_config is not None:
-                    from foldjax.padding import (
-                        resolve_axis,
-                        resolve_token_axis,
+                # Featurized once per seed, with that seed, as upstream
+                # does: its runner reseeds before the dataloader builds each
+                # seed's input (Protenix `runner/inference.py:565-566`), so
+                # the reference-conformer augmentation and the chemistry
+                # draws differ from seed to seed. The language-model
+                # embedding depends on the sequence alone and is computed
+                # once per job.
+                embeddings: dict[tuple[Any, ...], np.ndarray] = {}
+                for seed in _resolve_seeds(config, job.get("modelSeeds")):
+                    features = featurize_protein_json(
+                        job,
+                        base_dir=config.input_json.parent,
+                        n_queries=config.n_queries,
+                        n_keys=config.n_keys,
+                        max_msa_depth=config.max_msa_depth,
+                        use_rna_msa=config.use_rna_msa,
+                        use_template=config.use_template,
+                        seed=seed,
                     )
+                    language_model_profile = None
+                    if esm_provider is not None and padding_config is not None:
+                        from foldjax.padding import (
+                            resolve_axis,
+                            resolve_token_axis,
+                        )
 
-                    protein_lengths = []
-                    for wrapper in job.get("sequences", []):
-                        if not isinstance(wrapper, dict):
-                            continue
-                        protein = wrapper.get("proteinChain")
-                        if isinstance(protein, dict):
-                            protein_lengths.append(
-                                len(str(protein.get("sequence", "")))
+                        protein_lengths = []
+                        for wrapper in job.get("sequences", []):
+                            if not isinstance(wrapper, dict):
+                                continue
+                            protein = wrapper.get("proteinChain")
+                            if isinstance(protein, dict):
+                                protein_lengths.append(
+                                    len(str(protein.get("sequence", "")))
+                                )
+                        if not protein_lengths or max(protein_lengths) < 1:
+                            raise ValueError(
+                                "ESM/ISM padding requires at least one protein sequence"
                             )
-                    if not protein_lengths or max(protein_lengths) < 1:
-                        raise ValueError(
-                            "ESM/ISM padding requires at least one protein sequence"
+                        language_model_actual = max(protein_lengths)
+                        token_target = resolve_axis(
+                            int(features["restype"].shape[0]), padding_config, "tokens"
                         )
-                    language_model_actual = max(protein_lengths)
-                    token_target = resolve_axis(
-                        int(features["restype"].shape[0]), padding_config, "tokens"
-                    )
-                    language_model_target = resolve_token_axis(
-                        language_model_actual,
-                        padding_config,
-                        "language_model_tokens",
-                        token_target=token_target,
-                        fixed_size=min(token_target, esm_provider.max_sequence_length),
-                    )
-                    if language_model_target > esm_provider.max_sequence_length:
-                        raise ValueError(
-                            f"language model padding target {language_model_target} "
-                            "exceeds "
-                            f"model limit {esm_provider.max_sequence_length}; "
-                            "set --pad-language-model-tokens explicitly"
+                        language_model_target = resolve_token_axis(
+                            language_model_actual,
+                            padding_config,
+                            "language_model_tokens",
+                            token_target=token_target,
+                            fixed_size=min(
+                                token_target, esm_provider.max_sequence_length
+                            ),
                         )
-                    language_model_profile = (
-                        language_model_actual,
-                        language_model_target,
-                    )
-                if esm_provider is not None:
-                    from foldjax.models.protenix.data.esm import add_esm_embeddings
+                        if language_model_target > esm_provider.max_sequence_length:
+                            raise ValueError(
+                                "language model padding target "
+                                f"{language_model_target} exceeds "
+                                f"model limit {esm_provider.max_sequence_length}; "
+                                "set --pad-language-model-tokens explicitly"
+                            )
+                        language_model_profile = (
+                            language_model_actual,
+                            language_model_target,
+                        )
+                    if esm_provider is not None:
+                        from foldjax.models.protenix.data.esm import add_esm_embeddings
 
-                    esm_features = dict(features)
-                    esm_features["residue_index"] = esm_features["residue_index"] - 1
-                    provider = esm_provider
-                    if language_model_profile is not None:
-                        _, language_model_target = language_model_profile
-                        provider = partial(
-                            esm_provider.embed,
-                            target_length=language_model_target,
+                        esm_features = dict(features)
+                        esm_features["residue_index"] = (
+                            esm_features["residue_index"] - 1
                         )
+                        provider = esm_provider
+                        if language_model_profile is not None:
+                            _, language_model_target = language_model_profile
+                            provider = partial(
+                                esm_provider.embed,
+                                target_length=language_model_target,
+                            )
 
-                    features = add_esm_embeddings(
-                        esm_features, job, provider=provider
+                        features = add_esm_embeddings(
+                            esm_features,
+                            job,
+                            provider=_memoized_embedding(
+                                provider, embeddings, language_model_profile
+                            ),
+                        )
+                        features["residue_index"] = esm_features["residue_index"] + 1
+                        # ``dict(features)`` shares every dense atom-category array.
+                        # The loop's final temporary would otherwise retain them
+                        # through parameter loading and the whole prediction even
+                        # after the managed model/output copies release them.
+                        del esm_features
+                    jobs.append(
+                        {
+                            "name": str(job.get("name") or fallback_name),
+                            "features": features,
+                            "modelSeeds": job.get("modelSeeds"),
+                            "seeds": [seed],
+                            "language_model_profile": language_model_profile,
+                        }
                     )
-                    features["residue_index"] = esm_features["residue_index"] + 1
-                    # ``dict(features)`` shares every dense atom-category array.
-                    # The loop's final temporary would otherwise retain them
-                    # through parameter loading and the whole prediction even
-                    # after the managed model/output copies release them.
-                    del esm_features
-                jobs.append(
-                    {
-                        "name": str(job.get("name") or fallback_name),
-                        "features": features,
-                        "modelSeeds": job.get("modelSeeds"),
-                        "language_model_profile": language_model_profile,
-                    }
-                )
 
         for job in jobs:
             features = job["features"]
@@ -904,7 +923,12 @@ def _run(
             config.trunk_dtype,
             not used_esm_provider,
         )
-    job_seeds = [_resolve_seeds(config, job.get("modelSeeds")) for job in jobs]
+    # A JSON job was featurized once per seed and carries that one seed; a
+    # static feature archive has no featurization to repeat.
+    job_seeds = [
+        job.get("seeds") or _resolve_seeds(config, job.get("modelSeeds"))
+        for job in jobs
+    ]
     legacy_npz = (
         config.output_format == "npz" and len(jobs) == 1 and len(job_seeds[0]) == 1
     )
@@ -1359,6 +1383,26 @@ def _padded_noise_tapes(
         pad_atom_noise(init_noise, actual=actual_atom, target=target_atom),
         pad_atom_noise(step_noises, actual=actual_atom, target=target_atom),
     )
+
+
+def _memoized_embedding(
+    provider: Callable[[str], np.ndarray],
+    cache: dict[tuple[Any, ...], np.ndarray],
+    profile: tuple[int, int] | None,
+) -> Callable[[str], np.ndarray]:
+    """``provider`` remembering each sequence across one job's seeds.
+
+    The embedding is a function of the sequence and the padded length alone,
+    so a job featurized once per seed asks the language model once.
+    """
+
+    def embed(sequence: str) -> np.ndarray:
+        key = (sequence, profile)
+        if key not in cache:
+            cache[key] = provider(sequence)
+        return cache[key]
+
+    return embed
 
 
 def _resolve_seeds(config: PredictionConfig, model_seeds: Any) -> list[int]:

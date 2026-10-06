@@ -67,11 +67,12 @@ class _ReaderPoison(Mapping[str, Any]):
         return self._values.get(key, default)
 
 
-def _protein_features(sequence: str = "AG") -> dict[str, Any]:
+def _protein_features(sequence: str = "AG", seed: int | None = None) -> dict[str, Any]:
     return featurize_protein_json(
         {"sequences": [{"proteinChain": {"sequence": sequence}}]},
         n_queries=2,
         n_keys=4,
+        seed=seed,
     )
 
 
@@ -231,7 +232,8 @@ def test_generated_cli_projection_never_reaches_model_bound_features(
         "sequences": [{"proteinChain": {"sequence": "ACDE"}}],
     }
     input_path.write_text(json.dumps([job]), encoding="utf-8")
-    expected = compact_msa_storage(_protein_features("ACDE"))
+    # The run below is `--seeds 7`, and each seed is featurized with itself.
+    expected = compact_msa_storage(_protein_features("ACDE", seed=7))
     expected = compact_msa_storage(
         compact_zero_template_geometry(dedup_templates(expected))
     )

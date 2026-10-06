@@ -1175,6 +1175,84 @@ def test_predict_uses_model_seeds_from_direct_json(tmp_path, monkeypatch) -> Non
 
 
 @pytest.mark.parametrize(
+    ("seed_args", "expected"),
+    [
+        # The JSON's own seeds, each featurized with itself -- not all with
+        # modelSeeds[0].
+        ((), [11, 13]),
+        # A request seed replaces them, and featurization follows it.
+        (("--seed", "7"), [7]),
+        (("--seeds", "5", "6"), [5, 6]),
+    ],
+)
+def test_each_seed_is_featurized_with_that_seed(
+    tmp_path, monkeypatch, seed_args, expected
+) -> None:
+    """Upstream reseeds before its dataloader builds each seed's input
+    (Protenix `runner/inference.py:565-566`), so the reference-conformer
+    augmentation and chemistry draws are per seed, as OpenDDE's are."""
+    import foldjax.models.protenix.data.featurize_json as featurize_module
+
+    weights_path = tmp_path / "toy_weights.pkl"
+    input_json = tmp_path / "input.json"
+    input_json.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "seeded",
+                    "modelSeeds": [11, 13],
+                    "sequences": [{"proteinChain": {"sequence": "AG", "count": 1}}],
+                }
+            ]
+        )
+    )
+    save_native_weights(weights_path, _toy_params_with_relp_dim(139), compress=False)
+    featurized: list[int] = []
+    folded: list[np.ndarray] = []
+    real = featurize_module.featurize_protein_json
+
+    def spy(job, **kwargs):
+        featurized.append(kwargs["seed"])
+        return real(job, **kwargs)
+
+    def fake_predict(_params, features, **kwargs):
+        folded.append(np.asarray(features["ref_pos"]))
+        n_atom = len(features["atom_to_token_idx"])
+        return {"coordinate": np.zeros((1, n_atom, 3), dtype=np.float32)}
+
+    monkeypatch.setattr(featurize_module, "featurize_protein_json", spy)
+    monkeypatch.setattr(
+        "foldjax.models.protenix.models.predict.protenix_predict_static", fake_predict
+    )
+    main(
+        [
+            "--model-name",
+            "unknown",
+            "--weights",
+            str(weights_path),
+            "--input-json",
+            str(input_json),
+            "--out",
+            str(tmp_path / "outputs"),
+            "--trunk-dtype",
+            "fp32",
+            "--n-queries",
+            "2",
+            "--n-keys",
+            "4",
+            "--no-compile-cache",
+            *seed_args,
+        ]
+    )
+
+    assert featurized == expected
+    assert len(folded) == len(expected)
+    if len(folded) == 2:
+        # Two seeds draw two reference-conformer augmentations.
+        assert not np.array_equal(folded[0], folded[1])
+
+
+@pytest.mark.parametrize(
     ("extra_args", "expected"),
     [
         ([], (4, 5, 0.0, 1.0)),
@@ -1297,6 +1375,67 @@ def test_predict_adds_esm_for_esm_model(
     # way it always did.
     assert providers == [(provider_name, checkpoint_dir, False)]
     assert captured["esm_token_embedding"].shape == (1, 2560)
+
+
+def test_a_job_featurized_per_seed_embeds_each_sequence_once(
+    tmp_path, monkeypatch
+) -> None:
+    """The embedding depends on the sequence alone, so the per-seed
+    featurization asks the language model once per job, not once per seed."""
+    weights_path = tmp_path / "toy_weights.pkl"
+    input_json = tmp_path / "input.json"
+    input_json.write_text(
+        '[{"sequences": [{"proteinChain": {"sequence": "AG", "count": 1}}]}]'
+    )
+    save_native_weights(weights_path, _toy_params_with_relp_dim(139), compress=False)
+    embedded: list[str] = []
+    folded: list[np.ndarray] = []
+
+    class FakeProvider:
+        def __init__(self, model_name, *, checkpoint_dir, deterministic=False):
+            del model_name, checkpoint_dir, deterministic
+
+        def __call__(self, sequence):
+            embedded.append(sequence)
+            return np.ones((len(sequence), 2560), dtype=np.float32)
+
+    def fake_predict(_params, features, **_kwargs):
+        folded.append(np.asarray(features["esm_token_embedding"]))
+        n_atom = len(features["atom_to_token_idx"])
+        return {"coordinate": np.zeros((1, n_atom, 3), dtype=np.float32)}
+
+    monkeypatch.setattr("foldjax.models.protenix.data.esm.JaxEsmProvider", FakeProvider)
+    monkeypatch.setattr(
+        "foldjax.models.protenix.models.predict.protenix_predict_static", fake_predict
+    )
+    main(
+        [
+            "--weights",
+            str(weights_path),
+            "--input-json",
+            str(input_json),
+            "--out",
+            str(tmp_path / "out"),
+            "--model-name",
+            "protenix_mini_esm_v0.5.0",
+            "--esm-checkpoint-dir",
+            str(tmp_path / "esm"),
+            "--seeds",
+            "1",
+            "2",
+            "--trunk-dtype",
+            "fp32",
+            "--n-queries",
+            "2",
+            "--n-keys",
+            "4",
+            "--no-compile-cache",
+        ]
+    )
+
+    assert embedded == ["AG"]
+    assert len(folded) == 2
+    np.testing.assert_array_equal(folded[0], folded[1])
 
 
 def test_predict_releases_esm_provider_before_structure_weights(
