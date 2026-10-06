@@ -241,18 +241,24 @@ map and refuse a bare file; **Boltz-2 aligns the mmCIF itself** and refuses a
 map it would have to ignore; OpenFold3 takes either form, one form per chain.
 
 Both index lists are **0-based**, exactly AlphaFold 3's `queryIndices` and
-`templateIndices`, and reach AlphaFold 3 and Protenix verbatim. A query index
+`templateIndices`, and mean the same residues for every backend. A query index
 counts residues of the entity's sequence; one past its end -- what a 1-based
 map has at its last position -- or a negative one is refused rather than
 shifted. A template index counts the template chain's full polymer sequence
 (`_entity_poly_seq`), unresolved residues included, as AlphaFold 3 and
-OpenFold3 read it. `chain_id` is the template's author chain
-(`auth_asym_id`); Boltz-2 and OpenFold3 address chains by `label_asym_id`, so
-FoldJAX looks the label id up in the file for them. Protenix and OpenDDE read
-the *first* chain of the file and count only its observed residues (upstream
-`parse_simple_cif`), ignoring `chain_id`; the two counts agree only for a
-single-chain file in which every residue is resolved. Give those two such a
-file -- it is what `--templates auto` writes for them.
+OpenFold3 read it; it is refused past the end of that sequence. `chain_id` is
+the template's author chain (`auth_asym_id`); without it the file's first
+chain is the template. AlphaFold 3 receives the map verbatim. Boltz-2 and
+OpenFold3 address chains by `label_asym_id`, so FoldJAX looks the label id up
+in the file for them. Protenix and OpenDDE read the *first* chain of a file
+and count only its observed residues (upstream `parse_simple_cif`), so FoldJAX
+restates the map for them: the named chain is moved first (the file is passed
+unchanged when it already is), each template index becomes that residue's
+ordinal among the chain's observed residues, and a pair whose template residue
+is unresolved is dropped -- neither reader has coordinates for it. The
+residues' entity is read from `label_entity_id`, or from `_struct_asym` when
+the atoms do not carry it; a file that declares `_entity_poly_seq` but none for
+that entity is refused. Any template file works for all of them.
 
 Protenix and OpenDDE have native template machinery,
 but both released inference configurations set `use_template=False` (Protenix
@@ -260,8 +266,9 @@ but both released inference configurations set `use_template=False` (Protenix
 and then ignore a job's templates. FoldJAX preserves that default and folds
 without common-schema templates as upstream does, but not silently: a
 `UserWarning` names the chain and the file, and the run manifest lists each
-dropped template under `ignored_templates` (null for native input, which is not
-inspected). Set `options={"use_template": true}` (CLI:
+dropped template under `ignored_templates`. Native input is not inspected
+(null), except a native OpenDDE job, whose dropped `templatesPath` is listed
+there too. Set `options={"use_template": true}` (CLI:
 `--option use_template=true`) to materialize the mapped templates and run the
 template path, or `--option ignore_templates=false` to refuse such a job
 instead. `use_template=true` with an explicit `ignore_templates=true` is
