@@ -30,3 +30,17 @@
   cache and to the Boltz-2, OpenDDE, OpenFold3 and AlphaFold 3 entry points
   that set the cache themselves. A group-writable, setgid store shared with
   another account (such as a lab's) now misses until that variable is set.
+- **Remote MSA, template and structure servers must be https and are not
+  followed through redirects.** `FOLDJAX_MSA_SERVER_URL`,
+  `FOLDJAX_TEMPLATE_STRUCTURE_URL`, `--msa-remote-url` and Boltz-2's MSA server
+  URL must be `https://`, plain `http://` being accepted for loopback hosts or
+  with `FOLDJAX_ALLOW_INSECURE_HTTP=1`. A redirect is now an error instead of
+  being followed: urllib resent `Authorization` and API-key headers to whatever
+  host it named, `http://` included, and requests strips only `Authorization`.
+  A server job id must be `[A-Za-z0-9_-]+` before it is put in a URL, and one
+  response or result-archive member is capped at 1 GiB.
+- **A cached template mmCIF is checked before it is used.** A downloaded or
+  unpacked structure must name the requested PDB id in its data block (and
+  parse, where gemmi is installed); one that does not is fetched or unpacked
+  again, and a download naming another entry is refused before it is cached.
+  The local mirror (`FOLDJAX_TEMPLATE_MMCIF_DIR`) stays trusted as is.

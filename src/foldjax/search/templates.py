@@ -28,12 +28,14 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from foldjax.search.msa import (
+    MAX_REMOTE_BYTES,
     HttpTransport,
     RemoteMMseqs2Client,
     SearchError,
     _normalize_sequence,
     _sha256,
     _urllib_transport,
+    require_https,
 )
 
 #: The archive member the ColabFold server writes its PDB70 hits to.
@@ -362,6 +364,8 @@ class StructureStore:
         self.cache_dir = Path(cache_dir)
         self.local_dir = Path(local_dir) if local_dir else None
         self.base_url = base_url.rstrip("/") if base_url else None
+        if self.base_url is not None:
+            require_https(self.base_url, what="template structure URL")
         self.transport = transport
         self.timeout = timeout
         try:
@@ -418,7 +422,11 @@ class StructureStore:
             # entry is unpacked once into the cache, beside its source's key.
             directory = self.cache_dir / self._source_key(str(local.parent.resolve()))
             unpacked = directory / f"{pdb_id}.cif"
-            if unpacked.is_file() and unpacked.stat().st_mtime >= local.stat().st_mtime:
+            if (
+                unpacked.is_file()
+                and unpacked.stat().st_mtime >= local.stat().st_mtime
+                and _cached_mmcif_is(unpacked, pdb_id)
+            ):
                 return unpacked.resolve()
             import gzip
 
@@ -434,7 +442,10 @@ class StructureStore:
             )
         directory = self.cache_dir / self._source_key(self.base_url)
         cached = directory / f"{pdb_id}.cif"
-        if cached.is_file():
+        # A cached file is only ever this store's own download, but anything
+        # that can write the cache can also leave a different entry -- or a
+        # truncated one -- under the name; such a file is fetched again.
+        if cached.is_file() and _cached_mmcif_is(cached, pdb_id):
             return cached.resolve()
         url = f"{self.base_url}/{pdb_id.upper()}.cif"
         response = self.transport("GET", url, None, self.headers, self.timeout)
@@ -444,28 +455,42 @@ class StructureStore:
                 f"{response.status}"
             )
         body = response.body
-        if not body.lstrip().startswith(b"data_"):
-            raise SearchError(f"template structure {pdb_id} is not an mmCIF file")
+        if len(body) > MAX_REMOTE_BYTES:
+            raise SearchError(f"template structure {pdb_id} is implausibly large")
+        if _mmcif_block_name(body[:4096].decode("utf-8", "replace")) != pdb_id:
+            raise SearchError(
+                f"template structure {pdb_id} is not that entry's mmCIF file"
+            )
         return self._publish(directory, pdb_id, body)
-        if self.base_url is None:
-            raise SearchError(
-                f"template structure {pdb_id} is not in the local mirror and "
-                "downloading is disabled"
-            )
-        url = f"{self.base_url}/{pdb_id.upper()}.cif"
-        response = self.transport("GET", url, None, self.headers, self.timeout)
-        if response.status != 200:
-            raise SearchError(
-                f"template structure {pdb_id} download failed with HTTP "
-                f"{response.status}"
-            )
-        body = response.body
-        if not body.lstrip().startswith(b"data_"):
-            raise SearchError(f"template structure {pdb_id} is not an mmCIF file")
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            dir=self.cache_dir, prefix=f".{pdb_id}.", suffix=".cif", delete=False
-        ) as staged:
-            staged.write(body)
-        os.replace(staged.name, cached)
-        return cached.resolve()
+
+
+def _mmcif_block_name(text: str) -> str | None:
+    """The lower-cased name of an mmCIF's first data block, if it has one."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped[:5].lower() == "data_":
+            return stripped[5:].split()[0].lower() if stripped[5:] else None
+        return None
+    return None
+
+
+def _cached_mmcif_is(path: Path, pdb_id: str) -> bool:
+    """Whether a cached file is an mmCIF of ``pdb_id`` that can be parsed."""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            head = handle.read(4096)
+    except OSError:
+        return False
+    if _mmcif_block_name(head) != pdb_id:
+        return False
+    try:
+        import gemmi
+    except ImportError:
+        return True
+    try:
+        gemmi.cif.read(str(path)).sole_block()
+    except (RuntimeError, ValueError):
+        return False
+    return True

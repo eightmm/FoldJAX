@@ -27,6 +27,8 @@ import base64
 import hashlib
 import io
 import json
+import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -43,6 +45,46 @@ from typing import Any, Protocol
 
 class SearchError(RuntimeError):
     """An MSA provider returned an unusable or incomplete result."""
+
+
+#: Set to ``1`` to let a search or download use plain ``http://`` beyond this
+#: machine. Off by default: the query sequence and any credential would cross
+#: the network in clear text. Loopback addresses are always allowed.
+ALLOW_INSECURE_HTTP_ENV = "FOLDJAX_ALLOW_INSECURE_HTTP"
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+#: The most one remote response, or one member of a result archive, may hold.
+#: Generous for the largest alignment or mmCIF a server returns; a server that
+#: sends more is refused before it exhausts memory.
+MAX_REMOTE_BYTES = 1 << 30
+#: A server job id is spliced into the next request's URL path.
+_JOB_ID = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def require_https(url: str, *, what: str) -> str:
+    """Return ``url`` when it is https (or loopback / opted-in plain http)."""
+    try:
+        parts = urllib.parse.urlsplit(url.strip())
+        host = parts.hostname
+    except ValueError as exc:
+        raise ValueError(f"{what} is not a valid URL") from exc
+    scheme = parts.scheme.lower()
+    if scheme == "https" and host:
+        return url
+    if scheme == "http" and host:
+        opt_in = os.environ.get(ALLOW_INSECURE_HTTP_ENV, "").strip().lower()
+        if host in _LOOPBACK_HOSTS or opt_in in {"1", "true", "yes", "on"}:
+            return url
+    raise ValueError(
+        f"{what} must be an https:// URL, got {scheme or 'no'} scheme for host "
+        f"{host or '(none)'}; set {ALLOW_INSECURE_HTTP_ENV}=1 to allow plain http"
+    )
+
+
+def validate_job_id(job_id: object) -> str:
+    """A server-issued job id, checked before it becomes part of a URL."""
+    if not isinstance(job_id, str) or not _JOB_ID.fullmatch(job_id):
+        raise SearchError("remote MSA submission returned an invalid job id")
+    return job_id
 
 
 @dataclass(frozen=True)
@@ -757,10 +799,34 @@ def _urllib_transport(
         url, data=data, headers=dict(headers), method=method
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return HttpResponse(response.status, response.read())
+        with _NO_REDIRECT_OPENER.open(request, timeout=timeout) as response:
+            return HttpResponse(response.status, _read_capped(response, url))
     except urllib.error.HTTPError as exc:
-        return HttpResponse(exc.code, exc.read())
+        return HttpResponse(exc.code, _read_capped(exc, url))
+
+
+class _RefuseRedirect(urllib.request.HTTPRedirectHandler):
+    """Return a redirect as its 3xx status instead of following it.
+
+    urllib's own handler resends every header, ``Authorization`` and API keys
+    included, to whatever host the ``Location`` names, ``http://`` included.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_RefuseRedirect)
+
+
+def _read_capped(response: Any, url: str) -> bytes:
+    body = response.read(MAX_REMOTE_BYTES + 1)
+    if len(body) > MAX_REMOTE_BYTES:
+        host = urllib.parse.urlsplit(url).hostname
+        raise SearchError(
+            f"response from {host} exceeds {MAX_REMOTE_BYTES} bytes; refused"
+        )
+    return body
 
 
 class RemoteMMseqs2Client:
@@ -788,6 +854,7 @@ class RemoteMMseqs2Client:
             raise ValueError("basic auth and auth_headers are mutually exclusive")
         if not host_url.strip() or not version:
             raise ValueError("remote MSA host URL and version are required")
+        require_https(host_url, what="remote MSA host URL")
         if timeout <= 0 or poll_interval < 0 or max_wait_seconds <= 0:
             raise ValueError("remote MSA timeout values are invalid")
         self.host_url = host_url.rstrip("/")
@@ -907,6 +974,7 @@ class RemoteMMseqs2Client:
             raise SearchError(f"remote MSA submission ended with status {state!r}")
         if not isinstance(job_id, str) or not job_id:
             raise SearchError("remote MSA submission response is missing a job id")
+        validate_job_id(job_id)
         deadline = time.monotonic() + self.max_wait_seconds
         while state in {"UNKNOWN", "RUNNING", "PENDING", "RATELIMIT"}:
             if time.monotonic() >= deadline:
@@ -926,6 +994,11 @@ class RemoteMMseqs2Client:
                     if not member.isfile():
                         raise SearchError(
                             f"remote MSA archive entry is not a file: {name}"
+                        )
+                    if member.size > MAX_REMOTE_BYTES:
+                        raise SearchError(
+                            f"remote MSA archive entry {name} exceeds "
+                            f"{MAX_REMOTE_BYTES} bytes; refused"
                         )
                     extracted = tar.extractfile(member)
                     if extracted is None:
