@@ -1919,10 +1919,11 @@ def test_request_requires_a_real_compile_cache_boolean(
 def test_protenix_v2_is_a_managed_profile_pinned_by_its_own_hash() -> None:
     """Selecting v2 by name resolves the managed bundle, not the release.
 
-    `model_name` is not cosmetic: it carries v2's sampler schedule and its
-    2,560-token limit. If the name did not select a profile of its own, asking
-    for v2 would either error or quietly fetch the 368M release and run it as
-    though it were the 464M model.
+    `model_name` is not cosmetic: it carries v2's sampler schedule and
+    upstream's 2,560-token limit (a warning here unless `strict_token_limit`).
+    If the name did not select a profile of its own, asking for v2 would
+    either error or quietly fetch the 368M release and run it as though it
+    were the 464M model.
 
     The checkpoint is user-supplied, since upstream states the v2 weights are
     proprietary, so the pinned hash is what binds a conversion to the exact
@@ -1955,7 +1956,7 @@ def test_protenix_v2_runs_from_supplied_weights(tmp_path: Path) -> None:
     """Supplying the checkpoint is the supported route, so it must resolve.
 
     `model_name` is not cosmetic here -- it carries v2's sampler schedule and
-    its 2,560-token limit -- so it has to survive the option surface rather
+    upstream's 2,560-token limit -- so it has to survive the option surface rather
     than being normalised to the managed model.
     """
     from foldjax.api import resolve_request

@@ -1777,7 +1777,8 @@ def _protenix_v2_assets(spec: ModelAssets, profile: str) -> ModelAssets:
     widths from the parameters they are handed -- the triangle head count is
     `tri_att_start.linear.weight.shape[0]` -- so c_z=256 and eight heads arrive
     with the checkpoint. What the model name carries is the rest of v2: its
-    sampler schedule and the 2,560-token limit `runtime_policy` enforces.
+    sampler schedule and upstream's 2,560-token limit, which `runtime_policy`
+    turns into a warning unless `strict_token_limit` asks for the refusal.
     """
     assert profile == PROTENIX_V2_PROFILE
     base = REGISTRY["protenix"]
@@ -1812,7 +1813,9 @@ def _protenix_v2_assets(spec: ModelAssets, profile: str) -> ModelAssets:
             f"{checkpoint.target(_PROTENIX_V2_MODEL)}, then run "
             "`foldjax weights fetch --model protenix --profile v2` to convert "
             f"it. Only the file with SHA-256 {checkpoint.sha256} is accepted; "
-            "a different file is refused. Predicts up to 2,560 tokens."
+            "a different file is refused. Upstream refuses v2 above 2,560 "
+            "tokens; FoldJAX warns and runs past it unless "
+            "strict_token_limit=true."
         ),
     )
 

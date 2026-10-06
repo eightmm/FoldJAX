@@ -2208,9 +2208,10 @@ separation with `clip(delta, 0, 2 * r_max)` at r_max=32, so nothing in the
 model is bounded by token count. A budget calibrated on one implementation
 does not transfer to another that uses less, so FoldJAX warns with the
 expected size and runs. Measured: 3,012 tokens, five completed samples,
-**78.2 GiB**. Pass `--option strict_token_limit=true` for upstream's refusal
-instead. Neither implementation validates the model at that length, and the
-warning says so.
+**78.2 GiB**. The warning is the default (`strict_token_limit=false`); pass
+`--option strict_token_limit=true` for upstream's refusal of anything above
+2,560 tokens instead. Neither implementation validates the model at that
+length, and the warning says so.
 
 Capacity is not free, and the arithmetic is simple enough to plan with. v2
 doubles the pair channel, and the trunk's dominant tensors are pair tensors of
