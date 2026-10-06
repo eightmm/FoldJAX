@@ -109,8 +109,8 @@
   umask mode,** not `tempfile`'s owner-only `0600`, as `confidence_full.npz`
   already was.
 
-### Documented
-
-- **OpenDDE's native writer has no `full_data_sample_*.json`.** Upstream
-  writes it by default; its pair arrays are program outputs here only under
-  `--option include_raw=true`. See `docs/ports/opendde/README.md`.
+- **The OpenDDE port notes say its native writer has no
+  `full_data_sample_*.json`.** Upstream writes one by default; its pair
+  arrays are program outputs here only under `--option include_raw=true`, so
+  writing it by default would add quadratic outputs to every run
+  (`docs/ports/opendde/README.md`).
