@@ -973,17 +973,25 @@ def _validate(
                 and model == "boltz2"
                 and Path(value.strip()).suffix.lower() == ".csv"
             ):
-                # Boltz dispatches on the suffix and pairs a CSV's rows by its
-                # `key` column (`data/parse/csv.py`), so this "unpaired"
-                # alignment would be paired after all -- the input refused just
-                # above as paired_msa.
+                # Boltz dispatches on the exact suffix: `.csv` is its paired
+                # alignment format, whose rows sharing a `key` are paired
+                # (`data/parse/csv.py`), so this "unpaired" alignment would be
+                # paired after all -- the input refused above as paired_msa.
+                # Any other spelling of the suffix it does not read at all.
+                named = f"entity {_ids(entity)[0]!r} names {value.strip()!r}"
                 _reject(
                     model,
                     "a .csv unpaired_msa",
-                    f"entity {_ids(entity)[0]!r} names {value.strip()!r}, and "
-                    "Boltz pairs a CSV alignment's rows by its key column. Give "
-                    "an .a3m here, or put a paired CSV in a native Boltz YAML "
-                    "msa field",
+                    (
+                        f"{named}, and .csv is Boltz's paired-alignment format: "
+                        "rows that share a key are paired. Give an .a3m here, or "
+                        "a native Boltz YAML whose msa field names the CSV to "
+                        "pair it"
+                        if Path(value.strip()).suffix == ".csv"
+                        else f"{named}, a suffix Boltz does not read as an "
+                        "alignment. Give an .a3m, or a native Boltz YAML for a "
+                        "paired .csv"
+                    ),
                 )
             if value is not None and model in _USE_RNA_MSA_MODELS and kind == "rna":
                 if feature == "paired_msa":

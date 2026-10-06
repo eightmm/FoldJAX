@@ -630,13 +630,15 @@ def test_boltz_refuses_a_csv_unpaired_msa_it_would_pair(
     with pytest.raises(ValueError, match="native Boltz YAML") as refused:
         _materialize(source, "boltz2", tmp_path / "out")
     assert "a .csv unpaired_msa" in str(refused.value)
+    paired = "paired-alignment format: rows that share a key are paired"
+    assert (paired in str(refused.value)) == (name == "hits.csv")
 
     # The same alignment as an .a3m is an ordinary unpaired MSA.
     job["entities"][0]["unpaired_msa"] = "hits.a3m"
     source = _write(tmp_path / "job.json", job)
     native = yaml.safe_load(_materialize(source, "boltz2", tmp_path / "ok").read_text())
     assert native["sequences"][0]["protein"]["msa"] == str(tmp_path / "hits.a3m")
-    # Only Boltz reads the key column, so the others still take the file.
+    # The refusal is Boltz-2's alone; this check does not extend to the others.
     job["entities"][0]["unpaired_msa"] = name
     source = _write(tmp_path / "job.json", job)
     _materialize(source, "alphafold3", tmp_path / "af3")
