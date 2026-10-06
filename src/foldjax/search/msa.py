@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -831,6 +832,97 @@ def _read_capped(response: Any, url: str) -> bytes:
     return body
 
 
+#: Seconds one remote search, or one request's retries, may take before it is
+#: abandoned. Overridden by ``FOLDJAX_MSA_MAX_WAIT_SECONDS``.
+MAX_WAIT_ENV = "FOLDJAX_MSA_MAX_WAIT_SECONDS"
+DEFAULT_MAX_WAIT_SECONDS = 3600.0
+#: Answers that mean "try again shortly": capacity (429) and a gateway or
+#: server that is restarting. Anything else is the server's real answer.
+_TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504})
+#: How often a connection failure or 5xx is retried; 429 is waited out for the
+#: whole budget instead, since it is the server asking for exactly that.
+_TRANSIENT_RETRIES = 5
+
+
+def resolve_max_wait_seconds(value: float | None = None) -> float:
+    """``value``, else ``FOLDJAX_MSA_MAX_WAIT_SECONDS``, else one hour."""
+    if value is not None:
+        return float(value)
+    raw = os.environ.get(MAX_WAIT_ENV, "").strip()
+    if not raw:
+        return DEFAULT_MAX_WAIT_SECONDS
+    try:
+        parsed = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{MAX_WAIT_ENV} must be a number of seconds") from exc
+    if parsed <= 0:
+        raise ValueError(f"{MAX_WAIT_ENV} must be positive")
+    return parsed
+
+
+def _send(
+    transport: HttpTransport,
+    method: str,
+    url: str,
+    data: bytes | None,
+    headers: Mapping[str, str],
+    timeout: float,
+    *,
+    budget: float,
+    first_delay: float,
+    label: str,
+) -> HttpResponse:
+    """One request, retried through the failures that are worth waiting out.
+
+    A dropped connection, a truncated body (``http.client.IncompleteRead``,
+    which is not an ``OSError``) or a 5xx is retried a few times with
+    exponential backoff; 429 is waited out for the whole ``budget``. What is
+    still failing at the end is a `SearchError` that names the server, so a
+    caller's ``except SearchError`` sees it rather than a stray exception type.
+    """
+    from foldjax import progress
+
+    host = urllib.parse.urlsplit(url).hostname or url
+    deadline = time.monotonic() + budget
+    delay = max(first_delay, 1.0)
+    retries = 0
+    while True:
+        try:
+            response: HttpResponse | None = transport(
+                method, url, data, headers, timeout
+            )
+        except (OSError, http.client.HTTPException) as exc:
+            response, failure = None, f"{type(exc).__name__}: {exc}"
+        else:
+            assert response is not None
+            if response.status not in _TRANSIENT_STATUSES:
+                return response
+            failure = f"HTTP {response.status}"
+        limited = response is not None and response.status == 429
+        if not limited:
+            retries += 1
+        if time.monotonic() + delay >= deadline:
+            if limited:
+                raise SearchError(
+                    f"{label} was rate-limited for the whole {budget:.0f}s "
+                    f"budget by {host}"
+                )
+            raise SearchError(
+                f"{label} to {host} failed ({failure}) within {budget:.0f}s"
+            )
+        if retries > _TRANSIENT_RETRIES:
+            raise SearchError(
+                f"{label} to {host} failed after {retries} attempts ({failure})"
+            )
+        progress.message(
+            f"  {host}: {label} "
+            + ("rate-limited" if limited else f"failed ({failure})")
+            + f"; retrying in {delay:.0f}s"
+        )
+        time.sleep(delay)
+        delay = min(delay * 2, 60.0)
+
+
 class RemoteMMseqs2Client:
     """Minimal ColabFold-compatible MMseqs2 ticket client using stdlib HTTP."""
 
@@ -848,8 +940,9 @@ class RemoteMMseqs2Client:
         transport: HttpTransport = _urllib_transport,
         timeout: float = 30.0,
         poll_interval: float = 5.0,
-        max_wait_seconds: float = 3600.0,
+        max_wait_seconds: float | None = None,
     ) -> None:
+        max_wait_seconds = resolve_max_wait_seconds(max_wait_seconds)
         if (username is None) != (password is None):
             raise ValueError("remote MSA basic auth requires username and password")
         if username is not None and auth_headers:
@@ -889,22 +982,21 @@ class RemoteMMseqs2Client:
         search fail on a condition whose entire meaning is that it is temporary,
         and lost the queue position of every sequence after it. The wait is
         bounded by ``max_wait_seconds``, the same budget the poll loop uses, so
-        a server that never recovers still ends the search.
+        a server that never recovers still ends the search. A dropped
+        connection or a 5xx is retried a few times the same way (`_send`).
         """
         url = f"{self.host_url}/{path.lstrip('/')}"
-        deadline = time.monotonic() + self.max_wait_seconds
-        delay = max(self.poll_interval, 1.0)
-        while True:
-            response = self.transport(method, url, data, self.headers, self.timeout)
-            if response.status != 429:
-                break
-            if time.monotonic() + delay >= deadline:
-                raise SearchError(
-                    f"remote MSA request {path!r} was rate-limited for the whole "
-                    f"{self.max_wait_seconds:.0f}s budget"
-                )
-            time.sleep(delay)
-            delay = min(delay * 2, 60.0)
+        response = _send(
+            self.transport,
+            method,
+            url,
+            data,
+            self.headers,
+            self.timeout,
+            budget=self.max_wait_seconds,
+            first_delay=self.poll_interval,
+            label=f"remote MSA request {path!r}",
+        )
         if response.status < 200 or response.status >= 300:
             raise SearchError(
                 f"remote MSA request {path!r} failed with HTTP {response.status}"
@@ -968,25 +1060,53 @@ class RemoteMMseqs2Client:
         self, query: str, *, mode: str, endpoint: str, names: Sequence[str]
     ) -> tuple[list[str], str]:
         """Run one ticket to completion and return the named archive members."""
+        from foldjax import progress
+
+        host = urllib.parse.urlsplit(self.host_url).hostname or self.host_url
         data = urllib.parse.urlencode({"q": query, "mode": mode}).encode()
+        deadline = time.monotonic() + self.max_wait_seconds
         response = self._json("POST", endpoint, data)
         state = response["status"]
+        # RATELIMIT or UNKNOWN in answer to a submission means the ticket was
+        # not taken; ColabFold's own client, and Boltz's, submit again. Polling
+        # the id such an answer carries waited on a job that did not exist.
+        delay = max(self.poll_interval, 1.0)
+        while state in {"UNKNOWN", "RATELIMIT"}:
+            if time.monotonic() + delay >= deadline:
+                raise SearchError(
+                    f"remote MSA server {host} answered {state} to every "
+                    f"submission for {self.max_wait_seconds:.0f}s"
+                )
+            progress.message(
+                f"  {host}: MSA submission {state.lower()}; resubmitting in "
+                f"{delay:.0f}s"
+            )
+            time.sleep(delay)
+            delay = min(delay * 2, 60.0)
+            response = self._json("POST", endpoint, data)
+            state = response["status"]
         job_id = response.get("id")
         if state in {"ERROR", "MAINTENANCE"}:
-            raise SearchError(f"remote MSA submission ended with status {state!r}")
+            raise SearchError(
+                f"remote MSA submission to {host} ended with status {state!r}"
+            )
         if not isinstance(job_id, str) or not job_id:
             raise SearchError("remote MSA submission response is missing a job id")
         validate_job_id(job_id)
-        deadline = time.monotonic() + self.max_wait_seconds
         while state in {"UNKNOWN", "RUNNING", "PENDING", "RATELIMIT"}:
             if time.monotonic() >= deadline:
-                raise TimeoutError(f"remote MSA search {job_id} timed out")
+                raise TimeoutError(
+                    f"remote MSA search {job_id} on {host} did not finish within "
+                    f"{self.max_wait_seconds:.0f}s (set {MAX_WAIT_ENV} to wait longer)"
+                )
             if self.poll_interval:
                 time.sleep(self.poll_interval)
             response = self._json("GET", f"ticket/{job_id}")
             state = response["status"]
         if state != "COMPLETE":
-            raise SearchError(f"remote MSA search {job_id} ended with status {state!r}")
+            raise SearchError(
+                f"remote MSA search {job_id} on {host} ended with status {state!r}"
+            )
         archive = self._request("GET", f"result/download/{job_id}")
         chunks: list[str] = []
         try:

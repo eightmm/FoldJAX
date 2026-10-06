@@ -83,6 +83,11 @@ def _duration(seconds: float) -> str:
     return f"{hours}h{minutes:02d}m"
 
 
+def message(text: str) -> None:
+    """One free-form progress line: a wait, a retry, a search that failed."""
+    _write(text)
+
+
 def header(model: str, target: str, seed: int) -> None:
     """Announce which run the following stage lines belong to."""
     _write(f"[foldjax] {model} · {target} · seed {seed}")
@@ -117,4 +122,4 @@ class Timeline:
         return {label: round(value, 2) for label, value in self._phases.items()}
 
 
-__all__ = ["Timeline", "disable", "enable", "enabled", "header"]
+__all__ = ["Timeline", "disable", "enable", "enabled", "header", "message"]

@@ -168,7 +168,12 @@ def _rcsb(calls: list | None = None, structures=None, unreachable=()):
 
 
 def _route(tmp_path, monkeypatch, *, m8=M8, structures=None, unreachable=()):
-    """Point `foldjax.template_search` at the fake server and RCSB."""
+    """Point `foldjax.template_search` at the fake server and RCSB.
+
+    A dropped connection is retried with backoff; the fake's are permanent, so
+    the waits between attempts are skipped.
+    """
+    monkeypatch.setattr("foldjax.search.msa.time.sleep", lambda _seconds: None)
     calls: dict[str, list] = {"server": [], "rcsb": []}
     cache = tmp_path / "home" / "templates"
 

@@ -10,6 +10,16 @@
   existing `processed/` is regenerated rather than reused, and a symlink
   planted at that name is replaced instead of written through.
 
+- **The remote MSA client rides out a busy server.** A submission answered
+  `RATELIMIT` or `UNKNOWN` is submitted again with backoff, as ColabFold's and
+  Boltz's clients do, instead of polling a job that does not exist. A 5xx, a
+  dropped connection or a truncated body (`http.client.IncompleteRead`, which
+  escaped every caller's `except`) is retried up to five times with
+  exponential backoff for searches and template-structure downloads alike; a
+  failure that persists is a search error naming the server. Waits print a
+  progress line instead of sitting silent, a timeout names the server, and the
+  one-hour ceiling is `FOLDJAX_MSA_MAX_WAIT_SECONDS`.
+
 ### Security
 
 - **Boltz-2 loads its processed arrays and molecule pickles without arbitrary

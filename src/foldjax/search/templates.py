@@ -34,9 +34,11 @@ from foldjax.search.msa import (
     RemoteMMseqs2Client,
     SearchError,
     _normalize_sequence,
+    _send,
     _sha256,
     _urllib_transport,
     require_https,
+    resolve_max_wait_seconds,
 )
 
 #: The archive member the ColabFold server writes its PDB70 hits to.
@@ -155,7 +157,7 @@ class RemoteTemplateHitsClient:
         transport: HttpTransport = _urllib_transport,
         timeout: float = 30.0,
         poll_interval: float = 5.0,
-        max_wait_seconds: float = 3600.0,
+        max_wait_seconds: float | None = None,
     ) -> None:
         self._client = RemoteMMseqs2Client(
             host_url,
@@ -361,7 +363,9 @@ class StructureStore:
         base_url: str | None = DEFAULT_STRUCTURE_URL,
         transport: HttpTransport = _urllib_transport,
         timeout: float = 60.0,
+        max_wait_seconds: float | None = None,
     ) -> None:
+        self.max_wait_seconds = resolve_max_wait_seconds(max_wait_seconds)
         self.cache_dir = Path(cache_dir)
         self.local_dir = Path(local_dir) if local_dir else None
         self.base_url = base_url.rstrip("/") if base_url else None
@@ -449,7 +453,17 @@ class StructureStore:
         if cached.is_file() and _cached_mmcif_is(cached, pdb_id):
             return cached.resolve()
         url = f"{self.base_url}/{pdb_id.upper()}.cif"
-        response = self.transport("GET", url, None, self.headers, self.timeout)
+        response = _send(
+            self.transport,
+            "GET",
+            url,
+            None,
+            self.headers,
+            self.timeout,
+            budget=self.max_wait_seconds,
+            first_delay=1.0,
+            label=f"template structure {pdb_id} download",
+        )
         if response.status != 200:
             raise SearchError(
                 f"template structure {pdb_id} download failed with HTTP "
