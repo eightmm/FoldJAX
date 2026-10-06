@@ -23,6 +23,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +78,111 @@ def _tokamax_api():
     import tokamax
 
     return tokamax
+
+
+# ---------------------------------------------------------------------------
+# Tokamax's HLO payload, and why the executed AlphaFold 3 program drops it.
+#
+# Every configurable Tokamax op wraps its body in
+# ``set_xla_metadata(xla_metadata_payload="tokamax:<json>")`` so offline tools
+# can find it in the HLO; the payload becomes ``OpMetadata.metadata_payload``.
+# On the GPU, a persistent-cache entry of the AlphaFold 3 program cannot be read
+# back: XLA's ``InlineMetadataPayloadsFromProtoPayloadTable`` refuses it with
+# ``RET_CHECK ... Invalid metadata payload id 201 with payloads size 192`` and
+# every warm process recompiles (jctc-v3 E9: 286 of the AlphaFold 3 warm
+# processes, FoldJAX and DeepMind's own runner alike; no other port). That check
+# only reads instructions that carry a payload, so a program with none cannot
+# fail it. The payload has no effect on the compiled code; the one reader this
+# backend has is the discovery lowering below (``get_bound_args`` finds the ops
+# by it), which keeps it.
+#
+# Discovery and execution lower the same jitted callable, and JAX shares one
+# trace between ``lower`` and the call when the context at the jit boundary is
+# the same -- so a cold process would otherwise execute (and cache) the trace
+# discovery made, payloads included, under a key no warm process asks for.
+# Discovery therefore lowers under an extra metadata entry, which is part of
+# the trace context and keeps the two traces apart.
+# ---------------------------------------------------------------------------
+
+_HLO_PAYLOAD_SUPPRESSED: ContextVar[bool] = ContextVar(
+    "foldjax_tokamax_hlo_payload_suppressed", default=False
+)
+_DISCOVERY_MARKER = "foldjax_tokamax_discovery"
+_PAYLOAD_GATE_LOCK = threading.Lock()
+_payload_gate_installed: bool | None = None
+
+
+def _install_payload_gate() -> bool:
+    """Route Tokamax's payload context through ``_HLO_PAYLOAD_SUPPRESSED``."""
+
+    global _payload_gate_installed
+    with _PAYLOAD_GATE_LOCK:
+        if _payload_gate_installed is not None:
+            return _payload_gate_installed
+        try:
+            from tokamax._src.ops import op as op_module
+        except ImportError:
+            _payload_gate_installed = False
+            return False
+        original = getattr(op_module, "_tokamax_metadata", None)
+        active = getattr(op_module, "_ACTIVE_TOKAMAX_PAYLOAD", None)
+        if not callable(original) or not isinstance(active, ContextVar):
+            _LOGGER.warning(
+                "this Tokamax has no recognised HLO payload hook; AlphaFold 3 "
+                "persistent-cache entries keep the payload and may not load"
+            )
+            _payload_gate_installed = False
+            return False
+
+        @contextmanager
+        def gated(json_data: str) -> Iterator[None]:
+            if not _HLO_PAYLOAD_SUPPRESSED.get():
+                with original(json_data):
+                    yield
+                return
+            # Keep Tokamax's own nesting record; only the HLO attribute goes.
+            previous = active.get()
+            payload = (
+                f"{previous}/tokamax:{json_data}"
+                if previous
+                else f"tokamax:{json_data}"
+            )
+            token = active.set(payload)
+            try:
+                yield
+            finally:
+                active.reset(token)
+
+        gated.__wrapped__ = original  # type: ignore[attr-defined]
+        op_module._tokamax_metadata = gated
+        _payload_gate_installed = True
+        return True
+
+
+@contextmanager
+def without_tokamax_hlo_payload() -> Iterator[None]:
+    """Trace Tokamax ops without their HLO payload inside this block."""
+
+    _install_payload_gate()
+    token = _HLO_PAYLOAD_SUPPRESSED.set(True)
+    try:
+        yield
+    finally:
+        _HLO_PAYLOAD_SUPPRESSED.reset(token)
+
+
+@contextmanager
+def _discovery_lowering() -> Iterator[None]:
+    """Lower with payloads, in a trace the executed call cannot reuse."""
+
+    from jax.experimental import xla_metadata
+
+    token = _HLO_PAYLOAD_SUPPRESSED.set(False)
+    try:
+        with xla_metadata.set_xla_metadata(**{_DISCOVERY_MARKER: "1"}):
+            yield
+    finally:
+        _HLO_PAYLOAD_SUPPRESSED.reset(token)
 
 
 def _canonical_json(value: Any) -> str:
@@ -1016,15 +1122,20 @@ class _PersistentModelCall:
 
     def __call__(self, rng_key: Any, batch: Any) -> Any:
         original = self.original
+
+        def lower() -> Any:
+            with _discovery_lowering():
+                return original.func.lower(
+                    *original.args,
+                    rng_key,
+                    batch,
+                    **(original.keywords or {}),
+                )
+
         return self.store.call(
             rng_key=rng_key,
             batch=batch,
-            lower=lambda: original.func.lower(
-                *original.args,
-                rng_key,
-                batch,
-                **(original.keywords or {}),
-            ),
+            lower=lower,
             invoke=lambda: original(rng_key, batch),
         )
 

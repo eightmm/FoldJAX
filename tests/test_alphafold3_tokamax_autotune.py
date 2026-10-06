@@ -969,3 +969,48 @@ def test_flock_recheck_allows_only_one_cross_process_builder(tmp_path: Path) -> 
 
     assert builders.value == 1
     assert {results.get(timeout=2) for _ in processes} == {b"complete"}
+
+
+def _glu_model():
+    """A jitted ``(params, rng_key, batch)`` callable holding one Tokamax op."""
+
+    tokamax = pytest.importorskip("tokamax")
+
+    def forward(params, rng_key, batch):
+        del batch
+        return tokamax.gated_linear_unit(
+            params, rng_key, activation=jax.nn.silu, implementation="xla"
+        )
+
+    x = jax.numpy.ones((4, 16, 8), jax.numpy.float32)
+    w = jax.numpy.ones((8, 2, 32), jax.numpy.float32)
+    return tokamax, jax.jit(forward), x, w
+
+
+def test_executed_program_drops_the_tokamax_payload_that_discovery_reads() -> None:
+    tokamax, forward, x, w = _glu_model()
+
+    class _ColdStore:
+        compatibility_key = ("cold",)
+
+        def call(self, *, rng_key, batch, lower, invoke):
+            self.discovered = lower()
+            return invoke()
+
+    store = _ColdStore()
+    runner = SimpleNamespace(_model=functools.partial(forward, x))
+    assert persistent.install_store(runner, store)
+    with persistent.without_tokamax_hlo_payload():
+        # A cold process: discovery lowers first, then the model executes.
+        runner._model(w, None)
+        executed = forward.lower(x, w, None)
+    discovered = store.discovered.as_text()
+    assert "xla_metadata_payload" in discovered
+    assert len(tokamax.autotuning.get_bound_args(store.discovered)) == 1
+    # The executed trace is not the one discovery made, and so carries no
+    # payload for XLA to serialise into the persistent-cache entry.
+    assert "xla_metadata_payload" not in executed.as_text()
+    assert "metadata_payload" not in executed.compile().as_text()
+    # Outside the block a fresh trace is Tokamax's own, payload included.
+    shipped = _glu_model()[1].lower(x, w, None)
+    assert "xla_metadata_payload" in shipped.as_text()
