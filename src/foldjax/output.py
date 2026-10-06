@@ -179,9 +179,15 @@ def _normalize_cif(path: Path, *, job: str, model: str, seed: int, index: int) -
         cif.quote(f"{job} predicted by {model} (seed {seed}, sample {index})"),
     )
     block.set_pair("_struct.entry_id", cif.quote(block.name))
-    # Through a sibling and a rename: written in place, a write cut short (a
-    # full disk) left a truncated structure that the run manifest then
-    # digested as the verified result.
+    _replace_cif(document, path)
+
+
+def _replace_cif(document, path: Path) -> None:
+    """Write an edited CIF document over ``path`` through a sibling and a rename.
+
+    Written in place, a write cut short (a full disk) left a truncated
+    structure that the run manifest then digested as the verified result.
+    """
     with tempfile.TemporaryDirectory(
         prefix=".foldjax-structure-", dir=path.parent
     ) as scratch:
@@ -250,7 +256,7 @@ def _ensure_plddt_b_factors(
         column = block.find_mmcif_category("_atom_site.").find_column("B_iso_or_equiv")
     for row, value in enumerate(plddt):
         column[row] = f"{value:.2f}" if np.isfinite(value) else "?"
-    document.write_file(str(path))
+    _replace_cif(document, path)
     return "filled"
 
 
