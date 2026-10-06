@@ -60,28 +60,37 @@ OPENDDE_ABAG_PROFILE = "abag"
 
 @dataclass(frozen=True)
 class SourceSpec:
-    """One tracked implementation file, or one recursive tree of them.
+    """One tracked implementation file, or one tree of them.
 
     ``path`` is relative to the installed `foldjax` package directory. With
     ``pattern`` set it names a directory whose matching files are tracked in
-    sorted order, which is how Boltz-2's whole model tree is bound: the port's
-    numerics live across forty files and enumerating them here would go stale
-    silently, so the policy is the directory rather than the listing.
+    sorted order, which is how every port's whole source tree is bound: a
+    port's numerics and featurization live across dozens of files and
+    enumerating them here would go stale silently, so the policy is the
+    directory rather than the listing. ``recursive=False`` matches only the
+    directory's own entries, for `models/`'s shared helpers, whose
+    subdirectories are the ports.
     """
 
     path: str
     pattern: str | None = None
+    recursive: bool = True
 
     @property
     def token(self) -> str:
         """A stable one-line spelling of this spec, for frozen fixtures."""
-        return self.path if self.pattern is None else f"{self.path}/**/{self.pattern}"
+        if self.pattern is None:
+            return self.path
+        if not self.recursive:
+            return f"{self.path}/{self.pattern}"
+        return f"{self.path}/**/{self.pattern}"
 
     def resolve(self, package: Path) -> tuple[Path, ...]:
         root = package / self.path
         if self.pattern is None:
             return (root,)
-        return tuple(sorted(root.rglob(self.pattern)))
+        found = root.rglob(self.pattern) if self.recursive else root.glob(self.pattern)
+        return tuple(sorted(path for path in found if path.is_file()))
 
 
 @dataclass(frozen=True)
@@ -134,15 +143,45 @@ class PortSpec:
     input_ccd_validator: str | None = None
 
 
+#: FoldJAX-owned code every port's prediction path runs through, beyond its
+#: own tree: the shared `models/_*.py` helpers (RNG, compile policy, kernels
+#: and their routing, stacking, context parallelism -- one flat directory, so
+#: a helper added later is bound without an edit here), the adapter base whose
+#: `realised_glu_backend` resolves an omitted option, and the common-job writer
+#: and translation in `input.py` that turns a FoldJAX document into the native
+#: one, including the MSA and template paths it writes.
+_SHARED_SOURCES: tuple[SourceSpec, ...] = (
+    SourceSpec("models", pattern="_*.py", recursive=False),
+    SourceSpec("backends/base.py"),
+    SourceSpec("input.py"),
+)
+
+#: Reads a user-supplied template structure for the dialects that map
+#: templates through it (Boltz-2's and OpenFold3's writers in `input.py`).
+_TEMPLATE_READER = SourceSpec("template_search.py")
+
+
 #: Every port, keyed by canonical model id.
 #:
 #: `manifest_sources` is the part with a persisted consequence. Each entry is a
-#: file whose *content* changes what the model predicts while the request's
+#: file whose *content* can change what the model predicts while the request's
 #: options stay identical, so a result produced before such a change must not
-#: satisfy a resume request made after it. The reason each one is tracked is on
-#: the entry; the policy is repair-driven rather than structural, which is why
-#: ordinary shared helpers (`_fsutil`, chemistry tables, string maps) are absent
-#: even though several ports import them.
+#: satisfy a resume request made after it. The policy is structural, not
+#: repair-driven: a port binds its whole source tree (featurizer, model,
+#: runner, native-input and output writers, vendored upstream code), the
+#: packaged data assets its featurizer loads, its adapter (which resolves
+#: omitted options), every module in another port's tree that its code
+#: imports, and `_SHARED_SOURCES`. `tests/test_portspec.py` re-derives the
+#: import closure of each tree and fails when a `foldjax.models` module it
+#: reaches is not bound. Package infrastructure outside `models/`
+#: (`padding`, `paths`, `schema`, `memory_policy`, the search clients) is not
+#: bound: what it decides is either an option already in the request identity
+#: or a remote search, which makes the run unverifiable on its own.
+#:
+#: Binding is by stat identity (`manifest.path_stat_identity`), so a reinstall
+#: or checkout that rewrites these files makes every earlier run of the port
+#: unresumable. That is the intended trade -- a rerun -- against silently
+#: reusing a prediction an upgraded featurizer or model would not make.
 PORTS: Mapping[str, PortSpec] = {
     "alphafold3": PortSpec(
         model="alphafold3",
@@ -152,8 +191,14 @@ PORTS: Mapping[str, PortSpec] = {
         # The managed AlphaFold 3 route runs a vendored runner against a
         # vendored source tree, but only when no explicit `source` is given and
         # only once the libcifpp selection resolves. That is a condition rather
-        # than a list, so `manifest.py` still spells it out.
-        manifest_sources=(),
+        # than a list, so `manifest.py` still spells it out. What is bound here
+        # is FoldJAX's own part of every route: the adapter, and the writer
+        # that turns a common job (and its template chain filter) into the
+        # AlphaFold 3 JSON.
+        manifest_sources=(
+            SourceSpec("backends/alphafold3.py"),
+            *_SHARED_SOURCES,
+        ),
         input_dialect="foldjax.input:_alphafold3",
     ),
     "boltz2": PortSpec(
@@ -166,22 +211,14 @@ PORTS: Mapping[str, PortSpec] = {
             StagingSpec(".foldjax-mols-*"),
         ),
         manifest_sources=(
-            # Native AMP/normalization repairs can change predictions with
-            # identical request options. Stat only source files, not mutable
-            # __pycache__ trees.
-            SourceSpec("models/boltz2/api.py"),
-            SourceSpec("models/boltz2/compile_policy.py"),
-            SourceSpec("models/boltz2/models", pattern="*.py"),
-            # FFI precision corrections change predictions without changing
-            # options: old outputs can contain TF32 attention or zero BF16
-            # triangle updates.
-            SourceSpec("models/_cueq.py"),
-            # The Pallas pair kernels and the site rule that routes to them.
-            # Since 2026-09-25 they are what an omitted option runs on a GPU,
-            # so their bytes change predictions with the options unchanged,
-            # and a result from before the default flipped must not resume.
-            SourceSpec("models/_pallas_pair.py"),
-            SourceSpec("models/_glu.py"),
+            # Native AMP/normalization repairs, the featurizer and its parsers,
+            # and the structure writer. Stat only source files, not mutable
+            # __pycache__ trees. The CCD `mols/` tree is bound by `manifest.py`
+            # beside the checkpoint.
+            SourceSpec("models/boltz2", pattern="*.py"),
+            SourceSpec("backends/boltz2.py"),
+            _TEMPLATE_READER,
+            *_SHARED_SOURCES,
         ),
         manifest_weight_assets="foldjax.manifest:_boltz2_weight_assets",
         input_dialect="foldjax.input:_boltz",
@@ -202,20 +239,15 @@ PORTS: Mapping[str, PortSpec] = {
             StagingSpec(".foldjax-stage-*", base="esmc"),
         ),
         manifest_sources=(
-            # Native autocast routing and dropout opmath change ordinary
-            # predictions as well as fixed-tape replay, without changing
-            # request options.
-            SourceSpec("models/esmfold2/inference.py"),
-            SourceSpec("models/esmfold2/models/esmc.py"),
-            SourceSpec("models/esmfold2/models/model.py"),
-            SourceSpec("models/esmfold2/models/diffusion.py"),
-            SourceSpec("models/esmfold2/models/trunk.py"),
-            SourceSpec("models/esmfold2/models/primitives.py"),
-            # Both the CUDA norm implementation and its CP routing affect ESM
-            # outputs even though they live outside this model's source
-            # directory.
+            # Native autocast routing, dropout opmath and the featurizer.
+            SourceSpec("models/esmfold2", pattern="*.py"),
+            SourceSpec("backends/esmfold2.py"),
+            # The CUDA norm implementation and the primitives it shares live in
+            # Boltz-2's tree and affect ESM outputs.
+            SourceSpec("models/boltz2/models/primitives/_common.py"),
             SourceSpec("models/boltz2/models/primitives/native_amp_norm.py"),
-            SourceSpec("models/_cp.py"),
+            SourceSpec("models/boltz2/models/primitives/native_pwa_weights.py"),
+            *_SHARED_SOURCES,
         ),
         manifest_weight_assets="foldjax.manifest:_esmfold2_weight_assets",
         input_dialect="foldjax.input:_esmfold2",
@@ -231,24 +263,18 @@ PORTS: Mapping[str, PortSpec] = {
         asset_staging=(StagingSpec(".foldjax-opendde-native-*"),),
         manifest_sources=(
             # Omitted options can change meaning when the native precision
-            # default changes. Bind both policy definitions so a legacy BF16
-            # result cannot satisfy an otherwise identical request whose
-            # default is now FP32.
+            # default changes; the adapter and `runner.py` hold those defaults,
+            # so a legacy BF16 result cannot satisfy an otherwise identical
+            # request whose default is now FP32.
+            SourceSpec("models/opendde", pattern="*.py"),
+            SourceSpec("models/opendde", pattern="*.npz"),
             SourceSpec("backends/opendde.py"),
-            SourceSpec("models/opendde/cli/predict.py"),
-            # The prediction body `cli/predict.py` used to hold. It moved out
-            # from under this entry, and everything the entry above was tracked
-            # for -- the precision defaults, the order they are applied in --
-            # moved with it, so both halves are bound or neither is.
-            SourceSpec("models/opendde/runner.py"),
-            SourceSpec("models/opendde/models/geometry.py"),
-            SourceSpec("models/opendde/models/sampling.py"),
-            SourceSpec("models/opendde/models/model.py"),
-            # Shared with Protenix. Old results predate the corrected directed
-            # pair initialization and must not survive an otherwise identical
-            # resume.
-            SourceSpec("models/protenix/models/heads/confidence.py"),
-            SourceSpec("models/_cueq.py"),
+            # OpenDDE featurizes through Protenix's `featurize_protein_json`
+            # (which loads its CCD tables) and runs Protenix's trunk, heads and
+            # primitives, so the whole Protenix tree and its tables are bound.
+            SourceSpec("models/protenix", pattern="*.py"),
+            SourceSpec("models/protenix", pattern="*.npz"),
+            *_SHARED_SOURCES,
         ),
         manifest_ccd_assets="foldjax.manifest:_ccd_chemistry_assets",
         input_dialect="foldjax.input:_protenix",
@@ -260,19 +286,16 @@ PORTS: Mapping[str, PortSpec] = {
         asset_profiles=(RELEASED_PROFILE,),
         asset_staging=(StagingSpec(".foldjax-stage-*"),),
         manifest_sources=(
-            # Sample-chunk/augmentation repairs change ordinary predictions
-            # without changing request options; a pre-repair result must not
-            # satisfy resume.
-            SourceSpec("models/openfold3/inference.py"),
-            SourceSpec("models/openfold3/models/augmentation.py"),
-            SourceSpec("models/openfold3/models/sampler.py"),
-            SourceSpec("models/_cueq.py"),
-            # The Pallas pair kernels and the site rule that routes to them.
-            # Since 2026-09-25 they are what an omitted option runs on a GPU,
-            # so their bytes change predictions with the options unchanged,
-            # and a result from before the default flipped must not resume.
-            SourceSpec("models/_pallas_pair.py"),
-            SourceSpec("models/_glu.py"),
+            # Sample-chunk/augmentation repairs, the featurizer, and the
+            # vendored upstream data pipeline under `_upstream/`.
+            SourceSpec("models/openfold3", pattern="*.py"),
+            SourceSpec("backends/openfold3.py"),
+            # Resolves an omitted triangle kernel to the fused GPU one.
+            SourceSpec("_openfold3_compile.py"),
+            SourceSpec("models/boltz2/models/primitives/_common.py"),
+            SourceSpec("models/boltz2/models/primitives/native_amp_norm.py"),
+            _TEMPLATE_READER,
+            *_SHARED_SOURCES,
         ),
         manifest_ccd_assets="foldjax.manifest:_openfold3_ccd_assets",
         input_dialect="foldjax.input:_openfold3",
@@ -298,24 +321,14 @@ PORTS: Mapping[str, PortSpec] = {
         },
         asset_staging=(StagingSpec(".foldjax-protenix-native-*"),),
         manifest_sources=(
-            # Shared with OpenDDE; see that entry for the directed pair
-            # initialization.
-            SourceSpec("models/protenix/models/heads/confidence.py"),
-            # Rigid augmentation and native mixed-precision conditioning
-            # changed predictions without changing request options or
-            # checkpoint bytes.
-            SourceSpec("models/protenix/models/model.py"),
-            SourceSpec("models/protenix/models/predict.py"),
-            SourceSpec("models/protenix/models/diffusion/diffusion.py"),
-            SourceSpec("models/protenix/models/trunk_blocks/trunk.py"),
-            SourceSpec("models/protenix/models/heads/head.py"),
-            SourceSpec("models/_cueq.py"),
-            # The Pallas multiplication is what an omitted option runs on a
-            # GPU since 2026-09-25. The GLU default did not change, but the
-            # released `xla` transition still runs through `_glu.py`
-            # (`gated_linear_unit`, `site_backend`), so its bytes are bound too.
-            SourceSpec("models/_pallas_pair.py"),
-            SourceSpec("models/_glu.py"),
+            # Rigid augmentation, native mixed-precision conditioning, the AMP
+            # and chunk policies, and the featurizer `data/featurize_json.py`
+            # with the CCD tables it loads (`ccd_std_residues.npz`,
+            # `ccd_ligands.npz`, `ccd_nucleotides.npz`).
+            SourceSpec("models/protenix", pattern="*.py"),
+            SourceSpec("models/protenix", pattern="*.npz"),
+            SourceSpec("backends/protenix.py"),
+            *_SHARED_SOURCES,
         ),
         manifest_weight_assets="foldjax.manifest:_protenix_weight_assets",
         manifest_ccd_assets="foldjax.manifest:_ccd_chemistry_assets",

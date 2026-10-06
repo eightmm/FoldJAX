@@ -73,8 +73,10 @@ def test_the_runner_is_tracked_as_a_manifest_source() -> None:
     tracked too; without this a runner edit would silently let a pre-edit
     result satisfy a post-edit resume.
     """
-    from foldjax import portspec
+    from foldjax import manifest
 
-    tokens = {source.token for source in portspec.PORTS["opendde"].manifest_sources}
-    assert "models/opendde/runner.py" in tokens
-    assert "models/opendde/cli/predict.py" in tokens
+    tracked = {
+        path.resolve() for path in manifest.implementation_dependency_paths("opendde")
+    }
+    assert Path(runner.__file__).resolve() in tracked
+    assert Path(predict_cli.__file__).resolve() in tracked
