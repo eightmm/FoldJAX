@@ -24,7 +24,7 @@ from foldjax.backends.esmfold2 import (
     ESMFold2Backend,
     _job_chains,
     _model_asset_snapshot,
-    _requires_all_atom_features,
+    _takes_split_route,
     managed_asset_profile,
 )
 from foldjax.paths import weights_dir
@@ -36,6 +36,29 @@ def _job(tmp_path, entities) -> str:
     path = tmp_path / "job.json"
     path.write_text(json.dumps({"name": "t", "entities": entities}))
     return path
+
+
+def _bare_chain_route(predict_job, features=None) -> dict[str, object]:
+    """`build_common_job_features` and `predict` fakes from a `predict_job` one.
+
+    Every job is featurized by the all-atom builder now, and a bare chain is
+    folded by one `predict` call -- `predict_job` minus its featurization --
+    so a fake written as `predict_job` keeps describing that route.
+    """
+    built = {"asym_id": np.asarray([[0]])} if features is None else features
+
+    def build_common_job_features(document, **kwargs):
+        del document, kwargs
+        return built
+
+    def predict(key, model_features, model, **kwargs):
+        del model_features
+        return predict_job(key, (), {}, model, **kwargs)[0]
+
+    return {
+        "build_common_job_features": build_common_job_features,
+        "predict": predict,
+    }
 
 
 def test_the_neutral_schedule_reaches_the_ports_own_names(tmp_path) -> None:
@@ -109,7 +132,7 @@ def test_external_esmc_keeps_the_released_language_model_branch(
         "foldjax.models.esmfold2.inference": SimpleNamespace(
             load=fake_load,
             seed_key=lambda seed: seed,
-            predict_job=lambda *args, **kwargs: (object(), object()),
+            **_bare_chain_route(lambda *args, **kwargs: (object(), object())),
         ),
         "foldjax.models.esmfold2.output": SimpleNamespace(
             write_prediction_outputs=lambda *args, **kwargs: {
@@ -158,7 +181,7 @@ def test_scalar_backend_withholds_unused_graph_outputs_without_exposing_an_overr
     inference_attributes = {
         "load": lambda *args, **kwargs: model,
         "seed_key": lambda seed: seed,
-        "predict_job": predict_job,
+        **_bare_chain_route(predict_job),
     }
     if managed_auxiliary_api:
         inference_attributes["MANAGED_AUXILIARY_OUTPUT_API"] = True
@@ -216,7 +239,7 @@ def _stub_prediction(tmp_path, monkeypatch, options):
         "foldjax.models.esmfold2.inference": SimpleNamespace(
             load=lambda *args, **kwargs: SimpleNamespace(has_language_model=False),
             seed_key=lambda seed: seed,
-            predict_job=predict_job,
+            **_bare_chain_route(predict_job),
         ),
         "foldjax.models.esmfold2.output": SimpleNamespace(
             write_prediction_outputs=lambda *args, **kwargs: {
@@ -407,12 +430,12 @@ def test_all_released_biomolecule_types_are_advertised() -> None:
         },
     ],
 )
-def test_noncanonical_chemistry_selects_all_atom_features(document) -> None:
-    assert _requires_all_atom_features(document)
+def test_noncanonical_chemistry_takes_the_split_route(document) -> None:
+    assert _takes_split_route(document)
 
 
-def test_plain_protein_keeps_the_historical_feature_path() -> None:
-    assert not _requires_all_atom_features(
+def test_plain_protein_keeps_the_single_predict_route() -> None:
+    assert not _takes_split_route(
         {"entities": [{"type": "protein", "id": "P", "sequence": "AS"}]}
     )
 
@@ -428,8 +451,8 @@ def test_plain_protein_keeps_the_historical_feature_path() -> None:
         ],
     ],
 )
-def test_protein_msa_and_multichain_jobs_use_creator_preprocessing(entities) -> None:
-    assert _requires_all_atom_features({"entities": entities})
+def test_protein_msa_and_multichain_jobs_take_the_split_route(entities) -> None:
+    assert _takes_split_route({"entities": entities})
 
 
 def test_all_biomolecule_job_uses_common_feature_builder(tmp_path, monkeypatch) -> None:
@@ -561,6 +584,11 @@ def test_padded_split_path_requests_managed_outputs(tmp_path, monkeypatch) -> No
             load=lambda *args, **kwargs: model,
             seed_key=real_inference.seed_key,
             build_job_features=real_inference.build_job_features,
+            # The real all-atom builder needs a CCD; the chain's feature
+            # shapes are what this test reads.
+            build_common_job_features=lambda document, **kwargs: (
+                real_inference.build_job_features([("ACD", "A", 0, 0)], {})
+            ),
             language_model_states=lambda *args, **kwargs: pytest.fail(
                 "the disabled language model was evaluated"
             ),
@@ -839,18 +867,38 @@ def test_all_atom_session_without_execution_never_acquires_ccd(
     assert calls == {"build": 0, "predict": 0}
 
 
-def test_plain_protein_prediction_never_acquires_ccd(tmp_path, monkeypatch) -> None:
+def test_a_plain_protein_is_featurized_from_the_ccd_on_the_single_route(
+    tmp_path, monkeypatch
+) -> None:
+    """A bare chain gets Biohub's CCD conformers, as a chain with an MSA does.
+
+    It used to take the transformers fork's protein-only featurizer and its
+    own conformer table, so attaching an alignment changed `ref_pos`. The
+    route it folds by is unchanged: one `predict` call, no LM stage.
+    """
     job = _job(tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACD"}])
     weights = tmp_path / "weights"
     weights.mkdir()
     model = SimpleNamespace(has_language_model=False)
+    seen: dict[str, object] = {}
+    features = {"asym_id": np.asarray([[0]])}
+
+    def build_common_job_features(document, *, base_dir, ccd_path, seed):
+        seen.update(document=document, ccd_path=ccd_path, seed=seed)
+        return features
+
+    def predict(key, model_features, loaded, **kwargs):
+        seen.update(features=model_features, lm_input=sorted(kwargs))
+        return {}
+
     modules = {
         "foldjax.models.esmfold2.inference": SimpleNamespace(
             load=lambda *args, **kwargs: model,
             seed_key=lambda seed: seed,
-            predict_job=lambda *args, **kwargs: (
-                {},
-                {"asym_id": np.asarray([[0]])},
+            build_common_job_features=build_common_job_features,
+            predict=predict,
+            predict_job=lambda *args, **kwargs: pytest.fail(
+                "a bare chain was featurized by the protein-only path"
             ),
         ),
         "foldjax.models.esmfold2.output": SimpleNamespace(
@@ -863,10 +911,6 @@ def test_plain_protein_prediction_never_acquires_ccd(tmp_path, monkeypatch) -> N
     monkeypatch.setattr(
         "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
     )
-    monkeypatch.setattr(
-        "foldjax.backends.esmfold2.managed_memory_lease",
-        lambda *_args, **_kwargs: pytest.fail("protein-only path acquired CCD"),
-    )
 
     ESMFold2Backend().predict(
         PredictionRequest(
@@ -874,8 +918,15 @@ def test_plain_protein_prediction_never_acquires_ccd(tmp_path, monkeypatch) -> N
             input=job,
             weights=weights,
             output_dir=tmp_path / "out",
+            seed=7,
             options={"no_language_model": True},
         )
+    )
+    assert seen["ccd_path"] == weights / "ccd.pkl"
+    assert seen["seed"] == 7
+    assert seen["features"] is features
+    assert not {"precomputed_lm_states", "precomputed_lm_embedding"} & set(
+        seen["lm_input"]
     )
 
 
@@ -917,6 +968,15 @@ def test_a_non_foldjax_document_says_so(tmp_path) -> None:
         _job_chains(path)
 
 
+def _document_chains(document) -> list[tuple[str]]:
+    """One `(sequence,)` per chain copy, which is all the fakes' builder reads."""
+    return [
+        (entity["sequence"],)
+        for entity in document["entities"]
+        for _ in (entity["id"] if isinstance(entity["id"], list) else [entity["id"]])
+    ]
+
+
 def _fake_session_modules(tmp_path, calls):
     model = SimpleNamespace(
         has_language_model=True,
@@ -938,6 +998,10 @@ def _fake_session_modules(tmp_path, calls):
             "mol_type": np.zeros_like(row),
             "token_attention_mask": np.ones_like(row, dtype=bool),
         }
+
+    def build_common_job_features(document, **kwargs):
+        del kwargs
+        return build_job_features(_document_chains(document), {})
 
     def language_model_states(features, loaded, *, packed_length):
         del loaded
@@ -972,6 +1036,7 @@ def _fake_session_modules(tmp_path, calls):
         load=load,
         seed_key=lambda seed: seed,
         build_job_features=build_job_features,
+        build_common_job_features=build_common_job_features,
         language_model_length=lambda features: int(features["input_ids"].shape[-1]) + 2,
         language_model_states=language_model_states,
         language_model_embedding=language_model_embedding,
@@ -1036,6 +1101,10 @@ def _fake_staged_session_modules(tmp_path, events):
             "token_attention_mask": np.ones_like(row, dtype=bool),
         }
 
+    def build_common_job_features(document, **kwargs):
+        del kwargs
+        return build_job_features(_document_chains(document), {})
+
     def language_model_embedding(features, loaded, *, packed_length):
         assert loaded.has_language_model
         assert not loaded.released
@@ -1068,6 +1137,7 @@ def _fake_staged_session_modules(tmp_path, events):
         release_language_model_parameters=release_language_model_parameters,
         seed_key=lambda seed: seed,
         build_job_features=build_job_features,
+        build_common_job_features=build_common_job_features,
         language_model_states=lambda *args, **kwargs: pytest.fail(
             "staged session used raw states"
         ),
@@ -1397,7 +1467,7 @@ def test_staged_transition_failure_clears_ownership_before_retry(
     assert names[-1] == "predict"
 
 
-def test_direct_backend_call_keeps_complete_native_load_and_predict_job(
+def test_direct_backend_call_keeps_complete_native_load_and_single_predict(
     tmp_path, monkeypatch
 ) -> None:
     events: list[tuple[str, object]] = []
@@ -1415,12 +1485,15 @@ def test_direct_backend_call_keeps_complete_native_load_and_predict_job(
 
     inference.load = load
 
-    def predict_job(*args, **kwargs):
-        del kwargs
-        events.append(("predict_job", None))
-        return {}, inference.build_job_features(args[1], args[2])
+    def predict(key, features, loaded, **kwargs):
+        # The single route: the language model runs inside this call.
+        assert loaded is complete
+        assert "precomputed_lm_embedding" not in kwargs
+        assert "precomputed_lm_states" not in kwargs
+        events.append(("predict", None))
+        return {}
 
-    inference.predict_job = predict_job
+    inference.predict = predict
     monkeypatch.setattr(
         "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
     )
@@ -1438,7 +1511,7 @@ def test_direct_backend_call_keeps_complete_native_load_and_predict_job(
         )
     )
 
-    assert events == [("complete", True), ("predict_job", None)]
+    assert events == [("complete", True), ("predict", None)]
 
 
 def test_request_session_loads_once_and_runs_esmc_once_per_input(
@@ -1749,9 +1822,11 @@ def test_available_ccd_is_part_of_the_model_asset_snapshot(tmp_path) -> None:
     assert after != before
 
 
-def test_multi_seed_session_keeps_predict_job_only_wrappers_compatible(
+def test_multi_seed_session_keeps_single_route_wrappers_compatible(
     tmp_path, monkeypatch
 ) -> None:
+    # A wrapper with no split language-model API folds a bare chain by its
+    # single `predict` in a session too, loading once across seeds.
     weights = _fake_session_weights(tmp_path)
     job = _job(tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACD"}])
     calls = {"load": 0, "predict_job": 0}
@@ -1769,7 +1844,7 @@ def test_multi_seed_session_keeps_predict_job_only_wrappers_compatible(
         "foldjax.models.esmfold2.inference": SimpleNamespace(
             load=load,
             seed_key=lambda seed: seed,
-            predict_job=predict_job,
+            **_bare_chain_route(predict_job),
         ),
         "foldjax.models.esmfold2.output": SimpleNamespace(
             write_prediction_outputs=lambda *args, **kwargs: {

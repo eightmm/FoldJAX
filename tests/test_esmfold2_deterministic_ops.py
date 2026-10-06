@@ -75,7 +75,8 @@ def test_the_option_reaches_the_ports_own_signature(tmp_path, monkeypatch) -> No
         "foldjax.models.esmfold2.inference": SimpleNamespace(
             load=lambda *_args, **_kwargs: SimpleNamespace(has_language_model=True),
             seed_key=lambda seed: seed,
-            predict_job=capture,
+            build_common_job_features=lambda *_args, **_kwargs: {},
+            predict=lambda *args, **kwargs: capture(*args, **kwargs)[0],
         ),
         "foldjax.models.esmfold2.output": SimpleNamespace(
             write_prediction_outputs=lambda *_args, **_kwargs: {
@@ -106,7 +107,8 @@ def test_an_unasked_run_passes_no_policy_at_all(tmp_path, monkeypatch) -> None:
         "foldjax.models.esmfold2.inference": SimpleNamespace(
             load=lambda *_args, **_kwargs: SimpleNamespace(has_language_model=True),
             seed_key=lambda seed: seed,
-            predict_job=capture,
+            build_common_job_features=lambda *_args, **_kwargs: {},
+            predict=lambda *args, **kwargs: capture(*args, **kwargs)[0],
         ),
         "foldjax.models.esmfold2.output": SimpleNamespace(
             write_prediction_outputs=lambda *_args, **_kwargs: {

@@ -191,7 +191,7 @@ def test_split_releases_raw_lm_and_full_features_before_export_and_writer(
     assert feature_refs[0]() is None
 
 
-def test_scalar_predict_job_graph_is_preserved_and_full_features_are_released(
+def test_scalar_single_predict_graph_is_preserved_and_full_features_are_released(
     tmp_path, monkeypatch
 ) -> None:
     feature_refs: list[weakref.ReferenceType[np.ndarray]] = []
@@ -199,23 +199,28 @@ def test_scalar_predict_job_graph_is_preserved_and_full_features_are_released(
     model = _model()
     prediction_key = object()
 
-    def predict_job(key, chains, alignments, loaded, **kwargs):
-        del chains, alignments
+    def predict(key, features, loaded, **kwargs):
         assert loaded is model
+        assert "input_only_large_temporary" in features
         seen.append((key, dict(kwargs)))
-        return {}, _feature_tree(feature_refs, all_biomolecule=False)
+        return {}
 
+    # A bare chain is featurized by the all-atom builder and still folded by
+    # one `predict` that runs the language model itself.
     inference = SimpleNamespace(
         MANAGED_AUXILIARY_OUTPUT_API=True,
         LANGUAGE_MODEL_FEATURES=("input_ids",),
         load=lambda *args, **kwargs: model,
         seed_key=lambda seed: prediction_key,
-        build_job_features=lambda *args: pytest.fail("split builder was used"),
+        build_common_job_features=lambda *args, **kwargs: _feature_tree(
+            feature_refs, all_biomolecule=True
+        ),
+        build_job_features=lambda *args: pytest.fail("legacy builder was used"),
         language_model_states=lambda *args, **kwargs: pytest.fail(
             "split LM was used"
         ),
-        predict=lambda *args, **kwargs: pytest.fail("split predictor was used"),
-        predict_job=predict_job,
+        predict=predict,
+        predict_job=lambda *args, **kwargs: pytest.fail("legacy route was used"),
     )
 
     def writer(prediction, features, *args, **kwargs):
@@ -259,10 +264,10 @@ def test_writer_exception_observes_released_input_only_features(
     inference = SimpleNamespace(
         load=lambda *args, **kwargs: model,
         seed_key=lambda seed: seed,
-        predict_job=lambda *args, **kwargs: (
-            {},
-            _feature_tree(feature_refs, all_biomolecule=False),
+        build_common_job_features=lambda *args, **kwargs: _feature_tree(
+            feature_refs, all_biomolecule=True
         ),
+        predict=lambda *args, **kwargs: {},
     )
 
     def fail_writer(prediction, features, *args, **kwargs):
@@ -447,9 +452,10 @@ def test_multi_seed_session_keeps_one_compact_embedding_not_feature_trees(
         ),
         load=lambda *args, **kwargs: model,
         seed_key=lambda seed: ("seed", seed),
-        build_job_features=lambda *args: _feature_tree(
-            feature_refs, all_biomolecule=False
+        build_common_job_features=lambda *args, **kwargs: _feature_tree(
+            feature_refs, all_biomolecule=True
         ),
+        build_job_features=lambda *args: pytest.fail("legacy builder was used"),
         language_model_states=lambda *args, **kwargs: pytest.fail(
             "session used raw LM states"
         ),

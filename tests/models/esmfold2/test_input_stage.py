@@ -45,15 +45,16 @@ def test_direct_backend_input_selectors(tmp_path, monkeypatch, selector):
     job.write_text('{"entities":[{"type":"protein","id":["A"],"sequence":"AG"}]}')
     seen = {}
 
-    def predict_job(*args, **kwargs):
+    def predict(*args, **kwargs):
         seen.update(kwargs)
-        return {"single_inputs": np.ones((1, 2, 3))}, {}
+        return {"single_inputs": np.ones((1, 2, 3))}
 
     modules = {
         "foldjax.models.esmfold2.inference": SimpleNamespace(
             load=lambda *a, **kw: SimpleNamespace(has_language_model=False),
             seed_key=lambda seed: seed,
-            predict_job=predict_job,
+            build_common_job_features=lambda *a, **kw: {},
+            predict=predict,
         ),
         "foldjax.models.esmfold2.output": SimpleNamespace(),
     }

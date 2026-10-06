@@ -24,8 +24,8 @@ Two things about it differ from the rest of the fleet and reach the interface:
 Upstream ESMFold2 is an all-biomolecule model. FoldJAX implements that released
 input contract in NumPy: proteins, DNA, RNA, CCD and SMILES ligands, modified
 residues and explicit covalent bonds all reach the same JAX model. Biohub's
-verified ``ccd.pkl`` supplies arbitrary component chemistry; an unchanged
-protein-only job retains the smaller historical in-package chemistry path.
+verified ``ccd.pkl`` supplies arbitrary component chemistry and every
+reference conformer, a bare protein chain's included.
 """
 
 from __future__ import annotations
@@ -1077,8 +1077,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         )
 
         document, document_base = _job_document(request.input)
-        chains, alignments = _chains_from_document(document, document_base)
-        all_atom_input = _requires_all_atom_features(document)
+        split_route = _takes_split_route(document)
         overrides = {
             name: int(options.pop(name))
             for name in ("num_recycles", "num_steps", "num_samples", "max_msa_depth")
@@ -1209,29 +1208,36 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         output_features = None
         lm_input = None
         try:
-            if all_atom_input:
-                weights_root = Path(request.weights)
-                if not weights_root.is_dir():
-                    weights_root = weights_root.parent
-                with self._ccd_memory_scope():
-                    prebuilt_features = inference.build_common_job_features(
-                        document,
-                        base_dir=document_base,
-                        ccd_path=weights_root / "ccd.pkl",
-                        seed=request.seed,
-                    )
+            # Every job is featurized by Biohub's all-atom input pipeline
+            # (`prepare_input.py`), the released end-to-end one, whose
+            # reference conformers come from the CCD. A bare single chain
+            # used to be featurized by the transformers fork's
+            # `prepare_protein_features` instead, with its own conformer
+            # table, so attaching an alignment changed `ref_pos` as well.
+            weights_root = Path(request.weights)
+            if not weights_root.is_dir():
+                weights_root = weights_root.parent
+            with self._ccd_memory_scope():
+                prebuilt_features = inference.build_common_job_features(
+                    document,
+                    base_dir=document_base,
+                    ccd_path=weights_root / "ccd.pkl",
+                    seed=request.seed,
+                )
 
-            if not all_atom_input and request.padding is None and (
+            if not split_route and request.padding is None and (
                 not managed_compact_lm or not split_lm_api
             ):
-                # Preserve the original, public no-padding path exactly.
-                # Wrappers that expose only ``predict_job`` keep working in a
-                # session and deliberately forgo the derived-state cache.
+                # The original public no-padding route for a bare chain: one
+                # `predict` call that runs the language model itself. Only
+                # the feature source changed; this is `predict_job` minus its
+                # featurization.
+                model_features = prebuilt_features
+                prebuilt_features = None
                 with matmul_precision():
-                    prediction, model_features = inference.predict_job(
+                    prediction = inference.predict(
                         inference.seed_key(request.seed),
-                        chains,
-                        alignments,
+                        model_features,
                         model,
                         return_distogram_logits=False,
                         **managed_output_kwargs,
@@ -1243,11 +1249,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                     else project_output_features(model_features)
                 )
             else:
-                model_features = (
-                    prebuilt_features
-                    if prebuilt_features is not None
-                    else inference.build_job_features(chains, alignments)
-                )
+                model_features = prebuilt_features
                 # ``model_features`` now owns this exact object.  Do not keep
                 # the all-atom builder's second alias through normalization,
                 # LM inference, and structure inference.
@@ -1501,8 +1503,13 @@ def _chains_from_document(
     return chains, alignments
 
 
-def _requires_all_atom_features(document: Mapping[str, Any]) -> bool:
-    """Use the creator pipeline beyond the legacy single-protein/query-only case."""
+def _takes_split_route(document: Mapping[str, Any]) -> bool:
+    """Whether an unpadded job runs the language model as its own stage.
+
+    Everything but a bare single protein chain does; that one keeps the
+    single-`predict` route it always took. Which route runs is all this
+    decides: every job is featurized by the all-atom pipeline.
+    """
 
     chains = sum(
         1 if isinstance(entity["id"], str) else len(entity["id"])

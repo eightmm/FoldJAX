@@ -1043,7 +1043,10 @@ def _esmfold2_aligned_padding(
             LANGUAGE_MODEL_FEATURES=(),
             load=lambda *args, **kwargs: model,
             seed_key=lambda seed: seed,
-            build_job_features=lambda *args, **kwargs: {
+            build_job_features=lambda *args, **kwargs: pytest.fail(
+                "the protein-only builder was used"
+            ),
+            build_common_job_features=lambda *args, **kwargs: {
                 "token_attention_mask": np.ones((1, 3), dtype=bool),
                 "atom_attention_mask": np.ones((1, 24), dtype=bool),
                 "msa_attention_mask": np.ones((1, 2, 3), dtype=bool),
