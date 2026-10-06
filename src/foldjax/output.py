@@ -22,6 +22,13 @@ list) nests each job's directories one level down, under ``<output_dir>/<job>/``
 because the sample number restarts for every job: it is always the diffusion
 index, never a rank and never a running count across jobs.
 
+Two viewer-facing guarantees are added there too, from the sample's
+`confidence_full.npz`: every mmCIF carries the model's pLDDT (0-100) in its
+`B_iso_or_equiv` column, filled in only where the native writer left something
+else; and a model that returns PAE gets an AlphaFold-DB-schema
+`predicted_aligned_error.json` beside the structure, which PAE viewers, Mol*
+and ChimeraX read as they read an AFDB entry.
+
 **Each `confidence.json` keeps the model's own scores under the model's own
 names** (``scores``), plus a ``summary`` block (`foldjax.summary`) that maps
 pLDDT, pTM, ipTM and the model's ranking score onto one name and one scale,
@@ -43,8 +50,11 @@ import os
 import re
 import shutil
 import tempfile
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
+
+import numpy as np
 
 from foldjax import confidence_arrays
 from foldjax.schema import PredictionOutputError, PredictionResult, PredictionSample
@@ -92,6 +102,28 @@ _RANKING_SCORE = {
 }
 
 _UNSAFE_NAME = re.compile(r"[^\w.-]+", flags=re.UNICODE)
+
+#: The AlphaFold-DB-schema PAE file in each canonical sample directory.
+PAE_JSON = "predicted_aligned_error.json"
+
+#: The top of each model's PAE scale: the centre of its last bin, which is what
+#: AlphaFold DB's ``max_predicted_aligned_error`` states (31.75 there). All six
+#: bin 0-32 A into 64 bins of 0.5 A. AlphaFold 3 spells it as 63 breaks over
+#: 0-31 A plus a catch-all bin (``confidence_head.py``, ``max_error_bin=31``);
+#: Protenix, OpenDDE and OpenFold3 as ``get_bin_centers(0, 32, 64)``; Boltz-2
+#: and ESMFold2 as ``arange(0.25, 32, 0.5)``. `tests/test_viewer_exports.py`
+#: recomputes each from the port's own code.
+MAX_PREDICTED_ALIGNED_ERROR = {
+    "alphafold3": 31.75,
+    "boltz2": 31.75,
+    "esmfold2": 31.75,
+    "opendde": 31.75,
+    "openfold3": 31.75,
+    "protenix": 31.75,
+}
+
+#: Rounding the writers apply to the B-factor column (two decimals at most).
+_B_FACTOR_TOLERANCE = 0.01
 
 
 def safe_job_name(name: str, *, limit: int = 120) -> str:
@@ -147,6 +179,149 @@ def _normalize_cif(path: Path, *, job: str, model: str, seed: int, index: int) -
     )
     block.set_pair("_struct.entry_id", cif.quote(block.name))
     document.write_file(str(path))
+
+
+def _atom_plddt_percent(
+    arrays: confidence_arrays.ConfidenceArrays,
+) -> np.ndarray | None:
+    """Per-atom pLDDT on 0-100 in the mmCIF's atom order, or None."""
+    if "atom_plddt" in arrays:
+        name, values = "atom_plddt", np.asarray(arrays["atom_plddt"], np.float64)
+    elif "token_plddt" in arrays and "atom_token_index" in arrays:
+        name = "token_plddt"
+        values = np.asarray(arrays["token_plddt"], np.float64)[
+            np.asarray(arrays["atom_token_index"], np.int64)
+        ]
+    else:
+        return None
+    if arrays.describe(name).get("scale") == "0-1":
+        values = values * 100.0
+    return values
+
+
+def _cif_float(text: str) -> float:
+    try:
+        return float(text)
+    except ValueError:  # '?' and '.' are mmCIF's unknown/inapplicable
+        return float("nan")
+
+
+def _ensure_plddt_b_factors(
+    path: Path, arrays: confidence_arrays.ConfidenceArrays
+) -> str:
+    """Make the mmCIF's ``B_iso_or_equiv`` column the model's pLDDT (0-100).
+
+    Returns ``"native"`` when the writer already put it there (to its own
+    rounding), ``"filled"`` when this wrote it, or why it could not. Edited as
+    a CIF document, like `_normalize_cif`, so no other category is touched;
+    an already-correct file is not rewritten.
+    """
+    from gemmi import cif
+
+    plddt = _atom_plddt_percent(arrays)
+    if plddt is None:
+        return "skipped: the confidence archive has no per-atom pLDDT"
+    document = cif.read(str(path))
+    block = document.sole_block()
+    table = block.find_mmcif_category("_atom_site.")
+    if len(table) != plddt.size:
+        return (
+            f"skipped: {len(table)} atom_site rows against {plddt.size} "
+            "per-atom pLDDT values"
+        )
+    if "_atom_site.B_iso_or_equiv" in list(table.tags):
+        column = table.find_column("B_iso_or_equiv")
+        written = np.asarray([_cif_float(value) for value in column])
+        if np.allclose(written, plddt, rtol=0.0, atol=_B_FACTOR_TOLERANCE):
+            return "native"
+    else:
+        table.loop.add_columns(["_atom_site.B_iso_or_equiv"], "?")
+        # The table is a view of the loop as it was; read the widened one.
+        column = block.find_mmcif_category("_atom_site.").find_column("B_iso_or_equiv")
+    for row, value in enumerate(plddt):
+        column[row] = f"{value:.2f}" if np.isfinite(value) else "?"
+    document.write_file(str(path))
+    return "filled"
+
+
+def _write_pae_json(path: Path, pae: np.ndarray, *, maximum: float) -> None:
+    """AlphaFold DB's PAE JSON: one object in a list, values to two decimals.
+
+    Written row by row: at 3,012 tokens the matrix is 9.1 million values, and
+    one ``json.dumps`` of the nested list would hold all of them as Python
+    floats at once.
+    """
+    rows = np.round(np.asarray(pae, dtype=np.float64), 2)
+    with tempfile.NamedTemporaryFile(
+        "w",
+        prefix=".foldjax-pae-",
+        suffix=".json",
+        dir=path.parent,
+        delete=False,
+        encoding="utf-8",
+    ) as handle:
+        staged = Path(handle.name)
+        try:
+            handle.write('[{"predicted_aligned_error": [')
+            for index, row in enumerate(rows):
+                if index:
+                    handle.write(",")
+                handle.write(json.dumps(row.tolist()))
+            handle.write(f'], "max_predicted_aligned_error": {maximum}}}]')
+        except BaseException:
+            handle.close()
+            staged.unlink(missing_ok=True)
+            raise
+    os.chmod(staged, 0o666 & ~confidence_arrays._umask())
+    os.replace(staged, path)
+
+
+def _viewer_exports(
+    sample: PredictionSample, directory: Path, structure: Path, *, model: str
+) -> PredictionSample:
+    """Write the PAE JSON and pLDDT B-factors from the placed confidence archive.
+
+    Their outcome is recorded under the sample's ``confidence_arrays`` record
+    as ``exports``; a failure is recorded there rather than raised, because a
+    viewer convenience is never worth losing the run it describes.
+    """
+    metadata = sample.metadata or {}
+    entry = metadata.get(confidence_arrays.RECORD_KEY)
+    archive = directory / confidence_arrays.FILENAME
+    if not isinstance(entry, Mapping) or entry.get("file") != archive.name:
+        return sample
+    exports: dict[str, object] = {}
+    try:
+        arrays = confidence_arrays.load_confidence_arrays(archive)
+    except (OSError, ValueError, KeyError) as error:
+        exports["error"] = f"the confidence archive could not be read: {error}"
+        arrays = None
+    if arrays is not None:
+        maximum = MAX_PREDICTED_ALIGNED_ERROR.get(model)
+        if "pae" not in arrays:
+            exports["pae_json"] = None
+        elif maximum is None:
+            exports["pae_json"] = None
+            exports["pae_json_reason"] = f"no PAE scale is recorded for {model!r}"
+        else:
+            try:
+                _write_pae_json(directory / PAE_JSON, arrays["pae"], maximum=maximum)
+                exports["pae_json"] = PAE_JSON
+            except OSError as error:
+                exports["pae_json"] = None
+                exports["pae_json_reason"] = str(error)
+        if structure.suffix.lower() in {".cif", ".mmcif"}:
+            try:
+                exports["plddt_b_factor"] = _ensure_plddt_b_factors(structure, arrays)
+            except Exception as error:  # noqa: BLE001 - recorded, never raised
+                exports["plddt_b_factor"] = f"failed: {error}"
+    return replace(
+        sample,
+        metadata={
+            **metadata,
+            confidence_arrays.RECORD_KEY: {**entry, "exports": exports},
+        },
+    )
 
 
 def confidence_payload(
@@ -338,6 +513,7 @@ def normalize(
             structure=target,
         )
         sample = confidence_arrays.place(sample, directory)
+        sample = _viewer_exports(sample, directory, target, model=result.model)
         samples.append(replace(sample, structure_path=target))
     return replace(result, samples=tuple(samples))
 

@@ -295,6 +295,51 @@ def test_boltz2_routes_pae_pde_and_token_plddt_per_sample(
         assert "chain_pair_iptm" in loaded.unavailable
 
 
+def test_boltz2_routes_chains_ptm_and_pair_chains_iptm(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from foldjax.backends.boltz2 import Boltz2Backend
+
+    out = tmp_path / "out"
+    out.mkdir()
+    paths = [out / f"job_model_{index}.cif" for index in range(2)]
+    for path in paths:
+        path.write_text("data_x\n")
+    pair = np.asarray([[[0.9, 0.3], [0.2, 0.8]], [[0.7, 0.1], [0.4, 0.6]]])
+
+    def native_predict(**kwargs):
+        return {
+            "coords": np.zeros((2, 4, 3)),
+            "plddt": np.full((2, 3), 0.5),
+            "out_paths": paths,
+            "raw": {
+                "pae": np.zeros((2, 3, 3)),
+                "pair_chains_iptm": pair,
+                "chains_ptm": np.diagonal(pair, axis1=-2, axis2=-1),
+            },
+            "confidence_index": {
+                "token_chain_id": np.asarray(["A", "A", "B"]),
+                "chain_id": np.asarray(["A", "B"]),
+            },
+        }
+
+    monkeypatch.setattr(
+        "foldjax.backends.boltz2.import_module",
+        lambda name: SimpleNamespace(predict=native_predict),
+    )
+    result = Boltz2Backend().predict(_boltz_request(tmp_path))
+
+    for index, sample in enumerate(result.samples):
+        loaded = load_confidence_arrays(
+            Path(sample.metadata["confidence_arrays"]["path"])
+        )
+        np.testing.assert_allclose(loaded["chain_pair_iptm"], pair[index])
+        np.testing.assert_allclose(loaded["chain_ptm"], np.diagonal(pair[index]))
+        assert loaded.describe("chain_ptm")["source"] == "chains_ptm"
+        assert loaded["chain_id"].tolist() == ["A", "B"]
+        assert not {"chain_ptm", "chain_pair_iptm"} & set(loaded.unavailable)
+
+
 def test_boltz2_index_maps_agree_with_the_written_mmcif(tmp_path: Path) -> None:
     """Token chain/residue maps, read through atom_token_index, name each CIF atom."""
     gemmi = pytest.importorskip("gemmi")
@@ -312,11 +357,13 @@ def test_boltz2_index_maps_agree_with_the_written_mmcif(tmp_path: Path) -> None:
     structure_npz = struct_dir / f"{record_id}.npz"
     index = _confidence_index(features, structure_npz)
     atom_mask = np.asarray(features["atom_pad_mask"]).reshape(-1)
+    token_plddt = np.linspace(0.2, 0.9, len(index["token_residue_index"]))
     path = write_prediction(
         structure_npz=structure_npz,
         coords=np.zeros((atom_mask.size, 3), dtype=np.float32),
         atom_pad_mask=atom_mask,
         out_path=tmp_path / "out.cif",
+        plddts=token_plddt,
         fmt="cif",
     )
     site = gemmi.cif.read_file(str(path)).sole_block().get_mmcif_category(
@@ -328,6 +375,15 @@ def test_boltz2_index_maps_agree_with_the_written_mmcif(tmp_path: Path) -> None:
     assert index["token_residue_index"][owners].tolist() == [
         int(value) for value in site["auth_seq_id"]
     ]
+    # The ModelCIF writer's B-factors are the token pLDDT of each atom's token.
+    archive = confidence_arrays.write(
+        tmp_path / FILENAME,
+        model="boltz2",
+        arrays={"token_plddt": token_plddt, **index},
+        scales={"token_plddt": "0-1"},
+    )
+    assert archive is not None
+    _assert_b_factors_are_the_plddt(load_confidence_arrays(tmp_path), path)
 
 
 # --- Protenix and OpenDDE (one writer) ----------------------------------------
@@ -408,6 +464,7 @@ def test_protenix_writer_stages_arrays_in_cif_atom_order(
             loaded["chain_ptm"], output["chain_ptm"][sample_index]
         )
         assert loaded["chain_id"].tolist() == ["P", "Q", "M"]
+        _assert_b_factors_are_the_plddt(loaded, cif)
         site = gemmi.cif.read_file(str(cif)).sole_block().get_mmcif_category(
             "_atom_site."
         )
@@ -428,6 +485,16 @@ def test_protenix_writer_stages_arrays_in_cif_atom_order(
         else:
             assert "pae" not in loaded
             assert "output_format" in loaded.unavailable["pae"]
+
+
+def _assert_b_factors_are_the_plddt(loaded, cif: Path) -> None:
+    """The writer's mmCIF B-factors already are the pLDDT it stages."""
+    pytest.importorskip("gemmi")
+    from foldjax.output import _ensure_plddt_b_factors
+
+    before = cif.read_bytes()
+    assert _ensure_plddt_b_factors(cif, loaded) == "native"
+    assert cif.read_bytes() == before
 
 
 def _assert_maps_name_every_cif_atom(loaded, cif: Path) -> None:
@@ -478,6 +545,7 @@ def test_esmfold2_writer_stages_plddt_and_reports_withheld_pae(
         assert "return_expected_errors" in loaded.unavailable["pae"]
         assert "return_auxiliary_outputs" in loaded.unavailable["chain_pair_iptm"]
         _assert_maps_name_every_cif_atom(loaded, cif)
+        _assert_b_factors_are_the_plddt(loaded, cif)
 
 
 def test_esmfold2_writer_stages_pae_pde_and_chain_pair_iptm(tmp_path: Path) -> None:
@@ -540,6 +608,7 @@ def test_esmfold2_all_biomolecule_maps_and_direct_pae(
         "SMILES",
     }
     _assert_maps_name_every_cif_atom(loaded, written["structures"][1])
+    _assert_b_factors_are_the_plddt(loaded, written["structures"][1])
 
 
 @pytest.mark.parametrize("multimer", [True, False])
@@ -575,6 +644,7 @@ def test_openfold3_writer_stages_atom_plddt_and_chain_pair_iptm(
         else:
             assert "chain_pair_iptm" in loaded.unavailable
         _assert_maps_name_every_cif_atom(loaded, cif)
+        _assert_b_factors_are_the_plddt(loaded, cif)
 
 
 def test_openfold3_writer_stages_expected_errors_and_chain_scores(
@@ -709,6 +779,7 @@ def test_alphafold3_routes_the_inference_result_arrays(tmp_path: Path) -> None:
         [float(value) for value in site["B_iso_or_equiv"]],
         atol=0.01,
     )
+    _assert_b_factors_are_the_plddt(loaded, cif)
 
 
 def test_opendde_writer_names_its_own_model(tmp_path: Path) -> None:
@@ -725,6 +796,7 @@ def test_opendde_writer_names_its_own_model(tmp_path: Path) -> None:
     loaded = load_confidence_arrays(confidence_arrays.staged_path(cif))
     assert loaded.model == "opendde"
     assert "include_raw" in loaded.unavailable["pae"]
+    _assert_b_factors_are_the_plddt(loaded, cif)
 
 
 def test_the_archive_gets_the_mode_an_ordinary_write_would(tmp_path):
