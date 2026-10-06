@@ -57,10 +57,13 @@ def test_native_dialects_are_not_mistaken_for_the_common_schema(
     assert detect_input_format(fasta) == "native"
 
 
-def test_unparseable_structured_file_is_treated_as_native(tmp_path: Path) -> None:
+def test_unparseable_structured_file_is_refused_in_one_line(tmp_path: Path) -> None:
+    """Passed on as native, it reached a backend's parser as a traceback."""
     broken = tmp_path / "job.json"
     broken.write_text("{not json at all")
-    assert detect_input_format(broken) == "native"
+    with pytest.raises(ValueError, match="is not readable as JSON") as error:
+        detect_input_format(broken)
+    assert "\n" not in str(error.value)
 
 
 def test_yaml_common_input_materializes_like_its_json_twin(tmp_path: Path) -> None:
