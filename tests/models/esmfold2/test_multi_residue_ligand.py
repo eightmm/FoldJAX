@@ -20,6 +20,8 @@ is a different entity from the single code.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -142,3 +144,49 @@ def test_multi_ccd_ligand_bonds_match_upstream(built) -> None:
         for left, right in np.argwhere(np.triu(built["token_bonds"][..., 0]))
     }
     assert edges == _UPSTREAM_BOND_EDGES
+
+
+_GOLDEN = Path(__file__).with_name("data") / "single_code_features_ed6eec3.npz"
+
+
+def _golden_documents() -> dict:
+    from tests.models.esmfold2.test_all_atom_features import _mixed_document
+
+    return {
+        "mixed": _mixed_document(),
+        "protein": {
+            "entities": [
+                {"type": "protein", "id": ["A", "B"], "sequence": "MKVLA"},
+                {"type": "protein", "id": "C", "sequence": "GSH"},
+            ]
+        },
+    }
+
+
+@pytest.mark.parametrize("name", ["mixed", "protein"])
+def test_single_code_and_protein_featurization_is_unchanged(monkeypatch, name) -> None:
+    """Every feature array as main ed6eec3, before the code list, built it.
+
+    The fixture holds ``build_job_features`` on the fake-chemistry mixed
+    document of ``test_all_atom_features`` (modified protein, DNA, RNA, a
+    covalently bonded single-code ATP, a SMILES ligand) and on a protein-only
+    job, computed with ed6eec3's ``all_atom.py`` on ``_golden_documents``;
+    the code-list change must leave both bit-identical.
+    """
+    from tests.models.esmfold2.test_all_atom_features import _FakeCCD as _MixedCCD
+
+    monkeypatch.setattr(all_atom, "get_ccd_store", _MixedCCD)
+    built = all_atom.build_job_features(
+        _golden_documents()[name], base_dir=".", ccd_path="unused", seed=7
+    )
+    with np.load(_GOLDEN, allow_pickle=False) as golden:
+        expected = {
+            key.split("/", 1)[1]: golden[key]
+            for key in golden.files
+            if key.startswith(f"{name}/")
+        }
+    assert set(built) == set(expected)
+    for key, value in expected.items():
+        actual = np.asarray(built[key])
+        assert actual.dtype == value.dtype, key
+        np.testing.assert_array_equal(actual, value, err_msg=key)
