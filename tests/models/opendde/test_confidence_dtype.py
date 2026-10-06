@@ -583,7 +583,9 @@ def test_the_cli_refuses_an_unknown_width_naming_the_allowed_ones(capsys) -> Non
 
     with pytest.raises(SystemExit):
         parser.parse_args([*required, "--confidence-dtype", "bfloat16"])
-    assert "'fp32', 'bf16'" in capsys.readouterr().err
+    # argparse quotes the choices on older Python patch releases only.
+    err = capsys.readouterr().err.replace("'", "")
+    assert "fp32, bf16" in err
 
 
 # --------------------------------------------------------- the released run --

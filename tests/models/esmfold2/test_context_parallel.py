@@ -544,7 +544,9 @@ _SIGN_PROBE = _FIXTURE + textwrap.dedent(
     with context_parallel(DEVICES, layout="2d"):
         honest = np.asarray(jax.device_get(jax.jit(trunk_program())(pair, pair_mask)))
     honest_diff = float(np.abs(reference - honest).max())
-    assert honest_diff < 3e-5, honest_diff
+    # Reassociation noise only: 3.3e-5 on a GitHub runner CPU, ~1e-5 locally;
+    # a broken ring is order one (asserted below), so 1e-4 still discriminates.
+    assert honest_diff < 1e-4, honest_diff
 
     for name, patch in MUTATIONS.items():
         originals = {key: getattr(trunk_module, key) for key in patch}
@@ -566,7 +568,7 @@ _SIGN_PROBE = _FIXTURE + textwrap.dedent(
             # the wrong part of the contracted axis.
             assert diff > 1.0, (name, diff)
         else:
-            assert diff < 3e-5, (name, diff)
+            assert diff < 1e-4, (name, diff)
 
     print("SIGN_TRAP_OK")
     """

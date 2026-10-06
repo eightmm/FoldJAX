@@ -31,7 +31,8 @@ count and they fail differently:
 * below 384 tokens the transition runs as one op, the widened pre-gate form is
   the tenant, and no value may carry more of it than one row block holds --
   where the unblocked spelling carries the whole local tile. The result there
-  is bitwise equal to the unblocked one;
+  equals the unblocked one to float32 rounding (bitwise on the reference host,
+  one ulp on a GitHub runner CPU);
 * above 384 tokens -- the released regime, and where the 2,096-token peak was
   measured -- the call site passes ``chunk_size=32`` and the tenant is instead
   the eight co-live output accumulators of the unrolled hidden-chunk loop.
@@ -309,15 +310,21 @@ _PROBE = textwrap.dedent(
             assert before["collectives"] == after["collectives"], (
                 dtype_name, layout, before["collectives"], after["collectives"]
             )
+            # Blocking a pure batch axis is exact arithmetic but may change
+            # XLA's fusion: a GitHub runner CPU moved float32 results by one
+            # ulp (1.2e-6). A real defect moves them by the tile's magnitude.
             for name in ("z", "m"):
-                np.testing.assert_array_equal(
-                    after[name], before[name], err_msg=f"{dtype_name} {layout} {name}"
+                np.testing.assert_allclose(
+                    np.asarray(after[name], np.float32),
+                    np.asarray(before[name], np.float32),
+                    rtol=0, atol=1e-5,
+                    err_msg=f"{dtype_name} {layout} {name}",
                 )
             print(
                 f"single-op {dtype_name} {layout} local={after['local']} "
                 f"bound={bound} widest {max(before['found'].values())} -> "
                 f"{max(after['found'].values())} "
-                f"collectives {after['collectives']} bitwise-equal"
+                f"collectives {after['collectives']} equal to 1e-5"
             )
 
     # The branch the released program actually takes. Above 384 tokens the
@@ -337,7 +344,7 @@ _PROBE = textwrap.dedent(
     # block-sized values appear -- the same movement the 2,112-token census
     # reads as 16 -> 1.
     #
-    # Nor is this branch bitwise equal, where the single-op one above is:
+    # Nor is this branch equal to rounding, as the single-op one above is:
     # blocking the rows lets XLA reassociate the eight-chunk accumulation, and
     # the result moves by a rounding of the compute dtype -- measured
     # `m` 0.0 (float32 1-D), 9.5e-7 (float32 2-D) and 7.8e-3 (bfloat16, one
