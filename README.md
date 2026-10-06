@@ -382,7 +382,10 @@ FoldJAX vendors these ports rather than depending on them, so one install covers
 data intake through model output. Each keeps its upstream module layout,
 `LICENSE` and `NOTICE`, so it stays diffable against the repository it came
 from; the top-level `NOTICE` lists every upstream, its license, and where its
-port lives. The parameter terms per model, which are not always the code
+port lives, and
+[`THIRD_PARTY_NOTICES`](https://github.com/eightmm/FoldJAX/blob/main/THIRD_PARTY_NOTICES)
+lists every carried third-party file and the proprietary NVIDIA wheels a GPU
+install pulls in. The parameter terms per model, which are not always the code
 license, are in [docs/licences.md](https://github.com/eightmm/FoldJAX/blob/main/docs/licences.md) -- publisher summaries,
 not legal advice. Model weights are never redistributed here; AlphaFold 3's
 must be requested from Google DeepMind under its

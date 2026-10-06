@@ -4,8 +4,9 @@ Copyright 2026 FoldJAX contributors
 This product includes software derived from OpenFold3:
 https://github.com/aqlaboratory/openfold-3
 
-OpenFold3 is Copyright the OpenFold Team and is licensed under the Apache
-License, Version 2.0. A copy is in LICENSE beside this file.
+OpenFold3 is Copyright 2026 AlQuraishi Laboratory (developed by the OpenFold
+Team) and is licensed under the Apache License, Version 2.0. A copy is in
+LICENSE beside this file.
 
 This is an independent community port and is not an official OpenFold project.
 OpenFold3 model weights are not distributed with this software; they are
@@ -35,3 +36,9 @@ that commit only as follows:
 - core/data/tools/kalign.py bounds the kalign LRU cache to 32 entries.
 core/config/pocket_sampling_config.py is vendored so the query schema parses
 pocket_constraint; FoldJAX refuses queries that set it.
+
+core/data/resources/patches.py contains three functions that upstream copied
+from Biotite (https://github.com/biotite-dev/biotite), Copyright 2017, The
+Biotite contributors, under the BSD 3-Clause License. That licence is
+reproduced in FoldJAX's THIRD_PARTY_NOTICES (repository root; in a wheel,
+the foldjax-*.dist-info/licenses/ directory).

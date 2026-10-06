@@ -325,7 +325,13 @@ def _clean_build_tree(destination: Path) -> list[Path]:
     """
     relative_paths = [
         Path(name)
-        for name in ("pyproject.toml", "README.md", "LICENSE", "NOTICE")
+        for name in (
+            "pyproject.toml",
+            "README.md",
+            "LICENSE",
+            "NOTICE",
+            "THIRD_PARTY_NOTICES",
+        )
         if (ROOT / name).is_file()
     ]
     relative_paths.extend(
@@ -441,6 +447,15 @@ def test_wheel_carries_alphafold3_first_use_build_inputs(tmp_path: Path) -> None
     missing = sorted(required - members)
     message = "required runtime/package files missing from wheel:\n"
     assert not missing, message + "\n".join(missing)
+    # The root licence, attribution and third-party notices (the Biotite
+    # BSD-3-Clause text among them) travel in the wheel's metadata directory.
+    licence_files = {
+        name.rpartition("/")[2]
+        for name in members
+        if name.partition("/")[0].endswith(".dist-info")
+        and name.rpartition("/")[0].endswith("/licenses")
+    }
+    assert {"LICENSE", "NOTICE", "THIRD_PARTY_NOTICES"} <= licence_files
 
     installed = tmp_path / "installed"
     with zipfile.ZipFile(wheels[0]) as archive:

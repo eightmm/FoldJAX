@@ -15,3 +15,34 @@ published parameters carry, which are not always the same thing.
 These are publisher summaries, not legal advice. Review the linked current
 terms before use; third-party chemistry assets, sequence databases and other
 referenced data retain their own licenses and terms.
+
+## Terms that ship with the code
+
+AlphaFold 3's `OUTPUT_TERMS_OF_USE.md`, `WEIGHTS_TERMS_OF_USE.md` and
+`WEIGHTS_PROHIBITED_USE_POLICY.md` are installed with the wheel, beside the
+vendored source in `foldjax/models/alphafold3/_upstream/` (the output terms
+also sit in its `alphafold3/` package). They are not software licences and
+FoldJAX grants nothing under them: the output terms govern what you may do
+with predictions made using AlphaFold 3 parameters, independently of the
+Apache-2.0 code.
+
+The repository's
+[`THIRD_PARTY_NOTICES`](https://github.com/eightmm/FoldJAX/blob/main/THIRD_PARTY_NOTICES),
+installed in the wheel's `foldjax-*.dist-info/licenses/` beside `LICENSE` and
+`NOTICE`, lists every carried third-party file with its licence and copyright,
+including the Biotite (BSD-3-Clause) functions inside the vendored OpenFold3
+pipeline, whose licence text it reproduces.
+
+## Proprietary GPU dependencies
+
+FoldJAX is Apache-2.0, but a GPU environment installs NVIDIA software that is
+not open source. `cuequivariance-ops-cu12`/`-cu13` and
+`cuequivariance-ops-jax-cu12`/`-cu13` are under NVIDIA's proprietary Software
+License Agreement, and the `nvidia-*` CUDA library wheels JAX's CUDA plugin
+pulls in are under NVIDIA's proprietary terms (`nvidia-ml-py` is BSD). They
+arrive through the `cuda12` and `cuda13` extras, through the default `gpu`
+dependency group that a bare `uv sync` enables, and through the Docker image,
+which always installs one of the two CUDA extras. A CPU-only install
+(`uv sync --no-default-groups`, or `pip install foldjax` without a CUDA
+extra) installs none of them. Anyone redistributing a GPU environment or
+image redistributes these wheels under NVIDIA's terms.

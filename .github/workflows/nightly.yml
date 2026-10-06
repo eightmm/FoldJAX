@@ -3,7 +3,8 @@ name: Nightly
 # What CI leaves out to stay inside its time limit: the `slow` tests (end-to-end
 # runs and the multi-minute context-parallel compiles), and the `network` tests
 # that reach RCSB. Nightly runs the whole suite, slow included, in the same
-# shards as CI (`tests.yml`), without the coverage gate.
+# shards as CI (`tests.yml`), without the coverage gate. It also audits the
+# lockfile for known vulnerabilities and publishes a CycloneDX SBOM.
 #
 # The CPU parity subset (`tests/parity`, `--run-cpu-parity`) is not here: it
 # needs released weights (about 14 GB before ESM-C) that exceed what the hosted
@@ -55,3 +56,57 @@ jobs:
 
       - name: Tests
         run: uv run --no-sync pytest -q -m network tests
+
+  # Known vulnerabilities in the locked dependency set. Advisories are published
+  # without a commit here, so this runs on the schedule rather than in PR CI,
+  # where an unrelated upstream CVE would redden every open pull request; a
+  # finding fails the nightly. The three exports are the environments people
+  # install: a bare `uv sync` (CUDA 13 plus dev), every extra on CUDA 13, and
+  # every extra on CUDA 12. Nothing is installed: pip-audit reads the pins.
+  dependency-audit:
+    name: dependency audit (pip-audit) and SBOM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.10.3"
+          enable-cache: true
+          python-version: "3.13"
+
+      - name: Export the locked environments
+        run: |
+          set -eu
+          mkdir -p audit
+          # `--quiet`: with `-o`, uv also echoes the export to the log.
+          export_lock="uv export --frozen --no-emit-project --quiet"
+          $export_lock --no-hashes -o audit/default.txt
+          $export_lock --no-hashes --all-extras --no-extra cuda12 \
+            -o audit/all-extras-cuda13.txt
+          $export_lock --no-hashes --no-default-groups --group dev \
+            --all-extras --no-extra cuda13 -o audit/all-extras-cuda12.txt
+          # CycloneDX export is a uv preview feature in 0.10.3.
+          for cuda in cuda12 cuda13; do
+            other=$([ "$cuda" = cuda12 ] && echo cuda13 || echo cuda12)
+            uv export --frozen --quiet --format cyclonedx1.5 \
+              --preview-features sbom-export --no-default-groups \
+              --all-extras --no-extra "$other" -o "audit/foldjax-$cuda.cdx.json"
+          done
+
+      - name: pip-audit
+        run: >
+          uvx pip-audit==2.10.1 --no-deps --disable-pip --progress-spinner off
+          -r audit/default.txt
+          -r audit/all-extras-cuda13.txt
+          -r audit/all-extras-cuda12.txt
+
+      - name: Upload SBOM and audited pins
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dependency-sbom
+          path: audit/
+          retention-days: 30

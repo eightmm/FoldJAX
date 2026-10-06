@@ -4,10 +4,19 @@ Copyright 2026 FoldJAX contributors
 Licensed under the Apache License, Version 2.0. See LICENSE.
 
 This product carries six published structure-prediction models behind one JAX
-interface. Five are independent JAX reimplementations; AlphaFold 3 carries
-upstream's own source. None is an official project of the organisation that
-published the original, and no model weights are distributed with this
-software.
+interface. Five models are reimplemented in JAX; AlphaFold 3 carries upstream's
+own source. The reimplementations still carry some upstream source where their
+input pipelines need it: Boltz-2's preprocessing under `models/boltz2/data/` is
+adapted from Boltz, OpenFold3's data pipeline under
+`models/openfold3/_upstream/` is vendored, and ESMFold2's residue constants and
+paired-MSA helper come from Biohub's code; each is identified below and in that
+port's NOTICE. None is an official project of the organisation that published
+the original, and no model weights are distributed with this software.
+
+THIRD_PARTY_NOTICES lists every carried third-party file with its licence and
+copyright, including code those upstreams themselves copied (Biotite, in the
+OpenFold3 pipeline), and the installed dependencies whose terms are not
+permissive.
 
   AlphaFold 3 https://github.com/google-deepmind/alphafold3
                Apache-2.0, Copyright 2024 DeepMind Technologies Limited
@@ -21,6 +30,9 @@ software.
                MIT, Copyright (c) 2024 Jeremy Wohlwend, Gabriele Corso,
                Saro Passaro and contributors
                -> src/foldjax/models/boltz2/{LICENSE,NOTICE}
+               The model is a reimplementation; the preprocessing and
+               featurization code under `models/boltz2/data/` is adapted from
+               upstream's `boltz.data`, file by file as that NOTICE lists.
 
   ESMFold2     https://huggingface.co/biohub/ESMFold2
                MIT plus upstream third-party notices, Copyright 2026 Chan
@@ -30,20 +42,24 @@ software.
                ESMFold2 support are identified in that NOTICE.
 
   OpenDDE      https://huggingface.co/aurekaresearch/OpenDDE
-               Apache-2.0
+               Apache-2.0, Copyright (c) 2026 Aureka AI Research (upstream's
+               source headers; its LICENSE names no holder)
                -> src/foldjax/models/opendde/{LICENSE,NOTICE}
 
   OpenFold3    https://github.com/aqlaboratory/openfold-3
-               Apache-2.0, Copyright the OpenFold Team
+               Apache-2.0, Copyright 2026 AlQuraishi Laboratory (the OpenFold
+               Team)
                -> src/foldjax/models/openfold3/{LICENSE,NOTICE}
                Two things are carried under this one upstream. The JAX port is
                a reimplementation; `models/openfold3/_upstream/` additionally
-               contains upstream's own *data pipeline*, vendored verbatim
-               (~46k lines) so featurization needs no separate checkout. That
-               tree is upstream's code under upstream's licence, kept in
-               upstream's style so it stays diffable against the repository it
-               came from; the single edit is marked in
-               `core/data/framework/__init__.py`.
+               contains the part of upstream's own *data pipeline* that
+               inference needs, vendored so featurization needs no separate
+               checkout. That tree is upstream's code under upstream's
+               licence, kept in upstream's style so it stays diffable against
+               the repository it came from; its few differences from upstream
+               v0.5.0 are listed in that NOTICE. One of its files carries
+               functions upstream copied from Biotite (BSD-3-Clause), whose
+               licence is reproduced in THIRD_PARTY_NOTICES.
 
   Protenix     https://github.com/bytedance/Protenix
                Apache-2.0, Copyright 2024 ByteDance and/or its affiliates

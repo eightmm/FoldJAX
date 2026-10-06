@@ -65,7 +65,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     echo "$extras" > /opt/foldjax/extras; \
     uv sync --frozen --no-default-groups --no-install-project $extras
 
-COPY README.md LICENSE NOTICE ./
+COPY README.md LICENSE NOTICE THIRD_PARTY_NOTICES ./
 COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-default-groups --no-editable $(cat /opt/foldjax/extras)
