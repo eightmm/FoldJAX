@@ -737,11 +737,21 @@ def _pocket_max_distance(model: str, pocket: Mapping[str, Any]) -> float:
 _Endpoint = tuple[str, int, str]
 
 
-def _bonds(job: dict[str, Any], chains: set[str]) -> list[tuple[_Endpoint, _Endpoint]]:
+def _bonds(
+    job: dict[str, Any],
+    chains: set[str],
+    lengths: Mapping[str, int] | None = None,
+) -> list[tuple[_Endpoint, _Endpoint]]:
     """Return validated ``[chain, residue, atom]`` endpoint pairs.
 
     ``chains`` is the set of known chain ids, or empty to skip that check when
-    the caller does not need chain resolution.
+    the caller does not need chain resolution. ``lengths`` maps a chain id to
+    its residue count, so an index past the chain's end is refused here for
+    every backend, as AlphaFold 3's own parser does
+    (``common/folding_input.py:1242-1246``), instead of as a Boltz ``KeyError``
+    or a featurizer error after the model has loaded. Atom names are left to
+    each backend's chemistry: which atoms a residue has (leaving atoms, SMILES
+    atom naming) differs between them.
     """
     value = job.get("bonds")
     if value is None:
@@ -769,6 +779,11 @@ def _bonds(job: dict[str, Any], chains: set[str]) -> list[tuple[_Endpoint, _Endp
                 raise ValueError(f"bond references unknown chain id: {chain!r}")
             if residue < 1:
                 raise ValueError("bond residue index is 1-based and must be positive")
+            if lengths is not None and chain in lengths and residue > lengths[chain]:
+                raise ValueError(
+                    f"bond residue index {residue} is outside chain {chain!r}, "
+                    f"which has {lengths[chain]} residue(s)"
+                )
             endpoints.append((chain, residue, atom))
         pairs.append((endpoints[0], endpoints[1]))
     return pairs
@@ -1052,7 +1067,13 @@ def _validate(
             "bonds",
             "its featurizer never applies covalent bonds, upstream or here",
         )
-    _bonds(job, chains)
+    # A common-schema ligand is one residue: one CCD code or one SMILES.
+    lengths = {
+        chain_id: 1 if entity["type"] == "ligand" else len(entity["sequence"])
+        for entity in entities
+        for chain_id in _ids(entity)
+    }
+    _bonds(job, chains, lengths)
     if job.get("properties") and "affinity" not in target.features:
         _reject(
             model,

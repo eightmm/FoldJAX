@@ -278,6 +278,38 @@ def test_bonds_translate_to_each_native_representation(
     ]
 
 
+@pytest.mark.parametrize(
+    "model", ["alphafold3", "boltz2", "esmfold2", "opendde", "protenix"]
+)
+@pytest.mark.parametrize(
+    ("endpoint", "length"),
+    [
+        # Chain A is "ACD": one past its end, as a 0-based index would land.
+        (["A", 4, "C"], 3),
+        # Copies share the entity's length.
+        (["B", 5, "P"], 4),
+        # A common-schema ligand is one residue.
+        (["L", 2, "PA"], 1),
+    ],
+)
+def test_a_bond_past_the_chain_end_is_refused_before_any_model(
+    tmp_path: Path, job: dict, model: str, endpoint: list, length: int
+) -> None:
+    endpoint = list(endpoint)
+    job["entities"][1]["id"] = ["B", "C"]
+    job["bonds"] = [[["A", 2, "OG"], endpoint]]
+    source = _write(tmp_path / "job.json", job)
+
+    with pytest.raises(ValueError, match=f"which has {length} residue") as refused:
+        _materialize(source, model, tmp_path / model)
+    assert f"bond residue index {endpoint[1]} is outside chain" in str(refused.value)
+
+    # The last residue of each chain is still addressable.
+    endpoint[1] = length
+    _write(source, job)
+    _materialize(source, model, tmp_path / f"{model}-ok")
+
+
 def test_protenix_bond_copy_index_follows_chain_order(tmp_path: Path) -> None:
     source = _write(
         tmp_path / "job.json",

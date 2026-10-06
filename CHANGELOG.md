@@ -93,6 +93,13 @@ unless it says so here, in its own paragraph.
   `paired_msa` for Boltz-2. Give an `.a3m`, or a native Boltz YAML for a
   paired CSV.
 
+- **A common job's bond whose residue index is past its chain's end is
+  refused while the job is validated, for every backend.** AlphaFold 3's own
+  parser already refused it; Boltz-2 failed with a bare `KeyError` and
+  Protenix, OpenDDE and ESMFold2 failed in their featurizers, after the job
+  had been accepted. A ligand counts as one residue. Atom names are still
+  checked by each backend, whose chemistry decides which atoms a residue has.
+
 ## 0.1.0 (2026-10-06)
 
 ### Added
