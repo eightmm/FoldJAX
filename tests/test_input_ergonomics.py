@@ -269,6 +269,103 @@ def test_boltz_takes_the_unpaired_alignment_and_never_a_paired_one(
     assert chain["msa"].endswith(".a3m")
 
 
+def test_boltz_server_csv_is_upstreams_compute_msa() -> None:
+    """Row for row what `boltz/main.py` `compute_msa` writes for one entity."""
+    from foldjax.input import boltz_server_msa_csv
+
+    paired = ">101\nAAAA\n>p1\n----\n>p2\nAC-A\n"
+    unpaired = ">101\nAAAA\n>u1\nACAA\n>u2\nAAcAA\n"
+    assert boltz_server_msa_csv(paired, unpaired).splitlines() == [
+        "key,sequence",
+        # Paired rows keep their row number as the key; the all-gap row goes.
+        "0,AAAA",
+        "2,AC-A",
+        # The query is already the first paired row, so the unpaired one goes.
+        "-1,ACAA",
+        "-1,AAcAA",
+    ]
+    # No paired block (a single entity): the unpaired rows alone, query kept.
+    assert boltz_server_msa_csv("", unpaired).splitlines() == [
+        "key,sequence",
+        "-1,AAAA",
+        "-1,ACAA",
+        "-1,AAcAA",
+    ]
+
+
+def test_boltz_pairs_a_heteromer_in_one_complex_search(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`--msa auto` on a heteromer pairs it, as Boltz-2's server search does.
+
+    Boltz submits its protein entities together as one `pairgreedy-env` job
+    and writes each a CSV whose paired rows share a key (`main.py`
+    `compute_msa`). The unpaired search alone left the complex unpaired.
+    """
+    from foldjax.models.boltz2.data.parse.csv import parse_csv
+
+    backend = _ComplexStubSearch()
+    monkeypatch.setattr(
+        "foldjax.msa_search._msa_pipeline", lambda: _stub_pipeline(tmp_path, backend)
+    )
+
+    native = json.loads(
+        _materialize(_heteromer(tmp_path), "boltz2", tmp_path / "out", msa="auto")
+        .read_text()
+    )
+
+    assert backend.complex_calls == [[SEQUENCE, OTHER_SEQUENCE]]
+    paths = [entry["protein"]["msa"] for entry in native["sequences"]]
+    assert all(path.endswith(".csv") for path in paths)
+    for path, sequence in zip(paths, (SEQUENCE, OTHER_SEQUENCE, SEQUENCE), strict=True):
+        lines = Path(path).read_text().splitlines()
+        hit = "A" * len(sequence)
+        assert lines[:3] == ["key,sequence", f"0,{sequence}", f"1,{hit}"]
+        assert all(line.startswith("-1,") for line in lines[3:])
+        # Boltz reads it as a paired alignment: the paired rows carry their key.
+        msa = parse_csv(Path(path))
+        assert [int(row["taxonomy"]) for row in msa.sequences[:2]] == [0, 1]
+
+
+def test_boltz_monomer_and_homomer_stay_unpaired(tmp_path: Path, monkeypatch) -> None:
+    """Upstream pairs only two or more protein entities; one gets none."""
+    backend = _ComplexStubSearch()
+    monkeypatch.setattr(
+        "foldjax.msa_search._msa_pipeline", lambda: _stub_pipeline(tmp_path, backend)
+    )
+    source = _write(
+        tmp_path / "job.json",
+        {"entities": [{"type": "protein", "id": ["A", "B"], "sequence": SEQUENCE}]},
+    )
+
+    native = json.loads(
+        _materialize(source, "boltz2", tmp_path / "out", msa="auto").read_text()
+    )
+
+    assert backend.complex_calls == []
+    assert native["sequences"][0]["protein"]["msa"].endswith(".a3m")
+
+
+def test_a_common_job_still_cannot_name_a_boltz_csv(tmp_path: Path) -> None:
+    alignment = tmp_path / "pairs.csv"
+    alignment.write_text("key,sequence\n0,MKT\n")
+    source = _write(
+        tmp_path / "job.json",
+        {
+            "entities": [
+                {
+                    "type": "protein",
+                    "id": "A",
+                    "sequence": "MKT",
+                    "unpaired_msa": str(alignment),
+                }
+            ]
+        },
+    )
+    with pytest.raises(ValueError, match="paired-alignment format"):
+        _materialize(source, "boltz2", tmp_path / "out")
+
+
 def test_openfold3_links_a_searched_alignment_under_a_stem_it_reads(
     tmp_path: Path, monkeypatch
 ) -> None:

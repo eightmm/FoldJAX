@@ -1804,6 +1804,77 @@ def _alphafold3(
     return native
 
 
+#: Boltz's ``const.max_paired_seqs`` and ``const.max_msa_seqs``, the two caps
+#: its server search writes a CSV under.
+_BOLTZ_MAX_PAIRED_SEQS = 8192
+_BOLTZ_MAX_MSA_SEQS = 16384
+
+
+def _a3m_rows(text: str) -> list[str]:
+    """An A3M's sequences in order, a record's continuation lines joined.
+
+    Boltz reads ColabFold's output as strict header/sequence line pairs
+    (``lines[1::2]``); reading by header gives the same rows for that output
+    and does not shift on a wrapped sequence.
+    """
+    rows: list[str] = []
+    current: list[str] | None = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith(">"):
+            if current is not None:
+                rows.append("".join(current))
+            current = []
+        elif current is not None:
+            current.append(line)
+    if current is not None:
+        rows.append("".join(current))
+    return rows
+
+
+def boltz_server_msa_csv(paired: str, unpaired: str) -> str:
+    """Upstream Boltz's per-entity CSV from a paired and an unpaired A3M.
+
+    The body of ``compute_msa`` (``boltz/main.py:496-522``): the paired rows
+    first, capped at 8,192, all-gap rows dropped and the rest keyed by their
+    row number so rows sharing a key across entities are paired; then the
+    unpaired rows, capped so the total stays at 16,384, minus the query when a
+    paired block already holds it, keyed ``-1``.
+    """
+    paired_rows = _a3m_rows(paired)[:_BOLTZ_MAX_PAIRED_SEQS]
+    keys = [index for index, row in enumerate(paired_rows) if row != "-" * len(row)]
+    paired_rows = [row for row in paired_rows if row != "-" * len(row)]
+    unpaired_rows = _a3m_rows(unpaired)[: _BOLTZ_MAX_MSA_SEQS - len(paired_rows)]
+    if paired_rows:
+        unpaired_rows = unpaired_rows[1:]
+    rows = paired_rows + unpaired_rows
+    keys = keys + [-1] * len(unpaired_rows)
+    return "\n".join(
+        ["key,sequence"] + [f"{key},{row}" for key, row in zip(keys, rows, strict=True)]
+    )
+
+
+def _boltz_server_csv(
+    entity: Mapping[str, Any], base: Path, destination: Path, entity_index: int
+) -> str:
+    """Write one entity's searched pair as the CSV Boltz reads; return its path."""
+    paired = Path(_path(entity["paired_msa"], base)).read_text(encoding="utf-8")
+    unpaired = Path(_path(entity["unpaired_msa"], base)).read_text(encoding="utf-8")
+    # Positional, like OpenFold3's links: chain ids are document data, not
+    # path components.
+    msa_root = destination / "msa"
+    if msa_root.is_symlink():
+        raise ValueError(f"generated MSA directory is a symlink: {msa_root}")
+    msa_root.mkdir(parents=True, exist_ok=True)
+    if not msa_root.resolve().is_relative_to(destination.resolve()):
+        raise ValueError(f"generated MSA directory escapes output root: {msa_root}")
+    target = msa_root / f"entity_{entity_index:04d}.csv"
+    _write_text_atomic(target, boltz_server_msa_csv(paired, unpaired))
+    return str(target.resolve())
+
+
 def _boltz(
     job: dict[str, Any],
     base: Path,
@@ -1812,7 +1883,7 @@ def _boltz(
     destination: Path | None = None,
 ) -> dict[str, Any]:
     sequences = []
-    for entity in job["entities"]:
+    for entity_index, entity in enumerate(job["entities"]):
         kind = entity["type"]
         body: dict[str, Any] = {"id": _ids(entity)}
         if kind == "ligand":
@@ -1825,7 +1896,18 @@ def _boltz(
                 body["smiles"] = str(entity["smiles"])
         else:
             body["sequence"] = str(entity["sequence"])
-            if entity.get("unpaired_msa"):
+            if entity.get("unpaired_msa") and entity.get("paired_msa"):
+                # Only `msa='auto'` attaches a paired alignment here (the
+                # common schema refuses one for Boltz-2); Boltz reads the pair
+                # as one CSV whose paired rows share a key.
+                if destination is None:
+                    raise ValueError(
+                        "a paired Boltz-2 alignment needs a destination directory"
+                    )
+                body["msa"] = _boltz_server_csv(
+                    entity, base, destination, entity_index
+                )
+            elif entity.get("unpaired_msa"):
                 body["msa"] = _path(entity["unpaired_msa"], base)
             elif kind == "protein":
                 # Boltz refuses a protein chain with neither an alignment nor an

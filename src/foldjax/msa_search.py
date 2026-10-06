@@ -48,7 +48,13 @@ _DEFAULT_LOCAL_VERSION = "local"
 #: Backends whose upstream pairs a complex in one search instead of pairing each
 #: chain on its own. Every other backend keeps the per-chain ``paircomplete``
 #: alignment this search inherited from the Protenix port.
-_COMPLEX_PAIRING = frozenset({"openfold3"})
+#:
+#: Boltz-2's server search (``main.py`` ``compute_msa``) submits its protein
+#: entities together as one ``pairgreedy-env`` job when there are two or more,
+#: then writes each entity a CSV whose paired rows share a ``key``. Its common
+#: schema takes no ``paired_msa`` -- only the search attaches one, after
+#: validation -- and the Boltz-2 writer turns the pair into that CSV.
+_COMPLEX_PAIRING = frozenset({"openfold3", "boltz2"})
 
 
 def report_search_failure(message: str) -> None:
@@ -202,7 +208,7 @@ def _search_alignments(
             "workflow, or supply unpaired_msa for it"
         )
     searched: list[dict[str, str]] = []
-    pairs_complex = model in _COMPLEX_PAIRING and "paired_msa" in target.features
+    pairs_complex = model in _COMPLEX_PAIRING
     if wanted:
         pipeline = _msa_pipeline()
         searched.extend(
@@ -291,13 +297,16 @@ def _pair_complex(
     policy: str,
     model: str,
 ) -> None:
-    """Pair the whole complex in one search, as OpenFold3 v0.5.0 does.
+    """Pair the whole complex in one search, as OpenFold3 v0.5.0 and Boltz-2 do.
 
     Upstream submits one ColabFold ``pairgreedy-env`` job per query, over its
     distinct protein sequences, and only when there is more than one of them
     (colabfold_msa_server.py:642-648, 940-975); a homomer gets no paired MSA.
     Its v0.5.0 featurizer requires every chain's paired block at one depth
     (sample_processing/msa.py:239-246), which per-chain pair jobs do not give.
+    Boltz-2 submits the same job over its protein *entities* (``main.py``
+    ``compute_msa``); here a common job's entities with one sequence are paired
+    as one query, as OpenFold3's are.
 
     Only a job whose protein chains were all searched here is paired: pairing
     submits every chain's sequence, and a chain that arrived with its own
@@ -328,10 +337,15 @@ def _pair_complex(
             if id(entity) not in searched_ids or entity.get("paired_msa")
         ]
         if supplied:
+            remedy = (
+                "a native Boltz YAML whose msa fields name paired .csv files"
+                if model == "boltz2"
+                else "paired_msa for every protein chain"
+            )
             warnings.warn(
                 f"{model}: not pairing the complex because chain(s) "
                 f"{', '.join(supplied)} carry their own alignment; supply "
-                "paired_msa for every protein chain to pair it",
+                f"{remedy} to pair it",
                 UserWarning,
                 stacklevel=3,
             )
