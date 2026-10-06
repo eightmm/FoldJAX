@@ -1833,6 +1833,18 @@ measured on: on a chaotic 3,012-token Protenix case the deterministic port
 landed 5-7 Å from the non-deterministic port and from native, the size of
 native's own basin choices. Read parity residuals with the option off.
 
+Without the option, a run is repeatable whenever it reuses its compiled
+executables. XLA chooses GPU kernels by timing candidates when it compiles,
+so two fresh compilations of the same program can pick different kernels
+(Triton against cuBLAS, different tile configurations) and round differently;
+on a target that amplifies small differences the two runs then land apart.
+In the JCTC benchmark, where every run compiled into an empty cache, two
+ESMFold2 runs of 9B7D at one seed differed in 65 of 578 kernel choices and
+lay 2.6 Å apart; replaying each run's own compilation cache on another card
+reproduced each of them bit for bit. Keep one `--cache-dir` (the default
+cache is persistent) to get the same structure again, and use
+`deterministic=on` when two independent compilations must agree.
+
 ### `--msa-seed` (Protenix)
 
 Seeds only the per-cycle MSA row draw, which is the released default as it
