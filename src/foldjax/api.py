@@ -1299,7 +1299,12 @@ def _predict_seeds(
     """Every seed of one prepared, locked model/input pair."""
     entry_failure_count = len(failures)
     seeds = request.resolved_seeds
-    if request.seed_source == RANDOM_SEED:
+    # A resumed run takes its seed back from the manifest rather than drawing
+    # one, and saying "drew" beside the reuse line would claim a fresh draw.
+    recorded = request.resume and seeds[0] == _recorded_random_seed(
+        request, request.output_dir
+    )
+    if request.seed_source == RANDOM_SEED and not recorded:
         # Upstream would leave this run unrepeatable; the drawn number is also
         # in the manifest, but a terminal line is where people look first.
         again = (
