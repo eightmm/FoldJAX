@@ -209,8 +209,10 @@ def _add_predict_arguments(
         help="structural templates for protein chains that name none: 'none' "
         "(default) uses only the job's own, 'auto' searches the ColabFold "
         "MMseqs2 server's PDB70 hits, fetches the structures from RCSB and "
-        "applies the model's released template filters and date cutoff. auto "
-        "SENDS THE SEQUENCE to that server (FOLDJAX_MSA_SERVER_URL points at "
+        "applies the model's released template filters and date cutoff, "
+        "'required' does the same and fails the run when the search cannot run "
+        "or keeps nothing. Both SEND THE SEQUENCE to that server "
+        "(FOLDJAX_MSA_SERVER_URL points at "
         "your own; FOLDJAX_TEMPLATE_COMMAND runs a local search). Protenix "
         "and OpenDDE need --option use_template=true; ESMFold2 has no "
         "template input",
@@ -218,8 +220,8 @@ def _add_predict_arguments(
     source.add_argument(
         "--template-max-date",
         metavar="YYYY-MM-DD",
-        help="with --templates auto: keep only templates released by this "
-        "date, instead of the model's released default (AlphaFold 3, "
+        help="with --templates auto/required: keep only templates released by "
+        "this date, instead of the model's released default (AlphaFold 3, "
         "Protenix, OpenDDE: 2021-09-30; OpenFold3 and Boltz-2: none)",
     )
     parser.add_argument(
@@ -494,11 +496,13 @@ def _parser() -> argparse.ArgumentParser:
 
     compare = commands.add_parser(
         "compare",
-        help="pairwise CA RMSD and coverage between every structure for each input",
+        help="pairwise RMSD (CA for proteins, C4' for nucleic acids) and "
+        "coverage between every structure for each input",
         description="Align every structure of each input in a finished output "
         "directory to every other one (all models, seeds and samples) with "
         "foldjax.align_structures, and write the RMSD, coverage and the residue "
-        "correspondence used to compare.json and compare.csv. Proteins are fitted "
+        "correspondence used to compare.json and compare.csv (pairs), and one row "
+        "per structure to compare_structures.csv. Proteins are fitted "
         "on CA, nucleic acids on C4'; ligands are carried, not fitted. Cost "
         "grows with the square of the structure count.",
     )
@@ -507,7 +511,8 @@ def _parser() -> argparse.ArgumentParser:
         "--out",
         type=Path,
         default=None,
-        help="where to write compare.json and compare.csv (default: PATH/compare)",
+        help="where to write compare.json, compare.csv and compare_structures.csv "
+        "(default: PATH/compare)",
     )
     compare.add_argument(
         "--samples",
@@ -892,36 +897,25 @@ class _WeightReporter:
 
 
 def _template_report() -> list[str]:
-    """What the template modality still needs, in the order it needs it."""
+    """What the template modality still needs, in the order it needs it.
+
+    Two searches exist and they are configured apart. `--templates auto` /
+    `required` is FoldJAX's (`foldjax.template_search`): its variables are
+    `FOLDJAX_TEMPLATE_*` and its aligner the `kalign` Python module, probed
+    with `find_spec` exactly as the search probes it. Protenix and OpenDDE
+    also carry upstream's native search, configured through their own options
+    (`template_mmcif_dir`, `kalign_binary`); those lines are labelled
+    `protenix-native` so neither is read as the other.
+    """
+    from foldjax.doctor import install_command
     from foldjax.models.protenix.data.search import templates
     from foldjax.paths import assets_dir
-
-    lines = []
-    metadata = ["release_date_cache.json", "obsolete_to_successor.json"]
-    missing = [name for name in metadata if not (assets_dir() / name).is_file()]
-    lines.append(
-        "metadata      missing: " + ", ".join(missing)
-        if missing
-        else "metadata      ready"
+    from foldjax.template_search import (
+        TEMPLATE_ENVIRONMENT,
+        template_search_backend,
     )
 
-    try:
-        binary = templates._resolve_kalign_binary(None)
-        lines.append(f"kalign        ready  {binary}")
-    except (ValueError, FileNotFoundError, RuntimeError) as error:
-        lines.append(f"kalign        {error}")
-
-    directory = os.environ.get("PROTENIX_TEMPLATE_MMCIF_DIR")
-    if directory and Path(directory).is_dir():
-        lines.append(f"coordinates   ready  {directory}")
-    else:
-        lines.append(
-            "coordinates   set PROTENIX_TEMPLATE_MMCIF_DIR to a directory of "
-            "mmCIF files (flat or PDB-divided, .cif or .cif.gz)"
-        )
-
-    from foldjax.template_search import template_search_backend
-
+    lines = []
     search = template_search_backend()
     hits = search["hits"]
     lines.append(
@@ -939,6 +933,29 @@ def _template_report() -> list[str]:
         f"{structures['url'] or 'no download'}"
     )
     lines.append(f"realignment   {search['aligner']}")
+    if search["aligner"] != "kalign-python":
+        lines.append(f"              {install_command('templates')}")
+    for name in TEMPLATE_ENVIRONMENT:
+        value = os.environ.get(name)
+        lines.append(f"  {name} " + ("unset" if value is None else repr(value)))
+
+    native = "protenix-native"
+    metadata = ["release_date_cache.json", "obsolete_to_successor.json"]
+    missing = [name for name in metadata if not (assets_dir() / name).is_file()]
+    lines.append(
+        f"{native} metadata  missing: " + ", ".join(missing)
+        if missing
+        else f"{native} metadata  ready"
+    )
+    try:
+        binary = templates._resolve_kalign_binary(None)
+        lines.append(f"{native} kalign    ready  {binary}")
+    except (ValueError, FileNotFoundError, RuntimeError) as error:
+        lines.append(f"{native} kalign    {error}")
+    lines.append(
+        f"{native} mmCIF     --option template_mmcif_dir=DIR (flat or "
+        "PDB-divided, .cif or .cif.gz)"
+    )
     return lines
 
 
@@ -1549,6 +1566,7 @@ _EXTRA_FOR_MODULE = {
     "scipy": "openfold3-preprocess",
     "triton": "cuda13",
     "jaxlib": "cuda13",
+    "kalign": "templates",
 }
 
 
@@ -1565,7 +1583,9 @@ def _with_hint(error: BaseException) -> str:
     if isinstance(error, ModuleNotFoundError) and error.name:
         extra = _EXTRA_FOR_MODULE.get(error.name.split(".")[0])
         if extra is not None:
-            return f"{message}\n  install it with: uv sync --extra {extra}"
+            from foldjax.doctor import install_command
+
+            return f"{message}\n  install it with: {install_command(extra)}"
         return message
     if isinstance(error, OSError) and error.errno == errno.ENOSPC:
         return (

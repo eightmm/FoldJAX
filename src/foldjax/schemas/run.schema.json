@@ -37,6 +37,15 @@
     "schema_version": {"type": "string", "pattern": "^1\\.[0-9]+$"},
     "artifact_paths": {"enum": ["manifest-relative", "absolute"]},
     "foldjax": {"type": "string"},
+    "foldjax_source": {
+      "description": "Where the FoldJAX that wrote this run came from: its package version, and `git describe --always --dirty` of the checkout it was imported from, or null for an installed wheel or when git is unavailable. Optional: absent from manifests written before it existed.",
+      "type": "object",
+      "required": ["version", "git_describe"],
+      "properties": {
+        "version": {"type": "string"},
+        "git_describe": {"type": ["string", "null"]}
+      }
+    },
     "finished": {"type": "string"},
     "model": {"type": "string", "minLength": 1},
     "input": {
@@ -110,8 +119,8 @@
     },
     "msa": {"type": "string"},
     "templates": {
-      "description": "The template-search policy: none, or auto. Optional: absent from manifests written before it existed, which ran with none.",
-      "enum": ["none", "auto"]
+      "description": "The template-search policy: none, auto, or required (search, and fail the run rather than fold without). Optional: absent from manifests written before it existed, which ran with none.",
+      "enum": ["none", "auto", "required"]
     },
     "template_max_date": {
       "description": "The caller's release-date cutoff for searched templates (YYYY-MM-DD), or null for the model's released default. Optional.",

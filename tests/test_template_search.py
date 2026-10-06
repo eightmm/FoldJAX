@@ -926,3 +926,78 @@ def test_live_ubiquitin_search_finds_a_released_template(tmp_path, monkeypatch):
     assert "error" not in record, record.get("error")
     assert record["hits"] > 0
     assert record["templates"], record
+
+
+def _materialize_required(source: Path, model: str):
+    records: list = []
+    path = materialize_native_input(
+        source,
+        capabilities(model),
+        source.parent / f"out-required-{model}",
+        seed=1,
+        msa="single",
+        templates="required",
+        template_search=records,
+    )
+    return path, records
+
+
+def test_required_attaches_what_auto_would(tmp_path, searched):
+    """`required` is `auto` with the fallback removed, not a second search."""
+    import yaml
+
+    path, records = _materialize_required(_job(tmp_path), "boltz2")
+    native = yaml.safe_load(path.read_text())
+    assert [Path(item["cif"]).stem for item in native["templates"]] == [
+        "3abc",
+        "4abc",
+        "2abc",
+        "5abc",
+    ]
+    assert len(records) == 1 and "error" not in records[0]
+
+
+def test_required_fails_when_the_search_cannot_run(tmp_path, monkeypatch):
+    def broken():
+        raise ValueError("FOLDJAX_MSA_SERVER_URL is set to an empty value")
+
+    monkeypatch.setattr(template_search, "_hits_pipeline", broken)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with pytest.raises(ValueError, match="templates='required'"):
+            _materialize_required(_job(tmp_path), "boltz2")
+    # Refused, not warned-and-folded: the `auto` fallback never ran.
+    assert _no_template_search_warning(caught)
+
+
+def test_required_fails_when_every_hit_is_dropped(tmp_path, monkeypatch):
+    _route(tmp_path, monkeypatch, unreachable=("*",))
+    with pytest.raises(ValueError, match=r"none of 5 template hits was kept"):
+        _materialize_required(_job(tmp_path), "boltz2")
+
+
+def test_required_refuses_a_job_with_nothing_to_search(tmp_path, searched):
+    source = tmp_path / "job.json"
+    dna = {"type": "dna", "id": "D", "sequence": "ACGT"}
+    source.write_text(json.dumps({"name": "t", "entities": [dna]}))
+    with pytest.raises(ValueError, match="no protein chain"):
+        _materialize_required(source, "boltz2")
+    assert searched == {"server": [], "rcsb": []}
+
+
+def test_required_is_a_request_policy_and_refused_where_auto_is(tmp_path):
+    from foldjax.registry import get_backend
+
+    job = _job(tmp_path)
+    request = PredictionRequest(
+        model="boltz2",
+        input=job,
+        templates="required",
+        template_max_date="2021-09-30",
+    )
+    assert request.template_max_date == "2021-09-30"
+    request = PredictionRequest(
+        model="esmfold2", input=job, input_format="foldjax", templates="required"
+    )
+    with pytest.raises(ValueError, match="templates='required' has nothing"):
+        get_backend("esmfold2").validate_request(request)

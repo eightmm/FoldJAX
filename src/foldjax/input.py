@@ -2464,14 +2464,18 @@ def materialize_native_input(
         )
     elif msa in ("none", "single"):
         _warn_single_sequence(job, model)
-    if templates == "auto":
+    if templates != "none":
         from foldjax.template_search import search_templates
 
         # After validation, like the alignment search: what is attached here
         # is born in the backend's form, so the writer below translates it
         # exactly as it translates a template the caller wrote.
         records = search_templates(
-            job, model, max_date=template_max_date, destination=output_dir
+            job,
+            model,
+            max_date=template_max_date,
+            destination=output_dir,
+            required=templates == "required",
         )
         _write_text_atomic(
             output_dir / "template_search.json", json.dumps(records, indent=2)

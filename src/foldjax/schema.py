@@ -44,8 +44,11 @@ MSA_POLICIES = ("none", "single", "auto", "required")
 #: PDB70 hits for every protein chain that names none, fetches the hit
 #: structures and applies the selected backend's released template filters and
 #: date cutoff (`foldjax.template_search`). It is opt-in for the same reason as
-#: ``msa='auto'``: it sends the sequence to a server.
-TEMPLATE_POLICIES = ("none", "auto")
+#: ``msa='auto'``: it sends the sequence to a server. ``required`` searches the
+#: same way and fails the run when the search cannot run or keeps no template
+#: for a chain it searched -- ``auto`` warns and folds without, which a batch
+#: script would only notice as a successful template-free run.
+TEMPLATE_POLICIES = ("none", "auto", "required")
 
 #: What a failing run does to the rest of the request.
 #: Where a run may stop. ``trunk`` exists so that downstream work can take
@@ -576,7 +579,8 @@ class PredictionRequest:
     templates: str = "none"
     # ``YYYY-MM-DD``: keep only searched templates released by this date. None
     # applies the selected backend's released default, which differs by model
-    # (`foldjax.template_search`). Meaningful only with ``templates="auto"``.
+    # (`foldjax.template_search`). Meaningful only when ``templates`` searches
+    # (``"auto"`` or ``"required"``).
     template_max_date: str | None = None
 
     def __post_init__(self) -> None:
@@ -602,10 +606,10 @@ class PredictionRequest:
                 "template_max_date",
                 _iso_date(self.template_max_date, name="template_max_date"),
             )
-            if self.templates != "auto":
+            if self.templates == "none":
                 raise ValueError(
                     "template_max_date filters searched templates; set "
-                    "templates='auto' (--templates auto) or drop it"
+                    "templates='auto' or 'required' (--templates auto) or drop it"
                 )
         if self.stop_after not in STOP_POINTS:
             raise ValueError(

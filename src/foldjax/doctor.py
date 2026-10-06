@@ -62,6 +62,7 @@ _EXTRA_DISTRIBUTIONS = {
         ("pdbeccdutils", ""),
         ("pydantic", ""),
     ),
+    "templates": (("kalign-python", ""),),
 }
 
 
@@ -73,6 +74,41 @@ def _distribution_version(name: str) -> str | None:
         return metadata.version(name)
     except metadata.PackageNotFoundError:
         return None
+
+
+def _installed_from_checkout() -> bool:
+    """Whether this FoldJAX runs from a source checkout rather than a built install.
+
+    A checkout is managed with uv (``uv sync``); a wheel installed by pip or
+    ``uv pip`` is extended with ``pip install 'foldjax[extra]'``. The installer
+    records which in ``direct_url.json``: an editable install says so, and a
+    package imported from a source tree on ``sys.path`` has no distribution.
+    """
+    from importlib import metadata
+
+    try:
+        distribution = metadata.distribution("foldjax")
+    except metadata.PackageNotFoundError:
+        return True
+    text = distribution.read_text("direct_url.json")
+    if not text:
+        return False
+    try:
+        return bool(json.loads(text).get("dir_info", {}).get("editable"))
+    except (ValueError, AttributeError):
+        return False
+
+
+def install_command(extra: str) -> str:
+    """The command that adds one extra to *this* installation.
+
+    ``--inexact`` because a bare ``uv sync --extra X`` uninstalls every extra
+    the command does not name -- following the hint for one would remove
+    another.
+    """
+    if _installed_from_checkout():
+        return f"uv sync --inexact --extra {extra}"
+    return f"pip install 'foldjax[{extra}]'"
 
 
 def _distribution_version_satisfies(version: str, specifier: str) -> bool | None:
@@ -190,7 +226,7 @@ def _input_readiness(info: Any) -> dict[str, dict[str, Any]]:
         if runtime_blocked:
             reasons.append("the model's generated preprocessing runtime is not ready")
         setup_commands = (
-            [f"uv sync --extra {extra}" for extra in requirement.required_extras]
+            [install_command(extra) for extra in requirement.required_extras]
             if missing or incompatible or unknown_extras
             else []
         )
@@ -219,9 +255,16 @@ def run_doctor(args: argparse.Namespace) -> int:
     import shutil as _shutil
 
     from foldjax.cli import _format_bytes, _template_report
+    from foldjax.manifest import source_describe
 
+    version = __import__("foldjax").__version__
     report_payload: dict[str, Any] = {
-        "foldjax": __import__("foldjax").__version__,
+        "foldjax": version,
+        # What the installer recorded. An editable install keeps the version
+        # of its last sync, so after a version change the two disagree until
+        # the checkout is synced again.
+        "distribution_version": _distribution_version("foldjax"),
+        "git_describe": source_describe(),
         "python": sys.version.split()[0],
         "platform": sys.platform,
         "home": str(paths.foldjax_home()),
@@ -304,6 +347,14 @@ def run_doctor(args: argparse.Namespace) -> int:
         return 0
 
     print(f"foldjax   {report_payload['foldjax']}  python {report_payload['python']}")
+    if report_payload["git_describe"]:
+        print(f"          checkout {report_payload['git_describe']}")
+    recorded = report_payload["distribution_version"]
+    if recorded is not None and recorded != version:
+        print(
+            f"          installed metadata says {recorded}; re-sync the "
+            "checkout (uv sync --inexact) to refresh it"
+        )
     if backend_name is None:
         print(f"jax       unavailable: {report_payload.get('jax_error')}")
     else:

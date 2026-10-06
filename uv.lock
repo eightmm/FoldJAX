@@ -456,8 +456,8 @@ name = "cuequivariance-ops-cu13"
 version = "0.11.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas", version = "13.1.1.3", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-7-foldjax-cuda12') or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13') or (extra == 'extra-7-foldjax-cuda12' and extra == 'group-7-foldjax-gpu')" },
-    { name = "nvidia-cublas", version = "13.6.0.2", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'emscripten' and extra != 'extra-7-foldjax-cuda12') or (sys_platform == 'win32' and extra != 'extra-7-foldjax-cuda12') or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13') or (extra == 'extra-7-foldjax-cuda12' and extra == 'group-7-foldjax-gpu')" },
+    { name = "nvidia-cublas", version = "13.1.1.3", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-7-foldjax-cuda13') or (sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'group-7-foldjax-gpu') or (sys_platform == 'emscripten' and extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13') or (sys_platform == 'emscripten' and extra == 'extra-7-foldjax-cuda12' and extra == 'group-7-foldjax-gpu') or (sys_platform == 'win32' and extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13') or (sys_platform == 'win32' and extra == 'extra-7-foldjax-cuda12' and extra == 'group-7-foldjax-gpu')" },
+    { name = "nvidia-cublas", version = "13.6.0.2", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'emscripten' and extra == 'extra-7-foldjax-cuda13') or (sys_platform == 'emscripten' and extra == 'group-7-foldjax-gpu') or (sys_platform == 'win32' and extra == 'extra-7-foldjax-cuda13') or (sys_platform == 'win32' and extra == 'group-7-foldjax-gpu') or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13') or (extra == 'extra-7-foldjax-cuda12' and extra == 'group-7-foldjax-gpu')" },
     { name = "nvidia-ml-py" },
     { name = "platformdirs" },
     { name = "tqdm" },
@@ -605,7 +605,7 @@ wheels = [
 
 [[package]]
 name = "foldjax"
-version = "0.1.0"
+version = "0.1.1.dev0"
 source = { editable = "." }
 dependencies = [
     { name = "biopython" },
@@ -670,6 +670,9 @@ openfold3-preprocess = [
     { name = "pdbeccdutils" },
     { name = "pydantic" },
 ]
+templates = [
+    { name = "kalign-python" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -681,7 +684,7 @@ dev = [
 ]
 gpu = [
     { name = "cuequivariance-ops-jax-cu13" },
-    { name = "jax", extra = ["cuda13"], marker = "extra == 'extra-7-foldjax-cuda13' or extra == 'group-7-foldjax-gpu' or extra != 'extra-7-foldjax-cuda12'" },
+    { name = "jax", extra = ["cuda13"], marker = "(extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13') or (extra != 'extra-7-foldjax-cuda13' and extra == 'group-7-foldjax-gpu') or (extra != 'extra-7-foldjax-cuda12' and extra == 'group-7-foldjax-gpu')" },
     { name = "triton" },
 ]
 
@@ -714,6 +717,7 @@ requires-dist = [
     { name = "jax", extras = ["cuda13"], marker = "extra == 'cuda13'", specifier = "==0.11.1" },
     { name = "jaxtyping", specifier = ">=0.2.34" },
     { name = "kalign-python", marker = "extra == 'openfold3-preprocess'" },
+    { name = "kalign-python", marker = "extra == 'templates'" },
     { name = "lmdb", marker = "extra == 'openfold3-preprocess'" },
     { name = "mashumaro", specifier = "==3.14" },
     { name = "memory-profiler", marker = "extra == 'openfold3-preprocess'" },
@@ -739,7 +743,7 @@ requires-dist = [
     { name = "triton", marker = "extra == 'cuda13'", specifier = "==3.7.1" },
     { name = "zstandard", marker = "extra == 'alphafold3'" },
 ]
-provides-extras = ["cuda12", "cuda13", "openfold3-preprocess", "alphafold3"]
+provides-extras = ["cuda12", "cuda13", "openfold3-preprocess", "templates", "alphafold3"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1165,7 +1169,7 @@ cuda12 = [
     { name = "jaxlib" },
 ]
 cuda13 = [
-    { name = "jax-cuda13-plugin", extra = ["with-cuda"], marker = "extra == 'extra-7-foldjax-cuda13' or extra == 'group-7-foldjax-gpu' or extra != 'extra-7-foldjax-cuda12'" },
+    { name = "jax-cuda13-plugin", extra = ["with-cuda"], marker = "extra == 'extra-7-foldjax-cuda13' or extra == 'group-7-foldjax-gpu'" },
     { name = "jaxlib" },
 ]
 

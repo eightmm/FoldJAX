@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "foldjax"
-version = "0.1.0"
+version = "0.1.1.dev0"
 description = "Six biomolecular structure-prediction models behind one JAX interface"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -127,6 +127,15 @@ openfold3-preprocess = [
     "networkx",
     "pdbeccdutils",
     "pydantic",
+]
+# Structural-template search (`templates="auto"`/`"required"`) realigns every
+# hit with Kalign for AlphaFold 3, Protenix, OpenDDE and OpenFold3
+# (`foldjax.template_search`). `kalign-python` is small (a ~250 KB wheel that
+# needs only NumPy) but publishes cp313 wheels for x86-64 Linux and macOS only:
+# in the base set it would make every aarch64 Linux install compile C from the
+# sdist, so it is an extra. `openfold3-preprocess` carries it too.
+templates = [
+    "kalign-python",
 ]
 # Publisher parity environments are deliberately external to FoldJAX's package
 # metadata. They remain useful for development evidence, but installing any
@@ -318,6 +327,9 @@ markers = [
 # `_alphafold3_upstream/run_alphafold.py` is DeepMind's runner, verbatim -- a
 # test asserts byte identity with upstream -- so measuring its lines would put
 # 320 vendored statements (16% of the denominator) on the orchestration gate.
+# Shards of one suite run on separate CI runners and are combined afterwards;
+# relative paths are what lets `coverage combine` merge them.
+relative_files = true
 omit = [
     "*/foldjax/models/*",
     "*/foldjax/search/*",

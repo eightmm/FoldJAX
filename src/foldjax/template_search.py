@@ -1,4 +1,4 @@
-"""The structural-template search behind ``templates='auto'``.
+"""The structural-template search behind ``templates='auto'`` and ``'required'``.
 
 `foldjax.input` calls into here while materializing a native input, after the
 common document is validated and before the dialect is written. The hits come
@@ -17,8 +17,8 @@ template search at all, so for it this is a FoldJAX convenience, not parity.
 
 Like `foldjax.msa_search`, searching **sends the query sequence** to the server
 unless a local command is configured, and nothing here runs unless asked for.
-A search that cannot run warns and leaves the chain without templates, and the
-run manifest records why.
+Under ``auto`` a search that cannot run warns and leaves the chain without
+templates, and the run manifest records why; under ``required`` it fails the run.
 """
 
 from __future__ import annotations
@@ -45,6 +45,13 @@ _TEMPLATE_LOCAL_VERSION_ENV = "FOLDJAX_TEMPLATE_LOCAL_VERSION"
 _TEMPLATE_MMCIF_DIR_ENV = "FOLDJAX_TEMPLATE_MMCIF_DIR"
 #: Where structures are downloaded from; an empty value disables downloading.
 _TEMPLATE_STRUCTURE_URL_ENV = "FOLDJAX_TEMPLATE_STRUCTURE_URL"
+#: Every variable the search reads, for `foldjax doctor`.
+TEMPLATE_ENVIRONMENT = (
+    _TEMPLATE_COMMAND_ENV,
+    _TEMPLATE_LOCAL_VERSION_ENV,
+    _TEMPLATE_MMCIF_DIR_ENV,
+    _TEMPLATE_STRUCTURE_URL_ENV,
+)
 
 
 @dataclass(frozen=True)
@@ -191,23 +198,23 @@ def refuse_template_search(
     *,
     input_format: str = "foldjax",
 ) -> None:
-    """Refuse ``templates='auto'`` where its result would be discarded.
+    """Refuse a template search where its result would be discarded.
 
     The search fills in FoldJAX-format jobs while they are translated; a
     native document is passed through untouched, so it would do nothing.
     """
-    if templates != "auto":
+    if templates == "none":
         return
     if input_format != "foldjax":
         raise ValueError(
-            "templates='auto' searches templates for FoldJAX-format jobs while "
+            f"templates={templates!r} searches templates for FoldJAX-format jobs while "
             f"they are translated; this {input_format!r} input is passed to "
             f"{model} untouched, so nothing would be searched. Put templates in "
             "the native document, or run a FoldJAX job"
         )
     if model not in POLICIES:
         raise ValueError(
-            f"{model} has no structural-template input, so templates='auto' has "
+            f"{model} has no structural-template input, so templates={templates!r} has "
             "nothing to deliver; run it with templates='none' (--templates none)"
         )
     from foldjax.input import _USE_TEMPLATE_MODELS
@@ -219,7 +226,7 @@ def refuse_template_search(
         raise ValueError(
             f"{model} reads templates only with use_template=true, and "
             "upstream's released default is false, which would discard a "
-            "searched template; templates='auto' does not turn it on. Set "
+            f"searched template; templates={templates!r} does not turn it on. Set "
             "--option use_template=true to search and read them, or run with "
             "--templates none"
         )
@@ -306,7 +313,7 @@ def template_search_backend() -> dict[str, Any]:
         "aligner": (
             "kalign-python"
             if importlib.util.find_spec("kalign") is not None
-            else "unavailable (install the openfold3-preprocess extra)"
+            else "unavailable (install the templates extra: kalign-python)"
         ),
     }
 
@@ -488,8 +495,8 @@ def _kalign_mapping(query: str, target: str) -> dict[int, int]:
         import kalign
     except ImportError as error:
         raise SearchError(
-            "templates='auto' realigns each hit with Kalign; install "
-            "kalign-python (the openfold3-preprocess extra)"
+            "template search realigns each hit with Kalign; install "
+            "kalign-python (the templates extra)"
         ) from error
     try:
         aligned = kalign.align([query, target])
@@ -733,12 +740,18 @@ def search_templates(
     *,
     max_date: str | None,
     destination: Path,
+    required: bool = False,
 ) -> list[dict[str, Any]]:
     """Attach searched templates to protein chains that name none.
 
     Returns one record per searched entity for the run manifest. A chain that
     already names templates keeps exactly those, as a chain with its own
     alignment keeps it under ``msa='auto'``.
+
+    ``required`` (``templates='required'``) turns every warning below into a
+    ``ValueError``: a search that cannot run, a chain whose search fails, and a
+    chain that keeps no template. A job with no protein chain at all is refused
+    too, since nothing could be searched for it.
     """
     from foldjax.input import _ids
     from foldjax.search.msa import SearchError
@@ -752,6 +765,13 @@ def search_templates(
         if entity.get("type") == "protein" and not entity.get("templates")
     ]
     if not wanted:
+        if required and not any(
+            entity.get("type") == "protein" for entity in job["entities"]
+        ):
+            raise ValueError(
+                "templates='required' but the job has no protein chain to search "
+                "templates for"
+            )
         return []
     records: list[dict[str, Any]] = []
     try:
@@ -763,7 +783,10 @@ def search_templates(
         pipeline, source = _hits_pipeline()
         store = _structure_store()
     except (SearchError, ValueError) as error:
-        _warn_failed(model, [_ids(entity)[0] for entity in wanted], error)
+        chains = [_ids(entity)[0] for entity in wanted]
+        if required:
+            _refuse_required(model, chains, error)
+        _warn_failed(model, chains, error)
         return [
             {"chains": _ids(entity), "error": str(error), "cutoff": cutoff_record}
             for entity in wanted
@@ -794,6 +817,8 @@ def search_templates(
                 memo[sequence] = (found, len(hits), chosen, skipped)
             found, total, chosen, skipped = memo[sequence]
         except (SearchError, TimeoutError, OSError, ValueError) as error:
+            if required:
+                _refuse_required(model, chains, error)
             _warn_failed(model, chains, error)
             record["error"] = str(error)
             records.append(record)
@@ -807,6 +832,13 @@ def search_templates(
         )
         if chosen:
             entity["templates"] = [dict(item.common) for item in chosen]
+        elif required:
+            reasons = ", ".join(f"{name} {count}" for name, count in skipped.items())
+            _refuse_required(
+                model,
+                chains,
+                f"none of {total} template hits was kept ({reasons or 'none tried'})",
+            )
         elif total:
             # The search ran and found hits, and every one of them was dropped:
             # a filter, a cutoff, or a download or realignment that failed.
@@ -827,9 +859,16 @@ def _require_kalign() -> None:
 
     if importlib.util.find_spec("kalign") is None:
         raise SearchError(
-            "templates='auto' realigns each hit with Kalign, which is not "
-            "installed; install kalign-python (the openfold3-preprocess extra)"
+            "template search realigns each hit with Kalign, which is not "
+            "installed; install kalign-python (the templates extra)"
         )
+
+
+def _refuse_required(model: str, chains: list[str], error: BaseException | str) -> None:
+    raise ValueError(
+        f"{model}: template search for chain(s) {', '.join(chains)} kept no "
+        f"template and templates='required': {error}"
+    ) from (error if isinstance(error, BaseException) else None)
 
 
 def _warn_failed(model: str, chains: list[str], error: BaseException | str) -> None:
