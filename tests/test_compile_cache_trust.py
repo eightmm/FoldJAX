@@ -30,7 +30,9 @@ def _mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
 
 
-def test_a_private_cache_is_created_without_group_write(tmp_path: Path) -> None:
+def test_a_private_cache_is_created_without_group_write(
+    tmp_path: Path, trust_ancestors_above_tmp_path
+) -> None:
     target = tmp_path / "compile" / "boltz2" / "weights" / "digest"
     previous = os.umask(0o002)
     try:
@@ -100,7 +102,9 @@ def test_the_environment_opts_in_to_a_shared_store(
     assert trusted_compile_cache_dir(target / "boltz2") == target / "boltz2"
 
 
-def test_the_scope_compiles_without_a_cache_it_refuses(tmp_path: Path) -> None:
+def test_the_scope_compiles_without_a_cache_it_refuses(
+    tmp_path: Path, trust_ancestors_above_tmp_path
+) -> None:
     import jax
 
     target = tmp_path / "compile"

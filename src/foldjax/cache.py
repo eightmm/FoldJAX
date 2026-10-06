@@ -274,30 +274,35 @@ def _untrusted_cache_reason(path: Path) -> str | None:
     other account may write to them: not the world (a root-owned sticky
     ancestor such as ``/tmp`` excepted) and not a group with another member.
     """
-    import stat
-
     if not hasattr(os, "geteuid"):  # pragma: no cover - POSIX only
         return None
-    uid = os.geteuid()
     leaf = Path(os.path.realpath(path))
     for directory in (leaf, *leaf.parents):
-        info = os.stat(directory)
-        if not stat.S_ISDIR(info.st_mode):
-            return f"{directory} is not a directory"
-        if info.st_uid not in (uid, 0):
-            return f"{directory} belongs to another user"
-        mode = stat.S_IMODE(info.st_mode)
-        sticky_root = (
-            info.st_uid == 0 and bool(mode & stat.S_ISVTX) and directory != leaf
-        )
-        if mode & stat.S_IWOTH and not sticky_root:
-            return f"{directory} is world-writable"
-        if (
-            mode & stat.S_IWGRP
-            and not sticky_root
-            and not _group_is_only_this_user(info.st_gid)
-        ):
-            return f"{directory} is writable by a group with other members"
+        reason = _untrusted_directory_reason(directory, leaf=directory == leaf)
+        if reason is not None:
+            return reason
+    return None
+
+
+def _untrusted_directory_reason(directory: Path, *, leaf: bool) -> str | None:
+    """`_untrusted_cache_reason` for one directory of the walk, if it fails."""
+    import stat
+
+    info = os.stat(directory)
+    if not stat.S_ISDIR(info.st_mode):
+        return f"{directory} is not a directory"
+    if info.st_uid not in (os.geteuid(), 0):
+        return f"{directory} belongs to another user"
+    mode = stat.S_IMODE(info.st_mode)
+    sticky_root = info.st_uid == 0 and bool(mode & stat.S_ISVTX) and not leaf
+    if mode & stat.S_IWOTH and not sticky_root:
+        return f"{directory} is world-writable"
+    if (
+        mode & stat.S_IWGRP
+        and not sticky_root
+        and not _group_is_only_this_user(info.st_gid)
+    ):
+        return f"{directory} is writable by a group with other members"
     return None
 
 

@@ -1176,7 +1176,7 @@ def test_openfold3_chunk_choices_keep_distinct_cache_namespace(
 
 
 def test_compilation_cache_scope_disables_and_restores_host_config(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, trust_ancestors_above_tmp_path
 ) -> None:
     import jax
     from jax.experimental.compilation_cache import compilation_cache
@@ -1227,7 +1227,7 @@ def test_compilation_cache_scope_disables_and_restores_host_config(
 
 
 def test_compilation_cache_scope_lifts_the_entry_floor_only_when_asked(
-    tmp_path: Path,
+    tmp_path: Path, trust_ancestors_above_tmp_path
 ) -> None:
     """OpenFold3 needs the floor lifted; nothing else may inherit that.
 
