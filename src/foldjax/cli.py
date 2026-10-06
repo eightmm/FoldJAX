@@ -27,18 +27,25 @@ from foldjax import (
     report,
     tools_cli,
 )
-from foldjax.api import predict_batch, preflight, resolve_requests
+from foldjax.api import _write_failures, predict_batch, preflight, resolve_requests
 from foldjax.input import is_jobs_file
 from foldjax.job import Job
 from foldjax.redaction import public_options
-from foldjax.registry import available_models, capabilities, model_info
+from foldjax.registry import (
+    available_models,
+    capabilities,
+    model_info,
+    normalize_model_name,
+)
 from foldjax.schema import (
     MSA_POLICIES,
     STOP_POINTS,
     TEMPLATE_POLICIES,
     BatchReport,
+    JobSource,
     PaddingConfig,
     PredictionError,
+    PredictionFailure,
     PredictionRequest,
     PredictionResult,
     expand_input_directories,
@@ -753,12 +760,20 @@ _JOB_SUFFIXES = (
 
 
 def _resolve_inputs(
-    args: argparse.Namespace, *, jobs_root: Path | None = None
+    args: argparse.Namespace,
+    *,
+    jobs_root: Path | None = None,
+    sources: dict[Path, JobSource] | None = None,
+    unreadable: list[tuple[Path, Exception]] | None = None,
 ) -> list[Path]:
     """Turn everything the CLI accepts as input into common job/native files.
 
     Generated job documents go to ``jobs_root``, or to the store's
-    ``runtime/jobs`` when it is None.
+    ``runtime/jobs`` when it is None. ``sources`` receives, per generated job
+    document, the FASTA or structure file it was written from. With
+    ``unreadable`` given, a file that cannot be converted is listed there
+    instead of ending the command -- `--keep-going` over a directory with one
+    empty FASTA file in it.
     """
     sequences = bool(args.sequence or args.dna or args.rna)
     ligands = bool(args.ligand or args.ligand_smiles)
@@ -804,7 +819,19 @@ def _resolve_inputs(
     # CLI accepts: it can turn a FASTA or a deposited structure into a job
     # document, which a request cannot.
     expanded = expand_input_directories(selected, suffixes=_JOB_SUFFIXES)
-    return [_as_job_file(path, jobs_root=jobs_root) for path in expanded]
+    converted: list[Path] = []
+    for path in expanded:
+        try:
+            job_file, source = _as_job_file(path, jobs_root=jobs_root)
+        except Exception as error:
+            if unreadable is None:
+                raise
+            unreadable.append((path, error))
+            continue
+        if source is not None and sources is not None:
+            sources[job_file] = source
+        converted.append(job_file)
+    return converted
 
 
 def _sequence_stem(job: Job, name: str | None) -> str:
@@ -824,32 +851,54 @@ def _sequence_stem(job: Job, name: str | None) -> str:
     return f"job-{hashlib.sha256(document.encode()).hexdigest()[:8]}"
 
 
-def _as_job_file(path: Path, *, jobs_root: Path | None = None) -> Path:
+def _as_job_file(
+    path: Path, *, jobs_root: Path | None = None
+) -> tuple[Path, JobSource | None]:
     """Turn one accepted input into a file a request can carry.
 
-    FASTA and deposited structures become ordinary common-schema documents;
-    everything else is already one, or is a model's own dialect, and passes
-    through untouched.
+    FASTA and deposited structures become ordinary common-schema documents,
+    returned with the file they came from; everything else is already one, or
+    is a model's own dialect, and passes through untouched.
     """
     text = str(path)
     if text.startswith("structure:"):
-        return Job.from_structure(Path(text[10:])).store(jobs_root)
-    suffix = path.suffix.lower()
-    if suffix in _FASTA_SUFFIXES:
-        return Job.from_fasta(path).store(jobs_root)
-    if suffix in _STRUCTURE_SUFFIXES:
-        return Job.from_structure(path).store(jobs_root)
-    return path
+        original, kind = Path(text[10:]), "structure"
+        job = Job.from_structure(original)
+    elif path.suffix.lower() in _FASTA_SUFFIXES:
+        original, kind = path, "fasta"
+        job = Job.from_fasta(path)
+    elif path.suffix.lower() in _STRUCTURE_SUFFIXES:
+        original, kind = path, "structure"
+        job = Job.from_structure(path)
+    else:
+        return path, None
+    source = JobSource(path=original, index=0, name=job.name, kind=kind)
+    return job.store(jobs_root), source
 
 
 def _request(
-    args: argparse.Namespace, *, jobs_root: Path | None = None
-) -> PredictionRequest:
-    inputs = _resolve_inputs(args, jobs_root=jobs_root)
+    args: argparse.Namespace,
+    *,
+    jobs_root: Path | None = None,
+    sources: dict[Path, JobSource] | None = None,
+    unreadable: list[tuple[Path, Exception]] | None = None,
+) -> PredictionRequest | None:
+    """The request ``args`` describe; None only when every input is unreadable.
+
+    ``sources`` and ``unreadable`` are :func:`_resolve_inputs`'s.
+    """
+    sources = {} if sources is None else sources
+    inputs = _resolve_inputs(
+        args, jobs_root=jobs_root, sources=sources, unreadable=unreadable
+    )
+    if not inputs:
+        return None
     single_model = len(args.model) == 1
     # A multi-job file is several runs, like a directory, so it takes the
-    # plural spelling even alone; the request expands it into its jobs.
-    single_input = len(inputs) == 1 and not (
+    # plural spelling even alone; the request expands it into its jobs. An
+    # input that could not be converted still counts: which layout a batch
+    # writes must not depend on how many of its files were readable.
+    single_input = len(inputs) + len(unreadable or ()) == 1 and not (
         args.input_format in ("auto", "foldjax") and is_jobs_file(inputs[0])
     )
     single_input = single_input and not getattr(args, "_plural_inputs", False)
@@ -903,6 +952,7 @@ def _request(
         stop_after=getattr(args, "stop_after", "full"),
         resume=getattr(args, "resume", False),
         on_error="continue" if getattr(args, "keep_going", False) else "stop",
+        source=sources.get(inputs[0]) if single_input else None,
     )
 
 
@@ -1546,21 +1596,40 @@ def _effective_sampling(request: PredictionRequest) -> dict[str, Any]:
     return {"sampling": values, "sampling_source": sources}
 
 
-def _run_predictions(request: PredictionRequest) -> BatchReport:
+def _run_predictions(
+    request: PredictionRequest | None,
+    *,
+    sources: dict[Path, JobSource] | None = None,
+    input_failures: tuple[PredictionFailure, ...] = (),
+    failures_root: Path | None = None,
+) -> BatchReport:
     """Execute a request and report what ran, what was reused and what failed.
 
     The resume and error policies live on the request rather than in this
     function, so `foldjax.predict_batch(...)` and `foldjax predict --resume
     --keep-going` are the same execution -- including at seed granularity,
-    which is where the expensive repetition was.
+    which is where the expensive repetition was. ``request`` is None when no
+    input could be read at all; ``input_failures`` then is the whole report.
     """
-    report = predict_batch(request)
+    if request is None:
+        report = BatchReport(failures=input_failures)
+        _write_failures(failures_root or Path.cwd(), list(input_failures))
+    else:
+        # Only what is set, so the plain call keeps the one-argument shape.
+        extra: dict[str, Any] = {}
+        if sources:
+            extra["sources"] = sources
+        if input_failures:
+            extra["input_failures"] = input_failures
+        report = predict_batch(request, **extra)
     for path in report.skipped:
         print(f"[foldjax] reused finished run at {path}", file=sys.stderr)
     for failure in report.failures:
         seed = "" if failure.seed is None else f" seed {failure.seed}"
+        # The file the caller wrote, not the job document generated from it.
+        named = failure.source.describe() if failure.source else failure.input
         print(
-            f"foldjax: {failure.model} · {failure.input}{seed} failed: {failure.error}",
+            f"foldjax: {failure.model} · {named}{seed} failed: {failure.error}",
             file=sys.stderr,
         )
     return report
@@ -1576,11 +1645,42 @@ def _warn_no_structures(path: Path, command: str) -> None:
     )
 
 
+def _unreadable_failures(
+    args: argparse.Namespace,
+    unreadable: list[tuple[Path, Exception]],
+    *,
+    plural: bool,
+) -> tuple[PredictionFailure, ...]:
+    """One failure per model for each input that never became a job."""
+    root = args.output_dir or Path("foldjax-outputs")
+    failures: list[PredictionFailure] = []
+    for path, error in unreadable:
+        text = str(path)
+        original = Path(text[10:]) if text.startswith("structure:") else path
+        for model in args.model:
+            name = normalize_model_name(model)
+            failures.append(
+                PredictionFailure(
+                    model=name,
+                    input=original,
+                    seed=None,
+                    output_dir=(
+                        root / name / original.stem
+                        if plural
+                        else (args.output_dir or root / original.stem)
+                    ),
+                    error=str(error),
+                    error_type=type(error).__name__,
+                )
+            )
+    return tuple(failures)
+
+
 def _render_predictions(results: list[PredictionResult]) -> str:
     """The summary tables for everything that just ran, or a plain fallback.
 
-    A manifest that could not be written never fails a prediction
-    (`foldjax.manifest.write`), so the renderer has to cope with its absence
+    A manifest whose provenance could not be described never fails a
+    prediction (`foldjax.manifest.write`), so the renderer has to cope with its absence
     rather than assume the file it prefers to read.
     """
     entries: list[tuple[Path, dict[str, Any]]] = []
@@ -1823,10 +1923,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Stdout carries the result and nothing else: anything a backend or a
     # native library prints while the request resolves and runs goes to stderr,
     # so `foldjax predict ... > out.json` stays valid JSON.
+    sources: dict[Path, JobSource] = {}
+    unreadable: list[tuple[Path, Exception]] | None = (
+        [] if getattr(args, "keep_going", False) else None
+    )
     with _stdout_to_stderr():
-        request = _request(args)
-        plural = request.models is not None or request.inputs is not None
-        outcome = _run_predictions(request)
+        request = _request(args, sources=sources, unreadable=unreadable)
+        plural = (
+            request.models is not None or request.inputs is not None
+            if request is not None
+            else len(args.model) > 1
+            or len(unreadable or ()) > 1
+            or getattr(args, "_plural_inputs", False)
+        )
+        outcome = _run_predictions(
+            request,
+            sources=sources,
+            input_failures=_unreadable_failures(
+                args, unreadable or [], plural=plural
+            ),
+            failures_root=args.output_dir,
+        )
     results = list(outcome.results)
     if args.json or not sys.stdout.isatty():
         summaries = [result.summary() for result in results]

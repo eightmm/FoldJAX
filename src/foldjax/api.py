@@ -13,6 +13,7 @@ import json
 import math
 import os
 import time
+import warnings
 from collections.abc import Mapping
 from itertools import groupby
 from pathlib import Path
@@ -64,6 +65,7 @@ from foldjax.schema import (
     RANDOM_SEED,
     RANDOM_SEED_BOUND,
     BatchReport,
+    JobSource,
     PredictionError,
     PredictionFailure,
     PredictionOutputError,
@@ -373,6 +375,8 @@ def resolve_requests(
     *,
     draw_seeds: bool = True,
     jobs_root: Path | None = None,
+    sources: Mapping[Path, JobSource] | None = None,
+    failures: list[PredictionFailure] | None = None,
 ) -> tuple[PredictionRequest, ...]:
     """Resolve every scalar run represented by ``request`` without executing it.
 
@@ -380,9 +384,17 @@ def resolve_requests(
     their documented cross product and receive collision-free model namespaces
     under the requested output root. ``resolve_request`` remains the convenient
     scalar API and keeps rejecting plural requests.
+
+    ``sources`` names the file a caller generated an input from (a FASTA or a
+    deposited structure written out as a job document), keyed by the generated
+    path, so errors and failure records name the file the caller wrote. With
+    ``failures`` given and ``on_error="continue"``, an input that cannot be
+    resolved is recorded there and left out instead of ending the batch.
     """
     plural = request.models is not None or request.inputs is not None
     if not plural:
+        if request.source is None and sources and request.input in sources:
+            request = dataclasses.replace(request, source=sources[request.input])
         return (resolve_request(request, draw_seeds=draw_seeds),)
 
     root = request.output_dir or Path("foldjax-outputs")
@@ -401,15 +413,39 @@ def resolve_requests(
             "one explicit weights path cannot be shared by several models; omit "
             "weights to use each model's managed checkpoint, or run them separately"
         )
+    collect = failures is not None and request.on_error == "continue"
+
+    def record(model: str, path: Path, source: Any, error: Exception) -> None:
+        assert failures is not None
+        failures.append(
+            PredictionFailure(
+                model=model,
+                input=Path(path),
+                seed=None,
+                output_dir=root / model / Path(path).stem,
+                error=str(error),
+                error_type=type(error).__name__,
+                source=source,
+            )
+        )
+
     # A multi-job file runs as the jobs inside it, each through a generated
     # single-job document named after the job, so it lands where a directory
     # of those files would put it. Expanded once, before the cross product.
     inputs: list[tuple[Path, Any]] = []
     for path in request.resolved_inputs:
-        if request.input_format in ("auto", "foldjax") and is_jobs_file(path):
-            inputs.extend(expand_jobs_file(path, root=jobs_root))
-        else:
-            inputs.append((path, request.source))
+        source = (sources or {}).get(path, request.source)
+        try:
+            if request.input_format in ("auto", "foldjax") and is_jobs_file(path):
+                inputs.extend(expand_jobs_file(path, root=jobs_root))
+                continue
+        except Exception as error:
+            if not collect:
+                raise
+            for model in canonical_models:
+                record(model, path, source, error)
+            continue
+        inputs.append((path, source))
     for model in canonical_models:
         backend = get_backend(model)
         for path, source in inputs:
@@ -435,21 +471,24 @@ def resolve_requests(
                 output_dir=destination,
                 source=source,
             )
-            runs.append(resolve_request(scalar, draw_seeds=draw_seeds))
+            try:
+                runs.append(resolve_request(scalar, draw_seeds=draw_seeds))
+            except Exception as error:
+                if not collect:
+                    raise
+                record(backend.name, path, source, error)
     return tuple(runs)
 
 
-#: Failures a `continue` policy absorbs. Everything else -- a defect in
-#: FoldJAX, a `KeyboardInterrupt` -- still ends the request immediately: one
-#: run's bug is not evidence that the next run is worth attempting, and a
-#: cancelled batch must stop when it is cancelled.
-_RESUMABLE_ERRORS = (
-    PredictionError,
-    MemoryError,
-    ValueError,
-    OSError,
-    ModuleNotFoundError,
-)
+#: Failures a `continue` policy absorbs: every ``Exception``. An unconverted
+#: checkpoint (``UnpicklingError``, a safetensors error), a kernel this device
+#: cannot run (``NotImplementedError``), a non-OOM ``XlaRuntimeError`` or a
+#: ``KeyError`` from one malformed input says nothing about the next pair, and
+#: an allow-list of types let each of them end a batch that had asked to keep
+#: going. ``KeyboardInterrupt`` and ``SystemExit`` are not ``Exception``s and
+#: still end the request immediately: a cancelled batch must stop when it is
+#: cancelled.
+_RESUMABLE_ERRORS = (Exception,)
 
 #: Where a batch records what did not work. A successful run has
 #: `foldjax_run.json`; this is the other half of that story.
@@ -832,24 +871,32 @@ def _restore_from_manifest(
 def _write_failures(directory: Path, failures: list[PredictionFailure]) -> None:
     """Record what failed, beside the runs that did not.
 
-    Reported rather than raised, exactly like the manifest: a batch that
-    produced seventeen good predictions must not be turned into a failure
-    because the note about the other three could not be written.
+    Reported rather than raised: a batch that produced seventeen good
+    predictions must not be turned into a failure because the note about the
+    other three could not be written -- the three are already failures, and the
+    caller's exit status says so. A pass with no failures removes the record a
+    previous invocation left, so the file never describes a batch that has
+    since succeeded.
     """
-    if not failures:
-        return
+    path = Path(directory) / FAILURES_NAME
     try:
-        directory = Path(directory)
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / FAILURES_NAME).write_text(
+        if not failures:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
             json.dumps(
                 [failure.summary() for failure in failures], indent=2, sort_keys=True
             )
             + "\n",
             encoding="utf-8",
         )
-    except OSError:
-        return
+    except OSError as error:
+        warnings.warn(
+            f"FoldJAX could not update {path}: {error}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 
 def _with_drawn_seed(request: PredictionRequest) -> PredictionRequest:
@@ -891,13 +938,22 @@ def _preflight_or_record(
     return True
 
 
-def predict_batch(request: PredictionRequest) -> BatchReport:
+def predict_batch(
+    request: PredictionRequest,
+    *,
+    sources: Mapping[Path, JobSource] | None = None,
+    input_failures: tuple[PredictionFailure, ...] = (),
+) -> BatchReport:
     """Run everything ``request`` names and report results, skips and failures.
 
     This is the complete answer; :func:`predict` is the same execution with the
     original return type. Only this one can say *which* runs were reused from a
     previous invocation and which failed, which is what a batch needs in order
     to be resumed or reported on.
+
+    ``sources`` is :func:`resolve_requests`'s. ``input_failures`` are inputs the
+    caller could not turn into a request at all (an empty FASTA file in a
+    directory, say); they are reported and recorded with this batch's own.
     """
     plural = request.models is not None or request.inputs is not None
     if request.output_dir is None:
@@ -907,14 +963,16 @@ def predict_batch(request: PredictionRequest) -> BatchReport:
     else:
         output_root = None
     results: list[PredictionResult] = []
-    failures: list[PredictionFailure] = []
+    failures: list[PredictionFailure] = list(input_failures)
     skipped: list[Path] = []
     # Every run is checked before any runs, and a seed is drawn only for a run
     # that passed: a refused job must not first announce a seed it never used.
     probes: dict[str, Backend] = {}
     resolved = tuple(
         _with_drawn_seed(item)
-        for item in resolve_requests(request, draw_seeds=False)
+        for item in resolve_requests(
+            request, draw_seeds=False, sources=sources, failures=failures
+        )
         if _preflight_or_record(item, failures, probes)
     )
     # Resolution orders the cross product model-first. Keep only one backend
@@ -1085,25 +1143,104 @@ def _attempt(
             allowed_root=allowed_root,
         )
     except _RESUMABLE_ERRORS as error:
-        if request.on_error != "continue":
-            raise
-        # A continued batch historically started the next scalar run with a
-        # fresh backend. Preserve that isolation when an adapter now keeps
-        # request-scoped weights or derived state alive.
-        if backend is not None:
-            backend.invalidate_session()
-        failures.append(
-            PredictionFailure(
-                model=request.model,
-                input=Path(request.input),
-                seed=seed,
-                output_dir=Path(directory),
-                error=str(error),
-                error_type=type(error).__name__,
-                source=request.source,
-            )
+        _absorb(
+            request,
+            error,
+            seed=seed,
+            directory=directory,
+            backend=backend,
+            failures=failures,
         )
         return None
+
+
+def _absorb(
+    request: PredictionRequest,
+    error: Exception,
+    *,
+    seed: int | None,
+    directory: Path,
+    backend: Backend | None,
+    failures: list[PredictionFailure],
+) -> None:
+    """Record ``error`` under a `continue` policy; re-raise it under any other.
+
+    Called from inside the ``except`` block that caught ``error``; the
+    exception is re-raised as itself, with its traceback.
+    """
+    if request.on_error != "continue":
+        raise error
+    # A continued batch historically started the next scalar run with a
+    # fresh backend. Preserve that isolation when an adapter now keeps
+    # request-scoped weights or derived state alive.
+    if backend is not None:
+        backend.invalidate_session()
+    failures.append(
+        PredictionFailure(
+            model=request.model,
+            input=Path(request.input),
+            seed=seed,
+            output_dir=Path(directory),
+            error=str(error),
+            error_type=type(error).__name__,
+            source=request.source,
+        )
+    )
+
+
+#: Held for the whole of one model/input run, so a second process writing the
+#: same directory is refused instead of interleaving its files with this one's.
+LOCK_NAME = ".foldjax.lock"
+
+
+class _RunLock:
+    """An exclusive ``flock`` on ``<run directory>/.foldjax.lock``.
+
+    Two processes pointed at one output directory used to run side by side and
+    finish with one structure file holding whichever writer renamed last, under
+    a manifest digesting the other's. The lock is advisory and per open file
+    description, so it excludes another process (or another batch in this one)
+    and is released by the kernel if the holder dies. The file itself is never
+    removed: unlinking a lock file lets a third process lock a fresh inode
+    while the second still holds the old one.
+    """
+
+    def __init__(self, directory: Path) -> None:
+        self.path = Path(directory) / LOCK_NAME
+        self._fd: int | None = None
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - no flock on this platform
+            return
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(self.path, flags, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            try:
+                holder = os.read(fd, 64).decode("ascii", "replace").strip()
+            except OSError:
+                holder = ""
+            os.close(fd)
+            who = f" (process {holder})" if holder.isdigit() else ""
+            raise PredictionError(
+                f"another FoldJAX run{who} is writing {directory}; wait for it "
+                f"to finish or choose another --output-dir (lock: {self.path})"
+            ) from None
+        except BaseException:
+            os.close(fd)
+            raise
+        try:
+            os.ftruncate(fd, 0)
+            os.write(fd, f"{os.getpid()}\n".encode())
+        except OSError:
+            pass  # who holds it is a courtesy for the refusal message
+        self._fd = fd
+
+    def release(self) -> None:
+        if self._fd is not None:
+            os.close(self._fd)
+            self._fd = None
 
 
 def _predict_resolved(
@@ -1124,8 +1261,43 @@ def _predict_resolved(
     """
     failures = [] if failures is None else failures
     skipped = [] if skipped is None else skipped
+    # Inside the error policy: a run directory that is a file, or is not
+    # writable, or is held by another process, is this pair's failure.
+    try:
+        _prepare_output_directory(request.output_dir, boundary=output_root)
+        lock = _RunLock(request.output_dir)
+    except _RESUMABLE_ERRORS as error:
+        _absorb(
+            request,
+            error,
+            seed=None,
+            directory=request.output_dir,
+            backend=None,
+            failures=failures,
+        )
+        return None
+    try:
+        return _predict_seeds(
+            request,
+            backend=backend,
+            backend_source=backend_source,
+            failures=failures,
+            skipped=skipped,
+        )
+    finally:
+        lock.release()
+
+
+def _predict_seeds(
+    request: PredictionRequest,
+    *,
+    backend: Backend | None,
+    backend_source: _ScalarBackendSource | None,
+    failures: list[PredictionFailure],
+    skipped: list[Path],
+) -> PredictionResult | None:
+    """Every seed of one prepared, locked model/input pair."""
     entry_failure_count = len(failures)
-    _prepare_output_directory(request.output_dir, boundary=output_root)
     seeds = request.resolved_seeds
     if request.seed_source == RANDOM_SEED:
         # Upstream would leave this run unrepeatable; the drawn number is also
@@ -1219,20 +1391,13 @@ def _predict_resolved(
                 },
             )
         except _RESUMABLE_ERRORS as error:
-            if request.on_error != "continue":
-                raise
-            if backend is not None:
-                backend.invalidate_session()
-            failures.append(
-                PredictionFailure(
-                    model=request.model,
-                    input=Path(request.input),
-                    seed=None,
-                    output_dir=Path(request.output_dir),
-                    error=str(error),
-                    error_type=type(error).__name__,
-                    source=request.source,
-                )
+            _absorb(
+                request,
+                error,
+                seed=None,
+                directory=request.output_dir,
+                backend=backend,
+                failures=failures,
             )
     return combined
 
@@ -1503,7 +1668,13 @@ def _write_session_manifest(
     except BaseException:
         _discard_manifest(directory)
         raise
-    written = write_manifest(request, result, directory, **kwargs)
+    try:
+        written = write_manifest(request, result, directory, **kwargs)
+    except OSError:
+        # The directory could not take the file. Whatever older manifest is
+        # still there describes outputs this run may just have overwritten.
+        _discard_manifest(directory)
+        raise
     if written is None:
         # ``write_manifest`` intentionally preserves a successful prediction
         # on provenance errors.  It must not, however, leave an older manifest

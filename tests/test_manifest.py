@@ -207,10 +207,15 @@ def test_every_seed_is_recorded_and_each_gets_its_own_manifest(tmp_path: Path) -
         assert per_seed["seeds"] == [seed]
 
 
-def test_a_manifest_that_cannot_be_written_does_not_fail_the_run(
+def test_a_manifest_the_disk_refuses_is_an_error_that_leaks_nothing(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """The prediction succeeded; losing its provenance must not undo that."""
+    """A run without its completion marker has not finished (ENOSPC, EROFS).
+
+    The error names the file and the OS's reason, never the text it carried.
+    """
+    import errno
+
     from foldjax import manifest
 
     job = _job(tmp_path)
@@ -228,14 +233,21 @@ def test_a_manifest_that_cannot_be_written_does_not_fail_the_run(
         raise OSError("do-not-leak-this-secret")
 
     monkeypatch.setattr(Path, "write_text", refuse)
-    with pytest.warns(RuntimeWarning) as caught:
-        assert (
-            manifest.write(request, PredictionResult(model="opendde"), tmp_path)
-            is None
-        )
-    warning = str(caught[0].message)
-    assert "could not record run provenance" in warning
-    assert "do-not-leak-this-secret" not in warning
+    with pytest.raises(OSError) as caught:
+        manifest.write(request, PredictionResult(model="opendde"), tmp_path)
+    assert "could not write the run manifest" in str(caught.value)
+    assert "do-not-leak-this-secret" not in str(caught.value)
+    assert caught.value.__cause__ is None
+
+    def full(*args, **kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(Path, "write_text", full)
+    with pytest.raises(OSError) as caught:
+        manifest.write(request, PredictionResult(model="opendde"), tmp_path)
+    # Kept, so the command line can name the store and the way to reclaim it.
+    assert caught.value.errno == errno.ENOSPC
+    assert not (tmp_path / manifest.MANIFEST_NAME).exists()
 
 
 def test_describe_run_without_directory_uses_absolute_artifact_paths(
