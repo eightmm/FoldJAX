@@ -24,6 +24,15 @@ unless it says so here, in its own paragraph.
   law -- is unchanged. OpenFold3 under `--padding` is now admitted once, at
   the padded shape, rather than first at the unpadded one.
 
+- **OpenFold3's capability record no longer lists `multi_residue_ligand` or
+  `ligand_file`.** OpenFold3 v0.5.0 declares `ccd_codes` lists and
+  `sdf_file_path` but raises `NotImplementedError` on both, upstream and in the
+  port, so `foldjax capabilities --model openfold3` advertised two native inputs
+  that never ran. Its native-only features are now `templates` and
+  `cyclic_polymer`. A common job with bonds is refused with the reason (the
+  featurizer never applies them) instead of a pointer to the native format,
+  which refuses them too.
+
 ## 0.1.0 (2026-10-06)
 
 ### Added

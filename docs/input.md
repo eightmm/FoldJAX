@@ -260,8 +260,8 @@ template addressed to it is refused. `foldjax capabilities --model MODEL
 [--json]` reports both `common_schema_features` and `native_only_features` for
 exactly this reason, generated from the same translation table the writer uses.
 `native_only_features` also names what only a native input can reach: ligands
-of several CCD components (glycans), AlphaFold 3's user-defined CCD entries,
-ligands read from a file (Protenix, OpenDDE, OpenFold3), pocket and contact
+of several CCD components (glycans; not OpenFold3 or ESMFold2), AlphaFold 3's
+user-defined CCD entries, ligands read from a file (Protenix, OpenDDE), pocket and contact
 constraints (Boltz-2, Protenix) and cyclic polymers (Boltz-2, OpenFold3). The
 common schema has no field for any of them; pass the model's native file
 instead.

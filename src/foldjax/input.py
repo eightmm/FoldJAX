@@ -102,8 +102,8 @@ _TARGETS = {
     # OpenDDE consumes most of the Protenix list-of-jobs dialect, including its
     # modified-polymer and entity/copy-addressed covalent-bond representations.
     # OpenDDE accepts Protenix-style mapped templates and exposes the dormant
-    # upstream path behind ``use_template=true``.  The validation below still
-    # refuses the field at the released default instead of silently dropping it.
+    # upstream path behind ``use_template=true``.  At the released default the
+    # validation below drops the field with an ``ignored_templates`` record.
     "opendde": _Target(".json", _ALL_FEATURES - {"templates_unmapped", "affinity"}),
     "protenix": _Target(".json", _ALL_FEATURES - {"templates_unmapped", "affinity"}),
     # OpenFold3 expresses everything, but with two constraints its own layer
@@ -113,9 +113,10 @@ _TARGETS = {
     # The released OpenFold3 query schema declares covalent bonds but its
     # featurizer never applies them. Advertising the field would silently drop
     # chemistry, so reject it until the upstream pipeline consumes the contract.
-    # OpenFold3's template features come from its own cache/search pipeline;
-    # its query document has no field for a caller-supplied structure, so a
-    # template here would be dropped rather than used.
+    # OpenFold3 reads templates from a hits alignment or from
+    # ``template_cif_paths`` in its native query, which the port supports; this
+    # writer does not translate common templates into either, so they are refused
+    # here and remain a native-input feature.
     "openfold3": _Target(".json", _ALL_FEATURES - {"bonds"} - _NO_TEMPLATES),
     # ESMFold2 has no second native dialect: its NumPy adapter reads the common
     # document and implements Biohub's all-biomolecule tokenizer directly.
@@ -855,7 +856,7 @@ def _validate(
             )
 
     if job.get("bonds") and "bonds" not in target.features:
-        _reject(model, "bonds", "use that model's native input format instead")
+        _reject(model, "bonds", "its featurizer never applies covalent bonds, upstream or here")
     _bonds(job, chains)
     if job.get("properties") and "affinity" not in target.features:
         _reject(
@@ -1367,12 +1368,15 @@ def common_schema_features(model: str) -> tuple[str, ...]:
 #: - ``multi_residue_ligand``: one ligand of several CCD components, such as a
 #:   glycan. AlphaFold 3 ``ccdCodes`` lists (common/folding_input.py), Boltz-2
 #:   ``ccd`` lists (data/parse/schema.py), Protenix/OpenDDE ``CCD_A_B``
-#:   strings (protenix/data/featurize_json.py), OpenFold3 ``ccd_codes`` lists
-#:   (core/data/primitives/structure/query.py). The common ``ccd`` is one code.
+#:   strings (protenix/data/featurize_json.py). The common ``ccd`` is one code.
+#:   OpenFold3 v0.5.0 declares ``ccd_codes`` lists and ``sdf_file_path`` but
+#:   raises NotImplementedError for more than one code and for SDF ligands
+#:   (core/data/primitives/structure/query.py), upstream and here, so neither
+#:   is listed for it.
 #: - ``user_ccd``: a caller-defined chemical component (AlphaFold 3
 #:   ``userCCD``/``userCCDPath``).
 #: - ``ligand_file``: a ligand read from a structure file (Protenix/OpenDDE
-#:   ``FILE_`` ligands, OpenFold3 ``sdf_file_path``).
+#:   ``FILE_`` ligands).
 #: - ``pocket_constraints`` / ``contact_constraints``: Boltz-2 ``constraints``
 #:   (data/parse/schema.py) and Protenix ``constraint`` (featurize_json.py,
 #:   embedded by trunk_blocks/embedders.py ``constraint_embedder``; a checkpoint
@@ -1396,7 +1400,7 @@ _NATIVE_ONLY: dict[str, frozenset[str]] = {
     ),
     "esmfold2": frozenset(),
     "opendde": frozenset({"multi_residue_ligand", "ligand_file"}),
-    "openfold3": frozenset({"multi_residue_ligand", "ligand_file", "cyclic_polymer"}),
+    "openfold3": frozenset({"cyclic_polymer"}),
     "protenix": frozenset(
         {
             "multi_residue_ligand",

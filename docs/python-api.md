@@ -303,8 +303,9 @@ this backend's dialect can carry from a
 FoldJAX job document, and `native_only_features` names abilities the model has
 but the common adapter cannot safely reach: `templates` and `affinity` where
 the dialect lacks the field, and the native-only inputs the port consumes --
-`multi_residue_ligand` (glycans as several CCD codes; all but ESMFold2),
-`user_ccd` (AlphaFold 3), `ligand_file` (Protenix, OpenDDE, OpenFold3),
+`multi_residue_ligand` (glycans as several CCD codes; all but OpenFold3, whose
+v0.5.0 release raises on them, and ESMFold2),
+`user_ccd` (AlphaFold 3), `ligand_file` (Protenix, OpenDDE),
 `pocket_constraints` and `contact_constraints` (Boltz-2, Protenix), and
 `cyclic_polymer` (Boltz-2, OpenFold3). These are reachable only through native
 input. Templates are the case that matters: backend support does not imply
