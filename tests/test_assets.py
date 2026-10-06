@@ -2206,3 +2206,186 @@ def test_protenix_base_20250630_is_its_own_bundle_without_an_encoder() -> None:
     assert applied == {"model_name": "protenix_base_20250630_v1.0.0"}, (
         "no esm_checkpoint_dir: this model has no encoder beside it"
     )
+
+
+def _no_network(monkeypatch) -> None:
+    """Fail the test on any download or socket-level request."""
+
+    def refuse(*args, **kwargs):
+        pytest.fail(f"unexpected network request: {args!r}")
+
+    monkeypatch.setattr(assets, "download", refuse)
+    monkeypatch.setattr(assets.urllib.request, "urlopen", refuse)
+
+
+def _small_v2_identity(monkeypatch, payload: bytes) -> assets.SuppliedFile:
+    """Pin the v2 checkpoint to a tiny file so a test can place the real thing."""
+    item = assets.SuppliedFile(
+        name="protenix-v2.pt",
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size=len(payload),
+    )
+    monkeypatch.setattr(assets, "_PROTENIX_V2_CHECKPOINT", item)
+    return item
+
+
+def test_no_profile_downloads_the_protenix_v2_checkpoint() -> None:
+    """Upstream states the v2 weights are proprietary, so none may be fetched.
+
+    Every profile of every model is checked, not only v2's: a registry entry
+    that downloads the file under another profile would break the same rule.
+    """
+    spec = assets.assets_for("protenix", profile="v2")
+    assert [item.name for item in spec.supplied] == ["protenix-v2.pt"]
+    assert all(item.shared for item in spec.downloads), (
+        "only shared chemistry and template assets may be downloaded"
+    )
+    assert spec.conversion_sources == ("protenix-v2.pt",)
+    for model in assets.available():
+        for profile in assets.available_profiles(model):
+            for item in assets.assets_for(model, profile=profile).downloads:
+                assert item.sha256 != spec.supplied[0].sha256, (model, profile)
+                assert "protenix-v2" not in item.url, (model, profile, item.url)
+                assert "protenix-v2" not in item.name, (model, profile, item.name)
+    assert "proprietary" in spec.licence
+    assert "Apache-2.0" in spec.licence, "the code and v1.x terms stay stated"
+    assert "https://github.com/bytedance/Protenix" in spec.notes
+    assert "a different file is refused" in spec.notes
+    assert "Apache-2.0" in assets.assets_for("protenix").licence
+
+
+def test_protenix_v2_fetch_without_the_file_requests_nothing(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from foldjax.cli import main
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    _no_network(monkeypatch)
+
+    for convert in (True, False):
+        with pytest.raises(RuntimeError, match="obtaining them directly") as error:
+            assets.fetch("protenix", profile="v2", convert=convert)
+        message = str(error.value)
+        assert "proprietary" in message
+        assert str(paths.weights_dir("protenix-v2")) in message
+        assert "Still missing: protenix-v2.pt" in message
+
+    assert main(["weights", "fetch", "--model", "protenix", "--profile", "v2"]) == 1
+    captured = capsys.readouterr()
+    assert "obtaining them directly" in captured.err
+    assert "supplied by you" in captured.out
+    assert "proprietary" in captured.out, "the licence line names the terms"
+
+
+def test_protenix_v2_resolution_says_where_the_file_goes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+
+    with pytest.raises(FileNotFoundError) as error:
+        assets.resolve_weights("protenix", profile="v2")
+
+    message = str(error.value)
+    assert str(paths.weights_dir("protenix-v2") / "protenix-v2.pt") in message
+    assert "proprietary" in message
+    assert "foldjax weights fetch --model protenix --profile v2" in message
+
+
+def test_doctor_reports_a_missing_protenix_v2_checkpoint_as_manual(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from foldjax.doctor import _weight_profile_readiness
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    rows = {
+        row["profile"]: row
+        for row in _weight_profile_readiness(model_info("protenix"))
+    }
+
+    assert rows["v2"]["supplied"] == "0/1"
+    assert rows["v2"]["reason"] == "a user-supplied checkpoint is missing"
+    assert "proprietary" in rows["v2"]["setup"]
+    assert "weights fetch" in rows["released"]["setup"]
+
+
+def test_protenix_v2_converts_a_placed_file_and_refuses_another(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The user's file is verified, converted and bound into the manifest.
+
+    Only shared assets are downloaded; the checkpoint is read where the user
+    put it. A file with another hash is refused before anything is loaded.
+    """
+    from foldjax.models.protenix.bridge import torch_mapping, weights_io
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    payload = b"user-supplied v2 checkpoint"
+    item = _small_v2_identity(monkeypatch, payload)
+    placed = paths.weights_dir("protenix-v2") / item.name
+    placed.parent.mkdir(parents=True)
+    # Same size, different bytes: only the hash can tell them apart.
+    placed.write_bytes(payload.upper())
+
+    downloaded: list[str] = []
+
+    def fake_download(download, model, *, on_progress=None):
+        assert download.shared, f"only shared assets may be fetched: {download}"
+        downloaded.append(download.name)
+        target = download.target(model)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"shared")
+        return target
+
+    loaded: list[Path] = []
+
+    def fake_load(path):
+        loaded.append(Path(path))
+        return {"source": Path(path).name}
+
+    def fake_save(path, state, *, compress):
+        assert state == {"source": "protenix-v2.pt"}
+        Path(path).write_bytes(b"native v2")
+
+    monkeypatch.setattr(assets, "download", fake_download)
+    monkeypatch.setattr(
+        assets.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: pytest.fail(f"unexpected request: {args!r}"),
+    )
+    monkeypatch.setattr(torch_mapping, "load_torch_checkpoint", fake_load)
+    monkeypatch.setattr(weights_io, "save_native_weights", fake_save)
+
+    with pytest.raises(RuntimeError, match="A different file is refused"):
+        assets.fetch("protenix", profile="v2")
+    placed.write_bytes(b"truncated")
+    rows = {row["profile"]: row for row in assets.profile_status("protenix")}
+    assert rows["v2"]["supplied"] == "1/1", "placed, so not reported missing"
+    with pytest.raises(RuntimeError, match="A different file is refused"):
+        assets.fetch("protenix", profile="v2")
+    assert loaded == [] and downloaded == [], "refused before any work"
+
+    placed.write_bytes(payload)
+    native = assets.fetch("protenix", profile="v2")
+
+    root = paths.weights_dir("protenix-v2")
+    assert native == root / "protenix-v2.jax"
+    assert native.read_bytes() == b"native v2"
+    assert loaded == [placed]
+    assert sorted(downloaded) == sorted(
+        download.name
+        for download in assets.assets_for("protenix").downloads
+        if download.shared
+    )
+    manifest = json.loads((root / assets._NATIVE_MANIFEST).read_text())
+    assert manifest["conversion"]["sources"] == {
+        "protenix-v2.pt": {"sha256": item.sha256, "size": item.size}
+    }
+    spec = assets.assets_for("protenix", profile="v2")
+    assert spec.ready()
+    assert assets.resolve_weights("protenix", profile="v2") == native
+
+    # The conversion is what predicts; the user may remove their source file.
+    placed.unlink()
+    assert spec.ready()
+    assert assets.fetch("protenix", profile="v2") == native
+    assert loaded == [placed], "a recorded conversion is not redone"

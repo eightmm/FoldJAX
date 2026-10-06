@@ -453,7 +453,7 @@ def test_setup_fetches_defaults_and_reports_opt_in_or_manual_models(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     """One command fetches defaults and reports every deliberate opt-in."""
-    from foldjax import assets
+    from foldjax import assets, paths
     from foldjax.models.alphafold3 import build
 
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
@@ -480,12 +480,15 @@ def test_setup_fetches_defaults_and_reports_opt_in_or_manual_models(
         ("opendde", None),
         ("openfold3", None),
         ("protenix", None),
-        ("protenix", "v2"),
-    ], "every published bundle, including Protenix's second supported model"
+    ], "every published bundle; Protenix v2's weights are not published"
     assert "alphafold3  manual" in out
     assert "download af3.bin.zst directly from Google" in out
-    # AlphaFold 3 is the only model a person has to fetch by hand, because it
-    # is the only one whose parameters are not published for redistribution.
+    # Protenix v2 is reported like AlphaFold 3: its weights are proprietary per
+    # upstream, so setup names the file, the reason and where it goes, and
+    # never asks for it.
+    assert "protenix/v2 manual" in out
+    assert "proprietary" in out
+    assert f"goes in: {paths.weights_dir('protenix-v2')}" in out
     assert "openfold3   opt-in" not in out
     assert "esmfold2    opt-in" in out, "still opt-in, for its 26.8 GB"
     assert "foldjax setup --all" in out, "the opt-in must say how to include it"
@@ -531,17 +534,52 @@ def test_setup_all_takes_the_models_held_back_for_their_size(
         ("opendde", "abag"),
         ("openfold3", None),
         ("protenix", None),
-        ("protenix", "v2"),
         ("protenix", "base-20250630"),
         ("protenix", "mini-esm-v0.5.0"),
         ("protenix", "mini-ism-v0.5.0"),
     ], "every published bundle, every profile of it included"
     assert "alphafold3  manual" in out, "a licence is not a size"
+    assert "protenix/v2 manual" in out, "nor is a proprietary checkpoint"
     assert "runtime" in out
     assert "foldjax runtime prepare --model alphafold3" in out
     # The two modalities that need no weights still need an answer.
     assert "msa" in out and "ColabFold" in out
     assert "PROTENIX_TEMPLATE_MMCIF_DIR" in out
+
+
+def test_setup_converts_a_placed_protenix_v2_checkpoint(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Once the user has put the file in place, setup converts it like any other."""
+    import hashlib
+
+    from foldjax import assets, paths
+    from foldjax.models.alphafold3 import build
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    monkeypatch.setattr(build, "is_ready", lambda: False)
+    monkeypatch.setattr(build, "runtime_blocker", lambda: None)
+    payload = b"user-supplied v2 checkpoint"
+    item = assets.SuppliedFile(
+        name="protenix-v2.pt",
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size=len(payload),
+    )
+    monkeypatch.setattr(assets, "_PROTENIX_V2_CHECKPOINT", item)
+    placed = paths.weights_dir("protenix-v2") / item.name
+    placed.parent.mkdir(parents=True)
+    placed.write_bytes(payload)
+    fetched = []
+    monkeypatch.setattr(
+        assets,
+        "fetch",
+        lambda name, **kw: fetched.append((name, kw.get("profile")))
+        or tmp_path / name,
+    )
+
+    assert main(["setup"]) == 0
+    assert ("protenix", "v2") in fetched
+    assert "protenix/v2 manual" not in capsys.readouterr().out
 
 
 def test_setup_exit_status_follows_the_public_downloads(

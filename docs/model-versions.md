@@ -500,15 +500,16 @@ versions and do not change that source identity:
 |---|---|---|
 | `released` | `protenix_base_default_v1.0.0.pt` | `2b7d5a8b30494514fc47fd2271a16260528cdba170ba09cc112fdecd8f85ec04` |
 | `base-20250630` | `protenix_base_20250630_v1.0.0.pt` | `e850a6b16b3d254ba9a7f67cefd9b59e111fb2036ae036d2703d050aff6ab611` |
-| `v2` | `protenix-v2.pt` | `8f931f9774a396b67033d0e58628e1834f4a1448165e04254b40a780b0c0d599` |
+| `v2` | `protenix-v2.pt` (user-supplied, never downloaded) | `8f931f9774a396b67033d0e58628e1834f4a1448165e04254b40a780b0c0d599` |
 | `mini-esm-v0.5.0` | `protenix_mini_esm_v0.5.0.pt` | `1301bba9ad322518eace60fd244ded7904439f55317e90d402cc7a0c06026664` |
 | `mini-ism-v0.5.0` | `protenix_mini_ism_v0.5.0.pt` | `a90d3040cdb2c84430878ea724ad817698ee68cc8b12f802a91dac3b081521a2` |
 
 The mini profiles additionally pin their matching ESM2-3B or ISM encoder in
-the asset registry. The `v2` profile is the original checkpoint identity fetched
-from a hash-pinned mirror because the publisher's CDN object is unavailable.
-Protenix v2 is a profile of the same FoldJAX backend, not a separate public
-model name.
+the asset registry. The `v2` checkpoint is never downloaded: upstream declares
+the v2 weights proprietary, so the user places `protenix-v2.pt` in the
+profile's weight directory and FoldJAX converts it only if it matches the
+SHA-256 above ([docs/cli.md](cli.md#weights-and-setup)). Protenix v2 is a
+profile of the same FoldJAX backend, not a separate public model name.
 
 ## Experimental records
 

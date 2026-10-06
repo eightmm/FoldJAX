@@ -2,7 +2,8 @@
 
 Upstreams publish several different formats. FoldJAX converts the torch
 archives used by Boltz-2, OpenDDE, and Protenix, stages ESMFold2 and OpenFold3
-for direct loading, and locates manually supplied AlphaFold 3 parameters.
+for direct loading, and locates manually supplied AlphaFold 3 parameters and
+Protenix v2 checkpoints (the latter converted like the other Protenix files).
 Managed checkpoint loading remains PyTorch-free.
 
 Nothing here runs during prediction, and no file is redistributed — each is
@@ -92,6 +93,23 @@ class Download:
 
 
 @dataclass(frozen=True, slots=True)
+class SuppliedFile:
+    """A file the user places by hand; FoldJAX never fetches it.
+
+    Deliberately not a `Download`: it has no URL, so no code path can send a
+    request for it. The pinned identity still binds a conversion to the exact
+    file it was made from.
+    """
+
+    name: str
+    sha256: str | None = None
+    size: int | None = None
+
+    def target(self, model: str) -> Path:
+        return weights_dir(model) / self.name
+
+
+@dataclass(frozen=True, slots=True)
 class AssetEvent:
     """One structured weight-store lifecycle event.
 
@@ -171,6 +189,9 @@ class ModelAssets:
     # Legacy base conversions predate manifests and stay prediction-compatible.
     # New multi-file profiles have no such legacy form and require provenance.
     requires_manifest: bool = False
+    # Conversion inputs whose terms forbid FoldJAX fetching them. The user puts
+    # each at `SuppliedFile.target`; `downloads` still covers shared assets.
+    supplied: tuple[SuppliedFile, ...] = ()
 
     def native_path(self) -> Path:
         root = weights_dir(self.model)
@@ -228,8 +249,16 @@ def _convert_protenix(model: str, source: Path) -> Path:
     # Derived, not hard-coded: a second base checkpoint converts through this
     # same function, and a fixed output name would have it overwrite the
     # release's converted weights in place.
-    out = weights_dir(model) / assets_for(model).native
+    spec = assets_for(model)
+    out = weights_dir(model) / spec.native
     out.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_name = spec.conversion_sources[0]
+    supplied = {item.name: item for item in spec.supplied}
+    checkpoint = (
+        supplied[checkpoint_name].target(model)
+        if checkpoint_name in supplied
+        else source / checkpoint_name
+    )
     # Written uncompressed: these are float32 weights, so gzip saves about 6%
     # of disk but costs 6x on every load (8.5 s vs 1.3 s for OpenDDE's 2.6 GB).
     # Stage beside the final file so a crash never exposes a partial archive.
@@ -238,7 +267,7 @@ def _convert_protenix(model: str, source: Path) -> Path:
     ) as scratch:
         staged = Path(scratch) / out.name
         save_native_weights(
-            staged, load_torch_checkpoint(source / "protenix.pt"), compress=False
+            staged, load_torch_checkpoint(checkpoint), compress=False
         )
         if not _nonempty_file(staged):
             raise RuntimeError("Protenix conversion produced empty native weights")
@@ -712,23 +741,21 @@ _PROTENIX_BASE_20250630 = Download(
     size=1_475_945_945,
 )
 
-#: ByteDance has not served this file since the announcement -- their key
-#: answers anonymous requests with `AccessDenied`, reported the same day in
-#: bytedance/Protenix#294 and #295 and still open, with the maintainers saying
-#: accessibility is under company-level internal review. The copy below is a
-#: mirror of that original CDN object, and its authenticity is checked rather
-#: than assumed: the archive carries 464,442,431 parameters, matching the
-#: 464.44 M upstream documents, and its Pairformer weights are
-#: `tri_mul_out.linear_a_p (256, 256)` and `tri_att_start.linear (8, 256)` --
-#: exactly the `c_hidden_mul = c_z` and `no_heads_pair = c_z // 32` that
-#: `hidden_scale_up` produces at c_z=256. Verified 2026-08-25; the SHA-256 is
-#: pinned here, so a substituted file fails before it is ever loaded.
-_PROTENIX_V2 = Download(
-    name="protenix.pt",
-    url=(
-        "https://huggingface.co/TMF001/protenix-v2-weights/resolve/main/"
-        "protenix-v2.pt"
-    ),
+#: Never fetched. Upstream's README states that the Protenix-v2 weights "are
+#: proprietary and confidential information of the rights holder, are not
+#: released under any open-source license, and may not be reproduced,
+#: distributed, sublicensed, disclosed, or otherwise transferred to any third
+#: party in any form without the express prior written consent of the rights
+#: holder." The user supplies the file; FoldJAX only converts it.
+#:
+#: The pinned identity was recorded 2026-08-25 from a copy checked to carry
+#: v2's architecture: 464,442,431 parameters, matching the 464.44 M upstream
+#: documents, with Pairformer weights `tri_mul_out.linear_a_p (256, 256)` and
+#: `tri_att_start.linear (8, 256)` -- exactly the `c_hidden_mul = c_z` and
+#: `no_heads_pair = c_z // 32` that `hidden_scale_up` produces at c_z=256. A
+#: file with a different hash is refused before it is loaded.
+_PROTENIX_V2_CHECKPOINT = SuppliedFile(
+    name="protenix-v2.pt",
     sha256="8f931f9774a396b67033d0e58628e1834f4a1448165e04254b40a780b0c0d599",
     size=1_859_785_497,
 )
@@ -1169,7 +1196,9 @@ def _conversion_identity(spec: ModelAssets) -> dict[str, object]:
     """Return the registry identity a native conversion was produced from."""
     if not spec.conversion_sources or spec.conversion_schema is None:
         raise RuntimeError(f"{spec.model} has no conversion identity")
-    published = {item.name: item for item in spec.downloads}
+    published: dict[str, Download | SuppliedFile] = {
+        item.name: item for item in (*spec.downloads, *spec.supplied)
+    }
     sources: dict[str, dict[str, object]] = {}
     for name in spec.conversion_sources:
         try:
@@ -1757,22 +1786,36 @@ def _protenix_v2_assets(spec: ModelAssets, profile: str) -> ModelAssets:
     base = REGISTRY["protenix"]
     shared = tuple(item for item in base.downloads if item.shared)
     native = "protenix-v2.jax"
+    checkpoint = _PROTENIX_V2_CHECKPOINT
     return dataclasses.replace(
         base,
         model=_PROTENIX_V2_MODEL,
-        downloads=(_PROTENIX_V2, *shared),
+        licence=(
+            "proprietary model parameters (upstream README: not released under "
+            "any open-source license; no reproduction or transfer without the "
+            "rights holder's prior written consent); Protenix code and v1.x "
+            "parameters are Apache-2.0"
+        ),
+        # Shared chemistry and template assets only. The v2 checkpoint is
+        # `supplied`, so nothing here can request it.
+        downloads=shared,
         native=native,
         requires=(native,),
-        conversion_sources=("protenix.pt",),
+        conversion_sources=(checkpoint.name,),
         conversion_schema="protenix-v2-native-v1",
+        supplied=(checkpoint,),
         notes=(
-            "Protenix v2, 464M parameters against the base model's 368M, "
-            "announced 2026-04-08. ByteDance's own CDN key stopped serving it "
-            "the same day and upstream says accessibility is under internal "
-            "review, so this fetches a mirror of that object and pins its "
-            "SHA-256: the archive was checked to carry v2's exact parameter "
-            "count and its c_z=256 Pairformer weights before the hash was "
-            "recorded. Predicts up to 2,560 tokens."
+            "Protenix v2 (464M parameters, announced 2026-04-08). Upstream's "
+            "README states its weights are proprietary and confidential, not "
+            "released under any open-source license, and may not be "
+            "reproduced or transferred without the rights holder's prior "
+            "written consent (https://github.com/bytedance/Protenix), so "
+            f"FoldJAX never downloads them. Put {checkpoint.name}, obtained "
+            "with the rights holder's consent, at "
+            f"{checkpoint.target(_PROTENIX_V2_MODEL)}, then run "
+            "`foldjax weights fetch --model protenix --profile v2` to convert "
+            f"it. Only the file with SHA-256 {checkpoint.sha256} is accepted; "
+            "a different file is refused. Predicts up to 2,560 tokens."
         ),
     )
 
@@ -1939,11 +1982,13 @@ def profile_status(model: str) -> tuple[dict[str, object], ...]:
             for item in spec.downloads
             if _present_download(item.target(spec.model), item)
         )
+        supplied = len(spec.supplied) - len(missing_supplied(spec))
         rows.append(
             {
                 "profile": profile,
                 "ready": spec.ready(),
                 "downloaded": f"{downloaded}/{len(spec.downloads)}",
+                "supplied": f"{supplied}/{len(spec.supplied)}",
                 "download_bytes": download_bytes,
                 "path": str(spec.native_path()),
                 "notes": spec.notes,
@@ -1979,7 +2024,10 @@ def _same_file_contents(first: Path, second: Path, item: Download) -> bool:
 
 
 def _verified(
-    path: Path, item: Download, *, known_sha256: str | None = None
+    path: Path,
+    item: Download | SuppliedFile,
+    *,
+    known_sha256: str | None = None,
 ) -> bool:
     """True when the file on disk is already the published one."""
     if not path.is_file():
@@ -1994,7 +2042,7 @@ def _verified(
     return path.stat().st_size > 0
 
 
-def _present_download(path: Path, item: Download) -> bool:
+def _present_download(path: Path, item: Download | SuppliedFile) -> bool:
     """Cheap status check; downloads still receive full verification on use."""
     try:
         if not path.is_file() or path.stat().st_size == 0:
@@ -2002,6 +2050,48 @@ def _present_download(path: Path, item: Download) -> bool:
         return item.size is None or path.stat().st_size == item.size
     except OSError:
         return False
+
+
+def missing_supplied(spec: ModelAssets) -> tuple[Path, ...]:
+    """Where each user-supplied file belongs that is not there yet.
+
+    Presence only. A placed file of the wrong size or hash is not "missing":
+    `fetch` refuses it by name, which is the message its owner needs.
+    """
+    return tuple(
+        item.target(spec.model)
+        for item in spec.supplied
+        if not _nonempty_file(item.target(spec.model))
+    )
+
+
+def _supplied_missing_message(spec: ModelAssets) -> str:
+    """The bring-your-own instruction, in AlphaFold 3's wording."""
+    missing = ", ".join(path.name for path in missing_supplied(spec))
+    return (
+        f"FoldJAX cannot fetch {spec.model}'s parameters; their terms require "
+        "obtaining them directly from the rights holder.\n"
+        f"{spec.notes}\n"
+        f"Expected here: {weights_dir(spec.model)}\n"
+        f"Still missing: {missing}"
+    )
+
+
+def _verify_supplied(spec: ModelAssets) -> None:
+    """Refuse a missing or substituted user-supplied file before any download."""
+    if missing_supplied(spec):
+        raise RuntimeError(_supplied_missing_message(spec))
+    for item in spec.supplied:
+        path = item.target(spec.model)
+        size = path.stat().st_size
+        actual = _digest(path) if item.sha256 is not None else None
+        if not _verified(path, item, known_sha256=actual):
+            raise RuntimeError(
+                f"{path} is not the {item.name} FoldJAX pins for {spec.model}: "
+                f"expected sha256 {item.sha256} ({item.size} bytes), got "
+                f"sha256 {actual} ({size} bytes). A different file is refused; "
+                "FoldJAX converts only the checkpoint whose identity it records."
+            )
 
 
 @contextmanager
@@ -2492,6 +2582,34 @@ def fetch(
         )
         return spec.native_path()
 
+    # Before any network traffic: a profile whose checkpoint the user has to
+    # supply cannot finish without it, so fetching its shared assets first
+    # would only waste the transfer. A recorded conversion no longer needs it.
+    if spec.supplied and not (
+        spec.ready() and _conversion_provenance_recorded(spec)
+    ):
+        try:
+            _verify_supplied(spec)
+        except RuntimeError as error:
+            _asset_event(
+                on_event,
+                spec,
+                profile,
+                "supplied",
+                "error",
+                str(error).splitlines()[0],
+                path=weights_dir(spec.model),
+            )
+            raise
+        _asset_event(
+            on_event,
+            spec,
+            profile,
+            "supplied",
+            "done",
+            "user-supplied file matches its pinned identity",
+            path=weights_dir(spec.model),
+        )
     _check_free_space(spec, convert=convert, on_event=on_event, profile=profile)
     provenance = _conversion_provenance_recorded(spec)
     for item in spec.downloads:
@@ -2785,6 +2903,13 @@ def resolve_weights(model: str, *, profile: str | None = None) -> Path:
             f"no usable {spec.model} weights at {native}.\n"
             f"{spec.notes}\n"
             f"Expected under: {weights_dir(spec.model)}\n"
+            "For prediction, supply PredictionRequest.weights or pass "
+            "`foldjax predict --weights PATH`."
+        )
+    if missing_supplied(spec):
+        raise FileNotFoundError(
+            f"no usable {spec.model} weights at {native}.\n"
+            f"{_supplied_missing_message(spec)}\n"
             "For prediction, supply PredictionRequest.weights or pass "
             "`foldjax predict --weights PATH`."
         )

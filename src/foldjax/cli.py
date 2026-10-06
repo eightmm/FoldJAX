@@ -534,8 +534,8 @@ def _parser() -> argparse.ArgumentParser:
         dest="fetch_all",
         action="store_true",
         help="also fetch the models held back for their size, so one command "
-        "installs every published checkpoint. AlphaFold 3 is still yours to "
-        "supply: its parameters are licensed, not merely large",
+        "installs every published checkpoint. AlphaFold 3 and Protenix v2 are "
+        "still yours to supply: their parameters are licensed, not merely large",
     )
 
     weights = commands.add_parser(
@@ -949,8 +949,8 @@ def _run_setup(args: argparse.Namespace) -> int:
     failed = False
     # Profiles, not just models. A model's alternative checkpoints are separate
     # bundles with their own `in_default_setup`, and Protenix's v2 is one: the
-    # release and v2 are both supported and both fetched, so iterating models
-    # alone would silently skip the newer of the two.
+    # release and v2 are both supported, so iterating models alone would
+    # silently skip the newer of the two -- here, its bring-your-own notice.
     targets: list[tuple[str, str | None]] = []
     for name in assets.available():
         for profile in assets.available_profiles(name):
@@ -970,14 +970,18 @@ def _run_setup(args: argparse.Namespace) -> int:
                 print(f"    {spec.notes}")
                 print("    or run `foldjax setup --all` to take it with the rest")
             continue
-        if not spec.downloads:
+        if not spec.downloads or (
+            assets.missing_supplied(spec) and not spec.ready()
+        ):
             # Gated or non-redistributable: the instruction differs per model,
-            # so `notes` is the only honest text.
+            # so `notes` is the only honest text. A profile with a user-supplied
+            # checkpoint stays here until the file is placed, and is then
+            # converted by the ordinary fetch below.
             state = "ready" if spec.ready() else "manual"
             print(f"  {label:<11s} {state}")
             if not spec.ready():
                 print(f"    {spec.notes}")
-                print(f"    goes in: {assets.weights_dir(name)}")
+                print(f"    goes in: {assets.weights_dir(spec.model)}")
             continue
         try:
             reporter = _WeightReporter()
@@ -1159,9 +1163,14 @@ def _run_weights(args: argparse.Namespace) -> int:
                     state = "ready" if profile["ready"] else "missing"
                     size = profile["download_bytes"]
                     size_text = "unknown size" if size is None else f"{size} bytes"
+                    supplied = str(profile.get("supplied", "0/0"))
+                    supplied_text = (
+                        "" if supplied.endswith("/0") else f", supplied {supplied}"
+                    )
                     print(
                         f"         profile {profile['profile']}: {state}, "
-                        f"downloaded {profile['downloaded']}, {size_text}"
+                        f"downloaded {profile['downloaded']}{supplied_text}, "
+                        f"{size_text}"
                     )
         return 0
     if args.weights_command == "path":
@@ -1171,6 +1180,8 @@ def _run_weights(args: argparse.Namespace) -> int:
     spec = assets.assets_for(args.model, profile=args.profile)
     public_model = assets._public_model_name(spec.model)
     print(f"{public_model}: {len(spec.downloads)} file(s) from {spec.source}")
+    for item in spec.supplied:
+        print(f"  plus {item.name}, supplied by you: {item.target(spec.model)}")
     print(f"licence: {spec.licence}")
     reporter = _WeightReporter()
     try:

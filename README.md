@@ -12,7 +12,7 @@ all carried inside the package:
 | `esmfold2` | [Biohub snapshot (`ef32577`)](docs/model-versions.md#esmfold2) | MIT + Biohub acceptable-use policy | [biohub/ESMFold2](https://huggingface.co/biohub/ESMFold2) |
 | `opendde` | [1.1.1 (`ddfa1df`); base + ABAG](docs/model-versions.md#opendde) | Apache-2.0 | [aurekaresearch/OpenDDE](https://huggingface.co/aurekaresearch/OpenDDE#license) |
 | `openfold3` | [0.5.0/OpenBind (`c477165`)](docs/model-versions.md#openfold3) | Apache-2.0 | [aqlaboratory/openfold-3](https://github.com/aqlaboratory/openfold-3) |
-| `protenix` | [2.0.0 metadata (`4c355be`); five weight profiles](docs/model-versions.md#protenix) | Apache-2.0 | [bytedance/Protenix](https://github.com/bytedance/Protenix#license) |
+| `protenix` | [2.0.0 metadata (`4c355be`); five weight profiles](docs/model-versions.md#protenix) | Apache-2.0 code and v1.x weights; v2 weights proprietary | [bytedance/Protenix](https://github.com/bytedance/Protenix#license) |
 
 These are fixed implementation targets, not aliases for upstream `latest`.
 [The version and validation ledger](docs/model-versions.md) records the full
@@ -69,11 +69,16 @@ jobs; predicting from a feature `.npz` needs nothing).
 
 Weights are never redistributed: each file comes from its own publisher, under
 that project's terms. `foldjax setup` fetches, verifies and converts the default
-checkpoint of every public model, plus Protenix's v2. ESMFold2 (about 26.8 GB)
-and the other alternative profiles are opt-in: `foldjax setup --all` takes them
-too, and `foldjax weights fetch --model M [--profile P]` takes one.
-**AlphaFold 3 is the only model whose weights you supply yourself**, because
-DeepMind releases its parameters only to applicants who accept their terms.
+checkpoint of every public model. ESMFold2 (about 26.8 GB) and the alternative
+profiles are opt-in: `foldjax setup --all` takes them too, and
+`foldjax weights fetch --model M [--profile P]` takes one.
+**Two sets of weights you supply yourself.** AlphaFold 3's, because DeepMind
+releases its parameters only to applicants who accept their terms; and
+Protenix v2's (`--profile v2`), because upstream declares them proprietary and
+not to be transferred without the rights holder's written consent. FoldJAX
+converts a `protenix-v2.pt` you place in its directory, and fetches the
+Protenix release and other public checkpoints as before
+([docs/cli.md](docs/cli.md#weights-and-setup)).
 `foldjax doctor` reports what is installed and what is missing.
 
 ## Quick start

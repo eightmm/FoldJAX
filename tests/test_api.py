@@ -1924,11 +1924,10 @@ def test_protenix_v2_is_a_managed_profile_pinned_by_its_own_hash() -> None:
     for v2 would either error or quietly fetch the 368M release and run it as
     though it were the 464M model.
 
-    The checkpoint is a mirror of ByteDance's CDN object, which stopped serving
-    anonymously the day v2 was announced, so the hash is what makes it
-    trustworthy rather than the host. It was recorded from an archive checked
-    to carry v2's architecture: 464,442,431 parameters and c_z=256 Pairformer
-    weights.
+    The checkpoint is user-supplied, since upstream states the v2 weights are
+    proprietary, so the pinned hash is what binds a conversion to the exact
+    file. It was recorded from an archive checked to carry v2's architecture:
+    464,442,431 parameters and c_z=256 Pairformer weights.
     """
     from foldjax import assets
     from foldjax.backends.protenix import apply_managed_profile, managed_asset_profile
@@ -1940,9 +1939,11 @@ def test_protenix_v2_is_a_managed_profile_pinned_by_its_own_hash() -> None:
     release = assets.assets_for("protenix")
     assert spec.model != release.model, "a shared root would overwrite one file"
     assert spec.native == "protenix-v2.jax"
-    assert spec.in_default_setup, "both supported Protenix models are fetched"
+    assert spec.in_default_setup, "setup reports it, as it reports AlphaFold 3"
 
-    checkpoint = spec.downloads[0]
+    (checkpoint,) = spec.supplied
+    assert checkpoint.name == "protenix-v2.pt"
+    assert spec.conversion_sources == (checkpoint.name,)
     assert checkpoint.size == 1_859_785_497
     assert checkpoint.sha256 == (
         "8f931f9774a396b67033d0e58628e1834f4a1448165e04254b40a780b0c0d599"

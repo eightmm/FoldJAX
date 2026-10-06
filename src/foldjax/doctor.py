@@ -121,7 +121,22 @@ def _weight_profile_readiness(info: Any) -> list[dict[str, Any]]:
         except (TypeError, ValueError):
             present = total = None
 
+        supplied = str(row.get("supplied", "0/0"))
+        try:
+            supplied_present, supplied_total = (
+                int(part) for part in supplied.split("/", maxsplit=1)
+            )
+        except (TypeError, ValueError):
+            supplied_present = supplied_total = 0
+
         profile = str(row.get("profile", "released"))
+        if supplied_present < supplied_total:
+            # Not a download FoldJAX can make: the notes say where the file
+            # goes and why, and `weights fetch` converts it once it is there.
+            row["reason"] = "a user-supplied checkpoint is missing"
+            row["setup"] = row.get("notes")
+            profiles.append(row)
+            continue
         if total == 0:
             reason = "manual weight installation is required"
             setup = info.setup if profile == "released" else row.get("notes")

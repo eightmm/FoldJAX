@@ -2133,9 +2133,9 @@ layers, and the ESMC language model's MLP all stay on XLA.
 
 Upstreams publish several formats. `foldjax weights` downloads public files,
 checks their pinned size and SHA-256, converts Boltz-2/OpenDDE/Protenix once,
-stages ESMFold2 and OpenFold3's publisher-native checkpoints, and locates
-manually supplied AlphaFold 3 parameters. Managed checkpoint loading remains
-PyTorch-free.
+stages ESMFold2 and OpenFold3's publisher-native checkpoints, locates
+manually supplied AlphaFold 3 parameters, and converts a manually supplied
+Protenix v2 checkpoint. Managed checkpoint loading remains PyTorch-free.
 
 ```bash
 uv run foldjax setup                            # default public models, in one go
@@ -2168,23 +2168,38 @@ architecture trained to a 2025-06-30 wwPDB cutoff instead of the release's
 benchmarks, since comparing against AlphaFold 3 needs AlphaFold 3's cutoff, and
 FoldJAX follows that split.
 
-**Protenix ships two supported models and `setup` fetches both.**
-`--profile v2` (or `model_name=protenix-v2`) selects Protenix v2 — 464M
-parameters against the release's 368M, announced 2026-04-08, with clear gains
-on antibody-antigen targets. The port needs no architecture change for it: its
-blocks read their widths from the parameters they are handed, so v2's c_z=256
-and its eight triangle heads arrive with the checkpoint.
+**Protenix ships two supported models; `setup` fetches the release and
+reports v2.** `--profile v2` (or `model_name=protenix-v2`) selects Protenix v2
+— 464M parameters against the release's 368M, announced 2026-04-08, with clear
+gains on antibody-antigen targets. The port needs no architecture change for
+it: its blocks read their widths from the parameters they are handed, so v2's
+c_z=256 and its eight triangle heads arrive with the checkpoint.
 
-Its provenance is worth stating. ByteDance's own CDN key stopped serving
-`protenix-v2.pt` the day it was announced and upstream says accessibility is
-under internal review
-([bytedance/Protenix#295](https://github.com/bytedance/Protenix/issues/295),
-still open), so FoldJAX fetches a mirror of that object and pins its SHA-256.
-The archive was checked before the hash was recorded: 464,442,431 parameters,
-matching the 464.44 M upstream documents, with Pairformer weights of
-`tri_mul_out.linear_a_p (256, 256)` and `tri_att_start.linear (8, 256)` —
-exactly what `hidden_scale_up` produces at c_z=256. A substituted file fails
-on the hash before it is loaded.
+**FoldJAX never downloads the v2 weights.** Upstream's
+[README](https://github.com/bytedance/Protenix) states that they "are
+proprietary and confidential information of the rights holder, are not
+released under any open-source license, and may not be reproduced,
+distributed, sublicensed, disclosed, or otherwise transferred to any third
+party in any form without the express prior written consent of the rights
+holder" — unlike the Protenix code and the v1.x checkpoints, which are
+Apache-2.0. Put `protenix-v2.pt`, obtained with the rights holder's consent,
+in the profile's directory and convert it:
+
+```bash
+v2="$(foldjax home --path weights)/protenix-v2"
+mkdir -p "$v2" && cp protenix-v2.pt "$v2/"
+foldjax weights fetch --model protenix --profile v2   # shared assets + conversion
+```
+
+`setup`, `doctor` and `weights fetch` name that directory until the file is
+there; nothing requests it over the network. The file is checked against the
+SHA-256 FoldJAX pins (`8f931f97…0d599`, recorded from an archive with
+464,442,431 parameters, matching the 464.44 M upstream documents, and
+Pairformer weights of `tri_mul_out.linear_a_p (256, 256)` and
+`tri_att_start.linear (8, 256)` — exactly what `hidden_scale_up` produces at
+c_z=256). **A file with a different hash is refused** before it is loaded. The
+converted `protenix-v2.jax` is what predicts, so the source may be removed
+afterwards.
 
 **FoldJAX runs v2 at 3,012 tokens; upstream refuses at 2,561.** That limit is
 a memory budget, not an architectural bound — upstream's own assertion says
@@ -2223,10 +2238,12 @@ Two models are outside that, for two different reasons. ESMFold2 is public but
 held back from the default because its full structure+ESMC+chemistry bundle is
 about 26.8 GB — `foldjax setup --all` takes it with the rest, `foldjax weights
 fetch --model esmfold2` takes it alone, and `--profile structure-only` takes
-the 1.36 GB structure+chemistry profile instead. **AlphaFold 3 is the one set of
-weights you have to supply yourself**, because DeepMind releases its parameters
-only to applicants who accept their terms and they may not be redistributed; no
-flag changes that, and `foldjax setup` says which directory `af3.bin` goes in.
+the 1.36 GB structure+chemistry profile instead. **AlphaFold 3 is one of two
+sets of weights you have to supply yourself**, because DeepMind releases its
+parameters only to applicants who accept their terms and they may not be
+redistributed; no flag changes that, and `foldjax setup` says which directory
+`af3.bin` goes in. The other is Protenix v2 (above), whose weights upstream
+declares proprietary.
 Once it is there nothing else is asked of you: the ABI-specific extension and
 CCD tables build themselves on first use. MSA search needs nothing installed
 (ColabFold MMseqs2 server).

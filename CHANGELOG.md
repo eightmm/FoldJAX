@@ -83,6 +83,26 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Protenix v2 weights are no longer downloaded; you supply them.** Upstream's
+  README ([bytedance/Protenix](https://github.com/bytedance/Protenix)) now
+  states that the Protenix-v2 weights "are proprietary and confidential
+  information of the rights holder, are not released under any open-source
+  license, and may not be reproduced, distributed, sublicensed, disclosed, or
+  otherwise transferred to any third party in any form without the express
+  prior written consent of the rights holder" — unlike the Protenix code and
+  v1.x weights, which stay Apache-2.0. `--profile v2` had fetched them from a
+  third-party mirror; that URL is gone and nothing requests the file. Put
+  `protenix-v2.pt`, obtained with the rights holder's consent, in
+  `<weights>/protenix-v2/` and run `foldjax weights fetch --model protenix
+  --profile v2`: the shared CCD and template assets are fetched as before and
+  the file is converted only if it matches the SHA-256 already pinned
+  (`8f931f97…`); a different file is refused. Until it is there, `foldjax setup`
+  lists `protenix/v2` as `manual` like AlphaFold 3 instead of fetching it,
+  `weights fetch` and prediction stop with the same instruction, and `doctor`
+  reports "a user-supplied checkpoint is missing". The conversion record now
+  names its source `protenix-v2.pt`, so an existing v2 conversion reads as not
+  ready until the file is placed and converted again.
+
 - **A Boltz-2 template's `chain_id` now names the author chain, as it does for
   every other backend.** FoldJAX used to copy the common `chain_id` into
   Boltz's `template_id`, which Boltz reads as a label chain
