@@ -1593,10 +1593,16 @@ def _protenix_templates(
     payload = []
     for template in templates:
         path = Path(_path(template["mmcif"], base))
+        mmcif, mapping = _protenix_observed_template(
+            path.read_text(encoding="utf-8"),
+            template["chain_id"],
+            template["mapping"],
+            path,
+        )
         entry: dict[str, Any] = {
-            "mmcif": path.read_text(encoding="utf-8"),
-            "queryIndices": [pair[0] for pair in template["mapping"]],
-            "templateIndices": [pair[1] for pair in template["mapping"]],
+            "mmcif": mmcif,
+            "queryIndices": [pair[0] for pair in mapping],
+            "templateIndices": [pair[1] for pair in mapping],
         }
         if template["chain_id"] is not None:
             entry["chainId"] = template["chain_id"]
@@ -1606,6 +1612,93 @@ def _protenix_templates(
     target = directory / f"entity_{entity_index:04d}.json"
     _write_text_atomic(target, json.dumps(payload))
     return str(target)
+
+
+def _protenix_observed_template(
+    text: str,
+    chain_id: str | None,
+    mapping: list[tuple[int, int]],
+    source: Path,
+) -> tuple[str, list[tuple[int, int]]]:
+    """Restate a common template map in the indices Protenix and OpenDDE read.
+
+    The common ``template_indices`` are AlphaFold 3's: 0-based over the named
+    author chain's full ``_entity_poly_seq``, unresolved residues included.
+    Protenix's mapped-JSON reader (upstream ``parse_simple_cif``; port
+    ``template_features.py:413-416``) instead takes the file's *first* chain,
+    after merging its parts, and counts its observed residues, ignoring any
+    chain id. So the named chain is moved first -- the file is passed verbatim
+    when it already is -- and each template index becomes that residue's
+    ordinal in the chain Protenix will read. A pair whose template residue is
+    unresolved is dropped: Protenix cannot address it, and it carries no
+    coordinates under AlphaFold 3 either. With no ``chain_id`` the first chain
+    is the template, as Protenix reads it; a file with no ``label_seq_id`` has
+    no full sequence to count, and its map is passed through.
+    """
+    import gemmi
+
+    def parse(content: str) -> Any:
+        try:
+            structure = gemmi.make_structure_from_block(
+                gemmi.cif.read_string(content)[0]
+            )
+        except (RuntimeError, ValueError, IndexError) as error:
+            raise ValueError(f"cannot read template mmCIF {source}: {error}") from None
+        structure.merge_chain_parts()
+        return structure
+
+    structure = parse(text)
+    names = [chain.name for chain in structure[0]] if len(structure) else []
+    if not names:
+        raise ValueError(f"template mmCIF {source} has no chains")
+    selected = names[0] if chain_id is None else chain_id
+    if selected not in names:
+        raise ValueError(
+            f"template chain_id {chain_id!r} is not an author chain of {source}; "
+            f"available: {sorted(set(names))}"
+        )
+    original = text
+    if selected != names[0]:
+        for model in structure:
+            for name in {name for name in names if name != selected}:
+                while model.find_chain(name) is not None:
+                    model.remove_chain(name)
+        text = structure.make_mmcif_document().as_string()
+        structure = parse(text)
+    residues = list(structure[0][0])
+    polymer = [residue for residue in residues if residue.label_seq is not None]
+    if not polymer:
+        return text, list(mapping)
+
+    entity = polymer[0].entity_id
+    numbers: dict[int, int] = {}
+    for row in gemmi.cif.read_string(original)[0].find(
+        "_entity_poly_seq.", ["entity_id", "num"]
+    ):
+        if row.str(0) == entity:
+            numbers.setdefault(int(row.str(1)), len(numbers))
+    if not numbers:
+        # No declared sequence: what the chain resolves is all of it.
+        for number in sorted({residue.label_seq for residue in polymer}):
+            numbers[number] = len(numbers)
+    ordinals: dict[int, int] = {}
+    for ordinal, residue in enumerate(residues):
+        if residue.label_seq is None or residue.entity_id != entity:
+            continue
+        position = numbers.get(residue.label_seq)
+        if position is not None:
+            ordinals.setdefault(position, ordinal)
+    converted = []
+    for query, position in mapping:
+        if not 0 <= position < len(numbers):
+            raise ValueError(
+                f"template index {position} is outside chain {selected!r} of "
+                f"{source}, whose sequence has {len(numbers)} residues; template "
+                "indices are 0-based over its _entity_poly_seq"
+            )
+        if position in ordinals:
+            converted.append((query, ordinals[position]))
+    return text, converted
 
 
 def _protenix(

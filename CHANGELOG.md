@@ -117,6 +117,24 @@ unless it says so here, in its own paragraph.
   entity, chains, path), as `ignored_constraints` lists a dropped
   `constraint`, and are empty lists when nothing was dropped.
 
+### Changed
+
+- **A common template map means one thing for every backend: AlphaFold 3's
+  indices.** This changes what a Protenix or OpenDDE job reads. `query_indices`
+  and `template_indices` are 0-based, a template index counting the template
+  chain's full `_entity_poly_seq`, unresolved residues included, and
+  `chain_id` naming its author chain. AlphaFold 3 receives them verbatim, as
+  before. Protenix and OpenDDE received them verbatim too, but read them as
+  ordinals of the *first* chain's resolved residues, ignoring `chain_id`; the
+  writer now restates the map in those terms: the named chain is moved first
+  (the file is passed unchanged when it already is), each template index
+  becomes that residue's ordinal, and a pair whose template residue is
+  unresolved is dropped, since neither reader has coordinates for it. A
+  template index past the chain's sequence, or a `chain_id` the file does not
+  have, is refused. A single chain whose every residue is resolved -- what a
+  hand-made Protenix template usually is -- maps as before; a map written for
+  the old reading against any other file now selects different residues.
+
 ## 0.1.0 (2026-10-06)
 
 ### Added

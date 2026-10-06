@@ -388,11 +388,35 @@ def test_unsupported_features_fail_instead_of_being_dropped(
         _materialize(source, model, tmp_path, options=options)
 
 
+# One fully resolved chain: its observed residues are its whole sequence, so
+# the common template indices reach Protenix and OpenDDE unchanged.
+_TEMPLATE_CIF = "\n".join(
+    [
+        "data_template",
+        "_entry.id template",
+        "loop_",
+        *(
+            f"_atom_site.{key}"
+            for key in (
+                "group_PDB id type_symbol label_atom_id label_alt_id label_comp_id "
+                "label_asym_id label_entity_id label_seq_id Cartn_x Cartn_y "
+                "Cartn_z occupancy auth_seq_id auth_asym_id"
+            ).split()
+        ),
+        *(
+            f"ATOM {n} C CA . {name} A 1 {n} {1.5 * n} 0.0 0.0 1.0 {n} A"
+            for n, name in enumerate(("ALA", "CYS", "ASP", "GLU", "PHE"), 1)
+        ),
+        "",
+    ]
+)
+
+
 def test_opendde_opt_in_materializes_rna_msa_and_mapped_template(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "rna.a3m").write_text(">query\nACGU\n")
-    (tmp_path / "template.cif").write_text("data_template\n")
+    (tmp_path / "template.cif").write_text(_TEMPLATE_CIF)
     source = _write(
         tmp_path / "opendde-features.json",
         {
@@ -429,9 +453,9 @@ def test_opendde_opt_in_materializes_rna_msa_and_mapped_template(
 
     protein = sequences[0]["proteinChain"]
     assert Path(protein["templatesPath"]).is_file()
-    assert json.loads(Path(protein["templatesPath"]).read_text())[0]["mmcif"] == (
-        "data_template\n"
-    )
+    (entry,) = json.loads(Path(protein["templatesPath"]).read_text())
+    assert entry["mmcif"] == _TEMPLATE_CIF
+    assert (entry["queryIndices"], entry["templateIndices"]) == ([1], [1])
     assert sequences[1]["rnaSequence"]["unpairedMsaPath"] == str(
         tmp_path / "rna.a3m"
     )

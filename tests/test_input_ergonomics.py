@@ -650,10 +650,69 @@ def _template_cif(tmp_path: Path) -> Path:
     return path
 
 
-def test_a_mapped_template_reaches_alphafold3_and_protenix(tmp_path: Path) -> None:
-    """Three of the dialects need the residue map, and each spells it its own way."""
-    template = _template_cif(tmp_path)
-    source = _write(
+#: (author chain, label chain, entity, full sequence, resolved 0-based positions)
+_TEMPLATE_CHAINS = (
+    ("A", "A", "1", ("ALA", "GLY", "SER", "THR", "VAL", "TRP"), (0, 2, 3, 4, 5)),
+    ("B", "B", "2", ("LEU", "ILE", "LYS", "MET", "PHE", "TYR"), (1, 3, 4, 5)),
+)
+
+
+def _structure_cif(tmp_path: Path, chains=_TEMPLATE_CHAINS, ligand=True) -> Path:
+    """A small mmCIF with unresolved residues and a ligand in the last chain."""
+    lines = ["data_template", "_entry.id template", "#", "loop_"]
+    lines += [f"_entity_poly_seq.{key}" for key in ("entity_id", "num", "mon_id")]
+    for _, _, entity, sequence, _ in chains:
+        lines += [f"{entity} {num} {name}" for num, name in enumerate(sequence, 1)]
+    keys = (
+        "group_PDB id type_symbol label_atom_id label_alt_id label_comp_id "
+        "label_asym_id label_entity_id label_seq_id Cartn_x Cartn_y Cartn_z "
+        "occupancy B_iso_or_equiv auth_seq_id auth_asym_id pdbx_PDB_model_num"
+    ).split()
+    lines += ["#", "loop_"] + [f"_atom_site.{key}" for key in keys]
+    serial = 0
+    for index, (auth, label, entity, sequence, resolved) in enumerate(chains):
+        for position in resolved:
+            for offset, atom in enumerate(("N", "CA", "C", "O")):
+                serial += 1
+                # Distinct coordinates per chain, residue and atom.
+                x, y, z = 20.0 * index + position, 1.5 * position, 0.7 * offset
+                lines.append(
+                    f"ATOM {serial} {atom[0]} {atom} . {sequence[position]} "
+                    f"{label} {entity} {position + 1} {x:.3f} {y:.3f} {z:.3f} "
+                    f"1.0 10.0 {position + 1} {auth} 1"
+                )
+    if ligand:
+        auth, label = chains[-1][0], chains[-1][1] + "L"
+        lines.append(
+            f"HETATM {serial + 1} C C1 . ATP {label} 9 . 1.0 2.0 3.0 1.0 10.0 "
+            f"101 {auth} 1"
+        )
+    path = tmp_path / "structure.cif"
+    path.write_text("\n".join([*lines, "#", ""]), encoding="utf-8")
+    return path
+
+
+def _ca(path: Path, chain: str, position: int) -> list[float]:
+    """The CA a 0-based full-sequence position has in the file."""
+    import gemmi
+
+    structure = gemmi.read_structure(str(path))
+    for residue in structure[0][chain]:
+        if residue.label_seq == position + 1:
+            atom = residue["CA"][0].pos
+            return [atom.x, atom.y, atom.z]
+    raise AssertionError(f"no residue {position} in chain {chain}")
+
+
+def _protenix_payload(source: Path, out: Path, model: str = "protenix") -> list:
+    written = _materialize(source, model, out, options={"use_template": True})
+    native = json.loads(written.read_text())
+    sidecar = Path(native[0]["sequences"][0]["proteinChain"]["templatesPath"])
+    return json.loads(sidecar.read_text())
+
+
+def _mapped_job(tmp_path: Path, template: Path, **fields: Any) -> Path:
+    return _write(
         tmp_path / "job.json",
         {
             "entities": [
@@ -661,36 +720,112 @@ def test_a_mapped_template_reaches_alphafold3_and_protenix(tmp_path: Path) -> No
                     "type": "protein",
                     "id": "A",
                     "sequence": SEQUENCE,
-                    "templates": [
-                        {
-                            "mmcif": str(template),
-                            "query_indices": [1, 2, 3],
-                            "template_indices": [5, 6, 7],
-                        }
-                    ],
+                    "templates": [{"mmcif": str(template), **fields}],
                 }
             ]
         },
+    )
+
+
+def test_a_mapped_template_reaches_alphafold3_and_protenix(tmp_path: Path) -> None:
+    """Three of the dialects need the residue map, and each spells it its own way.
+
+    The common indices are AlphaFold 3's -- 0-based, the template's over its
+    chain's full `_entity_poly_seq` -- and reach it verbatim. Protenix and
+    OpenDDE count the first chain's resolved residues instead, so the writer
+    restates the map in those: a behaviour change from passing it verbatim.
+    """
+    template = _structure_cif(tmp_path)
+    # Chain A resolves positions 0, 2, 3, 4, 5: position 1 (GLY) is missing.
+    source = _mapped_job(
+        tmp_path, template, query_indices=[1, 2, 3, 4], template_indices=[0, 1, 2, 5]
     )
 
     written = _materialize(source, "alphafold3", tmp_path / "af3")
     native = json.loads(written.read_text())
     chain = native["sequences"][0]["protein"]
     assert chain["templates"][0]["mmcifPath"] == str(template)
-    assert chain["templates"][0]["queryIndices"] == [1, 2, 3]
-    assert chain["templates"][0]["templateIndices"] == [5, 6, 7]
+    assert chain["templates"][0]["queryIndices"] == [1, 2, 3, 4]
+    assert chain["templates"][0]["templateIndices"] == [0, 1, 2, 5]
 
     # Protenix reads templates only under use_template, released false.
-    written = _materialize(
-        source, "protenix", tmp_path / "px", options={"use_template": True}
+    for model in ("protenix", "opendde"):
+        payload = _protenix_payload(source, tmp_path / model, model)
+        # Protenix reads the structure's contents, not a path, so the mmCIF is
+        # inlined into a file of its own rather than into the job document; A
+        # is already the first chain, so the file is the caller's, verbatim.
+        assert payload[0]["mmcif"] == template.read_text()
+        # The unresolved GLY has no observed ordinal and leaves the map.
+        assert payload[0]["queryIndices"] == [1, 3, 4]
+        assert payload[0]["templateIndices"] == [0, 1, 4]
+
+
+def test_protenix_reads_the_named_template_chain_at_alphafold3s_indices(
+    tmp_path: Path,
+) -> None:
+    """What Protenix featurizes is what AlphaFold 3 is told: the same CAs."""
+    import numpy as np
+
+    from foldjax.models.protenix.data.template_features import (
+        _single_json_template,
     )
-    native = json.loads(written.read_text())
-    sidecar = Path(native[0]["sequences"][0]["proteinChain"]["templatesPath"])
-    # Protenix reads the structure's contents, not a path, so the mmCIF is
-    # inlined into a file of its own rather than into the job document.
-    payload = json.loads(sidecar.read_text())
-    assert payload[0]["mmcif"].startswith("data_template")
-    assert payload[0]["queryIndices"] == [1, 2, 3]
+
+    template = _structure_cif(tmp_path)
+    # Chain B is second in the file and resolves positions 1, 3, 4, 5.
+    query, positions = [0, 1, 2, 3], [1, 2, 3, 5]
+    source = _mapped_job(
+        tmp_path,
+        template,
+        chain_id="B",
+        query_indices=query,
+        template_indices=positions,
+    )
+    (entry,) = _protenix_payload(source, tmp_path / "px")
+    features = _single_json_template(entry, len(SEQUENCE), observed_residues=True)
+
+    ca = 1  # atom37 index of CA
+    coords = features["template_all_atom_positions"][:, ca]
+    masks = features["template_all_atom_masks"][:, ca]
+    # Position 2 (LYS) is unresolved: no coordinates, as under AlphaFold 3.
+    assert masks[[0, 1, 2, 3]].tolist() == [1.0, 0.0, 1.0, 1.0]
+    # The template is zero-centred, so compare displacements between residues.
+    expected = np.subtract(_ca(template, "B", 5), _ca(template, "B", 1))
+    np.testing.assert_allclose(coords[3] - coords[0], expected, atol=1e-3)
+    # ILE and TYR, chain B's residues at positions 1 and 5; chain A has
+    # neither.
+    aatype = features["template_aatype"]
+    assert aatype[0] != aatype[3]
+    assert aatype[1] == aatype[len(SEQUENCE) - 1]  # an unmapped query: a gap
+
+
+def test_an_observed_chain_file_keeps_its_map(tmp_path: Path) -> None:
+    """A single fully resolved chain means the same under both readings."""
+    chains = (("Q", "A", "1", ("ALA", "GLY", "SER"), (0, 1, 2)),)
+    template = _structure_cif(tmp_path, chains, ligand=False)
+    source = _mapped_job(
+        tmp_path, template, chain_id="Q", query_indices=[4, 5], template_indices=[0, 2]
+    )
+    (entry,) = _protenix_payload(source, tmp_path / "px")
+    assert entry["mmcif"] == template.read_text()
+    assert (entry["queryIndices"], entry["templateIndices"]) == ([4, 5], [0, 2])
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"chain_id": "Z"}, "'Z' is not an author chain"),
+        ({"chain_id": "B", "template_indices": [6]}, "template index 6 is outside"),
+    ],
+)
+def test_protenix_refuses_a_template_map_it_cannot_restate(
+    tmp_path: Path, fields: dict, message: str
+) -> None:
+    template = _structure_cif(tmp_path)
+    source = _mapped_job(
+        tmp_path, template, **{"query_indices": [0], "template_indices": [0], **fields}
+    )
+    with pytest.raises(ValueError, match=message):
+        _protenix_payload(source, tmp_path / "px")
 
 
 def test_alphafold3_filters_a_named_template_chain_to_a_sidecar(
