@@ -208,6 +208,17 @@ def mock_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _MockRuntim
     return _MockRuntime(tmp_path, monkeypatch)
 
 
+@pytest.fixture
+def on_a_gpu(mock_runtime: _MockRuntime, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The mock devices are GPUs, where the released `triton` attention runs."""
+    devices = (
+        _Device(id=0, platform="gpu", local_hardware_id=0),
+        _Device(id=1, platform="gpu", local_hardware_id=1),
+    )
+    monkeypatch.setattr(jax, "local_devices", lambda backend=None: devices)
+    monkeypatch.setattr(jax, "default_backend", lambda: "gpu")
+
+
 def _weights(root: Path, name: str = "weights") -> Path:
     directory = root / name
     directory.mkdir()
@@ -453,7 +464,7 @@ def test_tokamax_identity_uses_effective_matmul_precision(
 
 
 def test_managed_default_aliases_reuse_one_managed_model_runner(
-    tmp_path: Path, mock_runtime: _MockRuntime
+    tmp_path: Path, mock_runtime: _MockRuntime, on_a_gpu: None
 ) -> None:
     weights = _weights(tmp_path)
     omitted = _request(
@@ -510,6 +521,35 @@ def test_managed_default_aliases_reuse_one_managed_model_runner(
     assert mock_runtime.counts["parameter_loads"] == 1
     assert mock_runtime.counts["traces"] == 1
     assert mock_runtime.counts["inferences"] == 2
+
+
+@pytest.mark.parametrize(
+    ("platform", "expected"), (("cpu", "xla"), ("tpu", "xla"), ("gpu", "triton"))
+)
+@pytest.mark.parametrize("spelling", ({}, {"attention_kernel": "auto"}))
+def test_omitted_attention_is_triton_only_on_a_gpu(
+    tmp_path: Path,
+    mock_runtime: _MockRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+    expected: str,
+    spelling: dict[str, str],
+) -> None:
+    """tokamax's Triton flash attention raises NotImplementedError off a GPU.
+
+    So an omitted (or `auto`) attention builds `xla` there, read from the
+    device the run selected, and upstream's `triton` on a GPU.
+    """
+    devices = (_Device(id=0, platform=platform),)
+    monkeypatch.setattr(jax, "local_devices", lambda backend=None: devices)
+    monkeypatch.setattr(jax, "default_backend", lambda: platform)
+    weights = _weights(tmp_path)
+    request = _request(tmp_path, weights=weights, output="out", options=spelling)
+
+    AlphaFold3Backend().predict(request)
+
+    (kwargs,) = mock_runtime.config_kwargs
+    assert kwargs["flash_attention_implementation"] == expected
 
 
 @pytest.mark.parametrize(
@@ -859,7 +899,8 @@ def test_runner_identity_change_drops_the_old_model_before_rebuilding(
     elif changed_identity == "buckets":
         options["buckets"] = [16]
     elif changed_identity == "attention":
-        options["attention_backend"] = "xla"
+        # The mock devices are CPUs, where the omitted attention is `xla`.
+        options["attention_backend"] = "triton"
     elif changed_identity == "return_embeddings":
         options["return_embeddings"] = True
     elif changed_identity == "return_distogram":

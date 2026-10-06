@@ -47,7 +47,7 @@ from foldjax.backends.base import (
     validate_memory_policy_options,
 )
 from foldjax.cache import PERSISTENT_CACHE_MIN_COMPILE_SECS, trusted_compile_cache_dir
-from foldjax.execution import DETERMINISTIC_API_OPTION
+from foldjax.execution import BACKEND_DEFAULT, DETERMINISTIC_API_OPTION
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
 from foldjax.models._compile_policy import compiler_options
@@ -429,6 +429,23 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "deterministic": False,
 }
 _MANAGED_CONFIG_DEFAULTS = frozenset({"num_steps", "max_msa_depth"})
+
+
+def _default_attention_backend(platform: str | None) -> str:
+    """The attention an omitted ``attention_backend`` runs on ``platform``.
+
+    Upstream's ``triton`` (``_RELEASED_COMPILE_DEFAULTS``) is tokamax's
+    Pallas-Triton flash attention, which exists only on a GPU: on a CPU it
+    raises ``NotImplementedError`` at trace time, so off a GPU the omitted
+    choice is ``xla``. ``platform`` is the ``platform`` option, or None for
+    JAX's default backend; predict passes the selected device's platform.
+    """
+    if platform is None:
+        import jax
+
+        platform = jax.default_backend()
+    gpu = str(platform).lower() in {"gpu", "cuda", "rocm"}
+    return str(_RELEASED_COMPILE_DEFAULTS["attention_backend"]) if gpu else "xla"
 
 #: The CCD release cutoff below which a component's model coordinates may stand
 #: in for a conformer RDKit could not generate. ``run_alphafold.py`` passes its
@@ -871,9 +888,10 @@ class AlphaFold3Backend(Backend):
     # no dtype for a caller to choose here; the knob would be a lie.
     execution_options: dict[str, tuple[str, dict[str, Any]]] = {
         **MATMUL_PRECISION_OPTION,
+        # `auto` is the omitted default: `triton` on a GPU, `xla` elsewhere.
         "attention_kernel": (
             "attention_backend",
-            {"auto": "triton", "xla": "xla"},
+            {"auto": BACKEND_DEFAULT, "xla": "xla"},
         ),
         **DETERMINISTIC_API_OPTION,
     }
@@ -941,6 +959,13 @@ class AlphaFold3Backend(Backend):
         buckets = profile.get("buckets")
         if type(buckets) in (list, tuple) and not buckets:
             profile.pop("buckets")
+        # Absent means the released `triton`; an omitted choice off a GPU runs
+        # `xla`, so it shares the namespace of an explicit `xla`.
+        if "attention_backend" not in self.apply_sampling(request):
+            platform = request.options.get("platform")
+            resolved = _default_attention_backend(platform)
+            if resolved != _RELEASED_COMPILE_DEFAULTS["attention_backend"]:
+                profile["attention_backend"] = resolved
         return profile
 
     @contextmanager
@@ -1185,9 +1210,9 @@ class AlphaFold3Backend(Backend):
                 jax.local_devices(backend=platform) if platform else jax.local_devices()
             )
             device = devices[int(options.pop("device", 0))]
-            attention_backend = options.pop(
-                "attention_backend", _RELEASED_COMPILE_DEFAULTS["attention_backend"]
-            )
+            attention_backend = options.pop("attention_backend", None)
+            if attention_backend is None:
+                attention_backend = _default_attention_backend(device.platform)
             num_samples = int(
                 options.pop("num_samples", _RELEASED_COMPILE_DEFAULTS["num_samples"])
             )

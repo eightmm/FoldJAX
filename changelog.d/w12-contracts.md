@@ -29,3 +29,10 @@
   on OpenFold3 and `confidence_dtype=float32` on OpenDDE are no longer
   refused. Manifests still record options as typed, so `--resume` treats two
   spellings of one width as different requests.
+- **AlphaFold 3 runs off a GPU with the default attention.** An omitted
+  attention (or `attention_kernel=auto`) was upstream's `triton`, which
+  tokamax refuses with `NotImplementedError` on a CPU (and TPU). It is now
+  `triton` only on a GPU device and `xla` elsewhere, decided from the selected
+  device at run time and from the `platform` option or JAX's default backend
+  in the cache namespace, so an omitted CPU run shares the explicit `xla`
+  namespace.

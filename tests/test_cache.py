@@ -281,8 +281,16 @@ def test_esmfold2_records_the_context_parallel_mesh_it_resolves(
     assert "cp_layout" not in backend.cache_profile(request)
 
 
+@pytest.fixture
+def af3_on_a_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Plan as a GPU host, where an omitted attention is the released `triton`."""
+    import jax
+
+    monkeypatch.setattr(jax, "default_backend", lambda: "gpu")
+
+
 def test_alphafold3_managed_defaults_share_the_omitted_cache_namespace(
-    tmp_path: Path,
+    tmp_path: Path, af3_on_a_gpu: None
 ) -> None:
     backend = AlphaFold3Backend()
     omitted = dataclasses.replace(
@@ -325,7 +333,7 @@ def test_alphafold3_managed_defaults_share_the_omitted_cache_namespace(
 
 
 def test_alphafold3_external_source_keeps_nested_config_defaults_explicit(
-    tmp_path: Path,
+    tmp_path: Path, af3_on_a_gpu: None
 ) -> None:
     backend = AlphaFold3Backend()
     request = dataclasses.replace(
@@ -374,6 +382,7 @@ def test_alphafold3_external_source_keeps_nested_config_defaults_explicit(
 )
 def test_alphafold3_nondefault_and_type_routes_keep_distinct_cache_namespaces(
     tmp_path: Path,
+    af3_on_a_gpu: None,
     options: dict[str, object],
 ) -> None:
     backend = AlphaFold3Backend()
@@ -384,6 +393,29 @@ def test_alphafold3_nondefault_and_type_routes_keep_distinct_cache_namespaces(
 
     assert backend.cache_profile(changed) != backend.cache_profile(omitted)
     assert resolve_cache_dir(changed, backend) != resolve_cache_dir(omitted, backend)
+
+
+def test_alphafold3_omitted_attention_off_a_gpu_is_the_xla_namespace(
+    tmp_path: Path,
+) -> None:
+    """Off a GPU an omitted attention runs `xla`, so it is `xla`'s namespace.
+
+    And not the released `triton`'s, which is a different program there.
+    """
+    backend = AlphaFold3Backend()
+    omitted = dataclasses.replace(
+        _request(tmp_path), model="alphafold3", input_format="native"
+    )
+    auto = dataclasses.replace(omitted, options={"attention_kernel": "auto"})
+    xla = dataclasses.replace(omitted, options={"attention_backend": "xla"})
+    triton = dataclasses.replace(omitted, options={"attention_backend": "triton"})
+
+    assert backend.cache_profile(omitted)["attention_backend"] == "xla"
+    assert backend.cache_profile(auto) == backend.cache_profile(omitted)
+    assert backend.cache_profile(xla) == backend.cache_profile(omitted)
+    assert backend.cache_profile(triton) != backend.cache_profile(omitted)
+    on_gpu = dataclasses.replace(omitted, options={"platform": "cuda"})
+    assert "attention_backend" not in backend.cache_profile(on_gpu)
 
 
 @pytest.mark.parametrize("strategy", ("autotune", "heuristics", "error"))
