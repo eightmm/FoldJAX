@@ -1644,14 +1644,14 @@ def test_upstream_esmfold2_binds_the_same_staged_assets_as_foldjax(
         "esmfold2", weights
     )
     shared = foldjax_implicit_asset_paths("esmfold2", weights)
-    # Publisher chemistry is job-dependent: every bench case names an
-    # alignment and therefore takes the all-biomolecule builder, but a lone
-    # unaligned chain never opens `ccd.pkl`.
-    assert upstream_implicit_asset_paths("esmfold2", native_input=aligned) == {
-        **shared,
-        "esmfold2.ccd": weights / "ccd.pkl",
-    }
-    assert upstream_implicit_asset_paths("esmfold2", native_input=bare) == shared
+    # Publisher chemistry is opened by every job: the all-biomolecule builder
+    # featurizes them all, a lone unaligned chain included.
+    for job in (aligned, bare):
+        assert upstream_implicit_asset_paths("esmfold2", native_input=job) == {
+            **shared,
+            "esmfold2.ccd": weights / "ccd.pkl",
+        }
+    assert upstream_implicit_asset_paths("esmfold2", native_input=None) == shared
 
 
 def test_upstream_runtime_probe_reads_an_interpreter_outside_the_checkout(

@@ -842,29 +842,26 @@ def upstream_implicit_asset_paths(
         weights = _esmfold2_weights()
         selected = foldjax_implicit_asset_paths(model, weights)
         if _esmfold2_job_is_all_atom(native_input):
-            # Publisher chemistry, and a job-dependent asset like Boltz's
-            # molecule pickles: a lone protein chain with no alignment takes
-            # the legacy builder and never opens it. Every bench case does
-            # open it -- each one names an alignment -- but binding it
-            # unconditionally would refuse a job that does not need it.
+            # Publisher chemistry: every job's reference conformers come from
+            # it, a lone protein chain's included, once there is a job.
             selected["esmfold2.ccd"] = weights / "ccd.pkl"
         return selected
     raise ValueError(f"no upstream assets for {model}")
 
 
 def _esmfold2_job_is_all_atom(native_input: Path | None) -> bool:
-    """Whether this job selects the all-biomolecule builder, and its CCD."""
+    """Whether this job opens the all-biomolecule builder, and its CCD.
+
+    Every readable job does: the backend featurizes them all with it.
+    """
 
     if native_input is None:
         return False
-    from foldjax.backends.esmfold2 import (
-        _job_document,
-        _requires_all_atom_features,
-    )
+    from foldjax.backends.esmfold2 import _job_document
 
     try:
-        document, _base = _job_document(Path(native_input))
-        return _requires_all_atom_features(document)
+        _job_document(Path(native_input))
+        return True
     except (OSError, UnicodeError, ValueError, KeyError, TypeError) as error:
         raise ArtifactFingerprintError(
             "cannot read the ESMFold2 benchmark job document"

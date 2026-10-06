@@ -70,40 +70,22 @@ def _document(path: Path) -> tuple[dict[str, Any], Path]:
 def _features(document: dict[str, Any], base: Path, weights: Path, seed: int):
     """Build the job the way `backends/esmfold2.predict` builds it.
 
-    The branch is upstream-shaped rather than a benchmark convenience: a lone
-    protein chain with no alignment is the legacy builder's case, and anything
-    else -- several chains, an alignment, a ligand, a bond -- is the
-    all-biomolecule contract, which needs the publisher chemistry in
-    `ccd.pkl`.
+    Every job, a lone protein chain included, takes the all-biomolecule
+    contract, whose reference conformers are the publisher chemistry in
+    `ccd.pkl` -- the backend's one feature source.
     """
-    from foldjax.backends.esmfold2 import (
-        _chains_from_document,
-        _requires_all_atom_features,
-    )
-
-    if _requires_all_atom_features(document):
-        from foldjax.models.esmfold2.data import all_atom
-
-        return (
-            all_atom.build_job_features(
-                document,
-                base_dir=base,
-                ccd_path=weights / "ccd.pkl",
-                seed=seed,
-            ),
-            "foldjax NumPy port of the publisher all-biomolecule input "
-            "contract; model-core comparison, not independent native "
-            "preprocessing",
-        )
-    chains, alignments = _chains_from_document(document, base)
-    if not chains:
-        raise ValueError("the job names no protein chains")
-    from foldjax.models.esmfold2.data import features as protein_features
+    from foldjax.models.esmfold2.data import all_atom
 
     return (
-        protein_features.build_features(chains, dict(alignments)),
-        "shared protein feature builder; parity-tested against publisher "
-        "prepare_protein_features",
+        all_atom.build_job_features(
+            document,
+            base_dir=base,
+            ccd_path=weights / "ccd.pkl",
+            seed=seed,
+        ),
+        "foldjax NumPy port of the publisher all-biomolecule input "
+        "contract; model-core comparison, not independent native "
+        "preprocessing",
     )
 
 
