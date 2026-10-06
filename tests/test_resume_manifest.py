@@ -13,6 +13,7 @@ import pytest
 
 import foldjax
 from foldjax.backends.base import Backend
+from foldjax.backends.boltz2 import Boltz2Backend
 from foldjax.manifest import MANIFEST_NAME
 from foldjax.registry import backend_override
 from foldjax.schema import (
@@ -201,6 +202,52 @@ def test_exact_request_reuses_nonempty_recorded_artifacts(tmp_path: Path) -> Non
         resumed.results[0].representations["single"],
         np.arange(6, dtype=np.float32).reshape(2, 3),
     )
+
+
+class _Boltz2Vocabulary(_ResumeBackend):
+    """The resume double, reading options with Boltz-2's real tables."""
+
+    execution_options = Boltz2Backend.execution_options
+    boolean_options = Boltz2Backend.boolean_options
+
+
+@pytest.mark.parametrize(
+    ("resumed_options", "reused"),
+    [
+        # The same run, spelled another way on each side.
+        (
+            {"compute_dtype": "bfloat16", "cp_atom_windows": True},
+            True,
+        ),
+        ({"dtype": "BF16", "cp_atom_windows": 1}, True),
+        # A different run.
+        ({"dtype": "fp32", "cp_atom_windows": True}, False),
+        ({"dtype": "bf16", "cp_atom_windows": "no"}, False),
+    ],
+)
+def test_resume_compares_options_as_the_backend_reads_them(
+    tmp_path: Path, resumed_options: dict[str, object], reused: bool
+) -> None:
+    """`bf16` and `bfloat16`, an alias and its name, `yes` and `True`: one run.
+
+    The manifest records what the first caller typed -- as every manifest
+    written before this did -- so both sides are read through the backend.
+    """
+    calls: list[tuple[str, str, int]] = []
+    backend = _Boltz2Vocabulary("boltz2", calls)
+    request = _request(
+        tmp_path, options={"trunk_dtype": "bf16", "cp_atom_windows": "yes"}
+    )
+    with backend_override("boltz2", lambda: backend):
+        foldjax.predict_batch(request)
+        recorded = json.loads((request.output_dir / MANIFEST_NAME).read_text())
+        assert recorded["options"] == {"trunk_dtype": "bf16", "cp_atom_windows": "yes"}
+        resumed = foldjax.predict_batch(
+            dataclasses.replace(request, resume=True, options=resumed_options)
+        )
+
+    assert len(calls) == (1 if reused else 2)
+    assert resumed.skipped == ((request.output_dir,) if reused else ())
 
 
 @pytest.mark.parametrize(
