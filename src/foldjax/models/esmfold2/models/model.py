@@ -1887,14 +1887,29 @@ def with_overrides(
     structure_sample_sequential: bool | None = None,
     glu_backend: str | None = None,
     confidence_dtype: str | None = None,
+    msa_column_mask_rate: float | None = None,
+    full_depth_msa: bool | None = None,
 ) -> ModelSettings:
     """The knobs a caller actually varies, applied without reconstruction.
 
     All optional, and `None` means "leave the checkpoint's value alone" --
     which for the boolean is the difference between a caller who did not ask
     and one who asked for the default.
+
+    ``full_depth_msa=True`` is upstream's `msa_subsample_at_inference=False`:
+    every loop reads the whole alignment, which a `max_msa_depth` of `None`
+    already means here, so it cannot be combined with a depth.
     """
+    if full_depth_msa and max_msa_depth is not None:
+        raise ValueError(
+            "full_depth_msa reads every alignment row, and max_msa_depth caps "
+            "them; pass one of the two"
+        )
     updates: dict[str, object] = {}
+    if full_depth_msa:
+        updates["max_msa_depth"] = None
+    if msa_column_mask_rate is not None:
+        updates["msa_column_mask_rate"] = float(msa_column_mask_rate)
     if num_recycles is not None:
         updates["num_recycles"] = num_recycles
     if structure_sample_sequential is not None:

@@ -502,8 +502,17 @@ def lm_hidden_states(
     settings: ESMCSettings,
     packed_length: int | None = None,
     deterministic: bool = False,
+    lm_mask_pct: float = 0.0,
+    mask_key: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
-    """`compute_lm_hidden_states`: pack, run ESMC, scatter back."""
+    """`compute_lm_hidden_states`: pack, run ESMC, scatter back.
+
+    ``lm_mask_pct`` is upstream's: that fraction of residues, drawn at random,
+    is replaced by the mask token before ESMC runs, and BOS/EOS/PAD never are
+    (`modeling_esmfold2_common.py:2316-2323`). Upstream draws from torch's
+    global RNG; here the draw comes off ``mask_key``, over the natural packed
+    length only, so serving padding of the LM axis cannot move it.
+    """
     lm_input_ids, sequence_id, expand_map = pack_lm_inputs(
         input_ids,
         asym_id,
@@ -512,6 +521,17 @@ def lm_hidden_states(
         token_mask,
         packed_length=packed_length,
     )
+    if lm_mask_pct > 0.0:
+        if mask_key is None:
+            raise ValueError("lm_mask_pct needs a mask_key to draw from")
+        batch, length = lm_input_ids.shape
+        natural = int((lm_input_ids != PAD_TOKEN_ID).sum(axis=1).max())
+        draw = np.ones((batch, length), dtype=np.float32)
+        draw[:, :natural] = np.asarray(jax.random.uniform(mask_key, (batch, natural)))
+        special = np.isin(lm_input_ids, (BOS_TOKEN_ID, PAD_TOKEN_ID, EOS_TOKEN_ID))
+        lm_input_ids = np.where(
+            (draw < lm_mask_pct) & ~special, MASK_TOKEN_ID, lm_input_ids
+        ).astype(lm_input_ids.dtype)
     hidden = encode(
         jnp.asarray(lm_input_ids),
         jnp.asarray(sequence_id),
