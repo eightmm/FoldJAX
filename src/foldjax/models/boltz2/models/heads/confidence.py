@@ -134,6 +134,7 @@ def confidence_module_forward(
     glu_backend: str = "xla",
     return_pair_chains_iptm: bool = True,
     confidence_chain_ids: tuple[int, ...] | None = None,
+    pair_chains_capacity: int | None = None,
     recompute_nonpolymer_frames: bool = True,
     atom_context_parallel: bool = False,
 ) -> dict[str, Any]:
@@ -249,6 +250,7 @@ def confidence_module_forward(
         rep_atom_index=rep_atom_index,
         return_pair_chains_iptm=return_pair_chains_iptm,
         confidence_chain_ids=confidence_chain_ids,
+        pair_chains_capacity=pair_chains_capacity,
         recompute_nonpolymer_frames=recompute_nonpolymer_frames,
     )
 
@@ -267,6 +269,7 @@ def _confidence_heads_forward(
     return_pair_chains_iptm: bool,
     recompute_nonpolymer_frames: bool,
     confidence_chain_ids: tuple[int, ...] | None = None,
+    pair_chains_capacity: int | None = None,
 ) -> dict[str, Any]:
     # use_separate_heads=True
     asym_id_token = feats["asym_id"]
@@ -379,6 +382,7 @@ def _confidence_heads_forward(
         rep_atom_index=rep_atom_index,
         return_pair_chains_iptm=return_pair_chains_iptm,
         confidence_chain_ids=confidence_chain_ids,
+        pair_chains_capacity=pair_chains_capacity,
         recompute_nonpolymer_frames=recompute_nonpolymer_frames,
     )
     out_dict["ptm"] = ptm
@@ -387,6 +391,63 @@ def _confidence_heads_forward(
     out_dict["protein_iptm"] = protein_iptm
     out_dict["pair_chains_iptm"] = pair_chains_iptm
     return out_dict
+
+
+def pair_chains_capacity(asym_id: np.ndarray, *, minimum: int = 32) -> int:
+    """The chain axis a dense ``pair_chains_iptm`` is compiled with.
+
+    A power of two no smaller than ``minimum`` that holds every ``asym_id``
+    label (padding included): the program is keyed by this bucket, not by the
+    set of chain labels, so inputs with up to 32 chains share one executable.
+    """
+    labels = int(np.max(np.asarray(asym_id))) + 1 if np.size(asym_id) else 1
+    capacity = max(int(minimum), 1)
+    while capacity < labels:
+        capacity *= 2
+    return capacity
+
+
+def _dense_pair_chains_iptm(
+    tm_expected_value: jnp.ndarray,
+    row_mask: jnp.ndarray,
+    mask_pad: jnp.ndarray,
+    asym_id: jnp.ndarray,
+    *,
+    capacity: int,
+) -> jnp.ndarray:
+    """Upstream's ``pair_chains_iptm`` for every label below ``capacity`` at once.
+
+    Upstream (``confidence_utils.compute_ptms``) loops over the chain labels
+    present, and entry ``[c][d]`` is
+    ``max_i sum_j tm[i, j] m[i, j] / (sum_j m[i, j] + 1e-5)`` with
+    ``m = row_i * [i in d] * [j in c] * pad_j``. The row factor is 0 or 1, so a
+    row outside chain ``d`` contributes exactly 0 to the max, and the j sums do
+    not depend on ``d``: they are one ``[rows, capacity]`` contraction, and the
+    max over a chain's rows is a segment max. Labels with no token give 0, as
+    an absent label would in upstream's loop. The contraction is pinned to full
+    float32 because upstream's is an elementwise sum, not a matmul.
+
+    Returns ``[batch, capacity, capacity]`` indexed ``[c, d]`` like upstream's
+    ``pair_chains_iptm[c][d]``; its diagonal is upstream's ``chains_ptm``.
+    """
+    labels = jnp.clip(asym_id.astype(jnp.int32), 0, capacity - 1)
+    columns = jax.nn.one_hot(labels, capacity, dtype=tm_expected_value.dtype)
+    columns = columns * mask_pad[..., None]
+    numerator = jnp.einsum(
+        "bij,bjc->bic",
+        tm_expected_value,
+        columns,
+        precision=jax.lax.Precision.HIGHEST,
+    )
+    denominator = jnp.sum(columns, axis=1)[:, None, :]
+    rows = row_mask[..., None]
+    value = rows * numerator / (rows * denominator + 1e-5)
+    by_row_chain = jax.vmap(
+        lambda one, segments: jax.ops.segment_max(
+            one, segments, num_segments=capacity
+        )
+    )(value, labels)
+    return jnp.swapaxes(jnp.maximum(by_row_chain, 0.0), -1, -2)
 
 
 def _compute_collinear_mask(v1: jnp.ndarray, v2: jnp.ndarray) -> jnp.ndarray:
@@ -554,8 +615,12 @@ def _compute_ptms(
     rep_atom_index: tuple[jnp.ndarray, jnp.ndarray] | None = None,
     return_pair_chains_iptm: bool = True,
     confidence_chain_ids: tuple[int, ...] | None = None,
+    pair_chains_capacity: int | None = None,
     recompute_nonpolymer_frames: bool = True,
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, dict]:
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, Any]:
+    # A dense capacity replaces the static per-label dictionary below.
+    if pair_chains_capacity is not None:
+        return_pair_chains_iptm = False
     chain_ids = (
         _resolve_confidence_chain_ids(feats["asym_id"], confidence_chain_ids)
         if return_pair_chains_iptm
@@ -609,6 +674,16 @@ def _compute_ptms(
     protein_mask = base * (is_protein[:, :, None] * is_protein[:, None, :])
     ligand_iptm = _agg(ligand_mask)
     protein_iptm = _agg(protein_mask)
+
+    if pair_chains_capacity is not None:
+        dense = _dense_pair_chains_iptm(
+            tm_expected_value,
+            maski * mask_pad,
+            mask_pad,
+            asym_id,
+            capacity=pair_chains_capacity,
+        )
+        return ptm, iptm, ligand_iptm, protein_iptm, dense
 
     chain_pair_iptm: dict[Any, dict[Any, jnp.ndarray]] = {}
     if return_pair_chains_iptm:

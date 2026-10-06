@@ -78,8 +78,9 @@ from foldjax.summary import (
 #: documented as such; it is not something ESMFold2 publishes.
 #:
 #: OpenFold3 exposes the exact key only when its complete score is available.
-#: Protein inputs need a disorder term that the torch-free writer cannot derive;
-#: those runs report `sample_ranking_score_no_disorder` for inspection and are
+#: Protein inputs need upstream's RASA disorder term, which the writer derives
+#: with biotite (`foldjax.models.openfold3.rasa`); without biotite those runs
+#: report `sample_ranking_score_no_disorder` for inspection and are
 #: deliberately absent from `best_sample`.
 _RANKING_SCORE = {
     "alphafold3": "ranking_score",

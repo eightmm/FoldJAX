@@ -475,8 +475,36 @@ def test_esmfold2_writer_stages_plddt_and_reports_withheld_pae(
         assert loaded.model == "esmfold2"
         assert loaded["token_plddt"].tolist() == [[0.25, 0.75][index]] * 7
         assert loaded.describe("atom_plddt")["scale"] == "0-1"
-        assert "return_confidence_logits" in loaded.unavailable["pae"]
+        assert "return_expected_errors" in loaded.unavailable["pae"]
+        assert "return_auxiliary_outputs" in loaded.unavailable["chain_pair_iptm"]
         _assert_maps_name_every_cif_atom(loaded, cif)
+
+
+def test_esmfold2_writer_stages_pae_pde_and_chain_pair_iptm(tmp_path: Path) -> None:
+    from foldjax.models.esmfold2.data import features
+    from foldjax.models.esmfold2.output import write_prediction_outputs
+
+    built = features.build_features([("ACDK", "A", 0, 0), ("GHK", "B", 0, 1)])
+    output = _esmfold2_output(built)
+    rng = np.random.default_rng(1)
+    output["pae"] = rng.uniform(0, 32, size=(2, 7, 7)).astype(np.float32)
+    output["pde"] = rng.uniform(0, 32, size=(2, 7, 7)).astype(np.float32)
+    output["pair_chains_iptm"] = rng.uniform(size=(2, 2, 2)).astype(np.float32)
+    written = write_prediction_outputs(output, built, tmp_path, name="j")
+
+    for index, cif in enumerate(written["structures"]):
+        loaded = load_confidence_arrays(confidence_arrays.staged_path(cif))
+        assert set(loaded.arrays) - confidence_arrays.INDEX_ARRAYS == set(
+            confidence_arrays.default_arrays("esmfold2")
+        )
+        np.testing.assert_allclose(loaded["pae"], output["pae"][index], atol=0.02)
+        np.testing.assert_allclose(loaded["pde"], output["pde"][index], atol=0.02)
+        np.testing.assert_allclose(
+            loaded["chain_pair_iptm"], output["pair_chains_iptm"][index]
+        )
+        assert loaded.describe("chain_pair_iptm")["source"] == "pair_chains_iptm"
+        assert loaded["chain_id"].tolist() == ["A", "B"]
+        assert loaded.unavailable == {}
 
 
 def test_esmfold2_all_biomolecule_maps_and_direct_pae(
@@ -541,12 +569,58 @@ def test_openfold3_writer_stages_atom_plddt_and_chain_pair_iptm(
         assert loaded.describe("atom_plddt")["scale"] == "0-1"
         assert loaded["chain_id"].tolist() == ["P", "L"]
         assert loaded["atom_chain_id"].tolist() == ["P"] * 4 + ["L"]
-        assert "all_arrays" in loaded.unavailable["pae"]
+        assert "return_expected_errors=False" in loaded.unavailable["pae"]
         if multimer:
             np.testing.assert_allclose(loaded["chain_pair_iptm"], chain_pair[index])
         else:
             assert "chain_pair_iptm" in loaded.unavailable
         _assert_maps_name_every_cif_atom(loaded, cif)
+
+
+def test_openfold3_writer_stages_expected_errors_and_chain_scores(
+    tmp_path: Path,
+) -> None:
+    from foldjax.models.openfold3.output import write_prediction_outputs
+    from tests.test_mmcif_label_fields import openfold3_case
+
+    rng = np.random.default_rng(4)
+    chain_pair = np.asarray([[[0.0, 0.3], [0.3, 0.0]], [[0.0, 0.8], [0.8, 0.0]]])
+    prediction, features, metadata = openfold3_case(
+        samples=2, chain_pair_iptm=chain_pair
+    )
+    # The program's bucket is wider than the three real tokens.
+    pae = rng.uniform(0.0, 32.0, size=(2, 5, 5)).astype(np.float32)
+    pde = rng.uniform(0.0, 32.0, size=(2, 5, 5)).astype(np.float32)
+    chain_ptm = np.asarray([[0.6, 0.2], [0.7, 0.4]], dtype=np.float32)
+    bespoke = np.asarray([[[0.0, 0.5], [0.5, 0.0]], [[0.0, 0.9], [0.9, 0.0]]])
+    prediction = prediction._replace(
+        pae=pae,
+        pde=pde,
+        gpde=np.asarray([3.0, 4.0], dtype=np.float32),
+        chain_ptm=chain_ptm,
+        bespoke_iptm=bespoke,
+    )
+    written = write_prediction_outputs(
+        prediction, features, tmp_path, output_metadata=metadata
+    )
+
+    for index, cif in enumerate(written["structures"]):
+        entry = confidence_arrays.sample_metadata(cif)["confidence_arrays"]
+        loaded = load_confidence_arrays(Path(entry["path"]))
+        np.testing.assert_allclose(
+            loaded["pae"], pae[index, :3, :3], atol=0.02
+        )
+        np.testing.assert_allclose(
+            loaded["pde"], pde[index, :3, :3], atol=0.02
+        )
+        assert loaded.describe("pae")["unit"] == "angstrom"
+        np.testing.assert_allclose(loaded["chain_ptm"], chain_ptm[index])
+        np.testing.assert_allclose(loaded["chain_pair_iptm_bespoke"], bespoke[index])
+        assert not {"pae", "pde", "chain_ptm"} & set(loaded.unavailable)
+    summary = json.loads(Path(written["scores"]).read_text())
+    assert [entry["gpde"] for entry in summary["samples"]] == [3.0, 4.0]
+    np.testing.assert_allclose(summary["chain_ptm"], chain_ptm, rtol=1e-6)
+    np.testing.assert_allclose(summary["bespoke_iptm"], bespoke)
 
 
 # --- AlphaFold 3 ----------------------------------------------------------------
