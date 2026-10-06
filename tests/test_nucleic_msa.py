@@ -479,7 +479,7 @@ def test_protenix_defaults_to_upstreams_released_flag(tmp_path: Path) -> None:
     assert invocation.config_fields["use_rna_msa"] is False
 
 
-@pytest.mark.parametrize("value", ["true", 1])
+@pytest.mark.parametrize("value", ["maybe", 2])
 def test_protenix_use_rna_msa_must_be_a_boolean(tmp_path: Path, value) -> None:
     request = PredictionRequest(
         model="protenix",

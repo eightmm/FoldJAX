@@ -581,7 +581,7 @@ def test_resolution_rejects_a_plan_that_prediction_cannot_run(
             "opendde",
             "job.json",
             "native",
-            {"include_raw": "yes"},
+            {"include_raw": "maybe"},
             "include_raw must be a boolean",
         ),
         (

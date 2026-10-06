@@ -294,13 +294,11 @@ def _canonical_options(model: str, options: Any) -> Any:
     """
     if not isinstance(options, Mapping):
         return options
-    import warnings
-
     from foldjax import execution
-    from foldjax.registry import get_backend
+    from foldjax.registry import backend_class
 
     try:
-        backend = get_backend(model)
+        backend = backend_class(model)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", execution.Alias)
             return backend.canonical_options(options)

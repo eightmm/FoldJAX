@@ -176,28 +176,30 @@ class Backend(ABC):
     #: the validation authority used before any model runtime is imported.
     padding_axes: tuple[str, ...] = ()
 
-    def canonical_options(self, options: Mapping[str, Any]) -> dict[str, Any]:
+    @classmethod
+    def canonical_options(cls, options: Mapping[str, Any]) -> dict[str, Any]:
         """``options`` in this backend's own names and spellings.
 
         Alias keys renamed, width and switch spellings unified, neutral knobs
         translated (`auto` to nothing where it is the omitted default). Two
         option mappings that mean the same run have equal canonical forms,
         which is what resume compares. Raises like `apply_sampling` on an
-        option this backend cannot express.
+        option this backend cannot express. A classmethod, because it reads
+        only the class's tables and resume must not construct a backend.
         """
         return execution.translate(
             execution.spell_booleans(
                 execution.spell_dtypes(
                     execution.normalize(
                         dict(options),
-                        native={name for name, _ in self.execution_options.values()},
+                        native={name for name, _ in cls.execution_options.values()},
                     ),
-                    self.execution_options,
+                    cls.execution_options,
                 ),
-                self.boolean_options,
+                cls.boolean_options,
             ),
-            self.execution_options,
-            model=self.name,
+            cls.execution_options,
+            model=getattr(cls, "name", cls.__name__),
         )
 
     def apply_sampling(self, request: PredictionRequest) -> dict[str, Any]:

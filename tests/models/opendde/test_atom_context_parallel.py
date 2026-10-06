@@ -302,10 +302,11 @@ def test_the_atom_window_option_is_part_of_the_compile_identity(tmp_path) -> Non
 def test_the_option_is_rejected_when_it_is_not_a_boolean(tmp_path) -> None:
     """A truthy string must not read as the switch being on.
 
-    The unified CLI parses ``--option cp_atom_windows=false`` as JSON, so a
-    request carries a real boolean; anything else is a caller error rather than
-    a value to coerce, and coercing it is how a typo becomes a silently
-    replicated atom graph.
+    A request's switch spellings (`false`, `no`, `0`, ...) reach the port as a
+    real boolean (`execution.spell_booleans`); anything outside that
+    vocabulary is a caller error rather than a value to coerce, and coercing
+    it is how a typo becomes a silently replicated atom graph. The native
+    validator itself still takes only a boolean.
     """
 
     from foldjax import PredictionRequest
@@ -319,7 +320,7 @@ def test_the_option_is_rejected_when_it_is_not_a_boolean(tmp_path) -> None:
         model="opendde",
         input=job,
         weights=job,
-        options={"cp_atom_windows": "false"},
+        options={"cp_atom_windows": "maybe"},
     )
     with pytest.raises(ValueError, match="cp_atom_windows"):
         OpenDDEBackend().cache_profile(request)
