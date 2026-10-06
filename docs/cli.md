@@ -2318,7 +2318,7 @@ spelling the upstream value selects the namespace omitting it selects.
 | model | option | upstream | default | notes |
 |---|---|---|---|---|
 | Boltz-2 | `step_scale=FLOAT` | `--step_scale` (`main.py:876-888`) | `1.5` | sampler step size; lower values diversify samples; affinity stage inherits it |
-| Boltz-2 | `subsample_msa=true` | `--subsample_msa` (`main.py:1021-1026`) | `false` | a click flag, so `boltz predict` does not subsample; `true` redraws rows each trunk pass; refused with `--padding` |
+| Boltz-2 | `subsample_msa=true` | `--subsample_msa` (`main.py:1021-1026`) | `false` | a click flag, so `boltz predict` does not subsample; `true` redraws rows each trunk pass; refused with `--padding` and `cp_devices>1` |
 | Boltz-2 | `num_subsampled_msa=N` | `--num_subsampled_msa` (`main.py:1027-1031`) | `1024` | rows per pass when subsampling |
 | Boltz-2 | `method=NAME` | `--method` (`main.py:979-984`) | none | method conditioning, case-insensitive, one of `const.method_types_ids`; also keys the feature cache; affinity keeps `other` |
 | Boltz-2 | `use_potentials=true` | `--use_potentials` (`main.py:969-972,1309-1311`) | `false` | Feynman-Kac steering and physical guidance on top of contact guidance; eager, so refused with `steering_args`, `--padding`, `deterministic=on` and `cp_devices>1` |

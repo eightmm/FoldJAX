@@ -1426,6 +1426,19 @@ class Boltz2Backend(Backend):
                 )
             }
         )
+        if (
+            options.get("subsample_msa") is True
+            and type(options.get("cp_devices", 1)) is int
+            and options["cp_devices"] > 1
+        ):
+            # The row draw is a permutation of the MSA depth the trunk holds,
+            # which under a mesh can be one device's share of it. Upstream has
+            # no mesh to define the answer, so it is refused, not guessed.
+            raise ValueError(
+                "subsample_msa draws alignment rows the serial trunk holds; "
+                "under context parallelism that depth is sharded, so drop "
+                "subsample_msa or cp_devices"
+            )
         if options.get("use_potentials") is True:
             # The steering loop is eager: no outer executable to carry
             # repeatable reductions, no partitioned graph, and no stable

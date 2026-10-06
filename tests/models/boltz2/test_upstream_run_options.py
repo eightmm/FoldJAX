@@ -184,6 +184,7 @@ def test_featurize_yaml_hands_the_method_to_the_dataset(
             "builds no executable",
         ),
         ({"use_potentials": True, "cp_devices": 2}, "cannot partition"),
+        ({"subsample_msa": True, "cp_devices": 4}, "drop subsample_msa or"),
     ],
 )
 def test_plan_refuses_what_the_run_would(
