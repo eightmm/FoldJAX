@@ -27,15 +27,19 @@ import functools
 import jax
 import jax.numpy as jnp
 
+#: Why the Pallas/Triton import failed, shown when the kernel is selected.
+_IMPORT_ERROR: Exception | None = None
+
 try:  # pragma: no cover - exercised only on GPU
     from jax.experimental import pallas as pl
     from jax.experimental.pallas import triton as plgpu
 
     _PALLAS_AVAILABLE = True
-except Exception:  # pragma: no cover
+except Exception as error:  # pragma: no cover  # noqa: BLE001 - kept, re-raised on use
     pl = None
     plgpu = None
     _PALLAS_AVAILABLE = False
+    _IMPORT_ERROR = error
 
 
 def _flash_kernel(
@@ -189,8 +193,13 @@ def pallas_attention_core(
     returns out [b, i, h, j, d]
     """
     if not _PALLAS_AVAILABLE:
-        msg = "Pallas/Triton GPU backend unavailable; cannot run pallas attention."
-        raise RuntimeError(msg)
+        cause = _IMPORT_ERROR
+        detail = "" if cause is None else f" ({type(cause).__name__}: {cause})"
+        msg = (
+            "Pallas/Triton GPU backend unavailable; cannot run pallas "
+            f"attention{detail}."
+        )
+        raise RuntimeError(msg) from cause
 
     # Strip broadcast singletons WITHOUT materializing the i-broadcast:
     # tri_bias [b,1,h,N,N] -> [b,h,N,N]; mask_bias [b,N,1,1,N] -> [b,N,N].

@@ -145,7 +145,9 @@ uv run foldjax cache gc --older-than 30 --max-size 20G   # reports; --apply dele
 `models --for` is answered from the input translation table, so it needs no
 weights, no GPU and no network. `cache gc` reports by default and deletes only
 with `--apply`: cache entries are pure derived data, but they are still someone's
-disk.
+disk. `cache gc --verify` selects entries that no longer decompress (a write cut
+short by a full disk or a kill): JAX never overwrites such an entry, so it
+recompiles that program on every run until the file is removed.
 
 `--msa auto` searches alignments and `--templates auto` structural templates
 for chains that arrived without them (`--templates required` fails the run

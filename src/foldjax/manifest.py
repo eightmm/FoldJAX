@@ -887,6 +887,12 @@ def _esmfold2_weight_assets(
     if not structure.is_file() or not config.is_file():
         return None
     paths.extend((structure, config))
+    # The CCD an all-biomolecule job is featurized from, beside the
+    # checkpoint (`ESMFold2Backend` binds it into the session the same way).
+    # Recorded as missing when absent, so placing one invalidates the run.
+    missing: list[Path] = []
+    ccd = root / "ccd.pkl"
+    (paths if ccd.exists() else missing).append(ccd)
     if request.options.get("no_language_model") is not True:
         configured = request.options.get("esmc_weights")
         try:
@@ -897,7 +903,7 @@ def _esmfold2_weight_assets(
         if selected_esmc is None:
             return None
         paths.extend(selected_esmc)
-    return paths, []
+    return paths, missing
 
 
 def _protenix_weight_assets(
@@ -1562,41 +1568,36 @@ def write(
     constraints: list[dict[str, Any]] | None = None,
     msa_search: list[dict[str, Any]] | None = None,
 ) -> Path | None:
-    """Write the manifest, or return None if the directory cannot take it.
+    """Write the manifest; return None if its provenance cannot be described.
 
-    A prediction that succeeded must not be turned into a failure because its
-    provenance could not be recorded, so this reports rather than raises.
+    A prediction that succeeded must not be turned into a failure because some
+    part of its provenance could not be introspected, so that reports rather
+    than raises. A directory that cannot take the file -- a full disk, a
+    read-only mount -- raises ``OSError``: the manifest is the completion marker
+    `resume` and every reader rely on, and a run without one has not finished.
+    The message names the file and the OS error, never the content.
     """
     try:
-        directory.mkdir(parents=True, exist_ok=True)
-        path = directory / MANIFEST_NAME
-        with tempfile.TemporaryDirectory(
-            prefix=".foldjax-manifest-", dir=directory
-        ) as scratch:
-            staged = Path(scratch) / MANIFEST_NAME
-            staged.write_text(
-                json.dumps(
-                    describe_run(
-                        request,
-                        result,
-                        native_input=native_input,
-                        cost=cost,
-                        directory=directory,
-                        ignored_msas=ignored_msas,
-                        ignored_templates=ignored_templates,
-                        ignored_constraints=ignored_constraints,
-                        template_search=template_search,
-                        constraints=constraints,
-                        msa_search=msa_search,
-                    ),
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n",
-                encoding="utf-8",
+        text = (
+            json.dumps(
+                describe_run(
+                    request,
+                    result,
+                    native_input=native_input,
+                    cost=cost,
+                    directory=directory,
+                    ignored_msas=ignored_msas,
+                    ignored_templates=ignored_templates,
+                    ignored_constraints=ignored_constraints,
+                    template_search=template_search,
+                    constraints=constraints,
+                    msa_search=msa_search,
+                ),
+                indent=2,
+                sort_keys=True,
             )
-            os.replace(staged, path)
-        return path
+            + "\n"
+        )
     except Exception:  # noqa: BLE001 - provenance must never erase a valid result
         try:
             warnings.warn(
@@ -1610,3 +1611,21 @@ def write(
             # reporting must still never invalidate a successful prediction.
             pass
         return None
+    path = directory / MANIFEST_NAME
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=".foldjax-manifest-", dir=directory
+        ) as scratch:
+            staged = Path(scratch) / MANIFEST_NAME
+            staged.write_text(text, encoding="utf-8")
+            os.replace(staged, path)
+    except OSError as error:
+        message = (
+            f"could not write the run manifest {path}: "
+            f"{error.strerror or 'the write failed'}"
+        )
+        if error.errno is None:
+            raise OSError(message) from None
+        raise OSError(error.errno, message) from None
+    return path

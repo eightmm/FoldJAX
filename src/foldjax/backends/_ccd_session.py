@@ -15,6 +15,7 @@ port's ``managed_memory_lease`` stays resolved in its own module.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Iterator, Sequence
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from pathlib import Path
@@ -83,5 +84,12 @@ class ManagedCcdSession(ManagedCcdMemory, WeightSessionHooks):
         finally:
             try:
                 memory.close()
-            except BaseException:
-                pass
+            except Exception as error:  # noqa: BLE001 - reported, never raised
+                # Best effort: a failed release must not replace the outcome
+                # already in flight. Cancellation still propagates.
+                warnings.warn(
+                    f"releasing managed CCD memory failed "
+                    f"({type(error).__name__}: {error})",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )

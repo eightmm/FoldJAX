@@ -453,12 +453,19 @@ class JobSource:
     provenance that generated file cannot carry: the file the caller named and
     the job's position and name in it, for the run manifest, failure records,
     ``foldjax plan`` and error messages.
+
+    The command line also writes a FASTA file or a deposited structure out as
+    a generated job document; ``kind`` then names that format and the source
+    is the one file it came from (``index`` 0), so a failure names the file
+    the caller wrote rather than the store path FoldJAX generated.
     """
 
     path: Path
     #: The job's 0-based position in the file's ``jobs`` list.
     index: int
     name: str
+    #: ``"jobs"`` for a multi-job file, else the converted format.
+    kind: str = "jobs"
 
     def __post_init__(self) -> None:
         if not isinstance(self.path, Path):
@@ -472,10 +479,20 @@ class JobSource:
 
     def describe(self) -> str:
         """How error messages name the job: ``jobs.yaml jobs[1] ('b')``."""
+        if self.kind != "jobs":
+            return str(self.path)
         return f"{self.path} jobs[{self.index}] ({self.name!r})"
 
     def summary(self) -> dict[str, Any]:
-        return {"path": str(self.path), "index": self.index, "name": self.name}
+        summary: dict[str, Any] = {
+            "path": str(self.path),
+            "index": self.index,
+            "name": self.name,
+        }
+        # Only when set, so a multi-job file's record is unchanged.
+        if self.kind != "jobs":
+            summary["kind"] = self.kind
+        return summary
 
 
 @dataclass(frozen=True, slots=True)

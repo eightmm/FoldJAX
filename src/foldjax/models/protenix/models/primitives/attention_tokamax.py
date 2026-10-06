@@ -23,13 +23,19 @@ import warnings
 
 import jax.numpy as jnp
 
+#: Why ``import tokamax`` failed, kept so that a run which explicitly selects
+#: the kernel can show the real cause (a missing CUDA library, a version skew)
+#: instead of only "unavailable".
+_IMPORT_ERROR: Exception | None = None
+
 try:  # pragma: no cover - exercised only where tokamax is installed
     import tokamax
 
     _TOKAMAX_AVAILABLE = True
-except Exception:  # pragma: no cover
+except Exception as error:  # pragma: no cover  # noqa: BLE001 - kept, re-raised on use
     tokamax = None
     _TOKAMAX_AVAILABLE = False
+    _IMPORT_ERROR = error
 
 
 #: Which tokamax implementation the ``tokamax`` attention backend asks for.
@@ -82,8 +88,9 @@ def tokamax_attention(
     """
 
     if not _TOKAMAX_AVAILABLE:
-        msg = "tokamax backend unavailable; cannot run tokamax attention."
-        raise RuntimeError(msg)
+        from foldjax.models._tokamax_attention import tokamax_unavailable
+
+        raise tokamax_unavailable("tokamax attention") from _IMPORT_ERROR
 
     from absl import flags
 

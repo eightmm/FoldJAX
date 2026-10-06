@@ -1,98 +1,58 @@
 {
-  "comment": "Frozen from FoldJAX at 4dd01e0, before manifest.py's per-port source ladder became foldjax.portspec's manifest_sources. These paths are recorded in every run manifest and compared on resume, so changing the set changes which finished runs can be reused: a difference here is a decision, never a refactor. Extended 2026-09-25 for boltz2 and openfold3 with models/_pallas_pair.py and models/_glu.py, and for protenix with both too (its multiplication became the GPU default; its released GLU runs through models/_glu.py).",
+  "comment": "Frozen from FoldJAX at 4dd01e0, before manifest.py's per-port source ladder became foldjax.portspec's manifest_sources. These paths are recorded in every run manifest and compared on resume, so changing the set changes which finished runs can be reused: a difference here is a decision, never a refactor. Extended 2026-09-25 for boltz2 and openfold3 with models/_pallas_pair.py and models/_glu.py, and for protenix with both too (its multiplication became the GPU default; its released GLU runs through models/_glu.py). Extended 2026-10-06 (W8 resume staleness): the policy became structural. Every port binds its whole source tree, its packaged data assets (Protenix's and OpenDDE's .npz tables), its adapter, the other port's modules its code imports, the shared models/_*.py helpers, backends/base.py and input.py (the common-job writer); Boltz-2 and OpenFold3 also bind template_search.py. Before this, Protenix's featurizer (models/protenix/data/featurize_json.py), its ccd_nucleotides.npz table and input.py's template-map writer could change a prediction without invalidating a finished run. The resolved listings are no longer frozen: tests/test_portspec.py asserts the import-closure property instead.",
   "spec_tokens": {
-    "alphafold3": [],
+    "alphafold3": [
+      "backends/alphafold3.py",
+      "models/_*.py",
+      "backends/base.py",
+      "input.py"
+    ],
     "boltz2": [
-      "models/boltz2/api.py",
-      "models/boltz2/compile_policy.py",
-      "models/boltz2/models/**/*.py",
-      "models/_cueq.py",
-      "models/_pallas_pair.py",
-      "models/_glu.py"
+      "models/boltz2/**/*.py",
+      "backends/boltz2.py",
+      "template_search.py",
+      "models/_*.py",
+      "backends/base.py",
+      "input.py"
     ],
     "esmfold2": [
-      "models/esmfold2/inference.py",
-      "models/esmfold2/models/esmc.py",
-      "models/esmfold2/models/model.py",
-      "models/esmfold2/models/diffusion.py",
-      "models/esmfold2/models/trunk.py",
-      "models/esmfold2/models/primitives.py",
+      "models/esmfold2/**/*.py",
+      "backends/esmfold2.py",
+      "models/boltz2/models/primitives/_common.py",
       "models/boltz2/models/primitives/native_amp_norm.py",
-      "models/_cp.py"
+      "models/boltz2/models/primitives/native_pwa_weights.py",
+      "models/_*.py",
+      "backends/base.py",
+      "input.py"
     ],
     "opendde": [
+      "models/opendde/**/*.py",
+      "models/opendde/**/*.npz",
       "backends/opendde.py",
-      "models/opendde/cli/predict.py",
-      "models/opendde/runner.py",
-      "models/opendde/models/geometry.py",
-      "models/opendde/models/sampling.py",
-      "models/opendde/models/model.py",
-      "models/protenix/models/heads/confidence.py",
-      "models/_cueq.py"
+      "models/protenix/**/*.py",
+      "models/protenix/**/*.npz",
+      "models/_*.py",
+      "backends/base.py",
+      "input.py"
     ],
     "openfold3": [
-      "models/openfold3/inference.py",
-      "models/openfold3/models/augmentation.py",
-      "models/openfold3/models/sampler.py",
-      "models/_cueq.py",
-      "models/_pallas_pair.py",
-      "models/_glu.py"
-    ],
-    "protenix": [
-      "models/protenix/models/heads/confidence.py",
-      "models/protenix/models/model.py",
-      "models/protenix/models/predict.py",
-      "models/protenix/models/diffusion/diffusion.py",
-      "models/protenix/models/trunk_blocks/trunk.py",
-      "models/protenix/models/heads/head.py",
-      "models/_cueq.py",
-      "models/_pallas_pair.py",
-      "models/_glu.py"
-    ]
-  },
-  "tracked_files": {
-    "alphafold3": [],
-    "esmfold2": [
-      "models/_cp.py",
+      "models/openfold3/**/*.py",
+      "backends/openfold3.py",
+      "_openfold3_compile.py",
+      "models/boltz2/models/primitives/_common.py",
       "models/boltz2/models/primitives/native_amp_norm.py",
-      "models/esmfold2/inference.py",
-      "models/esmfold2/models/diffusion.py",
-      "models/esmfold2/models/esmc.py",
-      "models/esmfold2/models/model.py",
-      "models/esmfold2/models/primitives.py",
-      "models/esmfold2/models/trunk.py"
-    ],
-    "opendde": [
-      "backends/opendde.py",
-      "models/_cueq.py",
-      "models/opendde/cli/predict.py",
-      "models/opendde/models/geometry.py",
-      "models/opendde/models/model.py",
-      "models/opendde/models/sampling.py",
-      "models/opendde/runner.py",
-      "models/protenix/models/heads/confidence.py"
-    ],
-    "openfold3": [
-      "models/_cueq.py",
-      "models/_glu.py",
-      "models/_pallas_pair.py",
-      "models/openfold3/inference.py",
-      "models/openfold3/models/augmentation.py",
-      "models/openfold3/models/sampler.py"
+      "template_search.py",
+      "models/_*.py",
+      "backends/base.py",
+      "input.py"
     ],
     "protenix": [
-      "models/_cueq.py",
-      "models/_glu.py",
-      "models/_pallas_pair.py",
-      "models/protenix/models/diffusion/diffusion.py",
-      "models/protenix/models/heads/confidence.py",
-      "models/protenix/models/heads/head.py",
-      "models/protenix/models/model.py",
-      "models/protenix/models/predict.py",
-      "models/protenix/models/trunk_blocks/trunk.py"
+      "models/protenix/**/*.py",
+      "models/protenix/**/*.npz",
+      "backends/protenix.py",
+      "models/_*.py",
+      "backends/base.py",
+      "input.py"
     ]
-  },
-  "globbed_ports": [
-    "boltz2"
-  ]
+  }
 }

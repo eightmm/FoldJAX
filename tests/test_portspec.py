@@ -7,9 +7,11 @@ stylistic, and both are asserted here:
 * **The tracked-file set per port is persisted.** Every run manifest records the
   stat identity of each implementation file the model's prediction depends on,
   and resume compares them (`manifest.py`'s `_input_dependencies`). Adding or
-  dropping one changes which finished runs can be reused, so the lists are
-  frozen in `tests/data/port_manifest_sources.json` and a change there has to
-  be a deliberate one.
+  dropping one changes which finished runs can be reused, so the declarations
+  are frozen in `tests/data/port_manifest_sources.json` and a change there has
+  to be a deliberate one; what they resolve to is held to a property instead --
+  a port's featurizer, its data assets, the common-job writer and every
+  `foldjax.models` module its code imports.
 * **Reading the table imports nothing.** `manifest.py` keeps the AlphaFold 3
   runtime import local so ordinary manifest use does not pay for it; a table
   that imported the ports to describe them would undo that for all six at once.
@@ -17,6 +19,7 @@ stylistic, and both are asserted here:
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import sys
@@ -96,39 +99,179 @@ def test_manifest_source_specs_match_the_frozen_fixture(model: str) -> None:
     assert tokens == FIXTURE["spec_tokens"][model]
 
 
-@pytest.mark.parametrize(
-    "model", [name for name in CANONICAL if name not in FIXTURE["globbed_ports"]]
-)
-def test_tracked_files_match_the_frozen_fixture(model: str) -> None:
-    """The resolved per-port list, as it was before the table existed."""
-    package = Path(manifest.__file__).parent
+PACKAGE = Path(manifest.__file__).parent
+
+#: Files in a port's tree that are not data a prediction reads.
+_NOT_DATA = frozenset({"LICENSE", "NOTICE"})
+
+
+def _tracked(model: str) -> set[Path]:
+    return set(manifest.implementation_dependency_paths(model))
+
+
+def _foldjax_imports(path: Path) -> set[Path]:
+    """Every `foldjax` module file ``path`` imports, at any scope."""
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            if node.module.split(".")[0] == "foldjax":
+                found.add(node.module)
+                found.update(f"{node.module}.{alias.name}" for alias in node.names)
+        elif isinstance(node, ast.Import):
+            found.update(
+                alias.name
+                for alias in node.names
+                if alias.name.split(".")[0] == "foldjax"
+            )
+    files: set[Path] = set()
+    for name in found:
+        stem = PACKAGE.parent / name.replace(".", "/")
+        for candidate in (stem.with_suffix(".py"), stem / "__init__.py"):
+            if candidate.is_file():
+                files.add(candidate)
+                break
+    return files
+
+
+def _model_closure(model: str) -> set[Path]:
+    """`foldjax.models` files reachable by import from a port's own code."""
+    pending = [
+        *(PACKAGE / "models" / model).rglob("*.py"),
+        PACKAGE / "backends" / f"{model}.py",
+    ]
+    seen: set[Path] = set()
+    while pending:
+        path = pending.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        pending.extend(
+            imported
+            for imported in _foldjax_imports(path)
+            if imported.is_relative_to(PACKAGE / "models")
+        )
+    return {path for path in seen if path.is_relative_to(PACKAGE / "models")}
+
+
+@pytest.mark.parametrize("model", CANONICAL)
+def test_tracked_files_exist_once_each(model: str) -> None:
     tracked = manifest.implementation_dependency_paths(model)
-    relative = sorted(str(path.relative_to(package)) for path in tracked)
-    assert relative == FIXTURE["tracked_files"][model]
     assert len(set(tracked)) == len(tracked)
     for path in tracked:
         assert path.is_file(), path
 
 
-def test_boltz2_tracks_its_whole_model_tree_by_glob() -> None:
-    """Boltz-2's numerics live across forty files, so the policy is the tree.
+@pytest.mark.parametrize("model", CANONICAL)
+def test_each_port_binds_its_featurizer_data_and_input_writer(model: str) -> None:
+    """The featurizer, the assets it loads, and the common-job writer.
 
-    Freezing the listing would make adding a module to the port a test failure
-    while leaving the actual contract -- every ``.py`` under `models/`, sorted
-    -- unasserted. This re-derives it instead.
+    Re-derived from the tree rather than listed, so a featurizer module or
+    table added later is held to the same contract. Before 2026-10-06 none of
+    these were bound: an edit to Protenix's `featurize_json.py` or its CCD
+    tables let a stale prediction satisfy `--resume`.
     """
-    package = Path(manifest.__file__).parent
-    tracked = manifest.implementation_dependency_paths("boltz2")
-    expected = [
-        package / "models/boltz2/api.py",
-        package / "models/boltz2/compile_policy.py",
-        *sorted((package / "models/boltz2/models").rglob("*.py")),
-        package / "models/_cueq.py",
-        package / "models/_pallas_pair.py",
-        package / "models/_glu.py",
+    tracked = _tracked(model)
+    assert PACKAGE / "input.py" in tracked
+    assert PACKAGE / "backends" / f"{model}.py" in tracked
+    featurizer = PACKAGE / "models" / model / "data"
+    if model == "alphafold3":
+        # Featurized by the vendored upstream tree, which `manifest.py` binds
+        # on the managed route only; FoldJAX owns no featurizer for it.
+        assert not featurizer.exists()
+        return
+    data = [
+        path
+        for path in featurizer.rglob("*")
+        if path.is_file()
+        and "__pycache__" not in path.parts
+        and path.name not in _NOT_DATA
     ]
-    assert list(tracked) == expected
-    assert len(expected) > 40
+    assert any(path.suffix == ".py" for path in data)
+    missing = sorted(
+        str(path.relative_to(PACKAGE)) for path in data if path not in tracked
+    )
+    assert missing == []
+
+
+@pytest.mark.parametrize("model", CANONICAL)
+def test_each_port_binds_every_model_module_its_code_imports(model: str) -> None:
+    """A module of another port, or a shared helper, changes predictions too.
+
+    OpenDDE featurizes through Protenix's `featurize_protein_json`; ESMFold2
+    and OpenFold3 run Boltz-2's native norm. An import that reaches a module
+    the table does not bind has to be a deliberate decision, made here.
+    """
+    tracked = _tracked(model)
+    missing = sorted(
+        str(path.relative_to(PACKAGE))
+        for path in _model_closure(model)
+        if path not in tracked
+        and not path.is_relative_to(PACKAGE / "models" / "alphafold3")
+    )
+    assert missing == []
+
+
+def test_protenix_binds_its_featurizer_and_ccd_tables() -> None:
+    """The three files the 2026-10-06 regression check found unbound."""
+    tracked = _tracked("protenix")
+    for relative in (
+        "models/protenix/data/featurize_json.py",
+        "models/protenix/data/ccd_nucleotides.npz",
+        "input.py",
+    ):
+        assert PACKAGE / relative in tracked
+        assert PACKAGE / relative in _tracked("opendde")
+
+
+@pytest.mark.parametrize(
+    "model, source",
+    [
+        ("protenix", "models/protenix/data/featurize_json.py"),
+        ("protenix", "models/protenix/data/ccd_nucleotides.npz"),
+        ("protenix", "input.py"),
+        ("opendde", "models/protenix/data/featurize_json.py"),
+        ("opendde", "models/opendde/data/opendde_std_reference.npz"),
+        ("boltz2", "models/boltz2/data/featurize.py"),
+        ("boltz2", "template_search.py"),
+        # ESMFold2 is absent: the stand-in checkpoint here has no
+        # `config.json` beside it, so that run is never resumable at all.
+        ("openfold3", "models/openfold3/data/featurize.py"),
+        (
+            "openfold3",
+            "models/openfold3/_upstream/openfold3/core/data/io/structure/cif.py",
+        ),
+    ],
+)
+def test_a_changed_featurizer_file_invalidates_resume(
+    tmp_path: Path, monkeypatch, model: str, source: str
+) -> None:
+    """End to end through `predict_batch`: the bound file is what resume checks."""
+    import dataclasses
+
+    import foldjax
+    from tests.test_resume_manifest import _backends, _request
+
+    target = (PACKAGE / source).resolve()
+    calls: list[tuple[str, str, int]] = []
+    request = _request(
+        tmp_path, model=model, options={}, padding=None, representations=None
+    )
+    with _backends(calls):
+        foldjax.predict(request)
+        unchanged = foldjax.predict_batch(dataclasses.replace(request, resume=True))
+        assert unchanged.skipped == (request.output_dir,)
+        original = manifest.path_stat_identity
+
+        def edited(path):
+            identity = original(path)
+            if Path(path) == target:
+                identity = {**identity, "stat_signature": "edited"}
+            return identity
+
+        monkeypatch.setattr(manifest, "path_stat_identity", edited)
+        resumed = foldjax.predict_batch(dataclasses.replace(request, resume=True))
+    assert len(calls) == 2
+    assert resumed.skipped == ()
 
 
 def test_asset_profiles_come_from_the_table() -> None:

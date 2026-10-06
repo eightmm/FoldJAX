@@ -85,7 +85,8 @@ def attach_msas(
             subdirectory per query and chain group, so two chains never collide.
         cache_dir: the search's own cache. Defaults to ``alignment_dir/cache``.
         backend: an ``MsaBackend``; ``RemoteMMseqs2Client`` when omitted, which
-            calls the public ColabFold server.
+            calls the public ColabFold server, or ``FOLDJAX_MSA_SERVER_URL`` /
+            ``FOLDJAX_MSA_SERVER_VERSION`` when set.
         paired: also pair each query's protein chains the way OpenFold3 v0.5.0
             does: one complex search over the query's distinct protein sequences
             (``backend.search_complex``), and only when there are at least two of
@@ -124,10 +125,12 @@ def attach_msas(
         if cache_dir is not None
         else _safe_directory(root, "cache")
     )
-    pipeline = MsaSearchPipeline(
-        cache_dir=pipeline_cache,
-        backend=backend if backend is not None else RemoteMMseqs2Client(),
-    )
+    if backend is None:
+        from foldjax.msa_search import remote_msa_server
+
+        host, version = remote_msa_server()
+        backend = RemoteMMseqs2Client(host, version=version)
+    pipeline = MsaSearchPipeline(cache_dir=pipeline_cache, backend=backend)
     if paired and not pipeline.pairs_complexes:
         raise ValueError(
             "paired=True needs a backend that pairs a complex in one search "

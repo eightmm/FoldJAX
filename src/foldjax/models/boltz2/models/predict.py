@@ -33,7 +33,11 @@ from foldjax.models._cp_attention import (
     cp_fused_attention,
     cp_fused_attention_sites,
 )
-from foldjax.models._tokamax_attention import tokamax_available
+from foldjax.models._tokamax_attention import (
+    tokamax_available,
+    tokamax_import_error,
+    tokamax_unavailable,
+)
 from foldjax.models.boltz2.models._compact_categories import (
     restore_compact_categories,
 )
@@ -190,9 +194,8 @@ def boltz2_predict(
             )
         if not tokamax_available():
             raise ValueError(
-                f"cp_fused_attention={fused_request!r} needs the tokamax "
-                "package, which did not import in this process"
-            )
+                str(tokamax_unavailable(f"cp_fused_attention={fused_request!r}"))
+            ) from tokamax_import_error()
         if "token" in fused_sites and cp_layout() != "2d":
             raise ValueError(
                 f"cp_fused_attention={fused_request!r} names the diffusion "

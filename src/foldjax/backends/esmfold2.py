@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import warnings
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from importlib import import_module
@@ -634,10 +635,16 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             self._ccd_memory_leased = False
             try:
                 memory.close()
-            except BaseException:
+            except Exception as error:  # noqa: BLE001 - reported, never raised
                 # Managed-memory cleanup is best effort and must not replace a
-                # prediction, poison, or KeyboardInterrupt already in flight.
-                pass
+                # prediction or poison already in flight; a cancellation of
+                # the cleanup itself still propagates.
+                warnings.warn(
+                    f"releasing ESMFold2 managed memory failed "
+                    f"({type(error).__name__}: {error})",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
     def managed_asset_profile(
         self,

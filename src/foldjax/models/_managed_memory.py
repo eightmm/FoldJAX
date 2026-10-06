@@ -12,6 +12,7 @@ import ctypes
 import gc
 import platform
 import sys
+import warnings
 from collections.abc import Callable, Hashable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -56,28 +57,42 @@ def _malloc_trim() -> None:
         trim.argtypes = (ctypes.c_size_t,)
         trim.restype = ctypes.c_int
         trim(0)
-    except BaseException:  # cleanup is never allowed to replace prediction state
+    except Exception:  # noqa: BLE001 - a trim is an optimisation, never a failure
         return
 
 
+def _warn_release(what: str, error: Exception) -> None:
+    warnings.warn(
+        f"managed memory: {what} failed ({type(error).__name__}: {error}); "
+        "the cache may stay resident until the process exits",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+
+
 def _cleanup(state: _LeaseState) -> None:
-    """Clear one cache and collect it without propagating cleanup failures."""
+    """Clear one cache and collect it without propagating cleanup failures.
+
+    An ordinary failure is reported and absorbed, so it cannot replace the
+    prediction outcome already in flight. ``KeyboardInterrupt`` and
+    ``SystemExit`` still propagate: a cancelled run must stop when cancelled.
+    """
 
     loaded = False
     try:
         loaded = bool(state.release_cache())
-    except BaseException:
-        pass
+    except Exception as error:  # noqa: BLE001 - reported, never raised
+        _warn_release("releasing a cache", error)
     if not loaded or not _RECLAIM_AT_RELEASE:
         return
     try:
         gc.collect()
-    except BaseException:
-        pass
+    except Exception as error:  # noqa: BLE001 - reported, never raised
+        _warn_release("collecting a released cache", error)
     try:
         _malloc_trim()
-    except BaseException:
-        pass
+    except Exception as error:  # noqa: BLE001 - reported, never raised
+        _warn_release("returning freed memory to the system", error)
 
 
 @contextmanager

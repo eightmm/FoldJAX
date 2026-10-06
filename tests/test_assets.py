@@ -519,6 +519,41 @@ def test_generic_native_manifest_tracks_source_and_converter_identity(
     assert not changed.ready()
 
 
+def test_a_truncated_converted_checkpoint_is_not_reported_as_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    spec = assets.REGISTRY["protenix"]
+    native = spec.native_path()
+    native.parent.mkdir(parents=True)
+    native.write_bytes(b"x" * 1000)
+    assets._write_native_manifest(spec)
+    assert spec.ready()
+    # A copy cut off part way: the conversion record still names the full size.
+    with native.open("r+b") as handle:
+        handle.truncate(100)
+
+    with pytest.raises(FileNotFoundError) as error:
+        assets.resolve_weights("protenix")
+
+    message = str(error.value)
+    assert "truncated: 100 bytes where their conversion wrote 1000" in message
+    assert "no converted" not in message
+    assert "foldjax weights fetch --model protenix" in message
+
+
+def test_an_empty_converted_checkpoint_is_reported_as_unreadable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    native = assets.REGISTRY["protenix"].native_path()
+    native.parent.mkdir(parents=True)
+    native.write_bytes(b"")
+
+    with pytest.raises(FileNotFoundError, match=r"unreadable: the file is empty"):
+        assets.resolve_weights("protenix")
+
+
 @pytest.mark.parametrize("legacy_schema", [None, "test-native-v1"])
 def test_fetch_rebuilds_unproven_or_stale_native_weights(
     tmp_path: Path, monkeypatch, legacy_schema: str | None

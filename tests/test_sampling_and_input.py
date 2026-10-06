@@ -103,8 +103,13 @@ def test_yaml_common_input_materializes_like_its_json_twin(tmp_path: Path) -> No
     ids=["boltz2", "opendde", "protenix"],
 )
 def test_neutral_knobs_become_each_backends_own_option_names(
-    tmp_path: Path, backend, expected
+    tmp_path: Path, backend, expected, monkeypatch
 ) -> None:
+    from foldjax.backends import protenix
+
+    # Off a GPU Protenix also resolves its denoiser attention; that is
+    # `tests/models/protenix/test_off_gpu_attention.py`'s subject, not this.
+    monkeypatch.setattr(protenix, "_gpu_process", lambda: True)
     request = PredictionRequest(
         model=backend.name,
         input=_job_file(tmp_path),

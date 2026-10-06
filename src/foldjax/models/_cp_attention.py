@@ -39,7 +39,11 @@ from foldjax.models._cp import (
     permute,
     transpose_perm,
 )
-from foldjax.models._tokamax_attention import tokamax_available
+from foldjax.models._tokamax_attention import (
+    tokamax_available,
+    tokamax_import_error,
+    tokamax_unavailable,
+)
 
 #: What a ring step may evaluate one local tile with. ``xla`` is the two-pass
 #: global-maximum ring below. ``tokamax`` runs the fused Triton attention per
@@ -335,10 +339,9 @@ def resolve_cp_fused_attention(site: str) -> bool:
             f"sites; the {site!r} site was reached with no mesh active"
         )
     if not tokamax_available():
-        raise RuntimeError(
-            f"cp_fused_attention={request!r} needs the tokamax package, "
-            "which did not import in this process"
-        )
+        raise tokamax_unavailable(
+            f"cp_fused_attention={request!r}"
+        ) from tokamax_import_error()
     return True
 
 
@@ -402,10 +405,9 @@ def resolve_ring_tile_kernel(kernel: str | None) -> str:
     if name == "xla":
         return name
     if not tokamax_available():
-        raise RuntimeError(
-            "triangle_attention_ring_kernel='tokamax' needs the tokamax "
-            "package, which did not import in this process"
-        )
+        raise tokamax_unavailable(
+            "triangle_attention_ring_kernel='tokamax'"
+        ) from tokamax_import_error()
     platform = jax.default_backend()
     if platform != "gpu":
         raise RuntimeError(
@@ -879,10 +881,9 @@ def tile_attention_tokamax(
     """
 
     if not tokamax_available():
-        raise RuntimeError(
-            "triangle_attention_ring_kernel='tokamax' needs the tokamax "
-            "package, which did not import in this process"
-        )
+        raise tokamax_unavailable(
+            "triangle_attention_ring_kernel='tokamax'"
+        ) from tokamax_import_error()
     from absl import flags
     from tokamax._src.ops.attention.api import IMPLEMENTATIONS
 

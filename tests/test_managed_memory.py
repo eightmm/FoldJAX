@@ -92,16 +92,20 @@ def test_cleanup_failures_never_replace_the_prediction_exception(
         lambda: (_ for _ in ()).throw(RuntimeError("trim failed")),
     )
 
-    with pytest.raises(PredictionInterrupted):
+    with (
+        pytest.warns(RuntimeWarning, match="collect failed"),
+        pytest.warns(RuntimeWarning, match="trim failed"),
+        pytest.raises(PredictionInterrupted),
+    ):
         with _managed_memory.lease("broken", loaded_release):
             raise PredictionInterrupted
 
 
-def test_release_failure_is_swallowed_without_running_later_cleanup(
+def test_release_failure_is_reported_without_running_later_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def broken_release() -> bool:
-        raise KeyboardInterrupt
+        raise OSError("release failed")
 
     monkeypatch.setattr(
         _managed_memory.gc,
@@ -114,8 +118,32 @@ def test_release_failure_is_swallowed_without_running_later_cleanup(
         lambda: pytest.fail("unknown loaded state must not be trimmed"),
     )
 
-    with _managed_memory.lease("release-error", broken_release):
-        pass
+    with pytest.warns(RuntimeWarning, match="releasing a cache failed.*release failed"):
+        with _managed_memory.lease("release-error", broken_release):
+            pass
+
+
+def test_cleanup_never_swallows_a_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ctrl-C during a release still stops the process; only errors are absorbed."""
+
+    def interrupted_release() -> bool:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        with _managed_memory.lease("release-interrupt", interrupted_release):
+            pass
+
+    monkeypatch.setattr(_managed_memory.gc, "collect", lambda: 0)
+    monkeypatch.setattr(
+        _managed_memory,
+        "_malloc_trim",
+        lambda: (_ for _ in ()).throw(SystemExit(3)),
+    )
+    with pytest.raises(SystemExit):
+        with _managed_memory.lease("trim-exit", lambda: True):
+            pass
 
 
 def test_one_key_rejects_two_release_helpers() -> None:
@@ -136,18 +164,19 @@ def test_one_key_rejects_two_release_helpers() -> None:
     assert first_calls == ["clear"]
 
 
-def test_loaded_cleanup_swallows_an_allocator_trim_failure(
+def test_loaded_cleanup_reports_an_allocator_trim_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(_managed_memory.gc, "collect", lambda: 0)
     monkeypatch.setattr(
         _managed_memory,
         "_malloc_trim",
-        lambda: (_ for _ in ()).throw(KeyboardInterrupt()),
+        lambda: (_ for _ in ()).throw(OSError("trim failed")),
     )
 
-    with _managed_memory.lease("trim-error", lambda: True):
-        pass
+    with pytest.warns(RuntimeWarning, match="trim failed"):
+        with _managed_memory.lease("trim-error", lambda: True):
+            pass
 
 
 def test_acquire_waits_until_cleanup_finishes(monkeypatch: pytest.MonkeyPatch) -> None:

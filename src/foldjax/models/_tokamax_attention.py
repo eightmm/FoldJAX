@@ -30,18 +30,44 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
+#: Why ``import tokamax`` failed, kept so that a run which explicitly selects
+#: the kernel can show the real cause (a missing CUDA library, a version skew)
+#: instead of only "unavailable".
+_IMPORT_ERROR: Exception | None = None
+
 try:  # pragma: no cover - exercised only where tokamax is installed
     import tokamax
 
     _TOKAMAX_AVAILABLE = True
-except Exception:  # pragma: no cover
+except Exception as error:  # pragma: no cover  # noqa: BLE001 - kept, re-raised on use
     tokamax = None
     _TOKAMAX_AVAILABLE = False
+    _IMPORT_ERROR = error
 
 
 def tokamax_available() -> bool:
     """True if tokamax imported."""
     return _TOKAMAX_AVAILABLE
+
+
+def tokamax_import_error() -> Exception | None:
+    """The exception ``import tokamax`` raised in this process, if it did."""
+    return _IMPORT_ERROR
+
+
+def tokamax_unavailable(what: str) -> RuntimeError:
+    """The error for an explicit tokamax selection, naming the import failure.
+
+    Raise it ``from tokamax_import_error()`` so the original traceback stays
+    attached; the message carries the cause for a one-line CLI report too.
+    """
+    cause = _IMPORT_ERROR
+    detail = (
+        "it is not importable"
+        if cause is None
+        else f"importing it failed with {type(cause).__name__}: {cause}"
+    )
+    return RuntimeError(f"{what} needs the tokamax package; {detail}")
 
 
 def tokamax_attention_core(
@@ -60,8 +86,7 @@ def tokamax_attention_core(
     returns out [b, i, h, j, d]
     """
     if not _TOKAMAX_AVAILABLE:
-        msg = "tokamax backend unavailable; cannot run tokamax attention."
-        raise RuntimeError(msg)
+        raise tokamax_unavailable("tokamax attention") from _IMPORT_ERROR
 
     from absl import flags
 
