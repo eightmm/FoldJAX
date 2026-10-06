@@ -9,6 +9,11 @@ import pytest
 
 from foldjax.cli import _options, _WeightReporter, entrypoint, main
 
+#: A native-dialect document for tests that only exercise request plumbing. An
+#: empty mapping carries no native signature, so `auto` reads it as a FoldJAX
+#: job and refuses it for having no entities.
+NATIVE_PLACEHOLDER = '{"sequences": []}'
+
 
 def test_weight_reporter_emits_machine_readable_progress_when_requested(
     monkeypatch, capsys
@@ -841,8 +846,8 @@ def test_batch_plan_cli_prints_every_resolved_run(
     monkeypatch.chdir(tmp_path)
     first = tmp_path / "alpha.json"
     second = tmp_path / "beta.json"
-    first.write_text("{}")
-    second.write_text("{}")
+    first.write_text(NATIVE_PLACEHOLDER)
+    second.write_text(NATIVE_PLACEHOLDER)
     weights = tmp_path / "weights"
     weights.mkdir()
     output = tmp_path / "out"
@@ -877,7 +882,7 @@ def test_batch_plan_cli_prints_every_resolved_run(
 
 def test_plan_cli_redacts_secret_options(tmp_path: Path, capsys) -> None:
     input_path = tmp_path / "job.json"
-    input_path.write_text("{}")
+    input_path.write_text(NATIVE_PLACEHOLDER)
     weights = tmp_path / "weights"
     weights.mkdir()
     secret = "do-not-print-this"
@@ -969,7 +974,9 @@ def test_plan_shows_each_models_default_seed(
     )
     weights = tmp_path / "weights"
     weights.mkdir()
-    argv = ["plan", "--model", model, "--input", str(input_path)]
+    # `--msa single`: plan applies predict's alignment policy, and this job
+    # names no alignment.
+    argv = ["plan", "--model", model, "--input", str(input_path), "--msa", "single"]
     argv += ["--weights", str(weights), "--no-cache"]
 
     assert main(argv) == 0

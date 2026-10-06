@@ -73,15 +73,20 @@ def test_a_bare_sequence_becomes_a_job_file_the_plan_can_name(
                 "demo",
                 "--weights",
                 str(_weights(tmp_path)),
+                "--msa",
+                "single",
             ]
         )
         == 0
     )
     plan = json.loads(capsys.readouterr().out)
 
+    # A plan writes nothing into the store: it shows the document, and the
+    # store path predict will give it.
     generated = Path(plan["input"])
-    assert generated.is_file()
-    document = json.loads(generated.read_text())
+    assert not generated.exists()
+    assert generated.stem == "demo"
+    document = plan["generated_input"]
     assert document["name"] == "demo"
     assert [entity["id"] for entity in document["entities"]] == ["A", "B"]
     assert document["entities"][1]["ccd"] == "ATP"
@@ -102,6 +107,8 @@ def test_the_same_sequences_reuse_one_generated_file(tmp_path: Path, capsys) -> 
                 sequence,
                 "--weights",
                 str(_weights(tmp_path)),
+                "--msa",
+                "single",
             ]
         )
         return json.loads(capsys.readouterr().out)["input"]
@@ -147,13 +154,15 @@ def test_a_fasta_input_becomes_one_chain_per_record(tmp_path: Path, capsys) -> N
                 str(fasta),
                 "--weights",
                 str(_weights(tmp_path)),
+                "--msa",
+                "single",
             ]
         )
         == 0
     )
     plan = json.loads(capsys.readouterr().out)
 
-    document = json.loads(Path(plan["input"]).read_text())
+    document = plan["generated_input"]
     assert [entity["id"] for entity in document["entities"]] == ["A", "B"]
     assert document["entities"][0]["sequence"] == SEQUENCE
 
@@ -208,7 +217,7 @@ def test_models_for_reports_which_backends_can_run_a_job(
         encoding="utf-8",
     )
 
-    assert main(["models", "--for", str(path), "--json"]) == 0
+    assert main(["models", "--for", str(path), "--json", "--msa", "single"]) == 0
     rows = {row["model"]: row for row in json.loads(capsys.readouterr().out)}
 
     assert rows["boltz2"]["runs"] is True
@@ -1039,13 +1048,15 @@ def test_a_structure_input_becomes_a_job_the_plan_can_name(
                 str(deposition),
                 "--weights",
                 str(_weights(tmp_path)),
+                "--msa",
+                "single",
             ]
         )
         == 0
     )
     plan = json.loads(capsys.readouterr().out)
 
-    document = json.loads(Path(plan["input"]).read_text())
+    document = plan["generated_input"]
     assert document["name"] == "1abc"
     assert document["entities"][0]["sequence"] == "MK"
     assert document["entities"][1]["ccd"] == "ATP"
@@ -1069,13 +1080,15 @@ def test_an_affinity_binder_reaches_the_generated_job(tmp_path: Path, capsys) ->
                 "aff",
                 "--weights",
                 str(_weights(tmp_path)),
+                "--msa",
+                "single",
             ]
         )
         == 0
     )
     plan = json.loads(capsys.readouterr().out)
 
-    document = json.loads(Path(plan["input"]).read_text())
+    document = plan["generated_input"]
     assert document["properties"] == [{"affinity": {"binder": "B"}}]
 
 

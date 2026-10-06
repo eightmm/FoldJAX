@@ -78,22 +78,32 @@ def detect_input_format(path: Path) -> str:
     """Return ``"foldjax"`` for the common schema, ``"native"`` otherwise.
 
     Detection is on content, not extension: every backend's native dialect also
-    uses JSON or YAML, and only the common schema is a mapping with
-    ``entities`` -- or, for several jobs in one file, a mapping with ``jobs``
-    (`foldjax.input.JOBS_KEY`). Anything unreadable as JSON/YAML is native by
-    definition.
+    uses JSON or YAML. A top-level list is native (AlphaFold Server's and the
+    Protenix/OpenDDE job lists), and so is a mapping carrying a native
+    dialect's signature key (`_NATIVE_SIGNATURES`). Every other mapping is read
+    as a FoldJAX job, so a misspelled ``entities`` is answered by the common
+    validator ("did you mean 'entities'?") rather than by a backend's
+    ``KeyError``. A ``.json``/``.yaml`` file that does not parse is refused
+    here with the parser's one-line reason; other suffixes are native.
     """
     if path.suffix.lower() not in JOB_DOCUMENT_SUFFIXES:
         return "native"
-    try:
-        document = read_job_document(path)
-    except (ValueError, json.JSONDecodeError, OSError):
-        return "native"
-    if isinstance(document, dict) and "entities" in document:
-        return "foldjax"
+    document = read_job_document(path)
     if is_jobs_document(document):
         return "foldjax"
+    if isinstance(document, dict):
+        if "entities" in document or not (_NATIVE_SIGNATURES & set(document)):
+            return "foldjax"
     return "native"
+
+
+#: Top-level keys only a native dialect has: AlphaFold 3 (``sequences``,
+#: ``modelSeeds``, ``dialect``, ``version``), Boltz YAML (``version``,
+#: ``sequences``) and a Protenix/OpenDDE job object
+#: (``sequences``), and an OpenFold3 query set (``queries``).
+_NATIVE_SIGNATURES = frozenset(
+    {"sequences", "modelSeeds", "dialect", "version", "queries"}
+)
 
 
 def _draw_seed() -> int:
@@ -321,8 +331,48 @@ def resolve_request(
     return resolved
 
 
+def preflight(request: PredictionRequest, *, backend: Backend | None = None) -> None:
+    """Refuse a resolved scalar request the way running it would, without running.
+
+    Everything knowable before weights load: the backend's request checks, and
+    for a FoldJAX job the whole common-schema translation check -- schema,
+    capabilities, alignment policy, files the job names, CCD codes, SMILES and
+    bond atoms -- with nothing searched or written. `foldjax plan` and
+    `predict_batch` both call this, so a job one refuses the other refuses with
+    the same message. The MSA rows a model stores, which ``padding.msa`` must
+    not undercut, are known only after featurization and are not checked here.
+    """
+    from foldjax.input import validate_common_input
+
+    backend = backend if backend is not None else get_backend(request.model)
+    backend.validate_request(request)
+    capabilities = backend.capabilities()
+    if request.input_format != "foldjax":
+        if request.input_format not in capabilities.input_formats:
+            raise ValueError(
+                f"{backend.name} does not support input format {request.input_format!r}"
+            )
+        return
+    try:
+        validate_common_input(
+            request.input,
+            capabilities,
+            msa=request.msa,
+            options=backend.apply_sampling(request),
+            templates=request.templates,
+        )
+    except (ValueError, FileNotFoundError) as error:
+        if request.source is None:
+            raise
+        kind = FileNotFoundError if isinstance(error, FileNotFoundError) else ValueError
+        raise kind(f"{request.source.describe()}: {error}") from error
+
+
 def resolve_requests(
-    request: PredictionRequest, *, draw_seeds: bool = True
+    request: PredictionRequest,
+    *,
+    draw_seeds: bool = True,
+    jobs_root: Path | None = None,
 ) -> tuple[PredictionRequest, ...]:
     """Resolve every scalar run represented by ``request`` without executing it.
 
@@ -357,7 +407,7 @@ def resolve_requests(
     inputs: list[tuple[Path, Any]] = []
     for path in request.resolved_inputs:
         if request.input_format in ("auto", "foldjax") and is_jobs_file(path):
-            inputs.extend(expand_jobs_file(path))
+            inputs.extend(expand_jobs_file(path, root=jobs_root))
         else:
             inputs.append((path, request.source))
     for model in canonical_models:
@@ -775,6 +825,45 @@ def _write_failures(directory: Path, failures: list[PredictionFailure]) -> None:
         return
 
 
+def _with_drawn_seed(request: PredictionRequest) -> PredictionRequest:
+    """Draw the seed a resolved request left to be drawn, if it left one."""
+    if (
+        request.seed_source == RANDOM_SEED
+        and request.seed is None
+        and request.seeds is None
+    ):
+        return dataclasses.replace(request, seed=_draw_seed())
+    return request
+
+
+def _preflight_or_record(
+    request: PredictionRequest,
+    failures: list[PredictionFailure],
+    probes: dict[str, Backend],
+) -> bool:
+    """Preflight one run; under ``on_error="continue"`` record a refusal."""
+    try:
+        if request.model not in probes:
+            probes[request.model] = get_backend(request.model)
+        preflight(request, backend=probes[request.model])
+    except _RESUMABLE_ERRORS as error:
+        if request.on_error != "continue":
+            raise
+        failures.append(
+            PredictionFailure(
+                model=request.model,
+                input=Path(request.input),
+                seed=None,
+                output_dir=Path(request.output_dir),
+                error=str(error),
+                error_type=type(error).__name__,
+                source=request.source,
+            )
+        )
+        return False
+    return True
+
+
 def predict_batch(request: PredictionRequest) -> BatchReport:
     """Run everything ``request`` names and report results, skips and failures.
 
@@ -790,10 +879,17 @@ def predict_batch(request: PredictionRequest) -> BatchReport:
         output_root = Path(request.output_dir)
     else:
         output_root = None
-    resolved = resolve_requests(request)
     results: list[PredictionResult] = []
     failures: list[PredictionFailure] = []
     skipped: list[Path] = []
+    # Every run is checked before any runs, and a seed is drawn only for a run
+    # that passed: a refused job must not first announce a seed it never used.
+    probes: dict[str, Backend] = {}
+    resolved = tuple(
+        _with_drawn_seed(item)
+        for item in resolve_requests(request, draw_seeds=False)
+        if _preflight_or_record(item, failures, probes)
+    )
     # Resolution orders the cross product model-first. Keep only one backend
     # session alive at a time: a session may own tens of gigabytes of weights,
     # so opening every model up front would trade repeated I/O for a larger and
@@ -801,7 +897,9 @@ def predict_batch(request: PredictionRequest) -> BatchReport:
     # keeps the historical fresh-instance-per-scalar contract.
     for _model, grouped in groupby(resolved, key=lambda item: item.model):
         items = tuple(grouped)
-        backend = get_backend(items[0].model)
+        # The instance preflight built, so checking up front constructs no
+        # more backends than the batch did before.
+        backend = probes.pop(items[0].model, None) or get_backend(items[0].model)
         if not backend.session_reuse:
             backend_source = _ScalarBackendSource(items[0].model, backend)
             del backend

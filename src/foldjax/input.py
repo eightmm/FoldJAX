@@ -1011,6 +1011,131 @@ def _bonds(
     return pairs
 
 
+def _require_component(code: str, *, what: str) -> None:
+    """Refuse a CCD code the installed Chemical Component Dictionary lacks."""
+    from foldjax import ccd
+
+    # Exact: every backend passes the code through as written, and the
+    # dictionary's codes are uppercase, so 'atp' fails in all of them.
+    found = ccd.lookup(code.strip())
+    if found is not None and not found[0]:
+        upper = code.strip().upper()
+        hint = (
+            f" (CCD codes are uppercase: {upper!r})"
+            if upper != code.strip() and (ccd.lookup(upper) or (False,))[0]
+            else ""
+        )
+        raise ValueError(
+            f"{what} {code!r} is not in the wwPDB Chemical Component "
+            f"Dictionary{hint}"
+        )
+
+
+def _require_smiles(smiles: str, *, chain: str) -> None:
+    """Refuse a SMILES string RDKit cannot read, when RDKit is installed.
+
+    Every backend builds a SMILES ligand with RDKit; a string it cannot parse
+    surfaced as a Boost.Python ``ArgumentError`` from inside a featurizer,
+    after the model had loaded.
+    """
+    try:
+        from rdkit import Chem, rdBase
+    except ImportError:
+        return
+    with rdBase.BlockLogs():
+        molecule = Chem.MolFromSmiles(smiles, sanitize=False)
+        if molecule is None:
+            raise ValueError(
+                f"ligand {chain!r} SMILES {smiles!r} is not a valid SMILES "
+                "string (RDKit cannot parse it)"
+            )
+        try:
+            Chem.SanitizeMol(molecule)
+        except Exception as error:  # noqa: BLE001 - RDKit raises several types
+            detail = str(error).strip().splitlines()
+            raise ValueError(
+                f"ligand {chain!r} SMILES {smiles!r} is not a valid molecule: "
+                f"{detail[0] if detail else type(error).__name__}"
+            ) from None
+
+
+def _require_input_files(entities: list[dict[str, Any]], base: Path) -> None:
+    """Refuse an alignment or template path that names no file."""
+    for entity in entities:
+        if entity.get("type") == "ligand":
+            continue
+        chain = _ids(entity)[0]
+        named = [
+            (field, entity[field])
+            for field in ("unpaired_msa", "paired_msa")
+            if isinstance(entity.get(field), str)
+        ]
+        named.extend(
+            ("template mmcif", template["mmcif"])
+            for template in entity.get("templates") or []
+            if isinstance(template, dict) and isinstance(template.get("mmcif"), str)
+        )
+        for field, value in named:
+            path = Path(value.strip())
+            resolved = path if path.is_absolute() else (base / path).absolute()
+            if not resolved.is_file():
+                raise FileNotFoundError(
+                    f"entity {chain!r} names {field} {value.strip()!r}, and there "
+                    f"is no such file: {resolved}"
+                )
+
+
+def _residue_component(entity: dict[str, Any], residue: int) -> str | None:
+    """The CCD component at a bond endpoint, or None when it has no fixed one."""
+    from foldjax import ccd
+
+    kind = entity["type"]
+    if kind == "ligand":
+        # Residue ``i`` of a CCD ligand is its ``i``-th code; a SMILES
+        # ligand's atom names are each backend's own.
+        codes = _ccd_codes(entity)
+        return codes[residue - 1] if 0 < residue <= len(codes) else None
+    modified = {position: code for code, position in _modifications(entity)}
+    if residue in modified:
+        return modified[residue]
+    table = {
+        "protein": ccd.PROTEIN_RESIDUES,
+        "dna": ccd.DNA_RESIDUES,
+        "rna": ccd.RNA_RESIDUES,
+    }[kind]
+    return table.get(entity["sequence"][residue - 1])
+
+
+def _check_bond_atoms(
+    bonds: list[tuple[_Endpoint, _Endpoint]], entities: list[dict[str, Any]]
+) -> None:
+    """Refuse a bond atom its residue's CCD component does not have.
+
+    Existence only: whether a backend strips that atom (a leaving group, a
+    hydrogen) is its own chemistry. Skipped where no dictionary is installed.
+    The residue is named by the job's own 1-based index.
+    """
+    if not bonds:
+        return
+    from foldjax import ccd
+
+    by_chain = {chain: entity for entity in entities for chain in _ids(entity)}
+    for bond in bonds:
+        for chain, residue, atom in bond:
+            entity = by_chain.get(chain)
+            code = None if entity is None else _residue_component(entity, residue)
+            if code is None:
+                continue
+            found = ccd.lookup(code.strip())
+            if found is None or not found[0] or not found[1] or atom in found[1]:
+                continue
+            shown = ", ".join(found[1][:40]) + (", ..." if len(found[1]) > 40 else "")
+            raise ValueError(
+                f"bond atom {atom!r} is not an atom of residue {residue} "
+                f"({code}) of chain {chain!r}; {code} has {shown}"
+            )
+
+
 def _validate(
     job: dict[str, Any],
     model: str,
@@ -1021,8 +1146,12 @@ def _validate(
     ignored: list[dict[str, Any]] | None = None,
     ignored_templates: list[dict[str, Any]] | None = None,
     ignored_constraints: list[dict[str, Any]] | None = None,
+    base: Path | None = None,
 ) -> None:
     """Check the common document against what ``model`` can express.
+
+    ``base`` is the job file's directory. Given, every alignment and template
+    path the backend will read must exist; omitted, paths are not checked.
 
     A nucleic-acid alignment the backend does not read is removed from ``job``
     and described in ``ignored``, and a template a backend would discard at
@@ -1137,6 +1266,12 @@ def _validate(
                     f"its ligand string joins codes with '_' (CCD_A_B), so "
                     f"{codes!r} would be read as other components",
                 )
+            for code in codes:
+                _require_component(
+                    code, what=f"ligand {_ids(entity)[0]!r} CCD code"
+                )
+            if entity.get("smiles"):
+                _require_smiles(entity["smiles"], chain=_ids(entity)[0])
             feature = "ligand_ccd" if entity.get("ccd") else "ligand_smiles"
             if feature not in target.features:
                 _reject(model, feature, "supply the other ligand representation")
@@ -1244,6 +1379,12 @@ def _validate(
         if validate_ccd is not None:
             for ccd, _ in modifications:
                 validate_ccd(ccd, field="modification CCD code")
+        for ccd, position in modifications:
+            _require_component(
+                ccd,
+                what=f"modification at residue {position} of chain "
+                f"{_ids(entity)[0]!r}: CCD code",
+            )
 
         templates = _templates(entity)
         if (
@@ -1324,6 +1465,8 @@ def _validate(
                     "same form",
                 )
 
+    if base is not None:
+        _require_input_files(entities, base)
     if job.get("bonds") and "bonds" not in target.features:
         _reject(
             model,
@@ -1331,7 +1474,7 @@ def _validate(
             "its featurizer never applies covalent bonds, upstream or here",
         )
     # A ligand has one residue per CCD code; a SMILES ligand has one.
-    _bonds(job, chains, _residue_counts(entities))
+    _check_bond_atoms(_bonds(job, chains, _residue_counts(entities)), entities)
     if job.get("properties") and "affinity" not in target.features:
         _reject(
             model,
@@ -2399,13 +2542,21 @@ def native_only_features(
     return tuple(unreachable)
 
 
-def compatibility(document: Any, model: str) -> str | None:
+def compatibility(
+    document: Any,
+    model: str,
+    *,
+    msa: str | None = None,
+    base: Path | None = None,
+) -> str | None:
     """Why ``model`` cannot run this common-schema job, or None if it can.
 
     The answer comes from `_validate` itself rather than from a second table:
     "can this backend express this document" already has exactly one
     implementation, and a discovery command that reimplemented it would
-    eventually disagree with the one that decides.
+    eventually disagree with the one that decides. ``msa``, given, applies
+    the same alignment policy `predict` applies (`_refuse_bare_proteins`), and
+    ``base``, the job file's directory, checks that the files it names exist.
     """
     from copy import deepcopy
 
@@ -2415,15 +2566,23 @@ def compatibility(document: Any, model: str) -> str | None:
     target = _TARGETS.get(backend.name)
     if target is None:
         return f"{backend.name} has no common-schema dialect"
+    if is_jobs_document(document):
+        return (
+            "a multi-job file holds several jobs; ask about one job at a time"
+        )
     if not isinstance(document, dict):
         return "a FoldJAX job must be a JSON or YAML mapping"
     try:
+        job = deepcopy(document)
         _validate(
-            deepcopy(document),
+            job,
             backend.name,
             target,
             backend.capabilities().entity_types,
+            base=base,
         )
+        if msa is not None:
+            _apply_msa_policy(job, backend.name, target, msa)
     except (ValueError, FileNotFoundError) as error:
         return str(error).splitlines()[0]
     return None
@@ -2444,11 +2603,22 @@ def read_job_document(path: Path) -> Any:
         try:
             return yaml.safe_load(text)
         except yaml.YAMLError as error:
-            raise ValueError(f"{path} is not readable as YAML: {error}") from error
+            # One line: the parser's own message spans several, with a caret
+            # drawing of the document that reads as a crash in a terminal.
+            problem = getattr(error, "problem", None) or str(error).splitlines()[0]
+            mark = getattr(error, "problem_mark", None)
+            where = (
+                f" (line {mark.line + 1}, column {mark.column + 1})"
+                if mark is not None
+                else ""
+            )
+            raise ValueError(
+                f"{path} is not readable as YAML: {problem}{where}"
+            ) from None
     try:
         return json.loads(text)
     except json.JSONDecodeError as error:
-        raise ValueError(f"{path} is not readable as JSON: {error}") from error
+        raise ValueError(f"{path} is not readable as JSON: {error}") from None
 
 
 #: The one top-level key of a multi-job common-schema file:
@@ -2579,7 +2749,9 @@ def _absolute_job_paths(job: dict[str, Any], base: Path) -> dict[str, Any]:
     return job
 
 
-def expand_jobs_file(path: Path) -> tuple[tuple[Path, Any], ...]:
+def expand_jobs_file(
+    path: Path, *, root: Path | None = None
+) -> tuple[tuple[Path, Any], ...]:
     """Write each job of a multi-job file as its own document; return them.
 
     Each entry is ``(generated path, JobSource)``. The generated file is named
@@ -2587,6 +2759,8 @@ def expand_jobs_file(path: Path) -> tuple[tuple[Path, Any], ...]:
     as it would a file of that name, and it lives in a directory keyed by its
     own content: an unchanged job keeps its path, and therefore its resume
     identity, when another job in the same file is edited or reordered.
+    ``root`` replaces the store's ``runtime/jobs/split`` (`foldjax plan`
+    writes into a scratch directory, never the store).
     """
     import hashlib
 
@@ -2596,7 +2770,7 @@ def expand_jobs_file(path: Path) -> tuple[tuple[Path, Any], ...]:
 
     path = Path(path)
     base = path.parent.absolute()
-    root = paths.runtime_dir("jobs") / "split"
+    root = Path(root) if root is not None else paths.runtime_dir("jobs") / "split"
     expanded: list[tuple[Path, Any]] = []
     for index, (name, job) in enumerate(read_jobs_file(path)):
         try:
@@ -2645,6 +2819,130 @@ def _refuse_bare_proteins(job: dict[str, Any], model: str) -> None:
     )
 
 
+def _apply_msa_policy(
+    job: dict[str, Any],
+    model: str,
+    target: _Target,
+    msa: str,
+    options: Mapping[str, Any] | None = None,
+) -> None:
+    """Refuse what the alignment policy refuses, before anything searches.
+
+    The same conditions `_search_alignments` raises on, asked of a validated
+    job without contacting a server.
+    """
+    if msa not in MSA_POLICIES:
+        raise ValueError(f"msa must be one of {MSA_POLICIES}; got {msa!r}")
+    if msa == "none" and model not in _SINGLE_SEQUENCE_UPSTREAM:
+        _refuse_bare_proteins(job, model)
+    if msa not in ("auto", "required"):
+        return
+    if "unpaired_msa" not in target.features:
+        raise ValueError(
+            f"{model} cannot take a searched alignment; run it with msa='none'"
+        )
+    read = _nucleic_msa_read(
+        model, use_rna_msa=(options or {}).get("use_rna_msa") is True
+    )
+    if msa == "required" and (read is None or "rna" in read):
+        bare_rna = [
+            entity
+            for entity in job["entities"]
+            if entity.get("type") == "rna" and not entity.get("unpaired_msa")
+        ]
+        if bare_rna and _rna_msa_pipeline() is None:
+            from foldjax.msa_search import _RNA_MSA_COMMAND_ENV
+
+            raise ValueError(
+                f"RNA entity {_ids(bare_rna[0])[0]!r} has no alignment and no RNA "
+                f"search is configured; set {_RNA_MSA_COMMAND_ENV} to a local "
+                "nhmmer workflow, or supply unpaired_msa for it"
+            )
+
+
+def _checked_common_job(
+    source: Path,
+    capabilities: ModelCapabilities,
+    *,
+    msa: str,
+    options: Mapping[str, Any] | None,
+    templates: str,
+    ignored: list[dict[str, Any]] | None = None,
+    ignored_templates: list[dict[str, Any]] | None = None,
+    ignored_constraints: list[dict[str, Any]] | None = None,
+    check_files: bool = False,
+) -> dict[str, Any]:
+    """Read and validate a common job exactly as translation will, writing nothing.
+
+    ``check_files`` also requires every alignment and template the job names
+    to exist (`preflight` asks; translation leaves a missing one to the
+    backend, which reports it in its own words).
+    """
+    from foldjax.template_search import refuse_template_search
+
+    model = capabilities.model
+    target = _TARGETS.get(model)
+    if target is None:
+        raise ValueError(f"unsupported model: {model}")
+    if msa not in MSA_POLICIES:
+        raise ValueError(f"msa must be one of {MSA_POLICIES}; got {msa!r}")
+    if templates not in TEMPLATE_POLICIES:
+        raise ValueError(
+            f"templates must be one of {TEMPLATE_POLICIES}; got {templates!r}"
+        )
+    refuse_template_search(model, templates, options)
+    source = Path(source)
+    job = read_job_document(source)
+    if is_jobs_document(job):
+        raise ValueError(
+            f"{source} is a multi-job file; pass it as one of several inputs "
+            "(inputs=...) to run every job in it"
+        )
+    if not isinstance(job, dict):
+        raise ValueError("a FoldJAX job must be a JSON or YAML mapping")
+    _validate(
+        job,
+        model,
+        target,
+        capabilities.entity_types,
+        options=options,
+        ignored=ignored,
+        ignored_templates=ignored_templates,
+        ignored_constraints=ignored_constraints,
+        base=source.parent if check_files else None,
+    )
+    # Before anything is written: the refusal is about the job, not the run.
+    _apply_msa_policy(job, model, target, msa, options)
+    return job
+
+
+def validate_common_input(
+    source: Path,
+    capabilities: ModelCapabilities,
+    *,
+    msa: str = "none",
+    options: Mapping[str, Any] | None = None,
+    templates: str = "none",
+) -> None:
+    """Raise what `materialize_native_input` would raise about this job.
+
+    And that every alignment and template it names exists, which a backend
+    otherwise discovers after loading. Read-only: nothing is searched,
+    fetched or written, so `foldjax plan` can refuse exactly what `foldjax
+    predict` refuses. What only featurization
+    can know -- the MSA rows a model stores, which ``padding.msa`` must not
+    undercut -- is still checked at run time.
+    """
+    _checked_common_job(
+        source,
+        capabilities,
+        msa=msa,
+        options=options,
+        templates=templates,
+        check_files=True,
+    )
+
+
 def materialize_native_input(
     source: Path,
     capabilities: ModelCapabilities,
@@ -2677,32 +2975,20 @@ def materialize_native_input(
     the ``max_distance`` it runs at and whether that came from the job or
     from the upstream default.
     """
-    from foldjax.template_search import refuse_template_search
-
     model = capabilities.model
     target = _TARGETS.get(model)
     if target is None:
         raise ValueError(f"unsupported model: {model}")
-    if msa not in MSA_POLICIES:
-        raise ValueError(f"msa must be one of {MSA_POLICIES}; got {msa!r}")
-    if templates not in TEMPLATE_POLICIES:
-        raise ValueError(
-            f"templates must be one of {TEMPLATE_POLICIES}; got {templates!r}"
-        )
-    refuse_template_search(model, templates, options)
     source = Path(source)
-    job = read_job_document(source)
-    if not isinstance(job, dict):
-        raise ValueError("a FoldJAX job must be a JSON or YAML mapping")
     dropped: list[dict[str, Any]] = []
     dropped_templates: list[dict[str, Any]] = []
     dropped_constraints: list[dict[str, Any]] = []
-    _validate(
-        job,
-        model,
-        target,
-        capabilities.entity_types,
+    job = _checked_common_job(
+        source,
+        capabilities,
+        msa=msa,
         options=options,
+        templates=templates,
         ignored=dropped,
         ignored_templates=dropped_templates,
         ignored_constraints=dropped_constraints,
@@ -2771,9 +3057,6 @@ def materialize_native_input(
     if ignored_templates is not None:
         ignored_templates.extend(dropped_templates)
 
-    # Before anything is written: the refusal is about the job, not the run.
-    if msa == "none" and model not in _SINGLE_SEQUENCE_UPSTREAM:
-        _refuse_bare_proteins(job, model)
     # Created before the dialects are built: OpenFold3 writes alongside its
     # document rather than only into it, and a searched alignment is recorded
     # beside both.

@@ -42,13 +42,33 @@ def test_storing_the_same_job_twice_returns_one_file(
 def test_two_different_jobs_sharing_a_name_never_share_a_file(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """The readable name is kept; a digest is added only on a real collision."""
+    """Both keep the readable stem; the content digest is the directory."""
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "home"))
     first = _job("MKTAYIAKQRQISFVKSHFSRQ").store()
     second = _job("MKTAYIAKQRQISFVKSHFSRE").store()
     assert first != second
-    assert first.name == "store-test.json"
-    assert second.name.startswith("store-test-")
+    assert first.name == second.name == "store-test.json"
+
+
+def test_the_stem_does_not_depend_on_what_was_stored_before(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The default output directory is the stem, so it must not drift."""
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "home"))
+    _job("MKTAYIAKQRQISFVKSHFSRE").store()
+    later = _job("MKTAYIAKQRQISFVKSHFSRQ").store()
+    fresh_home = tmp_path / "other"
+    monkeypatch.setenv("FOLDJAX_HOME", str(fresh_home))
+    alone = _job("MKTAYIAKQRQISFVKSHFSRQ").store()
+    assert later.stem == alone.stem == "store-test"
+    assert later.parent.name == alone.parent.name
+
+
+def test_store_takes_an_explicit_root(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "home"))
+    stored = _job().store(tmp_path / "scratch")
+    assert tmp_path / "scratch" in stored.parents
+    assert not (tmp_path / "home").exists()
 
 
 def test_the_stored_document_is_the_job(tmp_path: Path, monkeypatch) -> None:

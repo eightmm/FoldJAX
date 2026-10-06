@@ -26,7 +26,7 @@ from foldjax import (
     report,
     tools_cli,
 )
-from foldjax.api import predict_batch, resolve_requests
+from foldjax.api import predict_batch, preflight, resolve_requests
 from foldjax.input import is_jobs_file
 from foldjax.job import Job
 from foldjax.redaction import public_options
@@ -387,7 +387,16 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         metavar="JOB",
         help="report which models can run this job and why the others cannot. "
-        "Answered from the input translation table, so it needs no weights",
+        "Answered from the input translation table, so it needs no weights. A "
+        "multi-job file is answered per job",
+    )
+    models.add_argument(
+        "--msa",
+        choices=MSA_POLICIES,
+        default="none",
+        help="with --for: the alignment policy predict would run under "
+        "(default 'none', which refuses a protein chain with no alignment "
+        "except on ESMFold2)",
     )
     home = commands.add_parser("home", help="show where FoldJAX keeps its files")
     home.add_argument(
@@ -696,8 +705,14 @@ _JOB_SUFFIXES = (
 )
 
 
-def _resolve_inputs(args: argparse.Namespace) -> list[Path]:
-    """Turn everything the CLI accepts as input into common job/native files."""
+def _resolve_inputs(
+    args: argparse.Namespace, *, jobs_root: Path | None = None
+) -> list[Path]:
+    """Turn everything the CLI accepts as input into common job/native files.
+
+    Generated job documents go to ``jobs_root``, or to the store's
+    ``runtime/jobs`` when it is None.
+    """
     sequences = bool(args.sequence or args.dna or args.rna)
     ligands = bool(args.ligand or args.ligand_smiles)
     if sequences or ligands:
@@ -707,17 +722,16 @@ def _resolve_inputs(args: argparse.Namespace) -> list[Path]:
             )
         if not sequences:
             raise ValueError("a ligand needs a --sequence to bind to")
-        return [
-            Job.from_sequences(
-                args.sequence,
-                dna=args.dna,
-                rna=args.rna,
-                ligand_ccd=args.ligand,
-                ligand_smiles=args.ligand_smiles,
-                name=args.name or "job",
-                affinity_binder=args.affinity_binder,
-            ).store()
-        ]
+        job = Job.from_sequences(
+            args.sequence,
+            dna=args.dna,
+            rna=args.rna,
+            ligand_ccd=args.ligand,
+            ligand_smiles=args.ligand_smiles,
+            name=args.name or "job",
+            affinity_binder=args.affinity_binder,
+        )
+        return [job.store(jobs_root, stem=_sequence_stem(job, args.name))]
     if not args.input:
         raise ValueError("one of --input and --sequence is required")
     if args.name:
@@ -743,10 +757,27 @@ def _resolve_inputs(args: argparse.Namespace) -> list[Path]:
     # CLI accepts: it can turn a FASTA or a deposited structure into a job
     # document, which a request cannot.
     expanded = expand_input_directories(selected, suffixes=_JOB_SUFFIXES)
-    return [_as_job_file(path) for path in expanded]
+    return [_as_job_file(path, jobs_root=jobs_root) for path in expanded]
 
 
-def _as_job_file(path: Path) -> Path:
+def _sequence_stem(job: Job, name: str | None) -> str:
+    """The output stem of a ``--sequence`` job: its name, else job-<digest>.
+
+    Stable by construction: the same chains always land in the same
+    ``foldjax-outputs/<stem>``, whatever was run before, so ``--resume`` finds
+    them; two different unnamed jobs never share a directory.
+    ``<digest>`` is the first 8 hex digits of the SHA-256 of the job document
+    (``json.dumps(job.to_document(), sort_keys=True)``).
+    """
+    if name:
+        return name
+    import hashlib
+
+    document = json.dumps(job.to_document(), sort_keys=True)
+    return f"job-{hashlib.sha256(document.encode()).hexdigest()[:8]}"
+
+
+def _as_job_file(path: Path, *, jobs_root: Path | None = None) -> Path:
     """Turn one accepted input into a file a request can carry.
 
     FASTA and deposited structures become ordinary common-schema documents;
@@ -755,17 +786,19 @@ def _as_job_file(path: Path) -> Path:
     """
     text = str(path)
     if text.startswith("structure:"):
-        return Job.from_structure(Path(text[10:])).store()
+        return Job.from_structure(Path(text[10:])).store(jobs_root)
     suffix = path.suffix.lower()
     if suffix in _FASTA_SUFFIXES:
-        return Job.from_fasta(path).store()
+        return Job.from_fasta(path).store(jobs_root)
     if suffix in _STRUCTURE_SUFFIXES:
-        return Job.from_structure(path).store()
+        return Job.from_structure(path).store(jobs_root)
     return path
 
 
-def _request(args: argparse.Namespace) -> PredictionRequest:
-    inputs = _resolve_inputs(args)
+def _request(
+    args: argparse.Namespace, *, jobs_root: Path | None = None
+) -> PredictionRequest:
+    inputs = _resolve_inputs(args, jobs_root=jobs_root)
     single_model = len(args.model) == 1
     # A multi-job file is several runs, like a directory, so it takes the
     # plural spelling even alone; the request expands it into its jobs.
@@ -1097,37 +1130,59 @@ def _run_models_for(args: argparse.Namespace) -> int:
     alone, so this answers without weights, without a GPU, and without the
     fifteen minutes it takes to discover the same thing by running the job.
     """
-    from foldjax.input import compatibility, read_job_document
+    from foldjax.input import (
+        _absolute_job_paths,
+        compatibility,
+        is_jobs_document,
+        read_job_document,
+        read_jobs_file,
+    )
 
     path = Path(args.for_input)
-    document = read_job_document(path)
     if path.suffix.lower() in _FASTA_SUFFIXES:
         document = Job.from_fasta(path).to_document()
+    else:
+        document = read_job_document(path)
+    # One row per job and model: a multi-job file is several questions.
+    if is_jobs_document(document):
+        base = path.parent.absolute()
+        jobs = [
+            (name, _absolute_job_paths(job, base)) for name, job in read_jobs_file(path)
+        ]
+    else:
+        jobs = [(None, document)]
     rows = []
-    for name in available_models():
-        reason = compatibility(document, name)
-        info = model_info(name)
-        rows.append(
-            {
+    infos = {name: model_info(name) for name in available_models()}
+    for job_name, job in jobs:
+        for name, info in infos.items():
+            reason = compatibility(job, name, msa=args.msa, base=path.parent)
+            row = {
                 "model": name,
                 "runs": reason is None,
                 "reason": reason,
                 "weights_ready": info.weights_ready,
                 "setup": info.setup,
             }
-        )
+            if job_name is not None:
+                row["job"] = job_name
+            rows.append(row)
     if args.json:
         print(json.dumps(rows, indent=2, sort_keys=True))
         return 0
-    print(f"{'model':<11s}{'runs?':<7s}why")
-    for row in rows:
-        if not row["runs"]:
-            note = row["reason"]
-        elif row["weights_ready"]:
-            note = ""
-        else:
-            note = f"weights not installed: {row['setup']}"
-        print(f"{row['model']:<11s}{'yes' if row['runs'] else 'no':<7s}{note}")
+    for index, (job_name, _job) in enumerate(jobs):
+        if job_name is not None:
+            print(("\n" if index else "") + f"job {job_name}")
+        print(f"{'model':<11s}{'runs?':<7s}why")
+        for row in rows:
+            if row.get("job") != job_name:
+                continue
+            if not row["runs"]:
+                note = row["reason"]
+            elif row["weights_ready"]:
+                note = ""
+            else:
+                note = f"weights not installed: {row['setup']}"
+            print(f"{row['model']:<11s}{'yes' if row['runs'] else 'no':<7s}{note}")
     return 0
 
 
@@ -1365,10 +1420,25 @@ def _apply_rendezvous_timeout(args: argparse.Namespace) -> None:
         oom.set_rendezvous_timeout()
 
 
-def _plan_summary(request: PredictionRequest) -> dict[str, Any]:
+def _plan_summary(
+    request: PredictionRequest, *, scratch: Path | None = None
+) -> dict[str, Any]:
+    generated = None
+    shown_input = str(request.input)
+    if scratch is not None and Path(request.input).is_relative_to(scratch):
+        # Written to scratch, not the store. Show the document itself, and the
+        # path predict will give it: the store layout is content-keyed, so
+        # that path is known without writing it.
+        from foldjax.input import read_job_document
+
+        generated = read_job_document(Path(request.input))
+        shown_input = str(
+            paths.runtime_dir("jobs") / Path(request.input).relative_to(scratch)
+        )
     summary = {
         "model": request.model,
-        "input": str(request.input),
+        "input": shown_input,
+        "generated_input": generated,
         # The multi-job file and job this generated input came from.
         "source": (
             request.source.summary() if request.source is not None else None
@@ -1389,12 +1459,44 @@ def _plan_summary(request: PredictionRequest) -> dict[str, Any]:
         "msa": request.msa,
         "templates": request.templates,
         "template_max_date": request.template_max_date,
-        "sampling": request.sampling,
         "options": public_options(request.options),
+        **_effective_sampling(request),
     }
     if request.padding is not None:
         summary["padding"] = request.padding.summary()
+        # Plan refuses what predict refuses up to featurization; the MSA rows a
+        # model stores are known only after it, so a pin below them is not.
+        summary["not_checked"] = [
+            "padding.msa against the MSA rows the model stores (known only "
+            "after featurization; predict refuses a pin below them)"
+        ]
     return summary
+
+
+def _effective_sampling(request: PredictionRequest) -> dict[str, Any]:
+    """What each neutral sampling knob will run at, and where that comes from.
+
+    ``request`` names the knob, ``option`` is a native option (an explicit
+    ``--option`` or a managed profile's), ``default`` the adapter's released
+    value, and ``checkpoint`` a value the checkpoint's own configuration
+    decides at load time, shown as null.
+    """
+    from foldjax.registry import get_backend, sampling_defaults
+
+    backend = get_backend(request.model)
+    defaults = sampling_defaults(backend)
+    values: dict[str, Any] = {}
+    sources: dict[str, str] = {}
+    for knob, native in backend.sampling_options.items():
+        if knob in request.sampling:
+            values[knob], sources[knob] = request.sampling[knob], "request"
+        elif native in request.options:
+            values[knob], sources[knob] = request.options[native], "option"
+        elif defaults.get(knob) is not None:
+            values[knob], sources[knob] = defaults[knob], "default"
+        else:
+            values[knob], sources[knob] = None, "checkpoint"
+    return {"sampling": values, "sampling_source": sources}
 
 
 def _run_predictions(request: PredictionRequest) -> BatchReport:
@@ -1502,9 +1604,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             return cache_gc.run_cache_gc(args)
         return _run_cache(args)
     if args.command == "plan":
-        requested = _request(args)
-        resolved = resolve_requests(requested, draw_seeds=False)
-        payload = [_plan_summary(item) for item in resolved]
+        import tempfile
+
+        # Generated job documents (a --sequence, FASTA or structure input, the
+        # jobs of a multi-job file) are written to scratch: a plan writes
+        # nothing into the store. The stems are the ones predict would use.
+        with tempfile.TemporaryDirectory(prefix="foldjax-plan-") as scratch:
+            jobs = Path(scratch) / "jobs"
+            requested = _request(args, jobs_root=jobs)
+            resolved = resolve_requests(
+                requested, draw_seeds=False, jobs_root=jobs / "split"
+            )
+            for item in resolved:
+                preflight(item)
+            payload = [_plan_summary(item, scratch=jobs) for item in resolved]
         print(
             json.dumps(
                 payload

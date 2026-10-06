@@ -61,14 +61,47 @@ def capabilities(name: str) -> ModelCapabilities:
     from foldjax.confidence_arrays import default_arrays
     from foldjax.input import common_schema_features, native_only_features
 
-    described = get_backend(name).capabilities()
+    backend = get_backend(name)
+    described = backend.capabilities()
     return dataclasses.replace(
         described,
         common_schema_features=common_schema_features(described.model),
         native_only_features=native_only_features(described.model, described),
         confidence_arrays=described.confidence_arrays
         or default_arrays(described.model),
+        sampling_defaults=described.sampling_defaults or sampling_defaults(backend),
     )
+
+
+#: Module-level tables in which a built-in adapter states the native defaults
+#: it compiles with, keyed by native option name. Read rather than restated:
+#: a copy here would be a second statement of six ports' defaults.
+_DEFAULT_TABLES = ("_RELEASED_COMPILE_DEFAULTS", "DEFAULTS")
+
+
+def sampling_defaults(backend: Backend) -> dict[str, int | None]:
+    """What each neutral sampling knob runs at when a request omits it.
+
+    None where the adapter states no value because the checkpoint's own
+    configuration decides it (Protenix's steps and recycles, ESMFold2's samples
+    and steps) or the native runner keeps it internal (Boltz-2's MSA depth).
+    A managed profile can change these; `foldjax plan` reports the value a
+    resolved request will run at.
+    """
+    import sys
+
+    module = sys.modules.get(type(backend).__module__)
+    tables = [getattr(module, name, None) for name in _DEFAULT_TABLES]
+    defaults: dict[str, int | None] = {}
+    for knob, native in dict(getattr(backend, "sampling_options", {})).items():
+        value = None
+        for table in tables:
+            candidate = table.get(native) if isinstance(table, dict) else None
+            if isinstance(candidate, int) and not isinstance(candidate, bool):
+                value = candidate
+                break
+        defaults[knob] = value
+    return defaults
 
 
 def _runtime_info(name: str) -> RuntimeInfo:

@@ -307,7 +307,9 @@ class Job:
         path.write_text(json.dumps(self.to_document(), indent=2), encoding="utf-8")
         return path
 
-    def store(self) -> Path:
+    def store(
+        self, root: str | Path | None = None, *, stem: str | None = None
+    ) -> Path:
         """Write the job into the FoldJAX store and return its path.
 
         The sibling of :meth:`write` for when the caller has no opinion about
@@ -322,22 +324,22 @@ class Job:
         manifest and it is what `plan` prints -- so it belongs in the store
         beside everything else FoldJAX manages.
 
-        Re-storing the same job returns the same path. A *different* job whose
-        name collides gets a digest suffix, so two jobs never quietly share one
-        file.
+        The file is ``<root>/<content digest>/<stem>.json``, the stem being the
+        job's name unless ``stem`` names another. The stem is what
+        `foldjax-outputs/<stem>` is made from, so the default output directory
+        never depends on what was stored before. Re-storing the same job
+        returns the same path, and two different jobs of one name never share
+        a file. ``root`` defaults to the store's ``runtime/jobs``.
         """
         import hashlib
 
         from foldjax import paths
         from foldjax.output import safe_job_name
 
-        root = paths.runtime_dir("jobs")
-        root.mkdir(parents=True, exist_ok=True)
+        root = Path(root) if root is not None else paths.runtime_dir("jobs")
         document = json.dumps(self.to_document(), sort_keys=True)
-        name = safe_job_name(self.name)
-        # The plain name is what ends up in `foldjax-outputs/<stem>`, so keep it
-        # readable. The digest is added only on a real collision.
-        candidate = root / f"{name}.json"
+        digest = hashlib.sha256(document.encode()).hexdigest()[:16]
+        candidate = root / digest / f"{safe_job_name(stem or self.name)}.json"
         if candidate.is_file():
             try:
                 existing = json.dumps(
@@ -345,9 +347,8 @@ class Job:
                 )
             except (OSError, json.JSONDecodeError):
                 existing = None
-            if existing != document:
-                digest = hashlib.sha256(document.encode()).hexdigest()[:8]
-                candidate = root / f"{name}-{digest}.json"
+            if existing == document:
+                return candidate
         return self.write(candidate)
 
     @classmethod

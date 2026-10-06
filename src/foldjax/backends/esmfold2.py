@@ -1467,7 +1467,10 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
 def _job_document(path: Path) -> tuple[dict[str, Any], Path]:
     """Read the validated common document consumed by this native adapter."""
 
-    document: Any = json.loads(Path(path).read_text(encoding="utf-8"))
+    from foldjax.input import read_job_document
+
+    # JSON or YAML by suffix, like every other reader of a job document.
+    document: Any = read_job_document(Path(path))
     if not isinstance(document, dict) or "entities" not in document:
         raise ValueError(
             "ESMFold2 takes a FoldJAX job document; it has no native dialect"
