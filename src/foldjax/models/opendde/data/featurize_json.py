@@ -20,6 +20,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from foldjax.models.protenix.data.featurize_json import (
+    FeaturizerAssets,
     _local_atom_geometry,
     featurize_protein_json,
 )
@@ -175,6 +176,7 @@ def featurize_opendde_json(
     augment_reference: bool = True,
     use_template: bool = False,
     use_rna_msa: bool = False,
+    assets: FeaturizerAssets | None = None,
 ) -> dict[str, Any]:
     """Build Torch-free residue and OpenDDE structural-token input features.
 
@@ -207,6 +209,7 @@ def featurize_opendde_json(
         # only under Protenix's released-false `use_template`, which OpenDDE
         # shares (config/inference_defaults.py:28).
         use_template=use_template,
+        assets=assets,
     )
     _prepare_reference_features(
         features,

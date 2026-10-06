@@ -216,12 +216,10 @@ def test_opendde_adapter_restores_every_environment_variable_the_cli_exports(
         exported - set(opendde._EXPORTED_ENVIRONMENT)
     )
 
-    monkeypatch.delenv("PROTENIX_CCD_COMPONENTS_FILE", raising=False)
-    monkeypatch.setenv("PROTENIX_KALIGN_BINARY", "/pre-existing/kalign")
+    monkeypatch.delenv("JAX_PLATFORMS", raising=False)
 
     def fake_run(config, **_kwargs):
-        os.environ["PROTENIX_CCD_COMPONENTS_FILE"] = "/leaked/components.cif"
-        os.environ["PROTENIX_KALIGN_BINARY"] = "/leaked/kalign"
+        os.environ["JAX_PLATFORMS"] = "leaked"
         # The real runner returns the paths it wrote; this run writes none.
         return []
 
@@ -241,5 +239,4 @@ def test_opendde_adapter_restores_every_environment_variable_the_cli_exports(
     )
     opendde.OpenDDEBackend().predict(request)
 
-    assert "PROTENIX_CCD_COMPONENTS_FILE" not in os.environ
-    assert os.environ["PROTENIX_KALIGN_BINARY"] == "/pre-existing/kalign"
+    assert "JAX_PLATFORMS" not in os.environ

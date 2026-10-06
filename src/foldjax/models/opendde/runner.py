@@ -111,11 +111,19 @@ def _load_jobs(path: Path) -> list[dict[str, Any]]:
     return load_jobs(path)
 
 
-def _featurize(job: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+def _featurize(
+    job: dict[str, Any],
+    *,
+    asset_paths: Mapping[str, Path] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
     from foldjax.models.opendde.data.featurize_json import featurize_opendde_json
+    from foldjax.models.protenix.data.featurize_json import FeaturizerAssets
 
     with progress.part("featurize"):
-        return featurize_opendde_json(job, **kwargs)
+        return featurize_opendde_json(
+            job, assets=FeaturizerAssets(**(asset_paths or {})), **kwargs
+        )
 
 
 def _load_weights(path: Path) -> Any:
@@ -574,25 +582,21 @@ def _run(
         raise SystemExit("n-sample, n-step, and n-cycle must be positive")
     if config.cp_devices < 1:
         raise SystemExit("cp-devices must be positive")
-    for path, env_name, label in (
+    # Handed to the featurizer for this run, not exported: the environment is
+    # process-wide, and this runner also runs in-process under FoldJAX, where
+    # an export outlived the run and reached every later prediction.
+    asset_paths: dict[str, Path] = {}
+    for name, path, label in (
+        ("components_cif", config.components_cif, "components.cif"),
+        ("ccd_rdkit_cache", config.ccd_rdkit_cache, "CCD RDKit cache"),
         (
-            config.components_cif,
-            "PROTENIX_CCD_COMPONENTS_FILE",
-            "components.cif",
-        ),
-        (
-            config.ccd_rdkit_cache,
-            "PROTENIX_CCD_RDKIT_MOL_FILE",
-            "CCD RDKit cache",
-        ),
-        (
+            "template_release_dates",
             config.template_release_dates,
-            "PROTENIX_TEMPLATE_RELEASE_DATES_FILE",
             "template release-date cache",
         ),
         (
+            "template_obsolete_map",
             config.template_obsolete_map,
-            "PROTENIX_TEMPLATE_OBSOLETE_FILE",
             "obsolete template map",
         ),
     ):
@@ -600,20 +604,20 @@ def _run(
             continue
         if not path.is_file():
             raise SystemExit(f"missing {label}: {path}")
-        os.environ[env_name] = str(path.expanduser().resolve())
+        asset_paths[name] = path.expanduser().resolve()
     if config.template_mmcif_dir is not None:
         if not config.template_mmcif_dir.is_dir():
             raise SystemExit(
                 f"missing template mmCIF directory: {config.template_mmcif_dir}"
             )
-        os.environ["PROTENIX_TEMPLATE_MMCIF_DIR"] = str(
+        asset_paths["template_mmcif_dir"] = (
             config.template_mmcif_dir.expanduser().resolve()
         )
     if config.kalign_binary is not None:
         kalign_binary = config.kalign_binary.expanduser().resolve()
         if not kalign_binary.is_file() or not os.access(kalign_binary, os.X_OK):
             raise SystemExit(f"missing executable Kalign binary: {kalign_binary}")
-        os.environ["PROTENIX_KALIGN_BINARY"] = str(kalign_binary)
+        asset_paths["kalign_binary"] = kalign_binary
     if config.cpu_only:
         os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
@@ -751,6 +755,7 @@ def _run(
                     seed=seed,
                     use_template=config.use_template,
                     use_rna_msa=config.use_rna_msa,
+                    asset_paths=asset_paths,
                 )
                 features = compact_msa_storage(features)
                 output_features = (

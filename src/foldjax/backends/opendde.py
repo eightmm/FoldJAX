@@ -36,15 +36,7 @@ from foldjax.scores import ranked_native_samples
 
 # Every environment variable the native CLI assigns. Asserted against its
 # source in tests/test_native_contracts.py so a new export cannot escape.
-_EXPORTED_ENVIRONMENT = (
-    "JAX_PLATFORMS",
-    "PROTENIX_CCD_COMPONENTS_FILE",
-    "PROTENIX_CCD_RDKIT_MOL_FILE",
-    "PROTENIX_KALIGN_BINARY",
-    "PROTENIX_TEMPLATE_MMCIF_DIR",
-    "PROTENIX_TEMPLATE_OBSOLETE_FILE",
-    "PROTENIX_TEMPLATE_RELEASE_DATES_FILE",
-)
+_EXPORTED_ENVIRONMENT = ("JAX_PLATFORMS",)
 _CLI_OPTIONS = {
     "ccd_rdkit_cache",
     "components_cif",
@@ -642,13 +634,12 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
 
 @contextmanager
 def _restored_environment() -> Iterator[None]:
-    """Undo the asset environment variables the native CLI exports.
+    """Undo the environment variables the native CLI exports.
 
-    OpenDDE's CLI hands asset paths to the Protenix featurizer through
-    ``os.environ``, which is process-scoped and therefore harmless for its own
-    entry point. FoldJAX runs that CLI in-process, so without this a job that
-    passes ``components_cif`` would silently leave it applied to every later
-    prediction in the same session, including ones for other backends.
+    Only ``JAX_PLATFORMS`` (``--cpu-only``) is left: the asset paths --
+    ``components_cif`` and the template files -- are handed to the featurizer
+    explicitly now, where they used to be exported as ``PROTENIX_*`` and
+    outlived an in-process run into every later prediction.
     """
     saved = {name: os.environ.get(name) for name in _EXPORTED_ENVIRONMENT}
     try:

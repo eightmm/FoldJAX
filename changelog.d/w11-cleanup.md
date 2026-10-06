@@ -53,6 +53,20 @@
   run, as Protenix and OpenFold3 already did, so a direct caller gets its JAX
   config back and an untrusted directory is never read.
 
+- **OpenDDE no longer exports its asset paths to the environment.**
+  `components_cif`, `ccd_rdkit_cache` and the template files
+  (`template_mmcif_dir`, `template_release_dates`, `template_obsolete_map`,
+  `kalign_binary`) were written to `PROTENIX_*` variables for the whole
+  process; they are now passed to the featurizer for the run
+  (`featurize_protein_json(..., assets=FeaturizerAssets(...))`), and the
+  Protenix runner passes its `--template-mmcif-dir` the same way instead of
+  exporting `PROTENIX_TEMPLATE_MMCIF_DIR`. An explicit path comes before the
+  environment, which stays a fallback for anyone who sets it, and before the
+  managed store; a run naming a different RDKit CCD cache reloads it rather
+  than reading the molecules a previous run loaded. The run manifest records
+  the CCD files the options name, where it used to record the environment's
+  or the managed ones.
+
 ### Changed
 
 - **One job-name rule for every output path.** FoldJAX's layout, the
