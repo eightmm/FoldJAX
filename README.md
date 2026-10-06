@@ -369,6 +369,10 @@ locally too. Each vendored port brought its own suite to
 `tests/models/<name>/`. Clean runtime tests
 hard-block external Torch, Lightning, TorchMetrics and fair-esm imports. Tests
 on real depositions skip without `biotite` (`--extra openfold3-preprocess`).
+Tests that need AlphaFold 3's compiled runtime try to build it once per session
+and skip with the build's error where it cannot be built (missing zlib headers
+is enough); `FOLDJAX_REQUIRE_AF3_RUNTIME=1`, set on CI's core shard, turns that
+skip into a failure.
 
 `tests/parity/` is a CPU replay of stored native captures, deselected by
 default and selected with `--run-cpu-parity`. It needs released weights and
