@@ -477,6 +477,102 @@ def test_a_failed_search_falls_back_under_auto_and_fails_under_required(
         _materialize(source, "protenix", tmp_path / "req", msa="required")
 
 
+def test_one_chains_failed_search_keeps_the_others_and_is_recorded(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from foldjax.search.msa import SearchError
+
+    class _HalfBroken(_StubSearch):
+        def search(self, sequence: str):
+            if sequence == OTHER_SEQUENCE:
+                raise SearchError("server lost this one")
+            return super().search(sequence)
+
+    monkeypatch.setattr(
+        "foldjax.msa_search._msa_pipeline",
+        lambda: _stub_pipeline(tmp_path, _HalfBroken()),
+    )
+    source = _write(
+        tmp_path / "job.json",
+        {
+            "entities": [
+                {"type": "protein", "id": "A", "sequence": SEQUENCE},
+                {"type": "protein", "id": "B", "sequence": OTHER_SEQUENCE},
+            ]
+        },
+    )
+    records: list[dict[str, Any]] = []
+    with pytest.warns(UserWarning, match=r"chain\(s\) B .*server lost this one"):
+        _materialize(
+            source, "protenix", tmp_path / "out", msa="auto", msa_search=records
+        )
+
+    by_chain = {record["chain"]: record for record in records}
+    assert "unpaired_msa" in by_chain["A"]
+    assert by_chain["B"] == {"chain": "B", "error": "server lost this one"}
+    written = json.loads((tmp_path / "out" / "msa_search.json").read_text())
+    assert written == records
+
+
+def test_a_failed_search_is_a_progress_line_for_every_input(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import io
+    import warnings
+
+    from foldjax import progress
+    from foldjax.search.msa import SearchError
+
+    class _Broken(_StubSearch):
+        def search(self, sequence: str):
+            raise SearchError("server is down")
+
+    monkeypatch.setattr(
+        "foldjax.msa_search._msa_pipeline", lambda: _stub_pipeline(tmp_path, _Broken())
+    )
+    source = _write(
+        tmp_path / "job.json",
+        {"entities": [{"type": "protein", "id": "A", "sequence": SEQUENCE}]},
+    )
+    stream = io.StringIO()
+    progress.enable(stream)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            for name in ("first", "second"):
+                _materialize(source, "protenix", tmp_path / name, msa="auto")
+    finally:
+        progress.disable()
+    assert stream.getvalue().count("MSA search failed for chain(s) A") == 2
+
+
+def test_the_manifest_records_msa_search_and_old_manifests_still_resume(
+    tmp_path: Path,
+) -> None:
+    import dataclasses
+
+    from foldjax import manifest
+    from foldjax.schema import PredictionResult, PredictionSample
+    from tests.test_resume_manifest import _file, _request
+
+    request = dataclasses.replace(_request(tmp_path), msa="auto")
+    request.output_dir.mkdir()
+    structure = _file(request.output_dir / "sample.cif", b"data_mock\n#\n")
+    result = PredictionResult(
+        model="boltz2",
+        samples=(PredictionSample(seed=7, structure_path=structure, scores={}),),
+        output_dir=request.output_dir,
+    )
+    record = [{"chain": "A", "error": "server is down"}]
+    document = manifest.describe_run(
+        request, result, directory=request.output_dir, msa_search=record
+    )
+    assert document["msa_search"] == record
+    assert manifest.matches_request(document, request, seed=7)
+    old = {key: value for key, value in document.items() if key != "msa_search"}
+    assert manifest.matches_request(old, request, seed=7)
+
+
 def test_an_explicit_alignment_is_never_replaced_by_a_search(
     tmp_path: Path, monkeypatch
 ) -> None:

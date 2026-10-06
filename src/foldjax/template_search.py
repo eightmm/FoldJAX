@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import os
 import re
-import warnings
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -868,11 +867,12 @@ def _require_kalign() -> None:
 def _warn_failed(model: str, chains: list[str], error: BaseException | str) -> None:
     # `auto` is a convenience: a search that could not run must not destroy a
     # job that folds without templates, but it must not do so quietly either.
-    warnings.warn(
+    # The record carries the reason into the manifest; this says it now.
+    from foldjax.msa_search import report_search_failure
+
+    report_search_failure(
         f"{model}: template search for chain(s) {', '.join(chains)} failed "
-        f"({error}); folding without searched templates",
-        UserWarning,
-        stacklevel=4,
+        f"({error}); folding without searched templates"
     )
 
 

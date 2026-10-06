@@ -35,11 +35,17 @@ def _hits(number: int, sequence: str, database: str) -> str:
 class _ColabFold:
     """Per-query answers, NUL-separated blocks, tickets counted by mode."""
 
-    def __init__(self, fail_pair_for: str | None = None, fail_env: bool = False):
+    def __init__(
+        self,
+        fail_pair_for: str | None = None,
+        fail_env: bool = False,
+        separator: str = "\x00",
+    ):
         self.jobs: dict[str, tuple[str, list[str]]] = {}
         self.tickets: list[tuple[str, int]] = []
         self.fail_pair_for = fail_pair_for
         self.fail_env = fail_env
+        self.separator = separator
 
     def __call__(self, method, url, data, headers, timeout) -> HttpResponse:
         path = urllib.parse.urlsplit(url).path.lstrip("/")
@@ -69,7 +75,7 @@ class _ColabFold:
         with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
             for name in names:
                 text = "".join(
-                    _hits(101 + index, sequence, name.split(".")[0]) + "\x00"
+                    _hits(101 + index, sequence, name.split(".")[0]) + self.separator
                     for index, sequence in enumerate(sequences)
                 )
                 raw = text.encode()
@@ -96,6 +102,21 @@ def test_a_shared_ticket_gives_each_sequence_its_own_bytes() -> None:
         assert many.paired == one.paired
     assert alone.tickets.count(("env", 1)) == 3
     assert together.tickets == [("env", 3)] + [("paircomplete", 1)] * 3
+
+
+def test_a_result_that_does_not_split_falls_back_to_one_ticket_each() -> None:
+    """A server that does not separate its queries is asked one at a time."""
+    server = _ColabFold(separator="")
+    batched = _client(server).search_many(SEQUENCES)
+    single = [_client(_ColabFold(separator="")).search(s) for s in SEQUENCES]
+
+    assert [payload.unpaired for payload in batched] == [p.unpaired for p in single]
+    assert [ticket for ticket in server.tickets if ticket[0] == "env"] == [
+        ("env", 3),
+        ("env", 1),
+        ("env", 1),
+        ("env", 1),
+    ]
 
 
 def test_a_large_batch_is_split_into_bounded_tickets(

@@ -1198,6 +1198,7 @@ def describe_run(
     ignored_constraints: list[dict[str, Any]] | None = None,
     template_search: list[dict[str, Any]] | None = None,
     constraints: list[dict[str, Any]] | None = None,
+    msa_search: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the manifest for one finished prediction.
 
@@ -1219,6 +1220,8 @@ def describe_run(
     ``template_search`` is what ``templates="auto"`` searched, per chain:
     where the hits came from, the date cutoff applied and where it comes from,
     and each template kept; ``None`` when no search was asked for.
+    ``msa_search`` is the same for ``msa="auto"``/``"required"``: per chain,
+    the alignment and its provenance, or the ``error`` a failed search left.
     ``constraints`` lists the common job's pocket and contact constraints
     (``kind``) as the native input carries them, with the ``max_distance``
     each runs at and whether it
@@ -1313,6 +1316,13 @@ def describe_run(
         # Whether the alignments were the caller's or FoldJAX searched for them
         # changes the prediction, so it belongs with the knobs, not in a log.
         "msa": request.msa,
+        # What that search found per chain, or why it failed: under `auto` a
+        # failed search folds from single sequence, which must not be silent.
+        "msa_search": (
+            [dict(record) for record in msa_search]
+            if msa_search is not None
+            else None
+        ),
         # The same for structural templates, and what the search returned.
         "templates": request.templates,
         "template_max_date": request.template_max_date,
@@ -1372,6 +1382,7 @@ def write(
     ignored_constraints: list[dict[str, Any]] | None = None,
     template_search: list[dict[str, Any]] | None = None,
     constraints: list[dict[str, Any]] | None = None,
+    msa_search: list[dict[str, Any]] | None = None,
 ) -> Path | None:
     """Write the manifest, or return None if the directory cannot take it.
 
@@ -1398,6 +1409,7 @@ def write(
                         ignored_constraints=ignored_constraints,
                         template_search=template_search,
                         constraints=constraints,
+                        msa_search=msa_search,
                     ),
                     indent=2,
                     sort_keys=True,

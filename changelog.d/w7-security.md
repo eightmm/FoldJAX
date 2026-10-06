@@ -41,6 +41,16 @@
   taken from those clients, not re-measured). The per-chain paired search stays
   one ticket per sequence, since what it pairs depends on the ticket.
 
+- **A failed MSA search under `--msa auto` is recorded and keeps what
+  succeeded.** One chain's failure dropped every chain's alignment; each chain
+  now keeps its own result, and a failed chain is recorded with its `error` in
+  `msa_search.json` and in a new `msa_search` field of `foldjax_run.json`
+  (`null` when no search was asked for; not part of the resume identity, so
+  existing manifests still resume). In the CLI the failure, and a failed
+  template search, is a progress line for every input instead of a Python
+  warning, which the warning registry printed only for the first identical
+  one in a batch; library callers still get the warning.
+
 ### Security
 
 - **Boltz-2 loads its processed arrays and molecule pickles without arbitrary

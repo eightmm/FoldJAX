@@ -52,6 +52,10 @@ class SearchError(RuntimeError):
     """An MSA provider returned an unusable or incomplete result."""
 
 
+class _UnsplittableTicketError(SearchError):
+    """A shared ticket's result did not separate back into its queries."""
+
+
 #: Set to ``1`` to let a search or download use plain ``http://`` beyond this
 #: machine. Off by default: the query sequence and any credential would cross
 #: the network in clear text. Loopback addresses are always allowed.
@@ -1358,6 +1362,15 @@ class RemoteMMseqs2Client:
             chunk = list(sequences[start : start + MAX_QUERIES_PER_TICKET])
             try:
                 unpaired, unpaired_job = self._run_many(chunk)
+            except _UnsplittableTicketError:
+                # A server whose shared result cannot be split per query is
+                # asked one query at a time instead, as before batching.
+                for sequence in chunk:
+                    try:
+                        outcomes.append(self.search(sequence))
+                    except (SearchError, TimeoutError, OSError) as error:
+                        outcomes.append(error)
+                continue
             except (SearchError, TimeoutError, OSError) as error:
                 outcomes.extend([error] * len(chunk))
                 continue
@@ -1388,16 +1401,19 @@ class RemoteMMseqs2Client:
             endpoint="ticket/msa",
             names=names,
         )
-        members = [
-            _split_colabfold_a3m(text, name) for text, name in zip(texts, names)
-        ]
+        try:
+            members = [
+                _split_colabfold_a3m(text, name) for text, name in zip(texts, names)
+            ]
+        except SearchError as error:
+            raise _UnsplittableTicketError(str(error)) from error
         unpaired = []
         for index in range(len(sequences)):
             number = 101 + index
             parts = []
             for blocks, name in zip(members, names, strict=True):
                 if number not in blocks:
-                    raise SearchError(
+                    raise _UnsplittableTicketError(
                         f"remote MSA {name} has no block for query {number}"
                     )
                 block = blocks[number]

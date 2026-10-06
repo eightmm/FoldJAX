@@ -2660,6 +2660,7 @@ def materialize_native_input(
     template_search: list[dict[str, Any]] | None = None,
     ignored_constraints: list[dict[str, Any]] | None = None,
     constraints: list[dict[str, Any]] | None = None,
+    msa_search: list[dict[str, Any]] | None = None,
 ) -> Path:
     """Translate a FoldJAX JSON document to one backend-native input file.
 
@@ -2668,7 +2669,8 @@ def materialize_native_input(
     ``ignored_templates`` one per template (see ``IGNORE_TEMPLATES``).
     ``templates="auto"`` searches templates for protein chains that name none
     (`foldjax.template_search`); ``template_search``, when given, receives
-    one record per searched chain.
+    one record per searched chain; ``msa_search`` does the same for
+    ``msa="auto"``/``"required"``, a failed chain's record carrying ``error``.
     ``ignored_constraints`` receives pocket and contact restraints dropped
     as upstream drops them (see ``IGNORE_CONSTRAINTS``), and ``constraints``
     one record per pocket and per contact written into the native input, with
@@ -2793,6 +2795,8 @@ def materialize_native_input(
         model=model,
         search_rna=read is None or "rna" in read,
     )
+    if msa_search is not None:
+        msa_search.extend(searched)
     if searched:
         _write_text_atomic(
             output_dir / "msa_search.json", json.dumps(searched, indent=2)
