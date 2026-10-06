@@ -3,7 +3,7 @@ MIT License
 Copyright (c) 2026 boltz2-jax contributors
 
 Portions of this software (the preprocessing and featurization code under
-src/boltz_jax/data/) are adapted from Boltz, Copyright (c) 2024 Jeremy Wohlwend,
+src/foldjax/models/boltz2/data/) are adapted from Boltz, Copyright (c) 2024 Jeremy Wohlwend,
 Gabriele Corso, Saro Passaro, and contributors, used under the MIT License.
 See the NOTICE file for details.
 

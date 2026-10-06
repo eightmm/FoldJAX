@@ -1,9 +1,11 @@
 OpenDDE JAX
-Copyright 2026
+Copyright 2026 FoldJAX contributors
 
-This product includes software developed by Aureka AI Research for OpenDDE
-(https://github.com/aurekaresearch/OpenDDE), licensed under Apache-2.0. The
-implemented source target is OpenDDE v1.1.1, commit
+This product includes software derived from OpenDDE
+(https://github.com/aurekaresearch/OpenDDE), Copyright (c) 2026 Aureka AI
+Research, licensed under the Apache License, Version 2.0. Upstream's LICENSE
+leaves its copyright line unfilled; the holder above is the one its source
+file headers name. The implemented source target is OpenDDE v1.1.1, commit
 ddfa1df8aff1babf1fddac4247b7d2351bd0ce9f.
 
 Model parameters are not included. The managed `released` and `abag` profiles
