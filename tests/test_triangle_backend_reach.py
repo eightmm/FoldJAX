@@ -82,7 +82,18 @@ def test_no_triangle_site_pins_its_own_backend(files, parameter) -> None:
     )
 
 
-def test_protenix_hands_its_confidence_head_a_backend() -> None:
+@pytest.mark.parametrize(
+    ("trunk", "confidence", "expected"),
+    [
+        ("xla", None, "xla"),
+        ("xla_jit", None, "xla_jit"),
+        ("xla", "xla_jit", "xla_jit"),
+    ],
+    ids=["follows-xla", "follows-xla_jit", "override"],
+)
+def test_protenix_hands_its_confidence_head_a_backend(
+    monkeypatch, trunk: str, confidence: str | None, expected: str
+) -> None:
     """Removing the private default was only half the fix.
 
     `test_no_triangle_site_pins_its_own_backend` checks that no site *pins* a
@@ -99,25 +110,48 @@ def test_protenix_hands_its_confidence_head_a_backend() -> None:
     `PROTENIX_TRIANGLE_BACKEND` or a trunk override is set, which is exactly
     when a large job is being rescued.
 
-    Asserted on the call site rather than by running the model, because the
-    shapes that make this matter need a GPU and 2000 tokens to reproduce.
+    The shapes that make it cost memory need a GPU and 2000 tokens; which
+    backend the head is handed does not, so the head is watched on a toy model:
+    with no override it must get the trunk's backend, both values of it, and an
+    override must win.
     """
-    path = MODELS / "protenix/models/model.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "confidence_head"
-    ]
-    assert calls, "confidence_head is no longer called here; update this test"
-    for call in calls:
-        passed = {keyword.arg for keyword in call.keywords}
-        assert "triangle_attention_backend" in passed, (
-            "model.py calls confidence_head without a triangle backend, so the "
-            "head takes the module default while the trunk takes the caller's"
-        )
+    from foldjax.models.protenix.models import model
+    from tests.models.protenix.test_model import _toy_features, _toy_params
+
+    handed: list[str | None] = []
+    original = model.confidence_head
+
+    def head(*args, **kwargs):
+        handed.append(kwargs.get("triangle_attention_backend"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(model, "confidence_head", head)
+    noise = jnp.ones((1, 3, 3), dtype=jnp.float32)
+    model.protenix_infer_static(
+        _toy_features(),
+        _toy_params(),
+        jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+        key=None,
+        num_samples=1,
+        init_noise=noise,
+        step_noises=(jnp.zeros_like(noise),),
+        input_atom_heads=1,
+        atom_encoder_heads=1,
+        token_heads=1,
+        atom_decoder_heads=1,
+        n_queries=2,
+        n_keys=4,
+        sigma_data=4.0,
+        centre_each_step=False,
+        run_confidence_scores=False,
+        # tokamax, the released diffusion default, has no CPU kernel.
+        diffusion_attention_backend="xla_jit",
+        trunk_triangle_attention_backend=trunk,
+        confidence_triangle_attention_backend=confidence,
+    )
+
+    assert handed, "the confidence head did not run"
+    assert set(handed) == {expected}
 
 
 def test_opendde_runs_the_fused_kernels_upstream_ships(monkeypatch) -> None:
