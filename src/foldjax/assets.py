@@ -980,14 +980,27 @@ def _stage_single_published_file(
     return target
 
 
-_AF3_PARAMETER_PATTERNS = (
-    re.compile(r"(?P<model>.*)\.(?P<index>\d+)\.bin\.zst$"),
-    re.compile(r"(?P<model>.*)\.bin\.zst\.(?P<index>\d+)$"),
-    re.compile(r"(?P<model>.*)\.(?P<index>\d+)\.bin$"),
-    # Kept for byte-for-byte compatibility with the unusual spelling accepted
-    # by upstream's own parameter selector.
-    re.compile(r"(?P<model>.*)\.bin\]\.(?P<index>\d+)$"),
+#: AlphaFold 3's parameter filename families, in the order upstream's
+#: ``select_model_files`` tries them (``alphafold3/model/params.py``): the
+#: first family with a match wins, and one naming two models is ambiguous.
+#: The adapter replays that selector to stat exactly the files the lazy loader
+#: will read, and the readiness check below asks the split families for a
+#: complete shard run, so both read this one table. ``index`` is the shard
+#: number in the split families; the last two are whole files.
+AF3_PARAMETER_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"(?P<model>.*)\.(?P<index>[0-9]+)\.bin\.zst$",
+        r"(?P<model>.*)\.bin\.zst\.(?P<index>[0-9]+)$",
+        r"(?P<model>.*)\.(?P<index>[0-9]+)\.bin$",
+        # Kept for byte-for-byte compatibility with the unusual spelling
+        # accepted by upstream's own parameter selector.
+        r"(?P<model>.*)\.bin\]\.(?P<index>[0-9]+)$",
+        r"(?P<model>.*)\.bin\.zst$",
+        r"(?P<model>.*)\.bin$",
+    )
 )
+_AF3_PARAMETER_PATTERNS = AF3_PARAMETER_PATTERNS[:4]
 
 
 def _alphafold3_ready(root: Path) -> bool:

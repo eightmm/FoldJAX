@@ -24,3 +24,14 @@
   120 bytes with a digest; OpenFold3 sanitizes a name with a separator,
   whitespace or a control character instead of failing the finished
   prediction at the writer.
+
+- **Duplicated helpers are one each.** Device identity is
+  `cache.device_identity` (unchanged, so every compile-cache namespace keeps
+  its digest), and the AlphaFold 3 runner and Boltz-2 parameter sessions key
+  on `cache.device_key` built from it instead of their own attribute lists.
+  AlphaFold 3's parameter filename families are one table,
+  `assets.AF3_PARAMETER_PATTERNS`, read by both the readiness check and the
+  adapter's replay of upstream's selector. Boltz-2's feature-cache digest
+  streams referenced files through `_fsutil.update_digest_from_file`, with the
+  key byte-for-byte what it was, and its representation-archive notice is a
+  progress line instead of a `print` to stdout.

@@ -33,6 +33,7 @@ import hashlib
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 #: Read size for streamed hashing. Large enough that hashing a multi-GB
 #: checkpoint is not syscall-bound, small enough never to hold the file.
@@ -50,10 +51,20 @@ def sha256_file(path: Path) -> str:
     identity actually reads.
     """
     digest = hashlib.sha256()
+    update_digest_from_file(digest, path)
+    return digest.hexdigest()
+
+
+def update_digest_from_file(digest: Any, path: Path) -> None:
+    """Feed a file's bytes into a running ``hashlib`` digest, in bounded chunks.
+
+    For a digest that covers more than one file -- a featurization request
+    folds its job text and every file it names into one key -- where hashing
+    each file separately would change the key every existing cache holds.
+    """
     with path.open("rb") as handle:
         while chunk := handle.read(_HASH_CHUNK_BYTES):
             digest.update(chunk)
-    return digest.hexdigest()
 
 
 def ordinary_file_mode() -> int:

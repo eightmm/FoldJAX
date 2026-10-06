@@ -33,7 +33,11 @@ from typing import Any
 import numpy as np
 
 from foldjax import memory_policy, progress
-from foldjax.cache import PERSISTENT_CACHE_MIN_COMPILE_SECS, trusted_compile_cache_dir
+from foldjax.cache import (
+    PERSISTENT_CACHE_MIN_COMPILE_SECS,
+    device_key,
+    trusted_compile_cache_dir,
+)
 from foldjax.execution import auto_diffusion_chunk_size, resolved_matmul_precision
 from foldjax.models import _capture, _representations
 from foldjax.models._feature_storage import compact_msa_storage
@@ -460,19 +464,6 @@ def _static_runtime_identity(value: Any) -> Any:
     return ("dtype", dtype.str, dtype.name)
 
 
-def _device_runtime_identity(device: Any) -> tuple[Any, ...]:
-    return tuple(
-        getattr(device, name, None)
-        for name in (
-            "platform",
-            "process_index",
-            "id",
-            "local_hardware_id",
-            "device_kind",
-        )
-    )
-
-
 def _parameter_runtime_identity(
     jax_module: Any,
     *,
@@ -482,7 +473,7 @@ def _parameter_runtime_identity(
     """Settings that change the loaded dtype or retained mesh placement."""
 
     devices = tuple(
-        _device_runtime_identity(device)
+        device_key(device)
         for device in list(jax_module.devices())[:cp_devices]
     )
     return (
@@ -1775,7 +1766,9 @@ def predict(
             model="boltz2",
         )
         if archive is not None:
-            print(f"wrote {archive}")
+            # A progress line, not stdout: `predict` is a library call, and
+            # the CLI keeps stdout for the result it prints.
+            progress.message(f"  wrote {archive}")
     if write_fmt is not None:
         from foldjax.models.boltz2.data.write.structure import write_prediction
 

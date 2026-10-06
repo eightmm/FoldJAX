@@ -16,7 +16,6 @@ import hashlib
 import importlib.util
 import inspect
 import json
-import re
 import sys
 import time
 from collections.abc import Iterator, Mapping, Sequence
@@ -27,6 +26,7 @@ from typing import Any
 import numpy as np
 
 from foldjax import memory_policy
+from foldjax.assets import AF3_PARAMETER_PATTERNS
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._tokamax_autotune import create_store as _create_tokamax_store
 from foldjax.backends._tokamax_autotune import (
@@ -46,7 +46,11 @@ from foldjax.backends.base import (
     Backend,
     validate_memory_policy_options,
 )
-from foldjax.cache import PERSISTENT_CACHE_MIN_COMPILE_SECS, trusted_compile_cache_dir
+from foldjax.cache import (
+    PERSISTENT_CACHE_MIN_COMPILE_SECS,
+    device_key,
+    trusted_compile_cache_dir,
+)
 from foldjax.execution import DETERMINISTIC_API_OPTION
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
@@ -67,22 +71,11 @@ from foldjax.scores import scalar_scores
 #: NOTICE beside it.
 VENDORED_RUNNER = Path(__file__).with_name("_alphafold3_upstream") / "run_alphafold.py"
 
-# Keep this order byte-for-byte aligned with upstream's ``select_model_files``.
-# The first matching filename family wins, and a family containing more than
-# one model name is ambiguous.  Reproducing that small selector locally lets a
-# live session stat only the files the lazy parameter property will read,
-# without importing AlphaFold 3 or opening its 1.1 GB payload.
-_PARAMETER_PATTERNS = tuple(
-    re.compile(pattern)
-    for pattern in (
-        r"(?P<model_name>.*)\.[0-9]+\.bin\.zst$",
-        r"(?P<model_name>.*)\.bin\.zst\.[0-9]+$",
-        r"(?P<model_name>.*)\.[0-9]+\.bin$",
-        r"(?P<model_name>.*)\.bin\]\.[0-9]+$",
-        r"(?P<model_name>.*)\.bin\.zst$",
-        r"(?P<model_name>.*)\.bin$",
-    )
-)
+# Upstream's ``select_model_files`` order (`assets.AF3_PARAMETER_PATTERNS`).
+# Reproducing that small selector locally lets a live session stat only the
+# files the lazy parameter property will read, without importing AlphaFold 3
+# or opening its 1.1 GB payload.
+_PARAMETER_PATTERNS = AF3_PARAMETER_PATTERNS
 
 
 def _selected_parameter_files(model_dir: Path) -> tuple[Path, ...] | None:
@@ -97,7 +90,7 @@ def _selected_parameter_files(model_dir: Path) -> tuple[Path, ...] | None:
         for path in files:
             match = pattern.fullmatch(path.name)
             if match is not None:
-                models.setdefault(match.group("model_name"), []).append(path)
+                models.setdefault(match.group("model"), []).append(path)
         if not models:
             continue
         if len(models) != 1:
@@ -152,20 +145,6 @@ def _managed_source_key(weights: Path) -> tuple[str, str, str]:
         str(VENDORED_RUNNER.absolute()),
         str(build.source_package().absolute()),
     )
-
-
-def _device_identity(device: Any) -> tuple[str, ...]:
-    """Stable identity of the concrete device pinned into ``ModelRunner``."""
-
-    values = []
-    for name in ("platform", "id", "process_index", "local_hardware_id", "device_kind"):
-        value = getattr(device, name, None)
-        try:
-            value = value() if callable(value) else value
-        except Exception:  # noqa: BLE001 - an opaque device must split the cache
-            value = f"unavailable:{name}"
-        values.append(f"{name}={value!s}")
-    return (f"{type(device).__module__}.{type(device).__qualname__}", *values)
 
 
 def _runner_identity(runner: Any, path: Path) -> tuple[str, ...]:
@@ -1026,7 +1005,7 @@ class AlphaFold3Backend(Backend):
             key = (
                 anchor,
                 _runner_identity(runner, runner_path),
-                _device_identity(device),
+                device_key(device),
                 config_identity,
                 _cache_identity(request.cache_dir),
                 kernel_fallback,
