@@ -98,6 +98,49 @@ def test_protenix_dialect_joins_codes_and_numbers_them_from_one(
     ]
 
 
+def test_protenix_featurizer_builds_the_glycan_and_its_inter_residue_bonds(
+    tmp_path,
+) -> None:
+    """The port's own reader, representative-atom check included.
+
+    Leaving atoms need the full CCD (components.cif); without the asset
+    store, as in a fresh worktree, this skips.
+    """
+    import warnings
+
+    import numpy as np
+
+    from foldjax.models.protenix.data.featurize_json import featurize_protein_json
+
+    (native,) = _native(_job(tmp_path), "protenix")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            features = featurize_protein_json(
+                native, base_dir=tmp_path / "out-protenix", seed=1
+            )
+    except ValueError as error:
+        if "requires components.cif" in str(error):
+            pytest.skip("the Protenix components.cif asset is not available")
+        raise
+    asym = np.asarray(features["asym_id"])
+    residue = np.asarray(features["residue_index"])
+    glycan = asym == asym.max()
+    assert set(residue[glycan].tolist()) == {1, 2, 3}
+    names = np.asarray(features["ref_atom_name_chars"]).reshape(-1, 4, 64)
+    decoded = [
+        "".join(chr(int(c) + 32) for c in row.argmax(-1)).strip() for row in names
+    ]
+    token_of = {}
+    for atom, token in enumerate(np.asarray(features["atom_to_token_idx"])):
+        token_of.setdefault(
+            (int(asym[token]), int(residue[token]), decoded[atom]), token
+        )
+    o4 = token_of[(int(asym.max()), 1, "O4")]
+    c1 = token_of[(int(asym.max()), 2, "C1")]
+    assert np.asarray(features["token_bonds"])[o4, c1] == 1
+
+
 @pytest.mark.parametrize(
     "model", ["alphafold3", "boltz2", "esmfold2", "opendde", "protenix"]
 )

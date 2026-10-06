@@ -308,7 +308,7 @@ build a `constraint_feature` from it, warns, and the run manifest lists the job
 under `ignored_constraints` (an empty list when no job had one, null for every
 other backend). `--option ignore_constraints=false` refuses such a job
 instead, at `plan` as well as `predict`. A common job's pocket or contact
-`constraints` follows the same rule on OpenDDE ([below](#pocket-constraints)). Covalent
+`constraints` follows the same rule on OpenDDE ([pockets](#pocket-constraints), [contacts](#contact-constraints)). Covalent
 links reach OpenDDE through `covalent_bonds` (the common `bonds`), as upstream
 says.
 
