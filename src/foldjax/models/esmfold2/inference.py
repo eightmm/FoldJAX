@@ -23,7 +23,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from foldjax import memory_policy
+from foldjax import memory_policy, progress
 from foldjax.models import _capture
 from foldjax.models._compile_policy import (
     compiler_options as _compiler_options,
@@ -106,6 +106,13 @@ def esmc_directory(weights: str | Path) -> Path:
     return Path(weights) / ESMC_SUBDIRECTORY
 
 
+def _load_esmc(directory: Path, dtype: str | None) -> Mapping[str, jnp.ndarray]:
+    # Timed on its own: 25.4 GB read and narrowed per process is the case for
+    # an on-disk bfloat16 copy, and `cost.breakdown` is where that is decided.
+    with progress.part("language model weight load"):
+        return esmc_checkpoint.load_parameters(directory, dtype=dtype)
+
+
 def load(
     weights: str | Path,
     *,
@@ -157,7 +164,7 @@ def load(
     return LoadedModel(
         parameters=parameters,
         settings=settings,
-        esmc_parameters=esmc_checkpoint.load_parameters(directory, dtype=esmc_dtype),
+        esmc_parameters=_load_esmc(directory, esmc_dtype),
         esmc_settings=replace(
             esmc_checkpoint.load_settings(directory),
             autocast_bfloat16=(
@@ -180,13 +187,14 @@ def language_model_states(
     if model.esmc_parameters is None or model.esmc_settings is None:
         return None
     values = [np.asarray(features[name]) for name in LANGUAGE_MODEL_FEATURES]
-    return esmc_model.lm_hidden_states(
-        *values,
-        model.esmc_parameters,
-        settings=model.esmc_settings,
-        packed_length=packed_length,
-        deterministic=deterministic,
-    )
+    with progress.part("language model"):
+        return esmc_model.lm_hidden_states(
+            *values,
+            model.esmc_parameters,
+            settings=model.esmc_settings,
+            packed_length=packed_length,
+            deterministic=deterministic,
+        )
 
 
 _LANGUAGE_MODEL_EMBEDDING_REQUIRED_PARAMETERS = (
@@ -271,7 +279,7 @@ def load_language_model_stage(
     return LoadedModel(
         parameters=parameters,
         settings=structure_checkpoint.load_settings(weights),
-        esmc_parameters=esmc_checkpoint.load_parameters(directory, dtype=esmc_dtype),
+        esmc_parameters=_load_esmc(directory, esmc_dtype),
         esmc_settings=replace(
             esmc_checkpoint.load_settings(directory),
             autocast_bfloat16=(
