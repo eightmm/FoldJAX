@@ -793,8 +793,10 @@ activations itself and combines with a float32 trunk.
 
 FoldJAX defaults OpenFold3's token/pair representation track to `bfloat16`.
 `--option dtype=float32` selects the publisher's own inference precision
-(`openfold3/entry_points/validator.py:127`). `confidence_dtype` follows
-`dtype` unless it is spelled, so one word moves both regions.
+(`openfold3/entry_points/validator.py:127`). `confidence_dtype` does not
+follow it: the confidence head's Pairformer is float32 under either `dtype`,
+as upstream's is, unless `--option confidence_dtype=bfloat16` narrows it
+(next section but one).
 
 The default rests on a 28-row panel over three targets — one input, one
 checkpoint, 10 recycles, 200 diffusion steps, five samples per seed, four
@@ -810,6 +812,10 @@ The bfloat16 column is the arm that panel measured. The profile shipped since
 2026-09-14 is lower again, because the layer-norm affine is no longer narrowed
 and the guard that change forces stops widening two norms inside the denoiser:
 **243.7 s / 13,742.5 MiB at 2,096 and 617.0 s / 24,676.7 MiB at 3,012.**
+Every one of those rows ran the confidence head bfloat16. The shipped profile
+now runs it float32 (below); narrowing that head alone measured at +0.4% wall
+and -0.1% peak at 1,003 tokens, so the rows should hold, but they have not
+been re-measured with the float32 head.
 
 The accuracy column is per chain against the deposited coordinates under a
 permutation-aware chain assignment — 6ZTX is a homotetramer, and scoring it
@@ -839,7 +845,8 @@ classifies it:
 `trunk.pairformer_stack`, `trunk.layer_norm_z`/`linear_z`,
 `trunk.layer_norm_s`/`linear_s`, `trunk.template_embedder`; the diffusion
 conditioning's *pair* branch (`layer_norm_z`, `linear_z`, `transition_z`);
-and `pairformer_embedding.pairformer_stack`.
+and, only under `confidence_dtype=bfloat16`,
+`pairformer_embedding.pairformer_stack`.
 
 **float32** — `trunk.input_embedder` (the island that collapsed the prediction
 when it was narrowed, and upstream pins it too at
@@ -868,26 +875,31 @@ which all four released training configs do: the input embedder's atom
 encoder (`feature_embedders/input_embedders.py:129-131`), which this port
 keeps wide too, and the confidence head's Pairformer stack
 (`heads/prediction_heads.py:224`, whose `pairformer_dtype` defaults to
-`torch.float32`), which the shipped default narrows here unless
-`confidence_dtype=float32` says otherwise.
+`torch.float32`), which this port keeps wide too unless
+`confidence_dtype=bfloat16` says otherwise.
 
 `models/openfold3/dtype.py` carries the full reading with line numbers.
 
 ### Separating OpenFold3's confidence head (`--option confidence_dtype=...`)
 
-The confidence head has its own knob, and it is **not** a second default:
-`confidence_dtype` follows `dtype` when unset, so the BF16 default already
-narrows the head, and narrowing the head alone
-measures as nothing (+0.4% wall / -0.1% peak at 1,003 tokens, -1.1% / -0.0%
-at 2,096). Under a narrowed trunk it is fully subsumed: `dtype=bfloat16` and
-`dtype=bfloat16 confidence_dtype=bfloat16` reported byte-identical peaks
-(5,553 MiB at 1,003 tokens, 19,107 MiB at 2,096) and walls within 0.3%. What
-the knob buys is separating the two regions after the fact --
+The confidence head has its own knob, and it does **not** follow `dtype`:
+unset, the head's Pairformer is float32 under either trunk, because upstream
+pins that stack to float32 in every regime. Until 2026-10-06 it followed
+`dtype`, so the bfloat16 default narrowed the head too; that changes every
+confidence score of a default run, and with them the ranking, but no
+coordinate. Narrowing the head alone measured as nothing (+0.4% wall / -0.1%
+peak at 1,003 tokens, -1.1% / -0.0% at 2,096), and under a narrowed trunk
+`dtype=bfloat16` with and without `confidence_dtype=bfloat16` reported
+byte-identical peaks (5,553 MiB at 1,003 tokens, 19,107 MiB at 2,096) and
+walls within 0.3%, so the float32 head is expected to cost little; it has not
+been re-measured on a card. What the knob buys is separating the two regions --
 
-* `--option confidence_dtype=float32` keeps the head wide against the
-  narrowed trunk, which is upstream's shape for that region;
-* `--option dtype=float32 --option confidence_dtype=bfloat16` does the
-  reverse.
+* `--option confidence_dtype=bfloat16` narrows the head, alone or with the
+  default bfloat16 trunk (the profile shipped before 2026-10-06);
+* `--option dtype=float32` alone is upstream's precision for both regions.
+
+A float32 head behind the bfloat16 trunk widens the trunk's single and pair
+representations at its entry, so its Pairformer runs entirely float32.
 
 The region is separable because it consumes predicted coordinates and emits
 scores, never coordinates, so narrowing it cannot move a structure -- which
@@ -896,8 +908,7 @@ this knob. Upstream
 pins it wide with a dedicated `pairformer_dtype` defaulting to
 `torch.float32` (`openfold3/core/model/heads/prediction_heads.py:192`, used at
 `:224`, restoring the incoming dtype at `:241`) on top of running 32-true
-overall, so `confidence_dtype=float32` is the closest single option to
-upstream's arrangement of this head. Boltz-2's `diffusion_compute_dtype` is
+overall, which is why `float32` is this knob's default. Boltz-2's `diffusion_compute_dtype` is
 the same idea of a region-scoped knob.
 
 The nearest direct evidence for narrowing this region is a sibling's:
@@ -1191,6 +1202,16 @@ shipped before. It stays reachable because the parity harnesses compare
 against upstream's rounding and need it; they all pin it explicitly, so none
 of them moved. The two values are separate compilation-cache namespaces, and
 spelling `high` explicitly selects the same namespace as omitting it.
+
+**Off a GPU the default is `highest`.** `high` is TF32, which only a GPU has:
+on a CPU the cuEquivariance reference path hands `TF32_TF32_F32` to
+`dot_general`, which refuses it, so every CPU affinity stage failed at the
+default. An omitted option therefore resolves to `highest` off a GPU -- the
+policy the CPU parity replays already pin -- and the cache namespace records
+it, so such a run shares the explicit `highest` entry. An explicit
+`--option matmul_precision=high` off a GPU is refused while planning rather
+than rewritten. The native `api.predict` keeps its `high` pin; a direct caller
+off a GPU opens `jax.default_matmul_precision("highest")` itself.
 
 #### The second precision surface, which this default does not reach
 
@@ -1678,6 +1699,15 @@ be partitioned either, so under context parallelism the default resolves to
 `xla` and the run proceeds; naming `--option glu_backend=tokamax` together
 with `--option cp_devices=N` for N greater than 1 is refused rather than
 silently downgraded.
+
+Off a GPU there is no Triton at all, so an omitted option resolves to `xla`
+there as well, and a CPU run needs no GLU option; an explicit
+`--option glu_backend=tokamax` off a GPU is still refused. What an omitted
+option runs, in full: `pallas` on a serial GPU process (the Pallas pair-kernel
+default), `xla` under a mesh and `xla` off a GPU. The cache namespace records
+the value that ran, so an omitted option and its realised spelling share one
+entry. The native `foldjax.models.boltz2.api.predict` keeps `tokamax` as its
+own default; a direct caller off a GPU passes `glu_backend="xla"`.
 
 ### Fused gated linear unit (`--glu-backend tokamax`, Protenix)
 

@@ -184,11 +184,11 @@ The CUDA 13 install defaults both triangle kernels to Torch-compatible cuEq;
 | `--compile-cache` | dir (default on) | eligible readable XLA executables may be reused across processes; missing or rejected entries recompile |
 | `--feature-cache` | dir (default on) | memoize features by input digest and seed (the seed draws the `ref_pos` conformer augmentation); cache hit is bit-identical and skips featurization |
 | `--prewarm-only` | flag | execute one input/profile to populate the persistent cache, then skip prediction-file writing |
-| `matmul_precision` | `highest` (default) / `default` | `default` = TF32 (GPU). Unlike the other three ports, `highest` here **matches** upstream: `main.py:1096` is `set_float32_matmul_precision("highest")`, not the `"high"`/`enable_tf32` that OpenFold3, Protenix and OpenDDE select. Asking for TF32 is a divergence from Boltz-2, not a convergence on it |
+| `matmul_precision` | `high` (default on a GPU) / `highest` | `high` = TF32, the shipped default since 2026-09-11. `highest` **matches** upstream: `main.py:1096` is `set_float32_matmul_precision("highest")`, not the `"high"`/`enable_tf32` that OpenFold3, Protenix and OpenDDE select, so TF32 is a measured divergence from Boltz-2 (`docs/cli.md`, Boltz-2's matmul precision). Off a GPU, where there is no TF32, `foldjax predict` resolves an omitted value to `highest` and refuses an explicit `high` |
 | `attention_backend` | `xla` / `tokamax` | fused tokamax attention |
 | `triangle_backend` | `xla` / `tokamax` / `pallas` / `cueq` | triangle-attention kernel |
 | `--triangle-multiplication-backend` | `xla` / `cueq` | triangle-multiplication kernel |
-| `glu_backend` | `tokamax` (default) / `xla` | transition & triangle-mult GLU; the fused kernel is the released default, and resolves to `xla` under context parallelism |
+| `glu_backend` | `tokamax` (released) / `xla` / `pallas` | transition & triangle-mult GLU. Through `foldjax predict` an omitted value runs `pallas` on a serial GPU process and `xla` under context parallelism or off a GPU, where the Triton kernels cannot run; an explicit `tokamax` off a GPU is refused. The native `api.predict` default stays `tokamax` |
 
 ### Compilation-cache prewarming
 
