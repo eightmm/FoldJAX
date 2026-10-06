@@ -21,6 +21,8 @@ from foldjax.models.boltz2.data.module.inferencev2 import PredictionDataset
 from foldjax.models.boltz2.data.preprocess import check_inputs, process_inputs
 from foldjax.models.boltz2.data.types import Manifest, StructureV2
 
+_FEATURE_CACHE_SCHEMA = "structures-without-pickle"
+
 
 def _cache_opts(
     use_msa_server: bool,
@@ -43,8 +45,12 @@ def _cache_opts(
 
     `seed` draws the reference-conformer augmentation in `ref_pos`, so one
     seed's entry would answer another seed's run with the wrong input.
+
+    The schema token retires entries whose cached structures stored the
+    absent `pocket` as a pickled `None`, which the pickle-free loader refuses.
     """
     return (
+        _FEATURE_CACHE_SCHEMA,
         use_msa_server,
         msa_server_url,
         msa_pairing_strategy,

@@ -14,7 +14,10 @@ an explicitly offline path with no network and no ``import boltz``.
 
 from __future__ import annotations
 
+import os
 import pickle
+import shutil
+import tempfile
 from functools import partial
 from pathlib import Path
 
@@ -22,7 +25,7 @@ from rdkit import Chem
 from tqdm import tqdm
 
 from foldjax.models.boltz2.data import const
-from foldjax.models.boltz2.data.mol import load_canonicals
+from foldjax.models.boltz2.data.mol import load_canonicals, load_mol_pickle
 from foldjax.models.boltz2.data.parse.fasta import parse_fasta
 from foldjax.models.boltz2.data.parse.yaml import parse_yaml
 from foldjax.models.boltz2.data.types import Manifest, Record
@@ -253,24 +256,74 @@ def process_inputs(
     Returns the loaded :class:`Manifest`.
     """
     msa_dir = out_dir / "msa"
-    records_dir = out_dir / "processed" / "records"
-    structure_dir = out_dir / "processed" / "structures"
-    processed_msa_dir = out_dir / "processed" / "msa"
-    processed_constraints_dir = out_dir / "processed" / "constraints"
-    processed_templates_dir = out_dir / "processed" / "templates"
-    processed_mols_dir = out_dir / "processed" / "mols"
     predictions_dir = out_dir / "predictions"
+    for d in (out_dir, msa_dir, predictions_dir):
+        d.mkdir(parents=True, exist_ok=True)
+    # Every run builds its own tree and only then takes the ``processed/``
+    # name. The tree is named after the record id, which every common job
+    # shares (``boltz2_input``), so reusing an existing file answered a second
+    # job -- or an edited alignment -- with the first one's MSA, and a stale
+    # record from another job joined the manifest. Building under a fresh
+    # private directory also means no write follows a planted symlink.
+    staging = Path(tempfile.mkdtemp(prefix=".processed-", dir=out_dir))
+    try:
+        manifest = _process_into(
+            data,
+            staging,
+            msa_dir=msa_dir,
+            mol_dir=mol_dir,
+            ccd_path=ccd_path,
+            boltz2=boltz2,
+            use_msa_server=use_msa_server,
+            msa_server_url=msa_server_url,
+            msa_pairing_strategy=msa_pairing_strategy,
+            msa_server_username=msa_server_username,
+            msa_server_password=msa_server_password,
+            api_key_header=api_key_header,
+            api_key_value=api_key_value,
+        )
+        processed = out_dir / "processed"
+        if processed.is_symlink() or processed.is_file():
+            processed.unlink()
+        elif processed.exists():
+            shutil.rmtree(processed)
+        os.replace(staging, processed)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return manifest
+
+
+def _process_into(
+    data: list[Path],
+    processed: Path,
+    *,
+    msa_dir: Path,
+    mol_dir: Path,
+    ccd_path: Path,
+    boltz2: bool,
+    use_msa_server: bool,
+    msa_server_url: str,
+    msa_pairing_strategy: str,
+    msa_server_username: str | None,
+    msa_server_password: str | None,
+    api_key_header: str | None,
+    api_key_value: str | None,
+) -> Manifest:
+    records_dir = processed / "records"
+    structure_dir = processed / "structures"
+    processed_msa_dir = processed / "msa"
+    processed_constraints_dir = processed / "constraints"
+    processed_templates_dir = processed / "templates"
+    processed_mols_dir = processed / "mols"
 
     for d in (
-        out_dir,
-        msa_dir,
         records_dir,
         structure_dir,
         processed_msa_dir,
         processed_constraints_dir,
         processed_templates_dir,
         processed_mols_dir,
-        predictions_dir,
     ):
         d.mkdir(parents=True, exist_ok=True)
 
@@ -279,7 +332,7 @@ def process_inputs(
         ccd = load_canonicals(mol_dir)
     else:
         with ccd_path.open("rb") as file:
-            ccd = pickle.load(file)  # noqa: S301
+            ccd = load_mol_pickle(file)
 
     process_input_partial = partial(
         process_input,
@@ -307,5 +360,5 @@ def process_inputs(
 
     records = [Record.load(p) for p in records_dir.glob("*.json")]
     manifest = Manifest(records)
-    manifest.dump(out_dir / "processed" / "manifest.json")
+    manifest.dump(processed / "manifest.json")
     return manifest

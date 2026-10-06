@@ -29,7 +29,10 @@ class NumpySerializable:
             The loaded object.
 
         """
-        return cls(**np.load(path, allow_pickle=True))
+        # Every field is a numeric or structured array; an object array would
+        # be a pickle, which a processed file has no reason to carry.
+        with np.load(path, allow_pickle=False) as data:
+            return cls(**{name: data[name] for name in data.files})
 
     def dump(self, path: Path) -> None:
         """Dump the object to an NPZ file.
@@ -40,7 +43,12 @@ class NumpySerializable:
             The path to the file.
 
         """
-        np.savez_compressed(str(path), **asdict(self))
+        # An absent optional field (``StructureV2.pocket``) is left out rather
+        # than stored as a pickled ``None``; loading restores its default.
+        fields = {
+            name: value for name, value in asdict(self).items() if value is not None
+        }
+        np.savez_compressed(str(path), **fields)
 
 
 class JSONSerializable(DataClassDictMixin):
