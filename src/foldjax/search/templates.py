@@ -88,7 +88,21 @@ def parse_m8(text: str) -> list[TemplateHit]:
     A row whose target is not ``<pdb id>_<chain>`` cannot name a structure
     and is refused rather than skipped: it means the file is not PDB70 hits.
     """
-    hits: list[tuple[float, int, TemplateHit]] = []
+    rows = _m8_rows(text, pdb_ids=True)
+    return [TemplateHit(rank=rank, **row) for rank, row in enumerate(rows)]
+
+
+def parse_m8_rows(text: str) -> list[dict[str, Any]]:
+    """`parse_m8` for targets named ``<key>_<chain>`` by FoldJAX itself.
+
+    A private template folder's hits name a file key rather than a PDB id,
+    so the id is not held to four characters. Ordered as `parse_m8` orders.
+    """
+    return _m8_rows(text, pdb_ids=False)
+
+
+def _m8_rows(text: str, *, pdb_ids: bool) -> list[dict[str, Any]]:
+    hits: list[tuple[float, int, dict[str, Any]]] = []
     for line_number, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
             continue
@@ -102,37 +116,36 @@ def parse_m8(text: str) -> list[TemplateHit]:
             )
         target = columns[1].strip()
         pdb_id, separator, chain_id = target.partition("_")
-        if not separator or len(pdb_id) != 4 or not pdb_id.isalnum() or not chain_id:
+        valid = bool(separator) and pdb_id.isalnum() and bool(chain_id)
+        if pdb_ids:
+            valid = valid and len(pdb_id) == 4
+        if not valid:
             raise ValueError(
                 f"template hit {target!r} on line {line_number} is not "
-                "'<pdb id>_<chain>'"
+                f"'<{'pdb id' if pdb_ids else 'key'}>_<chain>'"
             )
         try:
-            hit = TemplateHit(
-                rank=0,
-                query=columns[0].strip(),
-                target=target,
-                pdb_id=pdb_id.lower(),
-                chain_id=chain_id,
-                identity=float(columns[2]),
-                alignment_length=int(columns[3]),
-                query_start=int(columns[6]),
-                query_end=int(columns[7]),
-                target_start=int(columns[8]),
-                target_end=int(columns[9]),
-                e_value=float(columns[10]),
-                bit_score=float(columns[11]),
-            )
+            hit = {
+                "query": columns[0].strip(),
+                "target": target,
+                "pdb_id": pdb_id.lower(),
+                "chain_id": chain_id,
+                "identity": float(columns[2]),
+                "alignment_length": int(columns[3]),
+                "query_start": int(columns[6]),
+                "query_end": int(columns[7]),
+                "target_start": int(columns[8]),
+                "target_end": int(columns[9]),
+                "e_value": float(columns[10]),
+                "bit_score": float(columns[11]),
+            }
         except ValueError as error:
             raise ValueError(
                 f"template hits line {line_number} has a non-numeric field: {error}"
             ) from error
-        hits.append((hit.e_value, len(hits), hit))
+        hits.append((hit["e_value"], len(hits), hit))
     hits.sort(key=lambda item: (item[0], item[1]))
-    return [
-        TemplateHit(**{**hit.__dict__, "rank": rank})
-        for rank, (_, _, hit) in enumerate(hits)
-    ]
+    return [hit for _, _, hit in hits]
 
 
 @dataclass(frozen=True)

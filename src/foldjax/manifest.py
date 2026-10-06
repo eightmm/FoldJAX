@@ -534,11 +534,14 @@ def _cached_alignment_paths(request: PredictionRequest) -> list[Path] | None:
     try:
         from foldjax.input import read_job_document
         from foldjax.msa_search import (
-            _COMPLEX_PAIRING,
             _msa_pipeline,
             _rna_msa_pipeline,
+            resolve_pairing,
         )
         from foldjax.search.msa import _normalize_sequence
+
+        pairing = resolve_pairing(str(request.model), request.msa_pairing)
+        complex_pairing = pairing["resolved"] in ("greedy", "complete")
 
         document = read_job_document(request.input)
         entities = [
@@ -560,9 +563,13 @@ def _cached_alignment_paths(request: PredictionRequest) -> list[Path] | None:
         )
         if bare_rna and _rna_msa_pipeline() is not None:
             return None
-        if request.model in _COMPLEX_PAIRING and len(set(proteins)) > 1:
+        if complex_pairing and len(set(proteins)) > 1:
             return None
         pipeline = _msa_pipeline() if bare else None
+        # Only an asked-for "none" narrows the search; ESMFold2 resolves
+        # "model" to "none" yet keeps the search it always had.
+        if pipeline is not None and request.msa_pairing == "none":
+            pipeline = pipeline.without_per_chain_pairing()
     except (OSError, ValueError, KeyError, TypeError):
         return None
     paths: list[Path] = []
@@ -1340,6 +1347,28 @@ def request_mismatch(
             _exact_value(document.get("template_max_date"), request.template_max_date),
             "the template date cutoff differs",
         ),
+        # The three below are absent from manifests written before W10, which
+        # all ran at their defaults.
+        (
+            _exact_value(
+                (document.get("msa_pairing") or {}).get("requested", "model"),
+                request.msa_pairing,
+            ),
+            "the msa pairing differs",
+        ),
+        (
+            _exact_value(
+                document.get("template_dir"),
+                _template_dir_record(request, _folder_digest),
+            ),
+            "the template folder differs or changed",
+        ),
+        (
+            _exact_value(
+                (document.get("preset") or {}).get("name"), request.preset
+            ),
+            "the preset differs",
+        ),
         (
             _exact_value(document["sampling"], request.sampling),
             "the sampling settings differ",
@@ -1366,6 +1395,32 @@ def request_mismatch(
     return None
 
 
+def _pairing_record(request: PredictionRequest) -> dict[str, Any] | None:
+    """``msa_pairing`` as asked and as resolved; None when nothing searched."""
+    if request.msa not in ("auto", "required") or request.input_format != "foldjax":
+        return None
+    from foldjax.msa_search import resolve_pairing
+
+    return resolve_pairing(str(request.model), request.msa_pairing)
+
+
+def _folder_digest(directory: Path) -> dict[str, Any]:
+    from foldjax.template_search import folder_digest
+
+    return folder_digest(directory)
+
+
+def _template_dir_record(
+    request: PredictionRequest, digest: Any
+) -> dict[str, Any] | None:
+    if request.template_dir is None:
+        return None
+    try:
+        return digest(request.template_dir)
+    except OSError as error:
+        return {"path": str(request.template_dir), "error": str(error)}
+
+
 def describe_run(
     request: PredictionRequest,
     result: PredictionResult,
@@ -1379,6 +1434,7 @@ def describe_run(
     template_search: list[dict[str, Any]] | None = None,
     constraints: list[dict[str, Any]] | None = None,
     msa_search: list[dict[str, Any]] | None = None,
+    msa_stats: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the manifest for one finished prediction.
 
@@ -1406,10 +1462,15 @@ def describe_run(
     (``kind``) as the native input carries them, with the ``max_distance``
     each runs at and whether it
     came from the job or the upstream default; ``None`` for native input.
+    ``msa_stats`` holds each chain's alignment depth and Neff
+    (`foldjax.msa_stats`); ``None`` for native input.
     """
     from foldjax import __version__, confidence_arrays
     from foldjax.cache import runtime_profile, weight_identity
+    from foldjax.msa_stats import NEFF_DEFINITION
     from foldjax.output import best_sample
+    from foldjax.presets import preset_record
+    from foldjax.template_search import folder_digest
 
     weights = request.weights
     label = identity = None
@@ -1504,6 +1565,18 @@ def describe_run(
             if msa_search is not None
             else None
         ),
+        # How a searched alignment paired the complex: what was asked, and
+        # what it meant for this model (`foldjax.msa_search.resolve_pairing`).
+        "msa_pairing": _pairing_record(request),
+        # Each chain's alignment as the model reads it: rows and Neff.
+        "msa_stats": (
+            {
+                "definition": NEFF_DEFINITION,
+                "chains": [dict(record) for record in msa_stats],
+            }
+            if msa_stats is not None
+            else None
+        ),
         # The same for structural templates, and what the search returned.
         "templates": request.templates,
         "template_max_date": request.template_max_date,
@@ -1512,6 +1585,10 @@ def describe_run(
             if template_search is not None
             else None
         ),
+        # A private template folder, by content: which structures it held.
+        "template_dir": _template_dir_record(request, folder_digest),
+        # The named preset the sampling below came from, and its source.
+        "preset": preset_record(request),
         "sampling": request.sampling,
         "options": options,
         # When redaction or non-JSON values erased information, the public
@@ -1567,6 +1644,7 @@ def write(
     template_search: list[dict[str, Any]] | None = None,
     constraints: list[dict[str, Any]] | None = None,
     msa_search: list[dict[str, Any]] | None = None,
+    msa_stats: list[dict[str, Any]] | None = None,
 ) -> Path | None:
     """Write the manifest; return None if its provenance cannot be described.
 
@@ -1592,6 +1670,7 @@ def write(
                     template_search=template_search,
                     constraints=constraints,
                     msa_search=msa_search,
+                    msa_stats=msa_stats,
                 ),
                 indent=2,
                 sort_keys=True,

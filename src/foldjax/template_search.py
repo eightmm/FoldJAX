@@ -198,11 +198,15 @@ def refuse_template_search(
     options: Mapping[str, Any] | None,
     *,
     input_format: str = "foldjax",
+    template_dir: Path | None = None,
 ) -> None:
     """Refuse a template search where its result would be discarded.
 
     The search fills in FoldJAX-format jobs while they are translated; a
     native document is passed through untouched, so it would do nothing.
+    A private ``template_dir`` is searched on this machine only, so it is
+    refused here -- where `foldjax plan` sees it -- when neither aligner it
+    can use is installed (`folder_aligner`).
     """
     if templates == "none":
         return
@@ -231,6 +235,13 @@ def refuse_template_search(
             "--option use_template=true to search and read them, or run with "
             "--templates none"
         )
+    if template_dir is not None:
+        if not _folder_files(Path(template_dir)):
+            raise ValueError(
+                f"template folder {template_dir} holds no "
+                f"{', '.join(_FOLDER_SUFFIXES)} file"
+            )
+        folder_aligner(POLICIES[model])
 
 
 def _local_command(name: str) -> list[str] | None:
@@ -328,6 +339,290 @@ def template_search_backend() -> dict[str, Any]:
     }
     # Printed by `foldjax doctor`: a command's argv or a URL can carry a secret.
     return redact(report)
+
+
+# --------------------------------------------------------------------------
+# Private template folders (``templates_dir`` / ``--templates DIR``)
+
+#: The suffixes a private folder's structures may have.
+_FOLDER_SUFFIXES = (".cif", ".mmcif", ".cif.gz")
+#: Kalign fallback: the least identity over the aligned columns, and the
+#: fewest aligned residues, a folder chain needs to count as a hit. FoldJAX's
+#: choice (no upstream searches a private folder); 25% is the conventional
+#: edge of the twilight zone, below which a pairwise alignment no longer
+#: implies homology. The mmseqs path keeps mmseqs's own e-value (1e-3).
+_KALIGN_MIN_IDENTITY = 0.25
+_KALIGN_MIN_ALIGNED = 10
+
+
+def folder_aligner(policy: TemplatePolicy) -> str:
+    """``mmseqs`` or ``kalign``: what searches a private folder here.
+
+    mmseqs (on ``PATH``) finds the hits when installed, Kalign otherwise; a
+    mapped policy also needs Kalign to realign each hit, as for any searched
+    template. Raises ``ValueError`` -- the refusal `foldjax plan` shows --
+    when what the policy needs is missing.
+    """
+    import importlib.util
+    import shutil
+
+    has_kalign = importlib.util.find_spec("kalign") is not None
+    has_mmseqs = shutil.which("mmseqs") is not None
+    if policy.mapped and not has_kalign:
+        raise ValueError(
+            "searching a private template folder realigns each hit with "
+            "Kalign, which is not installed; install kalign-python (the "
+            "templates extra)"
+        )
+    if has_mmseqs:
+        return "mmseqs"
+    if has_kalign:
+        return "kalign"
+    raise ValueError(
+        "searching a private template folder needs a local aligner: mmseqs on "
+        "PATH, or kalign-python (the templates extra); neither is installed, "
+        "and a private folder is never sent anywhere to be searched"
+    )
+
+
+def folder_digest(directory: Path) -> dict[str, Any]:
+    """The folder's structures by name and SHA-256, for the run manifest."""
+    import hashlib
+
+    files = {}
+    for path in _folder_files(Path(directory)):
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+        files[str(path.relative_to(directory))] = digest.hexdigest()
+    combined = hashlib.sha256(
+        "\n".join(f"{name}\t{sha}" for name, sha in sorted(files.items())).encode()
+    ).hexdigest()
+    return {
+        "path": str(Path(directory).resolve()),
+        "files": len(files),
+        "sha256": combined,
+    }
+
+
+def _folder_files(directory: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in directory.rglob("*")
+        if path.is_file()
+        and not path.name.startswith(".")
+        and path.name.lower().endswith(_FOLDER_SUFFIXES)
+    )
+
+
+class FolderTemplateSource:
+    """A private folder of mmCIF files, as the structure store of a search.
+
+    Each file gets a key built from its name (letters and digits only, made
+    unique), which stands where a PDB id stands for a searched hit: the hit
+    target is ``<key>_<author chain>`` and `path` maps the key back. A
+    ``.cif.gz`` is unpacked once into ``scratch``, because the readers
+    downstream take a plain file.
+    """
+
+    def __init__(self, directory: Path, scratch: Path) -> None:
+        self.directory = Path(directory)
+        self.scratch = Path(scratch)
+        self._paths: dict[str, Path] = {}
+        for path in _folder_files(self.directory):
+            stem = path.name
+            for suffix in _FOLDER_SUFFIXES:
+                if stem.lower().endswith(suffix):
+                    stem = stem[: -len(suffix)]
+                    break
+            base = _ENTRY_ID.sub("", stem).lower() or "template"
+            key, index = base, 1
+            while key in self._paths:
+                index += 1
+                key = f"{base}{index}"
+            self._paths[key] = path
+        if not self._paths:
+            raise ValueError(
+                f"template folder {self.directory} holds no "
+                f"{', '.join(_FOLDER_SUFFIXES)} file"
+            )
+
+    def keys(self) -> list[str]:
+        return list(self._paths)
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "local_dir": str(self.directory),
+            "url": None,
+            "cache_dir": None,
+            "kind": "private folder",
+        }
+
+    def path(self, key: str) -> Path:
+        source = self._paths.get(key)
+        if source is None:
+            from foldjax.search.msa import SearchError
+
+            raise SearchError(f"template folder has no structure {key!r}")
+        if not source.name.lower().endswith(".gz"):
+            return source.resolve()
+        import gzip
+
+        target = self.scratch / f"{key}.cif"
+        if not target.is_file():
+            self.scratch.mkdir(parents=True, exist_ok=True)
+            from foldjax.input import _write_text_atomic
+
+            _write_text_atomic(
+                target, gzip.decompress(source.read_bytes()).decode("utf-8")
+            )
+        return target.resolve()
+
+
+class _FolderHits:
+    """`search` like a hits pipeline, answered from a private folder."""
+
+    def __init__(self, source: FolderTemplateSource, aligner: str, scratch: Path):
+        self.source = source
+        self.aligner = aligner
+        self.scratch = scratch
+
+    def search(self, sequence: str) -> dict[str, Any]:
+        query = "".join(sequence.split()).upper()
+        return {
+            "hits": folder_hits(query, self.source, self.aligner, self.scratch),
+            "hitsPath": None,
+            "provenancePath": None,
+        }
+
+
+def _folder_chains(source: FolderTemplateSource) -> list[tuple[str, str, str]]:
+    """``(key, author chain, sequence)`` for every protein chain of the folder."""
+    chains = []
+    for key in source.keys():
+        try:
+            structure = read_template_structure(source.path(key))
+        except (OSError, ValueError):
+            continue
+        for chain in structure.chains.values():
+            if chain.sequence:
+                chains.append((key, chain.author_id, chain.sequence))
+    return chains
+
+
+def folder_hits(
+    query: str, source: FolderTemplateSource, aligner: str, scratch: Path
+) -> list[Any]:
+    """Hits for ``query`` among the folder's protein chains, best first."""
+    from foldjax.search.templates import TemplateHit
+
+    chains = _folder_chains(source)
+    if aligner == "mmseqs":
+        rows = _mmseqs_hits(query, chains, scratch)
+    else:
+        rows = _kalign_hits(query, chains)
+    return [
+        TemplateHit(rank=rank, **row) for rank, row in enumerate(rows)
+    ]
+
+
+def _mmseqs_hits(
+    query: str, chains: list[tuple[str, str, str]], scratch: Path
+) -> list[dict[str, Any]]:
+    """``mmseqs easy-search`` of the query against the folder's chains.
+
+    The default BLAST-tabular columns, ordered by e-value as `parse_m8` orders
+    a server's hits. Targets are named ``<key>_<author chain>``; keys hold no
+    underscore, so the first one splits them.
+    """
+    import subprocess
+    import tempfile
+
+    from foldjax.search.msa import SearchError
+    from foldjax.search.templates import parse_m8_rows
+
+    scratch.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=scratch, prefix="mmseqs-") as raw:
+        work = Path(raw)
+        (work / "query.fasta").write_text(f">query\n{query}\n", encoding="utf-8")
+        (work / "targets.fasta").write_text(
+            "".join(f">{key}_{chain}\n{sequence}\n" for key, chain, sequence in chains),
+            encoding="utf-8",
+        )
+        command = [
+            "mmseqs",
+            "easy-search",
+            str(work / "query.fasta"),
+            str(work / "targets.fasta"),
+            str(work / "hits.m8"),
+            str(work / "tmp"),
+            "-v",
+            "1",
+        ]
+        try:
+            completed = subprocess.run(
+                command, check=False, capture_output=True, text=True
+            )
+        except OSError as error:
+            raise SearchError(f"failed to start mmseqs: {error}") from error
+        if completed.returncode:
+            detail = (completed.stderr or completed.stdout or "").strip()[-500:]
+            raise SearchError(
+                f"mmseqs easy-search exited {completed.returncode}: {detail}"
+            )
+        hits = work / "hits.m8"
+        text = hits.read_text(encoding="utf-8") if hits.is_file() else ""
+    return parse_m8_rows(text)
+
+
+def _kalign_hits(
+    query: str, chains: list[tuple[str, str, str]]
+) -> list[dict[str, Any]]:
+    """Every folder chain Kalign aligns to the query well enough, best first.
+
+    Ranked by identical residues (then input order); a chain needs
+    `_KALIGN_MIN_IDENTITY` over its aligned columns and `_KALIGN_MIN_ALIGNED`
+    aligned residues. No e-value exists on this path, so ``e_value`` is 0.0
+    and ``bit_score`` the identical-residue count.
+    """
+    from foldjax.search.msa import SearchError
+
+    scored = []
+    for order, (key, chain, sequence) in enumerate(chains):
+        try:
+            mapping = _kalign_mapping(query, sequence)
+        except SearchError:
+            continue
+        if len(mapping) < _KALIGN_MIN_ALIGNED:
+            continue
+        identical = sum(query[q] == sequence[t] for q, t in mapping.items())
+        identity = identical / len(mapping)
+        if identity < _KALIGN_MIN_IDENTITY:
+            continue
+        queries, targets = sorted(mapping), sorted(mapping.values())
+        scored.append(
+            (
+                -identical,
+                order,
+                {
+                    "query": "query",
+                    "target": f"{key}_{chain}",
+                    "pdb_id": key,
+                    "chain_id": chain,
+                    "identity": round(identity, 4),
+                    "alignment_length": len(mapping),
+                    "query_start": queries[0] + 1,
+                    "query_end": queries[-1] + 1,
+                    "target_start": targets[0] + 1,
+                    "target_end": targets[-1] + 1,
+                    "e_value": 0.0,
+                    "bit_score": float(identical),
+                },
+            )
+        )
+    scored.sort(key=lambda item: (item[0], item[1]))
+    return [row for _, _, row in scored]
 
 
 # --------------------------------------------------------------------------
@@ -768,8 +1063,15 @@ def search_templates(
     max_date: str | None,
     destination: Path,
     required: bool = False,
+    template_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Attach searched templates to protein chains that name none.
+
+    ``template_dir`` searches that private folder of mmCIF files on this
+    machine instead of PDB70 (`folder_hits`), and applies no release-date
+    cutoff unless ``max_date`` is given: the model's cutoff exists to keep a
+    PDB search clear of its training set, and a private structure usually
+    carries no release date at all, which the cutoff would read as "too new".
 
     Returns one record per searched entity for the run manifest. A chain that
     already names templates keeps exactly those, as a chain with its own
@@ -786,6 +1088,16 @@ def search_templates(
 
     policy = POLICIES[model]
     cutoff, cutoff_record = _cutoff(policy, max_date)
+    if template_dir is not None and max_date is None:
+        cutoff = None
+        cutoff_record = {
+            "max_template_date": None,
+            "keeps_cutoff_date": policy.keep_on_cutoff,
+            "source": (
+                "private template folder: no release-date cutoff unless "
+                "template_max_date is set"
+            ),
+        }
     wanted = [
         entity
         for entity in job["entities"]
@@ -801,15 +1113,33 @@ def search_templates(
             )
         return []
     records: list[dict[str, Any]] = []
+    generated = destination / "template_search"
     try:
         if policy.mapped:
             # Checked once, before anything is sent: without the aligner every
             # hit would fail on its own and the chain would fold template-free
             # with nothing but a skip count to show for it.
             _require_kalign()
-        pipeline, source = _hits_pipeline()
-        store = _structure_store()
-        generated = destination / "template_search"
+        if template_dir is not None:
+            aligner = folder_aligner(policy)
+            _generated_directory(destination, generated)
+            store = FolderTemplateSource(template_dir, generated / "private")
+            pipeline = _FolderHits(store, aligner, generated)
+            source = {
+                "kind": "private folder",
+                "directory": str(Path(template_dir).resolve()),
+                "aligner": aligner,
+                "hit_filter": (
+                    "mmseqs easy-search default e-value (1e-3)"
+                    if aligner == "mmseqs"
+                    else f"Kalign identity >= {_KALIGN_MIN_IDENTITY} over "
+                    f">= {_KALIGN_MIN_ALIGNED} aligned residues; ranked by "
+                    "identical residues, no e-value (0.0)"
+                ),
+            }
+        else:
+            pipeline, source = _hits_pipeline()
+            store = _structure_store()
         if policy.observed_chain_file:
             _generated_directory(destination, generated)
     except (SearchError, ValueError) as error:
@@ -837,7 +1167,11 @@ def search_templates(
         try:
             if sequence not in memo:
                 found = pipeline.search(sequence)
-                hits = parse_m8(Path(found["hitsPath"]).read_text(encoding="utf-8"))
+                hits = (
+                    found["hits"]
+                    if "hits" in found
+                    else parse_m8(Path(found["hitsPath"]).read_text(encoding="utf-8"))
+                )
                 chosen, skipped = _select(
                     sequence,
                     hits,

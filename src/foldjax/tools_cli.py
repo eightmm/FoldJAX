@@ -38,6 +38,16 @@ def register(
         "native.chain_pair_iptm.A-B; see `foldjax interfaces`",
     )
     show.add_argument(
+        "--rank-by",
+        metavar="KEY",
+        help="order the samples by KEY within each model (and configuration) "
+        "only, with a rank_within_model column: plddt, ptm, iptm, ranking (the "
+        "model's own ranking score) or a numeric column such as "
+        "score.<native name> (derived.* with --interfaces). KEY:asc ranks the "
+        "smallest first. Ranks never cross models: each model's scores keep "
+        "their own calibration",
+    )
+    show.add_argument(
         "--screen",
         action="store_true",
         help="with --format table/csv/json: one row per model and job from the "
@@ -139,6 +149,51 @@ def register(
     check.add_argument("path", type=Path, help="a finished output directory")
     check.add_argument("--format", choices=("table", "csv", "json"), default="table")
     check.add_argument("--out", type=Path, help="write to a file instead of stdout")
+
+    from foldjax.schema import MSA_PAIRINGS
+
+    msa = commands.add_parser(
+        "msa", help="search and cache alignments ahead of a prediction"
+    )
+    msa_commands = msa.add_subparsers(dest="msa_command", required=True)
+    prefetch = msa_commands.add_parser(
+        "prefetch",
+        help="search and cache every chain's alignment, and nothing else",
+        description="Runs the --msa auto search for every protein chain (and "
+        "RNA chain, when FOLDJAX_RNA_MSA_COMMAND is set) of the inputs into the "
+        "shared MSA cache, so a later `foldjax predict --msa auto` -- on a node "
+        "without network, say -- reads them from there. No weights load and no "
+        "output is written. Without --model, the per-chain search every model "
+        "shares; with --model, the search predict runs for that model "
+        "(OpenFold3's complex pairing included). The public ColabFold server "
+        "receives the sequences unless FOLDJAX_MSA_COMMAND or "
+        "FOLDJAX_MSA_SERVER_URL says otherwise. Exits 3 when any chain's "
+        "search failed.",
+    )
+    prefetch.add_argument(
+        "inputs",
+        type=Path,
+        nargs="+",
+        help="job JSON/YAML, multi-job files, FASTA, .pdb/.mmcif, or directories",
+    )
+    prefetch.add_argument(
+        "--model", nargs="+", help="search as predict would for these models"
+    )
+    prefetch.add_argument(
+        "--msa-pairing",
+        choices=MSA_PAIRINGS,
+        default="model",
+        help="as for predict; without --model, greedy/complete also run the "
+        "complex pairing search",
+    )
+    msa_commands.add_parser(
+        "wrapper",
+        help="print the path of the reference local search wrapper",
+        description="Prints the file path of foldjax/search/colabfold_local.py, "
+        "a FOLDJAX_MSA_COMMAND wrapper that runs ColabFold's MMseqs2 search "
+        "against local databases (optional --gpu). Run it with the Python that "
+        "has ColabFold installed; see docs/cli.md.",
+    )
 
     jobs = commands.add_parser("jobs", help="generate multi-job files for screens")
     jobs_commands = jobs.add_subparsers(dest="jobs_command", required=True)
@@ -276,6 +331,8 @@ def dispatch(args: argparse.Namespace) -> int | None:
             json.dumps({"shard": args._empty_shard, "runs": []}, indent=2),
         )
         return 0
+    if command == "msa":
+        return _msa(args)
     if command == "report":
         from foldjax.html_report import write_report
 
@@ -335,7 +392,7 @@ def dispatch(args: argparse.Namespace) -> int | None:
         written = job_generators.write_jobs(document, out)
         print(json.dumps({"jobs_file": str(written), **summary}, indent=2))
         return 0
-    if command == "show" and (args.interfaces or args.screen):
+    if command == "show" and (args.interfaces or args.screen or args.rank_by):
         return _show(args)
     if command == "compare" and (args.reference is not None or args.metrics):
         from foldjax.compare import compare_directory
@@ -354,12 +411,72 @@ def dispatch(args: argparse.Namespace) -> int | None:
     return None
 
 
+def _msa(args: argparse.Namespace) -> int:
+    if args.msa_command == "wrapper":
+        from foldjax.search import colabfold_local
+
+        print(Path(colabfold_local.__file__).resolve())
+        return 0
+    from foldjax import progress
+    from foldjax.msa_prefetch import prefetch, render
+
+    was_enabled = progress.enabled()
+    progress.enable()
+    try:
+        records = _prefetch(args, prefetch)
+    finally:
+        if not was_enabled:
+            progress.disable()
+    print(render(records))
+    failed = [
+        record
+        for record in records
+        if record.get("error") or record.get("paired_error")
+    ]
+    if failed:
+        print(
+            f"foldjax: {len(failed)} chain search(es) failed; see 'error' above",
+            file=sys.stderr,
+        )
+        return 3
+    return 0
+
+
+def _prefetch(args: argparse.Namespace, prefetch: Any) -> list[dict[str, Any]]:
+    import tempfile
+
+    from foldjax import cli
+
+    with tempfile.TemporaryDirectory(prefix="foldjax-prefetch-jobs-") as scratch:
+        # FASTA and structures become job documents in scratch, as `plan`
+        # does: a prefetch writes nothing into the store but the MSA cache.
+        namespace = argparse.Namespace(
+            input=list(args.inputs),
+            sequence=[],
+            dna=[],
+            rna=[],
+            ligand=[],
+            ligand_smiles=[],
+            name=None,
+            affinity_binder=None,
+        )
+        inputs = cli._resolve_inputs(namespace, jobs_root=Path(scratch))
+        return prefetch(inputs, models=args.model, pairing=args.msa_pairing)
+
+
 def _show(args: argparse.Namespace) -> int:
     from foldjax import results
 
     if args.json:
         raise ValueError("--json prints manifests; use --format json for rows")
     rows = results.results_table(results.load_results(args.path))
+    if args.rank_by and (args.screen or args.aggregate):
+        raise ValueError(
+            "--rank-by orders samples; --screen and --aggregate are tables of "
+            "their own. Drop one of them"
+        )
+    if args.rank_by and not args.interfaces:
+        return _emit_ranked(results.rank_rows(rows, args.rank_by), args)
     if args.screen:
         if args.interfaces or args.aggregate:
             raise ValueError("--screen is its own table; drop --interfaces/--aggregate")
@@ -390,10 +507,24 @@ def _show(args: argparse.Namespace) -> int:
             row.get("sample"),
         )
         row.update(folded.get(key, {}))
+    if args.rank_by:
+        return _emit_ranked(results.rank_rows(rows, args.rank_by), args)
     if args.format == "csv":
         sys.stdout.write(results.to_csv(rows))
     else:
         print(json.dumps(rows, indent=2, sort_keys=True, default=str))
+    return 0
+
+
+def _emit_ranked(rows: list[dict[str, Any]], args: argparse.Namespace) -> int:
+    from foldjax import results
+
+    if args.format == "csv":
+        sys.stdout.write(results.to_csv(rows))
+    elif args.format == "json":
+        print(json.dumps(rows, indent=2, sort_keys=True, default=str))
+    else:
+        print(results.render_ranked(rows, args.rank_by))
     return 0
 
 

@@ -54,6 +54,7 @@ import warnings
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -160,13 +161,24 @@ def _index(sample: PredictionSample, fallback: int) -> int:
         return fallback
 
 
-def _normalize_cif(path: Path, *, job: str, model: str, seed: int, index: int) -> None:
+def _normalize_cif(
+    path: Path,
+    *,
+    job: str,
+    model: str,
+    seed: int,
+    index: int,
+    plddt: float | None = None,
+) -> None:
     """Give the file a data block and title that say what it is.
 
     Edited as a CIF *document*, not as a parsed structure: re-serializing
     coordinates would drop the categories each writer adds -- Boltz's ModelCIF
     `ma_*` blocks, AlphaFold 3's terms-of-use header -- and this only needs to
     touch what a person reads first. Atom records are not rewritten at all.
+    It also adds the ModelCIF confidence and software records a writer did
+    not (`_add_modelcif_qa`); ``plddt`` is the whole-structure value of the
+    common summary, on 0-100.
     """
     from gemmi import cif
 
@@ -179,6 +191,7 @@ def _normalize_cif(path: Path, *, job: str, model: str, seed: int, index: int) -
         cif.quote(f"{job} predicted by {model} (seed {seed}, sample {index})"),
     )
     block.set_pair("_struct.entry_id", cif.quote(block.name))
+    _add_modelcif_qa(block, model=model, plddt=plddt)
     _replace_cif(document, path)
 
 
@@ -338,6 +351,204 @@ def _viewer_exports(
             confidence_arrays.RECORD_KEY: {**entry, "exports": exports},
         },
     )
+
+
+#: The upstream each model implements, for ``_software`` (docs/model-versions.md).
+_UPSTREAM_SOFTWARE = {
+    "alphafold3": ("AlphaFold 3", "3.0.4"),
+    "boltz2": ("Boltz-2", "2.2.1"),
+    "esmfold2": ("ESMFold2", "Biohub snapshot ef32577f55da"),
+    "opendde": ("OpenDDE", "1.1.1"),
+    "openfold3": ("OpenFold3", "0.5.0"),
+    "protenix": ("Protenix", "2.0.0"),
+}
+
+
+def _cif_rows(block: Any, category: str, values: list[dict[str, str]]) -> None:
+    """Append rows to ``category``, a loop made if absent, by column name.
+
+    An existing category keeps its own columns: a value for a column it does
+    not have is dropped, a column the row does not name gets ``?``.
+    """
+    from gemmi import cif
+
+    def token(value: object) -> str:
+        text = str(value)
+        return text if text in ("?", ".") else cif.quote(text)
+
+    table = block.find_mmcif_category(category)
+    if not len(table):
+        loop = block.init_loop(category, list(values[0]))
+        for row in values:
+            loop.add_row([token(row[tag]) for tag in values[0]])
+        return
+    table.ensure_loop()
+    table = block.find_mmcif_category(category)
+    tags = [tag[len(category) :] for tag in table.tags]
+    for row in values:
+        table.append_row([token(row.get(tag, "?")) for tag in tags])
+
+
+def _add_modelcif_qa(block: Any, *, model: str, plddt: float | None) -> None:
+    """ModelCIF ``_ma_qa_metric`` pLDDT (global and local) and ``_software``.
+
+    What a writer already recorded is kept: AlphaFold 3 writes both pLDDT
+    metrics and its ``_software`` row (``model/mmcif_metadata.py``), Boltz-2's
+    ModelCIF writer the local one; only a missing mode is added, numbered
+    after the existing metric ids. Local values are each residue's mean
+    per-atom pLDDT from ``_atom_site.B_iso_or_equiv`` (first model), grouped
+    by ``label_asym_id``/``label_seq_id``/``label_comp_id`` as AlphaFold 3
+    groups them -- every writer here puts pLDDT on 0-100 in that column
+    (Protenix/OpenDDE ``data/output.py`` x100, Boltz-2 ``write/mmcif.py``
+    x100, OpenFold3 ``_plddt_percent``, ESMFold2 ``plddt_scale=100``,
+    AlphaFold 3 natively). The global value is the common summary's
+    (``plddt``), else the mean over atoms, as AlphaFold 3 defines it.
+    """
+    from gemmi import cif
+
+    from foldjax import __version__
+
+    sites = block.find(
+        "_atom_site.",
+        [
+            "label_asym_id",
+            "label_seq_id",
+            "label_comp_id",
+            "B_iso_or_equiv",
+            "?pdbx_PDB_model_num",
+        ],
+    )
+    residues: dict[tuple[str, str, str], list[float]] = {}
+    first_model = None
+    for row in sites:
+        if row.has(4):
+            first_model = first_model or row[4]
+            if row[4] != first_model:
+                continue
+        try:
+            value = float(row[3])
+        except ValueError:
+            continue
+        key = tuple(
+            raw if raw in ("?", ".") else cif.as_string(raw)
+            for raw in (row[0], row[1], row[2])
+        )
+        residues.setdefault(key, []).append(value)  # type: ignore[arg-type]
+    if not residues:
+        return
+    atoms = [value for values in residues.values() for value in values]
+    if plddt is None:
+        plddt = sum(atoms) / len(atoms)
+
+    software = block.find("_software.", ["name", "?pdbx_ordinal"])
+    names = [cif.as_string(row[0]).lower() for row in software]
+    ordinals = [int(row[1]) for row in software if row.has(1) and row[1].isdigit()]
+    upstream, version = _UPSTREAM_SOFTWARE.get(model, (model, "?"))
+    added_software = []
+    entries = [
+        ("FoldJAX", __version__, "JAX inference and output normalization"),
+        (upstream, version, "structure prediction model (JAX port)"),
+    ]
+    for name, release, description in entries:
+        if any(name.lower().split()[0] in existing for existing in names):
+            continue
+        ordinal = max(ordinals + [len(names)], default=0) + 1 + len(added_software)
+        added_software.append(
+            {
+                "pdbx_ordinal": str(ordinal),
+                "name": name,
+                "version": release,
+                "type": "package",
+                "description": description,
+                "classification": "other",
+            }
+        )
+    if added_software:
+        _cif_rows(block, "_software.", added_software)
+
+    metrics = block.find("_ma_qa_metric.", ["id", "?mode"])
+    modes = {row[1].lower() for row in metrics if row.has(1)}
+    ids = [int(row[0]) for row in metrics if row[0].isdigit()]
+    group = "."
+    if added_software and ("global" not in modes or "local" not in modes):
+        groups = block.find("_ma_software_group.", ["group_id", "?ordinal_id"])
+        group_ids = [int(row[0]) for row in groups if row[0].isdigit()]
+        ordinals = [int(row[1]) for row in groups if row.has(1) and row[1].isdigit()]
+        group = str(max(group_ids, default=0) + 1)
+        _cif_rows(
+            block,
+            "_ma_software_group.",
+            [
+                {
+                    "ordinal_id": str(max(ordinals, default=0) + 1 + offset),
+                    "group_id": group,
+                    "software_id": row["pdbx_ordinal"],
+                }
+                for offset, row in enumerate(added_software)
+            ],
+        )
+    next_id = max(ids, default=0) + 1
+    if "global" not in modes:
+        _cif_rows(
+            block,
+            "_ma_qa_metric.",
+            [
+                {
+                    "id": str(next_id),
+                    "name": "pLDDT",
+                    "description": f"{model} whole-structure pLDDT (0-100)",
+                    "type": "pLDDT",
+                    "mode": "global",
+                    "software_group_id": group,
+                }
+            ],
+        )
+        _cif_rows(
+            block,
+            "_ma_qa_metric_global.",
+            [
+                {
+                    "ordinal_id": "1",
+                    "model_id": "1",
+                    "metric_id": str(next_id),
+                    "metric_value": f"{plddt:.2f}",
+                }
+            ],
+        )
+        next_id += 1
+    if "local" not in modes:
+        _cif_rows(
+            block,
+            "_ma_qa_metric.",
+            [
+                {
+                    "id": str(next_id),
+                    "name": "pLDDT",
+                    "description": "per-residue mean of the per-atom pLDDT (0-100)",
+                    "type": "pLDDT",
+                    "mode": "local",
+                    "software_group_id": group,
+                }
+            ],
+        )
+        _cif_rows(
+            block,
+            "_ma_qa_metric_local.",
+            [
+                {
+                    "ordinal_id": str(ordinal),
+                    "model_id": "1",
+                    "label_asym_id": asym,
+                    "label_seq_id": seq,
+                    "label_comp_id": comp,
+                    "metric_id": str(next_id),
+                    "metric_value": f"{sum(values) / len(values):.2f}",
+                }
+                for ordinal, ((asym, seq, comp), values) in enumerate(
+                    residues.items(), start=1
+                )
+            ],
+        )
 
 
 def confidence_payload(
@@ -510,12 +721,16 @@ def normalize(
                 _copy_atomic(source, target)
         if suffix in {".cif", ".mmcif"}:
             try:
+                summary_plddt = common_summary(
+                    result.model, dict(sample.scores or {})
+                ).get("plddt", {})
                 _normalize_cif(
                     target,
                     job=sample_job,
                     model=result.model,
                     seed=sample.seed,
                     index=index,
+                    plddt=summary_plddt.get("value"),
                 )
             except Exception as error:  # noqa: BLE001 - a header never costs a run
                 # The structure is the result; a CIF this cannot parse is

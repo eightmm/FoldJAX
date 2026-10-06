@@ -225,7 +225,9 @@ def test_msa_auto_fills_in_the_alignment_and_reaches_the_dialect(
 
     chain = native[0]["sequences"][0]["proteinChain"]
     assert Path(chain["unpairedMsaPath"]).is_file()
-    assert Path(chain["pairedMsaPath"]).is_file()
+    # A monomer gets no pairing alignment, as upstream Protenix's ColabFold
+    # mode writes it a query-only pairing.a3m.
+    assert "pairedMsaPath" not in chain
     assert backend.calls == [SEQUENCE]
     searched = json.loads((tmp_path / "out" / "msa_search.json").read_text())
     assert searched[0]["chain"] == "A"
@@ -490,7 +492,9 @@ def test_openfold3_pairs_a_heteromer_in_one_complex_search(
     assert all("paired_msa" in record for record in searched)
 
 
-def test_other_backends_keep_per_chain_pairing(tmp_path: Path, monkeypatch) -> None:
+def test_alphafold3_keeps_per_chain_pairing(tmp_path: Path, monkeypatch) -> None:
+    # Protenix and OpenDDE pair the complex in one search
+    # (tests/test_w15_msa_pairing.py).
     backend = _ComplexStubSearch()
     monkeypatch.setattr(
         "foldjax.msa_search._msa_pipeline", lambda: _stub_pipeline(tmp_path, backend)
@@ -498,12 +502,12 @@ def test_other_backends_keep_per_chain_pairing(tmp_path: Path, monkeypatch) -> N
 
     native = json.loads(
         _materialize(
-            _heteromer(tmp_path), "protenix", tmp_path / "out", msa="auto"
+            _heteromer(tmp_path), "alphafold3", tmp_path / "out", msa="auto"
         ).read_text()
     )
 
     assert backend.complex_calls == []
-    chain = native[0]["sequences"][0]["proteinChain"]
+    chain = native["sequences"][0]["protein"]
     assert Path(chain["pairedMsaPath"]).name == "pairing.a3m"
 
 

@@ -174,6 +174,16 @@ def configuration_digest(manifest: Mapping[str, Any]) -> str:
     if manifest.get("templates", "none") != "none":
         identity["templates"] = manifest.get("templates")
         identity["template_max_date"] = manifest.get("template_max_date")
+    # Likewise only when set, so earlier runs keep their digests.
+    pairing = manifest.get("msa_pairing")
+    if isinstance(pairing, Mapping) and pairing.get("requested", "model") != "model":
+        identity["msa_pairing"] = pairing.get("requested")
+    folder = manifest.get("template_dir")
+    if isinstance(folder, Mapping):
+        identity["template_dir"] = folder.get("sha256")
+    preset = manifest.get("preset")
+    if isinstance(preset, Mapping):
+        identity["preset"] = preset.get("name")
     payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode()).hexdigest()[:12]
 
@@ -418,6 +428,29 @@ def _field_value(summary: Mapping[str, Any], name: str) -> float | None:
     return float(value)
 
 
+def _msa_columns(stats: Any) -> list[dict[str, Any]] | None:
+    """``[{chains, depth, neff, paired_depth, paired_neff}]`` from the manifest."""
+    chains = stats.get("chains") if isinstance(stats, Mapping) else None
+    if not isinstance(chains, list):
+        return None
+    out = []
+    for chain in chains:
+        if not isinstance(chain, Mapping):
+            continue
+        unpaired = chain.get("unpaired_msa") or {}
+        paired = chain.get("paired_msa") or {}
+        out.append(
+            {
+                "chains": list(chain.get("chains") or []),
+                "depth": unpaired.get("depth"),
+                "neff": unpaired.get("neff"),
+                "paired_depth": paired.get("depth"),
+                "paired_neff": paired.get("neff"),
+            }
+        )
+    return out
+
+
 def results_table(
     report: ResultsReport | str | os.PathLike[str],
     *,
@@ -517,6 +550,8 @@ def results_table(
                     if run.constraints is not None
                     else None
                 ),
+                # Per chain: alignment rows and Neff (`foldjax.msa_stats`).
+                "msa_stats": _msa_columns(run.manifest.get("msa_stats")),
                 "run_dir": str(run.directory),
                 "error_type": None,
                 "error": None,
@@ -589,6 +624,100 @@ def to_csv(rows: Sequence[Mapping[str, Any]]) -> str:
     for row in rows:
         writer.writerow({name: _cell(row.get(name)) for name in columns})
     return buffer.getvalue()
+
+
+#: ``--rank-by`` names for the common summary columns.
+RANK_ALIASES = {"ranking": "ranking_value"}
+
+
+def _rankable(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def rank_rows(
+    rows: Sequence[Mapping[str, Any]], key: str
+) -> list[dict[str, Any]]:
+    """The sample rows ordered by ``key`` within each (model, configuration).
+
+    ``key`` is ``plddt``, ``ptm``, ``iptm``, ``ranking`` (the model's own
+    ranking score), or any numeric column such as ``score.<native name>``;
+    ``KEY:asc`` ranks the smallest first (a PAE, say), the default is the
+    largest. Each row gains ``rank_by`` and ``rank_within_model`` (None
+    when the row has no value for the key). Ranks never cross models or
+    configurations: a model's scores carry its own calibration. Failure rows
+    are left out.
+    """
+    name, _, direction = key.partition(":")
+    if direction not in ("", "asc", "desc"):
+        raise ValueError(f"--rank-by {key!r}: the order is ':asc' or ':desc'")
+    column = RANK_ALIASES.get(name, name)
+    samples = [dict(row) for row in rows if row.get("status") != "failed"]
+    if not any(_rankable(row.get(column)) for row in samples):
+        numeric = sorted(
+            {
+                name
+                for row in samples
+                for name, value in row.items()
+                if _rankable(value) and name not in {"seed", "sample", "native_rank"}
+            }
+        )
+        raise ValueError(
+            f"--rank-by {name!r}: no sample has a numeric value for it; rank by "
+            f"one of {', '.join(sorted({'plddt', 'ptm', 'iptm', 'ranking'}))} "
+            f"or a column present here ({', '.join(numeric) or 'none'})"
+        )
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in samples:
+        groups.setdefault(
+            (str(row.get("model")), str(row.get("configuration"))), []
+        ).append(row)
+    ascending = direction == "asc"
+    ranked: list[dict[str, Any]] = []
+    for group in sorted(groups):
+        members = groups[group]
+        scored = [row for row in members if _rankable(row.get(column))]
+        # Stable: equal values keep input, seed and sample order.
+        scored.sort(key=lambda row: float(row[column]) * (1 if ascending else -1))
+        for rank, row in enumerate(scored, start=1):
+            row["rank_by"] = key
+            row["rank_within_model"] = rank
+            ranked.append(row)
+        for row in members:
+            if not _rankable(row.get(column)):
+                row["rank_by"] = key
+                row["rank_within_model"] = None
+                ranked.append(row)
+    return ranked
+
+
+def render_ranked(rows: Sequence[Mapping[str, Any]], key: str) -> str:
+    """`rank_rows` output as a table, one block per model and configuration."""
+    name = key.partition(":")[0]
+    column = RANK_ALIASES.get(name, name)
+    lines = ["ranked within each model only; a rank is not comparable across models"]
+    current = None
+    for row in rows:
+        group = (row.get("model"), row.get("configuration"))
+        if group != current:
+            current = group
+            lines += ["", f"{row.get('model')} ({row.get('configuration')}), by {key}"]
+            lines.append(
+                f"  {'rank':>4s}  {'input':<24s}{'seed':>6s}{'sample':>8s}"
+                f"{name[-14:]:>16s}  structure"
+            )
+        value = row.get(column)
+        text = f"{float(value):.3f}" if _rankable(value) else "-"
+        rank = row.get("rank_within_model")
+        lines.append(
+            f"  {str(rank or '-'):>4s}  {str(row.get('input_name') or '-')[:23]:<24s}"
+            f"{str(row.get('seed')):>6s}{str(row.get('sample')):>8s}{text:>16s}"
+            f"  {row.get('structure_path') or '-'}"
+        )
+    return "\n".join(lines)
 
 
 def _stats(values: list[float]) -> dict[str, Any]:

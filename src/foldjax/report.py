@@ -188,6 +188,39 @@ def render_failures(failures: list[Any]) -> str:
     return "\n".join(lines)
 
 
+def _alignment_lines(stats: Any) -> list[str]:
+    """One line per chain: alignment rows and Neff, unpaired then paired."""
+    chains = stats.get("chains") if isinstance(stats, dict) else None
+    if not chains:
+        return []
+
+    def part(record: Any, label: str) -> str | None:
+        if not isinstance(record, dict):
+            return None
+        if record.get("depth") is None:
+            return f"{label} unreadable"
+        neff = record.get("neff")
+        neff_text = "-" if not isinstance(neff, (int, float)) else f"{neff:.1f}"
+        return f"{label} {record['depth']} rows, Neff {neff_text}"
+
+    lines = []
+    for index, chain in enumerate(chains):
+        if not isinstance(chain, dict):
+            continue
+        parts = [
+            text
+            for text in (
+                part(chain.get("unpaired_msa"), "unpaired"),
+                part(chain.get("paired_msa"), "paired"),
+            )
+            if text
+        ]
+        head = "alignment " if index == 0 else "          "
+        names = ",".join(str(name) for name in chain.get("chains") or []) or "?"
+        lines.append(f"{head}{names}: {'; '.join(parts)}")
+    return lines
+
+
 def render(manifest: dict[str, Any], *, directory: Path) -> str:
     """One run's header, best structure, and per-sample table."""
     lines: list[str] = []
@@ -207,6 +240,13 @@ def render(manifest: dict[str, Any], *, directory: Path) -> str:
         f"{_duration(cost.get('seconds')):<10s}peak  {_bytes(cost.get('peak_bytes'))}"
     )
     lines.append(f"seeds     {seeds or '-':<16s}msa      {manifest.get('msa', 'none')}")
+    pairing = manifest.get("msa_pairing")
+    if isinstance(pairing, dict) and pairing.get("requested"):
+        mode = f" ({pairing['mode']})" if pairing.get("mode") else ""
+        lines.append(
+            f"pairing   {pairing['requested']} -> {pairing.get('resolved')}{mode}"
+        )
+    lines.extend(_alignment_lines(manifest.get("msa_stats")))
     if manifest.get("templates", "none") != "none":
         kept = sum(
             len(record.get("templates") or [])

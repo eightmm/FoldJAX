@@ -160,6 +160,139 @@ is in [input](input.md#searching-for-templates). `plan` prints `templates` and
 `template_max_date` beside `msa`, and refuses `--templates auto` for ESMFold2
 and for Protenix or OpenDDE without `--option use_template=true`.
 
+### Alignment pairing, prefetch, private templates and presets
+
+**`--msa-pairing {model,greedy,complete,none}`** (with `--msa auto` or
+`required`) chooses how a searched alignment pairs the chains of a complex.
+`model`, the default, is each model's own: OpenFold3 and Boltz-2 one ColabFold
+`pairgreedy-env` search over the complex's distinct sequences, Protenix and
+OpenDDE one `pairgreedy` search (no environmental databases), as their
+upstreams submit it; AlphaFold 3 each chain's own `paircomplete` alignment;
+ESMFold2 no paired alignment. `greedy` and `complete` run that one complex
+search with ColabFold's greedy or complete strategy (`pairgreedy-env` /
+`paircomplete-env`; `pairgreedy` / `paircomplete` for Protenix and OpenDDE)
+and are accepted by the models that read its rows as paired: OpenFold3;
+Boltz-2, which receives the keyed CSV upstream Boltz builds from the same
+search (`boltz/main.py` `compute_msa`: paired rows keep their row number as
+`key`, unpaired rows follow with -1); and Protenix and OpenDDE, which pair by
+the species their featurizer reads from each header. A ColabFold
+`>UniRef100_<accession>` header carries none, so each chain's block is written
+to `msa/entity_NNNN_pairing.a3m` the way upstream Protenix's ColabFold mode
+writes its `pairing.a3m` (`web_service/colab_request_utils.py`): the query as
+`>query` and every hit as `>UniRef100_<accession>_<row>/...`, so the species is
+the row number and row *i* of every chain is paired. That is Protenix's
+default. **OpenDDE's default pairs nothing, as upstream OpenDDE does:** it
+submits the same `pairgreedy` search but writes the blocks with the server's
+headers (`msa_service_client.py` `search_and_build_msa`), so its species
+re-pairing pairs only the query row and the block's rows join each chain's
+unpaired stack (`msa_pair_as_unpair`). FoldJAX passes OpenDDE the blocks as
+the server wrote them under `model` (`paired_by: species` in the manifest);
+`--msa-pairing greedy` or `complete` opts OpenDDE into Protenix's row reading
+(`paired_by: row`), a departure from its released behaviour that has not been
+measured for accuracy. A complex search whose blocks
+differ in depth is refused before it is cached (`required` fails, `auto` folds
+without the pairing and warns), and a local wrapper, which cannot pair a
+complex, delivers no pairing alignment to any of these four models. A
+`paired_msa` you supply is passed through untouched. AlphaFold 3 follows its
+upstream, which has no reader of ColabFold output: it re-pairs by the UniProt
+species in each header, so `greedy`/`complete` is refused for it, and its per-chain
+alignment pairs no rows of a heteromer either (only the query row); DeepMind's
+advice for a pre-paired alignment is `unpairedMsa` with an empty `pairedMsa`
+(`docs/input.md`, "MSA Pairing"). `none` delivers no paired alignment and
+skips the per-chain pairing ticket (a local wrapper is told so with
+`FOLDJAX_MSA_PAIRING=none`). The pairing is part of the MSA cache key (`model`
+keeps every existing per-chain entry) and of `foldjax_run.json`
+(`msa_pairing`: requested, resolved, ColabFold mode, and `paired_by`, `row` or
+`species`, where `species` means no row beyond the query is paired);
+`--resume` reruns a run asked under another pairing. A monomer or homomer is
+never complex-paired, as upstream OpenFold3, Boltz, Protenix's ColabFold mode
+and OpenDDE do not pair one (the last two write a query-only `pairing.a3m`);
+Protenix and OpenDDE therefore no longer read a per-chain pairing alignment
+for it.
+
+**Alignment depth and Neff.** Every common-schema run records, per chain, the
+rows of the alignment the model reads (`depth`, query included, before the
+model's own `--max-msa-depth`, deduplication or cap) and its effective number
+of sequences at 80% identity (`neff`) under `msa_stats` in `foldjax_run.json`;
+the definition is written beside the numbers: rows weighted by one over the
+number of rows (itself included) at >= 80% identity over the query's match
+columns, a gap counting as a symbol, A3M insertions removed. `foldjax show`
+prints an `alignment` line per chain and the CSV/JSON rows carry an
+`msa_stats` column. Neff uses at most the first 20,000 rows (`neff_rows`).
+
+**`foldjax show DIR --rank-by KEY`** orders the samples by `plddt`, `ptm`,
+`iptm`, `ranking` (the model's own ranking score) or any numeric column
+(`score.<native name>`; `derived.*` with `--interfaces`) within each model and
+configuration only, and adds `rank_within_model`. `KEY:asc` puts the smallest
+first, for a PAE. Ranks never cross models, because each model's confidence
+has its own calibration. It works with `--format table|csv|json`.
+
+**`foldjax msa prefetch INPUTS [--model M ...] [--msa-pairing P]`** runs the
+`--msa auto` search for every chain of the inputs (job files, multi-job files,
+FASTA, structures, directories) into the shared MSA cache and does nothing
+else: no weights, no output directory. A later `foldjax predict --msa auto`,
+for example on a GPU node without network, reads every alignment from the
+cache. Without `--model` it runs the per-chain search all models share; with
+`--model` it validates the job for that model and runs exactly its search,
+OpenFold3's complex pairing included. It prints one JSON record per chain and
+exits 3 when any chain's search failed.
+
+**A local search with ColabFold's databases.** `foldjax msa wrapper` prints
+the path of `foldjax/search/colabfold_local.py`, a reference
+`FOLDJAX_MSA_COMMAND` that runs ColabFold's own MMseqs2 steps
+(`colabfold.mmseqs.search`, as `colabfold_search` does) against databases built
+with ColabFold's `setup_databases.sh`, and writes the `non_pairing.a3m` /
+`pairing.a3m` pair FoldJAX expects. It imports nothing from FoldJAX, so it
+runs under the interpreter that has ColabFold installed; FoldJAX itself gains
+no dependency:
+
+```bash
+export FOLDJAX_MSA_COMMAND="/opt/colabfold/bin/python $(foldjax msa wrapper) \
+    --db /data/colabfold_db --threads 16"       # add --gpu for MMseqs2-GPU
+export FOLDJAX_MSA_LOCAL_VERSION="uniref30_2302+envdb_202108"  # the cache key
+foldjax msa prefetch jobs/
+```
+
+`--gpu` is ColabFold's `--gpu 1` (GPU-indexed databases, `GPU=1
+setup_databases.sh`). Name the databases in `FOLDJAX_MSA_LOCAL_VERSION`: it is
+part of the cache key, so new databases never reuse old alignments.
+
+**`--templates DIR`** searches a private folder of mmCIF files (`.cif`,
+`.mmcif`, `.cif.gz`, nested folders included) instead of PDB70, on this
+machine only, and hands the hits to the same per-model selection and delivery
+as `--templates auto` (AlphaFold 3's filters, Protenix/OpenDDE's observed-chain
+files, OpenFold3's template cache, Boltz-2's files). Hits come from
+`mmseqs easy-search` when `mmseqs` is on `PATH`, else from a Kalign alignment
+of every chain (kept at >= 25% identity over >= 10 aligned residues, ranked by
+identical residues); a mapped model needs Kalign (`--extra templates`) to
+realign either way. Without the aligner it needs, the run is refused before
+anything loads, `plan` included. No release-date cutoff applies unless
+`--template-max-date` is given, because private structures usually carry no
+release date. The manifest records the folder by content (`template_dir`: path,
+file count, SHA-256 over names and bytes), so `--resume` reruns after the
+folder changes. In Python: `PredictionRequest(templates="auto" or "required",
+template_dir=...)`.
+
+**`--preset fast`** sets the reduced diffusion steps and recycles a model's
+publisher documents for the checkpoint being run, and records it under
+`preset` in the manifest. Exactly one is published for what FoldJAX carries:
+Protenix's Mini checkpoints, 5 steps and 4 recycles (Protenix
+`docs/supported_models.md`), i.e. `--profile mini-esm-v0.5.0` or
+`mini-ism-v0.5.0`, whose released default this already is. Everywhere else the
+preset is refused with the reason: AlphaFold 3, Boltz-2, OpenDDE and the
+Protenix base/v2 checkpoints publish only their full schedule, OpenFold3's
+presets do not touch steps or recycles, and ESMFold2's fast option is a
+separate checkpoint (ESMFold2-Fast). A preset together with a different
+`--num-steps`/`--num-recycles` is refused.
+
+**ModelCIF confidence records.** Every structure FoldJAX writes carries the
+ModelCIF `_ma_qa_metric` pLDDT records -- `global` (the common summary's
+whole-structure pLDDT, 0-100) and `local` (each residue's mean per-atom pLDDT
+from `B_iso_or_equiv`) -- and `_software` rows for FoldJAX and the upstream
+model with their versions. What a writer already recorded is kept: AlphaFold
+3's metrics and `_software` row, Boltz-2's local metric; only what is missing
+is added.
+
 ### Outputs
 
 Every model writes the same layout:

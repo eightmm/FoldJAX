@@ -142,6 +142,22 @@
       "description": "The caller's release-date cutoff for searched templates (YYYY-MM-DD), or null for the model's released default. Optional.",
       "type": ["string", "null"]
     },
+    "template_dir": {
+      "description": "A private folder of mmCIF files searched for templates instead of the PDB: its resolved path, file count and a SHA-256 over every file's name and content; null when none. Optional.",
+      "type": ["object", "null"]
+    },
+    "msa_pairing": {
+      "description": "How a searched alignment paired the complex: requested (model, greedy, complete, none), resolved (greedy, complete, per_chain, none), the ColabFold mode, and paired_by (row, species or null: how the model joins chains' rows; species re-pairs by the UniProt species in each header, which ColabFold headers lack, so no row beyond the query is paired, as AlphaFold 3's per-chain alignment and OpenDDE's default do upstream; absent from older manifests); null when nothing was searched. Optional: absent before it existed, which ran with model.",
+      "type": ["object", "null"]
+    },
+    "msa_stats": {
+      "description": "Each chain's alignment as the model reads it: per chain, unpaired_msa and paired_msa records with depth (rows, query included) and neff (effective sequences at 80% identity, the definition alongside); null for native input. Optional.",
+      "type": ["object", "null"]
+    },
+    "preset": {
+      "description": "The named sampling preset the run used (name, the sampling it set, and the publisher's source), or null. Optional.",
+      "type": ["object", "null"]
+    },
     "template_search": {
       "description": "One record per protein entity templates=auto searched: chains, hit source, structure source, the date cutoff applied and where it comes from, the selection rule, the hits file, and each template kept (PDB id, author and label chain, release date, e-value, mmCIF path) or the error that left the chain without templates; null when no search was asked for. Optional.",
       "type": ["array", "null"],

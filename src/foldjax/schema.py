@@ -50,6 +50,20 @@ MSA_POLICIES = ("none", "single", "auto", "required")
 #: script would only notice as a successful template-free run.
 TEMPLATE_POLICIES = ("none", "auto", "required")
 
+#: How a searched alignment pairs the chains of a complex
+#: (`foldjax.msa_search`). ``model``, the default, is each backend's own:
+#: OpenFold3 and Boltz-2 one ColabFold ``pairgreedy-env`` search over the
+#: complex (Boltz-2 reading it as upstream's keyed CSV), AlphaFold 3, Protenix
+#: and OpenDDE a per-chain ``paircomplete`` alignment, ESMFold2 none.
+#: ``greedy`` and ``complete`` pair the
+#: complex in one search with that ColabFold strategy, for the backends that
+#: read a row-paired alignment (OpenFold3, and Boltz-2 through its keyed
+#: CSV); ``none`` asks for and delivers no paired alignment.
+MSA_PAIRINGS = ("model", "greedy", "complete", "none")
+
+#: Named sampling presets (`foldjax.presets`).
+PRESETS = ("fast",)
+
 #: What a failing run does to the rest of the request.
 #: Where a run may stop. ``trunk`` exists so that downstream work can take
 #: the representations without paying for a structure it will discard.
@@ -603,6 +617,16 @@ class PredictionRequest:
     # (`foldjax.template_search`). Meaningful only when ``templates`` searches
     # (``"auto"`` or ``"required"``).
     template_max_date: str | None = None
+    # How a searched alignment pairs a complex: one of `MSA_PAIRINGS`.
+    # Meaningful only when ``msa`` searches (``"auto"`` or ``"required"``).
+    msa_pairing: str = "model"
+    # A private folder of mmCIF files to search for templates instead of the
+    # PDB (`foldjax.template_search`): nothing leaves the machine. Needs
+    # ``templates`` ``"auto"`` or ``"required"``.
+    template_dir: Path | None = None
+    # A named sampling preset (`PRESETS`), resolved by
+    # `foldjax.resolve_request` into the sampling knobs it stands for.
+    preset: str | None = None
 
     def __post_init__(self) -> None:
         padding = _normalize_padding(self.padding)
@@ -616,6 +640,33 @@ class PredictionRequest:
             raise ValueError(
                 f"msa must be one of {', '.join(MSA_POLICIES)}; got {self.msa!r}"
             )
+        if self.msa_pairing not in MSA_PAIRINGS:
+            raise ValueError(
+                f"msa_pairing must be one of {', '.join(MSA_PAIRINGS)}; "
+                f"got {self.msa_pairing!r}"
+            )
+        if self.msa_pairing != "model" and self.msa not in ("auto", "required"):
+            raise ValueError(
+                f"msa_pairing={self.msa_pairing!r} chooses how a searched "
+                "alignment is paired; set msa='auto' or 'required' (--msa auto) "
+                "or drop it"
+            )
+        if self.preset is not None and self.preset not in PRESETS:
+            raise ValueError(
+                f"preset must be one of {', '.join(PRESETS)}; got {self.preset!r}"
+            )
+        if self.template_dir is not None:
+            template_dir = Path(self.template_dir)
+            if not template_dir.is_dir():
+                raise NotADirectoryError(
+                    f"template_dir is not a directory: {template_dir}"
+                )
+            object.__setattr__(self, "template_dir", template_dir)
+            if self.templates == "none":
+                raise ValueError(
+                    "template_dir is where searched templates come from; set "
+                    "templates='auto' or 'required' (--templates DIR does both)"
+                )
         if self.templates not in TEMPLATE_POLICIES:
             raise ValueError(
                 f"templates must be one of {', '.join(TEMPLATE_POLICIES)}; "

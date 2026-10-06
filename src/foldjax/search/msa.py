@@ -124,6 +124,23 @@ class ComplexPairPayload:
 #: with the environmental databases (``pairing_strategy="greedy"``,
 #: ``use_env=True`` in colabfold_msa_server.py:305-313).
 COMPLEX_PAIRING_MODE = "pairgreedy-env"
+#: The other ColabFold pairing strategy, spelled as ColabFold's client spells
+#: its mode (``colabfold.py`` ``run_mmseqs2``: ``paircomplete`` plus ``-env``).
+#: Greedy pairs any subset of chains with a hit in one taxon; complete pairs a
+#: row only when every chain has one.
+COMPLETE_PAIRING_MODE = "paircomplete-env"
+#: The same two strategies without the environmental databases: how Protenix
+#: 2.0.0's ColabFold mode (``use_env`` forced off for a pairing ticket,
+#: web_service/colab_request_utils.py:184-192) and OpenDDE
+#: (``use_env=False``, msa_service_client.py:390-400) pair a complex.
+PLAIN_GREEDY_PAIRING_MODE = "pairgreedy"
+PLAIN_COMPLETE_PAIRING_MODE = "paircomplete"
+COMPLEX_PAIRING_MODES = (
+    COMPLEX_PAIRING_MODE,
+    COMPLETE_PAIRING_MODE,
+    PLAIN_GREEDY_PAIRING_MODE,
+    PLAIN_COMPLETE_PAIRING_MODE,
+)
 
 
 def _split_colabfold_a3m(text: str, label: str) -> dict[int, str]:
@@ -560,12 +577,30 @@ class MsaSearchPipeline:
         """Whether the backend can pair several sequences in one search."""
         return callable(getattr(self.backend, "search_complex", None))
 
-    def search_complex(self, sequences: Sequence[str]) -> list[dict[str, str]]:
+    def without_per_chain_pairing(self) -> MsaSearchPipeline:
+        """This search with no per-chain pairing alignment asked for.
+
+        ``msa_pairing="none"``: a backend that can skip its pairing search
+        (``unpaired_only``) does, and ``"pairing": "none"`` joins the cache
+        identity, so these entries -- whose ``pairing.a3m`` may hold only the
+        query -- are never read back as a paired search's.
+        """
+        unpaired_only = getattr(self.backend, "unpaired_only", None)
+        backend = unpaired_only() if callable(unpaired_only) else self.backend
+        return type(self)(
+            self.cache_dir, backend, options={**self.options, "pairing": "none"}
+        )
+
+    def search_complex(
+        self, sequences: Sequence[str], *, mode: str | None = None
+    ) -> list[dict[str, str]]:
         """Pair the distinct sequences of one complex in a single search.
 
         One entry per input sequence, in input order; repeated sequences share a
-        file. The cache key is the ordered tuple of distinct sequences, so this
-        never collides with -- or reuses -- a per-sequence ``search`` entry.
+        file. The cache key is the ordered tuple of distinct sequences and the
+        pairing mode, so this never collides with -- or reuses -- a
+        per-sequence ``search`` entry, nor a search under the other strategy.
+        ``mode`` None is the backend's own (``complex_pairing_mode``).
         """
         normalized = [_normalize_sequence(sequence) for sequence in sequences]
         unique = list(dict.fromkeys(normalized))
@@ -575,12 +610,22 @@ class MsaSearchPipeline:
             raise SearchError(
                 f"MSA backend {self.backend.name!r} cannot pair a complex"
             )
+        default = getattr(self.backend, "complex_pairing_mode", None)
+        if mode == default:
+            mode = None
+        if mode is not None and mode not in getattr(
+            self.backend, "complex_pairing_modes", ()
+        ):
+            raise SearchError(
+                f"MSA backend {self.backend.name!r} cannot pair a complex with "
+                f"mode {mode!r}"
+            )
         identity = {
             "schema_version": 1,
             "kind": "complex_pairing",
             "sequences": unique,
             "backend": {"name": self.backend.name, "version": self.backend.version},
-            "mode": getattr(self.backend, "complex_pairing_mode", None),
+            "mode": default if mode is None else mode,
             "options": self.options,
         }
         canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
@@ -597,7 +642,11 @@ class MsaSearchPipeline:
                 unique,
                 cache_key,
                 identity,
-                self.backend.search_complex(unique),
+                (
+                    self.backend.search_complex(unique)
+                    if mode is None
+                    else self.backend.search_complex(unique, mode=mode)
+                ),
             )
         by_sequence = dict(zip(unique, paths, strict=True))
         return [by_sequence[sequence] for sequence in normalized]
@@ -670,6 +719,18 @@ class MsaSearchPipeline:
                     "paired MSA query does not match requested protein sequence: "
                     f"expected {sequence!r}, got {query!r}"
                 )
+        # Row i of every block is one paired row (the server pads a chain with
+        # no hit in a row with gaps); blocks of different depths cannot be
+        # paired by number, and OpenFold3 refuses them outright.
+        depths = {
+            sum(1 for line in content.splitlines() if line.startswith(">"))
+            for content in payload.paired
+        }
+        if len(depths) > 1:
+            raise SearchError(
+                "complex pairing returned blocks of different depths "
+                f"({sorted(depths)} rows), so its rows cannot be paired by number"
+            )
         temp_dir = staging_directory(self.cache_dir, cache_key)
         try:
             files: dict[str, dict[str, Any]] = {}
@@ -923,6 +984,11 @@ class LocalRnaMsaClient:
 
 
 
+#: Set in a local wrapper's environment to ``none`` when no pairing alignment
+#: is wanted (``msa_pairing="none"``); unset otherwise.
+MSA_PAIRING_ENV = "FOLDJAX_MSA_PAIRING"
+
+
 class LocalMsaClient:
     """Run a local wrapper which writes pairing/non_pairing A3M files.
 
@@ -945,6 +1011,19 @@ class LocalMsaClient:
         self.command = tuple(command)
         self.version = version
         self._runner = runner
+        #: Extra environment for the wrapper; set by `unpaired_only`.
+        self.environment: dict[str, str] = {}
+
+    def unpaired_only(self) -> LocalMsaClient:
+        """A copy that tells the wrapper no pairing alignment is needed.
+
+        The wrapper still owes a ``pairing.a3m`` (the contract) but may make
+        it the query alone: ``FOLDJAX_MSA_PAIRING=none`` is set in its
+        environment. A wrapper that ignores the variable is still correct.
+        """
+        clone = LocalMsaClient(self.command, version=self.version, runner=self._runner)
+        clone.environment = {**self.environment, MSA_PAIRING_ENV: "none"}
+        return clone
 
     def search(self, sequence: str) -> MsaPayload:
         with tempfile.TemporaryDirectory(prefix="protenix-jax-msa-") as raw_dir:
@@ -954,9 +1033,12 @@ class LocalMsaClient:
             output.mkdir()
             fasta.write_text(f">query\n{sequence}\n", encoding="utf-8")
             command = [*self.command, "--input", str(fasta), "--output", str(output)]
+            extra: dict[str, Any] = (
+                {"env": {**os.environ, **self.environment}} if self.environment else {}
+            )
             try:
                 completed = self._runner(
-                    command, check=False, capture_output=True, text=True
+                    command, check=False, capture_output=True, text=True, **extra
                 )
             except OSError as exc:
                 raise SearchError(
@@ -1129,6 +1211,9 @@ class RemoteMMseqs2Client:
 
     name = "remote-mmseqs2"
     complex_pairing_mode = COMPLEX_PAIRING_MODE
+    complex_pairing_modes = COMPLEX_PAIRING_MODES
+    #: Whether `search` also runs the per-chain ``paircomplete`` ticket.
+    pairs_per_chain = True
 
     def __init__(
         self,
@@ -1232,18 +1317,43 @@ class RemoteMMseqs2Client:
         )
         return "".join(text.replace("\x00", "") for text in texts), job_id
 
-    def search_complex(self, sequences: Sequence[str]) -> ComplexPairPayload:
+    def unpaired_only(self) -> RemoteMMseqs2Client:
+        """A copy whose `search` skips the per-chain pairing ticket.
+
+        Its ``pairing.a3m`` is the query alone: half the tickets, for a run
+        that reads no paired alignment (``msa_pairing="none"``).
+        """
+        import copy
+
+        clone = copy.copy(self)
+        clone.headers = dict(self.headers)
+        clone.pairs_per_chain = False
+        return clone
+
+    def _paired_for(self, sequence: str) -> tuple[str, str | None]:
+        if not self.pairs_per_chain:
+            return f">101\n{sequence}\n", None
+        return self._run(sequence, paired=True)
+
+    def search_complex(
+        self, sequences: Sequence[str], *, mode: str = COMPLEX_PAIRING_MODE
+    ) -> ComplexPairPayload:
         """Pair a complex in one job, the way OpenFold3 v0.5.0 does.
 
         The sequences are submitted together as queries 101, 102, ... and the
-        returned ``pair.a3m`` is split back into one block per query.
+        returned ``pair.a3m`` is split back into one block per query. ``mode``
+        is ``pairgreedy-env`` (OpenFold3's and Boltz-2's default),
+        ``paircomplete-env``, or either without ``-env`` (Protenix's and
+        OpenDDE's).
         """
+        if mode not in COMPLEX_PAIRING_MODES:
+            raise ValueError(f"unknown complex pairing mode {mode!r}")
         query = "".join(
             f">{101 + index}\n{sequence}\n" for index, sequence in enumerate(sequences)
         )
         (text,), job_id = self._submit(
             query,
-            mode=COMPLEX_PAIRING_MODE,
+            mode=mode,
             endpoint="ticket/pair",
             names=("pair.a3m",),
         )
@@ -1254,7 +1364,7 @@ class RemoteMMseqs2Client:
             raise SearchError(f"remote paired MSA has no block for queries {missing}")
         return ComplexPairPayload(
             tuple(blocks[number] for number in numbers),
-            {"paired_job_id": job_id, "mode": COMPLEX_PAIRING_MODE},
+            {"paired_job_id": job_id, "mode": mode},
         )
 
     def _submit(
@@ -1335,7 +1445,7 @@ class RemoteMMseqs2Client:
 
     def search(self, sequence: str) -> MsaPayload:
         unpaired, unpaired_job = self._run(sequence, paired=False)
-        paired, paired_job = self._run(sequence, paired=True)
+        paired, paired_job = self._paired_for(sequence)
         return MsaPayload(
             paired,
             unpaired,
@@ -1376,7 +1486,7 @@ class RemoteMMseqs2Client:
                 continue
             for sequence, text in zip(chunk, unpaired, strict=True):
                 try:
-                    paired, paired_job = self._run(sequence, paired=True)
+                    paired, paired_job = self._paired_for(sequence)
                 except (SearchError, TimeoutError, OSError) as error:
                     outcomes.append(error)
                     continue

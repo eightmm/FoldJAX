@@ -47,6 +47,9 @@ class ModelConfig:
     msa_search: str = "none"
     template_search: str = "none"
     template_max_date: str | None = None
+    #: `PredictionRequest.msa_pairing` and `.template_dir`.
+    msa_pairing: str = "model"
+    template_dir: Path | None = None
 
     def __post_init__(self):
         for name in ("msa_depth", "trunk_passes", "samples", "steps"):
@@ -211,6 +214,8 @@ class Model:
             msa=self.config.msa_search,
             templates=self.config.template_search,
             template_max_date=self.config.template_max_date,
+            msa_pairing=self.config.msa_pairing,
+            template_dir=self.config.template_dir,
             representations=outputs,
             stop_after=stage,
             padding=self.execution.padding,

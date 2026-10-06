@@ -312,6 +312,16 @@ def resolve_request(
         )
     if options != request.options:
         updates["options"] = options
+    if request.preset is not None:
+        from foldjax.presets import preset_updates
+
+        updates.update(
+            preset_updates(
+                request,
+                model=backend.name,
+                profile=updates.get("profile", request.profile),
+            )
+        )
     if request.output_dir is None:
         # Preserve the scalar API's original output contract. Plural requests
         # add the model namespace in ``resolve_requests`` because they need it
@@ -362,6 +372,8 @@ def preflight(request: PredictionRequest, *, backend: Backend | None = None) -> 
             msa=request.msa,
             options=backend.apply_sampling(request),
             templates=request.templates,
+            msa_pairing=request.msa_pairing,
+            template_dir=request.template_dir,
         )
     except (ValueError, FileNotFoundError) as error:
         if request.source is None:
@@ -1477,6 +1489,8 @@ def _predict_once(
     template_search: list[dict[str, Any]] | None = None
     # The same for `msa="auto"`/`"required"`, failures included.
     msa_search: list[dict[str, Any]] | None = None
+    # Each chain's alignment depth and Neff; None for native input.
+    msa_stats: list[dict[str, Any]] | None = None
     # A common job's pocket and contact constraints: each as written into
     # the native input, with the distance it runs at, and any dropped as
     # upstream drops them.
@@ -1486,6 +1500,7 @@ def _predict_once(
         ignored_msas = []
         ignored_templates = []
         constraints = []
+        msa_stats = []
         if request.templates != "none":
             template_search = []
         if request.msa in ("auto", "required"):
@@ -1507,6 +1522,9 @@ def _predict_once(
                     msa_search=msa_search,
                     ignored_constraints=common_ignored_constraints,
                     constraints=constraints,
+                    msa_pairing=request.msa_pairing,
+                    template_dir=request.template_dir,
+                    msa_stats=msa_stats,
                 )
             except (ValueError, FileNotFoundError) as error:
                 # The generated document is an implementation detail; the
@@ -1654,6 +1672,7 @@ def _predict_once(
         template_search=template_search,
         constraints=constraints,
         msa_search=msa_search,
+        msa_stats=msa_stats,
     )
     return result
 

@@ -1834,6 +1834,85 @@ def _a3m_rows(text: str) -> list[str]:
     return rows
 
 
+def row_species_a3m(paired: str) -> str:
+    """One chain's block of a complex pairing search, as Protenix's ColabFold
+    mode writes its ``pairing.a3m``.
+
+    Upstream (web_service/colab_request_utils.py:313-345) names the query
+    ``>query`` and suffixes every hit's accession with its row number,
+    ``>UniRef100_<accession>_<row>/<rest>``, so the species its featurizer
+    reads (``_UNIREF_REGEX``, ``^UniRef100_[^_]+_([^_/]+)``) is the row: rows
+    with one number are paired across chains, which is how the server aligned
+    them. Two departures, neither changing a row that upstream pairs: the row
+    is the record's position, where upstream numbers a dict keyed by header
+    text that would shift every later row past a repeated header; and a
+    header without the ``UniRef100_`` prefix gets it, with ``_`` and ``/``
+    in the accession replaced so the regex cannot read another field.
+    """
+    out: list[str] = []
+    for index, (header, row) in enumerate(_a3m_records(paired)):
+        if index == 0:
+            out.append(f">query\n{row}\n")
+            continue
+        accession, tab, rest = header.partition("\t")
+        accession = accession.split()[0] if accession.split() else ""
+        accession = accession.removeprefix("UniRef100_")
+        accession = accession.replace("_", "-").replace("/", "-") or "hit"
+        out.append(f">UniRef100_{accession}_{index}/{tab}{rest}\n{row}\n")
+    return "".join(out)
+
+
+def _a3m_records(text: str) -> list[tuple[str, str]]:
+    """An A3M's (header without ``>``, sequence) records, as `_a3m_rows` reads them."""
+    records: list[tuple[str, str]] = []
+    header: str | None = None
+    current: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith(">"):
+            if header is not None:
+                records.append((header, "".join(current)))
+            header, current = line[1:], []
+        elif header is not None:
+            current.append(line)
+    if header is not None:
+        records.append((header, "".join(current)))
+    return records
+
+
+def _protenix_row_paired(
+    job: dict[str, Any], base: Path, destination: Path
+) -> dict[int, str]:
+    """Write each searched complex block as `row_species_a3m`; entity index -> path.
+
+    The search refused blocks of different depths before caching them
+    (`MsaSearchPipeline._complex_materialize`), so row *i* is one paired row.
+    """
+    from foldjax.msa_search import ROW_PAIRED_MSA
+
+    texts = {
+        index: Path(_path(entity["paired_msa"], base)).read_text(encoding="utf-8")
+        for index, entity in enumerate(job["entities"])
+        if entity.get(ROW_PAIRED_MSA) and entity.get("paired_msa")
+    }
+    if not texts:
+        return {}
+    msa_root = destination / "msa"
+    if msa_root.is_symlink():
+        raise ValueError(f"generated MSA directory is a symlink: {msa_root}")
+    msa_root.mkdir(parents=True, exist_ok=True)
+    if not msa_root.resolve().is_relative_to(destination.resolve()):
+        raise ValueError(f"generated MSA directory escapes output root: {msa_root}")
+    paths: dict[int, str] = {}
+    for index, text in texts.items():
+        target = msa_root / f"entity_{index:04d}_pairing.a3m"
+        _write_text_atomic(target, row_species_a3m(text))
+        paths[index] = str(target.resolve())
+    return paths
+
+
 def boltz_server_msa_csv(paired: str, unpaired: str) -> str:
     """Upstream Boltz's per-entity CSV from a paired and an unpaired A3M.
 
@@ -2262,6 +2341,9 @@ def _protenix(
     # Protenix addresses covalent bonds by 1-based entity number and copy index
     # rather than by chain id, and derives both from this sequences list.
     endpoints: dict[str, tuple[int, int]] = {}
+    # A searched complex block is written as upstream's ColabFold mode writes
+    # it, so its rows pair by number; a caller's paired_msa passes untouched.
+    row_paired = _protenix_row_paired(job, base, destination)
     for entity_number, entity in enumerate(job["entities"], start=1):
         kind = entity["type"]
         ids = _ids(entity)
@@ -2280,7 +2362,9 @@ def _protenix(
             body["sequence"] = str(entity["sequence"])
             if entity.get("unpaired_msa"):
                 body["unpairedMsaPath"] = _path(entity["unpaired_msa"], base)
-            if entity.get("paired_msa"):
+            if entity_number - 1 in row_paired:
+                body["pairedMsaPath"] = row_paired[entity_number - 1]
+            elif entity.get("paired_msa"):
                 body["pairedMsaPath"] = _path(entity["paired_msa"], base)
             # Protenix requires the CCD_ prefix on modification types.
             modifications = _modifications(entity)
@@ -2979,6 +3063,8 @@ def _checked_common_job(
     ignored_templates: list[dict[str, Any]] | None = None,
     ignored_constraints: list[dict[str, Any]] | None = None,
     check_files: bool = False,
+    msa_pairing: str = "model",
+    template_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Read and validate a common job exactly as translation will, writing nothing.
 
@@ -2986,6 +3072,7 @@ def _checked_common_job(
     to exist (`preflight` asks; translation leaves a missing one to the
     backend, which reports it in its own words).
     """
+    from foldjax.msa_search import refuse_msa_pairing
     from foldjax.template_search import refuse_template_search
 
     model = capabilities.model
@@ -2998,7 +3085,13 @@ def _checked_common_job(
         raise ValueError(
             f"templates must be one of {TEMPLATE_POLICIES}; got {templates!r}"
         )
-    refuse_template_search(model, templates, options)
+    refuse_template_search(model, templates, options, template_dir=template_dir)
+    if msa_pairing != "model" and msa not in ("auto", "required"):
+        raise ValueError(
+            f"msa_pairing={msa_pairing!r} chooses how a searched alignment is "
+            "paired; set msa='auto' or 'required' (--msa auto) or drop it"
+        )
+    refuse_msa_pairing(model, msa_pairing)
     source = Path(source)
     job = read_job_document(source)
     if is_jobs_document(job):
@@ -3031,6 +3124,8 @@ def validate_common_input(
     msa: str = "none",
     options: Mapping[str, Any] | None = None,
     templates: str = "none",
+    msa_pairing: str = "model",
+    template_dir: Path | None = None,
 ) -> None:
     """Raise what `materialize_native_input` would raise about this job.
 
@@ -3048,6 +3143,8 @@ def validate_common_input(
         options=options,
         templates=templates,
         check_files=True,
+        msa_pairing=msa_pairing,
+        template_dir=template_dir,
     )
 
 
@@ -3067,8 +3164,17 @@ def materialize_native_input(
     ignored_constraints: list[dict[str, Any]] | None = None,
     constraints: list[dict[str, Any]] | None = None,
     msa_search: list[dict[str, Any]] | None = None,
+    msa_pairing: str = "model",
+    template_dir: Path | None = None,
+    msa_stats: list[dict[str, Any]] | None = None,
 ) -> Path:
     """Translate a FoldJAX JSON document to one backend-native input file.
+
+    ``msa_pairing`` chooses how a searched alignment pairs a complex
+    (`foldjax.msa_search.resolve_pairing`), ``template_dir`` searches a private
+    folder of mmCIFs for templates, and ``msa_stats`` receives each chain's
+    alignment depth and Neff (`foldjax.msa_stats`) as the native input reads
+    it.
 
     ``ignored``, when given, receives one record per alignment the document
     named but the native input leaves out (see ``IGNORE_NUCLEIC_MSA``), and
@@ -3100,6 +3206,8 @@ def materialize_native_input(
         ignored=dropped,
         ignored_templates=dropped_templates,
         ignored_constraints=dropped_constraints,
+        msa_pairing=msa_pairing,
+        template_dir=template_dir,
     )
     if dropped_constraints:
         import warnings
@@ -3185,6 +3293,7 @@ def materialize_native_input(
         policy="none" if msa == "single" else msa,
         model=model,
         search_rna=read is None or "rna" in read,
+        pairing=msa_pairing,
     )
     if msa_search is not None:
         msa_search.extend(searched)
@@ -3206,12 +3315,21 @@ def materialize_native_input(
             max_date=template_max_date,
             destination=output_dir,
             required=templates == "required",
+            template_dir=template_dir,
         )
         _write_text_atomic(
             output_dir / "template_search.json", json.dumps(records, indent=2)
         )
         if template_search is not None:
             template_search.extend(records)
+    if msa_stats is not None:
+        from foldjax.msa_stats import job_msa_stats
+
+        msa_stats.extend(
+            job_msa_stats(
+                job, base, skip={str(record["resolved_path"]) for record in dropped}
+            )
+        )
 
     # Which writer, and its suffix, are the port table's; OpenDDE reads the
     # Protenix dialect, so the two entries name one writer rather than a
