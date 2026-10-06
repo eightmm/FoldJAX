@@ -11,7 +11,8 @@ mesh and keeps resolving from the sample count without one.
 Three kinds of gate, and they answer different questions:
 
 * the **resolution rule** -- which automatic answer an omitted option gets,
-  that an explicit one always wins, and that a serial run is untouched;
+  that an explicit one always wins, and that a serial run is untouched up
+  to the largest measured serial size;
 * the **identity rule** -- the compile profile records the width the run
   resolves to, so the chunked mesh program and the unchunked rollout cannot
   share one cache namespace and an explicitly spelled width that *is* the

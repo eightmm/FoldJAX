@@ -681,7 +681,8 @@ def _blocked_width(n_token: int) -> int | None:
 #: nearest number for this knob is Boltz-2's +33% at 3k tokens
 #: (`docs/scale-rows-master-2026-09-10.md`). A caller who has the room says so
 #: -- any width at or above the sample count, or ``None`` through the Python
-#: API, is the unchunked rollout -- and serial runs are untouched.
+#: API, is the unchunked rollout -- and serial runs keep the whole axis up to
+#: :data:`SERIAL_DIFFUSION_CHUNK_ABOVE_TOKENS`.
 CP_DIFFUSION_CHUNK_SIZE = 1
 
 #: The largest token count a serial run keeps the whole sample axis at when the

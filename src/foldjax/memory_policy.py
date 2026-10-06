@@ -19,7 +19,9 @@ make a job fit: reducing MSA depth changes the prediction, and on this
 repository's own accuracy-admission test it failed. And it never claims more
 than it measured -- outside a law's fitted token range the answer is
 ``unknown`` and the run proceeds, because a refusal from an extrapolation is
-worse than no refusal at all.
+worse than no refusal at all. Below a fitted range a law may still say
+``fits`` where completed runs were checked against it (``admits_from``), and
+never refuses there.
 
 The laws are frozen literals fitted by `tests/calibrate_memory_policy.py`,
 which carries the measurements, the fit and the derivation of each allowance.

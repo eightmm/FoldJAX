@@ -110,7 +110,9 @@ _DEFAULT_DTYPE = "bfloat16"
 
 #: The diffusion sample width `released_config` resolves an omitted
 #: `diffusion_chunk_size` to under a context-parallel mesh. Serially it
-#: resolves from the sample count instead, through the shared
+#: resolves from the sample count instead (and, above
+#: `inference.SERIAL_DIFFUSION_CHUNK_ABOVE_TOKENS`, to this same width once the
+#: token count is known -- see `_resolved_diffusion_chunk_size`), through the shared
 #: `auto_diffusion_chunk_size` imported above -- one name, one constant -- and
 #: this is the other half of that rule. Copied rather than imported for the
 #: same reason as `_DEFAULT_DTYPE`, and a drift test pins the copy to

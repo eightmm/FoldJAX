@@ -78,17 +78,19 @@ separately, so its native provider length cap can bound the automatic LM target.
 
 ## The grid, and the context-parallel mesh
 
-The token grid steps by 256 from 256 to 8,192 -- 32 buckets -- so a bucket
-costs at most one step of padded work over the exact shape: 256 tokens, 12.5%
-at 2k. That bound is the rule; the list of sizes follows from it. A geometric
+The token grid steps by 128 from 128 to 1,024 and by 256 from there to 8,192
+-- 36 buckets -- so a bucket costs at most one step of padded work over the
+exact shape: 256 tokens, 12.5% at 2k. Below 1,024 a 256 step was up to a
+doubling, carried into the derived axes: OpenDDE's 8RG4 padded 373 -> 512
+tokens and 720 -> 1,024 structural tokens at 1.62x its unpadded wall, and now
+pads to 384 and 768. That bound is the rule; the list of sizes follows from it. A geometric
 grid had no such bound, and its gap between 2,048 and 3,072 was the whole cost
 of padding: a 2,096-token Protenix job landed on 3,072 and measured +97% wall
 and +44% peak against its exact shape (376 s / 30.6 GiB versus 191 s / 21.2
 GiB), with the deposited structure unchanged. It now lands on 2,304. The price
-is 32 executables per model to bake rather than 11, which `cache warm`
-amortizes: a bucket is baked once and then hit by every job in its 256-token
-band, which is what lets a deployment pre-bake per bucket and run padded by
-default.
+is 36 executables per model to bake rather than 11, which `cache warm`
+amortizes: a bucket is baked once and then hit by every job in its band, which
+is what lets a deployment pre-bake per bucket and run padded by default.
 
 The grid ends at 8,192 rather than at what one card folds on purpose: context
 parallelism exists to run the targets that do not fit one card, so a grid
