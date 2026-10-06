@@ -447,6 +447,7 @@ def _default_attention_backend(platform: str | None) -> str:
     gpu = str(platform).lower() in {"gpu", "cuda", "rocm"}
     return str(_RELEASED_COMPILE_DEFAULTS["attention_backend"]) if gpu else "xla"
 
+
 #: The CCD release cutoff below which a component's model coordinates may stand
 #: in for a conformer RDKit could not generate. ``run_alphafold.py`` passes its
 #: ``max_template_date`` flag, default 2021-09-30 (``run_alphafold.py:295-297``,
