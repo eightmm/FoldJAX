@@ -293,6 +293,23 @@ def test_boltz_server_csv_is_upstreams_compute_msa() -> None:
     ]
 
 
+def _boltz_accepts_the_msa_fields(native: dict[str, Any]) -> None:
+    """Run Boltz's own schema parser far enough to check the MSA fields.
+
+    Its same-sequence/same-MSA check runs before any chemistry is looked up;
+    with no CCD the parse then stops at the first residue lookup, which is not
+    what this asserts.
+    """
+    from foldjax.models.boltz2.data.parse.schema import parse_boltz_schema
+
+    try:
+        parse_boltz_schema("job", native, {}, None, boltz_2=True)
+    except ValueError as error:
+        assert "share the same MSA" not in str(error), error
+    except (KeyError, AttributeError, TypeError, FileNotFoundError):
+        pass
+
+
 def test_boltz_pairs_a_heteromer_in_one_complex_search(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -317,6 +334,10 @@ def test_boltz_pairs_a_heteromer_in_one_complex_search(
     assert backend.complex_calls == [[SEQUENCE, OTHER_SEQUENCE]]
     paths = [entry["protein"]["msa"] for entry in native["sequences"]]
     assert all(path.endswith(".csv") for path in paths)
+    # One CSV per sequence: Boltz refuses two chains of one sequence naming two
+    # alignments, and its own parser is what says so.
+    assert paths[0] == paths[2] != paths[1]
+    _boltz_accepts_the_msa_fields(native)
     for path, sequence in zip(paths, (SEQUENCE, OTHER_SEQUENCE, SEQUENCE), strict=True):
         lines = Path(path).read_text().splitlines()
         hit = "A" * len(sequence)

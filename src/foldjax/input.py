@@ -1883,6 +1883,7 @@ def _boltz(
     destination: Path | None = None,
 ) -> dict[str, Any]:
     sequences = []
+    server_csvs: dict[str, str] = {}
     for entity_index, entity in enumerate(job["entities"]):
         kind = entity["type"]
         body: dict[str, Any] = {"id": _ids(entity)}
@@ -1904,9 +1905,17 @@ def _boltz(
                     raise ValueError(
                         "a paired Boltz-2 alignment needs a destination directory"
                     )
-                body["msa"] = _boltz_server_csv(
-                    entity, base, destination, entity_index
-                )
+                # One CSV per sequence, named after the first entity carrying
+                # it: Boltz refuses two chains of one sequence naming two
+                # alignments ("All proteins with the same sequence must share
+                # the same MSA!", parse/schema.py), and upstream's search
+                # writes one per sequence too.
+                sequence = str(entity["sequence"])
+                if sequence not in server_csvs:
+                    server_csvs[sequence] = _boltz_server_csv(
+                        entity, base, destination, entity_index
+                    )
+                body["msa"] = server_csvs[sequence]
             elif entity.get("unpaired_msa"):
                 body["msa"] = _path(entity["unpaired_msa"], base)
             elif kind == "protein":
