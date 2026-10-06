@@ -1145,9 +1145,19 @@ def _representation_record(
     }
 
 
-def _sample_record(sample: Any, directory: Path | None) -> dict[str, Any]:
-    """Serialize one sample with a portable path and structure identity."""
+def _sample_record(
+    sample: Any, directory: Path | None, *, position: int | None = None
+) -> dict[str, Any]:
+    """Serialize one sample with a portable path and structure identity.
+
+    ``metadata.sample`` is filled in from ``position`` when the backend left it
+    out, so a reader never has to infer a sample's number from list order.
+    """
     record = sample.summary()
+    if position is not None and isinstance(record.get("metadata"), dict):
+        from foldjax.output import _index
+
+        record["metadata"].setdefault("sample", _index(sample, position))
     path = sample.structure_path
     record["structure_sha256"] = None
     if path is not None:
@@ -1520,7 +1530,10 @@ def describe_run(
         # the law was right -- which is the only way its coefficients ever get
         # corrected. `None` when this model has no fitted law.
         "memory": memory_profile(),
-        "samples": [_sample_record(sample, directory) for sample in result.samples],
+        "samples": [
+            _sample_record(sample, directory, position=position)
+            for position, sample in enumerate(result.samples)
+        ],
         # Which per-sample confidence arrays (`confidence_full.npz`) this run
         # wrote, and why the model's other arrays are absent.
         "confidence_arrays": confidence_arrays.manifest_record(result.samples),

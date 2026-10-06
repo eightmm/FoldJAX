@@ -173,10 +173,13 @@ def _add_predict_arguments(
             "seed values do not change the compiled program. Mutually "
             "exclusive with --seed"
             if cache_warm
-            else "run the job once per seed, into a seed_<n> directory each, "
-            "and return every structure together. The samples from one seed "
-            "are correlated, so this is the usual way to get independent "
-            "predictions. Mutually exclusive with --seed"
+            else "run the job once per seed and return every structure "
+            "together: each seed's native files and run manifest go in "
+            "<output>/seed_<n>, its structures in <output>/seed-<n>_sample-<NN> "
+            "(NN counts from 00 within each seed), and <output>/foldjax_run.json "
+            "lists them all. The samples from one seed are correlated, so this "
+            "is the usual way to get independent predictions. Mutually "
+            "exclusive with --seed"
         ),
     )
     sampling.add_argument(
@@ -1520,6 +1523,16 @@ def _run_predictions(request: PredictionRequest) -> BatchReport:
     return report
 
 
+def _warn_no_structures(path: Path, command: str) -> None:
+    """Say that a directory holds runs but no structure to read."""
+    warnings.warn(
+        f"{command} found 0 structures under {path}: its runs wrote none (a "
+        "--stop-after run) or recorded none that exist",
+        UserWarning,
+        stacklevel=2,
+    )
+
+
 def _render_predictions(results: list[PredictionResult]) -> str:
     """The summary tables for everything that just ran, or a plain fallback.
 
@@ -1698,6 +1711,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         written = compare_directory(
             args.path, out=args.out, samples=args.samples
         )
+        document = json.loads(written["json"].read_text(encoding="utf-8"))
+        if not any(entry.get("structures") for entry in document.get("inputs") or []):
+            _warn_no_structures(args.path, "compare")
         print(json.dumps({key: str(value) for key, value in written.items()}, indent=2))
         return 0
     if args.command == "show" and (args.format != "table" or args.aggregate):
@@ -1708,6 +1724,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.format == "table":
             raise ValueError("--aggregate needs --format csv or --format json")
         rows = results.results_table(results.load_results(args.path))
+        if not any(row.get("structure_path") for row in rows):
+            _warn_no_structures(args.path, "show")
         if args.aggregate:
             rows = results.aggregate_table(rows)
         if args.format == "csv":
@@ -1716,8 +1734,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(rows, indent=2, sort_keys=True, default=str))
         return 0
     if args.command == "show":
+        from foldjax import results
+        from foldjax.api import FAILURES_NAME
+
         entries = report.read_manifests(args.path)
-        if not entries:
+        root = Path(args.path)
+        failures = (
+            list(results.load_results(root).failures)
+            if not args.json
+            and (
+                root.name == FAILURES_NAME
+                or (root.is_dir() and any(root.rglob(FAILURES_NAME)))
+            )
+            else []
+        )
+        if not entries and not failures:
             raise FileNotFoundError(
                 f"no {manifest.MANIFEST_NAME} under {args.path}; a run writes one "
                 "when it finishes"
@@ -1730,8 +1761,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                     sort_keys=True,
                 )
             )
-        else:
-            print(report.render_all(entries))
+            return 0
+        if entries and not any(
+            sample.get("structure_path")
+            for _path, document in entries
+            for sample in document.get("samples") or []
+            if isinstance(sample, dict)
+        ):
+            _warn_no_structures(args.path, "show")
+        blocks = [report.render_all(entries)] if entries else []
+        if failures:
+            blocks.append(report.render_failures(failures))
+        print("\n\n".join(blocks))
         return 0
 
     if not args.quiet:

@@ -40,7 +40,8 @@ from pathlib import Path
 from typing import Any
 
 from foldjax.manifest import MANIFEST_NAME
-from foldjax.report import read_manifests
+from foldjax.report import is_best as report_is_best
+from foldjax.report import read_manifests, sample_indices
 from foldjax.scores import EXECUTION_FIELDS
 from foldjax.summary import common_summary
 
@@ -230,12 +231,8 @@ def _sample_record(
     )
     seed = entry.get("seed")
     seed = int(seed) if isinstance(seed, int) and not isinstance(seed, bool) else -1
-    index = metadata.get("sample")
-    index = (
-        int(index)
-        if isinstance(index, int) and not isinstance(index, bool)
-        else position
-    )
+    # ``position`` is the sample's number within its seed (`sample_indices`).
+    index = position
     structure = _structure(entry.get("structure_path"), manifest, directory, root)
     recorded_digest = entry.get("structure_sha256")
     recorded_digest = recorded_digest if isinstance(recorded_digest, str) else None
@@ -273,12 +270,7 @@ def _sample_record(
         for key in EXECUTION_FIELDS & set(scores):
             execution.setdefault(key, scores.pop(key))
         summary = common_summary(model, scores, structure=structure)
-    is_best = bool(
-        best
-        and best.get("seed") == seed
-        and best.get("sample") == index
-        and (best.get("job") in (None, job))
-    )
+    is_best = report_is_best(best, entry, index)
     return SampleRecord(
         seed=seed,
         sample=index,
@@ -329,7 +321,7 @@ def _run_record(path: Path, manifest: Mapping[str, Any], root: Path) -> RunRecor
             root=root,
             best=best,
         )
-        for position, entry in enumerate(entries)
+        for position, entry in zip(sample_indices(entries), entries, strict=True)
     )
     seeds = tuple(
         int(seed)

@@ -26,6 +26,7 @@ scripts come from `foldjax.results`.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +93,55 @@ def read_manifests(root: Path) -> list[tuple[Path, dict[str, Any]]]:
     ]
 
 
+def sample_indices(samples: list[Any]) -> list[int]:
+    """Each manifest sample's number within its own seed (and job).
+
+    ``metadata.sample`` when recorded. A merged multi-seed manifest written
+    before it was recorded lists every seed's samples in one array, so the
+    fallback counts within the seed rather than across the list.
+    """
+    counters: dict[tuple[Any, Any], int] = {}
+    indices: list[int] = []
+    for sample in samples:
+        metadata = sample.get("metadata") if isinstance(sample, Mapping) else None
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        slot = (
+            sample.get("seed") if isinstance(sample, Mapping) else None,
+            metadata.get("job"),
+        )
+        position = counters.get(slot, 0)
+        counters[slot] = position + 1
+        value = metadata.get("sample")
+        indices.append(
+            value
+            if isinstance(value, int) and not isinstance(value, bool)
+            else position
+        )
+    return indices
+
+
+def is_best(best: Any, sample: Any, index: int) -> bool:
+    """Whether ``sample`` (numbered ``index``) is the manifest's ``best``.
+
+    By structure path when both record one -- a merged manifest written before
+    per-seed numbering recorded ``best.sample`` as a position across seeds --
+    else by seed, sample number and job.
+    """
+    if not isinstance(best, Mapping) or not isinstance(sample, Mapping):
+        return False
+    path = best.get("structure_path")
+    if path and sample.get("structure_path"):
+        return path == sample["structure_path"]
+    metadata = (
+        sample.get("metadata") if isinstance(sample.get("metadata"), Mapping) else {}
+    )
+    return (
+        best.get("seed") == sample.get("seed")
+        and best.get("sample") == index
+        and best.get("job") in (None, metadata.get("job"))
+    )
+
+
 def _score_columns(samples: list[dict[str, Any]], ranking: str | None) -> list[str]:
     """Which score names to show, ranking score first, then the most common."""
     counts: dict[str, int] = {}
@@ -115,6 +165,29 @@ def _relative(path: str | None, base: Path) -> str:
         return str(candidate)
 
 
+def _input_label(manifest: dict[str, Any]) -> str:
+    """The job a run folded: a multi-job file's job by name, else its file."""
+    record = manifest.get("input") if isinstance(manifest.get("input"), dict) else {}
+    source = record.get("source")
+    if isinstance(source, dict) and source.get("name"):
+        return (
+            f"{source['name']}  ({Path(str(source.get('path') or '')).name} "
+            f"jobs[{source.get('index')}])"
+        )
+    path = record.get("path")
+    return Path(str(path)).name if path else "-"
+
+
+def render_failures(failures: list[Any]) -> str:
+    """The footer naming each recorded failure, one line per run."""
+    lines = [f"failed    {len(failures)} run(s)"]
+    for failure in failures:
+        seed = "" if failure.seed is None else f" seed {failure.seed}"
+        label = Path(failure.input).name if failure.input else "-"
+        lines.append(f"  {failure.model} · {label}{seed}: {failure.error}")
+    return "\n".join(lines)
+
+
 def render(manifest: dict[str, Any], *, directory: Path) -> str:
     """One run's header, best structure, and per-sample table."""
     lines: list[str] = []
@@ -127,6 +200,7 @@ def render(manifest: dict[str, Any], *, directory: Path) -> str:
     lines.append(
         f"model     {str(manifest.get('model', '?')):<16s}weights  {label}"
     )
+    lines.append(f"input     {_input_label(manifest)}")
     seeds = ", ".join(str(seed) for seed in manifest.get("seeds") or [])
     lines.append(
         f"samples   {len(samples):<16d}time     "
@@ -147,9 +221,17 @@ def render(manifest: dict[str, Any], *, directory: Path) -> str:
         )
         lines.append(f"phases    {detail}")
     if best:
+        best_index = next(
+            (
+                index
+                for sample, index in zip(samples, sample_indices(samples), strict=True)
+                if is_best(best, sample, index)
+            ),
+            best.get("sample", 0),
+        )
         lines.append(
             f"best      seed {best.get('seed')} / sample "
-            f"{int(best.get('sample', 0)):02d}     "
+            f"{int(best_index):02d}     "
             f"{best.get('score')} {best.get('value')}"
         )
         lines.append(f"          {_relative(best.get('structure_path'), directory)}")
@@ -164,13 +246,7 @@ def render(manifest: dict[str, Any], *, directory: Path) -> str:
     )
     lines.append("")
     lines.append(heading + "  structure")
-    best_slot = (
-        (best.get("seed"), int(best.get("sample", -1))) if best else (None, None)
-    )
-    for position, sample in enumerate(samples):
-        metadata = sample.get("metadata") or {}
-        index = metadata.get("sample")
-        index = position if not isinstance(index, int) else index
+    for sample, index in zip(samples, sample_indices(samples), strict=True):
         scores = sample.get("scores") or {}
         row = f"  {sample.get('seed', '-'):>4}  {index:>6d}"
         for name in columns:
@@ -178,7 +254,7 @@ def render(manifest: dict[str, Any], *, directory: Path) -> str:
             text = "-" if not isinstance(value, (int, float)) else f"{value:.3f}"
             row += f"  {text:>{widths[name]}s}"
         row += f"  {_relative(sample.get('structure_path'), directory)}"
-        if (sample.get("seed"), index) == best_slot:
+        if is_best(best, sample, index):
             row += "  <- best"
         lines.append(row)
     return "\n".join(lines)

@@ -1174,7 +1174,20 @@ def _predict_resolved(
         return None
     combined = PredictionResult(
         model=results[0].model,
-        samples=tuple(sample for result in results for sample in result.samples),
+        # Each seed numbers its samples from 0; the number is written into the
+        # sample so the merged manifest, `show`, the CSV and `best` all report
+        # the per-seed index rather than the position across seeds.
+        samples=tuple(
+            dataclasses.replace(
+                sample,
+                metadata={
+                    **(sample.metadata or {}),
+                    "sample": _sample_index(sample, position),
+                },
+            )
+            for result in results
+            for position, sample in enumerate(result.samples)
+        ),
         output_dir=request.output_dir,
         raw=[result.raw for result in results],
         shape_profile=(
