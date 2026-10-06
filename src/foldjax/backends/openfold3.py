@@ -298,6 +298,12 @@ def _resolved_diffusion_chunk_size(
     is returned as the integer the request carries. A spelling
     `validate_native_options` refuses keeps its raw value, so a request that
     cannot run is never filed under a width that can.
+
+    The namespace is resolved before the token count exists, so a serial run
+    above `inference.SERIAL_DIFFUSION_CHUNK_ABOVE_TOKENS`, whose omitted width
+    realises 1, still files under the sample count's width. That shares a
+    directory, not an executable: those token counts are distinct shapes, and
+    the persistent cache keys on the program.
     """
 
     if requested is None:
