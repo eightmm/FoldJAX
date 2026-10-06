@@ -250,6 +250,16 @@ def _conformer_features(
         molecule_position = np.asarray(molecule_positions, dtype=np.float32).reshape(
             -1, 3
         )
+        # Upstream `featurize_ref_conformers_af3` (featurization/conformer.py:
+        # 141-156): a used atom must have a position, and an unused one --
+        # NaN when the conformer gave it none -- is zeroed *before* centring,
+        # since the masked mean still multiplies it and NaN * 0 is NaN.
+        if np.any(np.isnan(molecule_position[molecule_mask == 1])):
+            raise ValueError(
+                "OpenFold3 reference conformer: valid atoms (mask=1) have NaN "
+                f"coordinates in molecule {molecule_index}"
+            )
+        molecule_position[molecule_mask == 0] = 0.0
         if np.any(molecule_mask):
             molecule_position = _augment_reference_positions(
                 molecule_position, molecule_mask, rng
