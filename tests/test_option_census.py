@@ -581,7 +581,7 @@ def test_the_native_default_of_every_knob_has_a_neutral_spelling(port: str) -> N
     ],
 )
 def test_every_neutral_value_survives_the_port_s_own_validator(
-    name: str, knob: str, value: str, tmp_path
+    name: str, knob: str, value: str, tmp_path, monkeypatch
 ) -> None:
     """The last surface: a value that translates and then dies downstream.
 
@@ -598,6 +598,12 @@ def test_every_neutral_value_survives_the_port_s_own_validator(
     without loading weights or importing a model runtime, which is exactly the
     boundary `validate_request` is specified to respect.
     """
+    from foldjax.models import _pallas_pair
+
+    # Every value on the platform it exists on: Boltz-2 refuses a spelled
+    # `high` (TF32) off a GPU, which `tests/models/boltz2/test_cpu_matmul_
+    # precision.py` pins separately.
+    monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: True)
     backend = get_backend(name)
     job = tmp_path / "job.json"
     job.write_text("{}")
@@ -984,10 +990,10 @@ def test_the_validator_invariant_notices_a_value_the_port_refuses(
         return original(self, options)
 
     test_every_neutral_value_survives_the_port_s_own_validator(
-        "boltz2", "attention_kernel", "tokamax", tmp_path
+        "boltz2", "attention_kernel", "tokamax", tmp_path, monkeypatch
     )
     monkeypatch.setattr(Boltz2Backend, "validate_native_options", narrowed)
     with pytest.raises(ValueError, match="attention_backend must be one of"):
         test_every_neutral_value_survives_the_port_s_own_validator(
-            "boltz2", "attention_kernel", "tokamax", tmp_path
+            "boltz2", "attention_kernel", "tokamax", tmp_path, monkeypatch
         )

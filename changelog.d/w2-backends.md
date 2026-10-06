@@ -82,6 +82,16 @@
   explicit `tokamax` is still refused off a GPU. The native
   `foldjax.models.boltz2.api.predict` keeps its released default.
 
+- **Boltz-2 runs off a GPU without naming a matmul policy.** The released
+  `matmul_precision` is `high`, which is TF32: off a GPU the cuEquivariance
+  reference path handed `TF32_TF32_F32` to `dot_general`, which the CPU
+  refuses, so every CPU affinity stage failed unless the run said
+  `--option matmul_precision=highest`. An omitted policy now resolves to
+  `highest` off a GPU (and stays `high` on one); the cache namespace records
+  the realised value, so a CPU run shares the explicit `highest` entry. An
+  explicit `high` off a GPU is refused while planning, with the spelling that
+  runs. The native `foldjax.models.boltz2.api.predict` keeps its pin.
+
 - **Boltz-2's affinity input is upstream's first-ranked sample.** The affinity
   stage re-featurized the sample with the highest ipTM; upstream scores the
   sample it ranks first by `confidence_score` (`data/write/writer.py:73-79,

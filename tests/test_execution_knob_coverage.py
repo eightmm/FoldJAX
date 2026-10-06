@@ -145,7 +145,7 @@ PINNED_MATMUL_PRECISION = {
 
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_matmul_precision_forks_the_cache_namespace_on_every_backend(
-    backend: str, tmp_path
+    backend: str, tmp_path, monkeypatch
 ) -> None:
     """Two policies are two programs, so two namespaces.
 
@@ -162,9 +162,13 @@ def test_matmul_precision_forks_the_cache_namespace_on_every_backend(
     omitted knob already gets, so it must *not* fork. Getting only the first
     half would have been `pair_residual_dtype` in reverse.
     """
+    from foldjax.models import _pallas_pair
     from foldjax.registry import get_backend
     from foldjax.schema import PredictionRequest
 
+    # On the platform both policies exist on: off a GPU Boltz-2 refuses a
+    # spelled `high` (TF32) and resolves an omitted one to `highest`.
+    monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: True)
     job = tmp_path / "job.json"
     job.write_text("{}")
     port = get_backend(backend)

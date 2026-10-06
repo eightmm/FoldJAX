@@ -406,7 +406,8 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
     from foldjax.models import _pallas_pair
 
     # Off a GPU an omitted GLU realises `xla` (the released fused `tokamax`
-    # cannot run there), so that is the spelling that shares its namespace.
+    # cannot run there) and an omitted matmul policy `highest` (there is no
+    # TF32), so those are the spellings that share its namespace.
     monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: False)
     backend = Boltz2Backend()
     omitted = _request(tmp_path)
@@ -432,7 +433,7 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
             "triangle_backend": "cueq",
             "glu_backend": "xla",
             "pair_residual_dtype": "auto",
-            "matmul_precision": "high",
+            "matmul_precision": "highest",
         },
     )
     neutral = dataclasses.replace(
@@ -450,7 +451,7 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
             "attention_kernel": "auto",
             "triangle_kernel": "auto",
             "glu_backend": "xla",
-            "matmul_precision": "high",
+            "matmul_precision": "highest",
         },
     )
 
@@ -475,7 +476,7 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
         "diffusion_chunk_size": None,
         "affinity_diffusion_chunk_size": None,
         "glu_backend": "xla",
-        "matmul_precision": "high",
+        "matmul_precision": "highest",
     }
     assert backend.cache_profile(native) == backend.cache_profile(omitted)
     assert backend.cache_profile(neutral) == backend.cache_profile(omitted)
@@ -569,7 +570,7 @@ def test_boltz2_inherited_atom_attention_backend_has_one_cache_identity(
 
 
 def test_boltz2_cache_profile_records_the_cp_layout_its_resolver_builds(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch
 ) -> None:
     """Every distributed run names its mesh; only one alias survives the flip.
 
@@ -581,6 +582,10 @@ def test_boltz2_cache_profile_records_the_cp_layout_its_resolver_builds(
     "recorded before the grid became the default" rather than becoming a third
     name for one of the two layouts.
     """
+    from foldjax.models import _pallas_pair
+
+    # A GPU host, where the released `high` policy is what an omitted knob runs.
+    monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: True)
     backend = Boltz2Backend()
     request = _request(tmp_path)
     cp_omitted = dataclasses.replace(request, options={"cp_devices": 4})
@@ -831,7 +836,12 @@ def test_boltz2_nondefault_compile_options_keep_distinct_namespaces(
     tmp_path: Path,
     request_fields: dict[str, object],
     options: dict[str, object],
+    monkeypatch,
 ) -> None:
+    from foldjax.models import _pallas_pair
+
+    # A GPU host: off one an omitted matmul policy already is `highest`.
+    monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: True)
     backend = Boltz2Backend()
     omitted = _request(tmp_path)
     changed = dataclasses.replace(omitted, options=options, **request_fields)

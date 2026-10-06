@@ -569,6 +569,37 @@ def _realised_glu_backend(value: object, options: Mapping[str, Any]) -> object:
     return realised
 
 
+def _realised_matmul_precision(value: object) -> str:
+    """The float32 matmul policy this run realises, for `value` spelled or omitted.
+
+    `high` is TF32, which exists only on a GPU: off one, the cuEquivariance
+    reference path hands `TF32_TF32_F32` to `dot_general` and the CPU refuses
+    it (`models/_cueq.py`), which is what killed an omitted-precision affinity
+    stage on CPU. So an omitted value is the released `high` on a GPU and
+    `highest` everywhere else -- the policy `docs/parity-cpu.md` already runs
+    CPU replays under -- and an explicit `high` off a GPU is refused rather
+    than rewritten. `cache_profile` and `predict` both call this, so the
+    namespace names the policy that ran.
+    """
+
+    released = str(_RELEASED_COMPILE_DEFAULTS["matmul_precision"])
+    if value is not None and value != "high":
+        return str(value)
+    # Imported here: the probe initialises JAX, and this module stays
+    # import-time JAX-free for planning.
+    from foldjax.models._pallas_pair import gpu_process
+
+    if gpu_process():
+        return released
+    if value is None:
+        return "highest"
+    raise ValueError(
+        "matmul_precision='high' is TF32, which only a GPU has; this process's "
+        "JAX backend has no TF32 and refuses it. Omit it (off a GPU that runs "
+        "`highest`) or pass --option matmul_precision=highest"
+    )
+
+
 def _realised_triangle_attention_grid(grid: object) -> str:
     """The 2-D triangle-attention algorithm this run realises.
 
@@ -936,11 +967,10 @@ class Boltz2Backend(Backend):
         # meaning; spelling the resolved value keeps the old one and still
         # aliases, because an omitted knob leaves the port on
         # `api.MATMUL_PRECISION`, which is what the released default names.
-        profile["matmul_precision"] = str(
-            profile.get(
-                "matmul_precision",
-                _RELEASED_COMPILE_DEFAULTS["matmul_precision"],
-            )
+        # Realised rather than spelled: off a GPU an omitted knob runs
+        # `highest` and shares the explicit `highest` entry.
+        profile["matmul_precision"] = _realised_matmul_precision(
+            profile.get("matmul_precision")
         )
         # ... and keep the three out of the strip, which would otherwise put
         # the released spelling back to absent the moment it equals a default.
@@ -1102,6 +1132,10 @@ class Boltz2Backend(Backend):
         # Here rather than at the admission check: `foldjax plan` runs this and
         # never reaches one, so a misspelled mode fails while planning.
         validate_memory_policy_options(options)
+        # An explicit TF32 policy off a GPU is refused while planning; the
+        # probe runs only when `high` was spelled.
+        if options.get("matmul_precision") == "high":
+            _realised_matmul_precision("high")
         if "num_steps" in options:
             # The published Karras schedule divides by ``num_steps - 1``.  One
             # step therefore produces a NaN schedule and only fails after an
@@ -1401,6 +1435,14 @@ class Boltz2Backend(Backend):
             _primary, affinity = self._request_weight_paths(request)
             self.prepare(affinity_requested=affinity is not None)
         options = self.apply_sampling(request)
+        # Resolved on the options `cache_profile` read. Written into the scope
+        # only where it departs from the port's own pin -- off a GPU -- so a
+        # GPU run's scope is the one it always opened.
+        realised_precision = _realised_matmul_precision(
+            options.get("matmul_precision")
+        )
+        if realised_precision != _RELEASED_COMPILE_DEFAULTS["matmul_precision"]:
+            options["matmul_precision"] = realised_precision
         # Out before `**options` reaches the native signature: no model takes
         # this as an argument, the scope carries it.
         matmul_precision = self.matmul_precision(options)
