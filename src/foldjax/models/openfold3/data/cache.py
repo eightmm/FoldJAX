@@ -13,6 +13,8 @@ from typing import Any
 
 import numpy as np
 
+from foldjax._fsutil import ordinary_file_mode
+
 _DATABASE_NAME = re.compile(r"[A-Za-z0-9_.-]+")
 
 
@@ -34,6 +36,9 @@ def _write_npz_atomic(target: Path, payload: Mapping[str, np.ndarray]) -> Path:
         staged = Path(temporary.name)
     try:
         np.savez_compressed(staged, **payload)
+        # Staged 0600 by `tempfile`; publish with the mode an ordinary write
+        # would give, so a shared cache stays readable to its group.
+        staged.chmod(ordinary_file_mode())
         os.replace(staged, target)
     finally:
         staged.unlink(missing_ok=True)

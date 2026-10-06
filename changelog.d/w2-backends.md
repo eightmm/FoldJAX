@@ -118,7 +118,9 @@
   it up front, naming the channel. The embedder's own refusal now names every
   unweighted channel in a fixed order instead of one arbitrary one.
 
-- **`representations.npz` is written with the umask mode,** not `tempfile`'s
+- **`representations.npz`, OpenFold3's feature archive (`save_features`) and
+  its pre-parsed MSA and template caches (`save_preparsed_msas`,
+  `save_template_cache`) are written with the umask mode,** not `tempfile`'s
   owner-only `0600`, as `confidence_full.npz` and the template mmCIF cache
   already were.
 

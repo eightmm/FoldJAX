@@ -11,6 +11,7 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
+from foldjax._fsutil import ordinary_file_mode
 from foldjax.models.openfold3.data.pocket_constraints import (
     POCKET_SAMPLING_ARRAY_FEATURES,
 )
@@ -980,6 +981,9 @@ def save_features(
         staged = Path(temporary.name)
     try:
         np.savez(staged, **payload)
+        # Staged 0600 by `tempfile`; publish with the mode an ordinary write
+        # would give, like every other file in the run directory.
+        staged.chmod(ordinary_file_mode())
         os.replace(staged, target)
     finally:
         staged.unlink(missing_ok=True)

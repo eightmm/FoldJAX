@@ -66,6 +66,34 @@ def test_save_preparsed_msas_is_public_pickle_free_and_roundtrips(
     assert features["msa"].shape[1] > 1
 
 
+def test_cache_and_feature_archives_get_the_mode_an_ordinary_write_would(
+    tmp_path: Path,
+) -> None:
+    """`tempfile` stages at 0600; a published archive gets ``0666 & ~umask``."""
+    import os
+    import stat
+
+    from foldjax.models.openfold3.data import save_features
+
+    features = featurize_query(_spec())
+    mask = os.umask(0o022)
+    try:
+        msas = save_preparsed_msas(
+            {
+                "colabfold_main": {
+                    "msa": [SEQUENCE],
+                    "deletion_matrix": np.zeros((1, len(SEQUENCE)), dtype=np.int32),
+                }
+            },
+            tmp_path / "msas",
+        )
+        archive = save_features(features, tmp_path / "features.npz")
+    finally:
+        os.umask(mask)
+    assert stat.S_IMODE(msas.stat().st_mode) == 0o644
+    assert stat.S_IMODE(archive.stat().st_mode) == 0o644
+
+
 def test_save_preparsed_msas_rejects_inconsistent_shapes(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="deletion_matrix"):
         save_preparsed_msas(
