@@ -345,5 +345,5 @@
     "Shared Protenix/OpenDDE precision forwarding has unit coverage but no fresh full-output GPU rerun.",
     "Historical independent-RNG and shared-feature controls remain separate evidence."
   ],
-  "documentation": "../../docs/preprocessing-contract-audit.md"
+  "documentation": "../../docs/archive/preprocessing-contract-audit.md"
 }

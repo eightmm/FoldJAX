@@ -2,7 +2,7 @@
 
 This is a partial validation checkpoint dated 2026-09-05, not a release-equivalence claim.
 The finite input-kind panel and its exceptions are recorded in
-[model-versions.md](model-versions.md#expanded-input-kind-panel-2026-09-05).
+[model-versions.md](../model-versions.md#expanded-input-kind-panel-2026-09-05).
 Raw dictionaries are compared before classifying differences; matching their
 intersection does not establish a complete inference contract.
 
@@ -11,7 +11,7 @@ include native-mixed-precision divergence and fixed-tape execution variability.
 Read those results alongside the earlier controls below; a single small FP32
 residual is not a native-default or repeatability guarantee.
 
-The [portable result record](../bench/experiments/independent-input-entity-parity-2026-09-05.json)
+The [portable result record](../../bench/experiments/independent-input-entity-parity-2026-09-05.json)
 retains the 202-cell comparison summary and all five Boltz sample pairs for the
 failed baseline, XLA control, and corrected fused path. Raw tapes and runtime
 logs remain outside the package; publication includes no weights or raw datasets.

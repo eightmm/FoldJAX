@@ -6,7 +6,7 @@ The subsequent [trunk pair-normalization investigation](boltz-trunk-pair-norm-20
 extends production correction to mixed-precision pair blocks; the v24 results
 below remain an immutable historical checkpoint, not the latest source identity.
 Portable metrics and artifact hashes are in
-[`boltz-conditioning-fma-2026-09-07.json`](../bench/experiments/boltz-conditioning-fma-2026-09-07.json).
+[`boltz-conditioning-fma-2026-09-07.json`](../../bench/experiments/boltz-conditioning-fma-2026-09-07.json).
 
 ## What was wrong
 
@@ -129,7 +129,7 @@ from the structure diagnostic. No acceptance threshold was relaxed.
 The same v24 snapshot also ran its own trunk, conditioning, sampler and
 confidence heads with the captured native features/tape, five samples and the
 full native settings. No native intermediate tensor was substituted in this
-run. The [full portable report](../bench/experiments/boltz-amp-5sak-v24-2026-09-07.json)
+run. The [full portable report](../../bench/experiments/boltz-amp-5sak-v24-2026-09-07.json)
 verifies feature/tape entry identities and bound artifacts.
 
 | Full FoldJAX result | Protein max RMSD (Å) | Ligand max RMSD (Å) |

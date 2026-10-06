@@ -211,9 +211,9 @@ bf16 GEMMs to cuBLAS).
 
 Extra rows on the same cases: Protenix `deterministic=on` costs 13% wall at 1k
 (74 vs 65 s) and 9.7% at 3k with Triton gemms disabled (635 vs 579 s;
-`docs/protenix-master-panel-2026-09-09.md`); OpenFold3 `cueq-full` at 3k is
+`docs/archive/protenix-master-panel-2026-09-09.md`); OpenFold3 `cueq-full` at 3k is
 9.2% faster and 6.7 GiB lower than `cueq`
-(`docs/openbind-master-cueq-panel-2026-09-09.md`).
+(`docs/archive/openbind-master-cueq-panel-2026-09-09.md`).
 
 ## Structure agreement without a shared tape
 

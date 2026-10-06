@@ -194,7 +194,7 @@ protein/ligand maxima **0.05585073 / 0.01985762 Å**; maximum atom pLDDT, PAE
 and PDE differences were **0.1966357 points / 0.2830896 Å / 0.2268696 Å**.
 The single recorded native repeat was **0.00658463 / 0.00322312 Å** and
 **0.0873804 points / 0.1334667 Å / 0.0488148 Å**, respectively. These are
-observations from the [existing immutable report](../bench/experiments/opendde-native-policy-panel-2026-09-06.json),
+observations from the [existing immutable report](../../bench/experiments/opendde-native-policy-panel-2026-09-06.json),
 not proof that every cuEq residual is bounded by native variability.
 
 Status is `accepted_known_residuals_for_continuation`; historical strict
@@ -228,7 +228,7 @@ The original three-case FP32 coordinate controls had entity maxima of
 5SAK A=0.041316/L=0.020835 Å, 1URN P=0.025111/R=0.022576 Å and
 3GCA R=0.017798/L=0.006295 Å. Those are historical **confidence-off** runs,
 not current full port acceptance. Their source/artifacts remain in the
-[four-way record](../bench/experiments/opendde-four-way-2026-09-06.json).
+[four-way record](../../bench/experiments/opendde-four-way-2026-09-06.json).
 
 The new `bench.opendde_closure_capture` executes the native forward and the
 public FoldJAX prediction route with captured sampler/MSA replay. It records
@@ -278,7 +278,7 @@ This isolates a genuine implementation correction but is not end-to-end proof.
 
 All 248 native confidence weight leaves match the managed checkpoint bitwise:
 31,067,214 scalar values, with every native confidence key consumed exactly once.
-The [portable weight record](../bench/experiments/opendde-confidence-weights-2026-09-06.json)
+The [portable weight record](../../bench/experiments/opendde-confidence-weights-2026-09-06.json)
 records both checkpoint identities and canonical content digest. Therefore the
 remaining confidence discrepancy is not explained by confidence weight conversion.
 
@@ -351,7 +351,7 @@ nonzero chunk starts, packed/tuple noise, and the final shorter chunk. This is
 not the cause of the unchunked five-sample discrepancy.
 
 Numerical records and arm identities are collected in the
-[progress artifact](../bench/experiments/opendde-closure-progress-2026-09-06.json).
+[progress artifact](../../bench/experiments/opendde-closure-progress-2026-09-06.json).
 This is explicitly an in-progress diagnostic record, not model acceptance.
 
 ### Shared attention FFI correction
@@ -394,7 +394,7 @@ This motivates a full-model XLA-attention control, not a global policy change.
 The installed cuEq FP32 kernel rejects head width 64; that synthetic probe is
 explicitly unsupported, while the width-32 controls complete.
 Per-sample values, strict confidence leaves and observed FFI policies are retained
-in the [precision-boundary record](../bench/experiments/opendde-precision-boundaries-2026-09-06.json).
+in the [precision-boundary record](../../bench/experiments/opendde-precision-boundaries-2026-09-06.json).
 
 The completed native-default TF32 / JAX high **XLA-attention controls** pass
 the structural screen for all seven finite-panel inputs (35 samples):
@@ -424,7 +424,7 @@ PDE max 0.0488148 Å and atom pLDDT max 0.0873804 points. This is one repeat,
 not a statistical error floor or an approved tolerance. In particular, the
 previously proposed 0.05 Å PAE maximum would reject this native repeat too.
 No default switch or confidence-threshold change has been approved. The
-[seven-case native-policy record](../bench/experiments/opendde-native-policy-panel-2026-09-06.json)
+[seven-case native-policy record](../../bench/experiments/opendde-native-policy-panel-2026-09-06.json)
 retains every sample/entity value, all confidence leaves, source/report hashes,
 input gates, observer bridges and native-repeat controls.
 

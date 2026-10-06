@@ -4,7 +4,7 @@ Running this port under the process-wide
 ``XLA_FLAGS=--xla_gpu_deterministic_ops=true`` made it bitwise repeatable
 across processes and moved one master-panel case into the pass band, at 13%
 of its wall time at 1,003 tokens
-(``docs/protenix-master-panel-2026-09-09.md``). An environment variable is
+(``docs/archive/protenix-master-panel-2026-09-09.md``). An environment variable is
 read once per process, so it cannot say "this prediction and not the next
 one", and in a benchmark process it silently reaches every other model.
 

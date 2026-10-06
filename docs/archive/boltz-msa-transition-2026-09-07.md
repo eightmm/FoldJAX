@@ -109,7 +109,7 @@ Angstrom entity diagnostic in this one control. No FP32 coordinate regression
 is observed here; this does not establish mixed-precision parity, confidence
 closure, repeatability, or universal absence of regressions.
 
-[Portable paired report](../bench/experiments/boltz-historical-fp32-2026-09-07.json)
+[Portable paired report](../../bench/experiments/boltz-historical-fp32-2026-09-07.json)
 retains every sample/entity value and binds raw coordinates and provenance.
 The current source snapshot predates the OPM normalization change; that later
 change is BF16-only but is not silently included in this result's source claim.
@@ -139,7 +139,7 @@ Job 404's full 5SAK result remains a failure: protein maximum
 raw/public strict confidence both fail. Final trunk RMSE is s=0.0559386702,
 z=0.0788247444. These are worse than the transition-only full run despite the
 teacher-forced OPM becoming exact. No end-to-end improvement is claimed.
-[Bound full report](../bench/experiments/boltz-amp-5sak-v36-2026-09-07.json).
+[Bound full report](../../bench/experiments/boltz-amp-5sak-v36-2026-09-07.json).
 
 The existing native same-tape repeat was bitwise stable on this case; it does
 not justify absorbing this discrepancy into a native-variability allowance.
@@ -169,8 +169,8 @@ do not claim the OPM repair closes protein/RNA parity.
 Job 406 completed 3GCA: RNA maximum 0.005124026892930201 Angstrom and ligand
 maximum 0.003981299213028154 Angstrom. Structure passes the fixed diagnostic,
 while both raw/public strict confidence fail. Bound full reports for
-[1URN](../bench/experiments/boltz-amp-1urn-v36-2026-09-07.json) and
-[3GCA](../bench/experiments/boltz-amp-3gca-v36-2026-09-07.json) preserve the
+[1URN](../../bench/experiments/boltz-amp-1urn-v36-2026-09-07.json) and
+[3GCA](../../bench/experiments/boltz-amp-3gca-v36-2026-09-07.json) preserve the
 individual values, source identity and separate gates.
 
 PWA native prerequisite job 407 passed on all 4,436 MSA rows: the explicit
@@ -247,7 +247,7 @@ It does not repair inherited head differences: against native the score has
 maximum absolute error 0.000606834888458252, with four strict failures. Both
 raw and public confidence gates still fail. Entity RMSD maxima are RNA
 0.005104914515503814 and ligand 0.004102210082385756 Angstrom, passing structure.
-The [source-bound report](../bench/experiments/boltz-amp-3gca-v40-2026-09-07.json)
+The [source-bound report](../../bench/experiments/boltz-amp-3gca-v40-2026-09-07.json)
 preserves all samples and separate gates; v36 remains an older snapshot.
 
 ### Native raw FP32 output bridge, job 418

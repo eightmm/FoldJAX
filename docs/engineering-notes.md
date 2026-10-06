@@ -400,7 +400,7 @@ six-seed acceptance. Its one 3,012-token outlier appears in **both** dtypes,
 one seed of six each, and the catalase core folds correctly in all twelve arms
 — so the miss is the target's and not the width's. Six seeds do not estimate a
 rate, and the mechanism is not measured. See
-[the OpenFold3 evidence note](openfold3-bf16-default-evidence-2026-09-12.md)
+[the OpenFold3 evidence note](archive/openfold3-bf16-default-evidence-2026-09-12.md)
 for the protocol, the per-arm table and the limits. Earlier accounts that read
 the 3,012-token result as a bfloat16 drift are superseded: they scored one arm
 against the other, which cannot say which arm moved.
@@ -430,7 +430,7 @@ reproduces that region.
 Kept for the record; the correction above replaces it. It read the generic
 `transformers` package rather than the Biohub fork, and its last paragraph
 predates the `dtype` knobs Boltz-2 and OpenFold3 now carry. See
-`esmfold2-msa-entry-observer-2026-09-09.md` for the matched-tape corrections.
+`archive/esmfold2-msa-entry-observer-2026-09-09.md` for the matched-tape corrections.
 
 **ESMFold2 is the undeclared one, found 2026-08-28.** It diverges on element
 width rather than matmul precision; the matmul column has no entry for it.
@@ -855,7 +855,7 @@ auto-versus-auto floor. Protenix's `auto` now resolves the five trunk knobs to
 no chunking up to 3,012 tokens (`PROTENIX_MEASURED_CHUNK_SIZE_THRESHOLDS`);
 OpenDDE keeps upstream's table because its blocked triangle path honors the
 widths. Above 3,012 the upstream value stays, unmeasured on that side. The
-ledger is `docs/scale-rows-master-2026-09-10.md`, "Chunk budgets are inert on
+ledger is `docs/archive/scale-rows-master-2026-09-10.md`, "Chunk budgets are inert on
 the fused paths".
 
 The baseline is the archive's own 3,012-token record rather than a fresh run,

@@ -834,7 +834,7 @@ dtype misses the arm's basin at one seed in six, and neither misses it at a
 seed the other one makes. Six seeds per arm cannot estimate a rate; what they
 do rule out is that the miss belongs to `bfloat16`. The arm's own pLDDT
 reports it locally (83.5 against 90.8–92.8) where the complex mean barely
-moves. [The evidence note](openfold3-bf16-default-evidence-2026-09-12.md)
+moves. [The evidence note](archive/openfold3-bf16-default-evidence-2026-09-12.md)
 carries the protocol and the limits.
 
 "Partial" is the other load-bearing word. A whole-trunk bfloat16 cast, input
@@ -2103,7 +2103,7 @@ arrays, but they are separate compile-cache and feature-cache namespaces, so a
 `restored` run never answers out of a `released` run's cached features. The
 effect on coordinates has not been measured; treat `restored` as an experiment
 until it has been. Background and the reproduction:
-[docs/boltz2-upstream-msa-deletion-regression-2026-09-10.md](boltz2-upstream-msa-deletion-regression-2026-09-10.md).
+[docs/archive/boltz2-upstream-msa-deletion-regression-2026-09-10.md](archive/boltz2-upstream-msa-deletion-regression-2026-09-10.md).
 
 ### `--option diffusion_chunk_size=N`
 

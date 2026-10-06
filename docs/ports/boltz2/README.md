@@ -45,8 +45,8 @@ low-precision inference — selectable per backend without changing weights.
   trunk equality, or native mixed-precision parity. Correlation 1.0 is not
   evidence of bitwise equality, and framework RNG is not the only possible
   source of drift. See the [current matched-input investigation](
-  ../../boltz-trunk-pair-norm-2026-09-07.md) and
-  [historical comparison scope](../../boltz-msa-transition-2026-09-07.md)
+  ../../archive/boltz-trunk-pair-norm-2026-09-07.md) and
+  [historical comparison scope](../../archive/boltz-msa-transition-2026-09-07.md)
   for the unresolved native-policy structure and confidence differences.
 - Performance depends strongly on sample count and kernel policy. In the
   production-size cached benchmark below (five samples), the Torch-compatible

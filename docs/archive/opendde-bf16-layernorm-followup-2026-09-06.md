@@ -38,7 +38,7 @@ Residual BF16 rounding differences remain. Neither bitwise parity nor the
 fixed 1e-4 numerical tolerance is claimed. CPU versus CUDA reduction ordering
 is an additional variable; the queued GPU operator probe tests this separately.
 
-[Per-operator CPU evidence](../bench/experiments/opendde-norm-cpu-2026-09-06.json)
+[Per-operator CPU evidence](../../bench/experiments/opendde-norm-cpu-2026-09-06.json)
 includes native capture hashes and metrics. Native capture job 175 succeeded;
 job 174 failed before inference due to a missing `src` entry in `PYTHONPATH`.
 That failed attempt is retained and not counted as a scientific result.

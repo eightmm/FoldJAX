@@ -242,7 +242,7 @@ Confidence maxima over the five samples: `complex_iplddt` 0.000183,
 
 Native Boltz-2 has no process floor here (A and B are bitwise), so the scale for
 the residual is upstream's own alternate implementation, as
-`docs/boltz2-master-kernel-toggle-2026-09-09.md` established for 5SAK. A third
+`docs/archive/boltz2-master-kernel-toggle-2026-09-09.md` established for 5SAK. A third
 native capture ran the same tape with `use_kernels=False` (job 634, 42 s;
 submitted by another agent, folded in here because this note is the case's
 results record).

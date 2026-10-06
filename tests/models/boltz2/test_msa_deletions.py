@@ -1,7 +1,7 @@
 """The Boltz-2 `msa_deletions` option: released regression vs restored loop.
 
 Upstream Boltz-2 v2.2.0+ zeroes every MSA deletion feature -- see
-`docs/boltz2-upstream-msa-deletion-regression-2026-09-10.md`. The port keeps
+`docs/archive/boltz2-upstream-msa-deletion-regression-2026-09-10.md`. The port keeps
 that released behaviour by default and reinstates the pre-`04d27c71` loop
 behind `msa_deletions=restored`.
 

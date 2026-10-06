@@ -71,7 +71,7 @@ work. A native precision screen is never substituted for that port gate.
 
 ## Evidence and verification
 
-[Portable per-sample records and hashes](../bench/experiments/native-precision-selection-2026-09-06.json)
+[Portable per-sample records and hashes](../../bench/experiments/native-precision-selection-2026-09-06.json)
 contain six paired controls and two repeats (14 successful native predictions,
 five samples each). Native source identity remained unchanged. Artifact hashes
 were rechecked when collecting the report. Failed instrumentation attempts are

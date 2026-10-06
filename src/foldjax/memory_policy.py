@@ -351,7 +351,7 @@ OPENDDE_BF16_PEAK = PeakLaw(
     admits_from=246,
     # 4,040 structural tokens (L2000_5dei, 2,096 residues) has been measured
     # completing on the shipped program: 78,588-78,616 MiB across two jobs
-    # (docs/opendde-2k-single-card-2026-09-24.md) and 77,112.8 on the jctc-v3
+    # (docs/archive/opendde-2k-single-card-2026-09-24.md) and 77,112.8 on the jctc-v3
     # snapshot. The law reads 80.9 GiB there and refused it. The bound is the
     # highest measurement plus the same-snapshot repeat spread (28 MiB):
     # 78,644 MiB, 131 MiB under the 78,775 MiB threshold of the 0.9 pool on the

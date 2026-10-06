@@ -242,7 +242,7 @@ def compute_collinear_mask(v1, v2):
 #: ``released`` reproduces upstream Boltz-2 v2.2.0+ exactly, including the
 #: regression that zeroes every MSA deletion feature.  ``restored`` reinstates
 #: the pre-``04d27c71`` loop.  See
-#: ``docs/boltz2-upstream-msa-deletion-regression-2026-09-10.md``.
+#: ``docs/archive/boltz2-upstream-msa-deletion-regression-2026-09-10.md``.
 MSA_DELETION_MODES = ("released", "restored")
 
 

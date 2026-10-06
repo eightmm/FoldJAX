@@ -4,7 +4,7 @@ The capture is ``protein_rna_1urn`` (118 tokens, 1,225 atoms), the smallest case
 the cuEq master panel admits: 1UBQ and 3GCA are excluded there because native
 cuEq attention falls back to plain attention below 100 tokens, so their numbers
 describe a kernel the panel is not measuring
-(``docs/openbind-master-cueq-panel-2026-09-09.md``).
+(``docs/archive/openbind-master-cueq-panel-2026-09-09.md``).
 
 Two tiers over the same fixture and the same tape:
 
