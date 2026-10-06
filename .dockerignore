@@ -1,0 +1,13 @@
+# Allow-list: the image needs the lockfile, the package source and the files
+# its metadata names. Everything else -- `.venv`, a `.foldjax/` weight store,
+# prediction outputs, benchmarks -- would bloat the context or leak into it.
+*
+!pyproject.toml
+!uv.lock
+!.python-version
+!README.md
+!LICENSE
+!NOTICE
+!src/
+**/__pycache__
+**/*.py[cod]
