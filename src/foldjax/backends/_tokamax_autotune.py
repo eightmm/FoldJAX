@@ -89,8 +89,9 @@ def _tokamax_api():
 # On the GPU, a persistent-cache entry of the AlphaFold 3 program cannot be read
 # back: XLA's ``InlineMetadataPayloadsFromProtoPayloadTable`` refuses it with
 # ``RET_CHECK ... Invalid metadata payload id 201 with payloads size 192`` and
-# every warm process recompiles (jctc-v3 E9: 286 of the AlphaFold 3 warm
-# processes, FoldJAX and DeepMind's own runner alike; no other port). That check
+# the warm process recompiles (jctc-v3 E9: 143 of 160 AlphaFold 3 warm
+# processes -- all 70 of DeepMind's own runner, 73 of 90 FoldJAX ones; the
+# bucket-padded FoldJAX arm read its entries back; no other port). That check
 # only reads instructions that carry a payload, so a program with none cannot
 # fail it. The payload has no effect on the compiled code; the one reader this
 # backend has is the discovery lowering below (``get_bound_args`` finds the ops
