@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from foldjax import memory_policy
-from foldjax.cache import PERSISTENT_CACHE_MIN_COMPILE_SECS
+from foldjax.cache import PERSISTENT_CACHE_MIN_COMPILE_SECS, trusted_compile_cache_dir
 from foldjax.models import _representations
 from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models.opendde.data.compact_categories import (
@@ -593,13 +593,13 @@ def run_prediction(
     if config.compile_cache is not None:
         import jax
 
-        cache = config.compile_cache.expanduser().resolve()
-        cache.mkdir(parents=True, exist_ok=True)
-        jax.config.update("jax_compilation_cache_dir", str(cache))
-        jax.config.update(
-            "jax_persistent_cache_min_compile_time_secs",
-            PERSISTENT_CACHE_MIN_COMPILE_SECS,
-        )
+        cache = trusted_compile_cache_dir(config.compile_cache.expanduser().resolve())
+        if cache is not None:
+            jax.config.update("jax_compilation_cache_dir", str(cache))
+            jax.config.update(
+                "jax_persistent_cache_min_compile_time_secs",
+                PERSISTENT_CACHE_MIN_COMPILE_SECS,
+            )
 
     # Returned so a caller knows which files *this* run produced. FoldJAX used
     # to recover them by globbing the output tree, which cannot tell a
@@ -923,8 +923,17 @@ def run_prediction(
                 model_features = None
                 cycle_msa_features = None
                 if config.stop_after in {"inputs", "trunk"}:
+                    from foldjax.models.protenix.data.output import (
+                        sanitize_job_name,
+                    )
+
+                    # The job's "name" is document data; the structure writer
+                    # sanitizes it the same way before it becomes a path.
                     destination = config.representations_dir or (
-                        config.out / job_name / f"seed_{seed}" / "predictions"
+                        config.out
+                        / sanitize_job_name(job_name)
+                        / f"seed_{seed}"
+                        / "predictions"
                     )
                     archive = _representations.save(
                         destination,

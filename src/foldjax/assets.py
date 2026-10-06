@@ -2386,6 +2386,14 @@ def _stream(item: Download, partial: Path, *, on_progress=None) -> None:
         done = offset
         with open(partial, mode) as handle:
             while chunk := response.read(_CHUNK):
+                if item.size is not None and done + len(chunk) > item.size:
+                    # Stop writing a body longer than the registered file
+                    # rather than filling the disk with it. A ValueError, so
+                    # the oversized prefix is discarded rather than resumed.
+                    raise ValueError(
+                        f"{item.name} sent more than its registered {item.size} "
+                        "bytes; refused"
+                    )
                 handle.write(chunk)
                 done += len(chunk)
                 if on_progress is not None:

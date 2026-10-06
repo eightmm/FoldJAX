@@ -168,7 +168,12 @@ def _rcsb(calls: list | None = None, structures=None, unreachable=()):
 
 
 def _route(tmp_path, monkeypatch, *, m8=M8, structures=None, unreachable=()):
-    """Point `foldjax.template_search` at the fake server and RCSB."""
+    """Point `foldjax.template_search` at the fake server and RCSB.
+
+    A dropped connection is retried with backoff; the fake's are permanent, so
+    the waits between attempts are skipped.
+    """
+    monkeypatch.setattr("foldjax.search.msa.time.sleep", lambda _seconds: None)
     calls: dict[str, list] = {"server": [], "rcsb": []}
     cache = tmp_path / "home" / "templates"
 
@@ -598,6 +603,24 @@ def test_a_generated_file_is_named_from_the_hit_not_the_downloaded_file(
     assert not (tmp_path.parent / "escaped_A.cif").exists()
     assert not list(tmp_path.parent.glob("*scaped*"))
     assert not list(tmp_path.parent.glob("*SCAPED*"))
+
+
+def test_a_planted_template_directory_symlink_is_refused(
+    tmp_path, searched, kalign
+):
+    destination = tmp_path / "out"
+    destination.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (destination / "template_search").symlink_to(outside, target_is_directory=True)
+    job = {"entities": [{"type": "protein", "id": "Q", "sequence": QUERY}]}
+    with pytest.warns(UserWarning, match="symlink"):
+        (record,) = template_search.search_templates(
+            job, "protenix", max_date=None, destination=destination
+        )
+    assert "symlink" in record["error"]
+    assert list(outside.iterdir()) == []
+    assert "templates" not in job["entities"][0]
 
 
 def test_alphafold3_skips_an_author_chain_spanning_two_polymers(

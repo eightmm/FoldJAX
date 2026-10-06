@@ -1165,6 +1165,8 @@ def _predict_once(
     # What `templates="auto"` searched, per chain; None when nothing was asked
     # to search, so the manifest keeps "not searched" apart from "found none".
     template_search: list[dict[str, Any]] | None = None
+    # The same for `msa="auto"`/`"required"`, failures included.
+    msa_search: list[dict[str, Any]] | None = None
     # A common job's pocket and contact constraints: each as written into
     # the native input, with the distance it runs at, and any dropped as
     # upstream drops them.
@@ -1176,6 +1178,8 @@ def _predict_once(
         constraints = []
         if request.templates != "none":
             template_search = []
+        if request.msa in ("auto", "required"):
+            msa_search = []
         with timeline.stage("prepare input"):
             try:
                 native_input = materialize_native_input(
@@ -1190,6 +1194,7 @@ def _predict_once(
                     templates=request.templates,
                     template_max_date=request.template_max_date,
                     template_search=template_search,
+                    msa_search=msa_search,
                     ignored_constraints=common_ignored_constraints,
                     constraints=constraints,
                 )
@@ -1333,6 +1338,7 @@ def _predict_once(
         ignored_constraints=ignored_constraints,
         template_search=template_search,
         constraints=constraints,
+        msa_search=msa_search,
     )
     return result
 

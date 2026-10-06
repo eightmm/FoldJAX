@@ -286,7 +286,7 @@ def save(
                     "description": spec.description if spec is not None else None,
                 }
                 with destination.open(f"{name}.npy", "w", force_zip64=True) as member:
-                    np.lib.format.write_array(member, value, allow_pickle=True)
+                    np.lib.format.write_array(member, value, allow_pickle=False)
                 del value
         staged.replace(archive)
     finally:

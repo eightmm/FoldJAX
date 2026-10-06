@@ -169,6 +169,20 @@ per model, so running one target through three backends searches once.
 wants: the silent fallback it guards against is a *successful* single-sequence
 run. `FOLDJAX_MSA_SERVER_URL` points at a different server, and the URL is part
 of the cache identity, so two servers never read each other's alignments.
+Server URLs (this one, `--msa-remote-url`, Boltz-2's MSA server and
+`FOLDJAX_TEMPLATE_STRUCTURE_URL`) must be `https://`; plain `http://` is
+accepted for loopback hosts, and elsewhere only with
+`FOLDJAX_ALLOW_INSECURE_HTTP=1`. A server that redirects is refused rather than
+followed, so a credential or API-key header never reaches another host.
+A busy server is waited out -- a rate-limited submission is resubmitted, and a
+5xx or dropped connection retried with backoff -- for at most
+`FOLDJAX_MSA_MAX_WAIT_SECONDS` (default 3600) per search.
+Concurrent runs on one sequence search once: the first holds a lock on the
+cache entry and the rest read what it published. An entry whose files no
+longer match their recorded hashes is moved aside as `.<key>.damaged`, with a
+warning naming it, and searched again. Entries are written with the process
+umask, so a group can share `$FOLDJAX_HOME/msa/`; the hashes detect damage,
+not a hostile writer, so a shared cache trusts everyone who can write it.
 For sequences that must not leave the machine — and for RNA, which no public
 endpoint answers — point FoldJAX at a locally installed search instead:
 
@@ -380,7 +394,11 @@ servers never share a file. Only PDB ids go to RCSB.
 `FOLDJAX_TEMPLATE_MMCIF_DIR` is read first: a flat or wwPDB-divided
 (`ab/1abc.cif.gz`) mirror of `.cif` or `.cif.gz` files, a compressed one
 unpacked once into the cache. `FOLDJAX_TEMPLATE_STRUCTURE_URL` changes the
-download source and an empty value turns downloading off. For sequences that must not leave the machine,
+download source and an empty value turns downloading off. A downloaded or
+unpacked file is used only when its data block names the requested entry (and
+parses, where gemmi is installed); a cached file that does not is fetched or
+unpacked again. Files in `FOLDJAX_TEMPLATE_MMCIF_DIR` are read as they are:
+the mirror is trusted, so keep it writable only by you. For sequences that must not leave the machine,
 `FOLDJAX_TEMPLATE_COMMAND` names a local search, called as
 `<command> --input query.fasta --output DIR` and writing `DIR/pdb70.m8` (hits
 named `<pdb id>_<author chain>`); `FOLDJAX_TEMPLATE_LOCAL_VERSION` is part of

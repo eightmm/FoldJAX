@@ -27,13 +27,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from foldjax.redaction import redact
 from foldjax.search.msa import (
+    MAX_REMOTE_BYTES,
     HttpTransport,
     RemoteMMseqs2Client,
     SearchError,
     _normalize_sequence,
+    _send,
     _sha256,
     _urllib_transport,
+    cache_key_lock,
+    publish_directory,
+    quarantine_entry,
+    require_https,
+    resolve_max_wait_seconds,
+    staging_directory,
 )
 
 #: The archive member the ColabFold server writes its PDB70 hits to.
@@ -152,7 +161,7 @@ class RemoteTemplateHitsClient:
         transport: HttpTransport = _urllib_transport,
         timeout: float = 30.0,
         poll_interval: float = 5.0,
-        max_wait_seconds: float = 3600.0,
+        max_wait_seconds: float | None = None,
     ) -> None:
         self._client = RemoteMMseqs2Client(
             host_url,
@@ -296,9 +305,23 @@ class TemplateHitsPipeline:
         normalized = _normalize_sequence(sequence)
         cache_key, identity = self._identity(normalized)
         directory = self.cache_dir / cache_key
-        cached = self._cached(directory, cache_key)
-        if cached is not None:
-            return cached
+        with cache_key_lock(self.cache_dir, cache_key):
+            try:
+                cached = self._cached(directory, cache_key)
+            except SearchError as error:
+                quarantine_entry(directory, cache_key, error)
+                cached = None
+            if cached is not None:
+                return cached
+            return self._materialize(directory, normalized, cache_key, identity)
+
+    def _materialize(
+        self,
+        directory: Path,
+        normalized: str,
+        cache_key: str,
+        identity: Mapping[str, Any],
+    ) -> dict[str, str]:
         payload = self.backend.search(normalized)
         if not isinstance(payload.hits, str):
             raise SearchError("template hits response is missing")
@@ -308,8 +331,7 @@ class TemplateHitsPipeline:
             # Parsed at the boundary so that a malformed answer never enters
             # the cache, where every later run would trip over it.
             raise SearchError(f"template hits are malformed: {exc}") from exc
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        temporary = Path(tempfile.mkdtemp(prefix=f".{cache_key}.", dir=self.cache_dir))
+        temporary = staging_directory(self.cache_dir, cache_key)
         try:
             raw = payload.hits.encode()
             (temporary / HITS_MEMBER).write_bytes(raw)
@@ -321,13 +343,10 @@ class TemplateHitsPipeline:
                 "files": {HITS_MEMBER: {"sha256": _sha256(raw), "bytes": len(raw)}},
             }
             (temporary / "provenance.json").write_text(
-                json.dumps(provenance, indent=2, sort_keys=True) + "\n",
+                json.dumps(redact(provenance), indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            try:
-                temporary.rename(directory)
-            except FileExistsError:
-                shutil.rmtree(temporary)
+            if not publish_directory(temporary, directory):
                 cached = self._cached(directory, cache_key)
                 if cached is None:
                     raise AssertionError("template hits cache disappeared") from None
@@ -358,10 +377,14 @@ class StructureStore:
         base_url: str | None = DEFAULT_STRUCTURE_URL,
         transport: HttpTransport = _urllib_transport,
         timeout: float = 60.0,
+        max_wait_seconds: float | None = None,
     ) -> None:
+        self.max_wait_seconds = resolve_max_wait_seconds(max_wait_seconds)
         self.cache_dir = Path(cache_dir)
         self.local_dir = Path(local_dir) if local_dir else None
         self.base_url = base_url.rstrip("/") if base_url else None
+        if self.base_url is not None:
+            require_https(self.base_url, what="template structure URL")
         self.transport = transport
         self.timeout = timeout
         try:
@@ -398,11 +421,17 @@ class StructureStore:
     def _publish(self, directory: Path, pdb_id: str, body: bytes) -> Path:
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / f"{pdb_id}.cif"
-        with tempfile.NamedTemporaryFile(
-            dir=directory, prefix=f".{pdb_id}.", suffix=".cif", delete=False
-        ) as staged:
-            staged.write(body)
-        os.replace(staged.name, target)
+        # Opened with the umask's mode (a NamedTemporaryFile is 0600, which a
+        # group-shared cache cannot read) and removed if anything fails.
+        staged = directory / f".{pdb_id}.{os.urandom(6).hex()}.cif"
+        handle = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        try:
+            with os.fdopen(handle, "wb") as stream:
+                stream.write(body)
+            os.replace(staged, target)
+        except BaseException:
+            staged.unlink(missing_ok=True)
+            raise
         return target.resolve()
 
     def path(self, pdb_id: str) -> Path:
@@ -418,7 +447,11 @@ class StructureStore:
             # entry is unpacked once into the cache, beside its source's key.
             directory = self.cache_dir / self._source_key(str(local.parent.resolve()))
             unpacked = directory / f"{pdb_id}.cif"
-            if unpacked.is_file() and unpacked.stat().st_mtime >= local.stat().st_mtime:
+            if (
+                unpacked.is_file()
+                and unpacked.stat().st_mtime >= local.stat().st_mtime
+                and _cached_mmcif_is(unpacked, pdb_id)
+            ):
                 return unpacked.resolve()
             import gzip
 
@@ -434,38 +467,65 @@ class StructureStore:
             )
         directory = self.cache_dir / self._source_key(self.base_url)
         cached = directory / f"{pdb_id}.cif"
-        if cached.is_file():
+        # A cached file is only ever this store's own download, but anything
+        # that can write the cache can also leave a different entry -- or a
+        # truncated one -- under the name; such a file is fetched again.
+        if cached.is_file() and _cached_mmcif_is(cached, pdb_id):
             return cached.resolve()
         url = f"{self.base_url}/{pdb_id.upper()}.cif"
-        response = self.transport("GET", url, None, self.headers, self.timeout)
+        response = _send(
+            self.transport,
+            "GET",
+            url,
+            None,
+            self.headers,
+            self.timeout,
+            budget=self.max_wait_seconds,
+            first_delay=1.0,
+            label=f"template structure {pdb_id} download",
+        )
         if response.status != 200:
             raise SearchError(
                 f"template structure {pdb_id} download failed with HTTP "
                 f"{response.status}"
             )
         body = response.body
-        if not body.lstrip().startswith(b"data_"):
-            raise SearchError(f"template structure {pdb_id} is not an mmCIF file")
+        if len(body) > MAX_REMOTE_BYTES:
+            raise SearchError(f"template structure {pdb_id} is implausibly large")
+        if _mmcif_block_name(body[:4096].decode("utf-8", "replace")) != pdb_id:
+            raise SearchError(
+                f"template structure {pdb_id} is not that entry's mmCIF file"
+            )
         return self._publish(directory, pdb_id, body)
-        if self.base_url is None:
-            raise SearchError(
-                f"template structure {pdb_id} is not in the local mirror and "
-                "downloading is disabled"
-            )
-        url = f"{self.base_url}/{pdb_id.upper()}.cif"
-        response = self.transport("GET", url, None, self.headers, self.timeout)
-        if response.status != 200:
-            raise SearchError(
-                f"template structure {pdb_id} download failed with HTTP "
-                f"{response.status}"
-            )
-        body = response.body
-        if not body.lstrip().startswith(b"data_"):
-            raise SearchError(f"template structure {pdb_id} is not an mmCIF file")
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            dir=self.cache_dir, prefix=f".{pdb_id}.", suffix=".cif", delete=False
-        ) as staged:
-            staged.write(body)
-        os.replace(staged.name, cached)
-        return cached.resolve()
+
+
+def _mmcif_block_name(text: str) -> str | None:
+    """The lower-cased name of an mmCIF's first data block, if it has one."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped[:5].lower() == "data_":
+            return stripped[5:].split()[0].lower() if stripped[5:] else None
+        return None
+    return None
+
+
+def _cached_mmcif_is(path: Path, pdb_id: str) -> bool:
+    """Whether a cached file is an mmCIF of ``pdb_id`` that can be parsed."""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            head = handle.read(4096)
+    except OSError:
+        return False
+    if _mmcif_block_name(head) != pdb_id:
+        return False
+    try:
+        import gemmi
+    except ImportError:
+        return True
+    try:
+        gemmi.cif.read(str(path)).sole_block()
+    except (RuntimeError, ValueError):
+        return False
+    return True

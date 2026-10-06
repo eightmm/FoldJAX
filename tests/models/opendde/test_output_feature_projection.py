@@ -542,3 +542,59 @@ def test_trunk_only_cli_does_not_build_an_output_projection(
             inference_params()
         ),
     )
+
+
+def test_a_trunk_only_destination_cannot_leave_the_output_root(
+    tmp_path, monkeypatch
+) -> None:
+    """The native document's "name" is data, not a path component."""
+    input_path = tmp_path / "job.json"
+    input_path.write_text(
+        '[{"name":"../../escaped","sequences":[{"proteinChain":{"sequence":"A"}}]}]',
+        encoding="utf-8",
+    )
+    weights_path = tmp_path / "weights.npz"
+    weights_path.write_bytes(b"fixture")
+    destinations: list[Path] = []
+    monkeypatch.setattr(
+        predict_runner,
+        "_predict",
+        lambda *_args, **_kwargs: {"single": np.zeros((1, 4), np.float32)},
+    )
+    monkeypatch.setattr(
+        predict_runner._representations,
+        "save",
+        lambda destination, *_args, **_kwargs: destinations.append(destination),
+    )
+    out = tmp_path / "nested" / "out"
+    predict_impl.main(
+        [
+            "--input-json",
+            str(input_path),
+            "--weights",
+            str(weights_path),
+            "--out",
+            str(out),
+            "--stop-after",
+            "trunk",
+            "--representations",
+            "single",
+            "--n-sample",
+            "1",
+            "--n-step",
+            "1",
+            "--n-cycle",
+            "1",
+            "--n-queries",
+            "2",
+            "--n-keys",
+            "4",
+        ],
+        _prepared_params_loader=lambda _path, _dtype, _cacheable: (
+            inference_params()
+        ),
+    )
+
+    (destination,) = destinations
+    assert destination.resolve().is_relative_to(out.resolve())
+    assert ".." not in destination.parts

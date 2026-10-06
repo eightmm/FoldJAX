@@ -68,8 +68,12 @@ def test_cache_validation_checks_utf8_after_the_first_entry(tmp_path: Path) -> N
     provenance["files"][paired.name]["sha256"] = hashlib.sha256(raw).hexdigest()
     provenance_path.write_text(json.dumps(provenance), encoding="utf-8")
 
-    with pytest.raises(UnicodeDecodeError):
-        pipeline.search([SEQUENCE])
+    # Detected, and the damaged entry is set aside and searched again rather
+    # than failing every later run of the sequence.
+    with pytest.warns(UserWarning, match="UnicodeDecodeError|can't decode"):
+        again = pipeline.search([SEQUENCE])[0]
+    assert backend.calls == [SEQUENCE, SEQUENCE]
+    assert Path(again["pairedMsaPath"]).read_bytes() == raw[:-1]
 
 
 def test_the_cache_layout_is_fixed(tmp_path: Path) -> None:

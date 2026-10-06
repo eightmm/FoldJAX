@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import re
 import tarfile
 import time
 from collections.abc import Callable, Sequence
@@ -20,6 +21,8 @@ import requests
 from requests.auth import HTTPBasicAuth
 from tqdm import tqdm
 
+from foldjax.search.msa import require_https
+
 logger = logging.getLogger(__name__)
 
 TQDM_BAR_FORMAT = (
@@ -27,6 +30,7 @@ TQDM_BAR_FORMAT = (
 )
 _ACTIVE_STATUSES = frozenset({"UNKNOWN", "RUNNING", "PENDING", "RATELIMIT"})
 _RESUBMIT_STATUSES = frozenset({"UNKNOWN", "RATELIMIT"})
+_JOB_ID = re.compile(r"[A-Za-z0-9_-]+")
 
 
 def _retry(
@@ -39,6 +43,14 @@ def _retry(
     for attempt in range(max_retries + 1):
         try:
             response = operation()
+            if 300 <= response.status_code < 400:
+                # Followed, a redirect would carry an API-key header to any
+                # host, over plain http included; requests strips only
+                # ``Authorization``.
+                raise RuntimeError(
+                    f"MSA server {description} was redirected "
+                    f"(HTTP {response.status_code}); redirects are refused"
+                )
             response.raise_for_status()
             return response
         except requests.RequestException as exc:
@@ -182,6 +194,7 @@ def run_mmseqs2(  # noqa: C901, PLR0912, PLR0915
     host_url = host_url.rstrip("/")
     if not host_url:
         raise ValueError("host_url must not be empty")
+    require_https(host_url, what="MSA server URL")
 
     sequences = [x] if isinstance(x, str) else list(x)
     if any(not sequence for sequence in sequences):
@@ -215,6 +228,7 @@ def run_mmseqs2(  # noqa: C901, PLR0912, PLR0915
                 f"{host_url}/{endpoint}",
                 data={"q": query, "mode": mode},
                 timeout=request_timeout,
+                allow_redirects=False,
                 headers=headers,
                 auth=auth,
             ),
@@ -228,6 +242,7 @@ def run_mmseqs2(  # noqa: C901, PLR0912, PLR0915
             lambda: requests.get(
                 f"{host_url}/ticket/{job_id}",
                 timeout=request_timeout,
+                allow_redirects=False,
                 headers=headers,
                 auth=auth,
             ),
@@ -258,6 +273,9 @@ def run_mmseqs2(  # noqa: C901, PLR0912, PLR0915
             job_id = response.get("id")
             if not isinstance(job_id, str) or not job_id:
                 raise RuntimeError(f"MSA submission response has no job id: {response!r}")
+            if not _JOB_ID.fullmatch(job_id):
+                # It is spliced into the next request's URL path.
+                raise RuntimeError("MSA submission returned an invalid job id")
 
             progress.set_description(state)
             while state in _ACTIVE_STATUSES:
@@ -279,6 +297,7 @@ def run_mmseqs2(  # noqa: C901, PLR0912, PLR0915
                 lambda: requests.get(
                     f"{host_url}/result/download/{job_id}",
                     timeout=request_timeout,
+                    allow_redirects=False,
                     headers=headers,
                     auth=auth,
                 ),

@@ -2429,6 +2429,17 @@ namespace, and options that only affect output formatting never fragment one.
 An eligible, readable entry may be reused across processes; a missing, invalid,
 or runtime-rejected entry recompiles normally.
 
+A cache entry is an executable that JAX runs as found, so FoldJAX uses a cache
+directory only when no other account can write into it or any directory above
+it: each must belong to you (or root) and be writable by neither the world nor
+a group with another member (a root-owned sticky directory such as `/tmp` is
+fine as an ancestor). New cache directories are created without group write
+whatever the umask. Otherwise the run warns once, names the directory and the
+reason, and compiles without a persistent cache. A store shared on purpose --
+a lab's group-writable, setgid cache -- is opted in with
+`FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1`, which trusts every account that can
+write to it.
+
 Warm the exact request before a production run on its deployment GPU:
 
 ```bash

@@ -51,6 +51,24 @@ _DEFAULT_LOCAL_VERSION = "local"
 _COMPLEX_PAIRING = frozenset({"openfold3"})
 
 
+def report_search_failure(message: str) -> None:
+    """Say that a search under ``auto`` failed, once for this input.
+
+    In the CLI it is a progress line. ``warnings.warn`` stays the channel for
+    library callers, but Python's warning registry prints an identical message
+    once per call site, so in a CLI batch every input after the first failed
+    silently.
+    """
+    from foldjax import progress
+
+    if progress.enabled():
+        progress.message(f"  warning: {message}")
+        return
+    import warnings
+
+    warnings.warn(message, UserWarning, stacklevel=4)
+
+
 def _local_command(name: str) -> list[str] | None:
     """A configured local search command, split the way a shell would."""
     import shlex
@@ -114,9 +132,14 @@ def _rna_msa_pipeline() -> Any | None:
 
 
 def msa_search_backend() -> dict[str, Any]:
-    """What a search would use right now, for `foldjax doctor` to report."""
+    """What a search would use right now, for `foldjax doctor` to report.
+
+    Redacted: a command's argv or a server URL can carry a credential.
+    """
+    from foldjax.redaction import redact
+
     protein_command = _local_command(_MSA_COMMAND_ENV)
-    return {
+    report = {
         "protein": (
             {"kind": "local", "command": protein_command}
             if protein_command
@@ -131,6 +154,7 @@ def msa_search_backend() -> dict[str, Any]:
             else {"kind": "unavailable", "setup": _RNA_MSA_COMMAND_ENV}
         ),
     }
+    return redact(report)
 
 
 def _search_alignments(
@@ -203,31 +227,48 @@ def _run_search(
     policy: str,
     paired: bool,
 ) -> list[dict[str, str]]:
-    """Search for these chains and attach what came back."""
+    """Search for these chains and attach what came back.
+
+    Each chain keeps what its own search found: one chain's failure used to
+    drop every chain's alignment. A failed chain is recorded with its
+    ``error`` and reported once for this input.
+    """
     from foldjax.input import _ids
     from foldjax.search.msa import SearchError
 
+    sequences = [str(entity["sequence"]) for entity in entities]
     try:
-        found = pipeline.search([str(entity["sequence"]) for entity in entities])
+        search_each = getattr(pipeline, "search_each", None)
+        if callable(search_each):
+            found = search_each(sequences)
+        else:
+            found = pipeline.search(sequences)
     except (SearchError, TimeoutError, OSError, ValueError) as error:
-        if policy == "required":
-            raise ValueError(
-                f"MSA search failed and msa='required': {error}"
-            ) from error
+        found = [error] * len(entities)
+    failed = [
+        (entity, result)
+        for entity, result in zip(entities, found, strict=True)
+        if isinstance(result, Exception)
+    ]
+    if failed and policy == "required":
+        error = failed[0][1]
+        raise ValueError(f"MSA search failed and msa='required': {error}") from error
+
+    searched = []
+    if failed:
         # `auto` is a convenience, not a promise. A search that could not run
         # must not destroy a job that would have folded from single sequence --
         # but it must also not do so quietly, so the caller sees the reason.
-        import warnings
-
-        warnings.warn(
-            f"MSA search failed ({error}); folding from single sequence",
-            UserWarning,
-            stacklevel=3,
+        reasons = dict.fromkeys(str(result) for _, result in failed)
+        report_search_failure(
+            f"MSA search failed for chain(s) "
+            f"{', '.join(_ids(entity)[0] for entity, _ in failed)} "
+            f"({'; '.join(reasons)}); folding them from single sequence"
         )
-        return []
-
-    searched = []
     for entity, result in zip(entities, found, strict=True):
+        if isinstance(result, Exception):
+            searched.append({"chain": _ids(entity)[0], "error": str(result)})
+            continue
         entity["unpaired_msa"] = result["unpairedMsaPath"]
         if paired and "pairedMsaPath" in result:
             entity["paired_msa"] = result["pairedMsaPath"]
@@ -312,11 +353,11 @@ def _pair_complex(
             raise ValueError(
                 f"paired MSA search failed and msa='required': {error}"
             ) from error
-        warnings.warn(
-            f"paired MSA search failed ({error}); folding without a paired MSA",
-            UserWarning,
-            stacklevel=3,
+        report_search_failure(
+            f"paired MSA search failed ({error}); folding without a paired MSA"
         )
+        for record in searched:
+            record.setdefault("paired_error", str(error))
         return
     records = {record["chain"]: record for record in searched}
     for entity, result in zip(proteins, found, strict=True):

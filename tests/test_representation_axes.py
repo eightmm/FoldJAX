@@ -125,3 +125,22 @@ def test_failed_streamed_write_preserves_archive_and_removes_staging(tmp_path) -
 
     assert archive.read_bytes() == original
     assert not tuple(tmp_path.glob(f".{_representations.ARCHIVE_NAME}.*.tmp"))
+
+
+def test_the_archive_is_written_and_read_without_pickle(tmp_path) -> None:
+    _representations.save(
+        tmp_path,
+        {"single": np.ones((7, 5), dtype=np.float32)},
+        _specs(),
+        model="boltz2",
+    )
+    archive = tmp_path / _representations.ARCHIVE_NAME
+    with np.load(archive, allow_pickle=False) as data:
+        np.testing.assert_array_equal(data["single"], np.ones((7, 5), np.float32))
+    with pytest.raises(ValueError, match="allow_pickle"):
+        _representations.save(
+            tmp_path / "objects",
+            {"lengths": np.array([None], dtype=object)},
+            {},
+            model="boltz2",
+        )

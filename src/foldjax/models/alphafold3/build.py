@@ -458,7 +458,14 @@ def _extract_build_wheel(wheel: Path, package: Path, root: Path) -> None:
                 target = package / f"cpp{_extension_suffix()}"
             elif name.startswith("share/libcifpp/"):
                 relative = Path(name).relative_to("share/libcifpp")
-                target = root / "share" / "libcifpp" / relative
+                data = root / "share" / "libcifpp"
+                target = data / relative
+                # A member name is archive data: ``share/libcifpp/../../x``
+                # must not write outside the data directory.
+                if not target.resolve().is_relative_to(data.resolve()):
+                    raise RuntimeError(
+                        f"AlphaFold 3 build wheel member escapes its directory: {name}"
+                    )
             else:
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)

@@ -1,4 +1,3 @@
-import pickle
 from pathlib import Path
 
 import numpy as np
@@ -6,7 +5,11 @@ import numpy as np
 from foldjax.models.boltz2.data import const
 from foldjax.models.boltz2.data._torch import torch
 from foldjax.models.boltz2.data.feature.featurizerv2 import Boltz2Featurizer
-from foldjax.models.boltz2.data.mol import load_canonicals, load_molecules
+from foldjax.models.boltz2.data.mol import (
+    load_canonicals,
+    load_mol_pickle,
+    load_molecules,
+)
 from foldjax.models.boltz2.data.tokenize.boltz2 import Boltz2Tokenizer
 from foldjax.models.boltz2.data.types import (
     MSA,
@@ -91,7 +94,7 @@ def load_input(
         extra_mol_path = extra_mols_dir / f"{record.id}.pkl"
         if extra_mol_path.exists():
             with extra_mol_path.open("rb") as f:
-                extra_mols = pickle.load(f)  # noqa: S301
+                extra_mols = load_mol_pickle(f)
 
     return Input(
         structure,

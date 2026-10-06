@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import os
 import re
-import warnings
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -33,6 +32,8 @@ from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+from foldjax.redaction import redact
 
 #: A locally installed template search, for sequences that must not leave the
 #: machine. Called as ``<command> --input query.fasta --output DIR``; writes
@@ -300,7 +301,16 @@ def template_search_backend() -> dict[str, Any]:
     from foldjax.msa_search import _DEFAULT_MSA_SERVER, _MSA_SERVER_ENV
 
     command = _local_command(_TEMPLATE_COMMAND_ENV)
-    return {
+    try:
+        structures = _structure_store().describe()
+    except ValueError as error:  # e.g. a plain-http structure URL
+        structures = {
+            "local_dir": os.environ.get(_TEMPLATE_MMCIF_DIR_ENV, "").strip() or None,
+            "url": None,
+            "cache_dir": None,
+            "error": str(error),
+        }
+    report = {
         "hits": (
             {"kind": "local", "command": command}
             if command
@@ -309,13 +319,15 @@ def template_search_backend() -> dict[str, Any]:
                 "host": os.environ.get(_MSA_SERVER_ENV, _DEFAULT_MSA_SERVER),
             }
         ),
-        "structures": _structure_store().describe(),
+        "structures": structures,
         "aligner": (
             "kalign-python"
             if importlib.util.find_spec("kalign") is not None
             else "unavailable (install the templates extra: kalign-python)"
         ),
     }
+    # Printed by `foldjax doctor`: a command's argv or a URL can carry a secret.
+    return redact(report)
 
 
 # --------------------------------------------------------------------------
@@ -734,6 +746,21 @@ def _select(
     return chosen, dict(skipped)
 
 
+def _generated_directory(root: Path, directory: Path) -> None:
+    """Create a generated-file directory that cannot lead outside ``root``.
+
+    The same checks `foldjax.input` applies to its generated ``msa/``: a
+    planted symlink would otherwise receive the template files written here.
+    """
+    if directory.is_symlink():
+        raise ValueError(f"generated template directory is a symlink: {directory}")
+    directory.mkdir(parents=True, exist_ok=True)
+    if not directory.resolve().is_relative_to(root.resolve()):
+        raise ValueError(
+            f"generated template directory escapes output root: {directory}"
+        )
+
+
 def search_templates(
     job: dict[str, Any],
     model: str,
@@ -782,6 +809,9 @@ def search_templates(
             _require_kalign()
         pipeline, source = _hits_pipeline()
         store = _structure_store()
+        generated = destination / "template_search"
+        if policy.observed_chain_file:
+            _generated_directory(destination, generated)
     except (SearchError, ValueError) as error:
         chains = [_ids(entity)[0] for entity in wanted]
         if required:
@@ -797,8 +827,10 @@ def search_templates(
         sequence = str(entity["sequence"])
         record: dict[str, Any] = {
             "chains": chains,
-            "source": source,
-            "structures": store.describe(),
+            # Written to template_search.json and the run manifest: a search
+            # command's argv or a server URL can carry a credential.
+            "source": redact(source),
+            "structures": redact(store.describe()),
             "cutoff": cutoff_record,
             "selection": policy.selection_source,
         }
@@ -812,7 +844,7 @@ def search_templates(
                     policy,
                     cutoff,
                     store,
-                    destination / "template_search",
+                    generated,
                 )
                 memo[sequence] = (found, len(hits), chosen, skipped)
             found, total, chosen, skipped = memo[sequence]
@@ -874,11 +906,12 @@ def _refuse_required(model: str, chains: list[str], error: BaseException | str) 
 def _warn_failed(model: str, chains: list[str], error: BaseException | str) -> None:
     # `auto` is a convenience: a search that could not run must not destroy a
     # job that folds without templates, but it must not do so quietly either.
-    warnings.warn(
+    # The record carries the reason into the manifest; this says it now.
+    from foldjax.msa_search import report_search_failure
+
+    report_search_failure(
         f"{model}: template search for chain(s) {', '.join(chains)} failed "
-        f"({error}); folding without searched templates",
-        UserWarning,
-        stacklevel=4,
+        f"({error}); folding without searched templates"
     )
 
 

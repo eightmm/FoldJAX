@@ -40,7 +40,7 @@ from foldjax.backends.base import (
     Backend,
     validate_memory_policy_options,
 )
-from foldjax.cache import PERSISTENT_CACHE_MIN_COMPILE_SECS
+from foldjax.cache import PERSISTENT_CACHE_MIN_COMPILE_SECS, trusted_compile_cache_dir
 from foldjax.execution import DETERMINISTIC_API_OPTION
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
@@ -1163,8 +1163,10 @@ class AlphaFold3Backend(Backend):
                     "AlphaFold3 common representations require one native job "
                     "per request; split multi-job inputs into separate requests"
                 )
-            if request.cache_dir is not None:
-                request.cache_dir.mkdir(parents=True, exist_ok=True)
+            if (
+                request.cache_dir is not None
+                and trusted_compile_cache_dir(request.cache_dir) is not None
+            ):
                 jax.config.update("jax_compilation_cache_dir", str(request.cache_dir))
                 jax.config.update(
                     "jax_persistent_cache_min_compile_time_secs",

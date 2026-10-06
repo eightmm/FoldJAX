@@ -24,9 +24,13 @@ dependency cycle.
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
+import http.client
 import io
 import json
+import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -35,14 +39,63 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from foldjax.redaction import redact
+
 
 class SearchError(RuntimeError):
     """An MSA provider returned an unusable or incomplete result."""
+
+
+class _UnsplittableTicketError(SearchError):
+    """A shared ticket's result did not separate back into its queries."""
+
+
+#: Set to ``1`` to let a search or download use plain ``http://`` beyond this
+#: machine. Off by default: the query sequence and any credential would cross
+#: the network in clear text. Loopback addresses are always allowed.
+ALLOW_INSECURE_HTTP_ENV = "FOLDJAX_ALLOW_INSECURE_HTTP"
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+#: The most one remote response, or one member of a result archive, may hold.
+#: Generous for the largest alignment or mmCIF a server returns; a server that
+#: sends more is refused before it exhausts memory.
+MAX_REMOTE_BYTES = 1 << 30
+#: Queries per shared unpaired ticket (`RemoteMMseqs2Client.search_many`).
+MAX_QUERIES_PER_TICKET = 16
+#: A server job id is spliced into the next request's URL path.
+_JOB_ID = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def require_https(url: str, *, what: str) -> str:
+    """Return ``url`` when it is https (or loopback / opted-in plain http)."""
+    try:
+        parts = urllib.parse.urlsplit(url.strip())
+        host = parts.hostname
+    except ValueError as exc:
+        raise ValueError(f"{what} is not a valid URL") from exc
+    scheme = parts.scheme.lower()
+    if scheme == "https" and host:
+        return url
+    if scheme == "http" and host:
+        opt_in = os.environ.get(ALLOW_INSECURE_HTTP_ENV, "").strip().lower()
+        if host in _LOOPBACK_HOSTS or opt_in in {"1", "true", "yes", "on"}:
+            return url
+    raise ValueError(
+        f"{what} must be an https:// URL, got {scheme or 'no'} scheme for host "
+        f"{host or '(none)'}; set {ALLOW_INSECURE_HTTP_ENV}=1 to allow plain http"
+    )
+
+
+def validate_job_id(job_id: object) -> str:
+    """A server-issued job id, checked before it becomes part of a URL."""
+    if not isinstance(job_id, str) or not _JOB_ID.fullmatch(job_id):
+        raise SearchError("remote MSA submission returned an invalid job id")
+    return job_id
 
 
 @dataclass(frozen=True)
@@ -181,6 +234,106 @@ def _validate_payload(sequence: str, payload: MsaPayload) -> None:
             )
 
 
+# Cache entries: one directory per key, published by renaming a staged sibling
+# into place. A shared store sees concurrent runs and the occasional damaged
+# entry, and the helpers below are what every search cache does about both.
+# The content hashes in provenance.json catch damage, not a hostile writer:
+# a cache other accounts can write is trusted by everyone who reads it.
+
+
+@contextmanager
+def cache_key_lock(cache_dir: Path, cache_key: str) -> Iterator[None]:
+    """Serialize work on one cache entry across processes, best effort.
+
+    Two runs on one sequence used to search twice and race to publish. Held
+    around check, search and publish, the lock makes the second run wait and
+    then read the first one's entry. It is advisory: where ``flock`` is not
+    honoured (some network filesystems) the publish below still resolves the
+    race, so a lock that cannot be taken is never a failure.
+    """
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - POSIX only
+        yield
+        return
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        handle = os.open(
+            cache_dir / f".{cache_key}.lock",
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0),
+            0o666,
+        )
+    except OSError:
+        yield
+        return
+    try:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        except OSError:
+            pass
+        yield
+    finally:
+        os.close(handle)
+
+
+def staging_directory(cache_dir: Path, cache_key: str) -> Path:
+    """A fresh hidden sibling to build an entry in, with the umask's mode.
+
+    ``tempfile.mkdtemp`` makes it 0700, which the published entry kept, so a
+    store shared by a group could not be read by the rest of it.
+    """
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    while True:
+        path = cache_dir / f".{cache_key}.{os.urandom(6).hex()}"
+        try:
+            os.mkdir(path)
+        except FileExistsError:
+            continue
+        return path
+
+
+def publish_directory(staged: Path, directory: Path) -> bool:
+    """Rename ``staged`` to ``directory``; ``False`` when another run got there.
+
+    Renaming onto an existing *non-empty* directory fails with ``ENOTEMPTY``,
+    not ``FileExistsError``, so the loser of a race used to fail its run.
+    """
+    try:
+        staged.rename(directory)
+    except OSError as exc:
+        if exc.errno not in (errno.EEXIST, errno.ENOTEMPTY):
+            raise
+        shutil.rmtree(staged, ignore_errors=True)
+        return False
+    return True
+
+
+def quarantine_entry(directory: Path, cache_key: str, reason: object) -> None:
+    """Move a damaged entry aside so the next lookup searches again.
+
+    A hash mismatch or a missing file used to fail every later run of that
+    sequence. The entry is kept, once, as ``.<key>.damaged`` for inspection.
+    """
+    import warnings
+
+    aside = directory.parent / f".{cache_key}.damaged"
+    shutil.rmtree(aside, ignore_errors=True)
+    try:
+        directory.rename(aside)
+    except OSError:
+        shutil.rmtree(directory, ignore_errors=True)
+    warnings.warn(
+        f"search cache entry {directory} was damaged ({reason}); moved aside to "
+        f"{aside.name} and searching again",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
+#: What one sequence's search may fail with and leave the others standing.
+_SEARCH_FAILURES = (SearchError, TimeoutError, OSError, ValueError)
+
+
 class MsaSearchPipeline:
     """Cache backend results by sequence plus immutable search provenance."""
 
@@ -259,8 +412,7 @@ class MsaSearchPipeline:
         payload: MsaPayload,
     ) -> dict[str, str]:
         _validate_payload(sequence, payload)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        temp_dir = Path(tempfile.mkdtemp(prefix=f".{cache_key}.", dir=self.cache_dir))
+        temp_dir = staging_directory(self.cache_dir, cache_key)
         try:
             files: dict[str, dict[str, Any]] = {}
             for filename, content in (
@@ -278,13 +430,10 @@ class MsaSearchPipeline:
                 "files": files,
             }
             (temp_dir / "provenance.json").write_text(
-                json.dumps(provenance, indent=2, sort_keys=True) + "\n",
+                json.dumps(redact(provenance), indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            try:
-                temp_dir.rename(directory)
-            except FileExistsError:
-                shutil.rmtree(temp_dir)
+            if not publish_directory(temp_dir, directory):
                 cached = self._cached(directory, sequence, cache_key)
                 if cached is None:
                     raise AssertionError("cache disappeared during materialization")
@@ -294,23 +443,117 @@ class MsaSearchPipeline:
             raise
         return self._paths(directory)
 
+    def _usable(
+        self, directory: Path, sequence: str, cache_key: str
+    ) -> dict[str, str] | None:
+        """The cached entry, or ``None`` after moving a damaged one aside."""
+        try:
+            return self._cached(directory, sequence, cache_key)
+        except (SearchError, UnicodeDecodeError) as error:
+            quarantine_entry(directory, cache_key, error)
+            return None
+
     def search(self, sequences: Sequence[str]) -> list[dict[str, str]]:
+        """One entry per sequence; the first sequence that failed raises."""
+        results = self.search_each(sequences)
+        for result in results:
+            if isinstance(result, Exception):
+                raise result
+        return results  # type: ignore[return-value]
+
+    def search_each(
+        self, sequences: Sequence[str]
+    ) -> list[dict[str, str] | Exception]:
+        """One entry per sequence, or the error that sequence's search raised.
+
+        A failure is the failing sequence's own: the others keep the alignment
+        they found. Sequences missing from the cache go to the backend's
+        ``search_many`` together when it has one (a shared ticket), else one
+        ``search`` at a time; every miss is searched under its cache key's lock.
+        """
         normalized = [_normalize_sequence(sequence) for sequence in sequences]
         if not normalized:
             raise ValueError("at least one protein sequence is required")
-        resolved: dict[str, dict[str, str]] = {}
-        for sequence in dict.fromkeys(normalized):
-            cache_key, identity = self._identity(sequence)
-            directory = self.cache_dir / cache_key
-            cached = self._cached(directory, sequence, cache_key)
-            resolved[sequence] = cached or self._materialize(
-                directory,
-                sequence,
-                cache_key,
-                identity,
-                self.backend.search(sequence),
-            )
-        return [resolved[sequence] for sequence in normalized]
+        identities = {
+            sequence: self._identity(sequence) for sequence in dict.fromkeys(normalized)
+        }
+        outcomes: dict[str, dict[str, str] | Exception] = {}
+        missing: list[str] = []
+        for sequence, (cache_key, _) in identities.items():
+            try:
+                cached = self._cached(self.cache_dir / cache_key, sequence, cache_key)
+            except (SearchError, UnicodeDecodeError):
+                cached = None  # set aside under the lock below
+            if cached is not None:
+                outcomes[sequence] = cached
+            else:
+                missing.append(sequence)
+        search_many = getattr(self.backend, "search_many", None)
+        if callable(search_many) and len(missing) > 1:
+            self._search_together(missing, identities, outcomes, search_many)
+        else:
+            for sequence in missing:
+                cache_key, identity = identities[sequence]
+                directory = self.cache_dir / cache_key
+                try:
+                    with cache_key_lock(self.cache_dir, cache_key):
+                        cached = self._usable(directory, sequence, cache_key)
+                        outcomes[sequence] = cached or self._materialize(
+                            directory,
+                            sequence,
+                            cache_key,
+                            identity,
+                            self.backend.search(sequence),
+                        )
+                except _SEARCH_FAILURES as error:
+                    outcomes[sequence] = error
+        return [outcomes[sequence] for sequence in normalized]
+
+    def _search_together(
+        self,
+        missing: list[str],
+        identities: Mapping[str, tuple[str, dict[str, Any]]],
+        outcomes: dict[str, dict[str, str] | Exception],
+        search_many: Callable[[list[str]], list[MsaPayload | Exception]],
+    ) -> None:
+        with ExitStack() as locks:
+            # Sorted, so two runs taking overlapping sets cannot deadlock.
+            for cache_key in sorted(identities[sequence][0] for sequence in missing):
+                locks.enter_context(cache_key_lock(self.cache_dir, cache_key))
+            still: list[str] = []
+            for sequence in missing:
+                cache_key = identities[sequence][0]
+                cached = self._usable(self.cache_dir / cache_key, sequence, cache_key)
+                if cached is not None:
+                    outcomes[sequence] = cached
+                else:
+                    still.append(sequence)
+            if not still:
+                return
+            try:
+                payloads: list[MsaPayload | Exception] = list(search_many(still))
+            except _SEARCH_FAILURES as error:
+                payloads = [error] * len(still)
+            if len(payloads) != len(still):
+                raise SearchError(
+                    f"MSA backend returned {len(payloads)} results for "
+                    f"{len(still)} sequences"
+                )
+            for sequence, payload in zip(still, payloads, strict=True):
+                if isinstance(payload, Exception):
+                    outcomes[sequence] = payload
+                    continue
+                cache_key, identity = identities[sequence]
+                try:
+                    outcomes[sequence] = self._materialize(
+                        self.cache_dir / cache_key,
+                        sequence,
+                        cache_key,
+                        identity,
+                        payload,
+                    )
+                except _SEARCH_FAILURES as error:
+                    outcomes[sequence] = error
 
     @property
     def pairs_complexes(self) -> bool:
@@ -343,11 +586,19 @@ class MsaSearchPipeline:
         canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
         cache_key = _sha256(canonical.encode())
         directory = self.cache_dir / cache_key
-        paths = self._complex_cached(
-            directory, unique, cache_key
-        ) or self._complex_materialize(
-            directory, unique, cache_key, identity, self.backend.search_complex(unique)
-        )
+        with cache_key_lock(self.cache_dir, cache_key):
+            try:
+                paths = self._complex_cached(directory, unique, cache_key)
+            except (SearchError, UnicodeDecodeError) as error:
+                quarantine_entry(directory, cache_key, error)
+                paths = None
+            paths = paths or self._complex_materialize(
+                directory,
+                unique,
+                cache_key,
+                identity,
+                self.backend.search_complex(unique),
+            )
         by_sequence = dict(zip(unique, paths, strict=True))
         return [by_sequence[sequence] for sequence in normalized]
 
@@ -419,8 +670,7 @@ class MsaSearchPipeline:
                     "paired MSA query does not match requested protein sequence: "
                     f"expected {sequence!r}, got {query!r}"
                 )
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        temp_dir = Path(tempfile.mkdtemp(prefix=f".{cache_key}.", dir=self.cache_dir))
+        temp_dir = staging_directory(self.cache_dir, cache_key)
         try:
             files: dict[str, dict[str, Any]] = {}
             for index, content in enumerate(payload.paired):
@@ -435,13 +685,10 @@ class MsaSearchPipeline:
                 "files": files,
             }
             (temp_dir / "provenance.json").write_text(
-                json.dumps(provenance, indent=2, sort_keys=True) + "\n",
+                json.dumps(redact(provenance), indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            try:
-                temp_dir.rename(directory)
-            except FileExistsError:
-                shutil.rmtree(temp_dir)
+            if not publish_directory(temp_dir, directory):
                 cached = self._complex_cached(directory, sequences, cache_key)
                 if cached is None:
                     raise AssertionError("cache disappeared during materialization")
@@ -572,10 +819,7 @@ class RnaMsaSearchPipeline:
         payload: RnaMsaPayload,
     ) -> dict[str, str]:
         _validate_rna_payload(sequence, payload)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        temporary = Path(
-            tempfile.mkdtemp(prefix=f".{cache_key}.", dir=self.cache_dir)
-        )
+        temporary = staging_directory(self.cache_dir, cache_key)
         try:
             raw = payload.unpaired.encode()
             (temporary / "rna_msa.a3m").write_bytes(raw)
@@ -589,13 +833,10 @@ class RnaMsaSearchPipeline:
                 },
             }
             (temporary / "provenance.json").write_text(
-                json.dumps(provenance, indent=2, sort_keys=True) + "\n",
+                json.dumps(redact(provenance), indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            try:
-                temporary.rename(directory)
-            except FileExistsError:
-                shutil.rmtree(temporary)
+            if not publish_directory(temporary, directory):
                 cached = self._cached(directory, sequence, cache_key)
                 if cached is None:
                     raise AssertionError("RNA MSA cache disappeared")
@@ -613,14 +854,19 @@ class RnaMsaSearchPipeline:
         for sequence in dict.fromkeys(normalized):
             cache_key, identity = self._identity(sequence)
             directory = self.cache_dir / cache_key
-            cached = self._cached(directory, sequence, cache_key)
-            resolved[sequence] = cached or self._materialize(
-                directory,
-                sequence,
-                cache_key,
-                identity,
-                self.backend.search(sequence),
-            )
+            with cache_key_lock(self.cache_dir, cache_key):
+                try:
+                    cached = self._cached(directory, sequence, cache_key)
+                except SearchError as error:
+                    quarantine_entry(directory, cache_key, error)
+                    cached = None
+                resolved[sequence] = cached or self._materialize(
+                    directory,
+                    sequence,
+                    cache_key,
+                    identity,
+                    self.backend.search(sequence),
+                )
         return [resolved[sequence] for sequence in normalized]
 
 
@@ -757,10 +1003,125 @@ def _urllib_transport(
         url, data=data, headers=dict(headers), method=method
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return HttpResponse(response.status, response.read())
+        with _NO_REDIRECT_OPENER.open(request, timeout=timeout) as response:
+            return HttpResponse(response.status, _read_capped(response, url))
     except urllib.error.HTTPError as exc:
-        return HttpResponse(exc.code, exc.read())
+        return HttpResponse(exc.code, _read_capped(exc, url))
+
+
+class _RefuseRedirect(urllib.request.HTTPRedirectHandler):
+    """Return a redirect as its 3xx status instead of following it.
+
+    urllib's own handler resends every header, ``Authorization`` and API keys
+    included, to whatever host the ``Location`` names, ``http://`` included.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_RefuseRedirect)
+
+
+def _read_capped(response: Any, url: str) -> bytes:
+    body = response.read(MAX_REMOTE_BYTES + 1)
+    if len(body) > MAX_REMOTE_BYTES:
+        host = urllib.parse.urlsplit(url).hostname
+        raise SearchError(
+            f"response from {host} exceeds {MAX_REMOTE_BYTES} bytes; refused"
+        )
+    return body
+
+
+#: Seconds one remote search, or one request's retries, may take before it is
+#: abandoned. Overridden by ``FOLDJAX_MSA_MAX_WAIT_SECONDS``.
+MAX_WAIT_ENV = "FOLDJAX_MSA_MAX_WAIT_SECONDS"
+DEFAULT_MAX_WAIT_SECONDS = 3600.0
+#: Answers that mean "try again shortly": capacity (429) and a gateway or
+#: server that is restarting. Anything else is the server's real answer.
+_TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504})
+#: How often a connection failure or 5xx is retried; 429 is waited out for the
+#: whole budget instead, since it is the server asking for exactly that.
+_TRANSIENT_RETRIES = 5
+
+
+def resolve_max_wait_seconds(value: float | None = None) -> float:
+    """``value``, else ``FOLDJAX_MSA_MAX_WAIT_SECONDS``, else one hour."""
+    if value is not None:
+        return float(value)
+    raw = os.environ.get(MAX_WAIT_ENV, "").strip()
+    if not raw:
+        return DEFAULT_MAX_WAIT_SECONDS
+    try:
+        parsed = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{MAX_WAIT_ENV} must be a number of seconds") from exc
+    if parsed <= 0:
+        raise ValueError(f"{MAX_WAIT_ENV} must be positive")
+    return parsed
+
+
+def _send(
+    transport: HttpTransport,
+    method: str,
+    url: str,
+    data: bytes | None,
+    headers: Mapping[str, str],
+    timeout: float,
+    *,
+    budget: float,
+    first_delay: float,
+    label: str,
+) -> HttpResponse:
+    """One request, retried through the failures that are worth waiting out.
+
+    A dropped connection, a truncated body (``http.client.IncompleteRead``,
+    which is not an ``OSError``) or a 5xx is retried a few times with
+    exponential backoff; 429 is waited out for the whole ``budget``. What is
+    still failing at the end is a `SearchError` that names the server, so a
+    caller's ``except SearchError`` sees it rather than a stray exception type.
+    """
+    from foldjax import progress
+
+    host = urllib.parse.urlsplit(url).hostname or url
+    deadline = time.monotonic() + budget
+    delay = max(first_delay, 1.0)
+    retries = 0
+    while True:
+        try:
+            response: HttpResponse | None = transport(
+                method, url, data, headers, timeout
+            )
+        except (OSError, http.client.HTTPException) as exc:
+            response, failure = None, f"{type(exc).__name__}: {exc}"
+        else:
+            assert response is not None
+            if response.status not in _TRANSIENT_STATUSES:
+                return response
+            failure = f"HTTP {response.status}"
+        limited = response is not None and response.status == 429
+        if not limited:
+            retries += 1
+        if time.monotonic() + delay >= deadline:
+            if limited:
+                raise SearchError(
+                    f"{label} was rate-limited for the whole {budget:.0f}s "
+                    f"budget by {host}"
+                )
+            raise SearchError(
+                f"{label} to {host} failed ({failure}) within {budget:.0f}s"
+            )
+        if retries > _TRANSIENT_RETRIES:
+            raise SearchError(
+                f"{label} to {host} failed after {retries} attempts ({failure})"
+            )
+        progress.message(
+            f"  {host}: {label} "
+            + ("rate-limited" if limited else f"failed ({failure})")
+            + f"; retrying in {delay:.0f}s"
+        )
+        time.sleep(delay)
+        delay = min(delay * 2, 60.0)
 
 
 class RemoteMMseqs2Client:
@@ -780,14 +1141,16 @@ class RemoteMMseqs2Client:
         transport: HttpTransport = _urllib_transport,
         timeout: float = 30.0,
         poll_interval: float = 5.0,
-        max_wait_seconds: float = 3600.0,
+        max_wait_seconds: float | None = None,
     ) -> None:
+        max_wait_seconds = resolve_max_wait_seconds(max_wait_seconds)
         if (username is None) != (password is None):
             raise ValueError("remote MSA basic auth requires username and password")
         if username is not None and auth_headers:
             raise ValueError("basic auth and auth_headers are mutually exclusive")
         if not host_url.strip() or not version:
             raise ValueError("remote MSA host URL and version are required")
+        require_https(host_url, what="remote MSA host URL")
         if timeout <= 0 or poll_interval < 0 or max_wait_seconds <= 0:
             raise ValueError("remote MSA timeout values are invalid")
         self.host_url = host_url.rstrip("/")
@@ -820,22 +1183,21 @@ class RemoteMMseqs2Client:
         search fail on a condition whose entire meaning is that it is temporary,
         and lost the queue position of every sequence after it. The wait is
         bounded by ``max_wait_seconds``, the same budget the poll loop uses, so
-        a server that never recovers still ends the search.
+        a server that never recovers still ends the search. A dropped
+        connection or a 5xx is retried a few times the same way (`_send`).
         """
         url = f"{self.host_url}/{path.lstrip('/')}"
-        deadline = time.monotonic() + self.max_wait_seconds
-        delay = max(self.poll_interval, 1.0)
-        while True:
-            response = self.transport(method, url, data, self.headers, self.timeout)
-            if response.status != 429:
-                break
-            if time.monotonic() + delay >= deadline:
-                raise SearchError(
-                    f"remote MSA request {path!r} was rate-limited for the whole "
-                    f"{self.max_wait_seconds:.0f}s budget"
-                )
-            time.sleep(delay)
-            delay = min(delay * 2, 60.0)
+        response = _send(
+            self.transport,
+            method,
+            url,
+            data,
+            self.headers,
+            self.timeout,
+            budget=self.max_wait_seconds,
+            first_delay=self.poll_interval,
+            label=f"remote MSA request {path!r}",
+        )
         if response.status < 200 or response.status >= 300:
             raise SearchError(
                 f"remote MSA request {path!r} failed with HTTP {response.status}"
@@ -899,24 +1261,53 @@ class RemoteMMseqs2Client:
         self, query: str, *, mode: str, endpoint: str, names: Sequence[str]
     ) -> tuple[list[str], str]:
         """Run one ticket to completion and return the named archive members."""
+        from foldjax import progress
+
+        host = urllib.parse.urlsplit(self.host_url).hostname or self.host_url
         data = urllib.parse.urlencode({"q": query, "mode": mode}).encode()
+        deadline = time.monotonic() + self.max_wait_seconds
         response = self._json("POST", endpoint, data)
         state = response["status"]
+        # RATELIMIT or UNKNOWN in answer to a submission means the ticket was
+        # not taken; ColabFold's own client, and Boltz's, submit again. Polling
+        # the id such an answer carries waited on a job that did not exist.
+        delay = max(self.poll_interval, 1.0)
+        while state in {"UNKNOWN", "RATELIMIT"}:
+            if time.monotonic() + delay >= deadline:
+                raise SearchError(
+                    f"remote MSA server {host} answered {state} to every "
+                    f"submission for {self.max_wait_seconds:.0f}s"
+                )
+            progress.message(
+                f"  {host}: MSA submission {state.lower()}; resubmitting in "
+                f"{delay:.0f}s"
+            )
+            time.sleep(delay)
+            delay = min(delay * 2, 60.0)
+            response = self._json("POST", endpoint, data)
+            state = response["status"]
         job_id = response.get("id")
         if state in {"ERROR", "MAINTENANCE"}:
-            raise SearchError(f"remote MSA submission ended with status {state!r}")
+            raise SearchError(
+                f"remote MSA submission to {host} ended with status {state!r}"
+            )
         if not isinstance(job_id, str) or not job_id:
             raise SearchError("remote MSA submission response is missing a job id")
-        deadline = time.monotonic() + self.max_wait_seconds
+        validate_job_id(job_id)
         while state in {"UNKNOWN", "RUNNING", "PENDING", "RATELIMIT"}:
             if time.monotonic() >= deadline:
-                raise TimeoutError(f"remote MSA search {job_id} timed out")
+                raise TimeoutError(
+                    f"remote MSA search {job_id} on {host} did not finish within "
+                    f"{self.max_wait_seconds:.0f}s (set {MAX_WAIT_ENV} to wait longer)"
+                )
             if self.poll_interval:
                 time.sleep(self.poll_interval)
             response = self._json("GET", f"ticket/{job_id}")
             state = response["status"]
         if state != "COMPLETE":
-            raise SearchError(f"remote MSA search {job_id} ended with status {state!r}")
+            raise SearchError(
+                f"remote MSA search {job_id} on {host} ended with status {state!r}"
+            )
         archive = self._request("GET", f"result/download/{job_id}")
         chunks: list[str] = []
         try:
@@ -926,6 +1317,11 @@ class RemoteMMseqs2Client:
                     if not member.isfile():
                         raise SearchError(
                             f"remote MSA archive entry is not a file: {name}"
+                        )
+                    if member.size > MAX_REMOTE_BYTES:
+                        raise SearchError(
+                            f"remote MSA archive entry {name} exceeds "
+                            f"{MAX_REMOTE_BYTES} bytes; refused"
                         )
                     extracted = tar.extractfile(member)
                     if extracted is None:
@@ -945,3 +1341,83 @@ class RemoteMMseqs2Client:
             unpaired,
             {"paired_job_id": paired_job, "unpaired_job_id": unpaired_job},
         )
+
+    def search_many(self, sequences: Sequence[str]) -> list[MsaPayload | Exception]:
+        """`search` for several sequences, the unpaired search in shared tickets.
+
+        Twenty sequences used to cost forty serial tickets. ColabFold's own
+        client and Boltz's submit every query of a run in one ``env`` ticket;
+        that search treats each query on its own, so a query's block in a
+        shared ticket is what its own ticket returns (an inference from those
+        clients, not something this code can check). Each block's query header
+        is renumbered to the ``>101`` a single-query ticket writes, so the
+        cached bytes do not depend on the batching. The per-chain
+        ``paircomplete`` search stays one ticket per sequence: what it pairs
+        depends on which queries share the ticket.
+
+        One entry per sequence: its payload, or the error its search raised.
+        """
+        outcomes: list[MsaPayload | Exception] = []
+        for start in range(0, len(sequences), MAX_QUERIES_PER_TICKET):
+            chunk = list(sequences[start : start + MAX_QUERIES_PER_TICKET])
+            try:
+                unpaired, unpaired_job = self._run_many(chunk)
+            except _UnsplittableTicketError:
+                # A server whose shared result cannot be split per query is
+                # asked one query at a time instead, as before batching.
+                for sequence in chunk:
+                    try:
+                        outcomes.append(self.search(sequence))
+                    except (SearchError, TimeoutError, OSError) as error:
+                        outcomes.append(error)
+                continue
+            except (SearchError, TimeoutError, OSError) as error:
+                outcomes.extend([error] * len(chunk))
+                continue
+            for sequence, text in zip(chunk, unpaired, strict=True):
+                try:
+                    paired, paired_job = self._run(sequence, paired=True)
+                except (SearchError, TimeoutError, OSError) as error:
+                    outcomes.append(error)
+                    continue
+                outcomes.append(
+                    MsaPayload(
+                        paired,
+                        text,
+                        {"paired_job_id": paired_job, "unpaired_job_id": unpaired_job},
+                    )
+                )
+        return outcomes
+
+    def _run_many(self, sequences: Sequence[str]) -> tuple[list[str], str]:
+        """One ``env`` ticket for several queries, split back per query."""
+        names = ("uniref.a3m", "bfd.mgnify30.metaeuk30.smag30.a3m")
+        texts, job_id = self._submit(
+            "".join(
+                f">{101 + index}\n{sequence}\n"
+                for index, sequence in enumerate(sequences)
+            ),
+            mode="env",
+            endpoint="ticket/msa",
+            names=names,
+        )
+        try:
+            members = [
+                _split_colabfold_a3m(text, name) for text, name in zip(texts, names)
+            ]
+        except SearchError as error:
+            raise _UnsplittableTicketError(str(error)) from error
+        unpaired = []
+        for index in range(len(sequences)):
+            number = 101 + index
+            parts = []
+            for blocks, name in zip(members, names, strict=True):
+                if number not in blocks:
+                    raise _UnsplittableTicketError(
+                        f"remote MSA {name} has no block for query {number}"
+                    )
+                block = blocks[number]
+                header, _, rest = block.partition("\n")
+                parts.append(f">101\n{rest}" if header == f">{number}" else block)
+            unpaired.append("".join(parts))
+        return unpaired, job_id
