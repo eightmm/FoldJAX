@@ -900,14 +900,15 @@ def _run(
     # calls. A mini ESM/ISM provider is reconstructed per native invocation;
     # keeping the structure tree would overlap it on the next seed.
     params_loader = _prepared_params_loader or _load_prepared_params
-    if _prepared_params_loader is None:
-        params = params_loader(config.weights, config.trunk_dtype)
-    else:
-        params = params_loader(
-            config.weights,
-            config.trunk_dtype,
-            not used_esm_provider,
-        )
+    with progress.part("weight load"):
+        if _prepared_params_loader is None:
+            params = params_loader(config.weights, config.trunk_dtype)
+        else:
+            params = params_loader(
+                config.weights,
+                config.trunk_dtype,
+                not used_esm_provider,
+            )
     job_seeds = [_resolve_seeds(config, job.get("modelSeeds")) for job in jobs]
     legacy_npz = (
         config.output_format == "npz" and len(jobs) == 1 and len(job_seeds[0]) == 1

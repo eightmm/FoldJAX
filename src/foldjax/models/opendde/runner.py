@@ -686,10 +686,11 @@ def run_prediction(
         # The callback is backend-internal. It receives the parser-validated
         # weight path and compute dtype; direct callers keep the native loader.
         params_loader = _prepared_params_loader or _load_prepared_params
-        if _prepared_params_loader is None:
-            params = params_loader(config.weights, config.trunk_dtype)
-        else:
-            params = params_loader(config.weights, config.trunk_dtype, True)
+        with progress.part("weight load"):
+            if _prepared_params_loader is None:
+                params = params_loader(config.weights, config.trunk_dtype)
+            else:
+                params = params_loader(config.weights, config.trunk_dtype, True)
         if confidence_dtype is not None:
             # After the loader on purpose: `cast_confidence_params` refuses an
             # already-narrowed tree, and the trunk cast never reaches the

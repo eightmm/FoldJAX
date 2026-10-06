@@ -1009,16 +1009,17 @@ def predict(
     )
     if _runtime is not None:
         _runtime.prepare(affinity_requested=affinity_requested)
-    params = (
-        load_params(confidence_weights)
-        if _runtime is None
-        else _runtime.load_params(
-            "primary",
-            confidence_weights,
-            load_params,
-            placement=parameter_identity,
+    with progress.part("weight load"):
+        params = (
+            load_params(confidence_weights)
+            if _runtime is None
+            else _runtime.load_params(
+                "primary",
+                confidence_weights,
+                load_params,
+                placement=parameter_identity,
+            )
         )
-    )
     affinity_model_params = None
     if affinity_requested:
         affinity_path = (
