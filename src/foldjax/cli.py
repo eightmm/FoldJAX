@@ -33,7 +33,9 @@ from foldjax.job import Job
 from foldjax.redaction import public_options
 from foldjax.registry import available_models, capabilities, model_info
 from foldjax.schema import (
+    MSA_PAIRINGS,
     MSA_POLICIES,
+    PRESETS,
     STOP_POINTS,
     TEMPLATE_POLICIES,
     BatchReport,
@@ -43,6 +45,19 @@ from foldjax.schema import (
     PredictionResult,
     expand_input_directories,
 )
+
+
+def _templates_value(value: str) -> str | Path:
+    """``--templates``: a policy, or a private folder of mmCIF files."""
+    if value in TEMPLATE_POLICIES:
+        return value
+    path = Path(value).expanduser()
+    if path.is_dir():
+        return path
+    raise argparse.ArgumentTypeError(
+        f"{value!r} is neither one of {', '.join(TEMPLATE_POLICIES)} nor a "
+        "directory of mmCIF files"
+    )
 
 
 def _add_predict_arguments(
@@ -211,9 +226,23 @@ def _add_predict_arguments(
         "your own instead)",
     )
     source.add_argument(
+        "--msa-pairing",
+        choices=MSA_PAIRINGS,
+        default="model",
+        help="with --msa auto/required: how the searched alignment pairs a "
+        "complex. 'model' (default) is each model's own: OpenFold3 and Boltz-2 "
+        "one ColabFold pairgreedy search over the complex, AlphaFold 3/Protenix/"
+        "OpenDDE a per-chain alignment, ESMFold2 none. 'greedy' and 'complete' "
+        "pair the complex in one search with that ColabFold strategy, for "
+        "OpenFold3 and Boltz-2 (as upstream Boltz's keyed CSV); 'none' delivers "
+        "no paired alignment and skips the per-chain pairing search. Part of "
+        "the MSA cache key and the run manifest",
+    )
+    source.add_argument(
         "--templates",
-        choices=TEMPLATE_POLICIES,
+        type=_templates_value,
         default="none",
+        metavar="{none,auto,required,DIR}",
         help="structural templates for protein chains that name none: 'none' "
         "(default) uses only the job's own, 'auto' searches the ColabFold "
         "MMseqs2 server's PDB70 hits, fetches the structures from RCSB and "
@@ -221,9 +250,12 @@ def _add_predict_arguments(
         "'required' does the same and fails the run when the search cannot run "
         "or keeps nothing. Both SEND THE SEQUENCE to that server "
         "(FOLDJAX_MSA_SERVER_URL points at "
-        "your own; FOLDJAX_TEMPLATE_COMMAND runs a local search). Protenix "
-        "and OpenDDE need --option use_template=true; ESMFold2 has no "
-        "template input",
+        "your own; FOLDJAX_TEMPLATE_COMMAND runs a local search). A directory "
+        "searches that private folder of mmCIF files on this machine instead "
+        "(mmseqs on PATH, else Kalign; refused when neither is installed), as "
+        "'auto', with no release-date cutoff unless --template-max-date is "
+        "given. Protenix and OpenDDE need --option use_template=true; ESMFold2 "
+        "has no template input",
     )
     source.add_argument(
         "--template-max-date",
@@ -252,6 +284,14 @@ def _add_predict_arguments(
             "diffusion sampler and the confidence heads. It writes no "
             "structure, so it only makes sense with --representations."
         ),
+    )
+    sampling.add_argument(
+        "--preset",
+        choices=PRESETS,
+        help="'fast': the reduced steps and recycles the model's publisher "
+        "documents for the checkpoint being run, recorded in the manifest. "
+        "Published only for Protenix's Mini profiles (5 steps, 4 recycles); "
+        "refused elsewhere with the reason",
     )
     sampling.add_argument(
         "--num-samples", type=int, help="how many structures to generate"
@@ -854,6 +894,7 @@ def _request(
         if padding_requested
         else None
     )
+    templates = getattr(args, "templates", "none")
     return PredictionRequest(
         model=args.model[0] if single_model else None,
         models=None if single_model else tuple(args.model),
@@ -875,8 +916,11 @@ def _request(
         options=_memory_options(args, _options(args.option)),
         padding=padding,
         msa=args.msa,
-        templates=getattr(args, "templates", "none"),
+        msa_pairing=getattr(args, "msa_pairing", "model"),
+        templates="auto" if isinstance(templates, Path) else templates,
+        template_dir=templates if isinstance(templates, Path) else None,
         template_max_date=getattr(args, "template_max_date", None),
+        preset=getattr(args, "preset", None),
         representations=getattr(args, "representations", None),
         stop_after=getattr(args, "stop_after", "full"),
         resume=getattr(args, "resume", False),
@@ -1448,6 +1492,9 @@ def _apply_rendezvous_timeout(args: argparse.Namespace) -> None:
 def _plan_summary(
     request: PredictionRequest, *, scratch: Path | None = None
 ) -> dict[str, Any]:
+    from foldjax.msa_search import resolve_pairing
+    from foldjax.presets import preset_record
+
     generated = None
     shown_input = str(request.input)
     if scratch is not None and Path(request.input).is_relative_to(scratch):
@@ -1482,8 +1529,17 @@ def _plan_summary(
         ),
         "seed_source": request.seed_source,
         "msa": request.msa,
+        "msa_pairing": (
+            resolve_pairing(request.model, request.msa_pairing)
+            if request.msa in ("auto", "required")
+            else None
+        ),
         "templates": request.templates,
+        "template_dir": (
+            str(request.template_dir) if request.template_dir is not None else None
+        ),
         "template_max_date": request.template_max_date,
+        "preset": preset_record(request),
         "options": public_options(request.options),
         **_effective_sampling(request),
     }

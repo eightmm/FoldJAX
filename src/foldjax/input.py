@@ -2962,6 +2962,8 @@ def _checked_common_job(
     ignored_templates: list[dict[str, Any]] | None = None,
     ignored_constraints: list[dict[str, Any]] | None = None,
     check_files: bool = False,
+    msa_pairing: str = "model",
+    template_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Read and validate a common job exactly as translation will, writing nothing.
 
@@ -2969,6 +2971,7 @@ def _checked_common_job(
     to exist (`preflight` asks; translation leaves a missing one to the
     backend, which reports it in its own words).
     """
+    from foldjax.msa_search import refuse_msa_pairing
     from foldjax.template_search import refuse_template_search
 
     model = capabilities.model
@@ -2981,7 +2984,13 @@ def _checked_common_job(
         raise ValueError(
             f"templates must be one of {TEMPLATE_POLICIES}; got {templates!r}"
         )
-    refuse_template_search(model, templates, options)
+    refuse_template_search(model, templates, options, template_dir=template_dir)
+    if msa_pairing != "model" and msa not in ("auto", "required"):
+        raise ValueError(
+            f"msa_pairing={msa_pairing!r} chooses how a searched alignment is "
+            "paired; set msa='auto' or 'required' (--msa auto) or drop it"
+        )
+    refuse_msa_pairing(model, msa_pairing)
     source = Path(source)
     job = read_job_document(source)
     if is_jobs_document(job):
@@ -3014,6 +3023,8 @@ def validate_common_input(
     msa: str = "none",
     options: Mapping[str, Any] | None = None,
     templates: str = "none",
+    msa_pairing: str = "model",
+    template_dir: Path | None = None,
 ) -> None:
     """Raise what `materialize_native_input` would raise about this job.
 
@@ -3031,6 +3042,8 @@ def validate_common_input(
         options=options,
         templates=templates,
         check_files=True,
+        msa_pairing=msa_pairing,
+        template_dir=template_dir,
     )
 
 
@@ -3050,8 +3063,17 @@ def materialize_native_input(
     ignored_constraints: list[dict[str, Any]] | None = None,
     constraints: list[dict[str, Any]] | None = None,
     msa_search: list[dict[str, Any]] | None = None,
+    msa_pairing: str = "model",
+    template_dir: Path | None = None,
+    msa_stats: list[dict[str, Any]] | None = None,
 ) -> Path:
     """Translate a FoldJAX JSON document to one backend-native input file.
+
+    ``msa_pairing`` chooses how a searched alignment pairs a complex
+    (`foldjax.msa_search.resolve_pairing`), ``template_dir`` searches a private
+    folder of mmCIFs for templates, and ``msa_stats`` receives each chain's
+    alignment depth and Neff (`foldjax.msa_stats`) as the native input reads
+    it.
 
     ``ignored``, when given, receives one record per alignment the document
     named but the native input leaves out (see ``IGNORE_NUCLEIC_MSA``), and
@@ -3083,6 +3105,8 @@ def materialize_native_input(
         ignored=dropped,
         ignored_templates=dropped_templates,
         ignored_constraints=dropped_constraints,
+        msa_pairing=msa_pairing,
+        template_dir=template_dir,
     )
     if dropped_constraints:
         import warnings
@@ -3168,6 +3192,7 @@ def materialize_native_input(
         policy="none" if msa == "single" else msa,
         model=model,
         search_rna=read is None or "rna" in read,
+        pairing=msa_pairing,
     )
     if msa_search is not None:
         msa_search.extend(searched)
@@ -3189,12 +3214,21 @@ def materialize_native_input(
             max_date=template_max_date,
             destination=output_dir,
             required=templates == "required",
+            template_dir=template_dir,
         )
         _write_text_atomic(
             output_dir / "template_search.json", json.dumps(records, indent=2)
         )
         if template_search is not None:
             template_search.extend(records)
+    if msa_stats is not None:
+        from foldjax.msa_stats import job_msa_stats
+
+        msa_stats.extend(
+            job_msa_stats(
+                job, base, skip={str(record["resolved_path"]) for record in dropped}
+            )
+        )
 
     # Which writer, and its suffix, are the port table's; OpenDDE reads the
     # Protenix dialect, so the two entries name one writer rather than a

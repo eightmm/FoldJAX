@@ -256,7 +256,19 @@ class Backend(ABC):
             request.templates,
             options,
             input_format=request.input_format,
+            template_dir=request.template_dir,
         )
+        if request.msa_pairing != "model":
+            from foldjax.msa_search import refuse_msa_pairing
+
+            if request.input_format != "foldjax":
+                raise ValueError(
+                    f"msa_pairing={request.msa_pairing!r} pairs alignments "
+                    "FoldJAX searches while translating a FoldJAX-format job; "
+                    f"this {request.input_format!r} input is passed to "
+                    f"{self.name} untouched"
+                )
+            refuse_msa_pairing(self.name, request.msa_pairing)
 
         # Governs a native ``constraint`` and a common job's pocket and contact
         # ``constraints`` alike. ``false`` on native input is checked here,
