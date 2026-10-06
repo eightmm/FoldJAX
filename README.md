@@ -93,7 +93,9 @@ uv run foldjax plan --model openfold3 --input job.yaml
 Without `--msa`, a protein chain with no alignment is refused (ESMFold2, which
 folds without one upstream, is exempt). `--msa auto` searches and caches an
 alignment, and **sends the sequence to the public ColabFold MMseqs2 server**
-unless `FOLDJAX_MSA_SERVER_URL` points at your own.
+unless `FOLDJAX_MSA_SERVER_URL` points at your own. `--templates auto` does the
+same for structural templates, with each model's released date cutoff and
+selection ([input](docs/input.md#searching-for-templates)).
 
 The [Colab notebook](notebooks/FoldJAX_Colab.ipynb) runs one input through
 several models from a form, detecting the accelerator and installing the

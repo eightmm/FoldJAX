@@ -106,6 +106,17 @@ them has a CLI-only spelling either:
 | `cache_dir` | `None` | where that cache lives; the FoldJAX compile-cache directory when unset |
 | `source` | `None` | set by `resolve_requests` for one job of a `{"jobs": [...]}` file: a `JobSource` (file, 0-based `index`, `name`) recorded in the manifest, failures and `plan`; provenance only, never part of the resume identity |
 
+**Searches are request fields too.** `msa` (`"none"`, `"single"`, `"auto"`,
+`"required"`) decides what happens to a protein chain without an alignment, and
+`templates` (`"none"`, the default, or `"auto"`) whether chains without
+templates get searched ones, selected by the model's released cutoff and
+filters; `template_max_date="YYYY-MM-DD"` replaces that cutoff and needs
+`templates="auto"`. Both `auto` searches send the sequence to the ColabFold
+MMseqs2 server unless a local command is configured
+([input](input.md#searching-for-templates)). `ModelConfig` spells them
+`msa_search`, `template_search` and `template_max_date`. The manifest records
+the template search under `template_search`.
+
 `predict_batch(request)` is the entry point that returns results, skips and
 failures together; `predict` keeps its return type and raises.
 

@@ -78,6 +78,15 @@ def msa_cache_dir() -> Path:
     return foldjax_home() / "msa"
 
 
+def template_cache_dir() -> Path:
+    """Searched template hits and the structures they name, shared by models.
+
+    ``hits/`` is addressed like the alignment cache, by sequence and search
+    provenance; ``mmcif/`` holds downloaded structures by PDB id.
+    """
+    return foldjax_home() / "templates"
+
+
 def runtime_dir(model: str | None = None) -> Path:
     """Generated native artifacts that cannot live in a read-only wheel."""
     root = foldjax_home() / "runtime"
@@ -93,5 +102,6 @@ def describe() -> dict[str, str]:
         "assets": str(assets_dir()),
         "compile_cache": str(compile_cache_dir()),
         "msa": str(msa_cache_dir()),
+        "templates": str(template_cache_dir()),
         "runtime": str(runtime_dir()),
     }

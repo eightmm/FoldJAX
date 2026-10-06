@@ -33,7 +33,12 @@ from foldjax.msa_search import _rna_msa_pipeline as _rna_msa_pipeline
 from foldjax.msa_search import _search_alignments, _warn_single_sequence
 from foldjax.msa_search import msa_search_backend as msa_search_backend
 from foldjax.portspec import PORTS, provider
-from foldjax.schema import MSA_POLICIES, ModelCapabilities, _strict_boolean
+from foldjax.schema import (
+    MSA_POLICIES,
+    TEMPLATE_POLICIES,
+    ModelCapabilities,
+    _strict_boolean,
+)
 
 _ENTITY_TYPES = ("protein", "dna", "rna", "ligand")
 _JOB_KEYS = frozenset({"name", "entities", "bonds", "properties"})
@@ -90,8 +95,6 @@ _ALL_FEATURES = frozenset(
     }
 )
 
-_NO_TEMPLATES = {"templates", "templates_unmapped", "affinity"}
-
 # Boltz derives pairing from a single per-chain a3m, so a separate paired MSA has
 # nowhere to go.
 _TARGETS = {
@@ -113,11 +116,11 @@ _TARGETS = {
     # The released OpenFold3 query schema declares covalent bonds but its
     # featurizer never applies them. Advertising the field would silently drop
     # chemistry, so reject it until the upstream pipeline consumes the contract.
-    # OpenFold3 reads templates from a hits alignment or from
-    # ``template_cif_paths`` in its native query, which the port supports; this
-    # writer does not translate common templates into either, so they are refused
-    # here and remain a native-input feature.
-    "openfold3": _Target(".json", _ALL_FEATURES - {"bonds"} - _NO_TEMPLATES),
+    # OpenFold3 takes templates in either form: a mapped one becomes an entry of
+    # the template cache its reader loads from ``template_alignment_file_path``
+    # (`_openfold3_templates`), a bare file ``template_cif_paths``, which it
+    # aligns itself (upstream's CIF-direct mode).
+    "openfold3": _Target(".json", _ALL_FEATURES - {"bonds", "affinity"}),
     # ESMFold2 has no second native dialect: its NumPy adapter reads the common
     # document and implements Biohub's all-biomolecule tokenizer directly.
     # Taxonomy-paired MSAs and structural templates are not part of this route;
@@ -195,6 +198,12 @@ _NUCLEIC_PAIRED_MSA_READ: dict[str, frozenset[str]] = {
 #: OpenDDE (``config/inference_defaults.py:28``). Without it a common-schema
 #: template is discarded as upstream discards it, with a warning and a record.
 _USE_TEMPLATE_MODELS = frozenset({"opendde", "protenix"})
+
+#: Backends whose native query takes either a residue-mapped template source
+#: or bare files per chain, never both: OpenFold3 refuses a chain with both
+#: ``template_alignment_file_path`` and ``template_cif_paths``
+#: (``inference_query_format.py:112-119``) and reads protein templates only.
+_ONE_TEMPLATE_FORM = frozenset({"openfold3"})
 
 #: The template counterpart of ``IGNORE_NUCLEIC_MSA``: true by default (drop,
 #: warn, record under ``ignored_templates``), ``false`` refuses the job.
@@ -499,6 +508,18 @@ def _templates(entity: dict[str, Any]) -> list[dict[str, Any]]:
     residue map three of the five dialects require; supplying one without the
     other, or lists of different lengths, is refused here rather than producing
     a silently truncated mapping inside a featurizer.
+
+    Both index lists are 0-based, as AlphaFold 3's ``queryIndices`` and
+    ``templateIndices`` are (its ``docs/input.md``, "Structural Templates"),
+    and reach AlphaFold 3 and Protenix verbatim. A template index counts the
+    residues of the template chain's polymer sequence, unresolved ones
+    included, as AlphaFold 3 and OpenFold3 read it; Protenix and OpenDDE
+    count the observed residues of the file's first chain instead, which is
+    the same thing only for a single-chain file with every residue resolved
+    -- the form `foldjax.template_search` writes for them. ``chain_id`` is the
+    template's author chain (``auth_asym_id``). A query index past the end of
+    the sequence -- what a 1-based map has at its last position -- is refused
+    rather than shifted.
     """
     value = entity.get("templates")
     if value is None:
@@ -536,6 +557,18 @@ def _templates(entity: dict[str, Any]) -> list[dict[str, Any]]:
                 )
                 for left, right in zip(query, target, strict=True)
             ]
+            length = len(str(entity.get("sequence") or ""))
+            for left, right in mapping:
+                if left < 0 or right < 0:
+                    raise ValueError(
+                        "template indices are 0-based and must not be negative"
+                    )
+                if length and left >= length:
+                    raise ValueError(
+                        f"template query index {left} is outside the "
+                        f"{length}-residue sequence; indices are 0-based "
+                        f"(0..{length - 1})"
+                    )
         chain_id = item.get("chain_id")
         if chain_id is not None and (
             not isinstance(chain_id, str) or not chain_id.strip()
@@ -838,8 +871,8 @@ def _validate(
                 _reject(
                     model,
                     "a template without a residue map",
-                    "it requires query_indices and template_indices; Boltz-2 is "
-                    "the one backend that aligns a bare mmCIF itself",
+                    "it requires query_indices and template_indices; Boltz-2 and "
+                    "OpenFold3 align a bare mmCIF themselves",
                 )
             if feature == "templates" and "templates_unmapped" in target.features:
                 _reject(
@@ -854,6 +887,23 @@ def _validate(
                 "this backend has no per-job template field; use its own "
                 "template pipeline",
             )
+        if templates and model in _ONE_TEMPLATE_FORM:
+            if kind != "protein":
+                _reject(
+                    model,
+                    f"templates on a {kind} chain",
+                    "it preprocesses templates for protein chains only "
+                    "(TemplatePreprocessorSettings.moltypes)",
+                )
+            if len({bool(template["mapping"]) for template in templates}) > 1:
+                _reject(
+                    model,
+                    "mapped and unmapped templates on one chain",
+                    f"entity {_ids(entity)[0]!r} mixes them, and it reads one "
+                    "template source per chain (a residue-mapped template cache "
+                    "or bare files it aligns itself); give every template the "
+                    "same form",
+                )
 
     if job.get("bonds") and "bonds" not in target.features:
         _reject(
@@ -1063,8 +1113,11 @@ def _boltz(
             if template["chain_id"] is not None:
                 # Its ``template_id`` is the source-structure chain, while
                 # ``chain_id`` above names query chains. One entity can denote
-                # several copies, each using the same source chain.
-                entry["template_id"] = [template["chain_id"]] * len(query_chain_ids)
+                # several copies, each using the same source chain. Boltz names
+                # a structure's chains by ``label_asym_id``
+                # (`parse/mmcif.py` subchains), the common field by author id.
+                label = _template_label_chain(Path(entry["cif"]), template["chain_id"])
+                entry["template_id"] = [label] * len(query_chain_ids)
             templates.append(entry)
     if templates:
         native["templates"] = templates
@@ -1072,6 +1125,127 @@ def _boltz(
     if binder is not None:
         native["properties"] = [{"affinity": {"binder": binder}}]
     return native
+
+
+def _template_label_chain(path: Path, chain_id: str) -> str:
+    """The ``label_asym_id`` of the protein chain ``chain_id`` names in ``path``.
+
+    The common ``chain_id`` is an author chain; Boltz-2 and OpenFold3 address
+    a structure's chains by label id. An id that is already a label id of a
+    protein chain is kept, and so is one the file does not resolve, so the
+    backend's own parser reports it in its own words.
+    """
+    from foldjax.template_search import read_template_structure
+
+    try:
+        structure = read_template_structure(path)
+    except (OSError, ValueError):
+        return chain_id
+    chain = structure.chain(chain_id)
+    if chain is None:
+        return chain_id
+    if chain.label_id != chain_id and chain_id in structure.chains:
+        # The id names two different chains depending on how it is read. The
+        # common field is the author id, so that reading wins -- but a caller
+        # who meant the label id gets another chain, so say so.
+        import warnings
+
+        warnings.warn(
+            f"template {path}: chain_id {chain_id!r} is author chain "
+            f"{chain_id!r} (label {chain.label_id!r}) and also the label id of "
+            f"another chain; using the author chain, as the common schema "
+            f"defines chain_id",
+            UserWarning,
+            stacklevel=3,
+        )
+    return chain.label_id
+
+
+def _openfold3_templates(
+    templates: list[dict[str, Any]],
+    base: Path,
+    destination: Path,
+    entity_index: int,
+) -> dict[str, Any]:
+    """One chain's templates as fields of OpenFold3's native query.
+
+    Bare files go to ``template_cif_paths``, which OpenFold3 aligns and ranks
+    itself (upstream's CIF-direct mode). A residue map has no field of its own
+    in the query, so it is written as the template cache the reader loads from
+    ``template_alignment_file_path``: one entry per template, keyed
+    ``<entry>_<label chain>`` and listed in order in
+    ``template_entry_chain_ids``, whose ``idx_map`` pairs 1-based query
+    positions with the template residues' ``label_seq_id`` -- the form
+    upstream's preprocessor writes (``build_residue_idx_map``) and the port
+    reads (`_preprocessed_template_entries`). The reader keeps the first four
+    that resolve, as upstream's inference featurizer takes the top four.
+    """
+    from foldjax.template_search import entry_name, read_template_structure
+
+    if not templates[0]["mapping"]:
+        paths = [Path(_path(template["mmcif"], base)) for template in templates]
+        fields: dict[str, Any] = {"template_cif_paths": [str(path) for path in paths]}
+        if any(template["chain_id"] is not None for template in templates):
+            fields["template_cif_chain_ids"] = [
+                None
+                if template["chain_id"] is None
+                else _template_label_chain(path, template["chain_id"])
+                for path, template in zip(paths, templates, strict=True)
+            ]
+        return fields
+
+    entries: dict[str, dict[str, Any]] = {}
+    for index, template in enumerate(templates):
+        path = Path(_path(template["mmcif"], base))
+        structure = read_template_structure(path)
+        chain = structure.chain(template["chain_id"])
+        if chain is None:
+            named = template["chain_id"]
+            raise ValueError(
+                f"openfold3 template {path}: "
+                + (
+                    f"chain {named!r} is not a protein chain of it"
+                    if named is not None
+                    else "it has more than one protein chain; name one with chain_id"
+                )
+            )
+        pairs = []
+        for query_index, template_index in template["mapping"]:
+            if template_index >= len(chain.numbers):
+                raise ValueError(
+                    f"openfold3 template {path}: template index {template_index} "
+                    f"is outside chain {chain.author_id!r}'s "
+                    f"{len(chain.numbers)} residues"
+                )
+            pairs.append([query_index + 1, chain.numbers[template_index]])
+        name = f"{entry_name(structure, f't{index}')}_{chain.label_id}"
+        if name in entries:
+            name = f"t{index}_{chain.label_id}"
+        entries[name] = {
+            "idx_map": pairs,
+            "release_date": (
+                structure.release_date.isoformat() if structure.release_date else ""
+            ),
+            "cif_path": str(path),
+        }
+    directory = destination / "templates"
+    if directory.is_symlink():
+        raise ValueError(f"generated template directory is a symlink: {directory}")
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / f"entity_{entity_index:04d}.npz"
+    import numpy as np
+
+    with tempfile.TemporaryDirectory(
+        prefix=".foldjax-templates-", dir=directory
+    ) as scratch:
+        staged = Path(scratch) / target.name
+        with staged.open("wb") as handle:
+            np.savez(handle, entries_json=np.array(json.dumps(entries)))
+        os.replace(staged, target)
+    return {
+        "template_alignment_file_path": str(target),
+        "template_entry_chain_ids": list(entries),
+    }
 
 
 def _protenix_templates(
@@ -1330,6 +1504,11 @@ def _openfold3(
                 body["non_canonical_residues"] = {
                     position: ccd for ccd, position in modifications
                 }
+            templates = _templates(entity)
+            if templates:
+                body.update(
+                    _openfold3_templates(templates, base, destination, entity_index)
+                )
         chains.append(body)
 
     query: dict[str, Any] = {"chains": chains}
@@ -1698,19 +1877,32 @@ def materialize_native_input(
     options: Mapping[str, Any] | None = None,
     ignored: list[dict[str, Any]] | None = None,
     ignored_templates: list[dict[str, Any]] | None = None,
+    templates: str = "none",
+    template_max_date: str | None = None,
+    template_search: list[dict[str, Any]] | None = None,
 ) -> Path:
     """Translate a FoldJAX JSON document to one backend-native input file.
 
     ``ignored``, when given, receives one record per alignment the document
     named but the native input leaves out (see ``IGNORE_NUCLEIC_MSA``), and
     ``ignored_templates`` one per template (see ``IGNORE_TEMPLATES``).
+    ``templates="auto"`` searches templates for protein chains that name none
+    (`foldjax.template_search`); ``template_search``, when given, receives
+    one record per searched chain.
     """
+    from foldjax.template_search import refuse_template_search
+
     model = capabilities.model
     target = _TARGETS.get(model)
     if target is None:
         raise ValueError(f"unsupported model: {model}")
     if msa not in MSA_POLICIES:
         raise ValueError(f"msa must be one of {MSA_POLICIES}; got {msa!r}")
+    if templates not in TEMPLATE_POLICIES:
+        raise ValueError(
+            f"templates must be one of {TEMPLATE_POLICIES}; got {templates!r}"
+        )
+    refuse_template_search(model, templates, options)
     source = Path(source)
     job = read_job_document(source)
     if not isinstance(job, dict):
@@ -1776,6 +1968,20 @@ def materialize_native_input(
         )
     elif msa in ("none", "single"):
         _warn_single_sequence(job, model)
+    if templates == "auto":
+        from foldjax.template_search import search_templates
+
+        # After validation, like the alignment search: what is attached here
+        # is born in the backend's form, so the writer below translates it
+        # exactly as it translates a template the caller wrote.
+        records = search_templates(
+            job, model, max_date=template_max_date, destination=output_dir
+        )
+        _write_text_atomic(
+            output_dir / "template_search.json", json.dumps(records, indent=2)
+        )
+        if template_search is not None:
+            template_search.extend(records)
 
     # Which writer, and its suffix, are the port table's; OpenDDE reads the
     # Protenix dialect, so the two entries name one writer rather than a

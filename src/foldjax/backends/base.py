@@ -247,6 +247,16 @@ class Backend(ABC):
             accepts_ignore_templates,
             refuse_ignored_constraints,
         )
+        from foldjax.template_search import refuse_template_search
+
+        # Here as well as at materialization, so `foldjax plan` refuses a
+        # template search whose result the backend would discard.
+        refuse_template_search(
+            self.name,
+            request.templates,
+            options,
+            input_format=request.input_format,
+        )
 
         # The mirror image of the two below: a constraint has no common-schema
         # field, so this option governs native input and is meaningless on a

@@ -736,7 +736,7 @@ def test_alphafold3_filters_a_named_template_chain_to_a_sidecar(
     assert sidecar.read_text() == "data_filtered\n_entry.id filtered\n"
 
 
-def test_an_unmapped_template_reaches_boltz_and_is_refused_elsewhere(
+def test_an_unmapped_template_reaches_boltz_and_openfold3_and_is_refused_elsewhere(
     tmp_path: Path,
 ) -> None:
     template = _template_cif(tmp_path)
@@ -759,10 +759,18 @@ def test_an_unmapped_template_reaches_boltz_and_is_refused_elsewhere(
         {"cif": str(template), "chain_id": ["A"], "template_id": ["Q"]}
     ]
 
+    # OpenFold3 aligns a bare file itself (upstream's CIF-direct mode). This
+    # stub names no chain, so the author id cannot be resolved to a label id
+    # and is passed on for OpenFold3 to report.
+    query = json.loads(_materialize(source, "openfold3", tmp_path / "of3").read_text())
+    (chain,) = query["queries"]["query"]["chains"]
+    assert chain["template_cif_paths"] == [str(template)]
+    assert chain["template_cif_chain_ids"] == ["Q"]
+
     with pytest.raises(ValueError, match="requires query_indices"):
         _materialize(source, "protenix", tmp_path / "px")
     with pytest.raises(ValueError, match="no per-job template field"):
-        _materialize(source, "openfold3", tmp_path / "of3")
+        _materialize(source, "esmfold2", tmp_path / "esm")
 
 
 def test_a_mapped_template_is_refused_by_the_model_that_aligns_itself(
@@ -850,8 +858,8 @@ def test_an_affinity_binder_must_name_a_chain(tmp_path: Path) -> None:
 def test_capabilities_stop_claiming_templates_the_schema_now_carries() -> None:
     assert "templates" not in capabilities("protenix").native_only_features
     assert "affinity" not in capabilities("boltz2").native_only_features
-    # OpenFold3 builds templates from its own pipeline and has no job field.
-    assert "templates" in capabilities("openfold3").native_only_features
+    # OpenFold3's common templates are translated into its native query.
+    assert "templates" not in capabilities("openfold3").native_only_features
 
 
 def test_a_structure_becomes_a_job_of_its_chains_and_ligands(tmp_path: Path) -> None:

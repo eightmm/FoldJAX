@@ -1160,9 +1160,14 @@ def _predict_once(
     # because a native document is passed through without being inspected.
     ignored_msas: list[dict[str, Any]] | None = None
     ignored_templates: list[dict[str, Any]] | None = None
+    # What `templates="auto"` searched, per chain; None when nothing was asked
+    # to search, so the manifest keeps "not searched" apart from "found none".
+    template_search: list[dict[str, Any]] | None = None
     if request.input_format == "foldjax":
         ignored_msas = []
         ignored_templates = []
+        if request.templates == "auto":
+            template_search = []
         with timeline.stage("prepare input"):
             try:
                 native_input = materialize_native_input(
@@ -1174,6 +1179,9 @@ def _predict_once(
                     options=backend.apply_sampling(request),
                     ignored=ignored_msas,
                     ignored_templates=ignored_templates,
+                    templates=request.templates,
+                    template_max_date=request.template_max_date,
+                    template_search=template_search,
                 )
             except (ValueError, FileNotFoundError) as error:
                 # The generated document is an implementation detail; the
@@ -1305,6 +1313,7 @@ def _predict_once(
         ignored_msas=ignored_msas,
         ignored_templates=ignored_templates,
         ignored_constraints=ignored_constraints,
+        template_search=template_search,
     )
     return result
 

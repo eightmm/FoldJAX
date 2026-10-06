@@ -10,6 +10,40 @@ unless it says so here, in its own paragraph.
 
 ## Unreleased
 
+### Added
+
+- **Template search: `--templates auto` (`PredictionRequest(templates="auto")`).**
+  Upstream AlphaFold 3 and OpenFold3 search templates by default and FoldJAX
+  searched none, so a job without templates folded template-free. `auto` takes
+  the ColabFold MMseqs2 server's PDB70 hits (or `FOLDJAX_TEMPLATE_COMMAND`),
+  fetches the structures from RCSB (or `FOLDJAX_TEMPLATE_MMCIF_DIR`), realigns
+  with Kalign and keeps what each model's released inference keeps: AlphaFold
+  3, Protenix and OpenDDE a 2021-09-30 cutoff and AlphaFold 3's hit filters,
+  OpenFold3 no cutoff and e-value order, four templates each; Boltz-2, which
+  has no upstream search, the first four files to align itself.
+  `--template-max-date` overrides the cutoff. The default stays `none`, since
+  the search sends the sequence to the server; Protenix and OpenDDE refuse it
+  without `--option use_template=true`, ESMFold2 always. `foldjax_run.json`
+  records `templates`, `template_max_date` and `template_search` (hits, cutoff
+  and its source, each template kept). Common-schema templates now also reach
+  OpenFold3, which refused them: a mapped one as its template cache, a bare
+  file as `template_cif_paths`. Template indices are 0-based, as AlphaFold 3's,
+  and a query index outside the sequence is refused.
+
+### Changed
+
+- **A Boltz-2 template's `chain_id` now names the author chain, as it does for
+  every other backend.** FoldJAX used to copy the common `chain_id` into
+  Boltz's `template_id`, which Boltz reads as a label chain
+  (`label_asym_id`, `parse/mmcif.py` subchains). Where a structure's author
+  and label ids differ -- PDB entry 2MBH's author chain A is label chain B --
+  a recorded common-schema job with a Boltz-2 template now takes a different
+  template chain, and so can predict a different structure. FoldJAX now looks
+  the label id up in the file; an id that is both an author id and another
+  chain's label id warns and takes the author reading. A label id that is not
+  an author id is passed on unchanged, so a job that already named the label
+  chain behaves as before.
+
 ### Fixed
 
 - **Memory admission no longer reports `fits` for a run whose estimate is a

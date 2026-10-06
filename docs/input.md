@@ -227,7 +227,8 @@ entities:
     sequence: ACDEFG
     templates:
       - mmcif: templates/5xyz.cif
-        query_indices: [1, 2, 3]
+        chain_id: B                # the template's author chain
+        query_indices: [1, 2, 3]   # 0-based, as AlphaFold 3's queryIndices
         template_indices: [7, 8, 9]
   - {type: ligand, id: [L], ccd: ATP}
 properties:
@@ -235,9 +236,25 @@ properties:
 ```
 
 The two forms of a template are different inputs, not one input in two
-spellings. AlphaFold 3 and Protenix require the query→template residue map and
-refuse a bare file; **Boltz-2 aligns the mmCIF itself** and refuses a map it
-would have to ignore. Protenix and OpenDDE have native template machinery,
+spellings. AlphaFold 3, Protenix and OpenDDE require the query→template residue
+map and refuse a bare file; **Boltz-2 aligns the mmCIF itself** and refuses a
+map it would have to ignore; OpenFold3 takes either form, one form per chain.
+
+Both index lists are **0-based**, exactly AlphaFold 3's `queryIndices` and
+`templateIndices`, and reach AlphaFold 3 and Protenix verbatim. A query index
+counts residues of the entity's sequence; one past its end -- what a 1-based
+map has at its last position -- or a negative one is refused rather than
+shifted. A template index counts the template chain's full polymer sequence
+(`_entity_poly_seq`), unresolved residues included, as AlphaFold 3 and
+OpenFold3 read it. `chain_id` is the template's author chain
+(`auth_asym_id`); Boltz-2 and OpenFold3 address chains by `label_asym_id`, so
+FoldJAX looks the label id up in the file for them. Protenix and OpenDDE read
+the *first* chain of the file and count only its observed residues (upstream
+`parse_simple_cif`), ignoring `chain_id`; the two counts agree only for a
+single-chain file in which every residue is resolved. Give those two such a
+file -- it is what `--templates auto` writes for them.
+
+Protenix and OpenDDE have native template machinery,
 but both released inference configurations set `use_template=False` (Protenix
 `configs/configs_inference.py:36`, OpenDDE `config/inference_defaults.py:28`)
 and then ignore a job's templates. FoldJAX preserves that default and folds
@@ -255,8 +272,13 @@ does this port; `--template-search-command` requires it.
 Exact checked parity uses native Kalign 3.3.5; newer wrapper builds are not
 assumed alignment-equivalent. Affinity
 reaches Boltz-2 alone — it is the only carried model with that head. OpenFold3
-builds template features from its own pipeline and has no per-job field, so a
-template addressed to it is refused. `foldjax capabilities --model MODEL
+has no per-template residue-map field in its query, so a mapped template is
+written as the template cache its reader loads (`template_alignment_file_path`
+plus `template_entry_chain_ids`, `idx_map` against `label_seq_id`), and a bare
+file goes to `template_cif_paths`, which OpenFold3 aligns and ranks itself
+(upstream's CIF-direct mode). A chain mixing the two forms, or a template on a
+nucleic-acid chain, is refused: OpenFold3 reads one source per protein chain.
+`foldjax capabilities --model MODEL
 [--json]` reports both `common_schema_features` and `native_only_features` for
 exactly this reason, generated from the same translation table the writer uses.
 `native_only_features` also names what only a native input can reach: ligands
@@ -285,3 +307,75 @@ From a bare sequence the same affinity request is `--affinity-binder CHAIN`,
 naming which chain of the generated job to score. It reaches Boltz-2 alone, for
 the same reason the `properties` block does: the others have no such head and
 refuse it rather than dropping it.
+
+### Searching for templates
+
+```bash
+uv run foldjax predict --model alphafold3 --input job.yaml --msa auto --templates auto
+```
+
+Upstream AlphaFold 3 and OpenFold3 search for templates by default; Protenix
+and OpenDDE ship a search that is off by default; FoldJAX searched for none
+until `--templates auto` (`PredictionRequest(templates="auto")`). The default
+stays `none` for the reason `--msa auto` is opt-in: **the search sends the
+sequence to the ColabFold MMseqs2 server** (`FOLDJAX_MSA_SERVER_URL` points at
+your own). For every protein chain that names no `templates`, it reads the
+PDB70 hits (`pdb70.m8`) of the server's ordinary MSA job, as OpenFold3 v0.5.0
+does, downloads each hit's mmCIF from RCSB by PDB id, realigns the query to
+the hit chain with Kalign (the `openfold3-preprocess` extra's `kalign-python`),
+and attaches what the selected model's released inference would keep:
+
+| model | release-date cutoff (default) | selection | form |
+|---|---|---|---|
+| `alphafold3` | 2021-09-30, a hit released after it dropped (`run_alphafold.py:295-297`) | AlphaFold 3's filters: subsequence > 0.95, < 10 residues, alignment ≤ 0.1 of the query, no resolved aligned residue, duplicates; first 4 (`data/pipeline.py:456-462`) | mapped |
+| `protenix` | 2021-09-30 (`infer_dataloader.py:107`) | the same filters, 20 candidates, first 4 | mapped, one observed-residue chain per file |
+| `opendde` | 2021-09-30 (`infer_dataloader.py:196`) | as Protenix | as Protenix |
+| `openfold3` | none (`TemplatePreprocessorSettings.max_release_date=None`); a set cutoff drops a hit released on or after it (`template.py:2698`) | e-value order, no sequence filters, first 4 (`n_templates=4`) | mapped, as a template cache |
+| `boltz2` | none: upstream Boltz-2 has no template search | first 4 hits whose structure has the hit chain -- a FoldJAX convenience, not parity | the file; Boltz aligns it |
+
+Hits are taken in e-value order. `--template-max-date YYYY-MM-DD`
+(`template_max_date`) replaces the default cutoff, compared the way that
+upstream compares it; it is refused without `--templates auto`. Protenix and
+OpenDDE refuse `--templates auto` unless `--option use_template=true` is set,
+since at their released default the result would be discarded, and ESMFold2,
+which has no template input, refuses it outright -- both at `foldjax plan`
+already. So is `--templates auto` on a native document, which is passed to
+the backend untouched and so would search nothing; the search applies to
+FoldJAX-format jobs. A chain that names its own templates keeps exactly those.
+AlphaFold 3 also skips a hit whose author chain spans several polymer chains,
+since its template file must hold exactly one.
+
+The Protenix and OpenDDE selection approximates upstream's rather than
+reproducing it: upstream ranks hmmsearch or HHsearch hits by `sum_probs` and
+applies its filters to that search's own alignment, while these hits come
+from MMseqs2 in e-value order and are filtered on the Kalign realignment. A
+hit whose release date is unknown is dropped, as upstream's prefilter drops
+one missing from its release-date table (`template_utils.py:369-372`); here
+the date is the mmCIF's earliest `_pdbx_audit_revision_history` revision. The
+same filters on the Kalign span stand in for AlphaFold 3's hmmsearch hit.
+
+The hits are cached under `$FOLDJAX_HOME/templates/hits/`, keyed by sequence
+and server like the alignment cache, and the structures under
+`$FOLDJAX_HOME/templates/mmcif/`, one directory per download source so two
+servers never share a file. Only PDB ids go to RCSB.
+`FOLDJAX_TEMPLATE_MMCIF_DIR` is read first: a flat or wwPDB-divided
+(`ab/1abc.cif.gz`) mirror of `.cif` or `.cif.gz` files, a compressed one
+unpacked once into the cache. `FOLDJAX_TEMPLATE_STRUCTURE_URL` changes the
+download source and an empty value turns downloading off. For sequences that must not leave the machine,
+`FOLDJAX_TEMPLATE_COMMAND` names a local search, called as
+`<command> --input query.fasta --output DIR` and writing `DIR/pdb70.m8` (hits
+named `<pdb id>_<author chain>`); `FOLDJAX_TEMPLATE_LOCAL_VERSION` is part of
+its cache identity. `foldjax doctor` prints what a search would use.
+
+A search that cannot run -- no server, no Kalign -- warns and folds that
+chain without searched templates, and so does one whose hits were all dropped
+(by the cutoff, the filters, or a download or realignment that failed); the
+warning and the record name the reasons with their counts. It never fails the
+job. Kalign is checked before anything is sent.
+`foldjax_run.json` records `templates`, `template_max_date` and
+`template_search`: per chain, where the hits came from, the cutoff applied and
+the line it comes from, the selection rule, the hits file, every template kept
+(PDB id, author and label chain, release date, e-value, file) and what was
+skipped, or the error. The same record is written as `template_search.json`
+beside the generated native input. With `--msa auto` as well, the same
+sequence is submitted to the server twice, once per search.

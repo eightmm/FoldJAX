@@ -162,6 +162,11 @@ def configuration_digest(manifest: Mapping[str, Any]) -> str:
         "stop_after": manifest.get("stop_after"),
         "foldjax": manifest.get("foldjax"),
     }
+    # Only when searched, so a run without templates keeps the digest it had
+    # before the field existed.
+    if manifest.get("templates", "none") != "none":
+        identity["templates"] = manifest.get("templates")
+        identity["template_max_date"] = manifest.get("template_max_date")
     payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode()).hexdigest()[:12]
 

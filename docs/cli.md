@@ -147,6 +147,15 @@ weights, no GPU and no network. `cache gc` reports by default and deletes only
 with `--apply`: cache entries are pure derived data, but they are still someone's
 disk.
 
+`--msa auto` searches alignments and `--templates auto` structural templates
+for chains that arrived without them; `--template-max-date YYYY-MM-DD`
+replaces the model's released template cutoff. Both searches send the sequence
+to the ColabFold MMseqs2 server unless `FOLDJAX_MSA_COMMAND` /
+`FOLDJAX_TEMPLATE_COMMAND` names a local one; what each model keeps, and why,
+is in [input](input.md#searching-for-templates). `plan` prints `templates` and
+`template_max_date` beside `msa`, and refuses `--templates auto` for ESMFold2
+and for Protenix or OpenDDE without `--option use_template=true`.
+
 ### Outputs
 
 Every model writes the same layout:

@@ -33,6 +33,7 @@ from foldjax.registry import available_models, capabilities, model_info
 from foldjax.schema import (
     MSA_POLICIES,
     STOP_POINTS,
+    TEMPLATE_POLICIES,
     BatchReport,
     PaddingConfig,
     PredictionError,
@@ -200,6 +201,26 @@ def _add_predict_arguments(
         "search finds none. auto and required SEND THE SEQUENCE to the "
         "public ColabFold MMseqs2 server (FOLDJAX_MSA_SERVER_URL points at "
         "your own instead)",
+    )
+    source.add_argument(
+        "--templates",
+        choices=TEMPLATE_POLICIES,
+        default="none",
+        help="structural templates for protein chains that name none: 'none' "
+        "(default) uses only the job's own, 'auto' searches the ColabFold "
+        "MMseqs2 server's PDB70 hits, fetches the structures from RCSB and "
+        "applies the model's released template filters and date cutoff. auto "
+        "SENDS THE SEQUENCE to that server (FOLDJAX_MSA_SERVER_URL points at "
+        "your own; FOLDJAX_TEMPLATE_COMMAND runs a local search). Protenix "
+        "and OpenDDE need --option use_template=true; ESMFold2 has no "
+        "template input",
+    )
+    source.add_argument(
+        "--template-max-date",
+        metavar="YYYY-MM-DD",
+        help="with --templates auto: keep only templates released by this "
+        "date, instead of the model's released default (AlphaFold 3, "
+        "Protenix, OpenDDE: 2021-09-30; OpenFold3 and Boltz-2: none)",
     )
     parser.add_argument(
         "--representations",
@@ -788,6 +809,8 @@ def _request(args: argparse.Namespace) -> PredictionRequest:
         options=_memory_options(args, _options(args.option)),
         padding=padding,
         msa=args.msa,
+        templates=getattr(args, "templates", "none"),
+        template_max_date=getattr(args, "template_max_date", None),
         representations=getattr(args, "representations", None),
         stop_after=getattr(args, "stop_after", "full"),
         resume=getattr(args, "resume", False),
@@ -896,6 +919,26 @@ def _template_report() -> list[str]:
             "coordinates   set PROTENIX_TEMPLATE_MMCIF_DIR to a directory of "
             "mmCIF files (flat or PDB-divided, .cif or .cif.gz)"
         )
+
+    from foldjax.template_search import template_search_backend
+
+    search = template_search_backend()
+    hits = search["hits"]
+    lines.append(
+        "search        "
+        + (
+            "local  " + " ".join(hits["command"])
+            if hits["kind"] == "local"
+            else f"remote {hits['host']}  (--templates auto; sequences leave "
+            "this machine)"
+        )
+    )
+    structures = search["structures"]
+    lines.append(
+        f"structures    {structures['local_dir'] or 'no local mirror'}, then "
+        f"{structures['url'] or 'no download'}"
+    )
+    lines.append(f"realignment   {search['aligner']}")
     return lines
 
 
@@ -1313,6 +1356,8 @@ def _plan_summary(request: PredictionRequest) -> dict[str, Any]:
         ),
         "seed_source": request.seed_source,
         "msa": request.msa,
+        "templates": request.templates,
+        "template_max_date": request.template_max_date,
         "sampling": request.sampling,
         "options": public_options(request.options),
     }

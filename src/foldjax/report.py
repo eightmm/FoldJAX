@@ -133,6 +133,13 @@ def render(manifest: dict[str, Any], *, directory: Path) -> str:
         f"{_duration(cost.get('seconds')):<10s}peak  {_bytes(cost.get('peak_bytes'))}"
     )
     lines.append(f"seeds     {seeds or '-':<16s}msa      {manifest.get('msa', 'none')}")
+    if manifest.get("templates", "none") != "none":
+        kept = sum(
+            len(record.get("templates") or [])
+            for record in manifest.get("template_search") or []
+            if isinstance(record, dict)
+        )
+        lines.append(f"templates {manifest['templates']:<16s}kept     {kept}")
     phases = cost.get("phases")
     if isinstance(phases, dict) and phases:
         detail = "  ".join(

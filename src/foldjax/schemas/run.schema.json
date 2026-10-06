@@ -94,6 +94,19 @@
       "enum": ["user", "upstream", "random", "job", "foldjax", null]
     },
     "msa": {"type": "string"},
+    "templates": {
+      "description": "The template-search policy: none, or auto. Optional: absent from manifests written before it existed, which ran with none.",
+      "enum": ["none", "auto"]
+    },
+    "template_max_date": {
+      "description": "The caller's release-date cutoff for searched templates (YYYY-MM-DD), or null for the model's released default. Optional.",
+      "type": ["string", "null"]
+    },
+    "template_search": {
+      "description": "One record per protein entity templates=auto searched: chains, hit source, structure source, the date cutoff applied and where it comes from, the selection rule, the hits file, and each template kept (PDB id, author and label chain, release date, e-value, mmCIF path) or the error that left the chain without templates; null when no search was asked for. Optional.",
+      "type": ["array", "null"],
+      "items": {"type": "object"}
+    },
     "sampling": {"type": ["object", "null"]},
     "options": {"type": "object"},
     "options_verifiable": {"type": "boolean"},

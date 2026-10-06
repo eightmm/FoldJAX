@@ -35,7 +35,7 @@ the plan shows.
 | Public interface | Responsibility |
 | --- | --- |
 | `Job` | Sequences, chemistry, raw MSA and template references |
-| `ModelConfig` | `msa_depth`, total `trunk_passes`, `samples`, `steps`, `msa_search` |
+| `ModelConfig` | `msa_depth`, total `trunk_passes`, `samples`, `steps`, `msa_search`, `template_search`, `template_max_date` |
 | `ExecutionConfig` | Padding, persistent compile cache location/use, resume |
 | `model.capabilities` | Supported inputs, sampling bindings and representations |
 | `embed` | Native input representation, zero trunk passes |

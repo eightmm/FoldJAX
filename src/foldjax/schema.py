@@ -39,6 +39,14 @@ def _coordinate_shape(value: Any) -> list[int] | None:
 #: *successful* single-sequence run.
 MSA_POLICIES = ("none", "single", "auto", "required")
 
+#: Whether to search for structural templates. ``none``, the default, uses only
+#: the templates a job names. ``auto`` searches the ColabFold MMseqs2 server's
+#: PDB70 hits for every protein chain that names none, fetches the hit
+#: structures and applies the selected backend's released template filters and
+#: date cutoff (`foldjax.template_search`). It is opt-in for the same reason as
+#: ``msa='auto'``: it sends the sequence to a server.
+TEMPLATE_POLICIES = ("none", "auto")
+
 #: What a failing run does to the rest of the request.
 #: Where a run may stop. ``trunk`` exists so that downstream work can take
 #: the representations without paying for a structure it will discard.
@@ -119,6 +127,25 @@ def _strict_boolean(value: Any, *, name: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{name} must be a boolean")
     return value
+
+
+def _iso_date(value: Any, *, name: str) -> str:
+    """Return a ``YYYY-MM-DD`` calendar date, refusing anything else."""
+    import re
+    from datetime import date
+
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a YYYY-MM-DD string")
+    text = value.strip()
+    # `date.fromisoformat` also takes week dates (2021-W39-4) and the basic
+    # form (20210930); only the calendar spelling is the documented contract.
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text) is None:
+        raise ValueError(f"{name} must be a YYYY-MM-DD date; got {value!r}")
+    try:
+        parsed = date.fromisoformat(text)
+    except ValueError as error:
+        raise ValueError(f"{name} must be a YYYY-MM-DD date; got {value!r}") from error
+    return parsed.isoformat()
 
 
 @dataclass(frozen=True, slots=True)
@@ -543,6 +570,14 @@ class PredictionRequest:
     # this names the file and job it came from. Provenance only -- it never
     # changes what runs, and it is not part of the resume identity.
     source: JobSource | None = None
+    # Structural-template search for common-schema protein chains that name no
+    # template: one of `TEMPLATE_POLICIES`. Appended to keep the positional
+    # layout. Like `msa`, `auto` sends the sequence to a server.
+    templates: str = "none"
+    # ``YYYY-MM-DD``: keep only searched templates released by this date. None
+    # applies the selected backend's released default, which differs by model
+    # (`foldjax.template_search`). Meaningful only with ``templates="auto"``.
+    template_max_date: str | None = None
 
     def __post_init__(self) -> None:
         padding = _normalize_padding(self.padding)
@@ -556,6 +591,22 @@ class PredictionRequest:
             raise ValueError(
                 f"msa must be one of {', '.join(MSA_POLICIES)}; got {self.msa!r}"
             )
+        if self.templates not in TEMPLATE_POLICIES:
+            raise ValueError(
+                f"templates must be one of {', '.join(TEMPLATE_POLICIES)}; "
+                f"got {self.templates!r}"
+            )
+        if self.template_max_date is not None:
+            object.__setattr__(
+                self,
+                "template_max_date",
+                _iso_date(self.template_max_date, name="template_max_date"),
+            )
+            if self.templates != "auto":
+                raise ValueError(
+                    "template_max_date filters searched templates; set "
+                    "templates='auto' (--templates auto) or drop it"
+                )
         if self.stop_after not in STOP_POINTS:
             raise ValueError(
                 f"stop_after must be one of {', '.join(STOP_POINTS)}; "

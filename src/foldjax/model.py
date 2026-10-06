@@ -15,6 +15,7 @@ from foldjax.job import Job
 from foldjax.registry import capabilities, get_backend, normalize_model_name
 from foldjax.schema import (
     MSA_POLICIES,
+    TEMPLATE_POLICIES,
     ModelCapabilities,
     PaddingConfig,
     PredictionRequest,
@@ -44,6 +45,8 @@ class ModelConfig:
     samples: int | None = None
     steps: int | None = None
     msa_search: str = "none"
+    template_search: str = "none"
+    template_max_date: str | None = None
 
     def __post_init__(self):
         for name in ("msa_depth", "trunk_passes", "samples", "steps"):
@@ -53,6 +56,8 @@ class ModelConfig:
                 object.__setattr__(self, name, value)
         if self.msa_search not in MSA_POLICIES:
             raise ValueError(f"msa_search must be one of {MSA_POLICIES}")
+        if self.template_search not in TEMPLATE_POLICIES:
+            raise ValueError(f"template_search must be one of {TEMPLATE_POLICIES}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +209,8 @@ class Model:
             num_recycles=recycles,
             max_msa_depth=self.config.msa_depth,
             msa=self.config.msa_search,
+            templates=self.config.template_search,
+            template_max_date=self.config.template_max_date,
             representations=outputs,
             stop_after=stage,
             padding=self.execution.padding,

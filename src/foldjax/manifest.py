@@ -1171,6 +1171,10 @@ def matches_request(
             _exact_value(weights_record["profile"], request.profile),
             _exact_value(document["seeds"], [seed]),
             _exact_value(document["msa"], request.msa),
+            # Absent from manifests written before template search existed,
+            # which all ran without it.
+            _exact_value(document.get("templates", "none"), request.templates),
+            _exact_value(document.get("template_max_date"), request.template_max_date),
             _exact_value(document["sampling"], request.sampling),
             _exact_value(document["options"], options),
             _exact_value(document["padding"], expected_padding),
@@ -1192,6 +1196,7 @@ def describe_run(
     ignored_msas: list[dict[str, Any]] | None = None,
     ignored_templates: list[dict[str, Any]] | None = None,
     ignored_constraints: list[dict[str, Any]] | None = None,
+    template_search: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the manifest for one finished prediction.
 
@@ -1208,6 +1213,9 @@ def describe_run(
     ``ignored_constraints`` lists native jobs whose ``constraint`` the backend
     never reads (``ignore_constraints``); ``None`` where the backend has no
     such gate or the input was common-schema, which cannot carry one.
+    ``template_search`` is what ``templates="auto"`` searched, per chain:
+    where the hits came from, the date cutoff applied and where it comes from,
+    and each template kept; ``None`` when no search was asked for.
     """
     from foldjax import __version__, confidence_arrays
     from foldjax.cache import runtime_profile, weight_identity
@@ -1293,6 +1301,14 @@ def describe_run(
         # Whether the alignments were the caller's or FoldJAX searched for them
         # changes the prediction, so it belongs with the knobs, not in a log.
         "msa": request.msa,
+        # The same for structural templates, and what the search returned.
+        "templates": request.templates,
+        "template_max_date": request.template_max_date,
+        "template_search": (
+            [dict(record) for record in template_search]
+            if template_search is not None
+            else None
+        ),
         "sampling": request.sampling,
         "options": options,
         # When redaction or non-JSON values erased information, the public
@@ -1342,6 +1358,7 @@ def write(
     ignored_msas: list[dict[str, Any]] | None = None,
     ignored_templates: list[dict[str, Any]] | None = None,
     ignored_constraints: list[dict[str, Any]] | None = None,
+    template_search: list[dict[str, Any]] | None = None,
 ) -> Path | None:
     """Write the manifest, or return None if the directory cannot take it.
 
@@ -1366,6 +1383,7 @@ def write(
                         ignored_msas=ignored_msas,
                         ignored_templates=ignored_templates,
                         ignored_constraints=ignored_constraints,
+                        template_search=template_search,
                     ),
                     indent=2,
                     sort_keys=True,

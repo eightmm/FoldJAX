@@ -62,6 +62,7 @@ from foldjax.results import (
 from foldjax.schema import (
     ERROR_POLICIES,
     MSA_POLICIES,
+    TEMPLATE_POLICIES,
     BatchReport,
     InputRequirement,
     JobSource,
@@ -83,6 +84,7 @@ __all__ = [
     "AtomSelection",
     "ERROR_POLICIES",
     "MSA_POLICIES",
+    "TEMPLATE_POLICIES",
     "BatchReport",
     "Bond",
     "CacheWarmResult",
