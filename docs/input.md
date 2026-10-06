@@ -297,7 +297,7 @@ contact constraints and ligands of several CCD components are common fields
 [contact constraints](#contact-constraints),
 [multi-residue ligands](#multi-residue-ligands-glycans)).
 
-OpenDDE is absent from that constraint list on purpose. It shares Protenix's
+OpenDDE reads no constraint, native or common. It shares Protenix's
 native dialect and featurizer, but its model has no constraint embedder, and
 upstream's inference build warns and ignores a job's `constraint` (OpenDDE
 1.1.1 `opendde/data/inference/json_to_feature.py:28-32`, and its
@@ -441,10 +441,14 @@ is checked against the chain's length (a ligand's length is its number of CCD
 codes). `max_distance` is optional; omitted, the model runs its own upstream
 default, and `foldjax_run.json` records each contact under `constraints`
 (`kind: contact`, `token1`, `token2`, `max_distance`, `max_distance_source`).
-Pockets and contacts may share one `constraints` list. In Python:
+Pockets and contacts may share one `constraints` list. The two tokens may
+name one residue, which upstream Boltz-2 accepts; Protenix refuses it as a
+same-chain pair. In Python:
 `Job(..., contacts=[Contact(("A", 2), ("B", 3), max_distance=8.0)])`.
 
-A contact on a ligand is refused everywhere. Boltz-2 addresses a ligand in a
+A contact on a ligand is refused by Boltz-2 and Protenix (and by the three
+models with no contact field); OpenDDE drops and records it with the rest
+of the job's constraints. Boltz-2 addresses a ligand in a
 contact by an atom name of its first residue, never by residue
 (`parse/schema.py` `token_spec_to_ids`), and Protenix, for a residue that
 spans several tokens -- every ligand residue, and a modified polymer residue

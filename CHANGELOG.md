@@ -58,7 +58,9 @@ unless it says so here, in its own paragraph.
   from 1, and ESMFold2 tokenizes it as Biohub's `prepare_input` does (on the
   released CCD, all 18 feature arrays of an N-linked NAG-NAG-BMA match
   upstream's). OpenFold3 refuses more than one code, as its v0.5.0 raises
-  `NotImplementedError`; Protenix and OpenDDE refuse a code containing `_`.
+  `NotImplementedError`; Protenix and OpenDDE refuse a code containing `_`;
+  Boltz-2 refuses affinity for such a ligand while validating, as its parser
+  does.
   `multi_residue_ligand` moves from `native_only_features` to
   `common_schema_features` for the five that translate it. See
   [docs/input.md](docs/input.md#multi-residue-ligands-glycans).

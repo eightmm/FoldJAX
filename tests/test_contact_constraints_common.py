@@ -255,6 +255,33 @@ def test_opendde_records_a_pocket_and_a_contact_in_one_drop(tmp_path) -> None:
     (record,) = dropped
     assert record["keys"] == ["pocket", "contact"]
     assert record["binders"] == ["L"]
+    with pytest.raises(
+        ValueError, match="a pocket constraint and a contact constraint: upstream"
+    ):
+        _materialize(
+            _job(tmp_path, pocket, _contact()),
+            "opendde",
+            options={IGNORE_CONSTRAINTS: False},
+        )
+
+
+def test_a_ligand_contact_is_dropped_on_opendde_like_any_other(tmp_path) -> None:
+    dropped: list = []
+    with pytest.warns(UserWarning, match="1 contact constraint"):
+        _materialize(
+            _job(tmp_path, _contact(token2=["L", 1])), "opendde", dropped=dropped
+        )
+    assert dropped[0]["contacts"] == [[["A", 2], ["L", 1]]]
+
+
+def test_one_residue_named_twice_passes_where_upstream_lets_it(tmp_path) -> None:
+    """Boltz-2's parser takes it; Protenix refuses it as a same-chain pair."""
+    same = _contact(token2=["A", 2])
+    native = json.loads(_materialize(_job(tmp_path, same), "boltz2").read_text())
+    assert native["constraints"][0]["contact"]["token2"] == ["A", 2]
+    same["contact"]["max_distance"] = 5
+    with pytest.raises(ValueError, match="contact within one chain"):
+        _materialize(_job(tmp_path, same), "protenix")
 
 
 @pytest.mark.parametrize("model", ["alphafold3", "esmfold2", "openfold3"])
@@ -272,7 +299,6 @@ def test_models_without_a_contact_field_refuse_it(tmp_path, model) -> None:
         ({**_CONTACT, "token2": ["L", 3]}, "outside chain 'L', which has 2"),
         ({**_CONTACT, "token1": ["A", 0]}, "1-based"),
         ({**_CONTACT, "token1": ["A", True]}, "must be an integer"),
-        ({**_CONTACT, "token2": ["A", 2]}, "name the same residue"),
         ({**_CONTACT, "max_distance": -1}, "positive and finite"),
         ({**_CONTACT, "max_distance": "6"}, "must be a number"),
         ({**_CONTACT, "force": True}, "contact fields"),

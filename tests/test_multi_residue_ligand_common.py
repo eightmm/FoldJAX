@@ -98,13 +98,11 @@ def test_protenix_dialect_joins_codes_and_numbers_them_from_one(
     ]
 
 
-def test_protenix_featurizer_builds_the_glycan_and_its_inter_residue_bonds(
-    tmp_path,
-) -> None:
-    """The port's own reader, representative-atom check included.
+def _protenix_glycan(tmp_path: Path, bonds):
+    """The port's featurizer on the glycan job, or a skip without the CCD.
 
-    Leaving atoms need the full CCD (components.cif); without the asset
-    store, as in a fresh worktree, this skips.
+    Leaving atoms come from the full CCD, components.cif: the asset store's
+    copy, or the file ``PROTENIX_CCD_COMPONENTS_FILE`` names (as for a run).
     """
     import warnings
 
@@ -112,7 +110,7 @@ def test_protenix_featurizer_builds_the_glycan_and_its_inter_residue_bonds(
 
     from foldjax.models.protenix.data.featurize_json import featurize_protein_json
 
-    (native,) = _native(_job(tmp_path), "protenix")
+    (native,) = _native(_job(tmp_path, bonds=bonds), "protenix")
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -121,24 +119,47 @@ def test_protenix_featurizer_builds_the_glycan_and_its_inter_residue_bonds(
             )
     except ValueError as error:
         if "requires components.cif" in str(error):
-            pytest.skip("the Protenix components.cif asset is not available")
+            pytest.skip(
+                "the Protenix components.cif asset is not available; set "
+                "PROTENIX_CCD_COMPONENTS_FILE"
+            )
         raise
     asym = np.asarray(features["asym_id"])
     residue = np.asarray(features["residue_index"])
-    glycan = asym == asym.max()
-    assert set(residue[glycan].tolist()) == {1, 2, 3}
     names = np.asarray(features["ref_atom_name_chars"]).reshape(-1, 4, 64)
-    decoded = [
-        "".join(chr(int(c) + 32) for c in row.argmax(-1)).strip() for row in names
-    ]
-    token_of = {}
+    atoms: dict[int, list[str]] = {}
+    tokens: dict[tuple[int, str], int] = {}
     for atom, token in enumerate(np.asarray(features["atom_to_token_idx"])):
-        token_of.setdefault(
-            (int(asym[token]), int(residue[token]), decoded[atom]), token
-        )
-    o4 = token_of[(int(asym.max()), 1, "O4")]
-    c1 = token_of[(int(asym.max()), 2, "C1")]
-    assert np.asarray(features["token_bonds"])[o4, c1] == 1
+        if asym[token] != asym.max():
+            continue
+        name = "".join(chr(int(c) + 32) for c in names[atom].argmax(-1)).strip()
+        atoms.setdefault(int(residue[token]), []).append(name)
+        tokens.setdefault((int(residue[token]), name), int(token))
+    return features, atoms, tokens
+
+
+def test_protenix_featurizer_builds_the_glycan_and_its_inter_residue_bonds(
+    tmp_path,
+) -> None:
+    """The port's own reader, representative-atom check included.
+
+    NAG has 15 heavy atoms and BMA 12. A covalent bond at C1 removes that
+    residue's leaving O1 (upstream ``remove_leaving_atoms``), so the N-linked
+    chain NAG-NAG-BMA, bonded at every C1, keeps 14/14/11; unbonded, 15/15/12.
+    """
+    import numpy as np
+
+    features, atoms, tokens = _protenix_glycan(tmp_path, _BONDS)
+    assert {key: len(value) for key, value in atoms.items()} == {1: 14, 2: 14, 3: 11}
+    assert all("O1" not in names for names in atoms.values())
+    bonds = np.asarray(features["token_bonds"])
+    assert bonds[tokens[(1, "O4")], tokens[(2, "C1")]] == 1
+    assert bonds[tokens[(2, "O4")], tokens[(3, "C1")]] == 1
+
+    (tmp_path / "free").mkdir()
+    _, atoms, _ = _protenix_glycan(tmp_path / "free", None)
+    assert {key: len(value) for key, value in atoms.items()} == {1: 15, 2: 15, 3: 12}
+    assert all("O1" in names for names in atoms.values())
 
 
 @pytest.mark.parametrize(
@@ -148,6 +169,19 @@ def test_a_bond_counts_one_residue_per_code(tmp_path, model) -> None:
     past = [*_BONDS, [["G", 3, "O4"], ["G", 4, "C1"]]]
     with pytest.raises(ValueError, match="outside chain 'G', which has 3 residue"):
         _native(_job(tmp_path, bonds=past), model)
+
+
+def test_boltz2_refuses_affinity_for_a_multi_residue_ligand(tmp_path) -> None:
+    source = _job(tmp_path, bonds=None)
+    document = json.loads(source.read_text())
+    document["properties"] = [{"affinity": {"binder": "G"}}]
+    source.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match="affinity for the multi-residue ligand 'G'"):
+        _native(source, "boltz2")
+    # A one-code list is a single residue, which upstream scores.
+    document["entities"][1]["ccd"] = ["NAG"]
+    source.write_text(json.dumps(document))
+    assert _native(source, "boltz2")["properties"] == [{"affinity": {"binder": "G"}}]
 
 
 def test_esmfold2_reads_the_list_itself(tmp_path) -> None:

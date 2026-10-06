@@ -903,7 +903,9 @@ def _contact_constraints(
     1 for any other ligand). ``chains`` maps chain ids to entity types and
     ``residues`` every chain to its residue count; omitted, those checks are
     skipped, as for ``_pocket_constraints``. Whether a model can address a
-    ligand token is ``_validate_pocket_constraints``'s question.
+    ligand token is ``_validate_pocket_constraints``'s question. Two equal
+    tokens pass, as upstream Boltz-2's parser lets them (its featurizer marks
+    that token's diagonal); Protenix refuses them as a same-chain pair.
     """
     contacts: list[dict[str, Any]] = []
     for body in _constraint_items(job, "contact"):
@@ -934,8 +936,6 @@ def _contact_constraints(
                     f"which has {residues[chain]} residue(s)"
                 )
             tokens.append((chain, residue))
-        if tokens[0] == tokens[1]:
-            raise ValueError("contact token1 and token2 name the same residue")
         distance = body.get("max_distance")
         if distance is not None:
             if isinstance(distance, bool) or not isinstance(distance, (int, float)):
@@ -1338,7 +1338,17 @@ def _validate(
             "binding affinity",
             "only Boltz-2 carries an affinity head",
         )
-    _affinity_binder(job, chains)
+    binder = _affinity_binder(job, chains)
+    for entity in entities:
+        if binder in _ids(entity) and len(_ccd_codes(entity)) > 1:
+            # data/parse/schema.py:1190-1192 "Cannot compute affinity for
+            # multi residue ligands!", raised while parsing; refused here first.
+            _reject(
+                model,
+                "binding affinity for a ligand of several CCD codes",
+                f"upstream Boltz-2 cannot compute affinity for the multi-residue "
+                f"ligand {binder!r}",
+            )
     _validate_pocket_constraints(
         job, model, target, entities, options, ignored_constraints
     )
@@ -1370,10 +1380,14 @@ def _validate_pocket_constraints(
         ):
             _reject(
                 model,
-                "a pocket constraint" if pockets else "a contact constraint",
+                " and ".join(
+                    f"a {kind} constraint"
+                    for kind, present in (("pocket", pockets), ("contact", contacts))
+                    if present
+                ),
                 f"upstream {model}'s inference build ignores constraints. "
-                f"Remove it, or unset {IGNORE_CONSTRAINTS}=false to run without "
-                "it as upstream does; the run manifest then records the drop "
+                f"Remove them, or unset {IGNORE_CONSTRAINTS}=false to run without "
+                "them as upstream does; the run manifest then records the drop "
                 "under ignored_constraints",
             )
         if ignored_constraints is not None:
@@ -1403,7 +1417,7 @@ def _validate_pocket_constraints(
     if pockets:
         _validate_pockets(model, target, pockets, kinds)
     if contacts:
-        _validate_contacts(model, target, contacts, entities)
+        _validate_contacts(model, target, contacts, entities, kinds)
 
 
 def _validate_pockets(
@@ -1463,6 +1477,7 @@ def _validate_contacts(
     target: _Target,
     contacts: list[dict[str, Any]],
     entities: list[dict[str, Any]],
+    kinds: Mapping[str, str],
 ) -> None:
     if "contact_constraints" not in target.features:
         _reject(
@@ -1470,7 +1485,6 @@ def _validate_contacts(
             "a contact constraint",
             f"upstream {model} has no contact restraint field",
         )
-    kinds = {chain: entity["type"] for entity in entities for chain in _ids(entity)}
     modified = {
         (chain, position)
         for entity in entities

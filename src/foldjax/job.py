@@ -367,6 +367,7 @@ class Job:
             _normalize_sequence,
             _pocket_constraints,
             _reject_unknown,
+            _residue_counts,
             _templates,
             assign_chain_ids,
         )
@@ -482,15 +483,7 @@ class Job:
             )
             for pocket in _pocket_constraints(document, kinds, lengths)
         )
-        residues = {
-            chain: (
-                (len(entity.ccd) if isinstance(entity.ccd, tuple) else 1)
-                if isinstance(entity, Ligand)
-                else len(entity.sequence)
-            )
-            for entity in entities
-            for chain in (entity.id if isinstance(entity.id, tuple) else (entity.id,))
-        }
+        residues = _residue_counts(raw_entities)
         contacts = tuple(
             Contact(
                 contact["token1"],
