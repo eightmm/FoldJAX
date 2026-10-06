@@ -69,6 +69,20 @@
 
 ### Changed
 
+- **Boltz-2's `matmul_precision` reaches triangle attention.** The four
+  triangle-attention projections take an explicit op-level precision that
+  `api.predict` never set, so they ran `highest` under every request while
+  the rest of the trunk followed the knob. `predict` now passes the resolved
+  knob there, and `resolve_matmul_precision` accepts `high`. At the released
+  bfloat16 trunk those matmuls are bfloat16 on both operands, so the result
+  is unchanged: bit-identical on CPU, and a unified build measured the same
+  on GPU (81.96 against 82.17 s at 1,003 tokens). Under
+  `--option dtype=float32` an omitted knob now runs them at TF32 on a GPU
+  like the rest of the trunk; that arm has no GPU accuracy row, and
+  `--option matmul_precision=highest` still selects the whole float32
+  program. The compiled program's precision attribute changes, so the first
+  Boltz-2 run after upgrading recompiles.
+
 - **One job-name rule for every output path.** FoldJAX's layout, the
   Protenix/OpenDDE original-style tree and OpenFold3's native files each
   sanitized a job name their own way; all three now use
