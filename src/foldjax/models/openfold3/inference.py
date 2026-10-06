@@ -1908,6 +1908,7 @@ def released_config(
     max_array_bytes: int | None = DEFAULT_ARRAY_BUDGET_BYTES,
     padded: bool = False,
     pocket_sampling: PocketSamplingConfig | None = None,
+    non_protein_tokens: int = 0,
 ) -> InferenceConfig:
     """Return the released OpenFold3 architecture settings.
 
@@ -1939,7 +1940,13 @@ def released_config(
     ``pocket_sampling`` is the static half of a query's pocket constraint
     (:func:`~foldjax.models.openfold3.data.pocket_constraints.pocket_sampling_config`);
     the laws were fitted without its second rollout, so admission treats it
-    like padding.
+    like padding. ``non_protein_tokens`` counts the real nucleic-acid and
+    ligand tokens; it too reaches only admission. Every point the laws were
+    fitted on is protein-only, so any such token puts the run outside the
+    fitted composition, where the estimate is a lower bound: 5NPK, 3,061
+    tokens of DNA gyrase with DNA and ligands, peaked at 41,260 MiB against
+    the chunked law's 29,876 MiB upper estimate. No composition threshold was
+    measured, so none is assumed -- a single non-protein token is enough.
 
     Verify against the checkpoint before trusting this: read its block counts
     with :func:`~foldjax.models.openfold3.bridge.checkpoint.count_blocks` and
@@ -1998,6 +2005,11 @@ def released_config(
                     ("a float32 trunk", dtype == "float32"),
                     # A second rollout plus the proposal search.
                     ("pocket-guided sampling", pocket_sampling is not None),
+                    (
+                        f"{non_protein_tokens} nucleic-acid or ligand tokens "
+                        "(the law was fitted on protein-only inputs)",
+                        non_protein_tokens > 0,
+                    ),
                 )
                 if active
             ),

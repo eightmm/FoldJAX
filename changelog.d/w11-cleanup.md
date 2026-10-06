@@ -21,6 +21,13 @@
   a trunk-only or confidence-free run, which reads no ligand identity, is
   unaffected.
 
+- **OpenFold3 no longer calls a nucleic-acid or ligand input a fit.** Its peak
+  law keys on the token count alone and every point it was fitted on is
+  protein-only; 5NPK (DNA gyrase with DNA and ligands, 3,061 tokens) peaked at
+  41,260 MiB against the law's 29,876 MiB upper estimate. A run with any real
+  non-protein token is now admitted as `unknown` with that reason named, the
+  way a padded or float32 run already was; a refusal still binds.
+
 ### Changed
 
 - **One job-name rule for every output path.** FoldJAX's layout, the

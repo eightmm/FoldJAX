@@ -819,6 +819,13 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         overrides["memory_check"] = memory_policy.parse_check_mode(
             options.pop("memory_check", None)
         )
+        if "is_protein" in features:
+            # Counted on the unpadded features, before serving padding: the
+            # peak laws were fitted on protein-only inputs, and admission
+            # needs the real composition, not the padded token axis.
+            real = np.asarray(features["token_mask"], dtype=bool)
+            protein = np.asarray(features["is_protein"], dtype=bool)
+            overrides["non_protein_tokens"] = int(np.sum(real & ~protein))
         if chunk is not None:
             overrides["pair_chunk_size"] = int(chunk)
         else:

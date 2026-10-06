@@ -721,6 +721,15 @@ def test_an_omitted_option_and_an_explicit_unblocked_run_stay_distinguishable() 
         ({"padded": True}, ["serving padding"]),
         ({"dtype": "float32"}, ["a float32 trunk"]),
         ({"padded": True, "dtype": "float32"}, ["serving padding", "a float32 trunk"]),
+        # 5NPK, DNA gyrase with DNA and ligands at 3,061 tokens, peaked at
+        # 41,260 MiB against this law's 29,876 MiB upper estimate.
+        (
+            {"non_protein_tokens": 200},
+            [
+                "200 nucleic-acid or ligand tokens (the law was fitted on "
+                "protein-only inputs)"
+            ],
+        ),
     ],
 )
 def test_a_padded_or_float32_openfold3_run_is_not_called_a_fit(
@@ -747,7 +756,7 @@ def test_a_padded_or_float32_openfold3_run_is_not_called_a_fit(
             memory_budget=plenty,
             dtype=kwargs.get("dtype", inference.DEFAULT_DTYPE),
         )
-    if "padded" in kwargs:
+    if "padded" in kwargs or "non_protein_tokens" in kwargs:
         assert config == unpadded
 
 
@@ -779,6 +788,8 @@ def test_the_openfold3_adapter_admits_a_padded_run_once_at_its_padded_shape(
     features = {
         "token_mask": np.ones((1, 8), dtype=np.float32),
         "atom_mask": np.ones((1, 16), dtype=np.float32),
+        # Two of eight real tokens are not protein.
+        "is_protein": np.asarray([[1, 1, 1, 0, 1, 1, 0, 1]], dtype=np.int32),
     }
     calls: list[dict] = []
 
@@ -836,6 +847,8 @@ def test_the_openfold3_adapter_admits_a_padded_run_once_at_its_padded_shape(
     assert rebuilt["memory_budget"] is budget
     assert rebuilt["padded"] is True
     assert rebuilt["n_token"] == 16
+    # The composition is the unpadded one, and the admitted rebuild carries it.
+    assert first["non_protein_tokens"] == rebuilt["non_protein_tokens"] == 2
 
 
 def test_two_budgets_share_one_cache_profile_and_one_program(
