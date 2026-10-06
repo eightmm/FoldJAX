@@ -114,7 +114,10 @@ def _add_predict_arguments(
     )
     source.add_argument(
         "--name",
-        help="what to call a --sequence job in output file names (default 'job')",
+        help="what to call a --sequence job: its output directory is "
+        "foldjax-outputs/NAME. Omitted, the job is called 'job' and its "
+        "directory is foldjax-outputs/job-<first 8 hex digits of the job's "
+        "SHA-256>, the same for the same chains on every run",
     )
     source.add_argument(
         "--affinity-binder",
@@ -293,7 +296,9 @@ def _add_predict_arguments(
         help=(
             "pin the padded MSA row capacity; it pads the rows the model "
             "already reads and is refused below them, so --max-msa-depth "
-            "stays the only way to read fewer"
+            "stays the only way to read fewer. Those rows are known only "
+            "after featurization, so `foldjax plan` does not check a pin "
+            "against them; predict does"
         ),
     )
     shapes.add_argument(
@@ -366,8 +371,21 @@ def _add_predict_arguments(
     )
 
 
+def _model_help() -> str:
+    """Every model name, with the aliases each one also answers to."""
+    from foldjax.portspec import PORTS
+
+    names = []
+    for name in available_models():
+        aliases = PORTS[name].aliases
+        names.append(f"{name} ({', '.join(aliases)})" if aliases else name)
+    return "one of " + ", ".join(names)
+
+
 def _parser() -> argparse.ArgumentParser:
     from foldjax import __version__
+
+    model_help = _model_help()
 
     parser = argparse.ArgumentParser(
         prog="foldjax",
@@ -405,7 +423,7 @@ def _parser() -> argparse.ArgumentParser:
     home = commands.add_parser("home", help="show where FoldJAX keeps its files")
     home.add_argument(
         "--path",
-        choices=("home", "downloads", "weights", "assets", "compile_cache", "runtime"),
+        choices=tuple(paths.describe()),
         help="print just one location, for shell scripts",
     )
 
@@ -416,15 +434,15 @@ def _parser() -> argparse.ArgumentParser:
     runtime_status = runtime_commands.add_parser(
         "status", help="report whether one model can start without preparation"
     )
-    runtime_status.add_argument("--model", required=True)
+    runtime_status.add_argument("--model", required=True, help=model_help)
     runtime_prepare = runtime_commands.add_parser(
         "prepare", help="prepare one model's generated native artifacts"
     )
-    runtime_prepare.add_argument("--model", required=True)
+    runtime_prepare.add_argument("--model", required=True, help=model_help)
     runtime_gc = runtime_commands.add_parser(
         "gc", help="inspect or remove older prepared runtime generations"
     )
-    runtime_gc.add_argument("--model", required=True)
+    runtime_gc.add_argument("--model", required=True, help=model_help)
     runtime_gc.add_argument(
         "--keep-days",
         type=float,
@@ -452,8 +470,11 @@ def _parser() -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
 
-    describe = commands.add_parser("capabilities", help="show what one backend accepts")
-    describe.add_argument("--model", required=True)
+    describe = commands.add_parser(
+        "capabilities",
+        help="show what one backend accepts, and its sampling defaults",
+    )
+    describe.add_argument("--model", required=True, help=model_help)
     describe.add_argument(
         "--json",
         action="store_true",
@@ -579,7 +600,7 @@ def _parser() -> argparse.ArgumentParser:
     where = weights_commands.add_parser(
         "path", help="print the managed prediction-ready asset path"
     )
-    where.add_argument("--model", required=True)
+    where.add_argument("--model", required=True, help=model_help)
     where.add_argument(
         "--profile",
         help="managed asset profile (defaults to the complete released bundle)",

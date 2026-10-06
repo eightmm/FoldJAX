@@ -158,7 +158,7 @@ PORTS: Mapping[str, PortSpec] = {
     ),
     "boltz2": PortSpec(
         model="boltz2",
-        aliases=("boltz", "boltz-jax"),
+        aliases=("boltz", "boltz-2", "boltz-jax"),
         backend="foldjax.backends.boltz2:Boltz2Backend",
         asset_profiles=(RELEASED_PROFILE,),
         asset_staging=(

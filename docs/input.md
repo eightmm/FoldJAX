@@ -129,18 +129,38 @@ so the one document cannot be mistaken for another; any other top-level key is
 refused. `--input-format native` leaves the file whole. Because a jobs file is
 several runs, the Python API takes it as `inputs=("jobs.yaml",)`, the spelling
 a directory takes; `input=` refuses it and says so. `foldjax models
---for` reads one job and does not accept a jobs file.
+--for` answers a jobs file one job at a time.
 
 `--sequence`/`--dna`/`--rna`/`--ligand`/`--ligand-smiles` and FASTA files are
-turned into an ordinary common-schema job under `$FOLDJAX_HOME/runtime/jobs/`
-and run through the same path as any other input, so `plan` prints the
-generated file and the manifest hashes it. FASTA records become protein chains
+turned into an ordinary common-schema job at
+`$FOLDJAX_HOME/runtime/jobs/<digest>/<stem>.json` (`Job.store()`) and run
+through the same path as any other input, so the manifest hashes it. `plan`
+writes nothing into the store: it prints that path and the generated document
+(`generated_input`). FASTA records become protein chains
 unless `Job.from_fasta(path, kind="rna")` says otherwise: `ACGT` is a valid
 protein as well as valid DNA, and guessing would fold the wrong polymer
 silently. `--ligand` takes CCD codes and `--ligand-smiles` takes SMILES,
-separately, because `CCO` is both a plausible CCD code and ethanol. `--name`
-sets what that generated job is called in output file names; it defaults to
-`job`.
+separately, because `CCO` is both a plausible CCD code and ethanol.
+
+The stem is the default output directory, `foldjax-outputs/<stem>`, and it
+depends only on the job:
+
+- `--name NAME` gives the stem `NAME`.
+- Without `--name` the job is called `job` and its stem is `job-<hex>`, the
+  first 8 hex digits of the SHA-256 of the job document
+  (`json.dumps(job.to_document(), sort_keys=True)`). The same chains always
+  land in the same directory, which is what lets `--resume` find them, and two
+  different unnamed jobs never share one.
+- A FASTA or structure file's stem is its file name's.
+
+`<digest>` is the first 16 hex digits of the same SHA-256, so two different
+jobs with one name are two files.
+
+`auto` reads a JSON or YAML mapping as a FoldJAX job unless it carries a
+native dialect's signature key (`sequences`, `modelSeeds`, `dialect`,
+`version`, `queries`), so a misspelled `entities` is answered by the common
+validator ("did you mean 'entities'?"). A `.json` or `.yaml` file that does
+not parse is refused with the parser's one-line reason.
 
 ### Alignments
 
