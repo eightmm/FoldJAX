@@ -321,6 +321,15 @@ def pairformer_embedding(
         si = si.astype(dtype)
         single_mask = single_mask.astype(dtype)
         pair_mask = pair_mask.astype(dtype)
+    else:
+        # A float32 head behind a narrowed trunk -- the shipped profile --
+        # receives a bfloat16 trunk single. `zij` already promoted through the
+        # float32 entry projections above; `si` has no such projection and
+        # would enter the stack's scan carry narrow and leave it float32.
+        # Upstream runs this stack float32 in every regime. A no-op when the
+        # trunk is float32 too.
+        si = si.astype(jnp.float32)
+        zij = zij.astype(jnp.float32)
 
     si, zij = pairformer_stack(
         si,

@@ -866,33 +866,47 @@ def test_the_whole_program_traces_under_bfloat16_on_real_weights() -> None:
             lambda v: jax.ShapeDtypeStruct(np.shape(v), np.asarray(v).dtype), tree
         )
 
-    state = checkpoint.load_checkpoint(path)
-    prefix = torch_mapping.resolve_model_prefix(state, None)
-    torch_mapping.prune_sample_diffusion_aliases(state, prefix=prefix)
-    params = torch_mapping.map_inference_params(state, prefix)
-    # Reduce both trees to shapes and drop the 2.2 GB of real weights before
-    # tracing: `eval_shape` never reads a value, and this machine runs several
-    # jobs at once.
-    shaped = {
-        name: as_shapes(cast_narrow_params(params, *_both(name))) for name in DTYPES
-    }
-    del state, params
+    from foldjax.models.openfold3.inference import resolve_dtypes
 
     features = minimal_features(tokens=6, atoms=12, msa_rows=2, templates=1)
-    table = chemistry.representative_atom_table()
-    key = jax.random.key(0)
-
-    returned = {}
-    for name in DTYPES:
-        config = released_config(
+    # Both groups wide, both narrow, and the shipped profile: a narrow trunk
+    # beside upstream's float32 confidence head.
+    arms = {
+        "float32": {"dtype": "float32", "confidence_dtype": "float32"},
+        "bfloat16": {"dtype": "bfloat16", "confidence_dtype": "bfloat16"},
+        "shipped": {},
+    }
+    configs = {
+        name: released_config(
             n_token=features["token_mask"].shape[-1],
             n_atom=features["atom_mask"].shape[-1],
             num_recycles=2,
             num_steps=3,
             num_samples=2,
             msa_depth=None,
-            dtype=name,
+            **options,
         )
+        for name, options in arms.items()
+    }
+
+    state = checkpoint.load_checkpoint(path)
+    prefix = torch_mapping.resolve_model_prefix(state, None)
+    torch_mapping.prune_sample_diffusion_aliases(state, prefix=prefix)
+    params = torch_mapping.map_inference_params(state, prefix)
+    # Reduce the trees to shapes and drop the 2.2 GB of real weights before
+    # tracing: `eval_shape` never reads a value, and this machine runs several
+    # jobs at once.
+    shaped = {
+        name: as_shapes(cast_narrow_params(params, *resolve_dtypes(config)))
+        for name, config in configs.items()
+    }
+    del state, params
+
+    table = chemistry.representative_atom_table()
+    key = jax.random.key(0)
+
+    returned = {}
+    for name, config in configs.items():
         out = jax.eval_shape(
             lambda k, b, p, config=config: predict(k, b, p, config, table),
             key,
@@ -906,7 +920,7 @@ def test_the_whole_program_traces_under_bfloat16_on_real_weights() -> None:
         }
 
     assert returned["bfloat16"], "the narrowed program returned nothing"
-    assert returned["bfloat16"] == returned["float32"]
+    assert returned["bfloat16"] == returned["float32"] == returned["shipped"]
     assert all(
         dtype == jnp.float32 for _shape, dtype in returned["bfloat16"].values()
     ), returned["bfloat16"]

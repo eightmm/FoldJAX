@@ -18,7 +18,10 @@
   (`heads/head_modules.py:106`, `heads/prediction_heads.py:224`); this port
   let it follow `dtype`, so the shipped bfloat16 trunk ran it bfloat16.
   `confidence_dtype` now defaults to `float32` whatever `dtype` is, and
-  `--option confidence_dtype=bfloat16` restores the old head. The head reads
+  `--option confidence_dtype=bfloat16` restores the old head. A float32 head
+  behind the bfloat16 trunk did not trace before -- the trunk's bfloat16
+  single entered the stack's scan carry narrow and left it float32 -- so the
+  head now widens its inputs at entry. The head reads
   predicted coordinates and emits scores, so structures are unchanged, but
   every confidence score -- and therefore the ranking and `best` sample -- of
   a default OpenFold3 run can differ, and the run gets a new cache namespace.
