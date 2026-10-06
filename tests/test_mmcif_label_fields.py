@@ -240,7 +240,7 @@ def test_boltz2_writer_labels(tmp_path: Path) -> None:
 # --- AlphaFold 3 ----------------------------------------------------------------
 
 
-def test_alphafold3_writer_labels() -> None:
+def test_alphafold3_writer_labels(alphafold3_runtime: None) -> None:
     try:
         from foldjax.models.alphafold3 import build
 

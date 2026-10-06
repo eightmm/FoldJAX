@@ -137,9 +137,15 @@ jobs:
       #
       # RCSB deposition checks (`network`) run nightly: here they would make the
       # otherwise hermetic gate depend on an external service.
+      #
+      # The AlphaFold 3 runtime tests skip on a host that cannot build it
+      # (`tests/conftest.py::alphafold3_runtime`); the core shard has just
+      # built or restored it, so there a runtime that still cannot be
+      # prepared fails them instead.
       - name: Tests
         env:
           COVERAGE_FILE: .coverage.${{ matrix.shard }}
+          FOLDJAX_REQUIRE_AF3_RUNTIME: ${{ matrix.shard == 'core' && '1' || '' }}
         run: >
           uv run --no-sync pytest -q
           -m '${{ inputs.markers }}'

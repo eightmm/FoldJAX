@@ -4,6 +4,11 @@ import gc
 import weakref
 from types import SimpleNamespace
 
+import pytest
+
+# Every test here imports the patched AlphaFold 3 package.
+pytestmark = pytest.mark.usefixtures("alphafold3_runtime")
+
 
 def _runtime_modules():
     from foldjax.models.alphafold3 import build

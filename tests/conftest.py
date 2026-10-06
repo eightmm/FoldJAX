@@ -143,6 +143,39 @@ def _restore_release_reclaim() -> Iterator[None]:
         _managed_memory._RECLAIM_AT_RELEASE = saved
 
 
+@pytest.fixture(scope="session")
+def _alphafold3_runtime_error() -> str | None:
+    """Prepare AlphaFold 3's native runtime once; why it failed, or ``None``."""
+    from foldjax.models.alphafold3 import build
+
+    try:
+        build.ensure_ready()
+    except Exception as error:  # noqa: BLE001 - the reason is the skip message
+        return f"{type(error).__name__}: {error}"[:500]
+    return None
+
+
+@pytest.fixture
+def alphafold3_runtime(_alphafold3_runtime_error: str | None) -> None:
+    """Skip when FoldJAX's AlphaFold 3 runtime cannot be built on this host.
+
+    The runtime is a CMake build of AlphaFold 3's C++ extension. Each test used
+    to reach it through ``register_runtime()``, so on a host that cannot build
+    it -- no zlib headers is enough -- every one of them retried the whole
+    build before failing. It is now attempted once per session.
+
+    CI builds the runtime in a step of its own and sets
+    ``FOLDJAX_REQUIRE_AF3_RUNTIME=1`` on that shard, where a runtime that
+    still cannot be prepared is a failure rather than a skip.
+    """
+    if _alphafold3_runtime_error is None:
+        return
+    message = f"AlphaFold 3 runtime could not be prepared: {_alphafold3_runtime_error}"
+    if os.environ.get("FOLDJAX_REQUIRE_AF3_RUNTIME") == "1":
+        pytest.fail(message)
+    pytest.skip(message)
+
+
 @pytest.fixture
 def ccd_components() -> Path:
     """The released ``components.cif``, or skip the test.
