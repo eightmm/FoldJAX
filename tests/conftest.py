@@ -43,6 +43,23 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+def pytest_report_header(config: pytest.Config) -> list[str]:
+    """Say out loud which vendored suites the optional-import gate left out.
+
+    The gate itself is `collect_ignore` in `tests/models/conftest.py`; this hook
+    has to live here, because pytest only calls it from the rootdir conftest or
+    a plugin. Placed beside the gate it never ran, and some 80 Boltz-2 parity
+    tests disappeared from every run on a torch-free machine without a line.
+    """
+    from .models.conftest import _OPTIONAL_SUITES, _skipped
+
+    return [
+        f"vendored parity suites not collected: {len(_OPTIONAL_SUITES[module][1])} "
+        f"modules need {module} ({environment})"
+        for module, environment in sorted(_skipped.items())
+    ]
+
+
 _LEAKY_ENVIRONMENT = (
     "JAX_PLATFORMS",
     "PROTENIX_CCD_COMPONENTS_FILE",

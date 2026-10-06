@@ -43,3 +43,32 @@ def test_ignored_set_matches_the_dependencies_that_are_actually_missing() -> Non
 def test_this_module_is_collectable_without_any_optional_extra() -> None:
     """If the gate itself needed an extra, nothing above would ever run."""
     assert __name__.endswith("test_optional_suite_gate")
+
+
+def test_the_gate_announces_itself_in_the_session_header() -> None:
+    """The banner hook must sit where pytest calls it.
+
+    Defined beside the gate, in `tests/models/conftest.py`, it never ran: pytest
+    calls `pytest_report_header` only from the rootdir conftest or a plugin.
+    """
+    import subprocess
+    import sys
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-p",
+            "no:cacheprovider",
+            str(Path(__file__)),
+        ],
+        cwd=_HERE.parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    header = completed.stdout.split("\ncollected ", 1)[0]
+    announced = "vendored parity suites not collected" in header
+    assert announced == bool(collect_ignore), completed.stdout[-2000:]

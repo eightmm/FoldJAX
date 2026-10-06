@@ -8,6 +8,10 @@ profile contains a second tensor runtime.
 Those modules import their optional dependency at module scope, so they have to
 be excluded at collection time rather than skipped inside a test. Provision the
 named external environment to collect and run them.
+
+The banner that names what was left out is `pytest_report_header` in
+`tests/conftest.py`: pytest calls that hook only from the rootdir conftest or a
+plugin, so defined here it never ran and the gate hid these suites silently.
 """
 
 from __future__ import annotations
@@ -55,12 +59,3 @@ for _module, (_extra, _paths) in _OPTIONAL_SUITES.items():
         collect_ignore.extend(_paths)
         _skipped[_module] = _extra
 
-
-def pytest_report_header() -> list[str]:
-    """Say out loud which vendored suites were left out, and why."""
-    if not _skipped:
-        return []
-    return [
-        "vendored parity suites not collected: "
-        f"{', '.join(f'{m} ({e})' for m, e in sorted(_skipped.items()))}"
-    ]
