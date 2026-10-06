@@ -34,7 +34,7 @@ from .test_checkpoint_load import N_TOKENS, _features, _weights
 _WRITER_READS = ("sample_atom_coords", "plddt_per_atom", "plddt")
 
 
-def _settings(directory, *, logits: bool):
+def _settings(directory, *, logits: bool, errors: bool = True):
     return dataclasses.replace(
         jax_model.with_overrides(
             checkpoint.load_settings(directory),
@@ -43,15 +43,16 @@ def _settings(directory, *, logits: bool):
             num_steps=1,
         ),
         return_confidence_logits=logits,
+        return_expected_errors=errors,
     )
 
 
-def _run(directory, parameters, *, logits: bool):
+def _run(directory, parameters, *, logits: bool, errors: bool = True):
     return jax_model.predict(
         jax.random.key(0),
         _features(),
         parameters,
-        settings=_settings(directory, logits=logits),
+        settings=_settings(directory, logits=logits, errors=errors),
         lm_hidden_states=np.zeros((1, N_TOKENS, 81, 2560), dtype=np.float32),
     )
 
@@ -59,6 +60,11 @@ def _run(directory, parameters, *, logits: bool):
 def test_the_flag_is_off_by_default() -> None:
     """Mirrors Boltz-2's `return_confidence_logits`, name and default both."""
     assert jax_model.ModelSettings().return_confidence_logits is False
+    # The expected PAE/PDE matrices stay on: 1/32 of the logits they come from.
+    assert jax_model.ModelSettings().return_expected_errors is True
+    assert set(jax_model.EXPECTED_ERROR_OUTPUTS) <= set(
+        jax_model.CONFIDENCE_LOGIT_OUTPUTS
+    )
 
 
 @pytest.mark.slow
@@ -66,13 +72,23 @@ def test_withholding_the_logits_changes_nothing_the_writer_reads() -> None:
     directory = _weights()
     parameters = checkpoint.load_parameters(directory)
 
-    without = _run(directory, parameters, logits=False)
+    without = _run(directory, parameters, logits=False, errors=False)
+    errors_only = _run(directory, parameters, logits=False)
     with_them = _run(directory, parameters, logits=True)
 
     # Gone when off, present when on -- and absent means absent, not zeroed.
     for name in jax_model.CONFIDENCE_LOGIT_OUTPUTS:
         assert name not in without, f"{name} still returned with the flag off"
         assert name in with_them, f"{name} missing with the flag on"
+        assert (name in errors_only) == (name in jax_model.EXPECTED_ERROR_OUTPUTS)
+    for name in jax_model.EXPECTED_ERROR_OUTPUTS:
+        np.testing.assert_array_equal(
+            np.asarray(errors_only[name]), np.asarray(with_them[name]), err_msg=name
+        )
+    np.testing.assert_array_equal(
+        np.asarray(errors_only["sample_atom_coords"]),
+        np.asarray(without["sample_atom_coords"]),
+    )
 
     # Everything the writer and the scores need survives, bit for bit. `ptm`
     # is the load-bearing one: it is computed *from* `pae_logits`, so if

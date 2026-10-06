@@ -225,10 +225,20 @@ def _confidence_index(
             else str(int(asym))
             for asym in take("asym_id")[:n_token]
         ]
+    # The chain axis of `pair_chains_iptm` is `one_hot(asym_id, max + 1)`; each
+    # entry is named by its first token's chain.
+    asym = take("asym_id")[:n_token].astype(np.int64)
+    names = {}
+    for value, name in zip(asym.tolist(), chains, strict=True):
+        names.setdefault(value, name)
+    n_chain = int(asym.max()) + 1 if asym.size else 0
     return {
         "token_chain_id": np.asarray(chains),
         "token_residue_index": take("residue_index")[:n_token].astype(np.int32) + 1,
         "atom_token_index": take("atom_to_token")[:n_atom].astype(np.int32),
+        "chain_id": np.asarray(
+            [names.get(index, str(index)) for index in range(n_chain)]
+        ),
     }
 
 
@@ -241,9 +251,10 @@ def _write_confidence_arrays(
 ) -> None:
     """Stage one sample's `confidence_full.npz` beside its structure.
 
-    pLDDT stays on the head's 0-1 scale. `pae`/`pde` are present only when
-    the caller compiled them as outputs (`return_confidence_logits=True`);
-    the managed backend does not.
+    pLDDT stays on the head's 0-1 scale. `pae`/`pde` are present unless the
+    program was compiled with both `return_confidence_logits` and
+    `return_expected_errors` off; `pair_chains_iptm` unless a direct caller
+    projected auxiliary outputs away.
     """
     from foldjax import confidence_arrays
 
@@ -255,6 +266,18 @@ def _write_confidence_arrays(
             return array[index]
         return array if array.ndim == ndim else None
 
+    chain_pair = per_sample("pair_chains_iptm", 2)
+    maps = dict(index_maps)
+    if chain_pair is not None and chain_pair.shape[0] != len(maps.get("chain_id", ())):
+        chain_pair = None
+    unavailable = dict(confidence_arrays.AVAILABILITY["esmfold2"]["unavailable"])
+    for name, reason in (
+        ("pae", _WITHHELD_ERRORS),
+        ("pde", _WITHHELD_ERRORS),
+        ("chain_pair_iptm", _WITHHELD_CHAIN_PAIR),
+    ):
+        if (chain_pair if name == "chain_pair_iptm" else cropped.get(name)) is None:
+            unavailable[name] = reason
     confidence_arrays.write(
         confidence_arrays.staged_path(structure_path),
         model="esmfold2",
@@ -263,7 +286,8 @@ def _write_confidence_arrays(
             "atom_plddt": per_sample("plddt_per_atom", 1),
             "pae": per_sample("pae", 2),
             "pde": per_sample("pde", 2),
-            **index_maps,
+            "chain_pair_iptm": chain_pair,
+            **maps,
         },
         scales={"token_plddt": "0-1", "atom_plddt": "0-1"},
         sources={
@@ -271,10 +295,20 @@ def _write_confidence_arrays(
             "atom_plddt": "plddt_per_atom",
             "pae": "pae",
             "pde": "pde",
+            "chain_pair_iptm": "pair_chains_iptm",
         },
-        unavailable=confidence_arrays.AVAILABILITY["esmfold2"]["unavailable"],
+        unavailable=unavailable,
         sample={"sample": index},
     )
+
+
+_WITHHELD_ERRORS = (
+    "the program was compiled with return_confidence_logits and "
+    "return_expected_errors both off"
+)
+_WITHHELD_CHAIN_PAIR = (
+    "the program projected pair_chains_iptm out (return_auxiliary_outputs=False)"
+)
 
 
 def write_prediction_outputs(
@@ -320,7 +354,7 @@ def write_prediction_outputs(
     # Each array crosses to the host once, not once per sample.
     confidence_source = {
         name: _numpy(cropped[name])
-        for name in ("plddt", "plddt_per_atom", "pae", "pde")
+        for name in ("plddt", "plddt_per_atom", "pae", "pde", "pair_chains_iptm")
         if name in cropped
     }
     for index, path in enumerate(structures):

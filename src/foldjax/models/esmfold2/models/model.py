@@ -254,6 +254,17 @@ class ModelSettings:
     #: and flat in sample count, and `test_model_parity` reads it. Excluding it
     #: keeps 98% of the saving without touching a test that cannot run here.
     return_confidence_logits: bool = False
+    #: Keep the expected `pae` and `pde` matrices, `[S, L, L]` float32 in
+    #: angstroms, when `return_confidence_logits` is off. They are 1/32 of the
+    #: two 64-bin logit arrays that flag withholds: `2 * S * L^2 * 4` bytes,
+    #: 2.2 GiB at 3,012 tokens and the checkpoint's 32 samples (0.35 GiB at
+    #: five), against this port's fitted 3,012-token peak of 67.7 GiB
+    #: (`memory_policy.ESMFOLD2_PEAK`) -- 3.2% derived, not yet measured. The
+    #: head computes them either way; this only decides whether they are entry
+    #: outputs of the compiled program, so coordinates and scores are
+    #: untouched. On by default because a PAE matrix is what users of this
+    #: model family read.
+    return_expected_errors: bool = True
     #: FoldJAX compute policy, not a blanket upstream parameter dtype.
     #: The pinned native source has separate CUDA BF16 autocast regions for
     #: language-model execution, confidence and diffusion pair conditioning.
@@ -414,20 +425,21 @@ CONFIDENCE_LOGIT_OUTPUTS = (
     "pae",
     "pde",
 )
+#: The part of `CONFIDENCE_LOGIT_OUTPUTS` that `return_expected_errors` keeps.
+EXPECTED_ERROR_OUTPUTS = ("pae", "pde")
 
 #: Native results retained by direct callers but unused by the common backend.
 #: The writer reads metadata from the original feature mapping and consumes
-#: only the sample coordinates, per-atom/token pLDDT and scalar scores. Keeping
-#: this projection inside the traced function also lets XLA remove the
-#: per-chain matrix calculation instead of merely dropping its device result
-#: after dispatch.
+#: the sample coordinates, per-atom/token pLDDT, the expected PAE/PDE, the
+#: chain-pair matrix (`pair_chains_iptm`, `[S, n_chains, n_chains]`) and scalar
+#: scores. Keeping this projection inside the traced function lets XLA drop
+#: the rest instead of merely discarding the device results after dispatch.
 MANAGED_AUXILIARY_OUTPUTS = frozenset(
     {
         "atom_pad_mask",
         "residue_index",
         "entity_id",
         "plddt_ca",
-        "pair_chains_iptm",
     }
 )
 
@@ -1869,8 +1881,10 @@ def predict(
         # Dropped here, inside the traced function, so they stop being entry
         # outputs of the compiled program. Filtering the dict in the caller
         # would leave the buffers exactly where they are.
+        kept = EXPECTED_ERROR_OUTPUTS if settings.return_expected_errors else ()
         for name in CONFIDENCE_LOGIT_OUTPUTS:
-            output.pop(name, None)
+            if name not in kept:
+                output.pop(name, None)
     return _project_prediction_outputs(
         output,
         return_auxiliary_outputs=return_auxiliary_outputs,
@@ -1920,6 +1934,7 @@ def with_overrides(
 
 __all__ = [
     "CONFIDENCE_DTYPES",
+    "EXPECTED_ERROR_OUTPUTS",
     "ModelSettings",
     "inputs_embedding",
     "language_model_pair",

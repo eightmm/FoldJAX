@@ -70,9 +70,13 @@ from foldjax.models.openfold3.models.augmentation import (
 )
 from foldjax.models.openfold3.models.confidence import (
     bin_centers,
+    compute_bespoke_iptm,
+    compute_chain_mean_iptm,
     compute_chain_pair_iptm,
+    compute_chain_ptm,
     compute_plddt,
     compute_ptm,
+    probs_to_expected_error,
 )
 from foldjax.models.openfold3.models.denoiser import DenoiserParams, denoise
 from foldjax.models.openfold3.models.diffusion_conditioning import (
@@ -239,6 +243,15 @@ class InferenceConfig(NamedTuple):
     has_atomized_tokens: bool = True
     #: Keep the atom confidence distribution for raw-output parity checks.
     return_plddt_logits: bool = False
+    #: Return upstream's full confidence arrays: expected PAE and PDE in
+    #: angstroms, ``[num_samples, N, N]``, and the global PDE per sample. They
+    #: are what upstream's writer saves by default
+    #: (``OutputWritingSettings.write_full_confidence_scores=True``), reduced
+    #: from the binned logits inside the per-sample confidence map, so the
+    #: 64-bin logits still never leave it. On, this also runs the PDE head for
+    #: every sample, which the binned outputs alone do not need. Part of the
+    #: config, so the two settings never share a compiled program.
+    return_expected_errors: bool = True
     #: Which gated-linear-unit path every SwiGLU in the model takes.
     #: ``"xla"`` is the released spelling: two projections and an
     #: elementwise product, which is also what upstream runs -- its
@@ -449,6 +462,18 @@ class Prediction(NamedTuple):
     single: jnp.ndarray | None = None
     pair: jnp.ndarray | None = None
     plddt_logits: jnp.ndarray | None = None
+    #: Expected PAE and PDE in angstroms, ``[num_samples, N, N]`` float32, and
+    #: the contact-weighted global PDE, ``[num_samples]`` (AF3 SI 5.7 eq. 16);
+    #: present with ``config.return_expected_errors``.
+    pae: jnp.ndarray | None = None
+    pde: jnp.ndarray | None = None
+    gpde: jnp.ndarray | None = None
+    #: Per-chain pTM, ``[num_samples, n_chain]``, and upstream's ligand-aware
+    #: "bespoke" chain-pair ipTM, ``[num_samples, n_chain, n_chain]`` (AF3 SI
+    #: 5.9.3 items 2 and 3); present when the chain count is known, the
+    #: bespoke matrix only for multimers.
+    chain_ptm: jnp.ndarray | None = None
+    bespoke_iptm: jnp.ndarray | None = None
 
 
 #: Bytes one pair-stack row block is allowed to cost, which is how
@@ -1007,14 +1032,18 @@ def _compact_confidence_metrics_from_pae(
     bin_min: float,
     bin_max: float,
     no_bins: int,
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray | None]:
+    return_chain_ptm: bool = False,
+) -> tuple[jnp.ndarray, ...]:
     """Reduce one confidence sample without returning its quadratic PAE logits.
 
     This is used only across the serial-confidence map boundary. Softmax is shared
-    by global and chain-pair metrics, while each considered token set retains its
-    own ``d0`` and expected TM weights. Moving the reductions across that boundary
-    changes only floating-point fusion order; the caller enables it under the
-    confidence-only ``1e-3`` max-absolute-delta contract.
+    by global, chain and chain-pair metrics, while each considered token set
+    retains its own ``d0`` and expected TM weights. Moving the reductions across
+    that boundary changes only floating-point fusion order; the caller enables it
+    under the confidence-only ``1e-3`` max-absolute-delta contract.
+
+    Returns ``(ptm, iptm, chain_pair)``, and per-chain pTM as a fourth element
+    with ``return_chain_ptm`` (None when ``n_chain`` is unknown).
     """
     probabilities = jax.nn.softmax(pae_logits, axis=-1)
     # ``jax.nn.softmax`` defines NaN, any +Inf, and an all--Inf row as an
@@ -1081,7 +1110,106 @@ def _compact_confidence_metrics_from_pae(
                 matrix[i][j] = value
                 matrix[j][i] = value
         chain_pair = jnp.stack([jnp.stack(row, axis=-1) for row in matrix], axis=-2)
-    return ptm, iptm, chain_pair
+    if not return_chain_ptm:
+        return ptm, iptm, chain_pair
+    chain_ptm = None
+    if n_chain is not None:
+        # `compute_chain_ptm` over the shared softmax: pTM restricted to one
+        # chain's tokens, its own d0, zero for a chain with no tokens.
+        valid = token_mask.astype(bool)
+        scores = []
+        for chain in range(n_chain):
+            mask_i = valid & (asym_id == chain)
+            value = _reduce_tm_pair_scores(
+                _expected_tm_pair_scores(probabilities, mask_i, **kwargs),
+                has_frame,
+                mask_i,
+                considered_dtype=probabilities.dtype,
+                undefined_pairs=undefined_softmax,
+            )
+            scores.append(jnp.where(jnp.any(mask_i), value, 0.0))
+        chain_ptm = jnp.stack(scores, axis=-1)
+    return ptm, iptm, chain_pair, chain_ptm
+
+
+#: Upstream's PDE and distogram binning
+#: (``projects/of3_all_atom/config/model_config.py``, ``confidence.pde`` and
+#: ``confidence.distogram``): PDE over 0-32 A, the distogram over 2-22 A, both
+#: in 64 bins. The bin count is read off the logits.
+PDE_BIN_MAX = 32.0
+DISTOGRAM_BIN_MIN = 2.0
+DISTOGRAM_BIN_MAX = 22.0
+#: Distogram bins whose upper edge is at most this many angstroms form the
+#: contact probability that weights the global PDE (AF3 SI 5.7 eq. 16).
+CONTACT_DISTANCE = 8.0
+
+
+def _expected_pair_error(logits: jnp.ndarray, *, bin_max: float) -> jnp.ndarray:
+    """Upstream ``probs_to_expected_error(softmax(logits))`` over ``0..bin_max``.
+
+    Taken in float32 whatever the head's dtype: a bfloat16 expectation over a
+    32 A range would round to an eighth of an angstrom.
+    """
+    logits = logits.astype(jnp.float32)
+    return probs_to_expected_error(
+        jax.nn.softmax(logits, axis=-1),
+        bin_min=0.0,
+        bin_max=bin_max,
+        no_bins=logits.shape[-1],
+    )
+
+
+def _contact_probabilities(
+    distogram_logits: jnp.ndarray, pair_mask: jnp.ndarray
+) -> jnp.ndarray:
+    """Upstream ``compute_global_predicted_distance_error``'s contact weights.
+
+    Masked to real token pairs: serving padding adds tokens upstream never has,
+    and their distogram rows would otherwise weight the global PDE.
+    """
+    logits = distogram_logits.astype(jnp.float32)
+    no_bins = logits.shape[-1]
+    ends = jnp.linspace(DISTOGRAM_BIN_MIN, DISTOGRAM_BIN_MAX, no_bins + 1)[1:]
+    probabilities = jax.nn.softmax(logits, axis=-1)
+    contact = jnp.sum(jnp.where(ends <= CONTACT_DISTANCE, probabilities, 0.0), axis=-1)
+    return contact * pair_mask.astype(contact.dtype)
+
+
+def _global_pde(
+    pde: jnp.ndarray, contact: jnp.ndarray, *, eps: float = 1e-8
+) -> jnp.ndarray:
+    """Contact-weighted mean PDE, ``[num_samples]`` (AF3 SI 5.7 eq. 16)."""
+    return jnp.sum(contact * pde, axis=(-2, -1)) / (
+        jnp.sum(contact, axis=(-2, -1)) + eps
+    )
+
+
+def _bespoke_iptm(
+    chain_pair: jnp.ndarray,
+    has_frame: jnp.ndarray,
+    token_mask: jnp.ndarray,
+    asym_id: jnp.ndarray,
+    is_ligand: jnp.ndarray,
+    *,
+    n_chain: int,
+) -> jnp.ndarray:
+    """Upstream v0.5.0's bespoke ipTM, one sample at a time.
+
+    Upstream decides whether a chain has a frame per sample
+    (``(chain_mask & has_frame).any(dim=-1)``), so each sample is averaged with
+    its own frames rather than with any sample's.
+    """
+
+    def one(pair, frames):
+        mean = compute_chain_mean_iptm(
+            pair[None], frames[None], token_mask, asym_id, n_chain=n_chain
+        )
+        return compute_bespoke_iptm(
+            mean, token_mask, asym_id, is_ligand, n_chain=n_chain
+        )[0]
+
+    frames = jnp.broadcast_to(has_frame, (chain_pair.shape[0], has_frame.shape[-1]))
+    return jax.vmap(one)(chain_pair, frames)
 
 
 @openfold3_precision
@@ -1511,6 +1639,7 @@ def _predict_from_trunk(
     returned = set(config.returned_pair_logits)
     return_pae = "pae_logits" in returned
     return_pde = "pde_logits" in returned
+    return_errors = config.return_expected_errors
 
     # pTM/ipTM exclude tokens whose *predicted* coordinates cannot form a valid
     # local frame. For atomized ligands and modified residues this depends on
@@ -1571,10 +1700,20 @@ def _predict_from_trunk(
         pae_one = predicted_aligned_error_head(z_conf_one, params.pae_head)
         pde_one = (
             predicted_distance_error_head(z_conf_one, params.pde_head)
-            if return_pde
+            if return_pde or return_errors
             else None
         )
-        return s_conf_one, pae_one, pde_one
+        # Reduced to angstroms beside the heads, so under the serial schedule
+        # only `[N, N]` per sample crosses the map, never the 64 bins.
+        errors_one = (
+            (
+                _expected_pair_error(pae_one, bin_max=config.pae_bin_max),
+                _expected_pair_error(pde_one, bin_max=PDE_BIN_MAX),
+            )
+            if return_errors
+            else None
+        )
+        return s_conf_one, pae_one, pde_one if return_pde else None, errors_one
 
     # Upstream's ``apply_per_sample`` maps confidence over the token cutoff.
     # FoldJAX defaults the cutoff to zero, so every multi-sample prediction takes
@@ -1588,7 +1727,7 @@ def _predict_from_trunk(
     if sink_pae_metrics:
 
         def confidence_and_metrics(one):
-            s_one, pae_one, pde_one = confidence_pair(
+            s_one, pae_one, pde_one, errors_one = confidence_pair(
                 s_input,
                 s_trunk,
                 z_conf_input,
@@ -1602,17 +1741,22 @@ def _predict_from_trunk(
                 token_mask,
                 asym_id,
                 n_chain=n_chain,
+                return_chain_ptm=True,
                 **ptm_kwargs,
             )
-            return jax.tree.map(lambda leaf: leaf[0], (s_one, metrics_one, pde_one))
+            return jax.tree.map(
+                lambda leaf: leaf[0], (s_one, metrics_one, pde_one, errors_one)
+            )
 
-        s_conf, (ptm, iptm, chain_pair), pde_logits = jax.lax.map(
-            confidence_and_metrics,
-            (rep_x, rep_mask, has_frame),
+        s_conf, (ptm, iptm, chain_pair, chain_ptm), pde_logits, errors = (
+            jax.lax.map(
+                confidence_and_metrics,
+                (rep_x, rep_mask, has_frame),
+            )
         )
         pae_logits = None
     elif per_sample_confidence:
-        s_conf, pae_logits, pde_logits = jax.lax.map(
+        s_conf, pae_logits, pde_logits, errors = jax.lax.map(
             lambda one: jax.tree.map(
                 lambda leaf: leaf[0],
                 confidence_pair(
@@ -1628,7 +1772,7 @@ def _predict_from_trunk(
         )
     else:
         samples = config.num_samples
-        s_conf, pae_logits, pde_logits = confidence_pair(
+        s_conf, pae_logits, pde_logits, errors = confidence_pair(
             _expand_samples(s_input, samples),
             _expand_samples(s_trunk, samples),
             _expand_samples(z_conf_input, samples),
@@ -1661,6 +1805,36 @@ def _predict_from_trunk(
                 n_chain=n_chain,
                 **ptm_kwargs,
             )
+        chain_ptm = (
+            None
+            if n_chain is None
+            else compute_chain_ptm(
+                pae_for_ptm,
+                has_frame,
+                token_mask,
+                asym_id,
+                n_chain=n_chain,
+                **ptm_kwargs,
+            )
+        )
+
+    pae = pde = gpde = None
+    if errors is not None:
+        pae, pde = (
+            jnp.broadcast_to(value, (config.num_samples, *value.shape[-2:]))
+            for value in errors
+        )
+        gpde = _global_pde(pde, _contact_probabilities(disto_logits, pair_mask_1))
+    bespoke = None
+    if chain_pair is not None and "is_ligand" in batch:
+        bespoke = _bespoke_iptm(
+            chain_pair,
+            has_frame,
+            token_mask,
+            asym_id,
+            batch["is_ligand"].reshape(-1)[: config.n_token],
+            n_chain=n_chain,
+        )
 
     plddt_logits = atom_logit_head(
         s_conf,
@@ -1697,6 +1871,11 @@ def _predict_from_trunk(
         ),
         single=s_trunk if "single" in config.returned_representations else None,
         pair=z if "pair" in config.returned_representations else None,
+        pae=pae,
+        pde=pde,
+        gpde=gpde,
+        chain_ptm=chain_ptm,
+        bespoke_iptm=bespoke,
     )
 
 
@@ -1719,6 +1898,7 @@ def released_config(
     cp_atom_windows: bool = True,
     returned_representations: tuple[str, ...] = (),
     return_plddt_logits: bool = False,
+    return_expected_errors: bool = True,
     stop_after_trunk: bool = False,
     stop_after_inputs: bool = False,
     has_atomized_tokens: bool = True,
@@ -1895,6 +2075,7 @@ def released_config(
         cp_atom_windows=cp_atom_windows,
         returned_representations=returned_representations,
         return_plddt_logits=return_plddt_logits,
+        return_expected_errors=return_expected_errors,
         stop_after_trunk=stop_after_trunk,
         stop_after_inputs=stop_after_inputs,
         has_atomized_tokens=has_atomized_tokens,

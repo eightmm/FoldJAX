@@ -314,6 +314,28 @@ def _write_confidence_arrays(
     ):
         if name not in maps:
             unavailable[name] = reason
+
+    # Chain axes follow `chain_id`; without it a chain matrix has no labels.
+    def per_chain_sample(value: Any, ndim: int) -> np.ndarray | None:
+        if value is None or isinstance(value, Mapping) or "chain_id" not in maps:
+            return None
+        array = np.asarray(value)
+        if array.ndim == ndim + 1:
+            array = array[index]
+        if array.shape != (len(maps["chain_id"]),) * ndim:
+            return None
+        return array
+
+    chain_arrays = {
+        "chain_ptm": per_chain_sample(raw.get("chains_ptm"), 1),
+        "chain_pair_iptm": per_chain_sample(raw.get("pair_chains_iptm"), 2),
+    }
+    for name, array in chain_arrays.items():
+        if array is None:
+            unavailable[name] = (
+                "the program returned no dense pair_chains_iptm, or the chain "
+                "table that names its axis was not readable"
+            )
     return confidence_arrays.write(
         confidence_arrays.staged_path(structure_path),
         model="boltz2",
@@ -321,10 +343,17 @@ def _write_confidence_arrays(
             "pae": per_sample(raw.get("pae"), 2),
             "pde": per_sample(raw.get("pde"), 2),
             "token_plddt": per_sample(plddt, 1),
+            **chain_arrays,
             **maps,
         },
         scales={"token_plddt": "0-1"},
-        sources={"pae": "pae", "pde": "pde", "token_plddt": "plddt"},
+        sources={
+            "pae": "pae",
+            "pde": "pde",
+            "token_plddt": "plddt",
+            "chain_ptm": "chains_ptm",
+            "chain_pair_iptm": "pair_chains_iptm",
+        },
         unavailable=unavailable,
         sample={"sample": index},
     )

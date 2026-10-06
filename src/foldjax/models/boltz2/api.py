@@ -817,6 +817,7 @@ def predict(
     import jax.numpy as jnp
 
     from foldjax.models.boltz2.bridge.native import load_params
+    from foldjax.models.boltz2.models.heads.confidence import pair_chains_capacity
     from foldjax.models.boltz2.models.predict import boltz2_predict
 
     if num_samples <= 0:
@@ -1322,6 +1323,11 @@ def predict(
             else int(diffusion_chunk_size)
         ),
         "return_pair_chains_iptm": False,
+        # Upstream's `chains_ptm`/`pair_chains_iptm`, dense over a power-of-two
+        # chain bucket so the executable does not depend on the labels.
+        "pair_chains_capacity": (
+            pair_chains_capacity(feats_np["asym_id"]) if "asym_id" in feats_np else None
+        ),
         "recompute_nonpolymer_frames": bool(np.any(feats_np["mol_type"] == 3)),
         # The featurizer always emits template_* arrays, zero-filled when no
         # template was given. Whether they are real is a value question, so it
@@ -1561,7 +1567,14 @@ def predict(
         # dict can always take the pruning.
         affinity_feats = _graph_features(affinity_feats_np, place=False)
         affinity_kwargs = {
-            **predict_kwargs,
+            # Without the dense chain-pair capacity: the affinity program reads
+            # no chain-pair score, and leaving the key out keeps its kwargs --
+            # and so its retained-runner identity -- exactly as before.
+            **{
+                key: value
+                for key, value in predict_kwargs.items()
+                if key != "pair_chains_capacity"
+            },
             "recycling_steps": 5,
             "num_sampling_steps": affinity_num_steps,
             "steering_args": None,
@@ -1704,6 +1717,7 @@ def predict(
         if padding_plan is not None
         else out
     )
+    public_out = _select_present_chains(public_out, feats_np)
     public_coords_batched = (
         coords_batched[:, :public_atoms] if padding_plan is not None else coords_batched
     )
@@ -1851,6 +1865,35 @@ def _write_affinity_summary(
     return path
 
 
+def _present_chain_labels(feats: Mapping[str, Any]) -> np.ndarray:
+    """The ``asym_id`` labels of the real tokens, sorted as upstream's loop is."""
+    asym = np.asarray(feats["asym_id"]).reshape(-1)
+    mask = np.asarray(feats["token_pad_mask"]).reshape(-1).astype(bool)
+    return np.unique(asym[: mask.size][mask[: asym.size]])
+
+
+def _select_present_chains(
+    outputs: Mapping[str, Any], feats: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Cut the dense chain-pair matrix down to the labels the input has.
+
+    ``pair_chains_iptm`` comes out of the program as ``[samples, capacity,
+    capacity]`` over every label below the bucket; upstream's dictionary has
+    exactly the labels present, in ``torch.unique`` order. ``chains_ptm`` is
+    its diagonal, as upstream's writer reads it.
+    """
+    dense = outputs.get("pair_chains_iptm")
+    if dense is None or isinstance(dense, Mapping) or np.ndim(dense) != 3:
+        return dict(outputs)
+    labels = _present_chain_labels(feats)
+    selected = np.asarray(dense)[:, labels][:, :, labels]
+    return {
+        **outputs,
+        "pair_chains_iptm": selected,
+        "chains_ptm": np.diagonal(selected, axis1=-2, axis2=-1).copy(),
+    }
+
+
 def _confidence_index(
     feats: Mapping[str, Any], structure_npz: Path
 ) -> dict[str, np.ndarray]:
@@ -1888,6 +1931,9 @@ def _confidence_index(
         chains = StructureV2.load(structure_npz).remove_invalid_chains().chains
         names = {int(chain["asym_id"]): str(chain["name"]) for chain in chains}
         index["token_chain_id"] = np.asarray([names[int(a)] for a in asym])
+        index["chain_id"] = np.asarray(
+            [names[int(a)] for a in _present_chain_labels(feats)]
+        )
     except (OSError, KeyError, ValueError):
         pass
     return index

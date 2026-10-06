@@ -104,6 +104,12 @@ SPECS: dict[str, _Spec] = {
     "chain_pair_iptm_global": _Spec(
         ("chain", "chain"), "score", "chain-pair ipTM normalised over the complex"
     ),
+    "chain_pair_iptm_bespoke": _Spec(
+        ("chain", "chain"),
+        "score",
+        "ligand-aware chain-pair ipTM (AF3 SI 5.9.3): a ligand chain's mean "
+        "interface ipTM, else the two chains' means averaged",
+    ),
     "chain_pair_plddt": _Spec(("chain", "chain"), "plddt", "pLDDT per chain pair"),
     "chain_pair_gpde": _Spec(
         ("chain", "chain"), "angstrom", "global PDE per chain pair"
@@ -186,30 +192,14 @@ AVAILABILITY: dict[str, dict[str, Any]] = {
         },
     },
     "boltz2": {
-        "default": ("pae", "pde", "token_plddt"),
+        "default": ("pae", "pde", "token_plddt", "chain_ptm", "chain_pair_iptm"),
         "opt_in": {},
-        "unavailable": {
-            "chain_pair_iptm": (
-                "the managed prediction compiles return_pair_chains_iptm=False, "
-                "so the program never computes it"
-            ),
-        },
+        "unavailable": {},
     },
     "esmfold2": {
-        "default": ("token_plddt", "atom_plddt"),
+        "default": ("pae", "pde", "token_plddt", "atom_plddt", "chain_pair_iptm"),
         "opt_in": {},
-        "unavailable": {
-            "pae": (
-                "computed inside the confidence head for pTM, but "
-                "return_confidence_logits=False removes it from the compiled "
-                "program's outputs and the backend has no option for it"
-            ),
-            "pde": "removed from the compiled program's outputs, as pae",
-            "chain_pair_iptm": (
-                "the managed backend projects pair_chains_iptm out of the "
-                "compiled program (return_auxiliary_outputs=False)"
-            ),
-        },
+        "unavailable": {},
     },
     "opendde": {
         "default": (
@@ -233,19 +223,16 @@ AVAILABILITY: dict[str, dict[str, Any]] = {
         },
     },
     "openfold3": {
-        "default": ("atom_plddt", "chain_pair_iptm"),
+        "default": (
+            "pae",
+            "pde",
+            "atom_plddt",
+            "chain_ptm",
+            "chain_pair_iptm",
+            "chain_pair_iptm_bespoke",
+        ),
         "opt_in": {},
-        "unavailable": {
-            "pae": (
-                "OpenFold3 returns PAE only as binned logits, and only with "
-                "--option all_arrays=true (then in its native <job>_raw.npz); "
-                "the expected value in angstroms is never computed"
-            ),
-            "pde": (
-                "the PDE head runs only with --option all_arrays=true, and then "
-                "returns binned logits"
-            ),
-        },
+        "unavailable": {},
     },
     "protenix": {
         "default": (

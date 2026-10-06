@@ -160,7 +160,7 @@ def _compiled_projection(
     )
 
 
-def test_projection_dces_chain_matrix_and_reduces_compiled_output_bytes() -> None:
+def test_projection_keeps_chain_matrix_and_reduces_compiled_output_bytes() -> None:
     samples, tokens, atoms, chains = 2, 32, 24, 8
     pair = jnp.arange(samples * tokens * tokens, dtype=jnp.float32).reshape(
         samples, tokens, tokens
@@ -195,19 +195,18 @@ def test_projection_dces_chain_matrix_and_reduces_compiled_output_bytes() -> Non
 
     full_dot_count = full.as_text().count("stablehlo.dot_general")
     compact_dot_count = compact.as_text().count("stablehlo.dot_general")
+    # `pair_chains_iptm` is a managed output now (the chain-pair matrix in
+    # confidence_full.npz), so its three contractions survive the projection.
     assert full_dot_count == 3
-    assert compact_dot_count == 0
+    assert compact_dot_count == 3
+    assert "pair_chains_iptm" in compact_result
     for name, value in compact_result.items():
         _assert_raw_equal(value, full_result[name], name=name)
 
     full_bytes = full_executable.memory_analysis().output_size_in_bytes
     compact_bytes = compact_executable.memory_analysis().output_size_in_bytes
-    auxiliary_payload = (
-        samples * chains * chains * 4
-        + samples * tokens * 4
-        + atoms * 4
-        + 2 * tokens * 4
-    )
+    del chains
+    auxiliary_payload = samples * tokens * 4 + atoms * 4 + 2 * tokens * 4
     full_payload = sum(np.asarray(value).nbytes for value in full_result.values())
     compact_payload = sum(
         np.asarray(value).nbytes for value in compact_result.values()

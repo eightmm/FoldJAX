@@ -295,6 +295,51 @@ def test_boltz2_routes_pae_pde_and_token_plddt_per_sample(
         assert "chain_pair_iptm" in loaded.unavailable
 
 
+def test_boltz2_routes_chains_ptm_and_pair_chains_iptm(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from foldjax.backends.boltz2 import Boltz2Backend
+
+    out = tmp_path / "out"
+    out.mkdir()
+    paths = [out / f"job_model_{index}.cif" for index in range(2)]
+    for path in paths:
+        path.write_text("data_x\n")
+    pair = np.asarray([[[0.9, 0.3], [0.2, 0.8]], [[0.7, 0.1], [0.4, 0.6]]])
+
+    def native_predict(**kwargs):
+        return {
+            "coords": np.zeros((2, 4, 3)),
+            "plddt": np.full((2, 3), 0.5),
+            "out_paths": paths,
+            "raw": {
+                "pae": np.zeros((2, 3, 3)),
+                "pair_chains_iptm": pair,
+                "chains_ptm": np.diagonal(pair, axis1=-2, axis2=-1),
+            },
+            "confidence_index": {
+                "token_chain_id": np.asarray(["A", "A", "B"]),
+                "chain_id": np.asarray(["A", "B"]),
+            },
+        }
+
+    monkeypatch.setattr(
+        "foldjax.backends.boltz2.import_module",
+        lambda name: SimpleNamespace(predict=native_predict),
+    )
+    result = Boltz2Backend().predict(_boltz_request(tmp_path))
+
+    for index, sample in enumerate(result.samples):
+        loaded = load_confidence_arrays(
+            Path(sample.metadata["confidence_arrays"]["path"])
+        )
+        np.testing.assert_allclose(loaded["chain_pair_iptm"], pair[index])
+        np.testing.assert_allclose(loaded["chain_ptm"], np.diagonal(pair[index]))
+        assert loaded.describe("chain_ptm")["source"] == "chains_ptm"
+        assert loaded["chain_id"].tolist() == ["A", "B"]
+        assert not {"chain_ptm", "chain_pair_iptm"} & set(loaded.unavailable)
+
+
 def test_boltz2_index_maps_agree_with_the_written_mmcif(tmp_path: Path) -> None:
     """Token chain/residue maps, read through atom_token_index, name each CIF atom."""
     gemmi = pytest.importorskip("gemmi")
@@ -312,11 +357,13 @@ def test_boltz2_index_maps_agree_with_the_written_mmcif(tmp_path: Path) -> None:
     structure_npz = struct_dir / f"{record_id}.npz"
     index = _confidence_index(features, structure_npz)
     atom_mask = np.asarray(features["atom_pad_mask"]).reshape(-1)
+    token_plddt = np.linspace(0.2, 0.9, len(index["token_residue_index"]))
     path = write_prediction(
         structure_npz=structure_npz,
         coords=np.zeros((atom_mask.size, 3), dtype=np.float32),
         atom_pad_mask=atom_mask,
         out_path=tmp_path / "out.cif",
+        plddts=token_plddt,
         fmt="cif",
     )
     site = gemmi.cif.read_file(str(path)).sole_block().get_mmcif_category(
@@ -328,6 +375,15 @@ def test_boltz2_index_maps_agree_with_the_written_mmcif(tmp_path: Path) -> None:
     assert index["token_residue_index"][owners].tolist() == [
         int(value) for value in site["auth_seq_id"]
     ]
+    # The ModelCIF writer's B-factors are the token pLDDT of each atom's token.
+    archive = confidence_arrays.write(
+        tmp_path / FILENAME,
+        model="boltz2",
+        arrays={"token_plddt": token_plddt, **index},
+        scales={"token_plddt": "0-1"},
+    )
+    assert archive is not None
+    _assert_b_factors_are_the_plddt(load_confidence_arrays(tmp_path), path)
 
 
 # --- Protenix and OpenDDE (one writer) ----------------------------------------
@@ -408,6 +464,7 @@ def test_protenix_writer_stages_arrays_in_cif_atom_order(
             loaded["chain_ptm"], output["chain_ptm"][sample_index]
         )
         assert loaded["chain_id"].tolist() == ["P", "Q", "M"]
+        _assert_b_factors_are_the_plddt(loaded, cif)
         site = gemmi.cif.read_file(str(cif)).sole_block().get_mmcif_category(
             "_atom_site."
         )
@@ -428,6 +485,16 @@ def test_protenix_writer_stages_arrays_in_cif_atom_order(
         else:
             assert "pae" not in loaded
             assert "output_format" in loaded.unavailable["pae"]
+
+
+def _assert_b_factors_are_the_plddt(loaded, cif: Path) -> None:
+    """The writer's mmCIF B-factors already are the pLDDT it stages."""
+    pytest.importorskip("gemmi")
+    from foldjax.output import _ensure_plddt_b_factors
+
+    before = cif.read_bytes()
+    assert _ensure_plddt_b_factors(cif, loaded) == "native"
+    assert cif.read_bytes() == before
 
 
 def _assert_maps_name_every_cif_atom(loaded, cif: Path) -> None:
@@ -475,8 +542,37 @@ def test_esmfold2_writer_stages_plddt_and_reports_withheld_pae(
         assert loaded.model == "esmfold2"
         assert loaded["token_plddt"].tolist() == [[0.25, 0.75][index]] * 7
         assert loaded.describe("atom_plddt")["scale"] == "0-1"
-        assert "return_confidence_logits" in loaded.unavailable["pae"]
+        assert "return_expected_errors" in loaded.unavailable["pae"]
+        assert "return_auxiliary_outputs" in loaded.unavailable["chain_pair_iptm"]
         _assert_maps_name_every_cif_atom(loaded, cif)
+        _assert_b_factors_are_the_plddt(loaded, cif)
+
+
+def test_esmfold2_writer_stages_pae_pde_and_chain_pair_iptm(tmp_path: Path) -> None:
+    from foldjax.models.esmfold2.data import features
+    from foldjax.models.esmfold2.output import write_prediction_outputs
+
+    built = features.build_features([("ACDK", "A", 0, 0), ("GHK", "B", 0, 1)])
+    output = _esmfold2_output(built)
+    rng = np.random.default_rng(1)
+    output["pae"] = rng.uniform(0, 32, size=(2, 7, 7)).astype(np.float32)
+    output["pde"] = rng.uniform(0, 32, size=(2, 7, 7)).astype(np.float32)
+    output["pair_chains_iptm"] = rng.uniform(size=(2, 2, 2)).astype(np.float32)
+    written = write_prediction_outputs(output, built, tmp_path, name="j")
+
+    for index, cif in enumerate(written["structures"]):
+        loaded = load_confidence_arrays(confidence_arrays.staged_path(cif))
+        assert set(loaded.arrays) - confidence_arrays.INDEX_ARRAYS == set(
+            confidence_arrays.default_arrays("esmfold2")
+        )
+        np.testing.assert_allclose(loaded["pae"], output["pae"][index], atol=0.02)
+        np.testing.assert_allclose(loaded["pde"], output["pde"][index], atol=0.02)
+        np.testing.assert_allclose(
+            loaded["chain_pair_iptm"], output["pair_chains_iptm"][index]
+        )
+        assert loaded.describe("chain_pair_iptm")["source"] == "pair_chains_iptm"
+        assert loaded["chain_id"].tolist() == ["A", "B"]
+        assert loaded.unavailable == {}
 
 
 def test_esmfold2_all_biomolecule_maps_and_direct_pae(
@@ -512,6 +608,7 @@ def test_esmfold2_all_biomolecule_maps_and_direct_pae(
         "SMILES",
     }
     _assert_maps_name_every_cif_atom(loaded, written["structures"][1])
+    _assert_b_factors_are_the_plddt(loaded, written["structures"][1])
 
 
 @pytest.mark.parametrize("multimer", [True, False])
@@ -541,12 +638,59 @@ def test_openfold3_writer_stages_atom_plddt_and_chain_pair_iptm(
         assert loaded.describe("atom_plddt")["scale"] == "0-1"
         assert loaded["chain_id"].tolist() == ["P", "L"]
         assert loaded["atom_chain_id"].tolist() == ["P"] * 4 + ["L"]
-        assert "all_arrays" in loaded.unavailable["pae"]
+        assert "return_expected_errors=False" in loaded.unavailable["pae"]
         if multimer:
             np.testing.assert_allclose(loaded["chain_pair_iptm"], chain_pair[index])
         else:
             assert "chain_pair_iptm" in loaded.unavailable
         _assert_maps_name_every_cif_atom(loaded, cif)
+        _assert_b_factors_are_the_plddt(loaded, cif)
+
+
+def test_openfold3_writer_stages_expected_errors_and_chain_scores(
+    tmp_path: Path,
+) -> None:
+    from foldjax.models.openfold3.output import write_prediction_outputs
+    from tests.test_mmcif_label_fields import openfold3_case
+
+    rng = np.random.default_rng(4)
+    chain_pair = np.asarray([[[0.0, 0.3], [0.3, 0.0]], [[0.0, 0.8], [0.8, 0.0]]])
+    prediction, features, metadata = openfold3_case(
+        samples=2, chain_pair_iptm=chain_pair
+    )
+    # The program's bucket is wider than the three real tokens.
+    pae = rng.uniform(0.0, 32.0, size=(2, 5, 5)).astype(np.float32)
+    pde = rng.uniform(0.0, 32.0, size=(2, 5, 5)).astype(np.float32)
+    chain_ptm = np.asarray([[0.6, 0.2], [0.7, 0.4]], dtype=np.float32)
+    bespoke = np.asarray([[[0.0, 0.5], [0.5, 0.0]], [[0.0, 0.9], [0.9, 0.0]]])
+    prediction = prediction._replace(
+        pae=pae,
+        pde=pde,
+        gpde=np.asarray([3.0, 4.0], dtype=np.float32),
+        chain_ptm=chain_ptm,
+        bespoke_iptm=bespoke,
+    )
+    written = write_prediction_outputs(
+        prediction, features, tmp_path, output_metadata=metadata
+    )
+
+    for index, cif in enumerate(written["structures"]):
+        entry = confidence_arrays.sample_metadata(cif)["confidence_arrays"]
+        loaded = load_confidence_arrays(Path(entry["path"]))
+        np.testing.assert_allclose(
+            loaded["pae"], pae[index, :3, :3], atol=0.02
+        )
+        np.testing.assert_allclose(
+            loaded["pde"], pde[index, :3, :3], atol=0.02
+        )
+        assert loaded.describe("pae")["unit"] == "angstrom"
+        np.testing.assert_allclose(loaded["chain_ptm"], chain_ptm[index])
+        np.testing.assert_allclose(loaded["chain_pair_iptm_bespoke"], bespoke[index])
+        assert not {"pae", "pde", "chain_ptm"} & set(loaded.unavailable)
+    summary = json.loads(Path(written["scores"]).read_text())
+    assert [entry["gpde"] for entry in summary["samples"]] == [3.0, 4.0]
+    np.testing.assert_allclose(summary["chain_ptm"], chain_ptm, rtol=1e-6)
+    np.testing.assert_allclose(summary["bespoke_iptm"], bespoke)
 
 
 # --- AlphaFold 3 ----------------------------------------------------------------
@@ -635,6 +779,7 @@ def test_alphafold3_routes_the_inference_result_arrays(tmp_path: Path) -> None:
         [float(value) for value in site["B_iso_or_equiv"]],
         atol=0.01,
     )
+    _assert_b_factors_are_the_plddt(loaded, cif)
 
 
 def test_opendde_writer_names_its_own_model(tmp_path: Path) -> None:
@@ -651,6 +796,7 @@ def test_opendde_writer_names_its_own_model(tmp_path: Path) -> None:
     loaded = load_confidence_arrays(confidence_arrays.staged_path(cif))
     assert loaded.model == "opendde"
     assert "include_raw" in loaded.unavailable["pae"]
+    _assert_b_factors_are_the_plddt(loaded, cif)
 
 
 def test_the_archive_gets_the_mode_an_ordinary_write_would(tmp_path):

@@ -241,10 +241,10 @@ def _ranking(model: str, scores: Mapping[str, Any]) -> dict[str, Any]:
         reason = f"{model} reported no {key!r}"
         if model == "openfold3":
             reason += (
-                "; OpenFold3's score needs a disorder term this writer cannot "
-                "derive for protein inputs, which report "
-                "'sample_ranking_score_no_disorder' instead -- a different "
-                "quantity, so it is not used here"
+                "; OpenFold3's score needs a protein disorder term, which needs "
+                "biotite's SASA and the atoms' identities; without them the "
+                "run reports 'sample_ranking_score_no_disorder' instead -- a "
+                "different quantity, so it is not used here"
             )
         return {**_missing(reason), "key": key}
     return {

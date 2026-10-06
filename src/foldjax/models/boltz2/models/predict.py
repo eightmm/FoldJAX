@@ -244,6 +244,10 @@ def boltz2_predict(
     if affinity_params is None and "affinity" in params:
         affinity_params = params["affinity"]
     return_pair_chains_iptm = bool(sample_kwargs.pop("return_pair_chains_iptm", True))
+    #: A static chain-axis width: `pair_chains_iptm` comes back as one dense
+    #: `[samples, capacity, capacity]` array instead of a per-label dict, so
+    #: the program does not depend on which chain labels the input has.
+    pair_chains_capacity = sample_kwargs.pop("pair_chains_capacity", None)
     confidence_sequentially = bool(sample_kwargs.pop("confidence_sequentially", False))
     #: Diffusion samples denoised at once. The neutral name every port in this
     #: repository uses for this knob; `None` denoises all of them together.
@@ -513,6 +517,9 @@ def boltz2_predict(
             glu_backend=str(sample_kwargs.get("glu_backend", "xla")),
             return_pair_chains_iptm=return_pair_chains_iptm,
             confidence_chain_ids=confidence_chain_ids,
+            pair_chains_capacity=(
+                None if pair_chains_capacity is None else int(pair_chains_capacity)
+            ),
             recompute_nonpolymer_frames=recompute_nonpolymer_frames,
             atom_context_parallel=bool(
                 sample_kwargs.get("atom_context_parallel", False)

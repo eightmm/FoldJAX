@@ -242,10 +242,13 @@ def test_nonprotein_scores_use_the_exact_upstream_ranking_formula() -> None:
     assert summary["samples"][0]["mean_plddt"] > 1.0
 
 
-def test_protein_score_is_clearly_partial_and_never_promoted_to_ranking() -> None:
+def test_protein_score_without_atom_identities_stays_partial() -> None:
+    # These features carry no atom names, so the disorder term cannot be taken
+    # and the score is never promoted to the ranking one.
     prediction = _prediction(64, n_samples=3, with_iptm=True)
     summary = confidence_summary(prediction, _ranking_features(64, has_protein=True))
     assert "ranked_samples" not in summary
+    assert "disorder_unavailable" in summary
     for entry in summary["samples"]:
         assert "sample_ranking_score" not in entry
         assert entry["sample_ranking_score_no_disorder"] == pytest.approx(

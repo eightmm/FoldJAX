@@ -399,18 +399,65 @@ def _has_clash_blocked(
     return result
 
 
+def _disorder(
+    coordinates: np.ndarray,
+    features: Mapping[str, Any],
+    metadata: AtomMetadata | None,
+) -> tuple[np.ndarray | None, str]:
+    """Upstream's protein disorder term per sample, or None and the reason.
+
+    The labels are the structure's real atoms in feature order, which is the
+    order of upstream's ``AtomArray``; exact output metadata names the protein
+    atoms by molecule type, the canonical decoder by ``is_protein``.
+    """
+    from foldjax.models.openfold3 import rasa
+
+    reason = rasa.unavailable_reason()
+    if reason is not None:
+        return None, reason
+    if metadata is None:
+        try:
+            metadata = atom_metadata(features)
+        except (KeyError, ValueError) as error:
+            return None, (
+                "the atom identities RASA needs could not be decoded from the "
+                f"features ({error})"
+            )
+    keep = metadata.keep
+    if metadata.molecule_type_id is not None:
+        is_protein = np.asarray(metadata.molecule_type_id) == 0
+    else:
+        owners = _first(features["atom_to_token_index"], 1).astype(np.int64)[keep]
+        is_protein = _first(features["is_protein"], 1).astype(bool)[owners]
+    disorder = rasa.protein_disorder(
+        coordinates[:, keep],
+        atom_name=metadata.name,
+        element=metadata.element,
+        residue_name=metadata.residue_name,
+        residue_id=metadata.residue_id,
+        chain_id=metadata.chain_id,
+        is_protein=is_protein,
+    )
+    return disorder, "rasa"
+
+
 def confidence_summary(
-    prediction: Any, features: Mapping[str, Any] | None = None
+    prediction: Any,
+    features: Mapping[str, Any] | None = None,
+    *,
+    metadata: AtomMetadata | None = None,
 ) -> dict[str, Any]:
     """Summarize a prediction into JSON-serializable scores.
 
     Ranking follows upstream's
-    ``0.8*ipTM + 0.2*pTM + 0.5*disorder - 100*has_clash`` formula. FoldJAX can
-    compute clashes from prediction coordinates without an optional dependency,
-    but protein disorder requires the upstream RASA/SASA pipeline. Protein runs
-    therefore report a clearly partial ``sample_ranking_score_no_disorder`` and
-    make no ranked/best claim. For inputs without protein, disorder is exactly
-    zero upstream too, so ``sample_ranking_score`` is exact and may rank samples.
+    ``0.8*ipTM + 0.2*pTM + 0.5*disorder - 100*has_clash`` formula. Clashes come
+    from the prediction coordinates; protein disorder from upstream's RASA
+    pipeline (`foldjax.models.openfold3.rasa`), which needs biotite and the
+    atoms' identities (``metadata``, else decoded from ``features``). When
+    either is missing, protein runs report a clearly partial
+    ``sample_ranking_score_no_disorder`` and make no ranked/best claim, and
+    ``disorder_unavailable`` says why. For inputs without protein, disorder is
+    exactly zero upstream too, so ``sample_ranking_score`` is exact without it.
 
     pLDDT in this public JSON is 0--100. The raw prediction archive intentionally
     retains the model's fractional values.
@@ -433,12 +480,16 @@ def confidence_summary(
         if prediction.iptm is None
         else np.asarray(prediction.iptm, dtype=np.float64).reshape(-1)
     )
+    gpde = getattr(prediction, "gpde", None)
+    gpde = None if gpde is None else np.asarray(gpde, dtype=np.float64).reshape(-1)
 
     coordinates = np.asarray(prediction.coordinates, dtype=np.float64)
     if coordinates.ndim == 2:
         coordinates = coordinates[None, ...]
     has_clash = None
     has_protein = None
+    disorder = None
+    disorder_reason = None
     if features is not None:
         ranking_features = _ranking_atom_features(
             features, n_atom=coordinates.shape[-2]
@@ -447,6 +498,8 @@ def confidence_summary(
         has_clash = _has_clash_blocked(
             coordinates, atom_mask_for_clash, atom_asym_id, is_polymer
         )
+        if has_protein:
+            disorder, disorder_reason = _disorder(coordinates, features, metadata)
 
     samples = []
     for index in range(plddt.shape[0]):
@@ -460,38 +513,45 @@ def confidence_summary(
         }
         if iptm is not None and index < iptm.size:
             entry["iptm"] = _as_float(iptm[index])
+        if gpde is not None:
+            entry["gpde"] = _as_float(gpde[min(index, gpde.size - 1)])
         if has_clash is not None and index < has_clash.size:
             entry["has_clash"] = _as_float(has_clash[index])
+        if has_protein is not None and not has_protein:
+            entry["disorder"] = 0.0
+        elif disorder is not None and index < disorder.size:
+            entry["disorder"] = _as_float(disorder[index])
         components = (entry.get("ptm"), entry.get("iptm"), entry.get("has_clash"))
         if has_protein is not None and all(value is not None for value in components):
             ptm_value, iptm_value, clash_value = components
-            if not has_protein:
-                entry["disorder"] = 0.0
             score = (
                 0.8 * iptm_value
                 + 0.2 * ptm_value
                 - 100.0 * clash_value
             )
-            entry[
-                "sample_ranking_score_no_disorder"
-                if has_protein
-                else "sample_ranking_score"
-            ] = float(score)
+            if entry.get("disorder") is not None:
+                entry["sample_ranking_score"] = float(score + 0.5 * entry["disorder"])
+            else:
+                entry["sample_ranking_score_no_disorder"] = float(score)
         samples.append(entry)
 
     summary: dict[str, Any] = {
         "num_samples": len(samples),
         "samples": samples,
     }
+    if has_protein and disorder_reason != "rasa":
+        summary["disorder_unavailable"] = disorder_reason
     exact = [entry.get("sample_ranking_score") for entry in samples]
     if samples and all(value is not None and np.isfinite(value) for value in exact):
         # Python's sort is stable, so equal scores retain diffusion sample order.
         ranked = sorted(samples, key=lambda item: -item["sample_ranking_score"])
         summary["ranked_samples"] = [entry["sample"] for entry in ranked]
-    if prediction.chain_pair_iptm is not None:
-        summary["chain_pair_iptm"] = np.asarray(
-            prediction.chain_pair_iptm, dtype=np.float64
-        ).tolist()
+    # Chain-indexed matrices follow the normalized chain order (`chain_id` in
+    # each sample's confidence_full.npz names them).
+    for name in ("chain_pair_iptm", "chain_ptm", "bespoke_iptm"):
+        value = getattr(prediction, name, None)
+        if value is not None:
+            summary[name] = np.asarray(value, dtype=np.float64).tolist()
     return summary
 
 
@@ -500,11 +560,16 @@ def write_scores(
     path: str | os.PathLike[str],
     *,
     features: Mapping[str, Any] | None = None,
+    metadata: AtomMetadata | None = None,
 ) -> Path:
     """Write :func:`confidence_summary` as JSON."""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(confidence_summary(prediction, features), indent=2))
+    target.write_text(
+        json.dumps(
+            confidence_summary(prediction, features, metadata=metadata), indent=2
+        )
+    )
     return target
 
 
@@ -517,6 +582,10 @@ DEFAULT_ARRAY_BUDGET_BYTES = 4 * 2**30
 #: Pair distributions eligible for omission. Other requested outputs are retained
 #: but still count toward the writer's budget, including opt-in atom logits.
 _PAIR_LOGIT_NAMES = ("pae_logits", "pde_logits", "distogram_logits")
+#: Also eligible: the expected PAE/PDE maps, ``[num_samples, N, N]``. Every
+#: sample's ``confidence_full.npz`` already carries them, so a budget that has
+#: no room drops this second copy rather than a reported number.
+_PAIR_ERROR_NAMES = ("pae", "pde")
 
 
 def crop_prediction(prediction: Any, features: Mapping[str, Any]) -> Any:
@@ -541,6 +610,10 @@ def crop_prediction(prediction: Any, features: Mapping[str, Any]) -> Any:
         value = values.get(name)
         if value is not None:
             values[name] = value[..., :n_token, :n_token, :]
+    for name in _PAIR_ERROR_NAMES:
+        value = values.get(name)
+        if value is not None:
+            values[name] = value[..., :n_token, :n_token]
     for name in (
         "coordinates", "plddt", "plddt_logits", "experimentally_resolved_logits"
     ):
@@ -632,7 +705,7 @@ def write_arrays(
         # Dropped largest-first, so the smallest set of omissions gets under the
         # budget rather than the first ones encountered.
         for name in sorted(
-            (n for n in _PAIR_LOGIT_NAMES if n in arrays),
+            (n for n in (*_PAIR_LOGIT_NAMES, *_PAIR_ERROR_NAMES) if n in arrays),
             key=lambda n: arrays[n].nbytes,
             reverse=True,
         ):
@@ -947,10 +1020,9 @@ def _write_confidence_arrays(
     """Stage each sample's `confidence_full.npz` beside its structure.
 
     Holds per-atom pLDDT as the prediction carries it (fractional unless a
-    caller already converted it) and the chain-pair ipTM matrix when the
-    complex has more than one chain. PAE and PDE exist here only as binned
-    logits and only with `all_arrays`; they are left in the native
-    ``<name>_raw.npz`` rather than decoded. Atoms follow the CIF's order,
+    caller already converted it), expected PAE and PDE in angstroms over the
+    real tokens, per-chain pTM, and the chain-pair and bespoke ipTM matrices
+    when the complex has more than one chain. Atoms follow the CIF's order,
     which groups them by chain as `write_structure` does.
     """
     from foldjax import confidence_arrays
@@ -985,29 +1057,55 @@ def _write_confidence_arrays(
         plddt = plddt[None, :]
     finite = plddt[np.isfinite(plddt)]
     scale = "0-1" if finite.size == 0 or float(finite.max()) <= 1.0 + 1e-6 else "0-100"
-    chain_pair = (
-        None
-        if prediction.chain_pair_iptm is None
-        else np.asarray(prediction.chain_pair_iptm, dtype=np.float32)
-    )
+
+    def per_sample(name: str, ndim: int) -> np.ndarray | None:
+        value = getattr(prediction, name, None)
+        if value is None:
+            return None
+        array = np.asarray(value, dtype=np.float32)
+        return array if array.ndim == ndim + 1 else array[None]
+
+    pair_errors = {}
+    for name in ("pae", "pde"):
+        array = per_sample(name, 2)
+        pair_errors[name] = None if array is None else array[:, :n_token, :n_token]
+    chain_arrays = {
+        "chain_pair_iptm": per_sample("chain_pair_iptm", 2),
+        "chain_ptm": per_sample("chain_ptm", 1),
+        "chain_pair_iptm_bespoke": per_sample("bespoke_iptm", 2),
+    }
     reasons = dict(confidence_arrays.AVAILABILITY["openfold3"]["unavailable"])
-    if chain_pair is None:
-        reasons["chain_pair_iptm"] = "OpenFold3 computes it only for multimers"
+    for name, array in pair_errors.items():
+        if array is None:
+            reasons[name] = (
+                "the compiled program was built with return_expected_errors=False"
+            )
+    for name in ("chain_pair_iptm", "chain_pair_iptm_bespoke"):
+        if chain_arrays[name] is None:
+            reasons[name] = "OpenFold3 computes it only for multimers"
+    if chain_arrays["chain_ptm"] is None:
+        reasons["chain_ptm"] = "the chain count was not given to the program"
     for index, structure in enumerate(structures):
         arrays = {
             "atom_plddt": plddt[min(index, plddt.shape[0] - 1)][metadata.keep][order],
             **maps,
         }
-        if chain_pair is not None:
-            arrays["chain_pair_iptm"] = (
-                chain_pair[index] if chain_pair.ndim == 3 else chain_pair
-            )
+        for name, array in (*pair_errors.items(), *chain_arrays.items()):
+            if array is not None:
+                arrays[name] = array[min(index, array.shape[0] - 1)]
         confidence_arrays.write(
             confidence_arrays.staged_path(structure),
             model="openfold3",
             arrays=arrays,
             scales={"atom_plddt": scale},
-            sources={"atom_plddt": "plddt", "chain_pair_iptm": "chain_pair_iptm"},
+            sources={
+                "atom_plddt": "plddt",
+                "pae": "pae",
+                "pde": "pde",
+                "chain_ptm": "chain_ptm",
+                "chain_pair_iptm": "chain_pair_iptm",
+                "chain_pair_iptm_bespoke": "bespoke_iptm",
+            },
             unavailable=reasons,
             sample={"sample": index},
         )
@@ -1092,6 +1190,7 @@ def write_prediction_outputs(
             prediction,
             _output_path(root, f"{name}_confidences.json"),
             features=features,
+            metadata=metadata,
         ),
         "arrays": arrays,
         "omitted_arrays": omitted,
