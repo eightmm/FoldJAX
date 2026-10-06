@@ -231,6 +231,44 @@ def _sample_scores(
     return scores
 
 
+#: Upstream's affinity summary (``data/write/writer.py:303-324``), spelled as
+#: upstream spells it: the ensemble mean, then members ``1`` and ``2``.
+#: Copied from `models/boltz2/api.AFFINITY_SUMMARY_FIELDS` rather than
+#: imported, to keep this module import-time JAX-free; a test pins the copy.
+_AFFINITY_FIELDS = (
+    "affinity_pred_value",
+    "affinity_probability_binary",
+    "affinity_pred_value1",
+    "affinity_probability_binary1",
+    "affinity_pred_value2",
+    "affinity_probability_binary2",
+)
+
+
+def _affinity_scores(output: Mapping[str, Any]) -> tuple[int | None, dict[str, float]]:
+    """The affinity fields, and the one sample they belong to.
+
+    Affinity is not a per-sample score: upstream computes it once, on the
+    coordinates of the sample it ranks first, and writes it to its own
+    ``affinity_<id>.json``. So the fields go into that one sample's
+    ``scores`` and no other -- copying them onto every sample would say each
+    structure had been scored. ``(None, {})`` when no affinity ran.
+    """
+
+    index = output.get("affinity_input_sample")
+    if index is None:
+        return None, {}
+    scores: dict[str, float] = {}
+    for field in _AFFINITY_FIELDS:
+        value = output.get(field)
+        if value is None:
+            continue
+        flat = np.asarray(value, dtype=np.float64).reshape(-1)
+        if flat.size:
+            scores[field] = float(flat[0])
+    return int(index), scores
+
+
 def _write_confidence_arrays(
     output: Mapping[str, Any],
     index_maps: Mapping[str, np.ndarray] | None,
@@ -1481,16 +1519,20 @@ class Boltz2Backend(Backend):
         shape_profile = _padding_shape_profile(output.get("padding"))
         index_maps = output.pop("confidence_index", None)
         output = _detach_prediction_output(output, coords=coords, plddt=plddt)
+        affinity_sample, affinity_scores = _affinity_scores(output)
         samples = []
         for index in range(sample_count):
             path = Path(paths[index]) if paths[index] else None
             arrays = _write_confidence_arrays(output, index_maps, plddt, index, path)
+            scores = _sample_scores(output, plddt, index, sample_count)
+            if index == affinity_sample:
+                scores.update(affinity_scores)
             samples.append(
                 PredictionSample(
                     seed=request.seed,
                     structure_path=path,
                     coordinates=coords[index] if coords.ndim == 3 else coords,
-                    scores=_sample_scores(output, plddt, index, sample_count),
+                    scores=scores,
                     metadata={"confidence_arrays": arrays} if arrays else {},
                 )
             )

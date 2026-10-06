@@ -21,6 +21,7 @@ to the caller-owned outer ``jax.jit`` to preserve native dtype boundaries.
 from __future__ import annotations
 
 import functools
+import json
 import math
 import operator
 import os
@@ -1500,8 +1501,9 @@ def predict(
     plddt_batched = np.asarray(out["plddt"]).reshape(num_samples, -1)
 
     affinity_padding_plan = None
+    affinity_input_sample = None
     if affinity_model_params is not None:
-        best_idx = int(np.argmax(np.asarray(out["iptm"])))
+        best_idx = affinity_input_sample = _affinity_input_sample(out)
         affinity_feats_np = _prepare_affinity_features(
             input_path=Path(input) if input is not None else None,
             struct_dir=struct_dir,
@@ -1732,6 +1734,14 @@ def predict(
     result.update(
         {key: value for key, value in public_out.items() if key.startswith("affinity_")}
     )
+    if affinity_input_sample is not None:
+        # Which diffusion sample's coordinates the affinity was computed on.
+        result["affinity_input_sample"] = affinity_input_sample
+        result["affinity_path"] = _write_affinity_summary(
+            Path(out_dir) if out_dir is not None else struct_dir.parent,
+            record_id,
+            public_out,
+        )
     if wanted_representations:
         destination = (
             Path(representations_dir)
@@ -1774,6 +1784,63 @@ def predict(
         else:
             result["out_paths"] = paths
     return result
+
+
+def _affinity_input_sample(out: Mapping[str, Any]) -> int:
+    """The diffusion sample the affinity stage re-featurizes.
+
+    Upstream's writer saves ``pre_affinity_<id>.npz`` from the sample it ranks
+    first, ranking by ``confidence_score`` descending, and from sample 0 when
+    no confidence summary exists (``data/write/writer.py:73-79,178``). The
+    affinity model then reads that file, so this is the same sample -- and
+    the one `foldjax.output.best_sample` names for a Boltz-2 run.
+    """
+
+    score = out.get("confidence_score")
+    if score is None:
+        return 0
+    flat = np.asarray(score, dtype=np.float64).reshape(-1)
+    return int(np.argmax(flat)) if flat.size else 0
+
+
+#: Upstream's affinity summary fields, in its order (``BoltzAffinityWriter``,
+#: ``data/write/writer.py:303-324``): the ensemble mean, then each of the two
+#: ensemble members when the checkpoint carries both.
+AFFINITY_SUMMARY_FIELDS = (
+    "affinity_pred_value",
+    "affinity_probability_binary",
+    "affinity_pred_value1",
+    "affinity_probability_binary1",
+    "affinity_pred_value2",
+    "affinity_probability_binary2",
+)
+
+
+def affinity_summary(out: Mapping[str, Any]) -> dict[str, float]:
+    """Upstream's ``affinity_<id>.json`` body from a prediction's outputs."""
+
+    summary: dict[str, float] = {}
+    for key in AFFINITY_SUMMARY_FIELDS:
+        value = out.get(key)
+        if value is None:
+            continue
+        flat = np.asarray(value, dtype=np.float64).reshape(-1)
+        if flat.size:
+            summary[key] = float(flat[0])
+    return summary
+
+
+def _write_affinity_summary(
+    dest: Path, record_id: str, out: Mapping[str, Any]
+) -> Path | None:
+    summary = affinity_summary(out)
+    if not summary:
+        return None
+    dest.mkdir(parents=True, exist_ok=True)
+    path = dest / f"affinity_{record_id}.json"
+    # Upstream's own serialization: `json.dumps(summary, indent=4)`.
+    path.write_text(json.dumps(summary, indent=4), encoding="utf-8")
+    return path
 
 
 def _confidence_index(
