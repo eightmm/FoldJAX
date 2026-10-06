@@ -9,6 +9,7 @@ published 0700 whatever the umask.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import stat
@@ -99,6 +100,31 @@ def test_a_damaged_entry_is_set_aside_and_searched_again(tmp_path: Path) -> None
     assert second == first
     assert (tmp_path / f".{entry.name}.damaged").is_dir()
     assert pipeline.search([SEQUENCE]) == [first] and backend.calls == 2
+
+
+def test_an_entry_recorded_under_another_key_is_set_aside(tmp_path: Path) -> None:
+    """Intact files, but the provenance says they answer some other request.
+
+    An entry copied or renamed under the wrong key directory would otherwise
+    serve an alignment searched with other options or another backend.
+    """
+    backend = _Backend()
+    pipeline = MsaSearchPipeline(tmp_path, backend)
+    (first,) = pipeline.search([SEQUENCE])
+    provenance_path = Path(first["provenancePath"])
+    entry = provenance_path.parent
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    provenance["cache_key"] = "0" * 64
+    provenance_path.write_text(json.dumps(provenance), encoding="utf-8")
+
+    with pytest.warns(UserWarning, match="provenance key mismatch"):
+        (second,) = pipeline.search([SEQUENCE])
+
+    assert backend.calls == 2
+    assert second == first
+    assert (tmp_path / f".{entry.name}.damaged").is_dir()
+    restored = json.loads(provenance_path.read_text(encoding="utf-8"))
+    assert restored["cache_key"] == entry.name
 
 
 def test_an_entry_is_published_with_the_umask(tmp_path: Path) -> None:
