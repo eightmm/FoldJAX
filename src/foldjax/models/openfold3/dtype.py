@@ -66,11 +66,11 @@ while keeping the embedder float32 recovers it (pLDDT -0.001, CA RMSD 0.040 A
 against a 0.005 A rerun floor, at 1,003 tokens on 2026-08-10).
 
 The confidence head is therefore its own narrowing group, with its own knob
-(``confidence_dtype``). That knob *follows* ``dtype`` when unset, so opting
-into a bfloat16 trunk narrows the head with it and there is no second value
-to set; what the knob is for is holding this one region wide against a
-narrowed trunk (``confidence_dtype="float32"``), or narrowing it against a
-wide one. Narrowing it alone buys nothing measurable -- +0.4% wall and -0.1%
+(``confidence_dtype``). Unset, it is float32 whatever ``dtype`` is
+(``DEFAULT_CONFIDENCE_DTYPE``), because upstream pins this stack to float32 in
+every regime; it used to follow ``dtype`` and so ran bfloat16 under the
+shipped trunk. ``confidence_dtype="bfloat16"`` narrows it on request.
+Narrowing it alone buys nothing measurable -- +0.4% wall and -0.1%
 peak at 1,003 tokens, -1.1% and -0.0% at 2,096 -- and under a narrowed trunk
 it is already subsumed: ``dtype=bfloat16`` and ``dtype=bfloat16
 confidence_dtype=bfloat16`` reported byte-identical peaks (5,553 MiB at 1k,
@@ -347,11 +347,18 @@ from foldjax.models.openfold3.models.primitives import LayerNormParams
 #: one definition.
 DTYPES: tuple[str, ...] = ("float32", "bfloat16")
 
-#: What a request that says nothing gets. One value rather than two --
-#: ``confidence_dtype`` follows it when unset, so this single definition sets
-#: both regions. Every other layer reads it: the config fields,
-#: ``released_config``'s signature and the backend's cache-namespace strip.
+#: What a request that says nothing gets for the trunk. Every other layer reads
+#: it: the config fields, ``released_config``'s signature and the backend's
+#: cache-namespace strip.
 DEFAULT_DTYPE = "bfloat16"
+
+#: What a request that says nothing gets for the confidence head's
+#: re-embedding Pairformer, whatever ``dtype`` is. Upstream pins that stack to
+#: float32 in every regime -- ``pairformer_dtype`` defaults to ``torch.float32``
+#: (``heads/head_modules.py:106``, ``heads/prediction_heads.py:131,192,261``)
+#: and no caller passes another -- so this port does too. ``bfloat16`` stays
+#: available as an explicit ``confidence_dtype``.
+DEFAULT_CONFIDENCE_DTYPE = "float32"
 
 
 def narrow_dtype(name: str) -> Any:

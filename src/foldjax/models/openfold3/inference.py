@@ -57,6 +57,7 @@ from foldjax.models.openfold3.data.pocket_constraints import (
     POCKET_SAMPLING_FEATURES,
 )
 from foldjax.models.openfold3.dtype import (
+    DEFAULT_CONFIDENCE_DTYPE,
     DEFAULT_DTYPE,
     narrow_dtype,
     narrow_floats,
@@ -259,25 +260,24 @@ class InferenceConfig(NamedTuple):
     #: persistent cache namespace: two runs that differ here compile
     #: different programs and must never share one.
     dtype: str = DEFAULT_DTYPE
-    #: The confidence head's re-embedding Pairformer, separately. It follows
-    #: ``dtype`` when a caller says nothing -- which is why
-    #: ``dtype="float32"`` alone restores the upstream FP32 precision for both
-    #: regions
-    #: -- and this knob exists to hold the head *wide* against the shipped
-    #: narrow trunk (``confidence_dtype="float32"``), or to narrow it alone
-    #: against ``dtype="float32"``. It is the region that can be bisected out
-    #: without touching the trunk. It cannot move a structure: this head consumes
-    #: predicted coordinates and emits scores, never coordinates. Boltz-2's
-    #: ``diffusion_compute_dtype`` is the same idea -- a native, region-scoped
-    #: companion to the neutral knob rather than a third neutral value.
+    #: The confidence head's re-embedding Pairformer, separately. float32 when
+    #: a caller says nothing, whatever ``dtype`` is, because upstream pins this
+    #: stack to float32 in every regime (``DEFAULT_CONFIDENCE_DTYPE``); it used
+    #: to follow ``dtype``. ``confidence_dtype="bfloat16"`` narrows it. It is
+    #: the region that can be bisected out without touching the trunk. It
+    #: cannot move a structure: this head consumes predicted coordinates and
+    #: emits scores, never coordinates -- though its scores rank the samples.
+    #: Boltz-2's ``diffusion_compute_dtype`` is the same idea -- a native,
+    #: region-scoped companion to the neutral knob rather than a third neutral
+    #: value.
     #:
     #: Always a resolved string here; :func:`released_config` is where the
-    #: "follow ``dtype``" default is applied. A ``None`` surviving onto the
-    #: config would put two unequal objects -- the sentinel and the spelling
-    #: it resolves to -- behind one persistent cache namespace while still
-    #: forking the in-process JIT owner, because this whole object is a field
-    #: of ``_PredictGraphIdentity``.
-    confidence_dtype: str = DEFAULT_DTYPE
+    #: default is applied. A ``None`` surviving onto the config would put two
+    #: unequal objects -- the sentinel and the spelling it resolves to --
+    #: behind one persistent cache namespace while still forking the
+    #: in-process JIT owner, because this whole object is a field of
+    #: ``_PredictGraphIdentity``.
+    confidence_dtype: str = DEFAULT_CONFIDENCE_DTYPE
     #: Upstream's pocket-guided proposal sampling, read on the host from a
     #: query's ``pocket_sampling_*`` features by
     #: :func:`foldjax.models.openfold3.data.pocket_constraints.pocket_sampling_config`.
@@ -306,9 +306,9 @@ def resolve_dtypes(config: InferenceConfig) -> tuple[Any, Any]:
     """Return ``(trunk, confidence)`` narrow dtypes, each ``None`` for float32.
 
     Both fields are already resolved strings -- :func:`released_config`
-    applies ``confidence_dtype``'s "follow ``dtype``" default -- so this is
-    only the string-to-dtype step, and no second file can resolve a sentinel
-    differently. The shipped profile is ``(bfloat16, bfloat16)``;
+    applies ``confidence_dtype``'s float32 default -- so this is only the
+    string-to-dtype step, and no second file can resolve a sentinel
+    differently. The shipped profile is ``(bfloat16, None)``;
     ``dtype="float32"`` is the pair ``(None, None)``, which narrows nothing.
     """
 
@@ -326,9 +326,10 @@ def cast_narrow_params(
     ever emitted. :func:`resolve_dtypes` turns a config into the pair.
     ``dtype`` covers the trunk and the diffusion conditioning;
     ``confidence_dtype`` covers the confidence head's re-embedding Pairformer
-    and nothing else. The shipped profile narrows both, because
-    ``confidence_dtype`` follows ``dtype``; ``--option dtype=float32``
-    narrows neither and returns the tree it was given. Every field outside
+    and nothing else. The shipped profile narrows the trunk only, because
+    ``confidence_dtype`` defaults to upstream's float32; ``--option
+    dtype=float32`` narrows neither and returns the tree it was given. Every
+    field outside
     the two groups is handed back as the object it arrived as either way.
 
     **Every entry point that loads a checkpoint has to call this.** A config
@@ -1818,14 +1819,15 @@ def released_config(
     # built once and traced many times, and `narrow_dtype` names the accepted
     # values in its message.
     narrow_dtype(dtype)
-    # The only place the "follow ``dtype``" default is applied. Resolved here
-    # rather than on the config so that omitting the argument and spelling the
-    # value it resolves to build the *same* ``InferenceConfig`` -- which is a
-    # field of ``_PredictGraphIdentity``, so an unresolved sentinel would fork
-    # the in-process JIT owner even where ``cache_profile`` has already
-    # unified the persistent cache directory.
+    # The only place the float32 default is applied -- upstream's, whatever
+    # ``dtype`` is (``DEFAULT_CONFIDENCE_DTYPE``). Resolved here rather than on
+    # the config so that omitting the argument and spelling the value it
+    # resolves to build the *same* ``InferenceConfig`` -- which is a field of
+    # ``_PredictGraphIdentity``, so an unresolved sentinel would fork the
+    # in-process JIT owner even where ``cache_profile`` has already unified
+    # the persistent cache directory.
     if confidence_dtype is None:
-        confidence_dtype = dtype
+        confidence_dtype = DEFAULT_CONFIDENCE_DTYPE
     narrow_dtype(confidence_dtype)
     return InferenceConfig(
         n_token=n_token,
