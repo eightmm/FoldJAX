@@ -53,7 +53,7 @@ def enable_compilation_cache(
     directory: str | os.PathLike[str] | None = None,
     *,
     min_compile_time_secs: float = 1.0,
-) -> Path:
+) -> Path | None:
     """Cache compiled executables on disk and return the directory used.
 
     Args:
@@ -63,7 +63,9 @@ def enable_compilation_cache(
             that matter instead of every small kernel.
 
     Returns:
-        The directory, created if necessary.
+        The directory, created if necessary; ``None``, leaving the setting
+        alone, when another account could write into it (see
+        `foldjax.cache.trusted_compile_cache_dir`).
 
     A cache entry is keyed on the computation *and* the accelerator and jaxlib
     version, so a driver or version change silently misses rather than returning a
@@ -72,8 +74,13 @@ def enable_compilation_cache(
     """
     import jax
 
-    path = Path(directory) if directory is not None else default_cache_dir()
-    path.mkdir(parents=True, exist_ok=True)
+    from foldjax.cache import trusted_compile_cache_dir
+
+    path = trusted_compile_cache_dir(
+        Path(directory) if directory is not None else default_cache_dir()
+    )
+    if path is None:
+        return None
     jax.config.update("jax_compilation_cache_dir", str(path))
     jax.config.update(
         "jax_persistent_cache_min_compile_time_secs", min_compile_time_secs

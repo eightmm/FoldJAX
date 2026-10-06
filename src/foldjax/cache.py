@@ -201,6 +201,120 @@ def runtime_profile() -> dict[str, str]:
     }
 
 
+#: Set to ``1`` to load executables from a compile cache that other accounts
+#: can write -- a lab's shared store, typically group-writable and setgid. JAX
+#: runs whatever executable it finds under the key, so by default FoldJAX only
+#: uses a cache directory no other account can write into.
+TRUST_SHARED_COMPILE_CACHE_ENV = "FOLDJAX_TRUST_SHARED_COMPILE_CACHE"
+_TRUE = {"1", "true", "yes", "on"}
+_WARNED_CACHE_DIRS: set[str] = set()
+
+
+def _make_cache_directories(path: Path) -> None:
+    """Create missing components without the umask's group-write bit.
+
+    ``Path.mkdir(parents=True)`` under a collaborative umask of 0002 makes
+    every new namespace 0775, which the check below would then refuse.
+    """
+    missing: list[Path] = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        if current.parent == current:
+            break
+        current = current.parent
+    for directory in reversed(missing):
+        try:
+            os.mkdir(directory, 0o755)
+        except FileExistsError:
+            pass
+
+
+def _group_is_only_this_user(gid: int) -> bool:
+    """A user-private group: the account's own group, with no other member."""
+    try:
+        import grp
+        import pwd
+    except ImportError:  # pragma: no cover - POSIX only
+        return False
+    if gid != os.getgid():
+        return False
+    try:
+        members = set(grp.getgrgid(gid).gr_mem)
+        name = pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError:
+        return False
+    return members <= {name}
+
+
+def _untrusted_cache_reason(path: Path) -> str | None:
+    """Why another account could place an executable under ``path``, if it can.
+
+    The directory and every ancestor must belong to this user or root, and no
+    other account may write to them: not the world (a root-owned sticky
+    ancestor such as ``/tmp`` excepted) and not a group with another member.
+    """
+    import stat
+
+    if not hasattr(os, "geteuid"):  # pragma: no cover - POSIX only
+        return None
+    uid = os.geteuid()
+    leaf = Path(os.path.realpath(path))
+    for directory in (leaf, *leaf.parents):
+        info = os.stat(directory)
+        if not stat.S_ISDIR(info.st_mode):
+            return f"{directory} is not a directory"
+        if info.st_uid not in (uid, 0):
+            return f"{directory} belongs to another user"
+        mode = stat.S_IMODE(info.st_mode)
+        sticky_root = (
+            info.st_uid == 0 and bool(mode & stat.S_ISVTX) and directory != leaf
+        )
+        if mode & stat.S_IWOTH and not sticky_root:
+            return f"{directory} is world-writable"
+        if (
+            mode & stat.S_IWGRP
+            and not sticky_root
+            and not _group_is_only_this_user(info.st_gid)
+        ):
+            return f"{directory} is writable by a group with other members"
+    return None
+
+
+def trusted_compile_cache_dir(directory: str | os.PathLike[str]) -> Path | None:
+    """Prepare ``directory`` and return it when its executables can be trusted.
+
+    Returns ``None``, with one warning per directory, when another account can
+    write into the cache or its ancestors; the caller then compiles without a
+    persistent cache. ``FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1`` skips the check
+    for a deliberately shared store.
+    """
+    path = Path(directory).expanduser()
+    if os.environ.get(TRUST_SHARED_COMPILE_CACHE_ENV, "").strip().lower() in _TRUE:
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    try:
+        _make_cache_directories(path)
+        reason = _untrusted_cache_reason(path)
+    except OSError as error:
+        reason = f"it cannot be prepared ({error})"
+    if reason is None:
+        return path
+    if str(path) not in _WARNED_CACHE_DIRS:
+        _WARNED_CACHE_DIRS.add(str(path))
+        import warnings
+
+        warnings.warn(
+            f"not using the compile cache {path}: {reason}, so another account "
+            "could plant an executable there. Compiling without a persistent "
+            f"cache; set {TRUST_SHARED_COMPILE_CACHE_ENV}=1 to trust a shared "
+            "store, or use a cache directory only you can write.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    return None
+
+
 @contextmanager
 def compilation_cache_scope(
     directory: Path | None,
@@ -236,10 +350,11 @@ def compilation_cache_scope(
             # pointed at the old directory, so reset before selecting this
             # request's namespace (or disabling it).
             compilation_cache.reset_cache()
+            if directory is not None:
+                directory = trusted_compile_cache_dir(directory)
             if directory is None:
                 jax.config.update("jax_compilation_cache_dir", None)
             else:
-                Path(directory).mkdir(parents=True, exist_ok=True)
                 jax.config.update("jax_compilation_cache_dir", str(directory))
                 jax.config.update(
                     "jax_persistent_cache_min_compile_time_secs",
