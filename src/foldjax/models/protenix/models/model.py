@@ -301,12 +301,37 @@ def cast_trunk_params(
     )
 
 
-def _confidence_ligand_masks(features):
-    """Recover chemistry from native masks or older FoldJAX archive identity.
+#: Feature keys any one of which says which tokens are ligand.
+LIGAND_IDENTITY_KEYS = ("token_is_ligand", "is_ligand", "token_polymer_type")
 
-    Unknown restype is not ligand identity: modified polymers may share that
-    code. Retain the historical fallback only for archives lacking chemistry.
+
+def require_ligand_identity(features) -> None:
+    """Refuse a feature archive that cannot say which tokens are ligand.
+
+    Archives written before FoldJAX stored ligand identity carry only
+    ``restype``, and the unknown residue type there is shared by ligands and
+    by modified polymer residues. Reading it as ligand identity labelled every
+    modified residue a ligand in chain pTM/ipTM, so such an archive is
+    refused rather than scored on a guess.
     """
+    if not any(key in features for key in LIGAND_IDENTITY_KEYS):
+        raise ValueError(
+            "this Protenix feature archive has no ligand identity ("
+            + ", ".join(LIGAND_IDENTITY_KEYS)
+            + "); it predates FoldJAX recording it, and its unknown residue "
+            "type cannot tell a ligand from a modified residue. Re-featurize "
+            "the job with this version"
+        )
+
+
+def _confidence_ligand_masks(features):
+    """Ligand identity for the confidence scores, from native masks only.
+
+    Unknown restype is not ligand identity: modified polymers share that
+    code. An archive with none of `LIGAND_IDENTITY_KEYS` is refused
+    (`require_ligand_identity`).
+    """
+    require_ligand_identity(features)
     token_ligand = features.get("token_is_ligand")
     atom_ligand = features.get("is_ligand")
     if token_ligand is None and "token_polymer_type" in features:
@@ -322,8 +347,6 @@ def _confidence_ligand_masks(features):
             )
             > 0
         )
-    if token_ligand is None:
-        token_ligand = jnp.argmax(features["restype"], axis=-1) == 20
     return (
         None if atom_ligand is None else ~atom_ligand.astype(bool),
         token_ligand,

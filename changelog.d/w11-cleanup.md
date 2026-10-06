@@ -12,6 +12,15 @@
   retried like a failed request, and a refused or failed download leaves no
   partial archive to be reused.
 
+- **Protenix refuses a feature archive that cannot say which tokens are
+  ligand.** An archive without `token_is_ligand`, `is_ligand` or
+  `token_polymer_type` fell back to reading the unknown residue type as
+  ligand identity, which every modified residue shares, so chain pTM/ipTM
+  scored modified polymers as ligands. `--features` with such an archive now
+  stops before any weights load and asks for the job to be re-featurized;
+  a trunk-only or confidence-free run, which reads no ligand identity, is
+  unaffected.
+
 ### Changed
 
 - **One job-name rule for every output path.** FoldJAX's layout, the

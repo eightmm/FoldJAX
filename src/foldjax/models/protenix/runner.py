@@ -579,10 +579,21 @@ def _run(
 
     try:
         if config.features is not None:
+            static_features = load_static_feature_npz(config.features)
+            if config.stop_after not in {"inputs", "trunk"} and not (
+                config.no_confidence or config.no_confidence_scores
+            ):
+                from foldjax.models.protenix.models.model import (
+                    require_ligand_identity,
+                )
+
+                # Before any weights load: the confidence scores would refuse
+                # it anyway, after the whole trunk and sampler had run.
+                require_ligand_identity(static_features)
             jobs = [
                 {
                     "name": config.features.stem,
-                    "features": load_static_feature_npz(config.features),
+                    "features": static_features,
                     "modelSeeds": None,
                 }
             ]

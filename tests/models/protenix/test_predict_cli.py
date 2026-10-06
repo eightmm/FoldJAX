@@ -1933,6 +1933,7 @@ def test_predict_checks_v2_size_before_loading_weights(tmp_path) -> None:
     np.savez_compressed(
         features_path,
         restype=np.zeros((2561, 32), dtype=np.float32),
+        token_is_ligand=np.zeros((2561,), dtype=bool),
     )
     argv = [
         "--weights",
@@ -2036,3 +2037,25 @@ def _cli_defaults(entry) -> dict:
         with pytest.raises(SystemExit):
             entry(["--features", "x.npz", "--weights", "w.pkl", "--out", "o.npz"])
     return captured
+
+
+def test_a_feature_archive_without_ligand_identity_is_refused_before_weights(
+    tmp_path,
+) -> None:
+    """Unknown restype is shared by ligands and modified residues: no guess."""
+    features_path = tmp_path / "legacy_features.npz"
+    np.savez_compressed(features_path, restype=np.zeros((4, 32), dtype=np.float32))
+    argv = [
+        "--weights",
+        str(tmp_path / "missing.pkl"),
+        "--features",
+        str(features_path),
+        "--out",
+        str(tmp_path / "out.npz"),
+        "--model-name",
+        "protenix-v2",
+        "--cpu-only",
+    ]
+    with pytest.raises(SystemExit) as refused:
+        main(argv)
+    assert "no ligand identity" in str(refused.value)

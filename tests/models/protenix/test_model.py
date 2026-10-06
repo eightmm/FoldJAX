@@ -410,6 +410,9 @@ def _toy_features() -> dict[str, jnp.ndarray | dict[str, jnp.ndarray]]:
         "asym_id": jnp.asarray([0, 1]),
         "distogram_rep_atom_mask": jnp.asarray([1, 1, 0]),
         "atom_to_tokatom_idx": jnp.asarray([0, 0, 1]),
+        # Both tokens polymer, which is what the retired `restype == 20`
+        # fallback read off the all-zero `restype` above.
+        "token_is_ligand": jnp.asarray([False, False]),
     }
 
 
