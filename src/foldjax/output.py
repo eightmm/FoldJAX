@@ -43,6 +43,7 @@ import os
 import re
 import shutil
 import tempfile
+import warnings
 from dataclasses import replace
 from pathlib import Path
 
@@ -145,7 +146,16 @@ def _normalize_cif(path: Path, *, job: str, model: str, seed: int, index: int) -
         cif.quote(f"{job} predicted by {model} (seed {seed}, sample {index})"),
     )
     block.set_pair("_struct.entry_id", cif.quote(block.name))
-    document.write_file(str(path))
+    # Through a sibling and a rename: written in place, a write cut short (a
+    # full disk) left a truncated structure that the run manifest then
+    # digested as the verified result.
+    with tempfile.TemporaryDirectory(
+        prefix=".foldjax-structure-", dir=path.parent
+    ) as scratch:
+        staged = Path(scratch) / path.name
+        document.write_file(str(staged))
+        shutil.copymode(path, staged)
+        os.replace(staged, path)
 
 
 def confidence_payload(
@@ -325,10 +335,16 @@ def normalize(
                     seed=sample.seed,
                     index=index,
                 )
-            except Exception:  # noqa: BLE001 - a header is never worth losing a run
+            except Exception as error:  # noqa: BLE001 - a header never costs a run
                 # The structure is the result; a CIF this cannot parse is
-                # upstream's to fix, and the file is already where it belongs.
-                pass
+                # upstream's to fix, and the file is already where it belongs,
+                # unchanged, because the rewrite only ever replaces it whole.
+                warnings.warn(
+                    f"FoldJAX could not retitle {target} ({error}); the "
+                    f"structure is kept exactly as {result.model} wrote it",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
         _write_confidence(
             directory / "confidence.json",
             sample,

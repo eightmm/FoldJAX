@@ -338,9 +338,48 @@ def test_an_unparsable_cif_is_still_placed(tmp_path: Path) -> None:
         output_dir=tmp_path,
         raw={},
     )
-    placed = normalize(result, job="j").samples[0].structure_path
+    with pytest.warns(RuntimeWarning, match="could not retitle"):
+        placed = normalize(result, job="j").samples[0].structure_path
     assert placed.is_file()
     assert placed.read_text() == "this is not a CIF at all"
+
+
+def test_a_header_rewrite_cut_short_leaves_the_structure_whole(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A full disk mid-rewrite used to leave a truncated CIF behind.
+
+    The run manifest digests the placed file, so a truncated one was recorded
+    as the verified result. The rewrite now replaces the file whole or not at
+    all, and says that it did not.
+    """
+    import errno
+
+    from gemmi import cif
+
+    real_read = cif.read
+
+    class CutShort:
+        def __init__(self, document) -> None:
+            self.document = document
+
+        def sole_block(self):
+            return self.document.sole_block()
+
+        def write_file(self, path: str) -> None:
+            Path(path).write_text(CIF[:40], encoding="utf-8")
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(cif, "read", lambda path: CutShort(real_read(path)))
+    with pytest.warns(RuntimeWarning, match="No space left on device"):
+        placed = normalize(_result(tmp_path), job="1abc").samples[0].structure_path
+
+    assert placed.read_text(encoding="utf-8") == CIF
+    # No staged half-file is left beside it either.
+    assert {path.name for path in placed.parent.iterdir()} == {
+        placed.name,
+        "confidence.json",
+    }
 
 
 def test_a_sample_without_a_file_passes_through(tmp_path: Path) -> None:
