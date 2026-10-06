@@ -681,6 +681,50 @@ def test_standard_nucleotide_atom_slots_keep_canonical_op3_offset(kind: str) -> 
     np.testing.assert_array_equal(slots, expected)
 
 
+@pytest.mark.parametrize(
+    ("kind", "unknown"), [("rnaSequence", "N"), ("dnaSequence", "DN")]
+)
+def test_unknown_nucleotides_are_one_token_with_one_c1_prime(
+    kind: str, unknown: str
+) -> None:
+    """N and X both name the base-less nucleotide, as upstream's *_1to3 map them."""
+    features = featurize_protein_json(
+        _job({kind: {"sequence": "GNXA", "id": ["R"]}}),
+        center_reference=False,
+        augment_reference=False,
+    )
+
+    n_token = features["restype"].shape[0]
+    assert n_token == 4
+    representative = features["distogram_rep_atom_mask"].astype(bool)
+    counts = np.bincount(
+        features["atom_to_token_idx"][representative], minlength=n_token
+    )
+    np.testing.assert_array_equal(counts, [1, 1, 1, 1])
+    restype = 25 if kind == "rnaSequence" else 30
+    np.testing.assert_array_equal(np.argmax(features["restype"], -1)[1:3], restype)
+    for token in (1, 2):
+        atoms = features["atom_to_token_idx"] == token
+        assert features["output_atom_name"][atoms & representative].tolist() == ["C1'"]
+        assert set(features["output_atom_res_name"][atoms]) == {unknown}
+        # The reference conformer is the CCD entry's own, not a truncated C/DC.
+        table = featurize_impl._ccd_nucleotides()[unknown]
+        names = table["names"].astype(str)
+        rows = [
+            int(np.flatnonzero(names == name)[0])
+            for name in features["output_atom_name"][atoms]
+        ]
+        np.testing.assert_array_equal(features["ref_pos"][atoms], table["coord"][rows])
+    # X is N: the two tokens carry the same features.
+    first, second = (features["atom_to_token_idx"] == t for t in (1, 2))
+    np.testing.assert_array_equal(
+        features["output_atom_name"][first], features["output_atom_name"][second]
+    )
+    np.testing.assert_array_equal(
+        features["ref_pos"][first], features["ref_pos"][second]
+    )
+
+
 def test_molecule_ids_follow_native_inference_without_merging_ligand_bonds() -> None:
     features = featurize_protein_json(
         _job(

@@ -239,13 +239,6 @@ def _prepare_job(
         kind, info = next(iter(entry.items()))
         if not isinstance(info, dict):
             continue
-        sequence = info.get("sequence")
-        if kind in {"dnaSequence", "rnaSequence"} and isinstance(sequence, str):
-            # Upstream reads a nucleic ``X`` as it reads ``N`` (json_parser.py
-            # ``DNA_1to3``/``RNA_1to3``: both DN, both N), and every alignment
-            # alphabet already encodes the two alike; the shared featurizer
-            # knows only ``N``.
-            info["sequence"] = sequence.upper().replace("X", "N")
         path_keys = {
             "proteinChain": (
                 "pairedMsaPath",

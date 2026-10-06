@@ -72,9 +72,26 @@ unless it says so here, in its own paragraph.
   upstream's reference conformers (added to the vendored table from the same
   CCD cache), structural tokens and C1' distogram atom. The features of a
   mixed `X`/`N` job match upstream OpenDDE 1.1.1's bit for bit. Letters the
-  format document does not list stay refused. The C1' distogram atom for N and
-  DN is fixed in the featurizer Protenix shares too, which had marked no
-  representative atom for them.
+  format document does not list stay refused.
+
+- **Protenix predictions change for jobs with a DNA or RNA `N`, and nucleic
+  `X` is accepted.** Three differences from upstream Protenix's handling of
+  the base-less nucleotide, all in the featurizer:
+  - N and DN had no distogram representative atom. The confidence head pads
+    a missing one with atom 0 rather than failing, so pLDDT, PAE, PDE and the
+    sample ranking for such a job were computed from the wrong atoms. They
+    are now represented by C1', as upstream does (`add_distogram_rep_atom_mask`).
+    This changes confidence and ranking, not the sampled coordinates.
+  - Their reference conformers were the C and DC entries cut at C1', 3.1 Å
+    and 7.3 Å from the CCD's own N and DN. They are now upstream's, built from
+    the same CCD cache as the other nucleotides. This changes the predicted
+    structure of such a job.
+  - Nucleic `X` was refused; upstream reads it as `N` (`json_parser.py`
+    `DNA_1to3`/`RNA_1to3`), and so does the port now. DNA `I`/`U` and RNA `I`,
+    which upstream also maps, stay refused.
+
+  A token without exactly one representative atom is now refused at
+  featurization instead of being padded silently.
 
 - **Memory admission no longer reports `fits` for a run whose estimate is a
   lower bound.** The peak laws were fitted at each port's released dtype and

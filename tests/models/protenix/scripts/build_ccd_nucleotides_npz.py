@@ -23,8 +23,9 @@ from pathlib import Path
 import numpy as np
 from protenix.data.core import ccd
 
-# Standard DNA (DA/DC/DG/DT) and RNA (A/C/G/U) residues.
-DEFAULT_CODES = ["DA", "DC", "DG", "DT", "A", "C", "G", "U"]
+# Standard DNA (DA/DC/DG/DT) and RNA (A/C/G/U) residues, then the unknown
+# nucleotides N and DN, which upstream builds from their own CCD entries.
+DEFAULT_CODES = ["DA", "DC", "DG", "DT", "A", "C", "G", "U", "N", "DN"]
 
 
 def build(codes: list[str]) -> dict[str, np.ndarray]:

@@ -570,9 +570,10 @@ def test_featurize_rna_unpaired_msa_rejects_invalid_rows(
 
 
 def test_featurize_rejects_unsupported_nucleotide_base() -> None:
+    # Upstream's DNA_1to3 has no Q; its X (DN) is accepted here too.
     with pytest.raises(ValueError, match="unsupported dnaSequence base"):
         featurize_protein_json(
-            {"sequences": [{"dnaSequence": {"sequence": "AX", "count": 1}}]}
+            {"sequences": [{"dnaSequence": {"sequence": "AQ", "count": 1}}]}
         )
 
 

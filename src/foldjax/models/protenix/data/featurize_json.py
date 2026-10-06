@@ -84,8 +84,12 @@ MSA_RNA_INDEX = {
     **RNA_RESTYPE_INDEX,
     "-": 31,
 }
-RNA_CODES = {"A": "A", "G": "G", "C": "C", "U": "U", "N": "N"}
-DNA_CODES = {"A": "DA", "G": "DG", "C": "DC", "T": "DT", "N": "DN"}
+# Upstream's ``RNA_1to3``/``DNA_1to3`` (protenix/data/inference/json_parser.py)
+# for the letters whose residues this port carries: ``X`` and ``N`` both name
+# the unknown nucleotide. Upstream also maps DNA I/U and RNA I (DI, DU, I),
+# which are not vendored here and stay refused.
+RNA_CODES = {"A": "A", "G": "G", "C": "C", "U": "U", "N": "N", "X": "N"}
+DNA_CODES = {"A": "DA", "G": "DG", "C": "DC", "T": "DT", "N": "DN", "X": "DN"}
 # Distogram representative atom: purine -> C4, pyrimidine -> C2.
 _PURINE_CODES = {"DA", "DG", "A", "G"}
 _PYRIMIDINE_CODES = {"DC", "DT", "C", "U"}
@@ -194,7 +198,7 @@ def _ccd_ligands() -> dict[str, dict[str, np.ndarray]]:
 def _ccd_nucleotides() -> dict[str, dict[str, np.ndarray]]:
     """Lazy-load the vendored nucleotide CCD reference table.
 
-    Each CCD code (DA/DC/DG/DT, A/C/G/U) maps to ``names``/``coord``/
+    Each CCD code (DA/DC/DG/DT/DN, A/C/G/U/N) maps to ``names``/``coord``/
     ``charge``/``mask``/``elem`` arrays in RES_ATOMS order (OP3 first). OP3
     is the 5'-terminal leaving atom: kept only for the first residue.
     """
@@ -1821,19 +1825,6 @@ def _ccd_component(code: str) -> dict[str, np.ndarray]:
         entry = _ccd_nucleotides()[code]
     elif code in _ccd_std_residues():
         entry = _ccd_std_residues()[code]
-    elif code in ("N", "DN"):
-        # CCD N/DN are the RNA/DNA phosphate-sugar backbone without a base.
-        # Derive them from the vendored C/DC entries by retaining atoms through
-        # C1'. This matches upstream's N/DN heavy-atom layout without requiring
-        # the optional 490 MB full CCD database for a documented input symbol.
-        source = _ccd_nucleotides()["C" if code == "N" else "DC"]
-        names = np.asarray(source["names"]).astype(str)
-        c1_index = int(np.flatnonzero(names == "C1'")[0])
-        keep = slice(0, c1_index + 1)
-        entry = {
-            key: np.asarray(source[key])[keep]
-            for key in ("names", "coord", "charge", "mask", "elem")
-        }
     if entry is None:
         entry = _external_ccd_component(code)
     normalized = dict(entry)
