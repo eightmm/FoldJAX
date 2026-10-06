@@ -32,6 +32,15 @@
   group-shared cache is readable by the group, and a failed mmCIF download no
   longer leaves its staging file behind.
 
+- **Uncached sequences share the unpaired MSA ticket.** Twenty unique
+  sequences cost forty serial tickets; their unpaired (`env`) searches now go
+  to the server together, up to 16 per ticket, as ColabFold's and Boltz's own
+  clients submit them, and each query's block is renumbered to the `>101` a
+  single-query ticket writes, so the cached files are byte-identical either
+  way (the server answering each query independently of its ticket-mates is
+  taken from those clients, not re-measured). The per-chain paired search stays
+  one ticket per sequence, since what it pairs depends on the ticket.
+
 ### Security
 
 - **Boltz-2 loads its processed arrays and molecule pickles without arbitrary

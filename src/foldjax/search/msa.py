@@ -40,7 +40,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -61,6 +61,8 @@ _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 #: Generous for the largest alignment or mmCIF a server returns; a server that
 #: sends more is refused before it exhausts memory.
 MAX_REMOTE_BYTES = 1 << 30
+#: Queries per shared unpaired ticket (`RemoteMMseqs2Client.search_many`).
+MAX_QUERIES_PER_TICKET = 16
 #: A server job id is spliced into the next request's URL path.
 _JOB_ID = re.compile(r"[A-Za-z0-9_-]+")
 
@@ -324,6 +326,10 @@ def quarantine_entry(directory: Path, cache_key: str, reason: object) -> None:
     )
 
 
+#: What one sequence's search may fail with and leave the others standing.
+_SEARCH_FAILURES = (SearchError, TimeoutError, OSError, ValueError)
+
+
 class MsaSearchPipeline:
     """Cache backend results by sequence plus immutable search provenance."""
 
@@ -444,23 +450,106 @@ class MsaSearchPipeline:
             return None
 
     def search(self, sequences: Sequence[str]) -> list[dict[str, str]]:
+        """One entry per sequence; the first sequence that failed raises."""
+        results = self.search_each(sequences)
+        for result in results:
+            if isinstance(result, Exception):
+                raise result
+        return results  # type: ignore[return-value]
+
+    def search_each(
+        self, sequences: Sequence[str]
+    ) -> list[dict[str, str] | Exception]:
+        """One entry per sequence, or the error that sequence's search raised.
+
+        A failure is the failing sequence's own: the others keep the alignment
+        they found. Sequences missing from the cache go to the backend's
+        ``search_many`` together when it has one (a shared ticket), else one
+        ``search`` at a time; every miss is searched under its cache key's lock.
+        """
         normalized = [_normalize_sequence(sequence) for sequence in sequences]
         if not normalized:
             raise ValueError("at least one protein sequence is required")
-        resolved: dict[str, dict[str, str]] = {}
-        for sequence in dict.fromkeys(normalized):
-            cache_key, identity = self._identity(sequence)
-            directory = self.cache_dir / cache_key
-            with cache_key_lock(self.cache_dir, cache_key):
-                cached = self._usable(directory, sequence, cache_key)
-                resolved[sequence] = cached or self._materialize(
-                    directory,
-                    sequence,
-                    cache_key,
-                    identity,
-                    self.backend.search(sequence),
+        identities = {
+            sequence: self._identity(sequence) for sequence in dict.fromkeys(normalized)
+        }
+        outcomes: dict[str, dict[str, str] | Exception] = {}
+        missing: list[str] = []
+        for sequence, (cache_key, _) in identities.items():
+            try:
+                cached = self._cached(self.cache_dir / cache_key, sequence, cache_key)
+            except (SearchError, UnicodeDecodeError):
+                cached = None  # set aside under the lock below
+            if cached is not None:
+                outcomes[sequence] = cached
+            else:
+                missing.append(sequence)
+        search_many = getattr(self.backend, "search_many", None)
+        if callable(search_many) and len(missing) > 1:
+            self._search_together(missing, identities, outcomes, search_many)
+        else:
+            for sequence in missing:
+                cache_key, identity = identities[sequence]
+                directory = self.cache_dir / cache_key
+                try:
+                    with cache_key_lock(self.cache_dir, cache_key):
+                        cached = self._usable(directory, sequence, cache_key)
+                        outcomes[sequence] = cached or self._materialize(
+                            directory,
+                            sequence,
+                            cache_key,
+                            identity,
+                            self.backend.search(sequence),
+                        )
+                except _SEARCH_FAILURES as error:
+                    outcomes[sequence] = error
+        return [outcomes[sequence] for sequence in normalized]
+
+    def _search_together(
+        self,
+        missing: list[str],
+        identities: Mapping[str, tuple[str, dict[str, Any]]],
+        outcomes: dict[str, dict[str, str] | Exception],
+        search_many: Callable[[list[str]], list[MsaPayload | Exception]],
+    ) -> None:
+        with ExitStack() as locks:
+            # Sorted, so two runs taking overlapping sets cannot deadlock.
+            for cache_key in sorted(identities[sequence][0] for sequence in missing):
+                locks.enter_context(cache_key_lock(self.cache_dir, cache_key))
+            still: list[str] = []
+            for sequence in missing:
+                cache_key = identities[sequence][0]
+                cached = self._usable(self.cache_dir / cache_key, sequence, cache_key)
+                if cached is not None:
+                    outcomes[sequence] = cached
+                else:
+                    still.append(sequence)
+            if not still:
+                return
+            try:
+                payloads: list[MsaPayload | Exception] = list(search_many(still))
+            except _SEARCH_FAILURES as error:
+                payloads = [error] * len(still)
+            if len(payloads) != len(still):
+                raise SearchError(
+                    f"MSA backend returned {len(payloads)} results for "
+                    f"{len(still)} sequences"
                 )
-        return [resolved[sequence] for sequence in normalized]
+            for sequence, payload in zip(still, payloads, strict=True):
+                if isinstance(payload, Exception):
+                    outcomes[sequence] = payload
+                    continue
+                cache_key, identity = identities[sequence]
+                try:
+                    outcomes[sequence] = self._materialize(
+                        self.cache_dir / cache_key,
+                        sequence,
+                        cache_key,
+                        identity,
+                        payload,
+                    )
+                except _SEARCH_FAILURES as error:
+                    outcomes[sequence] = error
 
     @property
     def pairs_complexes(self) -> bool:
@@ -1248,3 +1337,71 @@ class RemoteMMseqs2Client:
             unpaired,
             {"paired_job_id": paired_job, "unpaired_job_id": unpaired_job},
         )
+
+    def search_many(self, sequences: Sequence[str]) -> list[MsaPayload | Exception]:
+        """`search` for several sequences, the unpaired search in shared tickets.
+
+        Twenty sequences used to cost forty serial tickets. ColabFold's own
+        client and Boltz's submit every query of a run in one ``env`` ticket;
+        that search treats each query on its own, so a query's block in a
+        shared ticket is what its own ticket returns (an inference from those
+        clients, not something this code can check). Each block's query header
+        is renumbered to the ``>101`` a single-query ticket writes, so the
+        cached bytes do not depend on the batching. The per-chain
+        ``paircomplete`` search stays one ticket per sequence: what it pairs
+        depends on which queries share the ticket.
+
+        One entry per sequence: its payload, or the error its search raised.
+        """
+        outcomes: list[MsaPayload | Exception] = []
+        for start in range(0, len(sequences), MAX_QUERIES_PER_TICKET):
+            chunk = list(sequences[start : start + MAX_QUERIES_PER_TICKET])
+            try:
+                unpaired, unpaired_job = self._run_many(chunk)
+            except (SearchError, TimeoutError, OSError) as error:
+                outcomes.extend([error] * len(chunk))
+                continue
+            for sequence, text in zip(chunk, unpaired, strict=True):
+                try:
+                    paired, paired_job = self._run(sequence, paired=True)
+                except (SearchError, TimeoutError, OSError) as error:
+                    outcomes.append(error)
+                    continue
+                outcomes.append(
+                    MsaPayload(
+                        paired,
+                        text,
+                        {"paired_job_id": paired_job, "unpaired_job_id": unpaired_job},
+                    )
+                )
+        return outcomes
+
+    def _run_many(self, sequences: Sequence[str]) -> tuple[list[str], str]:
+        """One ``env`` ticket for several queries, split back per query."""
+        names = ("uniref.a3m", "bfd.mgnify30.metaeuk30.smag30.a3m")
+        texts, job_id = self._submit(
+            "".join(
+                f">{101 + index}\n{sequence}\n"
+                for index, sequence in enumerate(sequences)
+            ),
+            mode="env",
+            endpoint="ticket/msa",
+            names=names,
+        )
+        members = [
+            _split_colabfold_a3m(text, name) for text, name in zip(texts, names)
+        ]
+        unpaired = []
+        for index in range(len(sequences)):
+            number = 101 + index
+            parts = []
+            for blocks, name in zip(members, names, strict=True):
+                if number not in blocks:
+                    raise SearchError(
+                        f"remote MSA {name} has no block for query {number}"
+                    )
+                block = blocks[number]
+                header, _, rest = block.partition("\n")
+                parts.append(f">101\n{rest}" if header == f">{number}" else block)
+            unpaired.append("".join(parts))
+        return unpaired, job_id
