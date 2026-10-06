@@ -68,8 +68,13 @@ def _cache_opts(
 
     The schema token retires entries whose cached structures stored the
     absent `pocket` as a pickled `None`, which the pickle-free loader refuses.
+
+    The parse cap is appended only where it departs from upstream's 8,192:
+    an entry written for a deeper `max_msa_depth` before the cap followed it
+    holds 8,192 parsed rows and must not answer, while every entry at or below
+    the released cap stays valid.
     """
-    return (
+    opts: tuple = (
         _FEATURE_CACHE_SCHEMA,
         use_msa_server,
         msa_server_url,
@@ -78,6 +83,10 @@ def _cache_opts(
         msa_deletions,
         int(seed),
     )
+    cap = parse_cap(max_msa_depth)
+    if cap != UPSTREAM_PARSE_CAP:
+        opts += (("parse_cap", cap),)
+    return opts
 
 
 def _input_digest(yaml_path: Path, mol_dir: Path, opts: tuple) -> str:

@@ -30,6 +30,20 @@ def test_the_msa_cap_is_part_of_the_cache_key() -> None:
     assert 1024 in capped
 
 
+def test_a_raised_parse_cap_retires_the_old_deep_entries() -> None:
+    """A depth above 8,192 used to parse only 8,192 rows under the same key.
+
+    The parse cap now follows such a depth, so its key has to differ from the
+    one those entries were written under -- the bare tuple of the same
+    options -- while every key at or below the released cap stays as it was.
+    """
+    deep = _opts(12000)
+    assert ("parse_cap", 12000) in deep
+    assert deep[:-1] == (*_opts(1024)[:4], 12000, *_opts(1024)[5:])
+    assert not any(isinstance(item, tuple) for item in _opts(8192))
+    assert not any(isinstance(item, tuple) for item in _opts())
+
+
 def test_an_alignment_named_relative_to_the_job_is_hashed(tmp_path: Path) -> None:
     """Boltz job files name alignments relative to themselves, not the CWD.
 
