@@ -319,7 +319,7 @@ AlphaFold 3 do not.
 | Boltz-2 | bfloat16 trunk with a **bfloat16 pair residual**; matmul scope **`high`** | bf16-mixed with a float32 pair residual; `highest` | `high` | `--option pair_residual_dtype=float32 --option matmul_precision=highest` |
 | ESMFold2 | bfloat16 trunk under the released fork's autocast region | the same (Biohub fork `ef32577`) | not pinned (JAX `DEFAULT`) | nothing to change |
 | OpenDDE | **bfloat16 trunk** and bfloat16 confidence Pairformer | float32 | not pinned (JAX `DEFAULT`) | `--option dtype=float32 --option confidence_dtype=fp32` |
-| OpenFold3 | **bfloat16 partial token/pair track** (the confidence head follows it) | `32-true` | `high` | `--option dtype=float32` |
+| OpenFold3 | **bfloat16 partial token/pair track** (the confidence head stays float32, as upstream's) | `32-true` | `high` | `--option dtype=float32` |
 | Protenix | bfloat16 trunk; **confidence head bfloat16 at every size** | confidence head float32 up to 2,560 tokens (v1 profiles; `protenix-v2` runs it bfloat16 at every size) | `high` | `--option amp_policy=upstream` |
 
 Bold marks a departure. Each default was kept because the structures held

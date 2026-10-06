@@ -237,10 +237,10 @@ def _model_asset_snapshot(
     weights = Path(weights)
     root = weights.parent if weights.is_file() else weights
     paths = [root / "model.safetensors", root / "config.json"]
-    # All-biomolecule jobs read the CCD beside the structure checkpoint. Keep
-    # it in the session provenance whenever it is present, while preserving
-    # compatibility with external protein-only bundles that predate the CCD
-    # requirement and never enter the all-atom feature path.
+    # Every job reads the CCD beside the structure checkpoint: its reference
+    # conformers come from it, a plain protein chain's included. Kept in the
+    # session provenance whenever it is present; a bundle without it fails at
+    # featurization with the fetch command, not here.
     ccd = root / "ccd.pkl"
     if ccd.exists():
         paths.append(ccd)
