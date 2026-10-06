@@ -37,7 +37,7 @@ the plan shows.
 | `Job` | Sequences, chemistry, raw MSA and template references |
 | `ModelConfig` | `msa_depth`, total `trunk_passes`, `samples`, `steps`, `msa_search`, `template_search`, `template_max_date` |
 | `ExecutionConfig` | Padding, persistent compile cache location/use, resume |
-| `model.capabilities` | Supported inputs, sampling bindings and representations |
+| `model.capabilities` | Supported inputs, sampling bindings, `sampling_defaults` and representations |
 | `embed` | Native input representation, zero trunk passes |
 | `encode` | Trunk representations, before structure sampling |
 | `predict` | Structure prediction and optional representations |
@@ -74,6 +74,19 @@ P total main-trunk evaluations, including the initial evaluation:
 OpenFold3's adapter then translates the common additional-recycle count to its
 native total count. A single total pass is supported. Input extraction executes
 zero trunk passes regardless of the configured prediction schedule.
+
+`capabilities(model).sampling_defaults` (`ModelCapabilities.sampling_defaults`)
+maps each `PredictionRequest` sampling knob to the value a request that sets
+none of them runs at, in these `PredictionRequest` units: OpenFold3 reports 3
+recycles, not the 4 trunk passes it stores, and AlphaFold 3 reports the 3 its
+adapter supplies rather than upstream's 10. Values the checkpoint decides are
+the default profile's -- Protenix's released base model (200 steps, 10
+recycles), ESMFold2's released `config.json` (32 samples, 14 steps) -- and
+Boltz-2's depth is its featurizer's 16,384-row cap. A value is `None` only
+where nothing can be read before a run. Each backend computes these through
+`Backend.sampling_resolution`, the same translation a run takes; `foldjax plan`
+prints that resolution for a concrete request as `sampling` and
+`sampling_source` (see [the CLI](cli.md#what-foldjax-plan-prints)).
 
 The existing `predict(PredictionRequest(...))` API remains available with its
 established counting and padding policy. The new handle writes

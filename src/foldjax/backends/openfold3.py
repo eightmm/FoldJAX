@@ -669,6 +669,13 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             )
         return options
 
+    def _neutral_sampling_value(self, knob: str, native_value: Any) -> int | None:
+        """The native ``num_recycles`` counts trunk passes; the neutral one does not."""
+        value = super()._neutral_sampling_value(knob, native_value)
+        if knob == "num_recycles" and value is not None:
+            return value - 1
+        return value
+
     def capabilities(self) -> ModelCapabilities:
         raw = InputRequirement(
             preprocessing_runtime="jax",

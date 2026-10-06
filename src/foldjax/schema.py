@@ -218,9 +218,10 @@ class ModelCapabilities:
     # `confidence_full.npz`. Filled in by `foldjax.capabilities` from
     # `foldjax.confidence_arrays.AVAILABILITY`, like the schema fields above.
     confidence_arrays: tuple[str, ...] = ()
-    # What each neutral sampling knob in `sampling` runs at when omitted;
-    # None where the checkpoint's own configuration decides. Filled in by
-    # `foldjax.capabilities`, like the fields above.
+    # What each neutral sampling knob in `sampling` runs at when omitted, in
+    # the knob's units, for the default profile's checkpoint; None only where
+    # nothing can be read before a run. Filled in by `foldjax.capabilities`
+    # from `Backend.sampling_resolution`, like the fields above.
     sampling_defaults: dict[str, int | None] = field(default_factory=dict)
 
 

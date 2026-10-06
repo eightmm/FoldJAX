@@ -897,6 +897,20 @@ class AlphaFold3Backend(Backend):
         options.setdefault("num_recycles", 3)
         return options
 
+    def _omitted_sampling(
+        self, request: PredictionRequest, options: Mapping[str, Any]
+    ) -> dict[str, tuple[int | None, str]]:
+        """The vendored config's steps and depth hold on the managed route only.
+
+        An explicit ``source`` checkout carries its own omitted defaults
+        (`_MANAGED_CONFIG_DEFAULTS`), which nothing here reads.
+        """
+        found = super()._omitted_sampling(request, options)
+        if request.options.get("source"):
+            for knob in _MANAGED_CONFIG_DEFAULTS:
+                found[knob] = (None, "checkpoint")
+        return found
+
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
         """Keep exact released-default aliases in one compilation namespace.
 

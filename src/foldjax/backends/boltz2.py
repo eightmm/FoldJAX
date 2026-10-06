@@ -866,6 +866,24 @@ class Boltz2Backend(Backend):
         for role in tuple(self._runners):
             self._drop_runner(role)
 
+    def _omitted_sampling(
+        self, request: PredictionRequest, options: Mapping[str, Any]
+    ) -> dict[str, tuple[int | None, str]]:
+        """An omitted MSA depth is the featurizer's `const.max_msa_seqs`.
+
+        `api.featurize` passes `max_msa_depth=None` through to
+        `PredictionDataset`, which caps the merged alignment at that constant.
+        It is read rather than restated -- `const` is plain Python -- and kept
+        out of `_RELEASED_COMPILE_DEFAULTS`, whose entries name cache
+        namespaces. Each `.a3m`/`.csv` is first read to upstream's parse cap,
+        8,192 rows when the knob is omitted (`data/featurize.parse_cap`).
+        """
+        from foldjax.models.boltz2.data import const
+
+        found = super()._omitted_sampling(request, options)
+        found["max_msa_depth"] = (int(const.max_msa_seqs), "default")
+        return found
+
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
         """Normalize native defaults, including the omitted recycle count.
 

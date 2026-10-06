@@ -1135,6 +1135,42 @@ class ProtenixBackend(ManagedCcdSession, Backend):
                 options["diffusion_attention_backend"] = _OFF_GPU_ATTENTION_BACKEND
         return options
 
+    def _omitted_sampling(
+        self, request: PredictionRequest, options: Mapping[str, Any]
+    ) -> dict[str, tuple[int | None, str]]:
+        """Steps and recycles follow the model variant, as the runner does.
+
+        The native parser leaves both unset and `models/protenix/runner.py`
+        reads them off :data:`MODEL_INFERENCE_DEFAULTS` for the model name:
+        named explicitly, else inferred from the weight filename, and with no
+        weights yet (a capability query) the profile's -- `released` unless
+        another is asked for. ``unknown`` runs the base schedule. A weight file
+        the name cannot be read off is refused by the runner, so nothing is
+        claimed for it.
+        """
+        from foldjax.models.protenix.runtime_policy import infer_model_name_from_path
+
+        found = super()._omitted_sampling(request, options)
+        model_name = options.get("model_name", "auto")
+        if model_name == "auto":
+            model_name = (
+                infer_model_name_from_path(request.weights)
+                if request.weights is not None
+                else _PROFILE_MODEL_NAMES.get(request.profile or "released")
+            )
+        if model_name == "unknown":
+            # The runner's own fallback for a name it was told not to infer.
+            schedule = {"num_steps": 200, "num_recycles": 10}
+        else:
+            schedule = MODEL_INFERENCE_DEFAULTS.get(str(model_name))
+        for knob in ("num_steps", "num_recycles"):
+            found[knob] = (
+                (None, "checkpoint")
+                if schedule is None
+                else (int(schedule[knob]), "checkpoint")
+            )
+        return found
+
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
         """Keep proven released-default aliases in one cache namespace.
 

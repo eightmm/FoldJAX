@@ -1,5 +1,22 @@
 ### Fixed
 
+- **`capabilities` and `plan` report the sampling each backend runs.**
+  `ModelCapabilities.sampling_defaults` read the adapters' native tables, so
+  AlphaFold 3 said 10 recycles where its adapter runs 3, OpenFold3 said 4
+  where the neutral count is 3 (4 is its trunk passes), and Protenix's steps
+  and recycles, ESMFold2's samples and steps and Boltz-2's MSA depth were
+  null although each runs a definite value. Both now come from
+  `Backend.sampling_resolution`, the translation a run takes: AlphaFold 3
+  5/200/3/1,024, Boltz-2 1/200/3/16,384, ESMFold2 32/14/3/1,024 (its released
+  `config.json`, or the named checkpoint's), OpenDDE 5/200/10/16,384,
+  OpenFold3 5/200/3/1,024, Protenix 5/200/10/16,384 (the model variant's
+  schedule, read off the model name). `plan`'s `sampling` shows the value a
+  knob runs at rather than the one spelled where a port narrows it, and
+  `sampling_source` says `checkpoint` with a value where the checkpoint
+  decides. `docs/cli.md` now documents `sampling`, `sampling_source`,
+  `generated_input` and `not_checked`, and `docs/model-interface.md`
+  `sampling_defaults`.
+
 - **A resumed random-seed run no longer says it drew its seed.** `--resume`
   takes the seed back from the finished run's manifest, but the "has no
   upstream default seed; drew N" line printed anyway, beside the line saying

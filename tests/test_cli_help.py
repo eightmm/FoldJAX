@@ -74,9 +74,9 @@ def test_plan_prints_the_effective_sampling_and_where_it_comes_from(
     assert plan["sampling_source"]["num_samples"] == "request"
     assert plan["sampling"]["num_steps"] == 200
     assert plan["sampling_source"]["num_steps"] == "default"
-    # Boltz-2's MSA depth is internal to its runner: shown, not invented.
-    assert plan["sampling"]["max_msa_depth"] is None
-    assert plan["sampling_source"]["max_msa_depth"] == "checkpoint"
+    # The featurizer's own cap, `const.max_msa_seqs`, which an omitted depth runs.
+    assert plan["sampling"]["max_msa_depth"] == 16384
+    assert plan["sampling_source"]["max_msa_depth"] == "default"
     assert "not_checked" not in plan
 
     assert (

@@ -160,6 +160,27 @@ is in [input](input.md#searching-for-templates). `plan` prints `templates` and
 `template_max_date` beside `msa`, and refuses `--templates auto` for ESMFold2
 and for Protenix or OpenDDE without `--option use_template=true`.
 
+### What `foldjax plan` prints
+
+`plan` resolves a request without running it and prints one JSON object per
+run. Beside the resolved `model`, `input`, `weights`, `profile`, `output_dir`,
+`cache_dir`, seeds, `msa`/`templates` and public `options`, four fields say
+what the request turns into:
+
+| field | what it holds |
+| --- | --- |
+| `sampling` | each neutral knob (`num_samples`, `num_steps`, `num_recycles`, `max_msa_depth`) at the value this run takes, in the knob's own units: OpenFold3's `num_recycles` counts recycles after the first pass, not its four trunk passes, and a depth above what a port keeps shows the depth it runs |
+| `sampling_source` | per knob, where that value came from: `request` (the knob was set), `option` (a native `--option`, or a managed profile's), `default` (the adapter's own value) or `checkpoint` (the checkpoint or its model variant decides: Protenix's schedule from the model name, ESMFold2's samples and steps from its `config.json`). A `checkpoint` value is `null` only when it cannot be read before the run -- a Protenix weight file whose name says no model, an ESMFold2 checkpoint with no readable `config.json`, an AlphaFold 3 run from an external `source` checkout |
+| `generated_input` | when the job was written from `--sequence`/FASTA rather than read from `--input`, the job document itself; `input` is then the content-keyed path `predict` would write it to. `null` for a job read from disk |
+| `not_checked` | present only under padding: what predict refuses that plan cannot, because it is known only after featurization -- today a `padding.msa` pin below the MSA rows the model stores |
+
+`foldjax capabilities --model MODEL` carries the same values for a request
+that names nothing, as `sampling_defaults`: the default profile's checkpoint
+and every knob omitted. They are what that run takes, not each upstream's own
+CLI default -- AlphaFold 3 reports 3 recycles, the four-pass schedule its
+adapter supplies, where upstream `run_alphafold.py` defaults to 10 (see
+[recycling defaults](recycling-defaults.md)).
+
 ### Outputs
 
 Every model writes the same layout:
