@@ -196,11 +196,18 @@ class Ligand:
     Exactly one of the two is allowed; setting both is refused at
     materialization. Every backend takes both representations
     (``foldjax.input._TARGETS``), so the choice is the caller's, not the model's.
+    A tuple of CCD codes is one chain of several residues, such as a glycan
+    (``ccd=("NAG", "NAG", "BMA")``); bonds number them 1, 2, ... in order.
+    OpenFold3 refuses one of more than one code.
     """
 
     id: str | tuple[str, ...]
-    ccd: str | None = None
+    ccd: str | tuple[str, ...] | None = None
     smiles: str | None = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.ccd, list):
+            object.__setattr__(self, "ccd", tuple(self.ccd))
 
     def to_document(self) -> dict[str, Any]:
         document: dict[str, Any] = {
@@ -208,7 +215,9 @@ class Ligand:
             "id": list(self.id) if isinstance(self.id, tuple) else self.id,
         }
         if self.ccd is not None:
-            document["ccd"] = self.ccd
+            document["ccd"] = (
+                list(self.ccd) if isinstance(self.ccd, tuple) else self.ccd
+            )
         if self.smiles is not None:
             document["smiles"] = self.smiles
         return document
@@ -359,17 +368,25 @@ class Job:
             )
             if kind == "ligand":
                 ligand_values: dict[str, str | None] = {}
+                codes = raw.get("ccd")
                 for field_name in ("ccd", "smiles"):
                     value = raw.get(field_name)
+                    if field_name == "ccd" and isinstance(value, list):
+                        continue
                     ligand_values[field_name] = _document_text(
                         value, name=f"ligand {field_name}"
                     )
+                ccd: str | tuple[str, ...] | None = ligand_values.get("ccd")
+                if isinstance(codes, list):
+                    if not codes or not all(
+                        isinstance(code, str) and code.strip() for code in codes
+                    ):
+                        raise ValueError(
+                            "ligand ccd list must hold one or more non-empty CCD codes"
+                        )
+                    ccd = tuple(code.strip() for code in codes)
                 entities.append(
-                    Ligand(
-                        identifier,
-                        ccd=ligand_values["ccd"],
-                        smiles=ligand_values["smiles"],
-                    )
+                    Ligand(identifier, ccd=ccd, smiles=ligand_values["smiles"])
                 )
                 continue
             polymer = {"protein": Protein, "dna": Dna, "rna": Rna}.get(str(kind))

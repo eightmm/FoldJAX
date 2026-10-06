@@ -190,7 +190,9 @@ def test_native_only_features_say_where_a_constraint_is_read() -> None:
     # native-only.
     assert "contact_constraints" in protenix
     assert "pocket_constraints" not in protenix
-    assert {"multi_residue_ligand", "ligand_file"} <= set(opendde)
+    assert "ligand_file" in opendde
+    # A glycan is the common `ccd` list now (CCD_A_B in this dialect).
+    assert "multi_residue_ligand" not in opendde
 
 
 class _StopError(Exception):

@@ -50,6 +50,19 @@ unless it says so here, in its own paragraph.
   those three models' `native_only_features` to `common_schema_features`. See
   [docs/input.md](docs/input.md#pocket-constraints).
 
+- **Multi-residue ligands (glycans) in the common schema:** a ligand's `ccd`
+  may be a list, `ccd: [NAG, NAG, BMA]` (Python: `Ligand("G", ccd=("NAG",
+  "NAG", "BMA"))`), one chain whose residues the common `bonds` number 1, 2,
+  ... AlphaFold 3 receives `ccdCodes`, Boltz-2 a `ccd` list, Protenix and
+  OpenDDE `CCD_NAG_NAG_BMA` with `covalent_bonds` positions counting the codes
+  from 1, and ESMFold2 tokenizes it as Biohub's `prepare_input` does (on the
+  released CCD, all 18 feature arrays of an N-linked NAG-NAG-BMA match
+  upstream's). OpenFold3 refuses more than one code, as its v0.5.0 raises
+  `NotImplementedError`; Protenix and OpenDDE refuse a code containing `_`.
+  `multi_residue_ligand` moves from `native_only_features` to
+  `common_schema_features` for the five that translate it. See
+  [docs/input.md](docs/input.md#multi-residue-ligands-glycans).
+
 ### Changed
 
 - **A Boltz-2 template's `chain_id` now names the author chain, as it does for
@@ -124,8 +137,9 @@ unless it says so here, in its own paragraph.
   refused while the job is validated, for every backend.** AlphaFold 3's own
   parser already refused it; Boltz-2 failed with a bare `KeyError` and
   Protenix, OpenDDE and ESMFold2 failed in their featurizers, after the job
-  had been accepted. A ligand counts as one residue. Atom names are still
-  checked by each backend, whose chemistry decides which atoms a residue has.
+  had been accepted. A ligand counts one residue per CCD code (a SMILES
+  ligand one). Atom names are still checked by each backend, whose chemistry
+  decides which atoms a residue has.
 
 - **AlphaFold 3 featurizes with `run_alphafold.py`'s `ref_max_modified_date`,
   2021-09-30.** FoldJAX called the runner and featurisation without it, so a

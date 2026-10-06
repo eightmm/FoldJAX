@@ -314,8 +314,6 @@ this backend's dialect can carry from a
 FoldJAX job document, and `native_only_features` names abilities the model has
 but the common adapter cannot safely reach: `templates` and `affinity` where
 the dialect lacks the field, and the native-only inputs the port consumes --
-`multi_residue_ligand` (glycans as several CCD codes; all but OpenFold3, whose
-v0.5.0 release raises on them, and ESMFold2),
 `user_ccd` (AlphaFold 3), `ligand_file` (Protenix, OpenDDE),
 `contact_constraints` (Boltz-2, Protenix), and
 `cyclic_polymer` (Boltz-2, OpenFold3). These are reachable only through native
@@ -327,7 +325,11 @@ common `constraints` field, `max_distance=None` takes each model's upstream
 default, and the manifest's `constraints` records the value used
 (`docs/input.md`, "Pocket constraints"). On OpenDDE it is dropped and recorded
 under `ignored_constraints` like a native constraint; AlphaFold 3 and ESMFold2
-refuse it.
+refuse it. `multi_residue_ligand` is a common feature for every model but
+OpenFold3, whose v0.5.0 release raises on more than one code:
+`Ligand("G", ccd=("NAG", "NAG", "BMA"))` writes a `ccd` list, one chain of
+three residues that `Bond`s number 1, 2, 3 (`docs/input.md`, "Multi-residue
+ligands").
 Its `input_requirements` mapping distinguishes
 dependencies by input format — for example, OpenFold3's `openfold3-features` archive is JAX-only,
 while its raw `native`, `openfold3`, and `foldjax` formats require the

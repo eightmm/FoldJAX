@@ -120,13 +120,21 @@ def _modifications(entity: Mapping[str, Any]) -> dict[int, str]:
     }
 
 
+def _ccd_codes(entity: Mapping[str, Any]) -> list[str]:
+    """A CCD ligand's components, one code or a list (``LigandInput.ccd``)."""
+
+    value = entity["ccd"]
+    codes = value if isinstance(value, list) else [value]
+    return [str(code).upper() for code in codes]
+
+
 def _entity_key(entity: Mapping[str, Any]) -> tuple[object, ...]:
     """Biohub's canonical chemical identity, independent of common input index."""
 
     kind = str(entity["type"])
     if kind == "ligand":
         if entity.get("ccd"):
-            return ("NONPOLYMER", None, (str(entity["ccd"]).upper(),))
+            return ("NONPOLYMER", None, tuple(_ccd_codes(entity)))
         return ("NONPOLYMER", entity.get("smiles"), ())
     return (
         kind.upper(),
@@ -489,26 +497,28 @@ def _ligand(
             atoms=atoms,
             seed=seed,
         )
-    component = str(entity["ccd"]).upper()
-    records = ccd.atoms(component)
-    if not records:
-        raise ValueError(f"ESMFold2 CCD component {component!r} was not found")
-    if bonded:
-        leaving = ccd.leaving_atoms(component)
-        records = [record for record in records if record[0] not in leaving]
-    _append_atom_tokenized_residue(
-        tokens=tokens,
-        atoms=atoms,
-        records=records,
-        residue_index=0,
-        residue_name=component,
-        mol_type=MOL_TYPE_NONPOLYMER,
-        asym_id=asym_id,
-        sym_id=sym_id,
-        entity_id=entity_id,
-        space_uid=_next_space_uid(atoms),
-        ccd=ccd,
-    )
+    # Biohub's tokenize_ligand_ccd: residue i is code i, its own space_uid,
+    # and a covalently bonded chain drops every residue's leaving atoms.
+    for residue_index, component in enumerate(_ccd_codes(entity)):
+        records = ccd.atoms(component)
+        if not records:
+            raise ValueError(f"ESMFold2 CCD component {component!r} was not found")
+        if bonded:
+            leaving = ccd.leaving_atoms(component)
+            records = [record for record in records if record[0] not in leaving]
+        _append_atom_tokenized_residue(
+            tokens=tokens,
+            atoms=atoms,
+            records=records,
+            residue_index=residue_index,
+            residue_name=component,
+            mol_type=MOL_TYPE_NONPOLYMER,
+            asym_id=asym_id,
+            sym_id=sym_id,
+            entity_id=entity_id,
+            space_uid=_next_space_uid(atoms),
+            ccd=ccd,
+        )
     return []
 
 

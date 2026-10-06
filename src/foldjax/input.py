@@ -81,6 +81,16 @@ _ALL_FEATURES = frozenset(
         "ligand_ccd",
         "ligand_smiles",
         "bonds",
+        # A ligand chain of several CCD components, such as a glycan:
+        # ``ccd: [NAG, NAG, BMA]``, one residue per code, numbered 1, 2, ... in
+        # ``bonds`` (`_ccd_codes`). AlphaFold 3 ``ccdCodes`` (folding_input.py
+        # Ligand.from_dict), Boltz-2 a ``ccd`` list (data/parse/schema.py
+        # parse_boltz_schema), Protenix/OpenDDE ``CCD_A_B``
+        # (data/inference/json_parser.py build_ligand, res_id = index + 1) and
+        # ESMFold2 ``LigandInput.ccd`` (prepare_input.py tokenize_ligand_ccd).
+        # OpenFold3 v0.5.0 raises NotImplementedError for more than one code
+        # (core/data/primitives/structure/query.py), so it does not list it.
+        "multi_residue_ligand",
         # A structural template, in the two forms the dialects actually take.
         # AlphaFold 3 and Protenix require an explicit query-residue ->
         # template-residue map and refuse a bare file (`folding_input.py:378`,
@@ -140,16 +150,29 @@ _TARGETS = {
     # the template cache its reader loads from ``template_alignment_file_path``
     # (`_openfold3_templates`), a bare file ``template_cif_paths``, which it
     # aligns itself (upstream's CIF-direct mode).
-    "openfold3": _Target(".json", _ALL_FEATURES - {"bonds", "affinity"}),
+    "openfold3": _Target(
+        ".json", _ALL_FEATURES - {"bonds", "affinity", "multi_residue_ligand"}
+    ),
     # ESMFold2 has no second native dialect: its NumPy adapter reads the common
     # document and implements Biohub's all-biomolecule tokenizer directly.
     # Taxonomy-paired MSAs and structural templates are not part of this route;
     # every chemistry feature below is represented without loss.
     "esmfold2": _Target(
         ".json",
-        {"unpaired_msa", "modifications", "ligand_ccd", "ligand_smiles", "bonds"},
+        {
+            "unpaired_msa",
+            "modifications",
+            "ligand_ccd",
+            "ligand_smiles",
+            "bonds",
+            "multi_residue_ligand",
+        },
     ),
 }
+
+#: Backends whose native ligand string joins CCD codes with "_" (``CCD_A_B``,
+#: Protenix and OpenDDE json_parser.py ``build_ligand``).
+_CCD_JOINED_MODELS = frozenset({"opendde", "protenix"})
 
 #: The per-job option governing a nucleic-acid alignment a backend does not
 #: read. Its default, true, does what every such upstream does -- folds the
@@ -558,6 +581,31 @@ def _reject(model: str, feature: str, detail: str) -> None:
     raise ValueError(f"{model} cannot express {feature}: {detail}")
 
 
+def _ccd_codes(entity: Mapping[str, Any]) -> list[str]:
+    """A CCD ligand's components in order: one code, or a ``ccd`` list.
+
+    Residue ``i`` (1-based, as ``bonds`` and contacts number it) is code
+    ``i - 1``. Empty for a SMILES ligand.
+    """
+    value = entity.get("ccd")
+    if value is None:
+        return []
+    return [str(code) for code in value] if isinstance(value, list) else [str(value)]
+
+
+def _residue_counts(entities: list[dict[str, Any]]) -> dict[str, int]:
+    """Residues per chain: a polymer's length, a ligand's CCD codes (else 1)."""
+    return {
+        chain: (
+            len(_ccd_codes(entity)) or 1
+            if entity["type"] == "ligand"
+            else len(entity["sequence"])
+        )
+        for entity in entities
+        for chain in _ids(entity)
+    }
+
+
 def _modifications(entity: dict[str, Any]) -> list[tuple[str, int]]:
     """Return validated ``(ccd, position)`` pairs in the common representation."""
     value = entity.get("modifications")
@@ -940,8 +988,19 @@ def _validate(
             chains.add(chain_id)
 
         if kind == "ligand":
+            codes = entity.get("ccd")
+            if isinstance(codes, list):
+                if not codes or not all(
+                    isinstance(code, str) and code.strip() for code in codes
+                ):
+                    raise ValueError(
+                        "ligand ccd list must hold one or more non-empty CCD codes"
+                    )
+                entity["ccd"] = [code.strip() for code in codes]
             for field_name in ("ccd", "smiles"):
                 field_value = entity.get(field_name)
+                if field_name == "ccd" and isinstance(field_value, list):
+                    continue
                 if field_value is not None and (
                     not isinstance(field_value, str) or not field_value.strip()
                 ):
@@ -952,8 +1011,30 @@ def _validate(
                 raise ValueError("ligand entity requires ccd or smiles")
             if entity.get("ccd") and entity.get("smiles"):
                 raise ValueError("ligand entity accepts either ccd or smiles, not both")
-            if validate_ccd is not None and entity.get("ccd"):
+            if validate_ccd is not None and isinstance(entity.get("ccd"), list):
+                entity["ccd"] = [
+                    validate_ccd(code, field="ligand CCD code")
+                    for code in entity["ccd"]
+                ]
+            elif validate_ccd is not None and entity.get("ccd"):
                 entity["ccd"] = validate_ccd(entity["ccd"], field="ligand CCD code")
+            codes = _ccd_codes(entity)
+            if len(codes) > 1 and "multi_residue_ligand" not in target.features:
+                _reject(
+                    model,
+                    "a ligand of several CCD codes",
+                    f"entity {_ids(entity)[0]!r} lists {len(codes)}, and upstream "
+                    f"{model} builds a ligand chain from one code (OpenFold3 "
+                    "v0.5.0 raises NotImplementedError for more)",
+                )
+            if model in _CCD_JOINED_MODELS and any("_" in code for code in codes):
+                # build_ligand splits ``CCD_A_B`` on "_" into its components.
+                _reject(
+                    model,
+                    "a CCD code containing '_'",
+                    f"its ligand string joins codes with '_' (CCD_A_B), so "
+                    f"{codes!r} would be read as other components",
+                )
             feature = "ligand_ccd" if entity.get("ccd") else "ligand_smiles"
             if feature not in target.features:
                 _reject(model, feature, "supply the other ligand representation")
@@ -1147,13 +1228,8 @@ def _validate(
             "bonds",
             "its featurizer never applies covalent bonds, upstream or here",
         )
-    # A common-schema ligand is one residue: one CCD code or one SMILES.
-    lengths = {
-        chain_id: 1 if entity["type"] == "ligand" else len(entity["sequence"])
-        for entity in entities
-        for chain_id in _ids(entity)
-    }
-    _bonds(job, chains, lengths)
+    # A ligand has one residue per CCD code; a SMILES ligand has one.
+    _bonds(job, chains, _residue_counts(entities))
     if job.get("properties") and "affinity" not in target.features:
         _reject(
             model,
@@ -1311,7 +1387,9 @@ def _alphafold3(
         body: dict[str, Any] = {"id": _ids(entity)}
         if kind == "ligand":
             if entity.get("ccd"):
-                body["ccdCodes"] = [str(entity["ccd"])]
+                # Bonds address residue i of the ligand as code i - 1
+                # (docs/input.md "Defining Glycans").
+                body["ccdCodes"] = _ccd_codes(entity)
             else:
                 body["smiles"] = str(entity["smiles"])
         else:
@@ -1393,7 +1471,10 @@ def _boltz(
         body: dict[str, Any] = {"id": _ids(entity)}
         if kind == "ligand":
             if entity.get("ccd"):
-                body["ccd"] = str(entity["ccd"])
+                # A list is one multi-residue chain (parse/schema.py
+                # parse_boltz_schema, residue index = list index).
+                codes = _ccd_codes(entity)
+                body["ccd"] = codes[0] if isinstance(entity["ccd"], str) else codes
             else:
                 body["smiles"] = str(entity["smiles"])
         else:
@@ -1739,8 +1820,12 @@ def _protenix(
             endpoints[chain_id] = (entity_number, copy_id)
         body: dict[str, Any] = {"id": ids, "count": len(ids)}
         if kind == "ligand":
+            # Several codes join as CCD_A_B; upstream numbers them res_id 1, 2,
+            # ..., which covalent_bonds' position addresses.
             body["ligand"] = (
-                f"CCD_{entity['ccd']}" if entity.get("ccd") else str(entity["smiles"])
+                f"CCD_{'_'.join(_ccd_codes(entity))}"
+                if entity.get("ccd")
+                else str(entity["smiles"])
             )
         else:
             body["sequence"] = str(entity["sequence"])
@@ -1940,7 +2025,8 @@ def _openfold3(
         body: dict[str, Any] = {"molecule_type": kind, "chain_ids": ids}
         if kind == "ligand":
             if entity.get("ccd"):
-                body["ccd_codes"] = [str(entity["ccd"])]
+                # Validation leaves one code: upstream refuses more.
+                body["ccd_codes"] = _ccd_codes(entity)
             else:
                 body["smiles"] = str(entity["smiles"])
         else:
@@ -2018,14 +2104,13 @@ def common_schema_features(model: str) -> tuple[str, ...]:
 #: is listed; a native field the port refuses (OpenFold3's ``covalent_bonds``,
 #: `models/openfold3/data/featurize.py`) is not a feature of that model here.
 #:
-#: - ``multi_residue_ligand``: one ligand of several CCD components, such as a
-#:   glycan. AlphaFold 3 ``ccdCodes`` lists (common/folding_input.py), Boltz-2
-#:   ``ccd`` lists (data/parse/schema.py), Protenix/OpenDDE ``CCD_A_B``
-#:   strings (protenix/data/featurize_json.py). The common ``ccd`` is one code.
-#:   OpenFold3 v0.5.0 declares ``ccd_codes`` lists and ``sdf_file_path`` but
-#:   raises NotImplementedError for more than one code and for SDF ligands
-#:   (core/data/primitives/structure/query.py), upstream and here, so neither
-#:   is listed for it.
+#: Ligands of several CCD components (glycans) are the common ``ccd`` list
+#: (``multi_residue_ligand`` in ``_TARGETS``) for every model but OpenFold3,
+#: whose v0.5.0 declares ``ccd_codes`` lists and ``sdf_file_path`` but raises
+#: NotImplementedError for more than one code and for SDF ligands
+#: (core/data/primitives/structure/query.py), upstream and here, so neither
+#: is listed for it.
+#:
 #: - ``user_ccd``: a caller-defined chemical component (AlphaFold 3
 #:   ``userCCD``/``userCCDPath``).
 #: - ``ligand_file``: a ligand read from a structure file (Protenix/OpenDDE
@@ -2044,16 +2129,12 @@ def common_schema_features(model: str) -> tuple[str, ...]:
 #:
 #: ESMFold2 has no native dialect: it reads the common document itself.
 _NATIVE_ONLY: dict[str, frozenset[str]] = {
-    "alphafold3": frozenset({"multi_residue_ligand", "user_ccd"}),
-    "boltz2": frozenset(
-        {"multi_residue_ligand", "contact_constraints", "cyclic_polymer"}
-    ),
+    "alphafold3": frozenset({"user_ccd"}),
+    "boltz2": frozenset({"contact_constraints", "cyclic_polymer"}),
     "esmfold2": frozenset(),
-    "opendde": frozenset({"multi_residue_ligand", "ligand_file"}),
+    "opendde": frozenset({"ligand_file"}),
     "openfold3": frozenset({"cyclic_polymer"}),
-    "protenix": frozenset(
-        {"multi_residue_ligand", "ligand_file", "contact_constraints"}
-    ),
+    "protenix": frozenset({"ligand_file", "contact_constraints"}),
 }
 
 

@@ -288,7 +288,7 @@ def test_bonds_translate_to_each_native_representation(
         (["A", 4, "C"], 3),
         # Copies share the entity's length.
         (["B", 5, "P"], 4),
-        # A common-schema ligand is one residue.
+        # A single-code ligand is one residue (a ccd list, one per code).
         (["L", 2, "PA"], 1),
     ],
 )

@@ -288,13 +288,13 @@ nucleic-acid chain, is refused: OpenFold3 reads one source per protein chain.
 `foldjax capabilities --model MODEL
 [--json]` reports both `common_schema_features` and `native_only_features` for
 exactly this reason, generated from the same translation table the writer uses.
-`native_only_features` also names what only a native input can reach: ligands
-of several CCD components (glycans; not OpenFold3 or ESMFold2), AlphaFold 3's
-user-defined CCD entries, ligands read from a file (Protenix, OpenDDE), contact
-constraints (Boltz-2, Protenix) and cyclic polymers (Boltz-2, OpenFold3). The
-common schema has no field for any of them; pass the model's native file
-instead. Pocket constraints are a common field
-([below](#pocket-constraints)).
+`native_only_features` also names what only a native input can reach:
+AlphaFold 3's user-defined CCD entries, ligands read from a file (Protenix,
+OpenDDE), contact constraints (Boltz-2, Protenix) and cyclic polymers (Boltz-2,
+OpenFold3). The common schema has no field for any of them; pass the model's
+native file instead. Pocket constraints and ligands of several CCD components
+are common fields ([pocket constraints](#pocket-constraints),
+[multi-residue ligands](#multi-residue-ligands-glycans)).
 
 OpenDDE is absent from that constraint list on purpose. It shares Protenix's
 native dialect and featurizer, but its model has no constraint embedder, and
@@ -423,3 +423,32 @@ In Python: `Job(..., pockets=[Pocket("L", [("A", 2), ("A", 5)])])`.
 | Protenix | `constraint.pocket` by entity/copy; one pocket; only weights with a constraint embedder read it, so the released default profile refuses it as it refuses a native one | none upstream: required |
 | OpenDDE | dropped as upstream drops a constraint, with a warning and an `ignored_constraints` record; `ignore_constraints=false` refuses | — |
 | AlphaFold 3, ESMFold2 | refused: no such field upstream | — |
+
+### Multi-residue ligands (glycans)
+
+```yaml
+entities:
+  - {type: protein, id: [A], sequence: MKNGST, unpaired_msa: msa.a3m}
+  - {type: ligand, id: [G], ccd: [NAG, NAG, BMA]}
+bonds:
+  - [[A, 3, ND2], [G, 1, C1]]   # N-glycosylation of ASN 3
+  - [[G, 1, O4], [G, 2, C1]]
+  - [[G, 2, O4], [G, 3, C1]]
+```
+
+A ligand's `ccd` may be a list: one chain made of several CCD components, in
+order. In `bonds` its residues are numbered from 1 by position in that list, as
+AlphaFold 3 numbers them; the bonds inside a glycan and to the protein are
+ordinary common `bonds`. A single code (`ccd: NAG`) is unchanged. In Python:
+`Ligand("G", ccd=("NAG", "NAG", "BMA"))`.
+
+| model | what the list becomes | residue numbering in bonds |
+|---|---|---|
+| AlphaFold 3 | `ccdCodes` (`folding_input.py` `Ligand.from_dict`) + `bondedAtomPairs` | 1-based position, unchanged |
+| Boltz-2 | a `ccd` list (`parse/schema.py` `parse_boltz_schema`) + `constraints: - bond` | 1-based, as Boltz's bond `atom1`/`atom2` |
+| Protenix, OpenDDE | `ligand: CCD_NAG_NAG_BMA` + `covalent_bonds` | `position` = the `res_id` upstream gives code *i*, *i* + 1 (`json_parser.py` `build_ligand`) |
+| ESMFold2 | read directly as Biohub's `LigandInput.ccd` list: one token per atom, one residue per code, its own reference-space id; a covalently bonded chain drops every residue's leaving atoms (`prepare_input.py` `tokenize_ligand_ccd`) | 1-based, resolved by atom name |
+| OpenFold3 | refused: v0.5.0 raises `NotImplementedError` for more than one code per ligand chain (`core/data/primitives/structure/query.py`); a one-code list is accepted | — |
+
+Protenix and OpenDDE refuse a CCD code containing `_`, since their ligand
+string splits on it.
