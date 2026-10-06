@@ -19,7 +19,7 @@ precision and checkpoints must also match to reproduce a paper's results.
 
 | Managed model | Common `num_recycles` | Executed main trunk passes | Evidence and status |
 | --- | --- | --- | --- |
-| AlphaFold 3 | **3** | **4** | Explicitly select SI Algorithm 1, `N_cycle=4`, over the timing schedule. |
+| AlphaFold 3 | **3** | **4** | Explicitly select SI Algorithm 1, `N_cycle=4`, over the timing schedule. Upstream `run_alphafold.py --num_recycles` defaults to 10 (11 passes). |
 | Boltz2 | 3 | 4 | **Upstream default since 2026-09-30** (`--recycling_steps 3`, `main.py:856`). From 2026-09-08 to 2026-09-30 it was 5, the paper's Appendix D.1 PDB evaluation count. |
 | Protenix base v1.0.0 | 10 | 10 | Protenix-v1 section 3.1 evaluation fixes inference recycles at 10. |
 | OpenDDE | 10 | 10 | **Publisher inference fallback**, not a verified paper benchmark count. |
@@ -73,10 +73,11 @@ variant-specific policy (mini/tiny: 4).
   T-1. The current carried native implementation interprets its `num_loops`
   option as additional iterations and performs `max(1, num_loops+1)`; FoldJAX
   preserves that explicit-option contract as `num_recycles`. The managed
-  default is therefore 9 to execute the paper's ten total loops. Passing 10
-  explicitly still executes 11. The released checkpoint's 14 diffusion steps
-  and 32 samples are unchanged by this recycling-only request; it is not the
-  complete paper inference protocol.
+  default is now the released checkpoint's `num_loops: 3` (four passes); pass
+  9 to execute the paper's ten total loops. Passing 10 explicitly executes 11.
+  The released checkpoint's 14 diffusion steps and 32 samples are unchanged
+  by the recycle count; neither setting is the complete paper inference
+  protocol.
 
 ## Verification
 

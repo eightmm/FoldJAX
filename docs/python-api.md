@@ -108,10 +108,11 @@ them has a CLI-only spelling either:
 
 **Searches are request fields too.** `msa` (`"none"`, `"single"`, `"auto"`,
 `"required"`) decides what happens to a protein chain without an alignment, and
-`templates` (`"none"`, the default, or `"auto"`) whether chains without
-templates get searched ones, selected by the model's released cutoff and
-filters; `template_max_date="YYYY-MM-DD"` replaces that cutoff and needs
-`templates="auto"`. Both `auto` searches send the sequence to the ColabFold
+`templates` (`"none"`, the default, `"auto"` or `"required"`) whether chains
+without templates get searched ones, selected by the model's released cutoff
+and filters; `"required"` fails the run where `"auto"` would warn and fold
+without. `template_max_date="YYYY-MM-DD"` replaces that cutoff and needs a
+searching policy. Both `auto` searches send the sequence to the ColabFold
 MMseqs2 server unless a local command is configured
 ([input](input.md#searching-for-templates)). `ModelConfig` spells them
 `msa_search`, `template_search` and `template_max_date`. The manifest records
@@ -239,7 +240,7 @@ point of the ports. What `None` means per model:
 
 | model | samples | steps | recycles | MSA depth |
 |---|---|---|---|---|
-| `alphafold3` | 5 | 200 | 10 | 1,024 rows (`evoformer.num_msa`) |
+| `alphafold3` | 5 | 200 | **3** | 1,024 rows (`evoformer.num_msa`) |
 | `boltz2` | **1** | 200 | **3** | 8,192 rows at the a3m parse, then 16,384 paired+unpaired |
 | `esmfold2` | **32** | **14** | **3** | 1,024 rows, resubsampled per loop |
 | `opendde` | 5 | 200 | 10 | 16,384 rows |
@@ -276,6 +277,13 @@ point at: its released `config.json` carries no depth field, and HuggingFace's
 `modeling_esmfold2` takes the MSA as a tensor and caps nothing, so the depth is
 whatever the caller built. The port's 1,024 is its own reading of the released
 per-loop draw (`_subsample_msa`), not a value copied from a config.
+
+AlphaFold 3's 3 is FoldJAX's choice, not upstream's: `apply_sampling` in
+`backends/alphafold3.py` supplies `num_recycles=3` so the carried loop runs
+four trunk passes, the `N_cycle=4` of the SI's Algorithm 1, whereas upstream
+`run_alphafold.py --num_recycles` defaults to 10 (eleven passes). Pass
+`num_recycles=10` for upstream's count; see
+[recycling defaults](recycling-defaults.md).
 
 OpenFold3's three recycles are the neutral spelling. `apply_sampling`
 translates that to the four executed trunk cycles its `InferenceConfig`
