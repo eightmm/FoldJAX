@@ -740,6 +740,21 @@ def _select(
     return chosen, dict(skipped)
 
 
+def _generated_directory(root: Path, directory: Path) -> None:
+    """Create a generated-file directory that cannot lead outside ``root``.
+
+    The same checks `foldjax.input` applies to its generated ``msa/``: a
+    planted symlink would otherwise receive the template files written here.
+    """
+    if directory.is_symlink():
+        raise ValueError(f"generated template directory is a symlink: {directory}")
+    directory.mkdir(parents=True, exist_ok=True)
+    if not directory.resolve().is_relative_to(root.resolve()):
+        raise ValueError(
+            f"generated template directory escapes output root: {directory}"
+        )
+
+
 def search_templates(
     job: dict[str, Any],
     model: str,
@@ -775,6 +790,9 @@ def search_templates(
             _require_kalign()
         pipeline, source = _hits_pipeline()
         store = _structure_store()
+        generated = destination / "template_search"
+        if policy.observed_chain_file:
+            _generated_directory(destination, generated)
     except (SearchError, ValueError) as error:
         _warn_failed(model, [_ids(entity)[0] for entity in wanted], error)
         return [
@@ -804,7 +822,7 @@ def search_templates(
                     policy,
                     cutoff,
                     store,
-                    destination / "template_search",
+                    generated,
                 )
                 memo[sequence] = (found, len(hits), chosen, skipped)
             found, total, chosen, skipped = memo[sequence]

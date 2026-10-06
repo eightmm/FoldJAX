@@ -46,6 +46,16 @@
   `template_search`, and printed by `doctor`; a `--password`/`--api-key`
   argument or URL userinfo now reads `[REDACTED]` there. Cache identities keep
   the raw values, so existing cache entries still hit.
+- **Generated files stay inside their output directory.** The
+  `template_search/` directory that Protenix and OpenDDE template files are
+  written to gets the symlink and containment checks `msa/` already had (a
+  planted symlink now fails that chain's template search with the reason
+  recorded); the OpenDDE CLI's `--stop-after inputs|trunk` representation
+  directory sanitizes the native document's `name` as the structure writer
+  does (`"../../x"` escaped `--out`); and an AlphaFold 3 build wheel member
+  under `share/libcifpp/` cannot climb out of that directory.
+- **Representation archives are written with `allow_pickle=False`**, so an
+  object array is refused at write time rather than stored as a pickle.
 - **A weight download stops at its registered size.** A server that sent more
   than the registry's byte count was written to disk until it stopped; the
   download now fails at the first byte past it and discards the prefix.

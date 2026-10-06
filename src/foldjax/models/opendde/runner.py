@@ -923,8 +923,17 @@ def run_prediction(
                 model_features = None
                 cycle_msa_features = None
                 if config.stop_after in {"inputs", "trunk"}:
+                    from foldjax.models.protenix.data.output import (
+                        sanitize_job_name,
+                    )
+
+                    # The job's "name" is document data; the structure writer
+                    # sanitizes it the same way before it becomes a path.
                     destination = config.representations_dir or (
-                        config.out / job_name / f"seed_{seed}" / "predictions"
+                        config.out
+                        / sanitize_job_name(job_name)
+                        / f"seed_{seed}"
+                        / "predictions"
                     )
                     archive = _representations.save(
                         destination,
