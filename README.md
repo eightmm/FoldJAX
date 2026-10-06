@@ -259,8 +259,12 @@ The full field tables are in [docs/cli.md](https://github.com/eightmm/FoldJAX/bl
 uv run foldjax show out/                          # per-run table, for reading
 uv run foldjax show out/ --format csv > runs.csv  # one row per model/input/seed/sample
 uv run foldjax show out/ --format json --aggregate
+uv run foldjax show out/ --rank-by iptm           # ordered within each model only
 uv run foldjax compare out/                       # pairwise RMSD within each input
 ```
+
+Each run's manifest also records every chain's alignment depth and Neff (80%
+identity), which `show` prints.
 
 `foldjax.load_results(root)` and `foldjax.results_table(...)` return the same
 rows as `show --format csv|json`: identity, the common summary, native scores
@@ -292,6 +296,11 @@ spends most of its time compiling unless the shapes repeat.
   `foldjax cache gc` reports what could be reclaimed (`--apply` deletes).
 - `--keep-going`, `--resume` and `foldjax show --format csv` make a long batch
   restartable and readable as one table.
+- `foldjax msa prefetch jobs/` searches and caches every alignment ahead of
+  time, so the GPU batch never waits on (or needs) the MSA server;
+  `--msa-pairing`, a local ColabFold search wrapper (`foldjax msa wrapper`),
+  private template folders (`--templates DIR`) and `--preset fast` are in
+  [the CLI reference](https://github.com/eightmm/FoldJAX/blob/main/docs/cli.md#alignment-pairing-prefetch-private-templates-and-presets).
 
 ## Memory admission
 
