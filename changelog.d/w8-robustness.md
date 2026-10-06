@@ -111,3 +111,7 @@
   `input.py`; Boltz-2 and OpenFold3 also bind `template_search.py`, and
   OpenFold3 `_openfold3_compile.py`. Runs made before upgrading to this version
   are rerun rather than reused, once.
+- **ESMFold2 binds the `ccd.pkl` beside its checkpoint.** An
+  all-biomolecule job is featurized from it, and the run manifest recorded
+  only the checkpoint and its config; it is now recorded (as absent when it
+  is), so replacing or placing it reruns the job under `--resume`.

@@ -887,6 +887,12 @@ def _esmfold2_weight_assets(
     if not structure.is_file() or not config.is_file():
         return None
     paths.extend((structure, config))
+    # The CCD an all-biomolecule job is featurized from, beside the
+    # checkpoint (`ESMFold2Backend` binds it into the session the same way).
+    # Recorded as missing when absent, so placing one invalidates the run.
+    missing: list[Path] = []
+    ccd = root / "ccd.pkl"
+    (paths if ccd.exists() else missing).append(ccd)
     if request.options.get("no_language_model") is not True:
         configured = request.options.get("esmc_weights")
         try:
@@ -897,7 +903,7 @@ def _esmfold2_weight_assets(
         if selected_esmc is None:
             return None
         paths.extend(selected_esmc)
-    return paths, []
+    return paths, missing
 
 
 def _protenix_weight_assets(

@@ -842,3 +842,29 @@ def test_no_git_or_a_failing_git_records_none(
 
     monkeypatch.setattr(manifest.subprocess, "run", fail)
     assert manifest.source_describe() is None
+
+
+def test_esmfold2_binds_the_ccd_beside_its_checkpoint(tmp_path: Path) -> None:
+    """An all-biomolecule job is featurized from it, so resume must see it."""
+    from foldjax import manifest
+
+    root = tmp_path / "esmfold2"
+    root.mkdir()
+    (root / "model.safetensors").write_bytes(b"weights")
+    (root / "config.json").write_text("{}")
+    request = PredictionRequest(
+        model="esmfold2",
+        input=_job(tmp_path),
+        weights=root,
+        output_dir=tmp_path / "out",
+        seed=1,
+        use_compile_cache=False,
+        options={"no_language_model": True},
+    )
+
+    paths, missing = manifest._esmfold2_weight_assets(request)
+    assert root / "ccd.pkl" in missing and root / "ccd.pkl" not in paths
+
+    (root / "ccd.pkl").write_bytes(b"ccd")
+    paths, missing = manifest._esmfold2_weight_assets(request)
+    assert root / "ccd.pkl" in paths and not missing
