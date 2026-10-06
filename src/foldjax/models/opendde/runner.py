@@ -59,6 +59,7 @@ class PredictionConfig(NamedTuple):
     n_keys: int
     use_template: bool
     use_rna_msa: bool
+    use_tfg_guidance: bool
     max_msa_depth: int
     deterministic_ops: str
     diffusion_attention_backend: str
@@ -269,6 +270,8 @@ def _predict(
     rotations: Any = None,
     translations: Any = None,
     preserve_prefix_rng: bool = False,
+    guidance_config: Mapping[str, Any] | None = None,
+    guidance_features: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     import jax
 
@@ -436,6 +439,15 @@ def _predict(
         # The policy is a property of the compiled owner, and the eager entry
         # point has no such parameter -- it was refused above.
         **({"deterministic": deterministic} if graph_jit else {}),
+        # Eager only: the guided step is Python control flow per step.
+        **(
+            {}
+            if guidance_config is None
+            else {
+                "guidance_config": guidance_config,
+                "guidance_features": guidance_features,
+            }
+        ),
         **scans,
     )
 
@@ -548,6 +560,23 @@ def run_prediction(
         raise SystemExit("n-sample, n-step, and n-cycle must be positive")
     if config.cp_devices < 1:
         raise SystemExit("cp-devices must be positive")
+    guidance_config = None
+    if config.use_tfg_guidance:
+        # Upstream sets `sample_diffusion.guidance.enable` on its default
+        # mapping (`runner/batch_inference.py:487`), which is Protenix's.
+        if padding is not None:
+            raise SystemExit(
+                "padding with TFG guidance is not yet supported; use one or the other"
+            )
+        if config.cp_devices > 1 or config.deterministic_ops == "on":
+            raise SystemExit(
+                "TFG guidance runs the eager, unrolled sampler, which neither "
+                "context parallelism nor deterministic reductions can carry"
+            )
+        from foldjax.models.protenix.tfg.config import upstream_guidance_config
+
+        guidance_config = upstream_guidance_config()
+        print("TFG enabled: using the eager, non-scan diffusion sampler")
     for path, env_name, label in (
         (
             config.components_cif,
@@ -732,6 +761,17 @@ def run_prediction(
                     use_template=config.use_template,
                     use_rna_msa=config.use_rna_msa,
                 )
+                guidance_features = None
+                if guidance_config is not None:
+                    # From the dense featurizer output, before any storage
+                    # compaction below rewrites the arrays the potentials read.
+                    from foldjax.models.protenix.data.geometry import (
+                        prepare_tfg_features,
+                        require_supported_geometry,
+                    )
+
+                    guidance_features = prepare_tfg_features(features)
+                    require_supported_geometry(guidance_features)
                 features = compact_msa_storage(features)
                 output_features = (
                     None
@@ -899,8 +939,16 @@ def run_prediction(
                         "single_att_q_chunk_size": config.single_att_q_chunk_size,
                         "token_q_chunk_size": config.token_q_chunk_size,
                     },
-                    graph_jit=not config.no_graph_jit,
+                    graph_jit=not config.no_graph_jit and guidance_config is None,
                     deterministic=deterministic,
+                    **(
+                        {}
+                        if guidance_config is None
+                        else {
+                            "guidance_config": guidance_config,
+                            "guidance_features": guidance_features,
+                        }
+                    ),
                     cp_shards=config.cp_devices,
                     cp_layout=config.cp_layout,
                     cp_atom_windows=config.cp_atom_windows,

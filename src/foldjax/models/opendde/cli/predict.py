@@ -67,6 +67,15 @@ def main(
     _predict_flags.add_atom_neighbourhood(parser)
     parser.add_argument("--use-template", type=_boolean, default=False)
     parser.add_argument("--use-rna-msa", type=_boolean, default=False)
+    # Upstream's `--use_tfg_guidance` (`runner/batch_inference.py:848-853`),
+    # a value like the two switches above.
+    parser.add_argument(
+        "--use-tfg-guidance",
+        type=_boolean,
+        default=False,
+        help="training-free guidance with upstream's default guidance mapping; "
+        "runs the eager, unrolled sampler",
+    )
     _predict_flags.add_msa_depth(parser)
     _predict_flags.add_deterministic_ops(parser)
     _predict_flags.add_attention_backends(parser)

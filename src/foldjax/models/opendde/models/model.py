@@ -793,6 +793,11 @@ def opendde_infer_static(
     use_confidence_scan: bool = False,
     use_diffusion_scan: bool = False,
     use_sampler_scan: bool = False,
+    #: Upstream's training-free guidance mapping and the geometry features it
+    #: reads (`foldjax.models.protenix.data.geometry.prepare_tfg_features`).
+    #: Guidance needs this eager entry point and the unrolled sampler.
+    guidance_config: Mapping[str, Any] | None = None,
+    guidance_features: Mapping[str, Any] | None = None,
     use_diffusion_efficient_fusion: bool = False,
     diffusion_attention_backend: str = "xla_jit",
     trunk_single_attention_backend: str = "xla_jit",
@@ -1225,6 +1230,14 @@ def opendde_infer_static(
             use_scan=use_sampler_scan,
             atom_mask=atom_mask,
             preserve_prefix_rng=preserve_prefix_rng,
+            **(
+                {}
+                if guidance_config is None
+                else {
+                    "guidance_config": guidance_config,
+                    "guidance_features": guidance_features,
+                }
+            ),
         )
 
     # Denoise the samples a chunk at a time when there is more than one chunk
