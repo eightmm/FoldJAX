@@ -1813,7 +1813,8 @@ What an omitted setting runs, and how to name either side:
 triangle_kernel=cueq-pallas`) and `--option glu_backend=pallas` still name the
 kernels explicitly; off a GPU they refuse to run. On OpenFold3,
 `triangle_kernel=auto` is the omitted default in every column above -- and
-`xla` under context parallelism -- not a fixed kernel.
+`xla` under context parallelism -- not a fixed kernel. On Protenix it is the
+omitted trunk triangle attention too, not `cueq` (`cueq_jit`).
 
 Where each default is decided:
 

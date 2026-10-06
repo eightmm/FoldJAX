@@ -40,3 +40,7 @@
   lacks: the torch-archive prefetch and the ESMC cast-on-load size their
   thread pools with `os.process_cpu_count()` (the CPUs this process may use,
   Python 3.13+).
+- **Protenix `triangle_kernel=auto` is the omitted default** too. It pinned
+  `cueq_jit`, which also traces the triangle multiplication, where an omitted
+  run leaves the trunk triangle attention to the runner; `auto` now passes
+  nothing and shares the omitted cache namespace.

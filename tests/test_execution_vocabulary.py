@@ -177,14 +177,26 @@ def test_auto_resolves_to_the_fused_kernel_where_one_exists(request_with) -> Non
     run two different programs on two machines, which is how a benchmark ends
     up comparing kernels instead of models.
     """
-    for model, native in (
-        ("boltz2", "triangle_backend"),
-        ("protenix", "trunk_triangle_attention_backend"),
-    ):
-        resolved = get_backend(model).apply_sampling(
-            request_with(triangle_kernel="auto")
-        )
-        assert resolved[native] in ("cueq", "cueq_jit"), model
+    resolved = get_backend("boltz2").apply_sampling(
+        request_with(triangle_kernel="auto")
+    )
+    assert resolved["triangle_backend"] == "cueq"
+
+
+def test_protenix_auto_is_the_omitted_kernel(request_with) -> None:
+    """`auto` used to pin `cueq_jit`, which no omitted Protenix run selects.
+
+    An omitted trunk triangle attention reaches the runner as None and takes
+    the untraced multiplication; `cueq_jit` traces it too. `auto` now passes
+    nothing, so it is the omitted run and its cache namespace.
+    """
+    protenix = get_backend("protenix")
+    auto = request_with(triangle_kernel="auto")
+    assert "trunk_triangle_attention_backend" not in protenix.apply_sampling(auto)
+    assert protenix.cache_profile(auto) == protenix.cache_profile(request_with())
+    assert protenix.cache_profile(
+        request_with(triangle_kernel="cueq")
+    ) != protenix.cache_profile(request_with())
 
 
 @pytest.mark.parametrize("cp_devices", [1, 4])
