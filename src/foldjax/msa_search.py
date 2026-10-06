@@ -77,6 +77,19 @@ def _local_command(name: str) -> list[str] | None:
     return shlex.split(raw) if raw else None
 
 
+def remote_msa_server() -> tuple[str, str]:
+    """The remote MMseqs2 endpoint and its cache label, from the environment.
+
+    One reading for every caller that builds a `RemoteMMseqs2Client`, so a
+    port's own search helper honours the same variables as ``msa='auto'``.
+    """
+    host = os.environ.get(_MSA_SERVER_ENV, _DEFAULT_MSA_SERVER).strip()
+    if not host:
+        raise ValueError(f"{_MSA_SERVER_ENV} is set to an empty value")
+    version = os.environ.get(_MSA_VERSION_ENV, "").strip() or _DEFAULT_MSA_VERSION
+    return host, version
+
+
 def _msa_pipeline() -> Any:
     """The protein search: a local wrapper when configured, else the server."""
     from foldjax.paths import msa_cache_dir
@@ -97,12 +110,7 @@ def _msa_pipeline() -> Any:
             options={"command": command},
         )
 
-    host = os.environ.get(_MSA_SERVER_ENV, _DEFAULT_MSA_SERVER).strip()
-    if not host:
-        raise ValueError(f"{_MSA_SERVER_ENV} is set to an empty value")
-    remote_version = (
-        os.environ.get(_MSA_VERSION_ENV, "").strip() or _DEFAULT_MSA_VERSION
-    )
+    host, remote_version = remote_msa_server()
     return MsaSearchPipeline(
         msa_cache_dir(),
         RemoteMMseqs2Client(host, version=remote_version),
