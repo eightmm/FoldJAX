@@ -12,12 +12,17 @@
   (`complete` runs `paircomplete`; both accepted, no longer refused). Each
   chain's block is written to `msa/entity_NNNN_pairing.a3m` the way upstream
   Protenix writes it (`>UniRef100_<accession>_<row>/...`), so the species is
-  the row number and row *i* of every chain is paired. Blocks of different
-  depths are refused, and a caller's `paired_msa` is passed through untouched.
-  This changes predictions: heteromers gain paired rows. A monomer or homomer
-  no longer reads a per-chain pairing alignment, as in upstream Protenix's
-  ColabFold mode. Upstream OpenDDE keeps the server's headers and so pairs
-  nothing; FoldJAX gives OpenDDE Protenix's reading.
+  the row number and row *i* of every chain is paired. A caller's
+  `paired_msa` is passed through untouched. This changes predictions:
+  heteromers gain paired rows. A monomer or homomer no longer reads a
+  per-chain pairing alignment, as in upstream Protenix's ColabFold mode, and
+  neither does a heteromer searched by a local wrapper
+  (`FOLDJAX_MSA_COMMAND`), which cannot pair a complex and now says so. Upstream
+  OpenDDE keeps the server's headers and so pairs nothing; FoldJAX gives
+  OpenDDE Protenix's reading.
+- A complex pairing search whose blocks differ in depth is refused before it is
+  cached (any model): `msa="required"` fails, `auto` folds without the pairing
+  and warns.
 
 ### Changed
 

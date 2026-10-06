@@ -719,6 +719,18 @@ class MsaSearchPipeline:
                     "paired MSA query does not match requested protein sequence: "
                     f"expected {sequence!r}, got {query!r}"
                 )
+        # Row i of every block is one paired row (the server pads a chain with
+        # no hit in a row with gaps); blocks of different depths cannot be
+        # paired by number, and OpenFold3 refuses them outright.
+        depths = {
+            sum(1 for line in content.splitlines() if line.startswith(">"))
+            for content in payload.paired
+        }
+        if len(depths) > 1:
+            raise SearchError(
+                "complex pairing returned blocks of different depths "
+                f"({sorted(depths)} rows), so its rows cannot be paired by number"
+            )
         temp_dir = staging_directory(self.cache_dir, cache_key)
         try:
             files: dict[str, dict[str, Any]] = {}

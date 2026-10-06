@@ -180,8 +180,11 @@ writes its `pairing.a3m` (`web_service/colab_request_utils.py`): the query as
 `>query` and every hit as `>UniRef100_<accession>_<row>/...`, so the species is
 the row number and row *i* of every chain is paired. Upstream OpenDDE submits
 the same search but keeps the server's headers, so its released code pairs no
-rows; FoldJAX gives OpenDDE Protenix's reading. Blocks of different depths are
-refused. A `paired_msa` you supply is passed through untouched. AlphaFold 3
+rows; FoldJAX gives OpenDDE Protenix's reading. A complex search whose blocks
+differ in depth is refused before it is cached (`required` fails, `auto` folds
+without the pairing and warns), and a local wrapper, which cannot pair a
+complex, delivers no pairing alignment to any of these four models. A
+`paired_msa` you supply is passed through untouched. AlphaFold 3
 re-pairs by the UniProt species in each header and has no upstream reader of
 ColabFold output, so `greedy`/`complete` is refused for it, and its per-chain
 alignment pairs no rows of a heteromer either (only the query row); DeepMind's

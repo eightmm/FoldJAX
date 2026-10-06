@@ -281,8 +281,16 @@ def test_blocks_of_different_depths_are_refused(tmp_path: Path, stub, monkeypatc
         )
 
     monkeypatch.setattr(stub, "search_complex", uneven)
+    job = _job(tmp_path, SEQUENCE, OTHER)
     with pytest.raises(ValueError, match="different depths"):
-        _materialize(_job(tmp_path, SEQUENCE, OTHER), "protenix", tmp_path / "out")
+        _materialize(job, "protenix", tmp_path / "required", msa="required")
+    # `auto` is a convenience: it folds without the pairing, and says so.
+    with pytest.warns(UserWarning, match="different depths"):
+        path = _materialize(job, "protenix", tmp_path / "auto")
+    chains = _chains(json.loads(path.read_text()))
+    assert all("pairedMsaPath" not in chain for chain in chains)
+    assert all(chain["unpairedMsaPath"] for chain in chains)
+    assert not list((tmp_path / "msa-cache").glob("*/pair_000.a3m"))
 
 
 def test_alphafold3_keeps_its_per_chain_alignment_and_refuses_complex(

@@ -1887,31 +1887,18 @@ def _protenix_row_paired(
 ) -> dict[int, str]:
     """Write each searched complex block as `row_species_a3m`; entity index -> path.
 
-    Every block of one complex has the same rows -- the server pads a chain
-    with no hit in a row with gaps -- and pairing by row number is only right
-    if that holds, so a block of another depth is refused rather than paired
-    off by one.
+    The search refused blocks of different depths before caching them
+    (`MsaSearchPipeline._complex_materialize`), so row *i* is one paired row.
     """
     from foldjax.msa_search import ROW_PAIRED_MSA
 
-    marked = [
-        (index, entity)
-        for index, entity in enumerate(job["entities"])
-        if entity.get(ROW_PAIRED_MSA) and entity.get("paired_msa")
-    ]
-    if not marked:
-        return {}
     texts = {
         index: Path(_path(entity["paired_msa"], base)).read_text(encoding="utf-8")
-        for index, entity in marked
+        for index, entity in enumerate(job["entities"])
+        if entity.get(ROW_PAIRED_MSA) and entity.get("paired_msa")
     }
-    depths = {index: len(_a3m_records(text)) for index, text in texts.items()}
-    if len(set(depths.values())) > 1:
-        raise ValueError(
-            "a complex pairing search returned blocks of different depths "
-            f"({sorted(set(depths.values()))} rows), so its rows cannot be "
-            "paired by number"
-        )
+    if not texts:
+        return {}
     msa_root = destination / "msa"
     if msa_root.is_symlink():
         raise ValueError(f"generated MSA directory is a symlink: {msa_root}")
