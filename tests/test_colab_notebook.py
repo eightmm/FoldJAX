@@ -969,7 +969,18 @@ def test_colab_configures_accelerator_specific_kernels(
         "PERSIST_COMPILE_CACHE_TO_DRIVE",
     ):
         source = source.replace(f"{setting} = True", f"{setting} = False")
-    monkeypatch.delenv("XLA_PYTHON_CLIENT_MEM_FRACTION", raising=False)
+    # Every variable the cell writes. `delenv` on an unset name records
+    # nothing to undo, so setting first is what makes the cell's write go
+    # away after the test instead of reaching every later one.
+    for name in (
+        "BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND",
+        "FOLDJAX_HOME",
+        "PROTENIX_TRIANGLE_BACKEND",
+        "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND",
+        "XLA_PYTHON_CLIENT_MEM_FRACTION",
+    ):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
     namespace = {
         "ACCELERATOR_KIND": accelerator,
         "GPU_COMPUTE_CAPABILITY": gpu_capability,
