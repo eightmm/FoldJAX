@@ -126,23 +126,25 @@ def test_boltz2_runner_identity_names_the_realised_multiplication(
 
 
 @pytest.mark.parametrize(
-    "backend, released, flips",
+    "backend, released, flips, off_gpu",
     [
-        (Boltz2Backend, "tokamax", True),
-        (ProtenixBackend, "xla", False),
-        (OpenFold3Backend, "xla", True),
+        # Boltz-2's released fused GLU cannot run off a GPU, so an omitted
+        # option there realises the unfused `xla`.
+        (Boltz2Backend, "tokamax", True, "xla"),
+        (ProtenixBackend, "xla", False, "xla"),
+        (OpenFold3Backend, "xla", True, "xla"),
     ],
     ids=["boltz2", "protenix", "openfold3"],
 )
 def test_cache_profile_records_the_realised_glu(
-    tmp_path: Path, gpu, backend, released, flips
+    tmp_path: Path, gpu, backend, released, flips, off_gpu
 ) -> None:
     adapter = backend()
 
     def profile(**options):
         return adapter.cache_profile(_request(tmp_path, backend.name, **options))
 
-    realised = "pallas" if gpu and flips else released
+    realised = ("pallas" if flips else released) if gpu else off_gpu
     omitted = profile()
     assert omitted.get("glu_backend") == (None if realised == released else realised)
     # The realised value spelled out names the omitted run's namespace.
@@ -215,7 +217,8 @@ def _boltz2_native_options(tmp_path: Path, monkeypatch, **options) -> dict:
 @pytest.mark.parametrize(
     "options, on_gpu, on_cpu",
     [
-        ({}, "pallas", "tokamax"),
+        # Off a GPU the released fused GLU cannot run, so omission is `xla`.
+        ({}, "pallas", "xla"),
         ({"glu_backend": "tokamax"}, "tokamax", "tokamax"),
         ({"glu_backend": "xla"}, "xla", "xla"),
         # Under a mesh the native API resolves the released `tokamax` to `xla`.

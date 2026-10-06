@@ -624,6 +624,12 @@ def test_pair_residual_namespace_records_the_width_not_the_spelling(
 def test_released_default_cache_aliases_reuse_one_native_runner(
     tmp_path: Path, monkeypatch
 ) -> None:
+    from foldjax.models import _pallas_pair
+
+    # Off a GPU the adapter realises an omitted GLU as `xla`, not the native
+    # API's released `tokamax`, which cannot run there; the adapter-level
+    # spelling below is therefore `xla`, while the native calls keep theirs.
+    monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: False)
     # Exercise publisher-native defaults; the common adapter now defaults to 5.
     request = dataclasses.replace(_request(tmp_path), num_recycles=3)
     explicit = dataclasses.replace(
@@ -641,7 +647,7 @@ def test_released_default_cache_aliases_reuse_one_native_runner(
             "compute_dtype": "bfloat16",
             "attention_backend": "xla",
             "triangle_backend": "cueq",
-            "glu_backend": "tokamax",
+            "glu_backend": "xla",
             "pair_residual_dtype": "auto",
             "msa_deletions": "released",
         },

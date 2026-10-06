@@ -513,14 +513,22 @@ def _realised_glu_backend(value: object, options: Mapping[str, Any]) -> object:
     reading of the shard count -- the one `validate_native_options` refuses a
     named fused GLU on. Under a mesh an omitted option stays `tokamax`, which
     the native API resolves to `xla` (`api.py`, at `"glu_backend"`).
+
+    Off a GPU an omitted option is `xla`, not the released `tokamax`: the
+    fused GLU is a Triton kernel and refuses to run there (`models/_glu.py`),
+    so the released value would fail every CPU run that never named a GLU.
+    An explicit `tokamax` is still returned as written and still refused.
     """
 
     devices = options.get("cp_devices", 1)
-    return realised_glu_backend(
-        value,
-        released=str(_RELEASED_COMPILE_DEFAULTS["glu_backend"]),
-        serial=not (type(devices) is int and devices > 1),
-    )
+    serial = not (type(devices) is int and devices > 1)
+    released = str(_RELEASED_COMPILE_DEFAULTS["glu_backend"])
+    realised = realised_glu_backend(value, released=released, serial=serial)
+    if value is None and serial and realised == released:
+        # `realised_glu_backend` returns `pallas` for this case on a GPU, so
+        # the released value here means the process has no GPU.
+        return "xla"
+    return realised
 
 
 def _realised_triangle_attention_grid(grid: object) -> str:

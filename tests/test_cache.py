@@ -401,8 +401,13 @@ def test_alphafold3_autotuning_miss_policies_share_one_cache_namespace(
 
 
 def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch
 ) -> None:
+    from foldjax.models import _pallas_pair
+
+    # Off a GPU an omitted GLU realises `xla` (the released fused `tokamax`
+    # cannot run there), so that is the spelling that shares its namespace.
+    monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: False)
     backend = Boltz2Backend()
     omitted = _request(tmp_path)
     native = dataclasses.replace(
@@ -425,7 +430,7 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
             "diffusion_attention_backend": "tokamax",
             "diffusion_compute_dtype": "float32",
             "triangle_backend": "cueq",
-            "glu_backend": "tokamax",
+            "glu_backend": "xla",
             "pair_residual_dtype": "auto",
             "matmul_precision": "high",
         },
@@ -444,7 +449,7 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
             "dtype": "bfloat16",
             "attention_kernel": "auto",
             "triangle_kernel": "auto",
-            "glu_backend": "tokamax",
+            "glu_backend": "xla",
             "matmul_precision": "high",
         },
     )
@@ -469,6 +474,7 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
         "pair_residual_dtype": "bfloat16",
         "diffusion_chunk_size": None,
         "affinity_diffusion_chunk_size": None,
+        "glu_backend": "xla",
         "matmul_precision": "high",
     }
     assert backend.cache_profile(native) == backend.cache_profile(omitted)
@@ -792,7 +798,9 @@ def test_boltz2_ring_namespace_records_the_body_not_the_spelling(
         ({}, {"diffusion_attention_backend": "xla"}),
         ({}, {"diffusion_compute_dtype": "bfloat16"}),
         ({}, {"triangle_backend": "xla"}),
-        ({}, {"glu_backend": "xla"}),
+        # An omitted GLU is `pallas` on a GPU and `xla` off one, so the
+        # spelling distinct from it on every platform is the released fused one.
+        ({}, {"glu_backend": "tokamax"}),
         # The token-attention block changes the compiled program for every
         # shape above the rung floor, so a pinned width must not be answered
         # out of the default rung's cache entry.
