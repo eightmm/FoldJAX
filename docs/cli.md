@@ -186,7 +186,7 @@ where it wrote it; nothing in FoldJAX reads it back.
 
 | field | meaning |
 |---|---|
-| `schema_version` | `"1.0"`; see compatibility below |
+| `schema_version` | `"1.1"`; see compatibility below |
 | `model`, `seed`, `sample`, `native_rank`, `job` | which structure this is |
 | `scores` | the model's own scalar scores under its own names, unchanged; boolean flags such as `has_clash` as 0/1 |
 | `summary` | `plddt` (0-100), `ptm`, `iptm`, `ranking`: see below |
@@ -233,7 +233,12 @@ shipped in the package, `foldjax/schemas/confidence.schema.json` and
 `foldjax/schemas/run.schema.json` (`foldjax.summary.load_schema`).
 **Compatibility:** a minor version only adds optional fields, so a reader for
 `1.x` accepts any `1.y` and ignores fields it does not know; removing, renaming
-or reinterpreting a field is a new major version.
+or reinterpreting a field is a new major version. `1.1` declares fields 1.0
+files already carried without the schema naming them -- the manifest's
+`msa_search`, `weights.kind` and `weights.stat_signature`, and AlphaFold 3's
+per-sample `metadata.native_sample` -- and moves both files' version together.
+A `1.0` run directory still validates and still resumes: resume reads `schema`,
+not `schema_version`.
 
 Reading a directory back:
 
