@@ -54,15 +54,18 @@ def _request(tmp_path: Path, **options) -> PredictionRequest:
 def _adapter_overrides(tmp_path: Path, monkeypatch, **options) -> dict:
     seen: dict = {}
 
-    def predict_job(key, chains, alignments, model, **overrides):
+    def predict(key, model_features, model, **overrides):
         seen.update(overrides)
-        return object(), object()
+        return object()
 
     modules = {
         "foldjax.models.esmfold2.inference": SimpleNamespace(
             load=lambda *args, **kwargs: SimpleNamespace(has_language_model=True),
             seed_key=lambda seed: seed,
-            predict_job=predict_job,
+            build_common_job_features=lambda document, **kwargs: {
+                "asym_id": np.asarray([[0]])
+            },
+            predict=predict,
         ),
         "foldjax.models.esmfold2.output": SimpleNamespace(
             write_prediction_outputs=lambda *args, **kwargs: {
