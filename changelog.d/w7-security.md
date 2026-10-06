@@ -39,6 +39,9 @@
   host it named, `http://` included, and requests strips only `Authorization`.
   A server job id must be `[A-Za-z0-9_-]+` before it is put in a URL, and one
   response or result-archive member is capped at 1 GiB.
+- **A weight download stops at its registered size.** A server that sent more
+  than the registry's byte count was written to disk until it stopped; the
+  download now fails at the first byte past it and discards the prefix.
 - **A cached template mmCIF is checked before it is used.** A downloaded or
   unpacked structure must name the requested PDB id in its data block (and
   parse, where gemmi is installed); one that does not is fetched or unpacked

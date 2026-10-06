@@ -1830,6 +1830,36 @@ def test_a_complete_download_is_kept(tmp_path: Path, monkeypatch) -> None:
     assert written.read_bytes() == b"x" * 40
 
 
+def test_a_body_longer_than_the_registered_size_stops_at_that_size(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A server that keeps sending must not fill the disk past the file."""
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    item = assets.Download(name="w.bin", url="https://example.invalid/w.bin", size=40)
+    written: list[int] = []
+
+    class _Endless:
+        headers: dict[str, str] = {}
+
+        def read(self, size):
+            written.append(size)
+            if len(written) > 100:
+                raise AssertionError("the stream was read past its registered size")
+            return b"x" * 16
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(assets.urllib.request, "urlopen", lambda *a, **k: _Endless())
+    with pytest.raises(ValueError, match="more than its registered 40 bytes"):
+        assets.download(item, "protenix")
+    assert not list(tmp_path.rglob("*.part"))
+    assert not list(tmp_path.rglob("w.bin"))
+
+
 def test_a_dropped_connection_is_retried(tmp_path: Path, monkeypatch) -> None:
     """Several GB of progress should not be lost to one transient failure."""
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
