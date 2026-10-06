@@ -856,7 +856,11 @@ def _validate(
             )
 
     if job.get("bonds") and "bonds" not in target.features:
-        _reject(model, "bonds", "its featurizer never applies covalent bonds, upstream or here")
+        _reject(
+            model,
+            "bonds",
+            "its featurizer never applies covalent bonds, upstream or here",
+        )
     _bonds(job, chains)
     if job.get("properties") and "affinity" not in target.features:
         _reject(
