@@ -641,6 +641,60 @@ def test_plan_json_adds_the_slurm_block(tmp_path: Path, capsys) -> None:
     assert payload["slurm"]["tokens_estimate"] == 54
 
 
+@pytest.mark.parametrize(
+    "inputs",
+    [
+        ["--sequence", "MKTAYIAKQR"],
+        ["--input", "jobs.json", "--shard", "0/2"],
+        ["--input", "jobs.json"],
+    ],
+    ids=["sequence", "shard", "jobs-file"],
+)
+def test_plan_json_writes_nothing_to_the_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, inputs: list[str]
+) -> None:
+    home = tmp_path / "home"
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    sequences = ("MKTAYIAKQR", "MKTAYIAKQRQ", "MKTAYIAKQRQQ")
+    (tmp_path / "jobs.json").write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        "name": name,
+                        "entities": [{"type": "protein", "id": "A", "sequence": s}],
+                    }
+                    for name, s in zip("abc", sequences, strict=True)
+                ]
+            }
+        )
+    )
+    weights = tmp_path / "w.safetensors"
+    weights.write_bytes(b"x")
+    monkeypatch.chdir(workdir)
+    inputs = [str(tmp_path / v) if v == "jobs.json" else v for v in inputs]
+    argv = ["plan", "--model", "esmfold2", *inputs, "--weights", str(weights)]
+    assert cli.main([*argv, "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    runs = payload if isinstance(payload, list) else [payload]
+    assert sorted(p for p in home.rglob("*")) == []
+    assert list(workdir.iterdir()) == []
+    # The slurm block still read each generated document before it went away.
+    assert sorted(run["slurm"]["tokens_estimate"] for run in runs) == sorted(
+        len(s)
+        for s in (
+            sequences[:1]
+            if "--sequence" in inputs
+            else sequences[::2]
+            if "--shard" in inputs
+            else sequences
+        )
+    )
+    assert all(run["input"].startswith(str(home / "runtime" / "jobs")) for run in runs)
+
+
 # -------------------------------------------------------------- frame, check
 
 

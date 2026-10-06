@@ -204,11 +204,13 @@ def _emit(text: str, out: Path | None) -> None:
     print(str(out))
 
 
-def prepare(args: argparse.Namespace) -> None:
+def prepare(args: argparse.Namespace, *, jobs_root: Path | None = None) -> None:
     """Apply ``--shard`` and the ``--structure-format pdb`` pre-flight.
 
     Runs before `foldjax.cli` builds the request, so a shard is just a
     smaller batch and a job PDB cannot hold is refused before any GPU time.
+    A shard's multi-job files go below ``jobs_root`` (`plan`'s scratch), or
+    the store's ``runtime/jobs`` when it is None.
     """
     if args.command not in {"predict", "plan"}:
         return
@@ -222,7 +224,9 @@ def prepare(args: argparse.Namespace) -> None:
         expanded = expand_input_directories(
             [Path(p) for p in args.input], suffixes=cli._JOB_SUFFIXES
         )
-        selected, summary = slurm.shard_inputs(expanded, index, count)
+        selected, summary = slurm.shard_inputs(
+            expanded, index, count, jobs_root=jobs_root
+        )
         print(
             f"[foldjax] shard {index}/{count}: {summary['units_in_shard']} of "
             f"{summary['units_total']} unit(s)",
@@ -349,8 +353,6 @@ def dispatch(args: argparse.Namespace) -> int | None:
         )
         print(json.dumps({key: str(value) for key, value in written.items()}, indent=2))
         return 0
-    if command == "plan" and args.json:
-        return _plan(args)
     return None
 
 
@@ -426,23 +428,6 @@ def _render_screen(table: list[dict[str, Any]]) -> str:
             f"{fmt(row.get('score.affinity_probability_binary')):>11s}"
         )
     return "\n".join(lines).lstrip("\n")
-
-
-def _plan(args: argparse.Namespace) -> int:
-    from foldjax import cli, slurm
-    from foldjax.api import resolve_requests
-    from foldjax.redaction import public_options
-
-    requested = cli._request(args)
-    resolved = resolve_requests(requested, draw_seeds=False)
-    payload = []
-    for item in resolved:
-        summary = cli._plan_summary(item)
-        summary["slurm"] = slurm.plan_slurm(summary, public_options(item.options) or {})
-        payload.append(summary)
-    plural = requested.models is not None or requested.inputs is not None
-    print(json.dumps(payload if plural else payload[0], indent=2, sort_keys=True))
-    return 0
 
 
 def finish_predict(args: argparse.Namespace, results: Any) -> int:

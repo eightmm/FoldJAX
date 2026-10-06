@@ -55,7 +55,8 @@ that is the spelling of the port's native CLI (`protenix-jax-predict`,
 `opendde-jax-predict`); through `foldjax predict` the same setting is
 `--option` with underscores, for example `--option amp_policy=upstream`.
 An option a backend does not accept is refused by name, and `foldjax plan`
-checks a spelling without running anything. Seeds fan out the same way — `--seeds 0 1 2` (or `--seed 0
+checks a spelling without running anything or writing into the store (with or
+without `--json` and `--shard`). Seeds fan out the same way — `--seeds 0 1 2` (or `--seed 0
 --num-seeds 3`) runs the job once per seed into `seed_<n>` directories and
 returns every structure together.
 
