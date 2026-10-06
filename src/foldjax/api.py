@@ -1269,6 +1269,7 @@ def _predict_once(
     try:
         with (
             timeline.stage("predict"),
+            timeline.recording(),
             compilation_cache_scope(request.cache_dir),
         ):
             result = backend.predict(request)
@@ -1321,6 +1322,10 @@ def _predict_once(
         # an alignment search, a cold compile, or the sample schedule, and those
         # call for three different responses.
         "phases": timeline.summary(),
+        # Inside those phases: weight load, featurize, the compiler's trace,
+        # lower, compile and cache restore, and the remainder that is
+        # execution (`progress.Timeline.breakdown`).
+        "breakdown": timeline.breakdown(),
     }
     # Backends own their native layout, but the common result always reports
     # the directory this scalar request actually ran in.

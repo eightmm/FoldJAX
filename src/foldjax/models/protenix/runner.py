@@ -27,7 +27,7 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
-from foldjax import memory_policy
+from foldjax import memory_policy, progress
 from foldjax.models import _representations
 from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models.protenix.amp_policy import (
@@ -610,15 +610,16 @@ def _run(
                     from foldjax.models.protenix.data.search import apply_rna_msa_paths
 
                     job = apply_rna_msa_paths(job, rna_msa_pipeline)
-                features = featurize_protein_json(
-                    job,
-                    base_dir=config.input_json.parent,
-                    n_queries=config.n_queries,
-                    n_keys=config.n_keys,
-                    max_msa_depth=config.max_msa_depth,
-                    use_rna_msa=config.use_rna_msa,
-                    use_template=config.use_template,
-                )
+                with progress.part("featurize"):
+                    features = featurize_protein_json(
+                        job,
+                        base_dir=config.input_json.parent,
+                        n_queries=config.n_queries,
+                        n_keys=config.n_keys,
+                        max_msa_depth=config.max_msa_depth,
+                        use_rna_msa=config.use_rna_msa,
+                        use_template=config.use_template,
+                    )
                 language_model_profile = None
                 if esm_provider is not None and padding_config is not None:
                     from foldjax.padding import (
@@ -674,9 +675,10 @@ def _run(
                             target_length=language_model_target,
                         )
 
-                    features = add_esm_embeddings(
-                        esm_features, job, provider=provider
-                    )
+                    with progress.part("language model"):
+                        features = add_esm_embeddings(
+                            esm_features, job, provider=provider
+                        )
                     features["residue_index"] = esm_features["residue_index"] + 1
                     # ``dict(features)`` shares every dense atom-category array.
                     # The loop's final temporary would otherwise retain them

@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from foldjax import progress
 from foldjax.manifest import path_stat_identity
 from foldjax.schema import PredictionError
 
@@ -172,7 +173,8 @@ class PreparedWeightSession:
         """Load once, pre-evicting an incompatible tree before replacement."""
 
         if not self._active:
-            return loader(path)
+            with progress.part("weight load"):
+                return loader(path)
         source, snapshot = self._anchor(path)
         key = (source, snapshot, prepare_key)
         cached = self._cached
@@ -184,7 +186,8 @@ class PreparedWeightSession:
             # the replacement loader constructs another one.
             del cached
 
-        value = loader(path)
+        with progress.part("weight load"):
+            value = loader(path)
         after = _file_snapshot(path)
         if snapshot is None or after is None:
             return value

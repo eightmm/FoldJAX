@@ -18,7 +18,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from foldjax import memory_policy
+from foldjax import memory_policy, progress
 from foldjax.cache import PERSISTENT_CACHE_MIN_COMPILE_SECS, trusted_compile_cache_dir
 from foldjax.models import _representations
 from foldjax.models._feature_storage import compact_msa_storage
@@ -113,7 +113,8 @@ def _load_jobs(path: Path) -> list[dict[str, Any]]:
 def _featurize(job: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     from foldjax.models.opendde.data.featurize_json import featurize_opendde_json
 
-    return featurize_opendde_json(job, **kwargs)
+    with progress.part("featurize"):
+        return featurize_opendde_json(job, **kwargs)
 
 
 def _load_weights(path: Path) -> Any:
