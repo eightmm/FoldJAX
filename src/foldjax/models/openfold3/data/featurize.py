@@ -11,6 +11,10 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
+from foldjax.models.openfold3.data.pocket_constraints import (
+    POCKET_SAMPLING_ARRAY_FEATURES,
+)
+
 # Every feature `predict` reads. Kept explicit so a featurizer that silently stops
 # producing one fails a test rather than surfacing as a shape error much later.
 MODEL_FEATURES = (
@@ -233,17 +237,6 @@ def _featurize_query(
             "featurizer does not apply them; remove the bonds or use a backend "
             "that supports covalent connectivity"
         )
-    if query.pocket_constraint is not None:
-        # Upstream reads the constraint only in its sampler: a second diffusion
-        # rollout seeded from pocket-placed ligand proposals
-        # (core/model/structure/diffusion_module.py:424-480, pocket_constraints.py).
-        raise ValueError(
-            f"{query_id!r} declares pocket_constraint, which OpenFold3 v0.5.0 "
-            "applies as pocket-guided diffusion sampling; this port's sampler "
-            "does not implement it, so remove the constraint rather than fold "
-            "without it"
-        )
-
     try:
         from foldjax.models.openfold3._upstream.openfold3.projects.of3_all_atom.config.dataset_config_components import (  # noqa: E501
             MSASettings,
@@ -523,6 +516,7 @@ _TOKEN_AXES: dict[str, tuple[int, ...]] = {
 }
 
 _ATOM_AXES: dict[str, tuple[int, ...]] = {
+    **{name: (-1,) for name in POCKET_SAMPLING_ARRAY_FEATURES},
     "atom_mask": (-1,),
     "atom_to_token_index": (-1,),
     "ref_atom_name_chars": (-3,),

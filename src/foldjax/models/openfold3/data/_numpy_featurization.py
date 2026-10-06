@@ -1281,6 +1281,9 @@ def featurize_query_numpy(
         get_token_count,
         tokenize_atom_array,
     )
+    from foldjax.models.openfold3.data.pocket_constraints import (
+        create_pocket_sampling_features,
+    )
 
     # Upstream's RDKit conformer helper draws its embedding seed from Python's
     # module-level RNG.  Scope that draw to the public seed while restoring the
@@ -1317,6 +1320,15 @@ def featurize_query_numpy(
             n_tokens,
             ccd_file_path=ccd_file_path,
             lazy_empty_pair_features=lazy_empty_template_pairs,
+        )
+    )
+    # Last, as upstream's ``create_all_features`` does; ``{}`` without a
+    # pocket_constraint. Its RDKit conformers use their own fixed seed.
+    features.update(
+        create_pocket_sampling_features(
+            query=query,
+            atom_array=atom_array,
+            processed_reference_molecules=processed_reference_molecules,
         )
     )
     return RawFeatures(features=features, atom_array=atom_array)

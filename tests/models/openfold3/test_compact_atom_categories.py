@@ -661,6 +661,8 @@ def test_managed_raw_and_archive_paths_compact_only_the_model_copy(
         OPTIONAL_MODEL_FEATURES=(),
         PRIVATE_MODEL_FEATURES=(),
         COMPACT_MSA_PRIVATE_FEATURES=(),
+        POCKET_SAMPLING_FEATURES=(),
+        pocket_sampling_config=lambda batch: None,
         load_feature_archive=load_feature_archive,
         featurize_query_with_metadata=featurize_query_with_metadata,
         has_compact_zero_template_pair_features=lambda batch: False,

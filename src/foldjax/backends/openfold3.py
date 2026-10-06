@@ -783,9 +783,14 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
                     *model_feature_names,
                     *optional_feature_names,
                     *private_feature_names,
+                    # A query's pocket_constraint; kept from archives too, so
+                    # an archived pocket query does not fold unconstrained.
+                    *data.POCKET_SAMPLING_FEATURES,
                 )
                 if name in features
             }
+        # Static settings of upstream's pocket-guided sampling, or None.
+        pocket_sampling = data.pocket_sampling_config(features)
         n_token = features["token_mask"].shape[-1]
         n_atom = features["atom_mask"].shape[-1]
 
@@ -832,6 +837,26 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         cp_layout = options.pop("cp_layout", None)
         if cp_layout is not None:
             overrides["cp_layout"] = str(cp_layout)
+        if pocket_sampling is not None:
+            # The refinement lives in the unstreamed program only, and its
+            # proposal search has not been run on a mesh. Refused rather than
+            # folded without the constraint.
+            blocked = [
+                name
+                for name, active in (
+                    ("padding", request.padding is not None),
+                    ("cp_devices > 1", int(overrides.get("cp_shards", 1)) > 1),
+                )
+                if active
+            ]
+            if blocked:
+                raise ValueError(
+                    "this OpenFold3 query declares pocket_constraint, whose "
+                    "pocket-guided sampling cannot be combined with "
+                    f"{' or '.join(blocked)}; drop that option, or remove the "
+                    "constraint to fold without it"
+                )
+            overrides["pocket_sampling"] = pocket_sampling
         atom_windows = options.pop("cp_atom_windows", None)
         if atom_windows is not None:
             overrides["cp_atom_windows"] = _strict_boolean(
@@ -1135,6 +1160,8 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         }
         if shape_profile is not None:
             raw["padding"] = shape_profile
+        if pocket_sampling is not None:
+            raw["pocket_sampling"] = pocket_sampling._asdict()
         # Saved before the structures because a trunk-only run has no
         # structures: the archive is the whole product of that graph.
         _representations.save(

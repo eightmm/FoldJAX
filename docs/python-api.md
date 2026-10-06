@@ -317,10 +317,17 @@ the dialect lacks the field, and the native-only inputs the port consumes --
 `multi_residue_ligand` (glycans as several CCD codes; all but OpenFold3, whose
 v0.5.0 release raises on them, and ESMFold2),
 `user_ccd` (AlphaFold 3), `ligand_file` (Protenix, OpenDDE),
-`pocket_constraints` and `contact_constraints` (Boltz-2, Protenix), and
+`contact_constraints` (Boltz-2, Protenix), and
 `cyclic_polymer` (Boltz-2, OpenFold3). These are reachable only through native
 input. Templates are the case that matters: backend support does not imply
-that every input route honors a per-job template.
+that every input route honors a per-job template. `pocket_constraints` is a
+common feature for Boltz-2, Protenix and OpenFold3: `Job(...,
+pockets=[Pocket("L", [("A", 2), ("A", 5)], max_distance=None)])` writes the
+common `constraints` field, `max_distance=None` takes each model's upstream
+default, and the manifest's `constraints` records the value used
+(`docs/input.md`, "Pocket constraints"). On OpenDDE it is dropped and recorded
+under `ignored_constraints` like a native constraint; AlphaFold 3 and ESMFold2
+refuse it.
 Its `input_requirements` mapping distinguishes
 dependencies by input format — for example, OpenFold3's `openfold3-features` archive is JAX-only,
 while its raw `native`, `openfold3`, and `foldjax` formats require the

@@ -33,6 +33,7 @@ from foldjax.input import (
     IGNORE_CONSTRAINTS,
     IGNORE_NUCLEIC_MSA,
     IGNORE_TEMPLATES,
+    accepts_ignore_constraints,
     expand_jobs_file,
     is_jobs_document,
     is_jobs_file,
@@ -1163,9 +1164,14 @@ def _predict_once(
     # What `templates="auto"` searched, per chain; None when nothing was asked
     # to search, so the manifest keeps "not searched" apart from "found none".
     template_search: list[dict[str, Any]] | None = None
+    # A common job's pocket constraints: each as written into the native input,
+    # with the distance it runs at, and any dropped as upstream drops them.
+    constraints: list[dict[str, Any]] | None = None
+    common_ignored_constraints: list[dict[str, Any]] = []
     if request.input_format == "foldjax":
         ignored_msas = []
         ignored_templates = []
+        constraints = []
         if request.templates == "auto":
             template_search = []
         with timeline.stage("prepare input"):
@@ -1182,6 +1188,8 @@ def _predict_once(
                     templates=request.templates,
                     template_max_date=request.template_max_date,
                     template_search=template_search,
+                    ignored_constraints=common_ignored_constraints,
+                    constraints=constraints,
                 )
             except (ValueError, FileNotFoundError) as error:
                 # The generated document is an implementation detail; the
@@ -1209,15 +1217,17 @@ def _predict_once(
         raise ValueError(
             f"{backend.name} does not support input format {request.input_format!r}"
         )
-    # A native constraint the backend's upstream never reads: the featurizer
-    # drops it with a warning, and this records it. Asked of the caller's
-    # input, since a common job cannot carry one. `ignore_constraints=false`
-    # was already refused by `validate_request` above.
-    ignored_constraints = (
-        native_ignored_constraints(asked.input, backend.name)
-        if asked.input_format != "foldjax"
-        else None
-    )
+    # A constraint the backend's upstream never reads: a native one is dropped
+    # by the featurizer with a warning and recorded from the caller's input;
+    # a common job's pocket was dropped by the translation above. A native
+    # `ignore_constraints=false` was already refused by `validate_request`, a
+    # common one by the translation.
+    if asked.input_format != "foldjax":
+        ignored_constraints = native_ignored_constraints(asked.input, backend.name)
+    elif accepts_ignore_constraints(backend.name):
+        ignored_constraints = common_ignored_constraints
+    else:
+        ignored_constraints = None
     # Consumed by the translation above; no native runner takes it. `asked`
     # keeps it, so the manifest's options still record the choice.
     consumed = {IGNORE_NUCLEIC_MSA, IGNORE_TEMPLATES, IGNORE_CONSTRAINTS}
@@ -1314,6 +1324,7 @@ def _predict_once(
         ignored_templates=ignored_templates,
         ignored_constraints=ignored_constraints,
         template_search=template_search,
+        constraints=constraints,
     )
     return result
 

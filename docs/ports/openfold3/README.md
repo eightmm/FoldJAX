@@ -165,6 +165,7 @@ lmdb, pdbeccdutils, awscli and the rest of the data stack.
 | `centre_random_augmentation` (AF3 Alg. 19) | `core/model/structure/augmentation.py` | `quat_to_rot` against upstream, plus rigid-transform invariants |
 | EDM sampler rollout (AF3 Alg. 18) | `core/model/structure/diffusion_module.py` | schedule arithmetic, gamma gating, determinism |
 | Denoiser body (AF3 Alg. 20) | `core/model/structure/diffusion_module.py` | composition order, against the gated sub-modules |
+| Pocket-guided proposals + partial rollout (`pocket_constraint`) | `core/model/structure/pocket_constraints.py`, `diffusion_module.py`, `core/data/pipelines/featurization/pocket_constraints.py` | features bit-identical (same RDKit build); proposal search replays upstream's recorded draws to 2.4e-6 Å; see [docs/openfold3.md](../../openfold3.md#pocket-constraints) |
 | EDM noise schedule + conditioning (AF3 p. 24) | `core/model/structure/diffusion_module.py` | yes, four `(steps, s_max, s_min, p)` settings plus limit behaviour |
 | PAE / PDE / distogram heads | `core/model/heads/prediction_heads.py` | yes, incl. the symmetrization and layer-norm differences between them |
 | pLDDT / experimentally-resolved heads | `core/model/heads/prediction_heads.py` | yes, several per-token atom-count splits |

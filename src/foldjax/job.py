@@ -87,6 +87,36 @@ class Bond:
 
 
 @dataclass(frozen=True, slots=True)
+class Pocket:
+    """A pocket restraint: ``binder`` (a chain id) near polymer residues.
+
+    ``contacts`` are ``(chain_id, residue_index)`` pairs in the same 1-based
+    numbering as modifications and bonds. ``max_distance`` (Å) left ``None``
+    takes each model's own upstream default, which the run manifest records.
+    Which models can apply it is decided at materialization; see
+    ``docs/input.md``.
+    """
+
+    binder: str
+    contacts: tuple[tuple[str, int], ...]
+    max_distance: float | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "contacts", tuple(tuple(contact) for contact in self.contacts)
+        )
+
+    def to_document(self) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "binder": self.binder,
+            "contacts": [list(contact) for contact in self.contacts],
+        }
+        if self.max_distance is not None:
+            body["max_distance"] = self.max_distance
+        return {"pocket": body}
+
+
+@dataclass(frozen=True, slots=True)
 class Template:
     """A structural template for one chain.
 
@@ -197,10 +227,13 @@ class Job:
     #: The chain whose binding affinity to predict. Boltz-2 is the only carried
     #: model with that head, so every other backend refuses a job that asks.
     affinity_binder: str | None = None
+    #: Pocket restraints, the common ``constraints`` field.
+    pockets: tuple[Pocket, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "entities", tuple(self.entities))
         object.__setattr__(self, "bonds", tuple(self.bonds))
+        object.__setattr__(self, "pockets", tuple(self.pockets))
 
     def to_document(self) -> dict[str, Any]:
         """The mapping a job file holds. Not validated -- see the module docstring."""
@@ -214,6 +247,8 @@ class Job:
             document["properties"] = [
                 {"affinity": {"binder": self.affinity_binder}}
             ]
+        if self.pockets:
+            document["constraints"] = [pocket.to_document() for pocket in self.pockets]
         return document
 
     def write(self, path: str | Path) -> Path:
@@ -285,6 +320,7 @@ class Job:
             _ids,
             _modifications,
             _normalize_sequence,
+            _pocket_constraints,
             _reject_unknown,
             _templates,
             assign_chain_ids,
@@ -374,11 +410,31 @@ class Job:
         bonds = tuple(
             Bond(first, second) for first, second in _bonds(document, chains)
         )
+        kinds = {
+            chain: ("ligand" if isinstance(entity, Ligand) else "polymer")
+            for entity in entities
+            for chain in (entity.id if isinstance(entity.id, tuple) else (entity.id,))
+        }
+        lengths = {
+            chain: len(entity.sequence)
+            for entity in entities
+            if not isinstance(entity, Ligand)
+            for chain in (entity.id if isinstance(entity.id, tuple) else (entity.id,))
+        }
+        pockets = tuple(
+            Pocket(
+                pocket["binder"],
+                tuple(pocket["contacts"]),
+                max_distance=pocket["max_distance"],
+            )
+            for pocket in _pocket_constraints(document, kinds, lengths)
+        )
         return cls(
             str(document.get("name", "")),
             tuple(entities),
             bonds,
             affinity_binder=_affinity_binder(document, chains),
+            pockets=pockets,
         )
 
     @classmethod

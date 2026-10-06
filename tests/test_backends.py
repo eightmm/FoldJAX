@@ -1986,6 +1986,8 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
 
     modules = {
         "foldjax.models.openfold3.data": SimpleNamespace(
+            pocket_sampling_config=lambda batch: None,
+            POCKET_SAMPLING_FEATURES=(),
             MODEL_FEATURES=("token_mask", "atom_mask", "asym_id", "is_atomized"),
             PRIVATE_MODEL_FEATURES=(
                 "_foldjax_zero_template_pair_features",
@@ -2165,6 +2167,7 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
 
     modules = {
         "foldjax.models.openfold3.data": SimpleNamespace(
+            pocket_sampling_config=lambda batch: None,
             featurize_query_with_metadata=lambda *args, **kwargs: (
                 features,
                 output_metadata,

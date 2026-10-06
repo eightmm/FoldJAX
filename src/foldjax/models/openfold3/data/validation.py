@@ -144,7 +144,8 @@ def validate_features(
     for name, value in features.items():
         array = np.asarray(value)
         if not np.issubdtype(array.dtype, np.number) and not (
-            name == "cyclic_mask" and array.dtype == np.dtype(bool)
+            name in ("cyclic_mask", "pocket_sampling_enabled")
+            and array.dtype == np.dtype(bool)
         ):
             raise ValueError(
                 f"OpenFold3 feature {name!r} must be numeric; got {array.dtype}"
@@ -244,6 +245,12 @@ def validate_features(
                 "OpenFold3 compact MSA zero-vector sentinel may appear only "
                 "where msa_mask is zero"
             )
+
+    from foldjax.models.openfold3.data.pocket_constraints import (
+        validate_pocket_sampling_features,
+    )
+
+    validate_pocket_sampling_features(arrays)
 
     real_tokens = _prefix_mask(token_mask, name="token_mask")
     real_atoms = _prefix_mask(atom_mask, name="atom_mask")

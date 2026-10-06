@@ -99,9 +99,14 @@ class RunRecord:
     samples: tuple[SampleRecord, ...]
     schema_version: str | None
     manifest: Mapping[str, Any] = field(repr=False, default_factory=dict)
-    #: Native constraints the backend never read (OpenDDE); None where the
+    #: Constraints the backend never read (OpenDDE): a native job's
+    #: ``constraint`` or a common job's pocket ``constraints``; None where the
     #: backend has no such gate or the manifest predates the field.
     ignored_constraints: tuple[Mapping[str, Any], ...] | None = None
+    #: A common job's pocket constraints as the model ran them, each with its
+    #: ``max_distance`` and ``max_distance_source`` (``job`` or ``upstream``);
+    #: None for native input or a manifest that predates the field.
+    constraints: tuple[Mapping[str, Any], ...] | None = None
 
     @property
     def directory(self) -> Path:
@@ -341,6 +346,7 @@ def _run_record(path: Path, manifest: Mapping[str, Any], root: Path) -> RunRecor
         ignored_msas=_ignored(manifest.get("ignored_msas")),
         ignored_templates=_ignored(manifest.get("ignored_templates")),
         ignored_constraints=_ignored(manifest.get("ignored_constraints")),
+        constraints=_ignored(manifest.get("constraints")),
         best=best,
         samples=samples,
         schema_version=manifest.get("schema_version"),
@@ -430,8 +436,10 @@ def results_table(
     them is empty), the native scores as ``score.<name>``, the structure path,
     its SHA-256 and whether it still matches, what the model never read
     (``ignored_msas``, ``ignored_templates``; None for a native input, which
-    is not inspected; and ``ignored_constraints``, a native OpenDDE job's
-    constraint), and for a failure its error. ``best_within_model``
+    is not inspected; and ``ignored_constraints``, an OpenDDE job's native
+    constraint or common pocket constraint), the pocket ``constraints`` a
+    common job ran with (``max_distance`` and its ``max_distance_source``),
+    and for a failure its error. ``best_within_model``
     marks the top of that model's own confidence ordering within its run.
     """
     if not isinstance(report, ResultsReport):
@@ -503,6 +511,11 @@ def results_table(
                 "ignored_constraints": (
                     [dict(item) for item in run.ignored_constraints]
                     if run.ignored_constraints is not None
+                    else None
+                ),
+                "constraints": (
+                    [dict(item) for item in run.constraints]
+                    if run.constraints is not None
                     else None
                 ),
                 "run_dir": str(run.directory),

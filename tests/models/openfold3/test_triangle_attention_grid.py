@@ -128,6 +128,7 @@ def _drive_to_the_native_call(monkeypatch, seen: list[str]) -> list[str]:
     config = SimpleNamespace(msa_depth=None, num_recycles=1, cp_shards=4)
     modules = {
         "foldjax.models.openfold3.data": SimpleNamespace(
+            pocket_sampling_config=lambda batch: None,
             prepare_msa_cycle_features=lambda batch, *a, **k: batch,
             collapse_identical_templates=lambda batch: batch,
             normalize_asym_ids=lambda batch: (batch, None),

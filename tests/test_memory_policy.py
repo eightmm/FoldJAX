@@ -794,6 +794,7 @@ def test_the_openfold3_adapter_admits_a_padded_run_once_at_its_padded_shape(
     )
     modules = {
         "foldjax.models.openfold3.data": SimpleNamespace(
+            pocket_sampling_config=lambda batch: None,
             featurize_query_with_metadata=lambda *args, **kwargs: (features, None),
             prepare_msa_cycle_features=lambda batch, depth, **kwargs: batch,
             collapse_identical_templates=lambda batch: batch,

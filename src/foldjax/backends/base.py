@@ -258,20 +258,15 @@ class Backend(ABC):
             input_format=request.input_format,
         )
 
-        # The mirror image of the two below: a constraint has no common-schema
-        # field, so this option governs native input and is meaningless on a
-        # common job. ``false`` is checked here, where `foldjax plan` sees it.
+        # Governs a native ``constraint`` and a common job's pocket
+        # ``constraints`` alike. ``false`` on native input is checked here,
+        # where `foldjax plan` sees it; on a common job the translation
+        # (`foldjax.input._validate_pocket_constraints`) refuses it.
         if IGNORE_CONSTRAINTS in options and accepts_ignore_constraints(self.name):
             ignore_constraints = _strict_boolean(
                 options.pop(IGNORE_CONSTRAINTS), name=IGNORE_CONSTRAINTS
             )
-            if request.input_format == "foldjax":
-                if ignore_constraints:
-                    raise ValueError(
-                        f"{IGNORE_CONSTRAINTS} applies to native {self.name} "
-                        "input; the FoldJAX common schema has no constraint field"
-                    )
-            elif not ignore_constraints:
+            if request.input_format != "foldjax" and not ignore_constraints:
                 refuse_ignored_constraints(request.input, self.name)
 
         for option, accepts in (

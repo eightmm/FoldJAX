@@ -29,9 +29,9 @@ alignment or a structural template that the backend's upstream ignores (see
 [templates](#templates-and-binding-affinity) below) is dropped as upstream drops it, but never
 silently: FoldJAX warns and records it in `foldjax_run.json` under
 `ignored_msas` or `ignored_templates`, and `ignore_nucleic_msa=false` /
-`ignore_templates=false` refuse the job instead. A native OpenDDE job's
-`constraint`, which upstream's inference build never reads, follows the same
-rule (below). Everything else -- chemistry, bonds, modifications, affinity, a
+`ignore_templates=false` refuse the job instead. A constraint OpenDDE's
+upstream inference build never reads -- a native job's `constraint`, or a
+common job's pocket `constraints` -- follows the same rule (below). Everything else -- chemistry, bonds, modifications, affinity, a
 template form the backend cannot take -- is refused, because discarding it
 would change the science without changing the exit code.
 
@@ -283,10 +283,11 @@ nucleic-acid chain, is refused: OpenFold3 reads one source per protein chain.
 exactly this reason, generated from the same translation table the writer uses.
 `native_only_features` also names what only a native input can reach: ligands
 of several CCD components (glycans; not OpenFold3 or ESMFold2), AlphaFold 3's
-user-defined CCD entries, ligands read from a file (Protenix, OpenDDE), pocket and contact
+user-defined CCD entries, ligands read from a file (Protenix, OpenDDE), contact
 constraints (Boltz-2, Protenix) and cyclic polymers (Boltz-2, OpenFold3). The
 common schema has no field for any of them; pass the model's native file
-instead.
+instead. Pocket constraints are a common field
+([below](#pocket-constraints)).
 
 OpenDDE is absent from that constraint list on purpose. It shares Protenix's
 native dialect and featurizer, but its model has no constraint embedder, and
@@ -297,11 +298,11 @@ that carries one is therefore folded without it, as upstream folds it, but not
 silently: the featurizer drops the field before the shared Protenix code can
 build a `constraint_feature` from it, warns, and the run manifest lists the job
 under `ignored_constraints` (an empty list when no job had one, null for every
-other backend and for common-schema input, which cannot carry a constraint).
-`--option ignore_constraints=false` refuses such a job instead, at `plan` as
-well as `predict`. The option governs native input only: `true` on a
-common-schema job is refused as meaningless. Covalent links reach OpenDDE
-through `covalent_bonds` (the common `bonds`), as upstream says.
+other backend). `--option ignore_constraints=false` refuses such a job
+instead, at `plan` as well as `predict`. A common job's pocket `constraints`
+follows the same rule on OpenDDE ([below](#pocket-constraints)). Covalent
+links reach OpenDDE through `covalent_bonds` (the common `bonds`), as upstream
+says.
 
 From a bare sequence the same affinity request is `--affinity-binder CHAIN`,
 naming which chain of the generated job to score. It reaches Boltz-2 alone, for
@@ -379,3 +380,39 @@ the line it comes from, the selection rule, the hits file, every template kept
 skipped, or the error. The same record is written as `template_search.json`
 beside the generated native input. With `--msa auto` as well, the same
 sequence is submitted to the server twice, once per search.
+
+### Pocket constraints
+
+```yaml
+entities:
+  - {type: protein, id: [A], sequence: ACDEFGHIK, unpaired_msa: msa.a3m}
+  - {type: ligand, id: [L], ccd: ATP}
+constraints:
+  - pocket: {binder: L, contacts: [[A, 2], [A, 5]], max_distance: 6.0}
+```
+
+`binder` is one chain id of the job; `contacts` are `[chain_id,
+residue_index]` pairs on polymer chains other than the binder, in the same
+1-based numbering as `modifications` and `bonds`, checked against each
+chain's length. `max_distance` (Å) is optional; omitted, each model runs its
+own upstream default, and `foldjax_run.json` records the value used under
+`constraints` with `max_distance_source` `job` or `upstream`. There are no
+model-specific knobs here; Boltz-2's `force`, for instance, stays native-only.
+
+`max_distance` does not mean the same thing to every model. For Boltz-2 and
+Protenix it is a conditioning input: the trunk is told the binder should sit
+within that distance of the contacts (Boltz-2's pocket feature; Protenix's
+`pocket` channel of the constraint embedder), and with Boltz-2's native
+`force` the sampler is also steered toward it. For OpenFold3 it is only the
+contact threshold the pocket sampler uses to *rank* its ligand proposals
+(ligand atoms within it of a pocket atom, and a penalty beyond it); nothing
+conditions the network on it or enforces it on the final structure.
+In Python: `Job(..., pockets=[Pocket("L", [("A", 2), ("A", 5)])])`.
+
+| model | what the pocket becomes | omitted `max_distance` |
+|---|---|---|
+| Boltz-2 | `constraints: - pocket: {binder, contacts, max_distance}`; several allowed | 6.0 (`parse/schema.py`) |
+| OpenFold3 | the query's `pocket_constraint`, applied as pocket-guided sampling ([docs/openfold3.md](openfold3.md#pocket-constraints)); one pocket, binder must be a ligand | 4.0 (`pocket_sampling_config.py`) |
+| Protenix | `constraint.pocket` by entity/copy; one pocket; only weights with a constraint embedder read it, so the released default profile refuses it as it refuses a native one | none upstream: required |
+| OpenDDE | dropped as upstream drops a constraint, with a warning and an `ignored_constraints` record; `ignore_constraints=false` refuses | — |
+| AlphaFold 3, ESMFold2 | refused: no such field upstream | — |

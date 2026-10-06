@@ -227,6 +227,13 @@ def compile_streamed_predict(
     ``deterministic`` compiles all four stage functions for reduction orders
     that repeat between runs; see :mod:`foldjax.models._compile_policy`.
     """
+    if config.pocket_sampling is not None:
+        # Serving padding is this scheduler's only caller, and the pocket
+        # sampler's refinement is wired into the unstreamed program only.
+        raise ValueError(
+            "OpenFold3 pocket-guided sampling is not supported by the "
+            "host-streamed (padded) program; drop the padding"
+        )
     if config.msa_depth is None or config.msa_depth < 1:
         raise ValueError("streamed prediction requires a fixed positive msa_depth")
     if not compiled and config.cp_shards > 1:

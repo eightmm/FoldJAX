@@ -349,10 +349,11 @@ def test_pocket_constraint_is_parsed_not_dropped() -> None:
     assert constraint.max_distance == 4.0
 
 
-def test_pocket_constraint_is_refused_rather_than_ignored() -> None:
-    """Upstream applies it only as pocket-guided sampling, which is not ported."""
-    with pytest.raises(ValueError, match="pocket_constraint.*does not implement"):
-        featurize_query(_pocket_spec())
+def test_pocket_constraint_becomes_sampler_features() -> None:
+    """Upstream applies it as pocket-guided sampling; see test_pocket_constraints."""
+    features = featurize_query(_pocket_spec())
+    assert features["pocket_sampling_ligand_atom_mask"].sum() == 3
+    assert features["pocket_sampling_pocket_atom_mask"].sum() > 0
 
 
 def test_pocket_constraint_on_a_non_ligand_chain_is_invalid() -> None:

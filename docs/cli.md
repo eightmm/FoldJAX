@@ -248,7 +248,8 @@ native rank, `best_within_model`), the common summary (`plddt`,
 matches it (`structure_verified`), and what the model never read
 (`ignored_msas`, `ignored_templates`; empty for a native input, which FoldJAX
 does not inspect; and `ignored_constraints`, a native OpenDDE job's
-`constraint`, which upstream never reads). A failed run is a row with `status: failed` and its error;
+`constraint` or a common job's pocket `constraints`, which upstream never
+reads). A failed run is a row with `status: failed` and its error;
 a field a backend refused never reaches a structure, so it only ever appears
 there. `--json` alone still prints the manifests.
 

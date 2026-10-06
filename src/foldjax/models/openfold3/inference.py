@@ -51,6 +51,11 @@ from foldjax.models.openfold3.data.compact_categories import (
     validate_compact_ref_atom_categories,
 )
 from foldjax.models.openfold3.data.featurize import _MSA_CYCLE_INDICES
+from foldjax.models.openfold3.data.pocket_constraints import (
+    POCKET_SAMPLING_ARRAY_FEATURES,
+    POCKET_SAMPLING_CONFORMERS,
+    POCKET_SAMPLING_FEATURES,
+)
 from foldjax.models.openfold3.dtype import (
     DEFAULT_DTYPE,
     narrow_dtype,
@@ -85,6 +90,13 @@ from foldjax.models.openfold3.models.heads import (
     pairformer_embedding,
     predicted_aligned_error_head,
     predicted_distance_error_head,
+)
+from foldjax.models.openfold3.models.pocket_constraints import (
+    PocketSamplingConfig,
+    PocketSamplingInputs,
+    build_pocket_sampling_seeds,
+    draw_pocket_proposals,
+    pocket_refinement_start,
 )
 from foldjax.models.openfold3.models.representative_atoms import (
     RepresentativeAtomTable,
@@ -266,6 +278,14 @@ class InferenceConfig(NamedTuple):
     #: forking the in-process JIT owner, because this whole object is a field
     #: of ``_PredictGraphIdentity``.
     confidence_dtype: str = DEFAULT_DTYPE
+    #: Upstream's pocket-guided proposal sampling, read on the host from a
+    #: query's ``pocket_sampling_*`` features by
+    #: :func:`foldjax.models.openfold3.data.pocket_constraints.pocket_sampling_config`.
+    #: ``None`` runs the ordinary single rollout. Set, the sampler runs a
+    #: second, partial rollout seeded from ligand poses proposed in the pocket
+    #: (``models/pocket_constraints.py``); its loop bounds and gather sizes are
+    #: static, which is why the settings live here rather than in the batch.
+    pocket_sampling: PocketSamplingConfig | None = None
 
 
 class InferenceParams(NamedTuple):
@@ -1106,6 +1126,14 @@ def predict(
             f"mesh has {_active_cp_shards()} shard(s); run through "
             "compile_predict or activate context_parallel() yourself"
         )
+    batch, pocket_inputs = _split_pocket_sampling_inputs(
+        batch,
+        config,
+        replay=any(
+            value is not None
+            for value in (noise_fn, noise_tape, noise_mask, augmentation_tape)
+        ),
+    )
     if config.stop_after_inputs:
         return _predict_inputs(
             _restore_ref_atom_category_one_hot(batch), params.trunk, config
@@ -1144,7 +1172,110 @@ def predict(
         noise_fn=noise_fn, noise_tape=noise_tape, noise_mask=noise_mask,
         augmentation_tape=augmentation_tape, augment=augment,
         use_trunk_pair_embedding=use_trunk_pair_embedding,
+        pocket_inputs=pocket_inputs,
     )
+
+
+def _refuse_pocket_under_cp(
+    pocket_sampling: PocketSamplingConfig | None, cp_shards: int
+) -> None:
+    """Pocket refinement is serial-only.
+
+    The proposal search gathers ligand and pocket atoms by index and writes
+    the selected poses back with ``.at[].set`` on the atom axis, which context
+    parallelism shards; that combination has not been validated on a mesh.
+    """
+    if pocket_sampling is not None and cp_shards > 1:
+        raise ValueError(
+            "OpenFold3 pocket-guided sampling is not supported under context "
+            f"parallelism (cp_shards={cp_shards}); run it on one device"
+        )
+
+
+def _split_pocket_sampling_inputs(
+    batch: Mapping[str, jnp.ndarray],
+    config: InferenceConfig,
+    *,
+    replay: bool,
+) -> tuple[Mapping[str, jnp.ndarray], PocketSamplingInputs | None]:
+    """Take the pocket features out of the batch the network reads.
+
+    The features and ``config.pocket_sampling`` must agree: a batch carrying a
+    pocket constraint under a config without one would fold as if the
+    constraint were absent, and the converse has nothing to sample from.
+    """
+    present = [name for name in POCKET_SAMPLING_FEATURES if name in batch]
+    _refuse_pocket_under_cp(config.pocket_sampling, config.cp_shards)
+    if config.pocket_sampling is None:
+        if present:
+            raise ValueError(
+                "the batch carries OpenFold3 pocket sampling features but the "
+                "config has pocket_sampling=None; build it with "
+                "released_config(..., pocket_sampling=pocket_sampling_config"
+                "(features))"
+            )
+        return batch, None
+    missing = [name for name in POCKET_SAMPLING_ARRAY_FEATURES if name not in batch]
+    if missing:
+        raise ValueError(f"config.pocket_sampling is set but the batch lacks {missing}")
+    if (POCKET_SAMPLING_CONFORMERS in batch) != (
+        config.pocket_sampling.n_conformers > 0
+    ):
+        raise ValueError(
+            "config.pocket_sampling.n_conformers does not match the batch's "
+            f"{POCKET_SAMPLING_CONFORMERS!r}"
+        )
+    if replay:
+        # The replay routes reproduce another implementation's draws for one
+        # rollout from pure noise; the refinement's proposal, jitter and
+        # second-rollout draws have no recorded counterpart.
+        raise ValueError(
+            "pocket-guided sampling cannot be combined with noise_fn, "
+            "noise_tape, noise_mask or augmentation_tape"
+        )
+    conformers = batch.get(POCKET_SAMPLING_CONFORMERS)
+    inputs = PocketSamplingInputs(
+        ligand_atom_mask=batch["pocket_sampling_ligand_atom_mask"][0],
+        pocket_atom_mask=batch["pocket_sampling_pocket_atom_mask"][0],
+        vdw_radii=batch["pocket_sampling_vdw_radii"][0],
+        conformer_rels=None if conformers is None else conformers[0],
+    )
+    remaining = {
+        name: value
+        for name, value in batch.items()
+        if name not in POCKET_SAMPLING_FEATURES
+    }
+    return remaining, inputs
+
+
+#: Folded into the prediction key for the refinement's draws, so the first
+#: rollout consumes the key exactly as a run without a pocket constraint does.
+_POCKET_KEY_TAG = 0x706F636B
+
+
+def _pocket_refinement(
+    key, coordinates, atom_mask, inputs, config, *, schedule, sample
+):
+    """Upstream's second rollout (``SampleDiffusion.forward``, pocket branch).
+
+    It traces the denoiser a second time, inside its own scan over the
+    schedule tail, so a pocket program compiles two rollouts rather than
+    sharing one.
+    """
+    settings = config.pocket_sampling
+    proposal_key, jitter_key, rollout_key = jax.random.split(
+        jax.random.fold_in(key, _POCKET_KEY_TAG), 3
+    )
+    draws = draw_pocket_proposals(
+        proposal_key,
+        candidates=settings.num_candidates_for(config.num_samples),
+        n_conformers=settings.n_conformers,
+        n_pocket_atoms=settings.n_pocket_atoms,
+    )
+    seeds = build_pocket_sampling_seeds(coordinates, atom_mask, inputs, settings, draws)
+    seeds = pocket_refinement_start(jitter_key, seeds, inputs, settings)
+    start = settings.start_step(config.num_steps)
+    return sample(rollout_key, None, None, schedule=schedule[start:], x_start=seeds)
 
 
 def _predict_inputs(batch, params, config):
@@ -1171,6 +1302,7 @@ def _predict_from_trunk(
     key, batch, params, config, representative_atoms, *, trunk_output,
     n_chain=None, noise_fn=None, noise_tape=None, noise_mask=None,
     augmentation_tape=None, augment=True, use_trunk_pair_embedding=True,
+    pocket_inputs=None,
 ):
     """Shared diffusion/confidence tail for fused and host-streamed recycling."""
     s_input, s_trunk, z = trunk_output
@@ -1296,7 +1428,7 @@ def _predict_from_trunk(
             pair=z if "pair" in config.returned_representations else None,
         )
 
-    def sample(key, noise_tape, noise_mask):
+    def sample(key, noise_tape, noise_mask, schedule=schedule, x_start=None):
         return sample_diffusion(
             key,
             schedule,
@@ -1327,9 +1459,20 @@ def _predict_from_trunk(
                 else None
             ),
             diffusion_chunk_size=config.diffusion_chunk_size,
+            x_start=x_start,
         )
 
     coordinates = sample(key, noise_tape, noise_mask)
+    if pocket_inputs is not None:
+        coordinates = _pocket_refinement(
+            key,
+            coordinates,
+            batch["atom_mask"][0],
+            pocket_inputs,
+            config,
+            schedule=schedule,
+            sample=sample,
+        )
 
     # The distogram head is the only one that reads the trunk pair embedding.
     disto_logits = distogram_head(z, params.distogram_head)
@@ -1563,6 +1706,7 @@ def released_config(
     confidence_dtype: str | None = None,
     max_array_bytes: int | None = DEFAULT_ARRAY_BUDGET_BYTES,
     padded: bool = False,
+    pocket_sampling: PocketSamplingConfig | None = None,
 ) -> InferenceConfig:
     """Return the released OpenFold3 architecture settings.
 
@@ -1591,6 +1735,10 @@ def released_config(
     :data:`memory_policy.OPENFOLD3_UNCHUNKED_PEAK`. ``padded`` says the
     features carry serving padding; it reaches only admission, where the
     unpadded law is then a lower bound, and is not part of the config.
+    ``pocket_sampling`` is the static half of a query's pocket constraint
+    (:func:`~foldjax.models.openfold3.data.pocket_constraints.pocket_sampling_config`);
+    the laws were fitted without its second rollout, so admission treats it
+    like padding.
 
     Verify against the checkpoint before trusting this: read its block counts
     with :func:`~foldjax.models.openfold3.bridge.checkpoint.count_blocks` and
@@ -1647,6 +1795,8 @@ def released_config(
                 for reason, active in (
                     ("serving padding", padded),
                     ("a float32 trunk", dtype == "float32"),
+                    # A second rollout plus the proposal search.
+                    ("pocket-guided sampling", pocket_sampling is not None),
                 )
                 if active
             ),
@@ -1654,6 +1804,7 @@ def released_config(
         if isinstance(pair_chunk_size, str)
         else pair_chunk_size
     )
+    _refuse_pocket_under_cp(pocket_sampling, cp_shards)
     if glu_backend not in GLU_BACKENDS:
         raise ValueError(
             f"glu_backend must be one of {GLU_BACKENDS}; got {glu_backend!r}"
@@ -1727,6 +1878,7 @@ def released_config(
         glu_backend=glu_backend,
         dtype=dtype,
         confidence_dtype=confidence_dtype,
+        pocket_sampling=pocket_sampling,
     )
 
 

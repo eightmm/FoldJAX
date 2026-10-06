@@ -1197,6 +1197,7 @@ def describe_run(
     ignored_templates: list[dict[str, Any]] | None = None,
     ignored_constraints: list[dict[str, Any]] | None = None,
     template_search: list[dict[str, Any]] | None = None,
+    constraints: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the manifest for one finished prediction.
 
@@ -1211,11 +1212,14 @@ def describe_run(
     common-schema input, whose alignments FoldJAX does not inspect.
     ``ignored_templates`` does the same for templates (``ignore_templates``).
     ``ignored_constraints`` lists native jobs whose ``constraint`` the backend
-    never reads (``ignore_constraints``); ``None`` where the backend has no
-    such gate or the input was common-schema, which cannot carry one.
+    never reads (``ignore_constraints``), or a common job's pocket constraint
+    dropped for the same reason; ``None`` where the backend has no such gate.
     ``template_search`` is what ``templates="auto"`` searched, per chain:
     where the hits came from, the date cutoff applied and where it comes from,
     and each template kept; ``None`` when no search was asked for.
+    ``constraints`` lists the common job's pocket constraints as the native
+    input carries them, with the ``max_distance`` each runs at and whether it
+    came from the job or the upstream default; ``None`` for native input.
     """
     from foldjax import __version__, confidence_arrays
     from foldjax.cache import runtime_profile, weight_identity
@@ -1283,6 +1287,11 @@ def describe_run(
         "ignored_constraints": (
             [dict(record) for record in ignored_constraints]
             if ignored_constraints is not None
+            else None
+        ),
+        "constraints": (
+            [dict(record) for record in constraints]
+            if constraints is not None
             else None
         ),
         "weights": {
@@ -1359,6 +1368,7 @@ def write(
     ignored_templates: list[dict[str, Any]] | None = None,
     ignored_constraints: list[dict[str, Any]] | None = None,
     template_search: list[dict[str, Any]] | None = None,
+    constraints: list[dict[str, Any]] | None = None,
 ) -> Path | None:
     """Write the manifest, or return None if the directory cannot take it.
 
@@ -1384,6 +1394,7 @@ def write(
                         ignored_templates=ignored_templates,
                         ignored_constraints=ignored_constraints,
                         template_search=template_search,
+                        constraints=constraints,
                     ),
                     indent=2,
                     sort_keys=True,

@@ -74,9 +74,24 @@
       "items": {"$ref": "#/$defs/ignored"}
     },
     "ignored_constraints": {
-      "description": "Native jobs whose constraint the backend never reads (OpenDDE) and that were run without it; null where the backend has no such gate or the input was common-schema, which cannot carry one. Optional: absent from manifests written before it existed.",
+      "description": "Constraints the backend never reads (OpenDDE) and that the run went without: a native job's constraint, or a common job's pocket constraints; null where the backend has no such gate. Optional: absent from manifests written before it existed.",
       "type": ["array", "null"],
       "items": {"$ref": "#/$defs/ignored"}
+    },
+    "constraints": {
+      "description": "A common job's pocket constraints as the native input carries them: binder chain, [chain, residue] contacts, the max_distance (angstrom) the model runs at, and max_distance_source, 'job' or 'upstream' (the model's own default when the job omitted it). null for native input. Optional: absent from manifests written before it existed.",
+      "type": ["array", "null"],
+      "items": {
+        "type": "object",
+        "required": ["kind", "binder", "contacts", "max_distance", "max_distance_source"],
+        "properties": {
+          "kind": {"const": "pocket"},
+          "binder": {"type": "string"},
+          "contacts": {"description": "[chain_id, residue_index] pairs.", "type": "array", "items": {"type": "array"}},
+          "max_distance": {"type": "number"},
+          "max_distance_source": {"enum": ["job", "upstream"]}
+        }
+      }
     },
     "weights": {
       "type": "object",

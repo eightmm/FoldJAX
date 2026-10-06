@@ -1,9 +1,10 @@
 """A native OpenDDE ``constraint`` is dropped as upstream drops it, never silently.
 
-Only native input can carry one: the common schema has no constraint field.
-The Protenix featurizer OpenDDE shares would build a ``constraint_feature``
-from it, and no OpenDDE module reads that feature; upstream's inference build
-warns and ignores the field (OpenDDE 1.1.1
+A common job's pocket ``constraints`` follows the same contract
+(``tests/test_pocket_constraints_common.py``). The Protenix featurizer
+OpenDDE shares would build a ``constraint_feature`` from it, and no OpenDDE
+module reads that feature; upstream's inference build warns and ignores the
+field (OpenDDE 1.1.1
 ``opendde/data/inference/json_to_feature.py:28-32``). The contract follows the
 template and nucleic-MSA ones (``tests/test_template_gate.py``): dropped with a
 warning and a manifest record by default, refused with
@@ -154,16 +155,16 @@ def test_ignore_constraints_false_refuses_while_planning(tmp_path) -> None:
         )
 
 
-def test_the_option_does_not_apply_to_common_schema_input(tmp_path) -> None:
+def test_the_option_also_governs_common_schema_input(tmp_path) -> None:
+    """A common job's pocket ``constraints`` is dropped or refused the same way;
+    the refusal is the translation's (tests/test_pocket_constraints_common.py).
+    """
     backend = get_backend("opendde")
     common = _common(tmp_path)
-    with pytest.raises(ValueError, match="common schema has no constraint field"):
+    for value in (True, False):
         backend.validate_request(
-            _request(common, input_format="foldjax", **{IGNORE_CONSTRAINTS: True})
+            _request(common, input_format="foldjax", **{IGNORE_CONSTRAINTS: value})
         )
-    backend.validate_request(
-        _request(common, input_format="foldjax", **{IGNORE_CONSTRAINTS: False})
-    )
 
 
 def test_backends_that_read_constraints_do_not_take_the_option(tmp_path) -> None:
@@ -185,7 +186,10 @@ def test_native_only_features_say_where_a_constraint_is_read() -> None:
     protenix = native_only_features("protenix", capabilities("protenix"))
     assert "contact_constraints" not in opendde
     assert "pocket_constraints" not in opendde
-    assert {"contact_constraints", "pocket_constraints"} <= set(protenix)
+    # Protenix's pocket is the common `constraints` field now; contact stays
+    # native-only.
+    assert "contact_constraints" in protenix
+    assert "pocket_constraints" not in protenix
     assert {"multi_residue_ligand", "ligand_file"} <= set(opendde)
 
 
@@ -258,7 +262,8 @@ def test_a_run_records_the_dropped_constraint_unless_the_option_refuses(
     explicit_manifest = json.loads((tmp_path / "explicit" / MANIFEST_NAME).read_text())
     assert explicit_manifest["options"][IGNORE_CONSTRAINTS] is True
     common_manifest = json.loads((tmp_path / "common" / MANIFEST_NAME).read_text())
-    assert common_manifest["ignored_constraints"] is None
+    # Inspected (a common job can carry a pocket), and this one had none.
+    assert common_manifest["ignored_constraints"] == []
     assert dropped.input == native and explicit.input == native
     assert ran_common.input_format != "foldjax"
 

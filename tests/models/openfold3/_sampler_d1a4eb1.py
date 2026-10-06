@@ -1,4 +1,9 @@
-"""EDM sampler rollout (AF3 Algorithm 18).
+"""Frozen copy of ``models/sampler.py`` at d1a4eb1, before ``x_start`` existed.
+
+Test-only reference for ``test_pocket_constraints.py``: an unconstrained
+rollout must stay bit-identical to it. Do not edit.
+
+EDM sampler rollout (AF3 Algorithm 18).
 
 A first-order Euler rollout over the noise schedule with optional noise inflation
 (``gamma``) per step. Three details are transcribed deliberately:
@@ -47,7 +52,6 @@ def sample_diffusion(
     augmentation_tape: AugmentationTape | None = None,
     atom_mask: jnp.ndarray | None = None,
     diffusion_chunk_size: int | None = None,
-    x_start: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Roll out the EDM sampler.
 
@@ -87,12 +91,6 @@ def sample_diffusion(
             Requires ``atom_mask`` and does not change initial/churn draws.
         atom_mask: ``[samples, atoms]`` or native ``[1, atoms]`` mask used only
             with ``augmentation_tape``; centering and output masking match native.
-        x_start: Coordinates of ``shape`` to resume from, for a partial rollout:
-            the initial state is ``x_start + noise_schedule[0] * noise`` instead
-            of pure noise, so passing the tail of a schedule continues
-            denoising from that level. OpenFold3's pocket refinement
-            (``SampleDiffusion.forward``) starts this way. Not combinable with
-            the replay routes, which describe a rollout from pure noise.
 
     Returns:
         Coordinates of shape ``shape``.
@@ -126,19 +124,6 @@ def sample_diffusion(
 
     if sum(value is not None for value in (noise_fn, noise_tape, noise_mask)) > 1:
         raise ValueError("noise_fn, noise_tape and noise_mask are mutually exclusive")
-    if x_start is not None:
-        if any(
-            value is not None
-            for value in (noise_fn, noise_tape, noise_mask, augmentation_tape)
-        ):
-            raise ValueError(
-                "x_start cannot be combined with noise_fn, noise_tape, "
-                "noise_mask or augmentation_tape"
-            )
-        if tuple(jnp.shape(x_start)) != tuple(shape):
-            raise ValueError(
-                f"x_start expected shape {tuple(shape)}, got {jnp.shape(x_start)}"
-            )
     if noise_mask is not None:
         noise_mask = jnp.asarray(noise_mask, dtype=bool)
         expected_mask = shape[:-1]
@@ -168,8 +153,6 @@ def sample_diffusion(
     elif noise_fn is None:
         injected = None
         xl = noise_schedule[0] * normal(init_key)
-        if x_start is not None:
-            xl = x_start + xl
     else:
         # Materialize the injected draws so the rollout can be scanned. The
         # callback is a pure function of the step index, so this changes only when

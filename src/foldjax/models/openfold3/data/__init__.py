@@ -43,6 +43,10 @@ from foldjax.models.openfold3.data.featurize import (
     validate_output_metadata,
 )
 from foldjax.models.openfold3.data.msa import MAIN_STEM, PAIRED_STEM, attach_msas
+from foldjax.models.openfold3.data.pocket_constraints import (
+    POCKET_SAMPLING_FEATURES,
+    pocket_sampling_config,
+)
 
 __all__ = [
     "COMPACT_MSA_PRIVATE_FEATURES",
@@ -53,6 +57,7 @@ __all__ = [
     "OUTPUT_PREFIX",
     "OutputMetadata",
     "PAIRED_STEM",
+    "POCKET_SAMPLING_FEATURES",
     "PRIVATE_MODEL_FEATURES",
     "attach_msas",
     "collapse_identical_templates",
@@ -69,6 +74,7 @@ __all__ = [
     "normalize_asym_ids",
     "output_metadata_from_atom_array",
     "pad_features",
+    "pocket_sampling_config",
     "prepare_msa_cycle_features",
     "save_preparsed_msas",
     "save_template_cache",

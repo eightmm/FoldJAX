@@ -30,6 +30,26 @@ unless it says so here, in its own paragraph.
   file as `template_cif_paths`. Template indices are 0-based, as AlphaFold 3's,
   and a query index outside the sequence is refused.
 
+- **OpenFold3 folds a native query's `pocket_constraint` as upstream v0.5.0
+  does,** instead of refusing it: the `pocket_sampling_*` features with
+  upstream's released settings, then a second, partial rollout from ligand
+  poses proposed in the pocket. Features match upstream bit for bit and the
+  proposal search replays upstream's draws to 2.4e-6 Å on CPU. `--padding`
+  and `cp_devices > 1` are refused for such a query, and admission records it
+  as `unknown` (`exceeds_profile: pocket-guided sampling`). See
+  [docs/openfold3.md](docs/openfold3.md#pocket-constraints).
+
+- **A common-schema pocket constraint:** `constraints: [{pocket: {binder,
+  contacts, max_distance}}]` (Python: `Job(pockets=[Pocket(...)])`). Boltz-2,
+  OpenFold3 and Protenix translate it into their native pocket field, with each
+  upstream's default `max_distance` when omitted (6.0 and 4.0 Å; Protenix has
+  none and requires it) and the value used recorded under the manifest's new
+  `constraints`; OpenDDE drops it as upstream drops a constraint, recorded
+  under `ignored_constraints` (now `[]` rather than `null` for its common
+  jobs); AlphaFold 3 and ESMFold2 refuse it. `pocket_constraints` moves from
+  those three models' `native_only_features` to `common_schema_features`. See
+  [docs/input.md](docs/input.md#pocket-constraints).
+
 ### Changed
 
 - **A Boltz-2 template's `chain_id` now names the author chain, as it does for
