@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import io
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -12,6 +13,7 @@ import numpy as np
 import pytest
 
 import foldjax
+from foldjax import progress
 from foldjax.backends.base import Backend
 from foldjax.manifest import MANIFEST_NAME
 from foldjax.registry import backend_override
@@ -418,25 +420,55 @@ def test_model_repair_invalidates_resume(tmp_path, monkeypatch, model, source):
     assert len(calls) == 2
 
 
-@pytest.mark.parametrize(
-    "identity",
-    [
-        "input_format",
-        "model",
-        "weights",
-        "profile",
-        "seed",
-        "msa",
-        "sampling",
-        "options",
-        "padding",
-        "representations",
-        "stop_after",
-    ],
-)
-def test_changed_request_identity_forces_a_rerun(tmp_path: Path, identity: str) -> None:
+#: The reason the resume path gives for refusing the old run, per changed
+#: field. Asserting it, not only the rerun, is what makes each row test its own
+#: check: a run that reruns for another field's reason passes a call count with
+#: this field's check deleted.
+_IDENTITY_REASONS = {
+    "input_format": "the input format differs",
+    "model": "the model differs",
+    "weights": "the weights changed on disk",
+    "profile": "the weight profile differs",
+    "seed": "the seed differs",
+    "msa": "the msa policy differs",
+    "sampling": "the sampling settings differ",
+    "options": "the options differ",
+    "padding": "the padding differs",
+    "representations": "the requested representations differ",
+    "stop_after": "stop_after differs",
+    "templates": "the templates policy differs",
+    "template_max_date": "the template date cutoff differs",
+}
+
+
+def _refusals(messages: io.StringIO) -> list[str]:
+    return [
+        line for line in messages.getvalue().splitlines() if "not resumable" in line
+    ]
+
+
+@pytest.fixture
+def resume_messages(monkeypatch) -> io.StringIO:
+    stream = io.StringIO()
+    monkeypatch.setattr(progress, "_enabled", True)
+    monkeypatch.setattr(progress, "_stream", stream)
+    return stream
+
+
+@pytest.mark.parametrize("identity", list(_IDENTITY_REASONS))
+def test_changed_request_identity_forces_a_rerun(
+    tmp_path: Path, identity: str, resume_messages: io.StringIO
+) -> None:
     calls: list[tuple[str, str, int]] = []
-    request = _request(tmp_path)
+    # A date cutoff exists only under a template search, so both runs search.
+    request = _request(
+        tmp_path,
+        **(
+            {"templates": "auto", "template_max_date": "2020-01-01"}
+            if identity == "template_max_date"
+            else {}
+        ),
+    )
     changes = {
         "input_format": {"input_format": "alternate-native"},
         "model": {"model": "opendde"},
@@ -449,6 +481,8 @@ def test_changed_request_identity_forces_a_rerun(tmp_path: Path, identity: str) 
         "padding": {"padding": PaddingConfig(tokens=16)},
         "representations": {"representations": ("pair",)},
         "stop_after": {"stop_after": "trunk"},
+        "templates": {"templates": "auto"},
+        "template_max_date": {"template_max_date": "2021-01-01"},
     }[identity]
 
     with _backends(calls):
@@ -459,6 +493,51 @@ def test_changed_request_identity_forces_a_rerun(tmp_path: Path, identity: str) 
 
     assert len(calls) == 2
     assert resumed.skipped == ()
+    (refusal,) = _refusals(resume_messages)
+    assert refusal.endswith(f": {_IDENTITY_REASONS[identity]}; running it again")
+
+
+def test_an_input_that_resolves_to_another_file_forces_a_rerun(
+    tmp_path: Path, resume_messages: io.StringIO
+) -> None:
+    """Same path, same bytes, another file: the resolved path is identity too."""
+    request = _request(tmp_path)
+    original = request.input.with_name("original.json")
+    replacement = request.input.with_name("replacement.json")
+    request.input.rename(original)
+    replacement.write_bytes(original.read_bytes())
+    request.input.symlink_to(original.name)
+
+    calls: list[tuple[str, str, int]] = []
+    with _backends(calls):
+        foldjax.predict(request)
+        request.input.unlink()
+        request.input.symlink_to(replacement.name)
+        resumed = foldjax.predict_batch(dataclasses.replace(request, resume=True))
+
+    assert len(calls) == 2
+    assert resumed.skipped == ()
+    (refusal,) = _refusals(resume_messages)
+    assert refusal.endswith(": the input resolves to another file; running it again")
+
+
+def test_unverifiable_recorded_dependencies_are_not_reused(
+    tmp_path: Path, resume_messages: io.StringIO
+) -> None:
+    request = _request(tmp_path)
+    calls: list[tuple[str, str, int]] = []
+    with _backends(calls):
+        foldjax.predict(request)
+        path = request.output_dir / MANIFEST_NAME
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["input_dependencies"]["verifiable"] = False
+        path.write_text(json.dumps(document), encoding="utf-8")
+        resumed = foldjax.predict_batch(dataclasses.replace(request, resume=True))
+
+    assert len(calls) == 2
+    assert resumed.skipped == ()
+    (refusal,) = _refusals(resume_messages)
+    assert "its input dependencies could not be recorded" in refusal
 
 
 def test_editing_the_input_in_place_forces_a_rerun(tmp_path: Path) -> None:
