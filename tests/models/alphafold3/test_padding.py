@@ -148,7 +148,7 @@ def test_af3_preflights_every_neutral_job_before_returning_work(
     calls = []
 
     def fake_featurize(
-        fold_input, *, buckets, overflow, fixed_target=False, msa_crop_size=None
+        fold_input, *, buckets, overflow, fixed_target=False, msa_crop_size=None, **_
     ):
         calls.append(fold_input)
         if fold_input == "late-overflow":

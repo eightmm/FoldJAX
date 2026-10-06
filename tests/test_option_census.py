@@ -722,6 +722,8 @@ _WHY_NO_STRIP_ENTRY = {
         # protenix/models/predict.py:153 do -- so this port pins nothing and
         # an omitted knob is JAX's default rather than a released value.
         "matmul_precision": "no released default a request can spell",
+        # `run_alphafold.py:305-311` defaults it to `None`, RDKit's own.
+        "conformer_max_iterations": "no released default a request can spell",
     },
     "boltz2": {
         # models/boltz2/api.py:317 defaults it to `None`.

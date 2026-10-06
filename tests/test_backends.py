@@ -1365,7 +1365,7 @@ def test_alphafold3_adapter_routes_padding_through_native_inference(
             return None
 
     def fake_featurize(
-        fold_input, *, buckets, overflow, fixed_target, msa_crop_size=None
+        fold_input, *, buckets, overflow, fixed_target, msa_crop_size=None, **_
     ):
         seen["preflight"] = (buckets, overflow, fixed_target)
         seen["msa_crop_size"] = msa_crop_size

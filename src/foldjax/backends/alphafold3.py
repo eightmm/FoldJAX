@@ -427,8 +427,23 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     # is the released value in the strict sense: the run every recorded
     # AlphaFold 3 measurement describes.
     "deterministic": False,
+    # `run_alphafold.py`'s data-pipeline flags (:286-319), which it hands to
+    # `featurise_input` through `predict_structure`. They change the features
+    # rather than the program; they are compile options so a cache entry
+    # never answers another featurisation. `conformer_max_iterations`
+    # defaults to `None` (RDKit's own) and so never strips.
+    "resolve_msa_overlaps": True,
+    "fix_standalone_glycans": False,
 }
 _MANAGED_CONFIG_DEFAULTS = frozenset({"num_steps", "max_msa_depth"})
+
+#: The `featurise_input` keywords a request may set, in `run_alphafold.py`'s
+#: spelling.
+_FEATURISATION_OPTIONS = (
+    "resolve_msa_overlaps",
+    "fix_standalone_glycans",
+    "conformer_max_iterations",
+)
 
 #: The CCD release cutoff below which a component's model coordinates may stand
 #: in for a conformer RDKit could not generate. ``run_alphafold.py`` passes its
@@ -438,21 +453,54 @@ _MANAGED_CONFIG_DEFAULTS = frozenset({"num_steps", "max_msa_depth"})
 _REF_MAX_MODIFIED_DATE = datetime.date(2021, 9, 30)
 
 
-def _predict_structure_kwargs(predict_structure: Any) -> dict[str, Any]:
-    """The upstream CLI defaults ``predict_structure`` would otherwise lack.
+def _ref_max_modified_date(template_max_date: str | None) -> datetime.date:
+    """The CCD cutoff `run_alphafold.py` derives from its template cutoff.
+
+    Upstream has one flag for both (`--max_template_date`, passed as
+    ``ref_max_modified_date`` at ``run_alphafold.py:1065``), so a request that
+    moves the template cutoff moves this one with it.
+    """
+
+    if template_max_date is None:
+        return _REF_MAX_MODIFIED_DATE
+    return datetime.date.fromisoformat(template_max_date)
+
+
+def _predict_structure_kwargs(
+    predict_structure: Any,
+    *,
+    ref_max_modified_date: datetime.date = _REF_MAX_MODIFIED_DATE,
+    featurisation_options: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The upstream CLI settings ``predict_structure`` would otherwise lack.
 
     An external ``source`` runner is called by signature: a checkout whose
-    ``predict_structure`` has no ``ref_max_modified_date`` cannot take one.
+    ``predict_structure`` has no ``ref_max_modified_date`` cannot take one,
+    and keeps running without it. A featurisation option the request spelled
+    is different -- dropping it would run something other than what was
+    asked -- so a signature that cannot take one is refused by name.
     """
+    featurisation = dict(featurisation_options or {})
     try:
         parameters = inspect.signature(predict_structure).parameters
     except (TypeError, ValueError):
-        return {}
-    accepts = "ref_max_modified_date" in parameters or any(
+        parameters = {}
+    variadic = any(
         parameter.kind is inspect.Parameter.VAR_KEYWORD
         for parameter in parameters.values()
     )
-    return {"ref_max_modified_date": _REF_MAX_MODIFIED_DATE} if accepts else {}
+    refused = sorted(
+        name for name in featurisation if not (variadic or name in parameters)
+    )
+    if refused:
+        raise ValueError(
+            "this AlphaFold3 runner's predict_structure does not take "
+            f"{', '.join(refused)}; drop the option or use the vendored runner"
+        )
+    kwargs = dict(featurisation)
+    if variadic or "ref_max_modified_date" in parameters:
+        kwargs["ref_max_modified_date"] = ref_max_modified_date
+    return kwargs
 
 
 def _validated_buckets(value: Any) -> tuple[int, ...]:
@@ -550,6 +598,8 @@ def _featurize_padded_structure(
     overflow: str,
     fixed_target: bool = False,
     msa_crop_size: int | None = None,
+    ref_max_modified_date: datetime.date = _REF_MAX_MODIFIED_DATE,
+    featurisation_options: Mapping[str, Any] | None = None,
 ) -> tuple[Any, PaddingPlan]:
     """Featurize one job and validate its resolved bucket without inference.
 
@@ -575,7 +625,8 @@ def _featurize_padded_structure(
         buckets=buckets,
         ccd=chemical_components.Ccd(user_ccd=fold_input.user_ccd),
         verbose=True,
-        ref_max_modified_date=_REF_MAX_MODIFIED_DATE,
+        ref_max_modified_date=ref_max_modified_date,
+        **dict(featurisation_options or {}),
         **crop,
     )
     plans: list[PaddingPlan] = []
@@ -609,6 +660,8 @@ def _prepare_padded_jobs(
     overflow: str,
     fixed_target: bool = False,
     msa_crop_size: int | None = None,
+    ref_max_modified_date: datetime.date = _REF_MAX_MODIFIED_DATE,
+    featurisation_options: Mapping[str, Any] | None = None,
 ) -> tuple[tuple[Any, str, Path, Any, PaddingPlan], ...]:
     """Resolve every neutral job before the first model invocation."""
 
@@ -620,6 +673,8 @@ def _prepare_padded_jobs(
             overflow=overflow,
             fixed_target=fixed_target,
             msa_crop_size=msa_crop_size,
+            ref_max_modified_date=ref_max_modified_date,
+            featurisation_options=featurisation_options,
         )
         prepared.append((fold_input, job_name, job_dir, examples, plan))
     return tuple(prepared)
@@ -692,6 +747,7 @@ def _predict_common_representations(
     request: PredictionRequest,
     wanted: tuple[str, ...],
     buckets: tuple[int, ...] | None,
+    featurisation_options: Mapping[str, Any] | None = None,
 ) -> tuple[Any, ...]:
     """Persist real-token model states without invoking downstream early-stop stages."""
     import jax
@@ -707,7 +763,8 @@ def _predict_common_representations(
             buckets=buckets,
             ccd=chemical_components.Ccd(user_ccd=fold_input.user_ccd),
             verbose=True,
-            ref_max_modified_date=_REF_MAX_MODIFIED_DATE,
+            ref_max_modified_date=_ref_max_modified_date(request.template_max_date),
+            **dict(featurisation_options or {}),
         )
     if len(examples) != 1 or len(fold_input.rng_seeds) != 1:
         raise ValueError("AlphaFold3 representations require exactly one seed")
@@ -844,7 +901,9 @@ class AlphaFold3Backend(Backend):
     native_options = frozenset(
         {
             "buckets",
+            "conformer_max_iterations",
             "device",
+            "fix_standalone_glycans",
             "kernel_autotuning",
             # Accepted, and deliberately not answered with an estimate: no
             # peak law is fitted for this port. What they buy here is one
@@ -854,6 +913,7 @@ class AlphaFold3Backend(Backend):
             "memory_budget_gib",
             "memory_check",
             "platform",
+            "resolve_msa_overlaps",
             "return_distogram",
             "return_embeddings",
             "source",
@@ -889,6 +949,7 @@ class AlphaFold3Backend(Backend):
         "attention_backend",
         "return_embeddings",
         "return_distogram",
+        *_FEATURISATION_OPTIONS,
     )
 
     def __init__(self) -> None:
@@ -1071,8 +1132,21 @@ class AlphaFold3Backend(Backend):
         # A malformed mode or budget is still a malformed request, and
         # `foldjax plan` reaches this and never reaches the run.
         validate_memory_policy_options(options)
-        for name in ("return_embeddings", "return_distogram"):
-            _strict_boolean(options.get(name, False), name=name)
+        for name in (
+            "return_embeddings",
+            "return_distogram",
+            "resolve_msa_overlaps",
+            "fix_standalone_glycans",
+        ):
+            if name in options:
+                _strict_boolean(options[name], name=name)
+        if options.get("conformer_max_iterations") is not None:
+            # `run_alphafold.py:305-311`: `lower_bound=0`.
+            _strict_integer(
+                options["conformer_max_iterations"],
+                name="conformer_max_iterations",
+                minimum=0,
+            )
         if "buckets" in options:
             _validated_buckets(options["buckets"])
         if "device" in options:
@@ -1240,6 +1314,16 @@ class AlphaFold3Backend(Backend):
             memory_budget_gib = memory_policy.parse_budget_gib(
                 options.pop("memory_budget_gib", None)
             )
+            # Only what the request spelled: an omitted option is the
+            # featuriser's own default, which is upstream's.
+            featurisation = {
+                name: options.pop(name)
+                for name in _FEATURISATION_OPTIONS
+                if name in options
+            }
+            if featurisation.get("conformer_max_iterations", 0) is None:
+                featurisation.pop("conformer_max_iterations")
+            ref_max_modified_date = _ref_max_modified_date(request.template_max_date)
             if options:
                 raise ValueError(
                     f"unsupported AlphaFold 3 options: {', '.join(options)}"
@@ -1351,6 +1435,8 @@ class AlphaFold3Backend(Backend):
                     buckets=buckets,
                     overflow=request.padding.overflow,
                     fixed_target=request.padding.tokens is not None,
+                    ref_max_modified_date=ref_max_modified_date,
+                    featurisation_options=featurisation,
                 )
             else:
                 run_jobs = tuple(
@@ -1395,6 +1481,7 @@ class AlphaFold3Backend(Backend):
                                 request=request,
                                 wanted=wanted,
                                 buckets=buckets,
+                                featurisation_options=featurisation,
                             )
                     elif examples is not None:
                         with matmul_precision():
@@ -1411,7 +1498,9 @@ class AlphaFold3Backend(Backend):
                                 model_runner,
                                 buckets=buckets,
                                 **_predict_structure_kwargs(
-                                    runner.predict_structure
+                                    runner.predict_structure,
+                                    ref_max_modified_date=ref_max_modified_date,
+                                    featurisation_options=featurisation,
                                 ),
                             )
                     if request.stop_after == "full":
