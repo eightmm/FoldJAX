@@ -592,6 +592,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
     sampling_options = SAMPLING_OPTIONS
     boolean_options = frozenset(
         {
+            "full_depth_msa",
             "no_language_model",
             "structure_sample_sequential",
         }

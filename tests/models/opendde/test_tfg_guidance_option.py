@@ -226,7 +226,7 @@ def test_the_adapter_renders_the_switch(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("options", "padding", "message"),
     [
-        ({"use_tfg_guidance": "yes"}, None, "use_tfg_guidance must be a boolean"),
+        ({"use_tfg_guidance": "maybe"}, None, "use_tfg_guidance must be a boolean"),
         ({"use_tfg_guidance": True}, PaddingConfig(), "padding with TFG guidance"),
         (
             {"use_tfg_guidance": True, "deterministic": "on"},
@@ -242,6 +242,18 @@ def test_plan_refuses_what_the_guided_sampler_cannot_run(
     request = dataclasses.replace(_request(tmp_path, **options), padding=padding)
     with pytest.raises(ValueError, match=message):
         OpenDDEBackend().validate_request(request)
+
+
+@pytest.mark.parametrize("spelling", ["false", "off", "no", "0", 0, False])
+def test_an_off_switch_is_not_guidance_under_padding(
+    tmp_path: Path, spelling
+) -> None:
+    # Every switch spelling is one `bool` (`boolean_options`); the padding
+    # check read the raw value, where the string "false" is truthy.
+    request = dataclasses.replace(
+        _request(tmp_path, use_tfg_guidance=spelling), padding=PaddingConfig()
+    )
+    OpenDDEBackend().validate_request(request)
 
 
 def test_the_switch_forks_the_namespace_and_false_does_not(tmp_path: Path) -> None:

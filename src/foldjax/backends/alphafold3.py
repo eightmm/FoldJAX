@@ -921,6 +921,8 @@ class AlphaFold3Backend(Backend):
     sampling_options = SAMPLING_OPTIONS
     boolean_options = frozenset(
         {
+            "fix_standalone_glycans",
+            "resolve_msa_overlaps",
             "return_distogram",
             "return_embeddings",
         }

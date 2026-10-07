@@ -325,6 +325,7 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
             "include_raw",
             "use_rna_msa",
             "use_template",
+            "use_tfg_guidance",
         }
     )
     # OpenDDE has no triangle-kernel option of its own -- it drives Protenix's
@@ -399,7 +400,13 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
 
     def validate_request(self, request: PredictionRequest) -> None:
         super().validate_request(request)
-        if request.padding is not None and request.options.get("use_tfg_guidance"):
+        # The canonical form, where every switch spelling is a `bool`: a raw
+        # `"false"` is a truthy string.
+        if (
+            request.padding is not None
+            and self.canonical_options(request.options).get("use_tfg_guidance")
+            is True
+        ):
             raise ValueError(
                 "padding with TFG guidance is not yet supported; drop "
                 "use_tfg_guidance or --padding"

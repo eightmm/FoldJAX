@@ -171,10 +171,10 @@ def test_featurize_yaml_hands_the_method_to_the_dataset(
     [
         ({"step_scale": 0}, "step_scale must be a positive number"),
         ({"step_scale": True}, "step_scale must be a positive number"),
-        ({"subsample_msa": "yes"}, "subsample_msa must be a boolean"),
+        ({"subsample_msa": "maybe"}, "subsample_msa must be a boolean"),
         ({"num_subsampled_msa": 0}, "num_subsampled_msa must be a positive"),
         ({"method": "cryo"}, "method 'cryo' is not supported"),
-        ({"use_potentials": 1}, "use_potentials must be a boolean"),
+        ({"use_potentials": 2}, "use_potentials must be a boolean"),
         (
             {"use_potentials": True, "steering_args": {"fk_steering": False}},
             "pass it or steering_args, not both",
@@ -201,10 +201,15 @@ def test_plan_accepts_the_switch_without_cp_devices(tmp_path: Path, name: str) -
     Boltz2Backend().validate_request(_request(tmp_path, **{name: True}))
 
 
+@pytest.mark.parametrize("spelling", [True, "true", "on", "yes", 1])
 @pytest.mark.parametrize("name", ["subsample_msa", "use_potentials"])
-def test_padding_refuses_the_options_it_cannot_carry(tmp_path: Path, name: str) -> None:
+def test_padding_refuses_the_options_it_cannot_carry(
+    tmp_path: Path, name: str, spelling
+) -> None:
+    # Every switch spelling is one `bool` (`boolean_options`); the check read
+    # the raw value and let "on" through.
     request = dataclasses.replace(
-        _request(tmp_path, **{name: True}), padding=PaddingConfig()
+        _request(tmp_path, **{name: spelling}), padding=PaddingConfig()
     )
     with pytest.raises(ValueError, match=f"{name} .*drop it or --padding"):
         Boltz2Backend().validate_request(request)

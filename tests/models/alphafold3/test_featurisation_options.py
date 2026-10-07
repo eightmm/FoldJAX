@@ -157,8 +157,8 @@ def test_an_external_runner_without_the_parameter_refuses_a_spelled_option() -> 
 @pytest.mark.parametrize(
     ("options", "message"),
     [
-        ({"resolve_msa_overlaps": "no"}, "resolve_msa_overlaps"),
-        ({"fix_standalone_glycans": 1}, "fix_standalone_glycans"),
+        ({"resolve_msa_overlaps": "maybe"}, "resolve_msa_overlaps"),
+        ({"fix_standalone_glycans": 2}, "fix_standalone_glycans"),
         ({"conformer_max_iterations": -1}, "conformer_max_iterations"),
         ({"conformer_max_iterations": 1.5}, "conformer_max_iterations"),
     ],

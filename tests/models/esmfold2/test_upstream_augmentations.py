@@ -269,7 +269,7 @@ def test_a_masked_embedding_is_not_served_to_another_seed(tmp_path: Path) -> Non
         ({"lm_mask_pct": 1.0}, r"lm_mask_pct must lie in \[0, 1\)"),
         ({"lm_mask_pct": True}, "lm_mask_pct must be a number"),
         ({"msa_column_mask_rate": 1.5}, r"msa_column_mask_rate must lie in \[0, 1\]"),
-        ({"full_depth_msa": "yes"}, "full_depth_msa must be a boolean"),
+        ({"full_depth_msa": "maybe"}, "full_depth_msa must be a boolean"),
         (
             {"full_depth_msa": True, "max_msa_depth": 256},
             "pass one of the two",

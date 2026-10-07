@@ -745,7 +745,9 @@ class Boltz2Backend(Backend):
             "affinity_mw_correction",
             "cp_atom_windows",
             "return_confidence_logits",
+            "subsample_msa",
             "use_msa_server",
+            "use_potentials",
         }
     )
     # Neutral knob -> (this port's name, {neutral value: its value}). Boltz-2
@@ -1558,6 +1560,8 @@ class Boltz2Backend(Backend):
                 "of cropping it, or omit it for an exact-shape run"
             )
         if request.padding is not None:
+            # The canonical form, where every switch spelling is a `bool`.
+            options = self.canonical_options(request.options)
             for name, reason in (
                 (
                     "subsample_msa",
@@ -1570,7 +1574,7 @@ class Boltz2Backend(Backend):
                     "profile",
                 ),
             ):
-                if request.options.get(name) is True:
+                if options.get(name) is True:
                     raise ValueError(f"{name} {reason}; drop it or --padding")
         super().validate_request(request)
 
