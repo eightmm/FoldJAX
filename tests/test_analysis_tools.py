@@ -617,6 +617,38 @@ def test_plan_resources_from_the_law() -> None:
     assert small["state"] == "unknown" and "does not extrapolate" in small["reason"]
 
 
+def test_plan_resources_does_not_size_a_card_outside_the_fitted_composition() -> None:
+    """OpenFold3's law is protein-only; its admission calls a nucleic-acid or
+    ligand run unknown (5NPK peaked 11 GiB over the upper estimate), and the
+    plan must not suggest a card from that estimate either.
+    """
+    from foldjax import memory_policy
+
+    protein = {"type": "protein", "id": ["A", "B"], "sequence": "M" * 600}
+    record = slurm.plan_resources("openfold3", {"entities": [protein]})
+    assert record["state"] == "estimated" and record["min_device_memory_gib"]
+
+    for other, label in (
+        ({"type": "ligand", "id": "L", "smiles": "c1ccccc1"}, "6 nucleic-acid"),
+        ({"type": "dna", "id": "D", "sequence": "ACGT"}, "4 nucleic-acid"),
+        ({"type": "ligand", "id": "L", "ccd": "ATP"}, "at least 1 nucleic-acid"),
+    ):
+        record = slurm.plan_resources("openfold3", {"entities": [protein, other]})
+        assert record["state"] == "unknown"
+        assert record["min_device_memory_gib"] is None
+        assert record["reason"].startswith(label)
+        assert "protein-only" in record["reason"]
+        # The estimate itself stays, as a lower bound.
+        assert record["upper_gib"] == round(
+            memory_policy.OPENFOLD3_CHUNKED_PEAK.upper(record["tokens_estimate"])
+            / 2**30,
+            2,
+        )
+    # Only a law whose admission checks the composition is affected.
+    mixed = {"entities": [protein, {"type": "ligand", "id": "L", "smiles": "CCO"}]}
+    assert slurm.plan_resources("boltz2", mixed)["state"] == "estimated"
+
+
 def test_plan_json_adds_the_slurm_block(tmp_path: Path, capsys) -> None:
     job = write_job(tmp_path / "jobs", "pair")
     weights = tmp_path / "w.jax"

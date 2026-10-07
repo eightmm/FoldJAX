@@ -14,7 +14,9 @@ is byte-identical to the unsharded run's. ``--shard auto`` reads
 `plan_resources` turns a model's fitted device-peak law (`foldjax.memory_policy`)
 into a suggested ``--gres`` and a minimum card size. The laws describe device
 memory only: no host-memory law is calibrated, so ``--mem`` is left to the
-caller rather than guessed.
+caller rather than guessed. A job outside a law's fitted composition (a
+nucleic acid or ligand under OpenFold3's protein-only law) is ``unknown``
+with no card size, as the run's own admission would call it.
 """
 
 from __future__ import annotations
@@ -195,6 +197,29 @@ def estimate_tokens(document: Mapping[str, Any]) -> tuple[int, list[str]]:
     return total, notes
 
 
+def _outside_composition(model: str, document: Mapping[str, Any]) -> str | None:
+    """Why ``model``'s law does not cover this job's composition, if it does not.
+
+    The plan-time half of the check the run's admission makes on its
+    features: any nucleic-acid or ligand entity, counted or not (a CCD
+    ligand's atoms are unknown here, and one token is enough).
+    """
+    if model not in memory_policy.PROTEIN_ONLY_LAWS:
+        return None
+    others = [
+        entity
+        for entity in document.get("entities") or []
+        if isinstance(entity, Mapping)
+        and str(entity.get("type", "")).lower() != "protein"
+    ]
+    if not others:
+        return None
+    counted, uncounted = estimate_tokens({"entities": others})
+    return memory_policy.non_protein_reason(
+        f"at least {max(counted, 1)}" if uncounted else counted
+    )
+
+
 def plan_resources(
     model: str,
     document: Mapping[str, Any] | None,
@@ -261,6 +286,20 @@ def plan_resources(
             ),
         }
     )
+    composition = _outside_composition(model, document)
+    if composition is not None:
+        # What the run's own admission says (`memory_policy.PROTEIN_ONLY_LAWS`):
+        # the estimate stays, as a lower bound, and no card is sized from it.
+        record.update(
+            {
+                "state": "unknown",
+                "min_device_memory_gib": None,
+                "reason": (
+                    f"{composition}: the estimate is a lower bound here, so no "
+                    "card size is suggested"
+                ),
+            }
+        )
     if cp_devices > 1:
         record["note"] = (
             "the law is single-device; with context parallelism the per-card "
