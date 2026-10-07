@@ -105,3 +105,26 @@ def test_the_seed_is_part_of_the_cache_key(tmp_path: Path) -> None:
     assert _input_digest(job, mols, _opts(seed=7)) == _input_digest(
         job, mols, _opts(seed=7)
     )
+
+
+def test_the_key_folds_referenced_file_bytes_into_one_digest(tmp_path: Path) -> None:
+    """The key is one running SHA-256, not a digest of per-file digests.
+
+    Spelled out here so moving the streaming loop into a shared helper cannot
+    change the key every existing feature cache was written under.
+    """
+    import hashlib
+
+    job = tmp_path / "job.yaml"
+    a3m = tmp_path / "hits.a3m"
+    a3m.write_bytes(b">q\nAAAA\n" * 300_000)
+    job.write_text("sequences:\n  - protein:\n      msa: hits.a3m\n")
+    mols = tmp_path / "mols"
+    opts = _opts()
+
+    expected = hashlib.sha256()
+    expected.update(job.read_bytes())
+    expected.update(str(mols).encode())
+    expected.update(repr(opts).encode())
+    expected.update(a3m.read_bytes())
+    assert _input_digest(job, mols, opts) == expected.hexdigest()[:16]

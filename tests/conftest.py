@@ -2,14 +2,15 @@
 
 The ports used to be separate repositories, so each ran pytest in its own
 process and could not observe another's environment. They now share one
-session: OpenDDE's CLI hands asset paths to the Protenix featurizer through
-``os.environ``, and once that ran, later Protenix tests picked up a stale
-``components.cif`` from a deleted tmp directory instead of skipping.
+session: OpenDDE's CLI used to hand asset paths to the Protenix featurizer
+through ``os.environ``, and once that ran, later Protenix tests picked up a
+stale ``components.cif`` from a deleted tmp directory instead of skipping.
 
-The product-side fix lives in ``foldjax.backends.opendde``, which restores these
-around its in-process call. `_restore_process_state` covers tests that invoke
-the native CLIs directly, so no suite can leak into the next regardless of
-ordering.
+The CLI now passes those paths explicitly, and ``foldjax.backends.opendde``
+still restores what the native CLI exports (``JAX_PLATFORMS``).
+`_restore_process_state` covers tests that invoke the native CLIs directly
+or set the ``PROTENIX_*`` variables themselves, so no suite can leak into
+the next regardless of ordering.
 """
 
 from __future__ import annotations
@@ -87,6 +88,37 @@ def _jax_cache_config() -> dict[str, object] | None:
     if jax is None:
         return None
     return {name: getattr(jax.config, name) for name in _JAX_CACHE_CONFIG}
+
+
+@pytest.fixture
+def trust_ancestors_above_tmp_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Judge a compile cache only from ``tmp_path`` down.
+
+    The trust policy walks every ancestor of a cache, so a run whose basetemp
+    sits in a group-writable tree -- a checkout under a directory whose group
+    has a second member -- refuses every cache a test builds, whatever the
+    test is about. Tests of the cache-on path take this fixture;
+    the tests of the ancestor rule itself do not, and still walk to `/`.
+    """
+    from foldjax import cache
+
+    boundary = Path(os.path.realpath(tmp_path))
+
+    def reason(path: Path) -> str | None:
+        leaf = Path(os.path.realpath(path))
+        for directory in (leaf, *leaf.parents):
+            if not directory.is_relative_to(boundary):
+                return None
+            found = cache._untrusted_directory_reason(
+                directory, leaf=directory == leaf
+            )
+            if found is not None:
+                return found
+        return None
+
+    monkeypatch.setattr(cache, "_untrusted_cache_reason", reason)
 
 
 @pytest.fixture(autouse=True)

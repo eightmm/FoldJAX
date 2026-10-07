@@ -233,14 +233,12 @@ def cueq_attention_core(
     the queries the way the XLA path does.
 
     ``precision`` is the FFI's float32 strategy. ``None``, the default, derives
-    it from the active JAX policy, which is what Protenix and OpenFold3 want:
-    their trunks have one precision surface. Boltz-2 has two that deliberately
-    disagree -- a neutral ``jax_default_matmul_precision`` of ``"high"`` and an
-    op-level ``matmul_precision`` string of ``"highest"``, the latter being what
-    its triangle attention ships and what its capture was taken under -- so it
-    passes its own resolved value here. Deriving it instead would move that
-    kernel from IEEE to TF32 and shift the whole trunk; the difference belongs
-    in the call, not in a second implementation of this function.
+    it from the active JAX policy, which is what Protenix and OpenFold3 want.
+    Boltz-2 passes its own resolved op-level string instead: under
+    `api.predict` that equals the policy, but a direct caller of its model
+    stack -- the parity harnesses, pinned to ``"highest"`` -- must reach the
+    kernel with the value it named; the difference belongs in the call, not in
+    a second implementation of this function.
 
     Leading axes beyond those are folded into ``B`` and restored afterwards. The
     kernel takes exactly five dimensions and unpacks them positionally, so a

@@ -30,7 +30,9 @@ def _mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
 
 
-def test_a_private_cache_is_created_without_group_write(tmp_path: Path) -> None:
+def test_a_private_cache_is_created_without_group_write(
+    tmp_path: Path, trust_ancestors_above_tmp_path
+) -> None:
     target = tmp_path / "compile" / "boltz2" / "weights" / "digest"
     previous = os.umask(0o002)
     try:
@@ -100,7 +102,9 @@ def test_the_environment_opts_in_to_a_shared_store(
     assert trusted_compile_cache_dir(target / "boltz2") == target / "boltz2"
 
 
-def test_the_scope_compiles_without_a_cache_it_refuses(tmp_path: Path) -> None:
+def test_the_scope_compiles_without_a_cache_it_refuses(
+    tmp_path: Path, trust_ancestors_above_tmp_path
+) -> None:
     import jax
 
     target = tmp_path / "compile"
@@ -127,3 +131,53 @@ def test_one_directory_warns_once(tmp_path: Path) -> None:
         trusted_compile_cache_dir(target)
         trusted_compile_cache_dir(target)
     assert len(caught) == 1
+
+
+def test_no_backend_latches_the_compile_cache_outside_the_shared_scope() -> None:
+    """Every in-process run selects its cache through `compilation_cache_scope`.
+
+    A raw `jax.config.update` of the directory skips the trust check's
+    refusal path and leaves the setting in force after the call. Allowed:
+    the scope itself, OpenFold3's documented process-wide opt-in for direct
+    library callers, and upstream's byte-identical runner.
+    """
+    import foldjax
+
+    root = Path(foldjax.__file__).parent
+    allowed = {
+        root / "cache.py",
+        root / "models" / "openfold3" / "compilation.py",
+        root / "backends" / "_alphafold3_upstream" / "run_alphafold.py",
+    }
+    offenders = [
+        str(path.relative_to(root))
+        for path in root.rglob("*.py")
+        if path not in allowed
+        and '"jax_compilation_cache_dir", str(' in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
+
+
+def test_boltz2_predict_scopes_its_compile_cache(
+    tmp_path: Path, trust_ancestors_above_tmp_path
+) -> None:
+    import jax
+
+    from foldjax.models.boltz2.api import _scoped_compile_cache
+
+    seen: list[object] = []
+
+    @_scoped_compile_cache
+    def run(*, compile_cache=None):
+        seen.append(jax.config.jax_compilation_cache_dir)
+
+    before = jax.config.jax_compilation_cache_dir
+    run(compile_cache=tmp_path / "private")
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o777)
+    with pytest.warns(RuntimeWarning, match="world-writable"):
+        run(compile_cache=shared / "ns")
+    run()
+    assert seen == [str((tmp_path / "private").resolve()), None, before]
+    assert jax.config.jax_compilation_cache_dir == before

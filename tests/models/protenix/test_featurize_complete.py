@@ -1386,3 +1386,54 @@ def test_covalent_ccd_removes_metadata_defined_leaving_group(monkeypatch):
 def test_invalid_or_unhandled_inputs_fail_explicitly(job, match):
     with pytest.raises((ValueError, FileNotFoundError), match=match):
         featurize_protein_json(job)
+
+
+def test_explicit_assets_reach_the_ccd_and_template_lookups_without_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OpenDDE hands its asset paths to the featurizer instead of exporting them."""
+    for name in (
+        "PROTENIX_CCD_COMPONENTS_FILE",
+        "PROTENIX_CCD_RDKIT_MOL_FILE",
+        "PROTENIX_TEMPLATE_MMCIF_DIR",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "empty-store"))
+    monkeypatch.setattr(featurize_impl, "_EXTERNAL_CCD_ATOMS", OrderedDict())
+    components = tmp_path / "explicit" / "components.cif"
+    components.parent.mkdir()
+    components.write_text(
+        "data_TST\n#\nloop_\n_chem_comp_atom.comp_id\n_chem_comp_atom.atom_id\n"
+        "_chem_comp_atom.type_symbol\n_chem_comp_atom.charge\n"
+        "_chem_comp_atom.pdbx_leaving_atom_flag\nTST CX C 0 N\nTST OX O -1 Y\n#\n",
+        encoding="utf-8",
+    )
+    assets = featurize_impl.FeaturizerAssets(
+        components_cif=components, template_mmcif_dir=tmp_path / "mmcif"
+    )
+
+    with pytest.raises(ValueError, match="requires components.cif"):
+        featurize_impl._external_ccd_atom_metadata("TST")
+    with featurize_impl._assets_in_force(assets):
+        assert featurize_impl._external_ccd_atom_metadata("TST")
+    assert "PROTENIX_CCD_COMPONENTS_FILE" not in os.environ
+
+    seen: list[dict] = []
+
+    def dense(path, **kwargs):
+        seen.append(kwargs)
+        return tuple(np.zeros((4, 3, 1)) for _ in range(3))
+
+    monkeypatch.setattr(featurize_impl, "chain_template_dense", dense)
+    monkeypatch.setattr(featurize_impl, "assemble_template_features", lambda d: d)
+    chain = {
+        "kind": "protein",
+        "sequence": "ACDEF",
+        "templates_path": "hits.a3m",
+        "token_to_sequence_idx": [0, 1, 2],
+    }
+    with featurize_impl._assets_in_force(assets):
+        featurize_impl._assemble_chain_templates([chain])
+    assert seen[0]["mmcif_dir"] == tmp_path / "mmcif"
+    featurize_impl._assemble_chain_templates([chain])
+    assert seen[1]["mmcif_dir"] is None

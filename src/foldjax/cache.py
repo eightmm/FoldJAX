@@ -123,8 +123,13 @@ def weight_identity(weights: Path) -> tuple[str, str]:
     return resolved.name, identity
 
 
-def _device_identity(device: Any) -> dict[str, Any]:
-    """Return stable, public device attributes without retaining a JAX object."""
+def device_identity(device: Any) -> dict[str, Any]:
+    """Return stable, public device attributes without retaining a JAX object.
+
+    The one description of a device. It is digested into every compile-cache
+    namespace (`runtime_profile`), so its output is an on-disk contract;
+    in-process session keys take :func:`device_key` instead.
+    """
 
     def attribute(name: str, default: Any = None) -> Any:
         try:
@@ -152,6 +157,21 @@ def _device_identity(device: Any) -> dict[str, Any]:
     return identity
 
 
+def device_key(device: Any) -> tuple[str, str]:
+    """A hashable, process-local key naming one concrete device.
+
+    For retaining a runner or parameter tree bound to a device: its type plus
+    :func:`device_identity`. A device whose attributes cannot be read gets a
+    key of its own object, so an opaque device splits a session rather than
+    sharing one with another device.
+    """
+    kind = f"{type(device).__module__}.{type(device).__qualname__}"
+    try:
+        return kind, json.dumps(device_identity(device), sort_keys=True)
+    except Exception:  # noqa: BLE001 - an opaque device must split the session
+        return kind, f"unavailable:{id(device)}"
+
+
 def _topology_identity(
     devices: Any,
     *,
@@ -159,7 +179,7 @@ def _topology_identity(
     local_device_count: int,
 ) -> dict[str, Any]:
     """Normalize JAX's selected topology into deterministic JSON."""
-    identities = [_device_identity(device) for device in devices]
+    identities = [device_identity(device) for device in devices]
     identities.sort(key=lambda item: json.dumps(item, sort_keys=True))
     return {
         "process_count": int(process_count),
@@ -254,30 +274,35 @@ def _untrusted_cache_reason(path: Path) -> str | None:
     other account may write to them: not the world (a root-owned sticky
     ancestor such as ``/tmp`` excepted) and not a group with another member.
     """
-    import stat
-
     if not hasattr(os, "geteuid"):  # pragma: no cover - POSIX only
         return None
-    uid = os.geteuid()
     leaf = Path(os.path.realpath(path))
     for directory in (leaf, *leaf.parents):
-        info = os.stat(directory)
-        if not stat.S_ISDIR(info.st_mode):
-            return f"{directory} is not a directory"
-        if info.st_uid not in (uid, 0):
-            return f"{directory} belongs to another user"
-        mode = stat.S_IMODE(info.st_mode)
-        sticky_root = (
-            info.st_uid == 0 and bool(mode & stat.S_ISVTX) and directory != leaf
-        )
-        if mode & stat.S_IWOTH and not sticky_root:
-            return f"{directory} is world-writable"
-        if (
-            mode & stat.S_IWGRP
-            and not sticky_root
-            and not _group_is_only_this_user(info.st_gid)
-        ):
-            return f"{directory} is writable by a group with other members"
+        reason = _untrusted_directory_reason(directory, leaf=directory == leaf)
+        if reason is not None:
+            return reason
+    return None
+
+
+def _untrusted_directory_reason(directory: Path, *, leaf: bool) -> str | None:
+    """`_untrusted_cache_reason` for one directory of the walk, if it fails."""
+    import stat
+
+    info = os.stat(directory)
+    if not stat.S_ISDIR(info.st_mode):
+        return f"{directory} is not a directory"
+    if info.st_uid not in (os.geteuid(), 0):
+        return f"{directory} belongs to another user"
+    mode = stat.S_IMODE(info.st_mode)
+    sticky_root = info.st_uid == 0 and bool(mode & stat.S_ISVTX) and not leaf
+    if mode & stat.S_IWOTH and not sticky_root:
+        return f"{directory} is world-writable"
+    if (
+        mode & stat.S_IWGRP
+        and not sticky_root
+        and not _group_is_only_this_user(info.st_gid)
+    ):
+        return f"{directory} is writable by a group with other members"
     return None
 
 

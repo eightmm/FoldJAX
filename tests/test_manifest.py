@@ -635,6 +635,38 @@ def test_resume_reuses_the_drawn_seed_instead_of_drawing_again(
     assert fresh != {drawn}
 
 
+def test_a_resumed_random_seed_is_not_announced_as_drawn(tmp_path: Path) -> None:
+    """The seed a resume takes back from the manifest was not drawn again."""
+    import io
+
+    from foldjax import progress
+
+    with backend_override("opendde", _Recorder):
+        first = foldjax.predict(_unseeded(tmp_path, resume=True))
+    (drawn,) = [sample.seed for sample in first.samples]
+
+    stream = io.StringIO()
+    progress.enable(stream)
+    try:
+        with backend_override("opendde", _Recorder):
+            foldjax.predict(_unseeded(tmp_path, resume=True))
+    finally:
+        progress.disable()
+    assert "drew" not in stream.getvalue()
+
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    stream = io.StringIO()
+    progress.enable(stream)
+    try:
+        with backend_override("opendde", _Recorder):
+            foldjax.predict(_unseeded(fresh, resume=True))
+    finally:
+        progress.disable()
+    assert "drew" in stream.getvalue()
+    assert f"drew {drawn} " not in stream.getvalue()
+
+
 def test_a_given_seed_is_recorded_as_the_callers(tmp_path: Path) -> None:
     with backend_override("opendde", _Recorder):
         foldjax.predict(_unseeded(tmp_path, seed=0))

@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from foldjax import memory_policy, progress
-from foldjax.cache import PERSISTENT_CACHE_MIN_COMPILE_SECS, trusted_compile_cache_dir
+from foldjax.cache import compilation_cache_scope
 from foldjax.models import _representations
 from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models.opendde.data.compact_categories import (
@@ -111,11 +112,19 @@ def _load_jobs(path: Path) -> list[dict[str, Any]]:
     return load_jobs(path)
 
 
-def _featurize(job: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+def _featurize(
+    job: dict[str, Any],
+    *,
+    asset_paths: Mapping[str, Path] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
     from foldjax.models.opendde.data.featurize_json import featurize_opendde_json
+    from foldjax.models.protenix.data.featurize_json import FeaturizerAssets
 
     with progress.part("featurize"):
-        return featurize_opendde_json(job, **kwargs)
+        return featurize_opendde_json(
+            job, assets=FeaturizerAssets(**(asset_paths or {})), **kwargs
+        )
 
 
 def _load_weights(path: Path) -> Any:
@@ -542,6 +551,31 @@ def run_prediction(
     padding_profiles: list[dict[str, Any]] | None = None,
     _prepared_params_loader: Callable[[Path, str, bool], Any] | None = None,
 ) -> list[Path]:
+    """Run the prediction inside the shared compilation-cache scope.
+
+    The same arrangement as Protenix's `run_prediction`: the scope covers the
+    whole run and gives an in-process caller -- the FoldJAX backend, tests --
+    its JAX cache config back, where a raw ``jax.config.update`` left it
+    overwritten.
+    """
+    with ExitStack() as cache_scope:
+        return _run(
+            config,
+            cache_scope=cache_scope,
+            padding=padding,
+            padding_profiles=padding_profiles,
+            _prepared_params_loader=_prepared_params_loader,
+        )
+
+
+def _run(
+    config: PredictionConfig,
+    *,
+    cache_scope: ExitStack,
+    padding: PaddingConfig | None = None,
+    padding_profiles: list[dict[str, Any]] | None = None,
+    _prepared_params_loader: Callable[[Path, str, bool], Any] | None = None,
+) -> list[Path]:
 
     if padding is not None:
         unsupported = sorted(
@@ -583,25 +617,21 @@ def run_prediction(
 
         guidance_config = upstream_guidance_config()
         print("TFG enabled: using the eager, non-scan diffusion sampler")
-    for path, env_name, label in (
+    # Handed to the featurizer for this run, not exported: the environment is
+    # process-wide, and this runner also runs in-process under FoldJAX, where
+    # an export outlived the run and reached every later prediction.
+    asset_paths: dict[str, Path] = {}
+    for name, path, label in (
+        ("components_cif", config.components_cif, "components.cif"),
+        ("ccd_rdkit_cache", config.ccd_rdkit_cache, "CCD RDKit cache"),
         (
-            config.components_cif,
-            "PROTENIX_CCD_COMPONENTS_FILE",
-            "components.cif",
-        ),
-        (
-            config.ccd_rdkit_cache,
-            "PROTENIX_CCD_RDKIT_MOL_FILE",
-            "CCD RDKit cache",
-        ),
-        (
+            "template_release_dates",
             config.template_release_dates,
-            "PROTENIX_TEMPLATE_RELEASE_DATES_FILE",
             "template release-date cache",
         ),
         (
+            "template_obsolete_map",
             config.template_obsolete_map,
-            "PROTENIX_TEMPLATE_OBSOLETE_FILE",
             "obsolete template map",
         ),
     ):
@@ -609,33 +639,27 @@ def run_prediction(
             continue
         if not path.is_file():
             raise SystemExit(f"missing {label}: {path}")
-        os.environ[env_name] = str(path.expanduser().resolve())
+        asset_paths[name] = path.expanduser().resolve()
     if config.template_mmcif_dir is not None:
         if not config.template_mmcif_dir.is_dir():
             raise SystemExit(
                 f"missing template mmCIF directory: {config.template_mmcif_dir}"
             )
-        os.environ["PROTENIX_TEMPLATE_MMCIF_DIR"] = str(
+        asset_paths["template_mmcif_dir"] = (
             config.template_mmcif_dir.expanduser().resolve()
         )
     if config.kalign_binary is not None:
         kalign_binary = config.kalign_binary.expanduser().resolve()
         if not kalign_binary.is_file() or not os.access(kalign_binary, os.X_OK):
             raise SystemExit(f"missing executable Kalign binary: {kalign_binary}")
-        os.environ["PROTENIX_KALIGN_BINARY"] = str(kalign_binary)
+        asset_paths["kalign_binary"] = kalign_binary
     if config.cpu_only:
         os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
     if config.compile_cache is not None:
-        import jax
-
-        cache = trusted_compile_cache_dir(config.compile_cache.expanduser().resolve())
-        if cache is not None:
-            jax.config.update("jax_compilation_cache_dir", str(cache))
-            jax.config.update(
-                "jax_persistent_cache_min_compile_time_secs",
-                PERSISTENT_CACHE_MIN_COMPILE_SECS,
-            )
+        cache_scope.enter_context(
+            compilation_cache_scope(config.compile_cache.expanduser().resolve())
+        )
 
     # Returned so a caller knows which files *this* run produced. FoldJAX used
     # to recover them by globbing the output tree, which cannot tell a
@@ -766,6 +790,7 @@ def run_prediction(
                     seed=seed,
                     use_template=config.use_template,
                     use_rna_msa=config.use_rna_msa,
+                    asset_paths=asset_paths,
                 )
                 guidance_features = None
                 if guidance_config is not None:

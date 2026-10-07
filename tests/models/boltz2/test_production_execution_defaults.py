@@ -96,22 +96,9 @@ def _scope_program() -> str:
     return jax.jit(lambda a, b: jnp.matmul(a, b)).lower(operand, operand).as_text()
 
 
-def _triangle_pin_program(dtype: str = "float32") -> str:
-    """One triangle-attention layer, called the way the product calls it.
-
-    No `matmul_precision` argument, because `api.predict` passes none: this is
-    the second precision surface, the one the neutral knob does not reach.
-    Lowered with float32 parameters by default, the arm where the attribute
-    has float32 operands to act on.
-    """
-
-    import jax
+def _triangle_params(dtype: str = "float32"):
     import jax.numpy as jnp
     import numpy as np
-
-    from foldjax.models.boltz2.models.triangle.triangle_attention import (
-        triangle_attention_forward,
-    )
 
     element = jnp.dtype(dtype)
     rng = np.random.default_rng(0)
@@ -121,7 +108,7 @@ def _triangle_pin_program(dtype: str = "float32") -> str:
     def weight(*shape):
         return jnp.asarray(rng.standard_normal(shape) * 0.1, dtype=element)
 
-    params = {
+    return {
         "layer_norm": {"scale": weight(dim), "bias": weight(dim)},
         "linear": {"kernel": weight(dim, heads)},
         "mha": {
@@ -130,18 +117,50 @@ def _triangle_pin_program(dtype: str = "float32") -> str:
         }
         | {"linear_o": {"kernel": weight(inner, dim)}},
     }
+
+
+def _triangle_pin_program(
+    dtype: str = "float32", matmul_precision: str | None = None
+) -> str:
+    """One triangle-attention layer, called the way the product calls it.
+
+    ``matmul_precision`` is the op-level string; `None` takes what
+    `api.predict` hands the model stack (`predict_kwargs["matmul_precision"]`,
+    the resolved neutral knob). Lowered with float32 parameters by default,
+    the arm where the attribute has float32 operands to act on.
+    """
+    from foldjax.execution import resolved_matmul_precision
+    from foldjax.models.boltz2.api import MATMUL_PRECISION
+
+    if matmul_precision is None:
+        matmul_precision = resolved_matmul_precision(MATMUL_PRECISION)
+
+    import jax
+    import jax.numpy as jnp
+
+    from foldjax.models.boltz2.models.triangle.triangle_attention import (
+        triangle_attention_forward,
+    )
+
+    params = _triangle_params(dtype)
     return (
         jax.jit(
             triangle_attention_forward,
-            static_argnames=("starting", "chunk_size", "triangle_backend"),
+            static_argnames=(
+                "starting",
+                "chunk_size",
+                "triangle_backend",
+                "matmul_precision",
+            ),
         )
         .lower(
             params,
-            jnp.zeros((1, 6, 6, dim), jnp.float32),
+            jnp.zeros((1, 6, 6, 8), jnp.float32),
             jnp.ones((1, 6, 6), jnp.float32),
             starting=True,
             chunk_size=0,
             triangle_backend="xla",
+            matmul_precision=matmul_precision,
         )
         .as_text()
     )
@@ -233,46 +252,101 @@ def _split_by_pin(text: str) -> tuple[set[str], set[str]]:
     ("request_value", "scope"),
     [(None, "HIGH, HIGH"), ("high", "HIGH, HIGH"), ("highest", "HIGHEST, HIGHEST")],
 )
-def test_the_neutral_knob_does_not_move_the_triangle_attention_pin(
+def test_the_neutral_knob_reaches_the_triangle_attention_pin(
     request_value: str | None, scope: str
 ) -> None:
-    """The port has two precision surfaces and the knob reaches only one.
+    """One precision surface: the four projections follow the knob too.
 
-    `triangle_attention_forward` turns its `matmul_precision` string into a
-    `jax.lax.Precision` and passes it explicitly to the four projections, so
-    those dots keep it whatever `jax.default_matmul_precision` says.
-    `api.predict` passes no such string, so they stay at the signature default
-    float32 while every dot beside them -- including the two contractions in
-    the same function -- follows the scope to TF32.
-
-    That asymmetry is the state the 2026-09-11 GPU measurement was taken in:
-    the measured arm moved the neutral knob and nothing else. Pinning it here
-    is what keeps the shipped default equal to the arm that was measured, and
-    it fails if a future edit wires the two surfaces together -- a real
-    change with its own accuracy gate, not a tidy-up.
+    `triangle_attention_forward` turns its `matmul_precision` string into an
+    explicit `jax.lax.Precision` on its four projections, which beats
+    `jax.default_matmul_precision`. `api.predict` passes the resolved neutral
+    knob as that string, so the pinned dots and the score/P@V contractions
+    beside them -- which carry no `precision=` and take the scope -- agree.
+    Until 2026-10-06 the projections stayed `HIGHEST` under every request.
     """
 
     pinned, inherited = _split_by_pin(_inside(request_value, _triangle_pin_program))
 
-    assert pinned == {"HIGHEST, HIGHEST"}
+    assert pinned == {scope}
     assert inherited == {scope}
 
 
-def test_wiring_the_two_surfaces_together_cannot_happen_quietly() -> None:
-    """The op-level resolver refuses the spelling the neutral knob uses.
-
-    A future edit that fed the resolved neutral value into the op-level string
-    would hand it `"high"`, and this is what makes that loud on the first
-    prediction instead of silently compiling a program nothing measured. It is
-    part of the cost of unifying the surfaces, and it is deliberate.
-    """
+def test_the_op_level_resolver_takes_the_neutral_spelling() -> None:
+    import jax
 
     from foldjax.models.boltz2.models.triangle.triangle_attention import (
         resolve_matmul_precision,
     )
 
-    with pytest.raises(ValueError, match="Unsupported matmul_precision: 'high'"):
-        resolve_matmul_precision("high")
+    assert resolve_matmul_precision("high") == jax.lax.Precision.HIGH
+    assert resolve_matmul_precision("highest") == jax.lax.Precision.HIGHEST
+    with pytest.raises(ValueError, match="Unsupported matmul_precision"):
+        resolve_matmul_precision("medium")
+
+
+@pytest.mark.parametrize(
+    ("request_value", "expected"),
+    [(None, "high"), ("high", "high"), ("highest", "highest")],
+)
+def test_predict_hands_the_model_stack_the_resolved_knob(
+    tmp_path, monkeypatch, request_value: str | None, expected: str
+) -> None:
+    """The wiring itself: what `api.predict` passes `boltz2_predict`."""
+    from foldjax.execution import matmul_precision_scope
+    from tests.models.boltz2.test_compact_categories import _managed_model_features
+
+    seen: list[dict] = []
+    with matmul_precision_scope(request_value):
+        _managed_model_features(tmp_path, monkeypatch, kwargs_seen=seen)
+    assert {kwargs["matmul_precision"] for kwargs in seen} == {expected}
+
+
+def test_routing_the_knob_leaves_the_released_trunk_bit_identical_on_cpu() -> None:
+    """CPU parity for the default: `high` and `highest` give the same bits.
+
+    At the released bfloat16 trunk every triangle-attention kernel is
+    bfloat16 and `_linear` narrows the activation to match, so the four
+    projections have no float32 operand for the attribute to act on. XLA:CPU
+    also ignores the attribute for float32 dots, so this cannot show what a
+    GPU does under `dtype=float32` -- that arm moves to TF32 there, unmeasured.
+    """
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    from foldjax.models.boltz2.models.triangle.triangle_attention import (
+        triangle_attention_forward,
+    )
+
+    rng = np.random.default_rng(1)
+    x = jnp.asarray(rng.standard_normal((1, 6, 6, 8)), jnp.float32)
+    mask = jnp.ones((1, 6, 6), jnp.float32)
+    run = jax.jit(
+        triangle_attention_forward,
+        static_argnames=(
+            "starting",
+            "chunk_size",
+            "triangle_backend",
+            "matmul_precision",
+        ),
+    )
+    for dtype in ("bfloat16", "float32"):
+        params = _triangle_params(dtype)
+        outputs = [
+            np.asarray(
+                run(
+                    params,
+                    x,
+                    mask,
+                    starting=True,
+                    chunk_size=0,
+                    triangle_backend="xla",
+                    matmul_precision=precision,
+                )
+            )
+            for precision in ("highest", "high")
+        ]
+        assert outputs[0].tobytes() == outputs[1].tobytes(), dtype
 
 
 def test_the_op_level_pin_is_inert_on_the_released_trunk() -> None:

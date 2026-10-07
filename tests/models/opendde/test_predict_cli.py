@@ -298,18 +298,24 @@ def test_predict_cli_runs_native_json_to_ranked_output(
     assert featurize_calls[0][1]["seed"] == 101
     assert featurize_calls[0][1]["use_template"] is True
     assert featurize_calls[0][1]["use_rna_msa"] is True
-    assert os.environ["PROTENIX_CCD_COMPONENTS_FILE"] == str(components_path.resolve())
-    assert os.environ["PROTENIX_CCD_RDKIT_MOL_FILE"] == str(rdkit_cache_path.resolve())
-    assert os.environ["PROTENIX_TEMPLATE_MMCIF_DIR"] == str(
-        template_mmcif_dir.resolve()
-    )
-    assert os.environ["PROTENIX_TEMPLATE_RELEASE_DATES_FILE"] == str(
-        template_release_dates.resolve()
-    )
-    assert os.environ["PROTENIX_TEMPLATE_OBSOLETE_FILE"] == str(
-        template_obsolete_map.resolve()
-    )
-    assert os.environ["PROTENIX_KALIGN_BINARY"] == str(kalign_binary.resolve())
+    # Handed to the featurizer for the run, never exported process-wide.
+    assert featurize_calls[0][1]["asset_paths"] == {
+        "components_cif": components_path.resolve(),
+        "ccd_rdkit_cache": rdkit_cache_path.resolve(),
+        "template_mmcif_dir": template_mmcif_dir.resolve(),
+        "template_release_dates": template_release_dates.resolve(),
+        "template_obsolete_map": template_obsolete_map.resolve(),
+        "kalign_binary": kalign_binary.resolve(),
+    }
+    for name in (
+        "PROTENIX_CCD_COMPONENTS_FILE",
+        "PROTENIX_CCD_RDKIT_MOL_FILE",
+        "PROTENIX_TEMPLATE_MMCIF_DIR",
+        "PROTENIX_TEMPLATE_RELEASE_DATES_FILE",
+        "PROTENIX_TEMPLATE_OBSOLETE_FILE",
+        "PROTENIX_KALIGN_BINARY",
+    ):
+        assert name not in os.environ
     assert f"wrote: {expected_path.parent}" in capsys.readouterr().out
 
     calls.clear()

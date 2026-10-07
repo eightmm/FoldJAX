@@ -39,6 +39,10 @@ from foldjax.schema import PredictionRequest
 from tests.models.cp_probe_env import inherited_environment
 from tests.models.openfold3.feature_fixture import minimal_features
 
+# These tests exercise the persistent cache being on, not the trust rule, so
+# they must not depend on whether the host's basetemp ancestors are private.
+pytestmark = pytest.mark.usefixtures("trust_ancestors_above_tmp_path")
+
 
 def _config(**changes) -> inference.InferenceConfig:
     config = inference.InferenceConfig(
@@ -843,8 +847,9 @@ def test_retargeted_cache_symlink_is_repopulated_on_memory_hit(
     inference._compiled_predict.clear_cache()
     first = tmp_path / "cache-a"
     second = tmp_path / "cache-b"
-    # Owner-only, as the compile-cache trust check requires: under a
-    # group-writable umask (0002) a plain mkdir() makes a directory it refuses.
+    # Owner-only, not the umask's: under a collaborative 0002 umask a plain
+    # `mkdir` is 0775, and on a host whose user-private group has a second
+    # member the trust policy rightly refuses both caches.
     first.mkdir(mode=0o700)
     second.mkdir(mode=0o700)
     scope = tmp_path / "cache"

@@ -21,6 +21,7 @@ import requests
 from requests.auth import HTTPBasicAuth
 from tqdm import tqdm
 
+from foldjax.search import msa as _search_msa
 from foldjax.search.msa import require_https
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,38 @@ def _retry(
             time.sleep(delay)
 
     raise AssertionError("unreachable")
+
+
+def _stream_capped(
+    response: requests.Response, destination: Path, *, host_url: str
+) -> requests.Response:
+    """Write a successful response's body to ``destination``, refusing a huge one.
+
+    The same ceiling as the shared MSA client's (`search.msa.MAX_REMOTE_BYTES`):
+    a server, or anything answering for one, decides how much this process
+    writes, and an archive of alignments has no business above it. A non-2xx
+    response is handed back unread for `_retry` to report.
+    """
+    if not 200 <= response.status_code < 300:
+        # Unread, so release the streamed connection; the status is all
+        # `_retry` reads.
+        response.close()
+        return response
+    limit = _search_msa.MAX_REMOTE_BYTES
+    written = 0
+    try:
+        with destination.open("wb") as handle:
+            for chunk in response.iter_content(chunk_size=1 << 20):
+                written += len(chunk)
+                if written > limit:
+                    raise RuntimeError(
+                        f"MSA server {host_url} sent more than {limit} bytes "
+                        "for one result archive; refused"
+                    )
+                handle.write(chunk)
+    finally:
+        response.close()
+    return response
 
 
 def _json_response(response: requests.Response, *, operation: str) -> dict[str, Any]:
@@ -293,18 +326,29 @@ def run_mmseqs2(  # noqa: C901, PLR0912, PLR0915
 
             partial_path = archive_path.with_name(f"{archive_path.name}.part")
             partial_path.unlink(missing_ok=True)
-            download = _retry(
-                lambda: requests.get(
-                    f"{host_url}/result/download/{job_id}",
-                    timeout=request_timeout,
-                    allow_redirects=False,
-                    headers=headers,
-                    auth=auth,
-                ),
-                description="result download",
-                max_retries=max_retries,
-            )
-            partial_path.write_bytes(download.content)
+            try:
+                # Streamed inside the retried operation: with `stream=True` a
+                # body that breaks off mid-transfer raises from `iter_content`,
+                # and that is the failure a retry is for.
+                _retry(
+                    lambda: _stream_capped(
+                        requests.get(
+                            f"{host_url}/result/download/{job_id}",
+                            timeout=request_timeout,
+                            allow_redirects=False,
+                            headers=headers,
+                            auth=auth,
+                            stream=True,
+                        ),
+                        partial_path,
+                        host_url=host_url,
+                    ),
+                    description="result download",
+                    max_retries=max_retries,
+                )
+            except BaseException:
+                partial_path.unlink(missing_ok=True)
+                raise
             partial_path.replace(archive_path)
             progress.update(max(estimate - progress.n, 0))
 

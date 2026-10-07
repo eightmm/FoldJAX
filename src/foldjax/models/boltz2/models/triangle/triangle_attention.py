@@ -76,23 +76,21 @@ def resolve_matmul_precision(matmul_precision: str) -> jax.lax.Precision:
     """Map a matmul-precision string to a ``jax.lax.Precision``.
 
     ``"highest"`` -> ``Precision.HIGHEST`` (fp32 accumulation, the bit-exact
-    default). ``"default"``/``"tensorfloat32"`` -> ``Precision.DEFAULT`` (TF32
-    tensor-core accumulation on GPU). Callers selecting a relaxed precision
-    should also set ``jax.config jax_default_matmul_precision`` to match so that
-    the unpinned matmuls use the same path (the trunk entry does this).
+    default). ``"high"`` -> ``Precision.HIGH``, the TF32 strategy the neutral
+    ``matmul_precision`` knob selects for every other dot (`jax`'s ``"high"``
+    is ``"tensorfloat32"``). ``"default"``/``"tensorfloat32"`` ->
+    ``Precision.DEFAULT``.
 
-    **There is deliberately no ``"high"``**, the spelling the neutral
-    ``matmul_precision`` knob uses. This function is reached only by the
-    op-level string, which `api.predict` does not set and which therefore
-    stays at its signature default while the port's scope ships ``"high"``
-    (see `api.MATMUL_PRECISION`). Accepting ``"high"`` here would make a
-    future edit that wires the two together compile quietly; refusing it
-    makes that edit raise on the first prediction instead. Adding it is part
-    of the cost of unifying the two surfaces, not a tidy-up.
+    `api.predict` passes the resolved neutral knob, so this op-level string
+    follows the same request as the scope around it: one precision surface.
+    Direct callers of the model stack -- the parity harnesses -- keep the
+    signature default ``"highest"``.
     """
     key = matmul_precision.lower()
     if key in ("highest", "float32", "fp32"):
         return jax.lax.Precision.HIGHEST
+    if key == "high":
+        return jax.lax.Precision.HIGH
     if key in ("default", "tensorfloat32", "tf32"):
         return jax.lax.Precision.DEFAULT
     msg = f"Unsupported matmul_precision: {matmul_precision!r}"
@@ -485,12 +483,9 @@ def _attention(
         )
 
         # `precision` is passed rather than left to the shared wrapper's
-        # default, which derives it from `jax_default_matmul_precision`. This
-        # port's two precision surfaces deliberately disagree -- the neutral
-        # knob ships "high", the op-level string ships "highest" -- so deriving
-        # it here would move the fused kernel from IEEE to TF32 and shift the
-        # whole trunk capture. `resolve_matmul_precision` refusing the spelling
-        # "high" is the tripwire for the edit that would do it.
+        # default, which derives it from `jax_default_matmul_precision`: under
+        # `api.predict` the two agree, but a direct caller's op-level string
+        # (the parity harnesses pin "highest") must reach the fused kernel.
         out = cueq_attention_core(
             q,
             k,

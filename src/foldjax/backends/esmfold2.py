@@ -85,6 +85,45 @@ DEFAULTS = {
     "max_msa_depth": 1024,
 }
 
+#: What the managed release checkpoint's `config.json` sets for the two knobs
+#: it decides (`num_diffusion_samples`, `structure_head.inference_num_steps`).
+#: Reported only where no checkpoint has been named yet -- `foldjax
+#: capabilities` -- and never used to run: the model reads its own config. A
+#: test pins these to the managed file when it is present.
+_RELEASED_CHECKPOINT_SAMPLING: Mapping[str, int] = {
+    "num_samples": 32,
+    "num_steps": 14,
+}
+
+
+def _checkpoint_sampling(weights: Path) -> dict[str, int | None]:
+    """The sample and step counts a checkpoint's `config.json` sets, if readable.
+
+    The keys and nesting `models/esmfold2/models/model.settings_from_config`
+    reads. A missing key is reported as unknown rather than as the dataclass
+    fallback the loader would apply.
+    """
+    root = weights.parent if weights.is_file() else weights
+    try:
+        config = json.loads((root / "config.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return {}
+    if not isinstance(config, Mapping):
+        return {}
+    head = config.get("structure_head")
+    values = {
+        "num_samples": config.get("num_diffusion_samples"),
+        "num_steps": head.get("inference_num_steps")
+        if isinstance(head, Mapping)
+        else None,
+    }
+    return {
+        knob: int(value)
+        if isinstance(value, int) and not isinstance(value, bool)
+        else None
+        for knob, value in values.items()
+    }
+
 # These are the only ESMFold2 compile defaults whose omitted resolution is
 # independent of checkpoint configuration. The managed recycle value is
 # injected into every effective request and retained in its compile identity.
@@ -1022,6 +1061,28 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # identity, including omitted requests.
         options.setdefault("num_recycles", DEFAULTS["num_recycles"])
         return options
+
+    def _omitted_sampling(
+        self, request: PredictionRequest, options: Mapping[str, Any]
+    ) -> dict[str, tuple[int | None, str]]:
+        """Samples and steps are the checkpoint's own `config.json` values.
+
+        Read from the checkpoint the request names, the file the loader reads
+        (`structure_model.settings_from_config`). With no weights yet -- a
+        capability query -- the managed release's are reported
+        (:data:`_RELEASED_CHECKPOINT_SAMPLING`); a named checkpoint whose
+        config cannot be read is left unclaimed rather than given the
+        release's numbers.
+        """
+        found = super()._omitted_sampling(request, options)
+        values: Mapping[str, int | None]
+        if request.weights is None:
+            values = _RELEASED_CHECKPOINT_SAMPLING
+        else:
+            values = _checkpoint_sampling(Path(request.weights))
+        for knob in ("num_samples", "num_steps"):
+            found[knob] = (values.get(knob), "checkpoint")
+        return found
 
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
         """Keep only proven fixed defaults in the omitted cache namespace.

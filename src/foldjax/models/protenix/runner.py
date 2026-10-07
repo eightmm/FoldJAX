@@ -368,7 +368,10 @@ def _run(
         PROTENIX_MEASURED_CHUNK_SIZE_THRESHOLDS,
         resolve_chunk_config,
     )
-    from foldjax.models.protenix.data.featurize_json import featurize_protein_json
+    from foldjax.models.protenix.data.featurize_json import (
+        FeaturizerAssets,
+        featurize_protein_json,
+    )
     from foldjax.models.protenix.data.output import (
         fix_cterminal_carboxyl_oxygens,
         project_generated_writer_features,
@@ -530,8 +533,9 @@ def _run(
         if not mmcif_dir.is_dir():
             raise SystemExit(f"template mmCIF directory does not exist: {mmcif_dir}")
         # Also enables coordinate resolution for an existing .a3m/.hhr
-        # templatesPath when no automatic search command is requested.
-        os.environ["PROTENIX_TEMPLATE_MMCIF_DIR"] = str(mmcif_dir)
+        # templatesPath when no automatic search command is requested: it is
+        # handed to the featurizer below rather than exported, because the
+        # environment outlived an in-process run.
     if config.template_search_command is not None:
         # Upstream searches templates only under use_template
         # (runner/batch_inference.py:124); without it the featurizer would
@@ -592,10 +596,21 @@ def _run(
 
     try:
         if config.features is not None:
+            static_features = load_static_feature_npz(config.features)
+            if config.stop_after not in {"inputs", "trunk"} and not (
+                config.no_confidence or config.no_confidence_scores
+            ):
+                from foldjax.models.protenix.models.model import (
+                    require_ligand_identity,
+                )
+
+                # Before any weights load: the confidence scores would refuse
+                # it anyway, after the whole trunk and sampler had run.
+                require_ligand_identity(static_features)
             jobs = [
                 {
                     "name": config.features.stem,
-                    "features": load_static_feature_npz(config.features),
+                    "features": static_features,
                     "modelSeeds": None,
                 }
             ]
@@ -644,6 +659,7 @@ def _run(
                             use_rna_msa=config.use_rna_msa,
                             use_template=config.use_template,
                             seed=seed,
+                            assets=FeaturizerAssets(template_mmcif_dir=mmcif_dir),
                         )
                     language_model_profile = None
                     if esm_provider is not None and padding_config is not None:

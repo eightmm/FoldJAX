@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 import warnings
 from collections.abc import Collection, Mapping
 from pathlib import Path
@@ -12,6 +11,7 @@ from typing import Any
 import gemmi
 import numpy as np
 
+from foldjax._fsutil import safe_job_name
 from foldjax.models._output_features import has_complete_output_atom_metadata
 from foldjax.models._output_validation import require_finite_coordinates
 from foldjax.models.protenix.data.static_io import save_output_npz
@@ -57,7 +57,6 @@ _ELEMENTS = (
     "IR PT AU HG TL PB BI PO AT RN FR RA AC TH PA U NP PU AM CM BK CF ES FM "
     "MD NO LR RF DB SG BH HS MT DS RG CN NH FL MC LV TS OG"
 ).split()
-_SAFE_NAME = re.compile(r"[^A-Za-z0-9_.-]+")
 
 # The managed generated-JSON CLI is the only caller allowed to project a
 # writer snapshot to this set.  Direct writer calls and static/custom feature
@@ -401,10 +400,13 @@ def fix_cterminal_carboxyl_oxygens(
 
 
 def sanitize_job_name(name: str) -> str:
-    """Return the filesystem-safe name used by original-style outputs."""
+    """Return the filesystem-safe name used by original-style outputs.
 
-    safe = _SAFE_NAME.sub("_", str(name).strip()).strip("._")
-    return safe or "prediction"
+    FoldJAX's one job-name rule (`foldjax._fsutil.safe_job_name`), so the
+    original-style tree and the common layout name a job the same way.
+    """
+
+    return safe_job_name(name)
 
 
 def _sample_ranks(output: dict[str, Any], num_samples: int) -> np.ndarray:

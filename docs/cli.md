@@ -294,6 +294,27 @@ model with their versions. What a writer already recorded is kept: AlphaFold
 3's metrics and `_software` row, Boltz-2's local metric; only what is missing
 is added.
 
+### What `foldjax plan` prints
+
+`plan` resolves a request without running it and prints one JSON object per
+run. Beside the resolved `model`, `input`, `weights`, `profile`, `output_dir`,
+`cache_dir`, seeds, `msa`/`templates` and public `options`, four fields say
+what the request turns into:
+
+| field | what it holds |
+| --- | --- |
+| `sampling` | each neutral knob (`num_samples`, `num_steps`, `num_recycles`, `max_msa_depth`) at the value this run takes, in the knob's own units: OpenFold3's `num_recycles` counts recycles after the first pass, not its four trunk passes, and a depth above what a port keeps shows the depth it runs |
+| `sampling_source` | per knob, where that value came from: `request` (the knob was set), `option` (a native `--option`, or a managed profile's), `default` (the adapter's own value) or `checkpoint` (the checkpoint or its model variant decides: Protenix's schedule from the model name, ESMFold2's samples and steps from its `config.json`). A `checkpoint` value is `null` only when it cannot be read before the run -- a Protenix weight file whose name says no model, an ESMFold2 checkpoint with no readable `config.json`, an AlphaFold 3 run from an external `source` checkout |
+| `generated_input` | when the job was written from `--sequence`/FASTA rather than read from `--input`, the job document itself; `input` is then the content-keyed path `predict` would write it to. `null` for a job read from disk |
+| `not_checked` | present only under padding: what predict refuses that plan cannot, because it is known only after featurization -- today a `padding.msa` pin below the MSA rows the model stores |
+
+`foldjax capabilities --model MODEL` carries the same values for a request
+that names nothing, as `sampling_defaults`: the default profile's checkpoint
+and every knob omitted. They are what that run takes, not each upstream's own
+CLI default -- AlphaFold 3 reports 3 recycles, the four-pass schedule its
+adapter supplies, where upstream `run_alphafold.py` defaults to 10 (see
+[recycling defaults](recycling-defaults.md)).
+
 ### Outputs
 
 Every model writes the same layout:
@@ -1314,8 +1335,8 @@ record elsewhere in the tree is not a control, however good it was when it
 was taken; card state alone moves a 2,000-token run by more than the effect
 being measured. (The pair above was taken on the snapshot that also unified
 the op-level pin described below. That unification measures as nothing --
-81.96 vs 82.17 s at 1,003, 287.71 vs 287.62 at 2,096 -- so the row describes
-the shipped scope-only default too.)
+81.96 vs 82.17 s at 1,003, 287.71 vs 287.62 at 2,096 -- and is what ships
+since 2026-10-06.)
 
 **Read the two sizes together, because this lever shrinks with length:**
 -7.2% at 1,003 tokens and -4.5% at 2,096, with no memory saving at either.
@@ -1357,25 +1378,26 @@ it, so such a run shares the explicit `highest` entry. An explicit
 than rewritten. The native `api.predict` keeps its `high` pin; a direct caller
 off a GPU opens `jax.default_matmul_precision("highest")` itself.
 
-#### The second precision surface, which this default does not reach
+#### Triangle attention's projections follow the option too
 
 Triangle attention takes a `matmul_precision` *string*
-(`models/predict.py:284`, `:425`), turns it into a `jax.lax.Precision`, and
-passes it explicitly to its four projections -- q/g, k/v, the triangle bias
-and the output linear. An explicit `precision=` beats
-`jax.default_matmul_precision`, so those four dots do not follow the option
-above. `api.predict` sets no such string, so they sit at their signature
-default, `highest`. Inside one triangle-attention layer the two surfaces are
-visible side by side: the four projections stay `HIGHEST` while the score and
-P@V contractions beside them, which carry no `precision=`, follow the option.
+(`models/predict.py`), turns it into a `jax.lax.Precision`, and passes it
+explicitly to its four projections -- q/g, k/v, the triangle bias and the
+output linear -- where an explicit `precision=` beats
+`jax.default_matmul_precision`. `api.predict` hands it the resolved option
+(`predict_kwargs["matmul_precision"]`), so those four dots and the score and
+P@V contractions beside them follow one request: `high` by default,
+`highest` under `--option matmul_precision=highest`.
 
-That asymmetry is not new and the flip did not create it; it is the state the
-measurement above was taken in, which is why the shipped default is
-bit-for-bit that arm.
+Until 2026-10-06 `api.predict` set no such string, and the four projections
+sat at the signature default `highest` under every request; the rows above
+were measured in that state, and a unified build measured the same to within
+noise (81.96 against 82.17 s at 1,003 tokens, 287.71 against 287.62 s at
+2,096). A direct caller of the model stack that names nothing -- the
+checkpoint-parity modules -- still gets `highest`.
 
-**On the released `dtype=bfloat16` it is inert, and the reason is not
-obvious** -- the pin is still spelled `HIGHEST` on those matmuls, so the
-natural assumption is that it is doing something. Two narrowings meet there:
+**On the released `dtype=bfloat16` the change is inert**, and the reason
+is not obvious. Two narrowings meet at those four matmuls:
 
 * `_cast_trunk_params` (`models/trunk_blocks/trunk.py:246`) narrows every
   `*/kernel` in the trunk except four subtrees --
@@ -1394,17 +1416,20 @@ accumulation to choose between. `cuequivariance_ops_jax` agrees
 independently: its `use_tf32` returns False for any non-float32 dtype
 (`_triangle_attention.py:51`) before it reads the precision at all.
 
-#### What unifying the two surfaces would be worth, and what it would cost
+On CPU the released configuration is bit-identical either way
+(`tests/models/boltz2/test_production_execution_defaults.py`); XLA:CPU does
+not act on the attribute for float32 dots either, so that check cannot speak
+for a GPU.
 
-Unifying them was built and measured: at 1,003 tokens the unified default is
-81.96 s against the hybrid's 82.17 s and at 2,096 it is 287.71 s against
-287.62 s -- the same to within noise at both sizes, which is what the
-inertness above predicts. So there is no performance case for it at the
-shipped dtype, and it is not shipped: a unified default would be a program no
-accuracy row describes.
+#### What the change moves under `--option dtype=float32`
 
-Under `--option dtype=float32` the pin is live and worth something. From the
-released checkpoint the trunk Pairformer is 64 layers at `c_z=128` with 4
+An omitted option now runs the four projections at TF32 on a GPU, like the
+rest of the trunk, where they used to stay float32. No GPU accuracy row has
+been taken for that arm; `--option matmul_precision=highest` is the whole
+float32 program, as before.
+
+How much of the trunk that is: from the released checkpoint the trunk
+Pairformer is 64 layers at `c_z=128` with 4
 heads of 32, plus 4 more inside the MSA module and an 8-layer stack in the
 confidence head. Per Pairformer layer, in MACs:
 
@@ -1424,17 +1449,6 @@ It is N² against N³ competition, so it shrinks with length. Layer-passes
 carrying it per released prediction: 64 × 4 recycles, plus 16 in the MSA
 module, plus 8 × 5 samples in the confidence head. Treat these as a FLOP
 share, not a wall prediction.
-
-If anyone does want that row, the recipe is not "edit one constant". Both
-snapshots need `--option dtype=float32`, or the pin has no float32 operand
-and the measurement is of nothing; and the changed snapshot needs **two**
-edits, not one -- `predict_kwargs["matmul_precision"]` added in
-`api.predict`, *and* a `"high" -> Precision.HIGH` arm in
-`triangle_attention.resolve_matmul_precision`, which takes
-`highest`/`float32`/`fp32` and `default`/`tensorfloat32`/`tf32` and raises on
-anything else. That refusal is deliberate: it makes a quiet wiring of the two
-surfaces fail on the first prediction rather than compile a program nothing
-has measured.
 
 #### Harnesses pinned to the old value
 

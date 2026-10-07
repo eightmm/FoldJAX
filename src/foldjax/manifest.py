@@ -660,16 +660,27 @@ def _ccd_chemistry_assets(request: PredictionRequest) -> list[Path] | None:
     from foldjax.paths import assets_dir
 
     managed = assets_dir()
+    # The featurizer's own order (`protenix/data/featurize_json.py`): the
+    # paths a request hands it (OpenDDE's `components_cif`/`ccd_rdkit_cache`
+    # options), then the environment, then the managed store.
+    explicit_components = request.options.get("components_cif")
+    explicit_rdkit = request.options.get("ccd_rdkit_cache")
     rdkit_candidates = []
+    if explicit_rdkit:
+        rdkit_candidates.append(Path(explicit_rdkit))
     configured_rdkit = os.environ.get("PROTENIX_CCD_RDKIT_MOL_FILE")
     if configured_rdkit:
         rdkit_candidates.append(Path(configured_rdkit))
     rdkit_candidates.append(managed / "components.cif.rdkit_mol.pkl")
 
     component_candidates = []
+    if explicit_components:
+        component_candidates.append(Path(explicit_components))
     configured_components = os.environ.get("PROTENIX_CCD_COMPONENTS_FILE")
     if configured_components:
         component_candidates.append(Path(configured_components))
+    if explicit_rdkit:
+        component_candidates.append(Path(explicit_rdkit).with_name("components.cif"))
     if configured_rdkit:
         component_candidates.append(Path(configured_rdkit).with_name("components.cif"))
     component_candidates.append(managed / "components.cif")

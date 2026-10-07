@@ -726,6 +726,10 @@ def chain_template_dense(
     *,
     sequence: str,
     skip: bool,
+    mmcif_dir: str | Path | None = None,
+    release_dates_path: str | Path | None = None,
+    obsolete_pdbs_path: str | Path | None = None,
+    kalign_binary: str | Path | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Build per-chain dense template features padded to ``MAX_TEMPLATES``.
 
@@ -746,8 +750,16 @@ def chain_template_dense(
             resolve_template_search_hits,
         )
 
+        # Explicit paths, else `resolve_template_search_hits` reads the
+        # `PROTENIX_TEMPLATE_*` environment and the managed store.
         template_list = resolve_template_search_hits(
-            path, query_sequence=sequence, max_templates=MAX_TEMPLATES
+            path,
+            query_sequence=sequence,
+            max_templates=MAX_TEMPLATES,
+            mmcif_dir=mmcif_dir,
+            release_dates_path=release_dates_path,
+            obsolete_pdbs_path=obsolete_pdbs_path,
+            kalign_binary=kalign_binary,
         )
     else:
         raise ValueError("templatesPath must end in .json, .a3m, or .hhr")

@@ -669,6 +669,13 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             )
         return options
 
+    def _neutral_sampling_value(self, knob: str, native_value: Any) -> int | None:
+        """The native ``num_recycles`` counts trunk passes; the neutral one does not."""
+        value = super()._neutral_sampling_value(knob, native_value)
+        if knob == "num_recycles" and value is not None:
+            return value - 1
+        return value
+
     def capabilities(self) -> ModelCapabilities:
         raw = InputRequirement(
             preprocessing_runtime="jax",
@@ -819,6 +826,13 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         overrides["memory_check"] = memory_policy.parse_check_mode(
             options.pop("memory_check", None)
         )
+        if "is_protein" in features:
+            # Counted on the unpadded features, before serving padding: the
+            # peak laws were fitted on protein-only inputs, and admission
+            # needs the real composition, not the padded token axis.
+            real = np.asarray(features["token_mask"], dtype=bool)
+            protein = np.asarray(features["is_protein"], dtype=bool)
+            overrides["non_protein_tokens"] = int(np.sum(real & ~protein))
         if chunk is not None:
             overrides["pair_chunk_size"] = int(chunk)
         else:

@@ -16,17 +16,17 @@ import hashlib
 import importlib.util
 import inspect
 import json
-import re
 import sys
 import time
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from foldjax import memory_policy
+from foldjax.assets import AF3_PARAMETER_PATTERNS
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._tokamax_autotune import create_store as _create_tokamax_store
 from foldjax.backends._tokamax_autotune import (
@@ -46,7 +46,7 @@ from foldjax.backends.base import (
     Backend,
     validate_memory_policy_options,
 )
-from foldjax.cache import PERSISTENT_CACHE_MIN_COMPILE_SECS, trusted_compile_cache_dir
+from foldjax.cache import compilation_cache_scope, device_key
 from foldjax.execution import DETERMINISTIC_API_OPTION
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
@@ -67,22 +67,11 @@ from foldjax.scores import scalar_scores
 #: NOTICE beside it.
 VENDORED_RUNNER = Path(__file__).with_name("_alphafold3_upstream") / "run_alphafold.py"
 
-# Keep this order byte-for-byte aligned with upstream's ``select_model_files``.
-# The first matching filename family wins, and a family containing more than
-# one model name is ambiguous.  Reproducing that small selector locally lets a
-# live session stat only the files the lazy parameter property will read,
-# without importing AlphaFold 3 or opening its 1.1 GB payload.
-_PARAMETER_PATTERNS = tuple(
-    re.compile(pattern)
-    for pattern in (
-        r"(?P<model_name>.*)\.[0-9]+\.bin\.zst$",
-        r"(?P<model_name>.*)\.bin\.zst\.[0-9]+$",
-        r"(?P<model_name>.*)\.[0-9]+\.bin$",
-        r"(?P<model_name>.*)\.bin\]\.[0-9]+$",
-        r"(?P<model_name>.*)\.bin\.zst$",
-        r"(?P<model_name>.*)\.bin$",
-    )
-)
+# Upstream's ``select_model_files`` order (`assets.AF3_PARAMETER_PATTERNS`).
+# Reproducing that small selector locally lets a live session stat only the
+# files the lazy parameter property will read, without importing AlphaFold 3
+# or opening its 1.1 GB payload.
+_PARAMETER_PATTERNS = AF3_PARAMETER_PATTERNS
 
 
 def _selected_parameter_files(model_dir: Path) -> tuple[Path, ...] | None:
@@ -97,7 +86,7 @@ def _selected_parameter_files(model_dir: Path) -> tuple[Path, ...] | None:
         for path in files:
             match = pattern.fullmatch(path.name)
             if match is not None:
-                models.setdefault(match.group("model_name"), []).append(path)
+                models.setdefault(match.group("model"), []).append(path)
         if not models:
             continue
         if len(models) != 1:
@@ -152,20 +141,6 @@ def _managed_source_key(weights: Path) -> tuple[str, str, str]:
         str(VENDORED_RUNNER.absolute()),
         str(build.source_package().absolute()),
     )
-
-
-def _device_identity(device: Any) -> tuple[str, ...]:
-    """Stable identity of the concrete device pinned into ``ModelRunner``."""
-
-    values = []
-    for name in ("platform", "id", "process_index", "local_hardware_id", "device_kind"):
-        value = getattr(device, name, None)
-        try:
-            value = value() if callable(value) else value
-        except Exception:  # noqa: BLE001 - an opaque device must split the cache
-            value = f"unavailable:{name}"
-        values.append(f"{name}={value!s}")
-    return (f"{type(device).__module__}.{type(device).__qualname__}", *values)
 
 
 def _runner_identity(runner: Any, path: Path) -> tuple[str, ...]:
@@ -979,6 +954,20 @@ class AlphaFold3Backend(Backend):
         options.setdefault("num_recycles", 3)
         return options
 
+    def _omitted_sampling(
+        self, request: PredictionRequest, options: Mapping[str, Any]
+    ) -> dict[str, tuple[int | None, str]]:
+        """The vendored config's steps and depth hold on the managed route only.
+
+        An explicit ``source`` checkout carries its own omitted defaults
+        (`_MANAGED_CONFIG_DEFAULTS`), which nothing here reads.
+        """
+        found = super()._omitted_sampling(request, options)
+        if request.options.get("source"):
+            for knob in _MANAGED_CONFIG_DEFAULTS:
+                found[knob] = (None, "checkpoint")
+        return found
+
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
         """Keep exact released-default aliases in one compilation namespace.
 
@@ -1087,7 +1076,7 @@ class AlphaFold3Backend(Backend):
             key = (
                 anchor,
                 _runner_identity(runner, runner_path),
-                _device_identity(device),
+                device_key(device),
                 config_identity,
                 _cache_identity(request.cache_dir),
                 kernel_fallback,
@@ -1217,6 +1206,7 @@ class AlphaFold3Backend(Backend):
             else None
         )
 
+        cache_scope = ExitStack()
         try:
             runner_path = _runner_path(options)
             runner = _load_runner(runner_path)
@@ -1243,15 +1233,13 @@ class AlphaFold3Backend(Backend):
                     "AlphaFold3 common representations require one native job "
                     "per request; split multi-job inputs into separate requests"
                 )
-            if (
-                request.cache_dir is not None
-                and trusted_compile_cache_dir(request.cache_dir) is not None
-            ):
-                jax.config.update("jax_compilation_cache_dir", str(request.cache_dir))
-                jax.config.update(
-                    "jax_persistent_cache_min_compile_time_secs",
-                    PERSISTENT_CACHE_MIN_COMPILE_SECS,
-                )
+            if request.cache_dir is not None:
+                # Scoped, not latched: a direct `predict` caller gets its own
+                # JAX config back, and an untrusted directory compiles without
+                # a cache rather than leaving the host's in force. Nested
+                # inside `api.predict`'s scope for the same directory, this is
+                # the same setting.
+                cache_scope.enter_context(compilation_cache_scope(request.cache_dir))
             # Selecting from the default backend keeps a CPU-only host usable
             # for smoke runs while still resolving the GPU on an accelerator.
             platform = options.pop("platform", None)
@@ -1535,6 +1523,8 @@ class AlphaFold3Backend(Backend):
             if isinstance(error, Exception) and managed_weights is not None:
                 self._anchor_assets(managed_weights)
             raise
+        finally:
+            cache_scope.close()
 
         if managed_weights is not None:
             self._anchor_assets(managed_weights)

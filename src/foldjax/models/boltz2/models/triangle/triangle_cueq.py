@@ -157,8 +157,8 @@ def _cueq_triangle_native_amp(cuex, params, x, mask, direction, *, eps):
 # Re-exported: the kernel wrapper moved to `models/_cueq.py`, which Protenix and
 # OpenFold3 already used. Kept importable from here so existing call sites do
 # not move. `triangle_attention._attention` keeps passing its own `precision`
-# to it, because this port's op-level string and its neutral knob deliberately
-# disagree; the shared wrapper's docstring records what deriving it would cost.
+# to it, so a direct caller's op-level string reaches the kernel; under
+# `api.predict` that string is the neutral knob.
 __all__ = [
     "cueq_attention_core",
     "cueq_triangle_multiplication_forward",

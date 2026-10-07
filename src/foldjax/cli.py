@@ -1631,25 +1631,17 @@ def _effective_sampling(request: PredictionRequest) -> dict[str, Any]:
 
     ``request`` names the knob, ``option`` is a native option (an explicit
     ``--option`` or a managed profile's), ``default`` the adapter's released
-    value, and ``checkpoint`` a value the checkpoint's own configuration
-    decides at load time, shown as null.
+    value, and ``checkpoint`` a value the checkpoint or its model variant
+    decides -- null only where it cannot be read before the run. Values are
+    in the neutral knobs' units (`Backend.sampling_resolution`).
     """
-    from foldjax.registry import get_backend, sampling_defaults
+    from foldjax.registry import get_backend
 
-    backend = get_backend(request.model)
-    defaults = sampling_defaults(backend)
-    values: dict[str, Any] = {}
-    sources: dict[str, str] = {}
-    for knob, native in backend.sampling_options.items():
-        if knob in request.sampling:
-            values[knob], sources[knob] = request.sampling[knob], "request"
-        elif native in request.options:
-            values[knob], sources[knob] = request.options[native], "option"
-        elif defaults.get(knob) is not None:
-            values[knob], sources[knob] = defaults[knob], "default"
-        else:
-            values[knob], sources[knob] = None, "checkpoint"
-    return {"sampling": values, "sampling_source": sources}
+    resolved = get_backend(request.model).sampling_resolution(request)
+    return {
+        "sampling": {knob: value for knob, (value, _) in resolved.items()},
+        "sampling_source": {knob: source for knob, (_, source) in resolved.items()},
+    }
 
 
 def _run_predictions(

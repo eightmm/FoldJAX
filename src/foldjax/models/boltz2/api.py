@@ -33,7 +33,7 @@ from typing import Any
 import numpy as np
 
 from foldjax import memory_policy, progress
-from foldjax.cache import PERSISTENT_CACHE_MIN_COMPILE_SECS, trusted_compile_cache_dir
+from foldjax.cache import compilation_cache_scope, device_key
 from foldjax.execution import auto_diffusion_chunk_size, resolved_matmul_precision
 from foldjax.models import _capture, _representations
 from foldjax.models._feature_storage import compact_msa_storage
@@ -122,37 +122,27 @@ DIFFUSION_ATTENTION_BACKENDS = ("tokamax", "triton", "xla")
 #: selects exactly the program this port shipped before -- because the parity
 #: harnesses compare against upstream's rounding and need it.
 #:
-#: **This is one of two precision surfaces, and the flip moved only this one.**
-#: The other is the `matmul_precision` string at `models/predict.py:284` and
-#: `:425`, which becomes an explicit `precision=` on triangle attention's four
-#: projections and therefore beats the scope this constant opens rather than
-#: inheriting it. `predict` below never puts that key in `predict_kwargs`, so
-#: it stays at its signature default `"highest"` -- including under
-#: `--option matmul_precision=high`, which is exactly how the measurement
-#: above was taken, so the shipped default is that measured arm and nothing
-#: more.
+#: **It reaches triangle attention's four projections too.** Those take an
+#: op-level `matmul_precision` string (`models/predict.py`) that becomes an
+#: explicit `precision=` and so beats the scope; `predict` passes the resolved
+#: knob there (`predict_kwargs["matmul_precision"]`), so both surfaces follow
+#: one request. Until 2026-10-06 it did not, and the four projections stayed
+#: at `highest` under every request -- the state the GPU rows above were
+#: measured in.
 #:
-#: **At the released `compute_dtype="bfloat16"` that disagreement is inert**,
-#: and the reason is worth spelling out, because the next reader to see
-#: `Precision.HIGHEST` on those matmuls will assume it is doing something.
-#: Two narrowings meet there. `_cast_trunk_params`
-#: (`models/trunk_blocks/trunk.py:246`) narrows every `*/kernel` in the trunk
-#: except four subtrees -- `input_embedder/atom_encoder`,
-#: `template_module/a_proj`,
-#: `input_embedder/atom_attention_encoder/atom_to_token_trans`, and each
-#: Pairformer layer's `pre_norm_s`/`attention`/`transition_s` -- and
-#: `tri_att_start`/`tri_att_end` are in none of them, so their kernels are
-#: bfloat16. `triangle_attention._linear` then casts the activation to the
-#: kernel's width before the matmul, so the float32 pair residual never meets
-#: a float32 kernel there either. Both operands are bfloat16 and the
-#: attribute has no float32 accumulation to choose between. The
-#: cuEquivariance attention FFI agrees independently: `use_tf32` returns
-#: False for any non-float32 dtype before it reads the precision at all.
-#:
-#: Under `--option dtype=float32` it is live and those four projections keep
-#: float32 while the rest of the graph runs TF32. Unifying the two surfaces
-#: was measured to buy nothing at the shipped dtype; `docs/cli.md` carries
-#: what it would be worth under `dtype=float32` and what it would cost.
+#: **At the released `compute_dtype="bfloat16"` the difference is inert.**
+#: `_cast_trunk_params` (`models/trunk_blocks/trunk.py`) narrows every
+#: triangle-attention kernel, and `triangle_attention._linear` casts the
+#: activation to the kernel's width before the matmul, so all four
+#: projections are bfloat16 x bfloat16 and the attribute has no float32
+#: accumulation to choose between; the cuEquivariance attention FFI agrees
+#: (`use_tf32` is False for any non-float32 dtype). On CPU the released
+#: configuration is bit-identical either way
+#: (`tests/models/boltz2/test_production_execution_defaults.py`). Under
+#: `--option dtype=float32` it is live: an omitted knob now runs those four
+#: projections at TF32 on a GPU, like the rest of the trunk, where they used to
+#: stay float32 -- unmeasured on GPU; `--option matmul_precision=highest` is
+#: the whole float32 program. `docs/cli.md` carries the FLOP share.
 MATMUL_PRECISION = "high"
 
 
@@ -278,6 +268,28 @@ def _pinned_matmul_precision(function):
         with jax.default_matmul_precision(
             resolved_matmul_precision(MATMUL_PRECISION)
         ):
+            return function(*args, **kwargs)
+
+    return wrapper
+
+
+def _scoped_compile_cache(function):
+    """Select ``compile_cache`` for the call, through the shared trusted scope.
+
+    `predict` used to `jax.config.update` the directory and leave it set for
+    the rest of the process, and skipped an untrusted directory by leaving
+    whatever cache the host had in force. `foldjax.cache.compilation_cache_scope`
+    applies the trust check, compiles without a cache it refuses, and gives
+    the caller its config back. An omitted ``compile_cache`` leaves the host's
+    setting alone, as it did.
+    """
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        directory = kwargs.get("compile_cache")
+        if directory is None:
+            return function(*args, **kwargs)
+        with compilation_cache_scope(Path(directory).expanduser().resolve()):
             return function(*args, **kwargs)
 
     return wrapper
@@ -463,19 +475,6 @@ def _static_runtime_identity(value: Any) -> Any:
     return ("dtype", dtype.str, dtype.name)
 
 
-def _device_runtime_identity(device: Any) -> tuple[Any, ...]:
-    return tuple(
-        getattr(device, name, None)
-        for name in (
-            "platform",
-            "process_index",
-            "id",
-            "local_hardware_id",
-            "device_kind",
-        )
-    )
-
-
 def _parameter_runtime_identity(
     jax_module: Any,
     *,
@@ -485,7 +484,7 @@ def _parameter_runtime_identity(
     """Settings that change the loaded dtype or retained mesh placement."""
 
     devices = tuple(
-        _device_runtime_identity(device)
+        device_key(device)
         for device in list(jax_module.devices())[:cp_devices]
     )
     return (
@@ -628,6 +627,7 @@ def _carries_guidance_constraints(feats: Mapping[str, object]) -> bool:
 
 
 @_pinned_matmul_precision
+@_scoped_compile_cache
 def predict(
     *,
     input: str | Path | None = None,
@@ -1025,15 +1025,11 @@ def predict(
     # the storage passes below compact it.
     confidence_index = _confidence_index(feats_np, struct_dir / f"{record_id}.npz")
 
+    # Selected for the whole call by `_scoped_compile_cache`; the resolved
+    # path is still part of the session identity below.
     cache = None
     if compile_cache is not None:
         cache = Path(compile_cache).expanduser().resolve()
-        if trusted_compile_cache_dir(cache) is not None:
-            jax.config.update("jax_compilation_cache_dir", str(cache))
-            jax.config.update(
-                "jax_persistent_cache_min_compile_time_secs",
-                PERSISTENT_CACHE_MIN_COMPILE_SECS,
-            )
 
     if compute_dtype not in COMPUTE_DTYPES:
         raise ValueError(
@@ -1308,6 +1304,9 @@ def predict(
         ),
     )
     predict_kwargs = {
+        # The neutral knob, resolved inside the scope `_pinned_matmul_precision`
+        # opened, so triangle attention's explicit `precision=` matches it.
+        "matmul_precision": resolved_matmul_precision(MATMUL_PRECISION),
         "recycling_steps": num_recycles,
         "num_sampling_steps": num_steps,
         # Upstream `AtomDiffusion.sample` centres, rotates and translates the
@@ -1832,7 +1831,9 @@ def predict(
             model="boltz2",
         )
         if archive is not None:
-            print(f"wrote {archive}")
+            # A progress line, not stdout: `predict` is a library call, and
+            # the CLI keeps stdout for the result it prints.
+            progress.message(f"  wrote {archive}")
     if write_fmt is not None:
         from foldjax.models.boltz2.data.write.structure import write_prediction
 

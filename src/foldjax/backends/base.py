@@ -134,6 +134,24 @@ def square_grid_cp_layout(options: Mapping[str, Any]) -> str | None:
     return square_grid_auto_layout(devices) if layout == "auto" else layout
 
 
+#: Module-level tables in which a built-in adapter states the native defaults
+#: it compiles with, keyed by native option name.
+_DEFAULT_TABLES = ("_RELEASED_COMPILE_DEFAULTS", "DEFAULTS")
+
+
+def _released_table_value(backend: Any, native: str) -> int | None:
+    """``native``'s integer default in the backend module's tables, if stated."""
+    import sys
+
+    module = sys.modules.get(type(backend).__module__)
+    for name in _DEFAULT_TABLES:
+        table = getattr(module, name, None)
+        candidate = table.get(native) if isinstance(table, dict) else None
+        if isinstance(candidate, int) and not isinstance(candidate, bool):
+            return candidate
+    return None
+
+
 class Backend(ABC):
     name: str
 
@@ -202,6 +220,70 @@ class Backend(ABC):
         # default depth, padded or not, and `max_msa_depth` remains the one
         # option that changes it.
         return options
+
+    def sampling_resolution(
+        self, request: PredictionRequest
+    ) -> dict[str, tuple[int | None, str]]:
+        """What each neutral sampling knob runs at for ``request``, and why.
+
+        Values are in the neutral knobs' units (``num_recycles`` counts the
+        recycles after the first trunk pass on every port that defines it
+        that way; see `docs/model-interface.md`). The source is ``request``
+        (the knob was set), ``option`` (a native option, explicit or from a
+        managed profile), ``default`` (the adapter's own value) or
+        ``checkpoint`` (decided by the checkpoint or its model variant). A
+        value of ``None`` means it is decided where the adapter cannot see
+        before loading -- a checkpoint this request names but that carries no
+        readable setting, or a native runner that keeps it internal.
+
+        Resolved through `apply_sampling`, the translation a run takes, so a
+        default the adapter supplies there (AlphaFold 3's and ESMFold2's
+        recycle counts) is the value reported.
+        """
+        options = self.apply_sampling(request)
+        omitted = self._omitted_sampling(request, options)
+        resolved: dict[str, tuple[int | None, str]] = {}
+        for knob, native in self.sampling_options.items():
+            if native not in options:
+                resolved[knob] = omitted.get(knob, (None, "checkpoint"))
+                continue
+            if knob in request.sampling:
+                source = "request"
+            elif native in request.options:
+                source = "option"
+            else:
+                source = "default"
+            # The translated value, not the one spelled: OpenFold3 narrows a
+            # requested MSA depth to its released 1,024 rows.
+            resolved[knob] = (
+                self._neutral_sampling_value(knob, options[native]),
+                source,
+            )
+        return resolved
+
+    def _omitted_sampling(
+        self, request: PredictionRequest, options: Mapping[str, Any]
+    ) -> dict[str, tuple[int | None, str]]:
+        """Values for the knobs neither the request nor `apply_sampling` set.
+
+        Read from the module-level tables in which a built-in adapter states
+        the native defaults it compiles with, so no port's defaults are stated
+        twice. A port whose value comes from elsewhere overrides this.
+        """
+        del request, options
+        found: dict[str, tuple[int | None, str]] = {}
+        for knob, native in self.sampling_options.items():
+            value = _released_table_value(self, native)
+            if value is not None:
+                found[knob] = (self._neutral_sampling_value(knob, value), "default")
+        return found
+
+    def _neutral_sampling_value(self, knob: str, native_value: Any) -> int | None:
+        """A native sampling value in the neutral knob's units."""
+        del knob
+        if isinstance(native_value, bool) or not isinstance(native_value, int):
+            return None
+        return native_value
 
     def matmul_precision(
         self, options: dict[str, Any]

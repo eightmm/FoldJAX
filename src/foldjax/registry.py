@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from foldjax.portspec import ALIASES, PORTS, provider
-from foldjax.schema import ModelCapabilities, ModelInfo, RuntimeInfo
+from foldjax.schema import ModelCapabilities, ModelInfo, PredictionRequest, RuntimeInfo
 
 if TYPE_CHECKING:
     # `Backend` appears here only in annotations, and `from __future__ import
@@ -73,35 +74,35 @@ def capabilities(name: str) -> ModelCapabilities:
     )
 
 
-#: Module-level tables in which a built-in adapter states the native defaults
-#: it compiles with, keyed by native option name. Read rather than restated:
-#: a copy here would be a second statement of six ports' defaults.
-_DEFAULT_TABLES = ("_RELEASED_COMPILE_DEFAULTS", "DEFAULTS")
-
-
 def sampling_defaults(backend: Backend) -> dict[str, int | None]:
     """What each neutral sampling knob runs at when a request omits it.
 
-    None where the adapter states no value because the checkpoint's own
-    configuration decides it (Protenix's steps and recycles, ESMFold2's samples
-    and steps) or the native runner keeps it internal (Boltz-2's MSA depth).
-    A managed profile can change these; `foldjax plan` reports the value a
-    resolved request will run at.
+    The backend's own resolution (`Backend.sampling_resolution`) of a request
+    that names nothing -- the translation a run takes, so a value the adapter
+    supplies at run time (AlphaFold 3's three recycles) is the one reported,
+    in the neutral knob's units (OpenFold3's three recycles, not its four
+    trunk passes). Checkpoint-decided values are the default profile's:
+    Protenix's released base model schedule, ESMFold2's released
+    `config.json`. ``None`` only where nothing can be read before a run.
+    A managed profile or a named checkpoint can change these; `foldjax plan`
+    reports the value a resolved request will run at.
     """
-    import sys
+    from foldjax.backends.base import Backend as _Base
+    from foldjax.backends.base import _released_table_value
 
-    module = sys.modules.get(type(backend).__module__)
-    tables = [getattr(module, name, None) for name in _DEFAULT_TABLES]
-    defaults: dict[str, int | None] = {}
-    for knob, native in dict(getattr(backend, "sampling_options", {})).items():
-        value = None
-        for table in tables:
-            candidate = table.get(native) if isinstance(table, dict) else None
-            if isinstance(candidate, int) and not isinstance(candidate, bool):
-                value = candidate
-                break
-        defaults[knob] = value
-    return defaults
+    # A request needs an input that exists; sampling resolves from options,
+    # profile and weights and never opens it, so this module stands in.
+    request = PredictionRequest(model=backend.name, input=Path(__file__))
+    if isinstance(backend, _Base):
+        return {
+            knob: value
+            for knob, (value, _source) in backend.sampling_resolution(request).items()
+        }
+    # A third-party adapter outside the base class: its tables, if any.
+    return {
+        knob: _released_table_value(backend, native)
+        for knob, native in dict(getattr(backend, "sampling_options", {})).items()
+    }
 
 
 def _runtime_info(name: str) -> RuntimeInfo:

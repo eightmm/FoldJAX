@@ -572,7 +572,12 @@ def _api_features(*, affinity: bool) -> dict[str, np.ndarray]:
 
 
 def _managed_model_features(
-    tmp_path, monkeypatch, *, affinity: bool = False, **predict_kwargs
+    tmp_path,
+    monkeypatch,
+    *,
+    affinity: bool = False,
+    kwargs_seen: list | None = None,
+    **predict_kwargs,
 ):
     public = _api_features(affinity=affinity)
     seen: list[dict] = []
@@ -599,6 +604,8 @@ def _managed_model_features(
 
     def fake_predict(params, model_features, _key, **kwargs):
         seen.append(dict(model_features))
+        if kwargs_seen is not None:
+            kwargs_seen.append(kwargs)
         tokens = model_features["token_pad_mask"].shape[-1]
         samples = int(kwargs.get("multiplicity", 1))
         if kwargs.get("stop_after_trunk"):

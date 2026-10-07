@@ -17,6 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
+from foldjax._fsutil import update_digest_from_file
 from foldjax.models.boltz2.data.module.inferencev2 import PredictionDataset
 from foldjax.models.boltz2.data.preprocess import check_inputs, process_inputs
 from foldjax.models.boltz2.data.types import Manifest, StructureV2
@@ -126,9 +127,7 @@ def _input_digest(yaml_path: Path, mol_dir: Path, opts: tuple) -> str:
                 p = beside if beside.is_file() else p
             if not p.is_file():
                 continue
-            with p.open("rb") as fh:
-                for chunk in iter(lambda: fh.read(1 << 20), b""):
-                    h.update(chunk)
+            update_digest_from_file(h, p)
         except OSError:
             continue
     return h.hexdigest()[:16]

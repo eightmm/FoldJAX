@@ -23,6 +23,13 @@ class _Response:
         if self.status_code >= 400:
             raise mmseqs2.requests.HTTPError(f"HTTP {self.status_code}")
 
+    def iter_content(self, chunk_size=1):
+        for start in range(0, len(self.content), chunk_size):
+            yield self.content[start : start + chunk_size]
+
+    def close(self):
+        self.closed = True
+
 
 def _result_tar(files: dict[str, str]) -> bytes:
     stream = io.BytesIO()
@@ -72,6 +79,60 @@ def test_run_mmseqs2_full_remote_contract_and_api_key(tmp_path, monkeypatch) -> 
     assert calls[0][2]["headers"]["X-API-Key"] == "secret"
     assert calls[0][2]["data"]["mode"] == "env"
     assert calls[1][2]["headers"]["User-Agent"].startswith("boltz-jax/")
+
+
+def test_run_mmseqs2_streams_the_archive_and_refuses_an_oversized_one(
+    tmp_path, monkeypatch
+) -> None:
+    """The download is streamed under the shared 1 GiB remote ceiling."""
+    from foldjax.search import msa as search_msa
+
+    archive = _result_tar({"uniref.a3m": ">101\nACD\n"})
+    requested = []
+    monkeypatch.setattr(
+        mmseqs2.requests,
+        "post",
+        lambda *a, **k: _Response(json_data={"status": "COMPLETE", "id": "job-3"}),
+    )
+
+    def get(url, **kwargs):
+        requested.append(kwargs)
+        return _Response(content=archive)
+
+    monkeypatch.setattr(mmseqs2.requests, "get", get)
+    monkeypatch.setattr(search_msa, "MAX_REMOTE_BYTES", len(archive) - 1)
+    prefix = tmp_path / "huge"
+    with pytest.raises(RuntimeError, match="more than"):
+        mmseqs2.run_mmseqs2("ACD", str(prefix), use_env=False, max_retries=3)
+    # Refused once, not retried, and nothing partial is left to be reused.
+    assert len(requested) == 1
+    assert requested[0]["stream"] is True
+    assert not any(Path(f"{prefix}_all").iterdir())
+
+    monkeypatch.setattr(search_msa, "MAX_REMOTE_BYTES", len(archive))
+    assert mmseqs2.run_mmseqs2("ACD", str(prefix), use_env=False) == [">101\nACD\n"]
+
+
+def test_run_mmseqs2_retries_a_download_that_breaks_off(tmp_path, monkeypatch) -> None:
+    archive = _result_tar({"uniref.a3m": ">101\nACD\n"})
+
+    class _Truncated(_Response):
+        def iter_content(self, chunk_size=1):
+            yield self.content[:10]
+            raise mmseqs2.requests.exceptions.ChunkedEncodingError("cut")
+
+    responses = iter([_Truncated(content=archive), _Response(content=archive)])
+    monkeypatch.setattr(
+        mmseqs2.requests,
+        "post",
+        lambda *a, **k: _Response(json_data={"status": "COMPLETE", "id": "job-4"}),
+    )
+    monkeypatch.setattr(mmseqs2.requests, "get", lambda *a, **k: next(responses))
+    monkeypatch.setattr(mmseqs2.time, "sleep", lambda _: None)
+
+    assert mmseqs2.run_mmseqs2(
+        "ACD", str(tmp_path / "cut"), use_env=False, max_retries=1
+    ) == [">101\nACD\n"]
 
 
 def test_run_mmseqs2_retries_transient_http_error(tmp_path, monkeypatch) -> None:

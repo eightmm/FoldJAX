@@ -15,7 +15,10 @@ import string
 import tempfile
 import warnings
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -123,11 +126,56 @@ _LIGAND_TABLE: dict[str, dict[str, np.ndarray]] | None = None
 _NUCLEIC_TABLE_PATH = Path(__file__).with_name("ccd_nucleotides.npz")
 _NUCLEIC_TABLE: dict[str, dict[str, np.ndarray]] | None = None
 _EXTERNAL_CCD_MOLS: dict[str, Any] | None = None
+#: The file `_EXTERNAL_CCD_MOLS` was loaded from, so a run naming another
+#: RDKit cache reloads rather than reading the previous run's molecules.
+_EXTERNAL_CCD_MOLS_PATH: Path | None = None
 _EXTERNAL_CCD_ATOM_CACHE_LIMIT = 256
 _EXTERNAL_CCD_ATOMS: OrderedDict[
     tuple[Path, tuple[int, int, int, int, int], str], dict[str, Any]
 ] = OrderedDict()
 _EXTERNAL_CCD_LOCK = RLock()
+
+
+@dataclass(frozen=True)
+class FeaturizerAssets:
+    """Asset paths a caller hands the featurizer instead of the environment.
+
+    Each one, when set, comes before its ``PROTENIX_*`` environment variable
+    and the managed asset store; left ``None`` the featurizer falls back to
+    those as it always has. OpenDDE's runner passes its `--components-cif`,
+    `--ccd-rdkit-cache` and template options here, and Protenix's its
+    `--template-mmcif-dir`, rather than exporting them process-wide.
+    """
+
+    components_cif: Path | None = None
+    ccd_rdkit_cache: Path | None = None
+    template_mmcif_dir: Path | None = None
+    template_release_dates: Path | None = None
+    template_obsolete_map: Path | None = None
+    kalign_binary: Path | None = None
+
+
+_ASSETS: ContextVar[FeaturizerAssets] = ContextVar(
+    "protenix_featurizer_assets", default=FeaturizerAssets()
+)
+
+
+@contextmanager
+def _assets_in_force(assets: FeaturizerAssets | None) -> Iterator[None]:
+    """Make ``assets`` the paths every lookup below this call reads.
+
+    A context variable rather than a parameter on each of the CCD helpers:
+    they are reached from a dozen featurization paths, and the variable is
+    scoped to this call and this thread, which the environment never was.
+    """
+    if assets is None:
+        yield
+        return
+    token = _ASSETS.set(assets)
+    try:
+        yield
+    finally:
+        _ASSETS.reset(token)
 _TRUSTED_CCD_RDKIT_SHA256 = frozenset(
     {"d1cfb71f5993a3ebea7c47877022d7f597bbfbaf86e28a4770e957da6c50cd35"}
 )
@@ -279,8 +327,13 @@ def featurize_protein_json(
     augment_reference: bool = True,
     use_rna_msa: bool = False,
     use_template: bool = False,
+    assets: FeaturizerAssets | None = None,
 ) -> dict[str, Any]:
     """Build static features for proteinChain inputs.
+
+    ``assets`` names CCD and template files explicitly for this call
+    (:class:`FeaturizerAssets`); omitted, the environment and the managed
+    store are read as before.
 
     ``use_rna_msa`` is upstream's inference flag of the same name, released
     false (Protenix 2.0.0 ``configs/configs_inference.py:37``): unless it is
@@ -295,6 +348,34 @@ def featurize_protein_json(
     (``protenix/data/template/template_featurizer.py:710``). This warns too.
     """
 
+    with _assets_in_force(assets):
+        return _featurize_protein_json(
+            job,
+            base_dir=base_dir,
+            n_queries=n_queries,
+            n_keys=n_keys,
+            max_msa_depth=max_msa_depth,
+            seed=seed,
+            center_reference=center_reference,
+            augment_reference=augment_reference,
+            use_rna_msa=use_rna_msa,
+            use_template=use_template,
+        )
+
+
+def _featurize_protein_json(
+    job: dict[str, Any],
+    *,
+    base_dir: str | Path | None,
+    n_queries: int,
+    n_keys: int,
+    max_msa_depth: int,
+    seed: int | None,
+    center_reference: bool,
+    augment_reference: bool,
+    use_rna_msa: bool,
+    use_template: bool,
+) -> dict[str, Any]:
     if not isinstance(job, dict):
         raise ValueError("job must be an object")
     unknown_job_keys = set(job) - {
@@ -628,10 +709,15 @@ def _assemble_chain_templates(
         num_res = _chain_biological_count(chain)
         if chain["kind"] == "protein":
             sequence = chain["sequence"]
+            assets = _ASSETS.get()
             dense = chain_template_dense(
                 chain.get("templates_path"),
                 sequence=sequence,
                 skip=len(sequence) <= 4,
+                mmcif_dir=assets.template_mmcif_dir,
+                release_dates_path=assets.template_release_dates,
+                obsolete_pdbs_path=assets.template_obsolete_map,
+                kalign_binary=assets.kalign_binary,
             )
         else:
             dense = chain_template_dense(
@@ -1947,9 +2033,10 @@ def _managed_ccd_asset(name: str) -> Path:
     Both CCD files are declared `shared=True` in the asset registry, so the
     store keeps one copy under `assets/` for Protenix and OpenDDE together.
     Resolving it here is what makes a fetched asset actually reachable: the
-    OpenDDE CLI exports these paths into the environment, but the Protenix
-    backend never did, so a fetched components.cif still produced "set
-    PROTENIX_CCD_COMPONENTS_FILE" on the first modified residue or ligand.
+    OpenDDE CLI hands explicit paths in (:class:`FeaturizerAssets`), but the
+    Protenix backend names none, so without this a fetched components.cif
+    still produced "set PROTENIX_CCD_COMPONENTS_FILE" on the first modified
+    residue or ligand.
     """
 
     from foldjax.paths import assets_dir
@@ -1960,10 +2047,18 @@ def _managed_ccd_asset(name: str) -> Path:
 def _external_ccd_molecule(code: str) -> Any:
     """Return one source molecule without racing process-cache cleanup."""
 
-    global _EXTERNAL_CCD_MOLS
+    global _EXTERNAL_CCD_MOLS, _EXTERNAL_CCD_MOLS_PATH
     with _EXTERNAL_CCD_LOCK:
-        if _EXTERNAL_CCD_MOLS is None:
+        explicit = _ASSETS.get().ccd_rdkit_cache
+        # Loaded once per process, as before; a run that names a different
+        # cache explicitly reloads rather than reading another file's set.
+        stale = _EXTERNAL_CCD_MOLS is None or (
+            explicit is not None and _EXTERNAL_CCD_MOLS_PATH != Path(explicit)
+        )
+        if stale:
             candidates = []
+            if explicit is not None:
+                candidates.append(Path(explicit))
             configured = os.environ.get("PROTENIX_CCD_RDKIT_MOL_FILE")
             if configured:
                 candidates.append(Path(configured))
@@ -1980,6 +2075,7 @@ def _external_ccd_molecule(code: str) -> Any:
                 raise RuntimeError(
                     "RDKit is required to load arbitrary CCD components"
                 ) from exc
+            _EXTERNAL_CCD_MOLS_PATH = cache_path
         source_mol = _EXTERNAL_CCD_MOLS.get(code)
     if source_mol is None:
         raise ValueError(f"unknown CCD code: {code!r}")
@@ -1989,10 +2085,11 @@ def _external_ccd_molecule(code: str) -> Any:
 def _release_external_ccd_cache() -> bool:
     """Drop shared Protenix/OpenDDE CCD globals after their last owner."""
 
-    global _EXTERNAL_CCD_MOLS
+    global _EXTERNAL_CCD_MOLS, _EXTERNAL_CCD_MOLS_PATH
     with _EXTERNAL_CCD_LOCK:
         loaded = _EXTERNAL_CCD_MOLS is not None or bool(_EXTERNAL_CCD_ATOMS)
         _EXTERNAL_CCD_MOLS = None
+        _EXTERNAL_CCD_MOLS_PATH = None
         _EXTERNAL_CCD_ATOMS.clear()
     return loaded
 
@@ -2131,9 +2228,14 @@ def _external_ccd_atom_metadata(code: str) -> dict[str, Any]:
     """Read exact heavy-atom identity from one block of components.cif."""
 
     candidates = []
+    explicit = _ASSETS.get()
+    if explicit.components_cif is not None:
+        candidates.append(Path(explicit.components_cif))
     configured = os.environ.get("PROTENIX_CCD_COMPONENTS_FILE")
     if configured:
         candidates.append(Path(configured))
+    if explicit.ccd_rdkit_cache is not None:
+        candidates.append(Path(explicit.ccd_rdkit_cache).with_name("components.cif"))
     configured_rdkit = os.environ.get("PROTENIX_CCD_RDKIT_MOL_FILE")
     if configured_rdkit:
         candidates.append(Path(configured_rdkit).with_name("components.cif"))

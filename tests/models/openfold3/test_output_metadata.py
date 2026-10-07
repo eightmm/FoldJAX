@@ -316,8 +316,19 @@ def test_saving_features_replaces_a_symlink_without_touching_its_target(
 )
 def test_output_names_are_single_safe_filename_components(name: str) -> None:
     """The prediction name reaches a path, so it cannot carry a separator."""
-    with pytest.raises(ValueError, match="one non-empty filename component"):
-        _safe_output_name(name)
+    safe = _safe_output_name(name)
+    assert safe and safe not in {".", ".."}
+    assert "/" not in safe and "\\" not in safe
+    assert all(32 <= ord(character) != 127 for character in safe)
+
+
+@pytest.mark.parametrize("name", ["1ubq", "job_A", "complex-2.v1", "A.B-c_d"])
+def test_ordinary_output_names_are_kept_as_written(name: str) -> None:
+    from foldjax.models.protenix.data.output import sanitize_job_name
+    from foldjax.output import safe_job_name
+
+    assert _safe_output_name(name) == sanitize_job_name(name) == name
+    assert safe_job_name(name) == name
 
 
 def test_existing_output_symlinks_are_refused(tmp_path: Path) -> None:
