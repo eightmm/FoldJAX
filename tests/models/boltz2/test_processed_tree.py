@@ -71,7 +71,7 @@ def test_another_jobs_record_never_joins_the_manifest(tmp_path: Path) -> None:
     assert sorted(p.name for p in (out / "processed" / "records").iterdir()) == [
         "beta.json"
     ]
-    assert not any(p.name.startswith(".processed-") for p in out.iterdir())
+    assert not any(p.name.startswith(".processed") for p in out.iterdir())
 
 
 def test_a_planted_processed_symlink_is_replaced_not_followed(tmp_path: Path) -> None:
@@ -86,6 +86,33 @@ def test_a_planted_processed_symlink_is_replaced_not_followed(tmp_path: Path) ->
     assert list(elsewhere.iterdir()) == []
     assert not (out / "processed").is_symlink()
     assert (out / "processed" / "manifest.json").is_file()
+
+
+def test_the_processed_tree_takes_the_umask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``mkdtemp``'s 0700 was published, so a group sharing the run could not
+    replace it."""
+    import stat
+
+    from foldjax.models.boltz2.data import preprocess
+
+    def build(data, processed, **_):
+        (processed / "records").mkdir()
+        return "manifest"
+
+    monkeypatch.setattr(preprocess, "_process_into", build)
+    out = tmp_path / "out"
+    previous = os.umask(0o002)
+    try:
+        assert (
+            preprocess.process_inputs([], out, ccd_path=tmp_path, mol_dir=tmp_path)
+            == "manifest"
+        )
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE((out / "processed").stat().st_mode) == 0o775
+    assert not any(p.name.startswith(".processed") for p in out.iterdir())
 
 
 def test_processed_arrays_load_without_pickle(tmp_path: Path) -> None:

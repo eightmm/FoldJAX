@@ -731,6 +731,9 @@ unless it says so here, in its own paragraph.
   mode, a lock another account made is taken read-only when it cannot be
   opened for writing, and one that cannot be opened at all is a
   `PredictionError` naming the lock and its `chmod` repair.
+- **Boltz-2's `processed/` tree takes the umask's mode.** It was built in a
+  `0700` temporary directory and published with that mode, so another member
+  of a shared run directory's group could not replace it on a rerun.
 - **OpenDDE accepts the unknown-residue letters upstream documents.** Protein
   `X`, and DNA and RNA `N` and `X`, were refused with `NotImplementedError`;
   they now become UNK, DN and N as upstream's parser maps them, with
