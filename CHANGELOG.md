@@ -707,6 +707,11 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **A group-shared store's converted weights are usable by the whole group.**
+  Conversion and completion records were written owner-only (`0600`) while
+  the weights beside them followed the umask, so another member of the store's
+  group was told the weights were not converted. The records now follow the
+  umask too.
 - **OpenDDE accepts the unknown-residue letters upstream documents.** Protein
   `X`, and DNA and RNA `N` and `X`, were refused with `NotImplementedError`;
   they now become UNK, DN and N as upstream's parser maps them, with
