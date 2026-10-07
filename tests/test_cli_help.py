@@ -101,6 +101,32 @@ def test_plan_prints_the_effective_sampling_and_where_it_comes_from(
     assert "padding.msa" in json.loads(capsys.readouterr().out)["not_checked"][0]
 
 
+def test_plan_with_padding_shows_the_token_bucket(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """The padding block is the request (null where unpinned); the bucket the
+    run would pad to is what a reader of `plan --padding` wants to know."""
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "store"))
+    weights = tmp_path / "weights.safetensors"
+    weights.write_bytes(b"w")
+    argv = [
+        "plan", "--model", "boltz2", "--sequence", "MKTAYIAKQRQISFVK" * 10,
+        "--msa", "single", "--weights", str(weights), "--padding",
+    ]
+    assert main(argv) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["padding"]["tokens"] is None
+    assert plan["padding_estimate"] == {"tokens": 160, "token_bucket": 256}
+
+    assert main([*argv[:-1], "--pad-tokens", "512"]) == 0
+    assert json.loads(capsys.readouterr().out)["padding_estimate"] == {
+        "tokens": 160,
+        "token_bucket": 512,
+    }
+    assert main(argv[:-1]) == 0
+    assert "padding_estimate" not in json.loads(capsys.readouterr().out)
+
+
 def _console_scripts() -> dict[str, str]:
     import tomllib
 

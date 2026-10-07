@@ -1660,6 +1660,9 @@ def _plan_summary(
     }
     if request.padding is not None:
         summary["padding"] = request.padding.summary()
+        bucket = _planned_token_bucket(request, generated)
+        if bucket is not None:
+            summary["padding_estimate"] = bucket
         # Plan refuses what predict refuses up to featurization; the MSA rows a
         # model stores are known only after it, so a pin below them is not.
         summary["not_checked"] = [
@@ -1667,6 +1670,42 @@ def _plan_summary(
             "after featurization; predict refuses a pin below them)"
         ]
     return summary
+
+
+def _planned_token_bucket(
+    request: PredictionRequest, generated: Mapping[str, Any] | None
+) -> dict[str, Any] | None:
+    """The token bucket ``--padding`` would pick, from the job's token estimate.
+
+    The ``padding`` block shows the request, which leaves an unpinned axis
+    null; the bucket itself is chosen from the featurized token count. That
+    count is estimated here as `plan --json`'s Slurm block estimates it, so a
+    ligand it cannot count is named. None for a native input, which carries no
+    common job to count.
+    """
+    from foldjax.padding import resolve_axis
+    from foldjax.slurm import estimate_tokens
+
+    document = generated
+    if document is None and request.input_format == "foldjax":
+        from foldjax.input import read_job_document
+
+        try:
+            document = read_job_document(Path(request.input))
+        except (OSError, ValueError):
+            return None
+    if not isinstance(document, Mapping):
+        return None
+    tokens, notes = estimate_tokens(document)
+    record: dict[str, Any] = {"tokens": tokens}
+    if notes:
+        record["tokens_not_counted"] = notes
+    try:
+        record["token_bucket"] = resolve_axis(tokens, request.padding, "tokens")
+    except ValueError as error:
+        record["token_bucket"] = None
+        record["reason"] = str(error)
+    return record
 
 
 def _effective_sampling(request: PredictionRequest) -> dict[str, Any]:
@@ -1967,8 +2006,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.path, out=args.out, samples=args.samples
         )
         document = json.loads(written["json"].read_text(encoding="utf-8"))
-        if not any(entry.get("structures") for entry in document.get("inputs") or []):
+        inputs = document.get("inputs") or []
+        if not any(entry.get("structures") for entry in inputs):
             _warn_no_structures(args.path, "compare")
+        elif not any(entry.get("pairs") for entry in inputs):
+            warnings.warn(
+                f"compare found no pair to compare under {args.path}: each input "
+                "there has a single structure, so compare.csv lists no pairs. "
+                "Compare several samples, seeds or models of one input, or "
+                "pass --reference to score against a known structure",
+                UserWarning,
+                stacklevel=2,
+            )
         print(json.dumps({key: str(value) for key, value in written.items()}, indent=2))
         return 0
     if args.command == "show" and (args.format != "table" or args.aggregate):
@@ -2004,6 +2053,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             else []
         )
         if not entries and not failures:
+            if not root.exists():
+                # The same words `show --format csv`, compare and report use.
+                raise FileNotFoundError(f"no such output directory: {args.path}")
             raise FileNotFoundError(
                 f"no {manifest.MANIFEST_NAME} under {args.path}; a run writes one "
                 "when it finishes"

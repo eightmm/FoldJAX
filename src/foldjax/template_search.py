@@ -242,6 +242,15 @@ def refuse_template_search(
                 f"{', '.join(_FOLDER_SUFFIXES)} file"
             )
         folder_aligner(POLICIES[model])
+    elif POLICIES[model].mapped:
+        # `search_templates` refuses this before anything is sent; raised here
+        # too, so `foldjax plan` does not pass a run predict then refuses.
+        from foldjax.search.msa import SearchError
+
+        try:
+            _require_kalign()
+        except SearchError as error:
+            raise ValueError(str(error)) from None
 
 
 def _local_command(name: str) -> list[str] | None:

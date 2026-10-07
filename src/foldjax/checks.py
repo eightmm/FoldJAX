@@ -25,11 +25,23 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-POSEBUSTERS_HINT = (
-    "PoseBusters is not installed; install the optional extra with "
-    "`uv sync --extra posebusters` (or `pip install 'foldjax[posebusters]'`)"
-)
 _WATER = frozenset({"HOH", "DOD", "WAT", "H2O"})
+
+
+def _posebusters_missing() -> ModuleNotFoundError:
+    """The refusal, with the install line `foldjax doctor` prints for an extra.
+
+    One command, for this installation: a checkout adds the extra with
+    ``uv sync --inexact`` (a bare ``uv sync --extra`` removes the others), a
+    pip install with ``pip install``.
+    """
+    from foldjax.doctor import install_command
+
+    return ModuleNotFoundError(
+        "PoseBusters is not installed; install the optional extra with "
+        f"`{install_command('posebusters')}`",
+        name="posebusters",
+    )
 
 
 _CCD_CACHE: dict[str, str | None] = {}
@@ -207,7 +219,7 @@ def check_structure(
     try:
         from posebusters import PoseBusters
     except ImportError as error:
-        raise ModuleNotFoundError(POSEBUSTERS_HINT, name="posebusters") from error
+        raise _posebusters_missing() from error
     structure_path = Path(structure_path)
     rows: list[dict[str, Any]] = []
     smiles = _file_smiles(structure_path)
@@ -259,7 +271,7 @@ def check_directory(root: str | os.PathLike[str]) -> list[dict[str, Any]]:
     try:
         import posebusters  # noqa: F401
     except ImportError as error:
-        raise ModuleNotFoundError(POSEBUSTERS_HINT, name="posebusters") from error
+        raise _posebusters_missing() from error
     report = load_results(root)
     rows: list[dict[str, Any]] = []
     for run, sample in report.samples():

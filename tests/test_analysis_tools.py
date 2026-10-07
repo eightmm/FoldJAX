@@ -709,10 +709,18 @@ def test_results_table_as_frame(tmp_path: Path) -> None:
 def test_check_without_posebusters_says_how_to_install(
     tmp_path: Path, monkeypatch
 ) -> None:
+    from foldjax.doctor import install_command
+
     root = _batch(tmp_path, ligand=True)
     monkeypatch.setitem(sys.modules, "posebusters", None)
-    with pytest.raises(ModuleNotFoundError, match="--extra posebusters"):
+    with pytest.raises(ModuleNotFoundError) as error:
         cli.main(["check", str(root)])
+    # The one command doctor would print for this installation, not a uv line
+    # for a pip install (or a bare `uv sync --extra`, which drops the others).
+    assert str(error.value).endswith(f"`{install_command('posebusters')}`")
+    assert "--extra posebusters" in install_command("posebusters") or (
+        "foldjax[posebusters]" in install_command("posebusters")
+    )
 
 
 def test_check_with_posebusters(tmp_path: Path) -> None:

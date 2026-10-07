@@ -557,7 +557,7 @@ than four, residue numbers outside -999..9999. `pdb` checks the job before
 running and exits 2 after the batch if a structure still does not fit; `both`
 warns and skips that PDB.
 
-**`check DIR`** runs PoseBusters (`uv sync --extra posebusters`) on every
+**`check DIR`** runs PoseBusters (`uv sync --inexact --extra posebusters`) on every
 ligand of every sample, `dock` configuration (ligand alone and against the
 predicted protein): `pb_valid` (every check passed; a check PoseBusters could
 not compute counts as not passed and is listed in `pb_not_computed`),

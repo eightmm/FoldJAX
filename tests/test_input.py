@@ -702,10 +702,14 @@ def test_msa_single_folds_a_bare_protein_on_purpose_without_searching(
 
     monkeypatch.setattr(msa_search, "_msa_pipeline", no_search)
     source = _write(tmp_path / "job.json", _BARE_PROTEIN)
-    with pytest.warns(UserWarning, match="single sequence"):
+    with pytest.warns(UserWarning, match="single sequence") as caught:
         written = materialize_native_input(
             source, capabilities("boltz2"), tmp_path / "out", seed=1, msa="single"
         )
+    # Asked for on purpose, so the warning does not advise the other policy.
+    (message,) = [str(item.message) for item in caught]
+    assert "as msa='single' asked" in message
+    assert "--msa auto" not in message
     protein = yaml.safe_load(written.read_text())["sequences"][0]["protein"]
     assert protein["msa"] == "empty"
 
