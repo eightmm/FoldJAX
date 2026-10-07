@@ -233,6 +233,33 @@ def test_a_metal_component_is_skipped_without_its_reference(monkeypatch) -> None
     assert (record["res_name"], record["status"]) == ("ZN", "metal")
 
 
+def test_mse_is_methionine_even_as_a_ligand(monkeypatch) -> None:
+    """Upstream's `mse_to_met` renames every MSE a non-hetero MET first."""
+
+    _no_ccd_cache(monkeypatch)
+    features = _features(np.zeros((2, 3), dtype=np.float32), bonds=[(0, 1)])
+    features.update(_input_ligand(2, res_name="MSE"))
+
+    result = prepare_tfg_features(features)
+
+    assert result["pairwise_distance_index"].shape == (2, 0)
+    assert result["geometry_provenance"]["residues"] == []
+
+
+def test_a_ccd_component_without_the_cache_names_it(monkeypatch) -> None:
+    def absent(code, **_kwargs):
+        raise ValueError(f"CCD code {code!r} is not vendored; set ...")
+
+    monkeypatch.setattr(
+        "foldjax.models.protenix.data.featurize_json._external_ccd_molecule", absent
+    )
+    features = _features(np.zeros((2, 3), dtype=np.float32), bonds=[(0, 1)])
+    features.update(_input_ligand(2, res_name="ATP"))
+
+    with pytest.raises(ValueError, match="'ATP' needs the official components.cif"):
+        prepare_tfg_features(features)
+
+
 def test_missing_residue_annotations_are_refused() -> None:
     features = _features(np.zeros((2, 3), dtype=np.float32), bonds=[(0, 1)])
     del features["output_atom_res_name"]

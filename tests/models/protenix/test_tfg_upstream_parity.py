@@ -16,7 +16,11 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from foldjax.models.protenix.data.featurize_json import featurize_protein_json
+from foldjax.models.protenix.data import featurize_json as featurize_impl
+from foldjax.models.protenix.data.featurize_json import (
+    FeaturizerAssets,
+    featurize_protein_json,
+)
 from foldjax.models.protenix.data.geometry import prepare_tfg_features
 from foldjax.models.protenix.tfg.config import (
     parse_tfg_config,
@@ -115,8 +119,12 @@ def _job(upstream: dict[str, np.ndarray], case: str) -> dict:
     return json.loads(str(upstream["geometry_jobs"]))[case]
 
 
-def _featurize(upstream: dict[str, np.ndarray], case: str) -> dict:
-    features = featurize_protein_json(_job(upstream, case), n_queries=2, n_keys=4)
+def _featurize(
+    upstream: dict[str, np.ndarray], case: str, assets: FeaturizerAssets | None = None
+) -> dict:
+    features = featurize_protein_json(
+        _job(upstream, case), n_queries=2, n_keys=4, assets=assets
+    )
     np.testing.assert_array_equal(
         features["output_atom_name"], upstream[f"geometry_{case}_atom_name"]
     )
@@ -164,7 +172,10 @@ def test_geometry_matches_upstreams_featurizer(upstream, case, monkeypatch) -> N
     _assert_upstream_geometry(upstream, case, result, bounds_atol=1e-6)
 
 
-def _use_official_ccd_assets(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture
+def official_ccd_assets():
+    """Upstream's CCD files, named explicitly so the process cache reloads."""
+
     root = next(
         (
             parent / "protenix" / "common"
@@ -175,13 +186,16 @@ def _use_official_ccd_assets(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     if root is None or not (root / "components.cif.rdkit_mol.pkl").is_file():
         pytest.skip("official components.cif/RDKit CCD assets are unavailable")
-    monkeypatch.setenv("PROTENIX_CCD_COMPONENTS_FILE", str(root / "components.cif"))
-    monkeypatch.setenv(
-        "PROTENIX_CCD_RDKIT_MOL_FILE", str(root / "components.cif.rdkit_mol.pkl")
+    yield FeaturizerAssets(
+        components_cif=root / "components.cif",
+        ccd_rdkit_cache=root / "components.cif.rdkit_mol.pkl",
     )
+    featurize_impl._release_external_ccd_cache()
 
 
-def test_ccd_geometry_matches_upstreams_featurizer(upstream, monkeypatch) -> None:
+def test_ccd_geometry_matches_upstreams_featurizer(
+    upstream, official_ccd_assets
+) -> None:
     """A CCD ligand and a modified residue from the cache; the metal ion skipped.
 
     The bounds tolerance is RDKit's, not the port's: on the identical cached
@@ -190,12 +204,17 @@ def test_ccd_geometry_matches_upstreams_featurizer(upstream, monkeypatch) -> Non
     pairs, by at most 0.052 A. Every index, flag and torsion is exact.
     """
 
-    _use_official_ccd_assets(monkeypatch)
-    features = _featurize(upstream, "ccd")
+    features = _featurize(upstream, "ccd", official_ccd_assets)
 
-    result = prepare_tfg_features(features)
+    result = prepare_tfg_features(features, assets=official_ccd_assets)
 
     _assert_upstream_geometry(upstream, "ccd", result, bounds_atol=0.06)
+    # The drift is a few pairs, not a shift of every bound within tolerance.
+    drift = [
+        np.abs(np.asarray(result[key]) - upstream[f"geometry_ccd_{key}"])
+        for key in _BOUNDS
+    ]
+    assert sum(int((value > 1e-5).sum()) for value in drift) <= 40
     statuses = {
         record["res_name"]: record["status"]
         for record in result["geometry_provenance"]["residues"]

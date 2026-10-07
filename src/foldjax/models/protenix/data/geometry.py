@@ -139,7 +139,8 @@ def _prepare_tfg_features(features: Mapping[str, Any]) -> dict[str, Any]:
     for start, stop in _residue_spans(annotations):
         res_name = str(res_names[start])
         hetero = str(annotations["output_atom_polymer_type"][start]) == "non-polymer"
-        if res_name in STD_RESIDUES and not hetero:
+        # Upstream's `mse_to_met` makes every MSE a non-hetero MET before this.
+        if res_name == "MSE" or (res_name in STD_RESIDUES and not hetero):
             continue
         record: dict[str, Any] = {
             "chain_id": str(annotations["output_atom_chain_id"][start]),
@@ -254,7 +255,15 @@ def _ccd_geometry(code: str) -> tuple[dict[str, Any], dict[str, int]] | None:
 
     from foldjax.models.protenix.data.featurize_json import _external_ccd_molecule
 
-    source = _external_ccd_molecule(code, missing_ok=True)
+    try:
+        source = _external_ccd_molecule(code, missing_ok=True)
+    except ValueError as exc:
+        # A vendored ligand featurizes without the cache; its geometry cannot.
+        raise ValueError(
+            f"TFG geometry for CCD component {code!r} needs the official "
+            "components.cif.rdkit_mol.pkl (fetched with the model; or set "
+            f"PROTENIX_CCD_RDKIT_MOL_FILE, or OpenDDE's --ccd-rdkit-cache): {exc}"
+        ) from exc
     if source is None or source.GetNumAtoms() == 0:
         return None
     atom_map = {str(name): int(index) for name, index in source.atom_map.items()}
