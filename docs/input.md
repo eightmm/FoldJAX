@@ -469,7 +469,7 @@ In Python: `Job(..., pockets=[Pocket("L", [("A", 2), ("A", 5)])])`.
 |---|---|---|
 | Boltz-2 | `constraints: - pocket: {binder, contacts, max_distance}`; several allowed | 6.0 (`parse/schema.py`) |
 | OpenFold3 | the query's `pocket_constraint`, applied as pocket-guided sampling ([docs/openfold3.md](openfold3.md#pocket-constraints)); one pocket, binder must be a ligand | 4.0 (`pocket_sampling_config.py`) |
-| Protenix | `constraint.pocket` by entity/copy; one pocket; only weights with a constraint embedder read it, so the released default profile refuses it as it refuses a native one | none upstream: required |
+| Protenix | `constraint.pocket` by entity/copy; one pocket; only weights with a constraint embedder read it -- the managed `--profile base-constraint-v0.5.0` (upstream `protenix_base_constraint_v0.5.0`) -- so the released default profile refuses it as it refuses a native one | none upstream: required |
 | OpenDDE | dropped as upstream drops a constraint, with a warning and an `ignored_constraints` record; `ignore_constraints=false` refuses | — |
 | AlphaFold 3, ESMFold2 | refused: no such field upstream | — |
 
@@ -508,7 +508,7 @@ which a common job cannot reproduce. Write such a contact, or Boltz-2's
 | model | what the contact becomes | omitted `max_distance` |
 |---|---|---|
 | Boltz-2 | `constraints: - contact: {token1, token2, max_distance}`; several allowed, within one chain too | 6.0 (`parse/schema.py`) |
-| Protenix | `constraint.contact` entries `{entity1, copy1, position1, entity2, copy2, position2, max_distance}` (a token contact); the two residues must be on different chains and not modified, as upstream requires; only weights with a constraint embedder read it, so the released default profile refuses it, as it refuses a pocket | none upstream: required |
+| Protenix | `constraint.contact` entries `{entity1, copy1, position1, entity2, copy2, position2, max_distance}` (a token contact); the two residues must be on different chains and not modified, as upstream requires; only weights with a constraint embedder read it -- the managed `--profile base-constraint-v0.5.0` -- so the released default profile refuses it, as it refuses a pocket | none upstream: required |
 | OpenDDE | dropped as upstream drops a constraint, with a warning and an `ignored_constraints` record (`keys`, `contacts`); `ignore_constraints=false` refuses | — |
 | AlphaFold 3, ESMFold2, OpenFold3 | refused: no contact field upstream (OpenFold3 v0.5.0's query has only `pocket_constraint`) | — |
 

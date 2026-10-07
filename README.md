@@ -234,8 +234,8 @@ differs by model (`foldjax capabilities --model M` lists it):
 | Boltz-2 | yes, by default (with PDE) |
 | Protenix | with `--option output_format=both` (with PDE and contact probabilities) |
 | OpenDDE | with `--option include_raw=true` (with PDE and contact probabilities) |
-| OpenFold3 | no: only binned logits, with `--option all_arrays=true`, in its native `<job>_raw.npz`; never decoded to angstroms |
-| ESMFold2 | no: not among its compiled program's outputs |
+| OpenFold3 | yes, by default (with PDE), expected errors in angstroms as upstream's full confidence output writes them |
+| ESMFold2 | yes, by default (with PDE) |
 
 Arrays a model does not return are listed in the archive's metadata and the
 manifest with the reason.

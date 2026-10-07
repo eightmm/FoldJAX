@@ -465,7 +465,7 @@ Both managed checkpoints come from immutable Hugging Face revision
 
 `abag` is an antibody-antigen-optimized parameter target on the same
 655,791,538-parameter graph. It has its own download/conversion root and is
-selected explicitly with `weight_profile="abag"`; it never replaces the
+selected explicitly with `--profile abag` (`profile="abag"` in Python); it never replaces the
 general checkpoint implicitly.
 
 ## OpenFold3

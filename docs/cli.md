@@ -490,9 +490,9 @@ Each ordered pair is an `asym` row and each unordered pair a `max` row
 (ipsae.py's rule: max of directions, LIS their mean). The model's own
 chain-pair ipTM sits beside them as `native.chain_pair_iptm` where the model
 returns one (AlphaFold 3, OpenDDE, OpenFold3, Protenix). Every score needs
-PAE: Boltz-2 and AlphaFold 3 write it by default, OpenDDE with
-`--option include_raw=true`, Protenix with `--option output_format=both`; a
-sample without it is listed with the reason. On a FoldJAX AlphaFold 3 sample
+PAE: AlphaFold 3, Boltz-2, ESMFold2 and OpenFold3 write it by default,
+OpenDDE with `--option include_raw=true`, Protenix with
+`--option output_format=both`; a sample without it is listed with the reason. On a FoldJAX AlphaFold 3 sample
 of 8REN (four chains) and on the synthetic test complex, every score agrees
 with `ipsae.py` to the precision it prints. `show --format csv|json
 --interfaces` folds the `max` rows into per-sample columns
@@ -1832,14 +1832,19 @@ partitioned, and an unrecognized value is refused with the two that exist. The
 choice is part of the compilation-cache identity, so a fused run never
 receives the executable built without it, and spelling the default out names
 the same namespace an omitted option does.
-### Fused gated linear unit (`--option glu_backend`, Boltz-2, on by default)
+### Fused gated linear unit (`--option glu_backend=tokamax`, Boltz-2)
 
 Boltz-2's transitions and its triangle-multiplication gate compute
 `activation(x @ w_gate) * (x @ w_value)`. Written as two matmuls and a
 product, XLA writes the widened gate and value tensors out before multiplying
-them; the fused Triton kernel runs the same arithmetic and never materializes
-them. This is the released default. `--option glu_backend=xla` restores the
-previous arithmetic exactly and gets its own compile-cache namespace.
+them; the fused Triton kernel (`tokamax`) runs the same arithmetic and never
+materializes them. It is the default of the native
+`foldjax.models.boltz2.api.predict`, but not what an omitted option runs
+through `foldjax`: there a serial GPU run resolves to `pallas` (the Pallas
+pair-kernel default, [below](#pallas-pair-kernels-gpu-default-boltz-2-and-openfold3-both-protenix-the-multiplication)), and a context-parallel
+run or a run off a GPU to `xla`. `--option glu_backend=tokamax` selects the
+Triton kernel; `--option glu_backend=xla` restores the unfused arithmetic
+exactly. Each gets its own compile-cache namespace.
 
 Measured on one RTX PRO 6000 Blackwell, warm after prefill, the same input
 file and schedule on both arms, released `xla` -> `tokamax`:
@@ -2634,7 +2639,10 @@ CCD tables build themselves on first use. MSA search needs nothing installed
 ├── assets/                # CCD dictionaries shared by protenix and opendde
 ├── weights/<model>/       # prediction-ready weights/assets
 ├── compile/               # XLA persistent compilation cache
-└── runtime/<model>/       # generated native binaries/data (AlphaFold 3)
+├── msa/                   # searched alignments, by sequence and search; shared by every model
+├── templates/             # template hits (hits/) and downloaded mmCIFs (mmcif/)
+└── runtime/<model>/       # generated native binaries/data (AlphaFold 3);
+                           #   runtime/jobs/ holds generated and split job files
 ```
 
 `mkdir .foldjax` in a checkout keeps all of it beside the source. Where a `.pt`
