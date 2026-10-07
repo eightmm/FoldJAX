@@ -838,6 +838,24 @@ def test_open_cache_directory_repairs_a_collaborative_umask(tmp_path: Path) -> N
     assert stat.S_IMODE(private.stat().st_mode) == 0o700
 
 
+def test_open_cache_directory_keeps_a_trusted_shared_namespace_group_writable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from foldjax.cache import TRUST_SHARED_COMPILE_CACHE_ENV
+
+    root = tmp_path / "cache"
+    root.mkdir()
+    root.chmod(0o2775)
+    monkeypatch.setenv(TRUST_SHARED_COMPILE_CACHE_ENV, "1")
+
+    with persistent._open_cache_directory(root):
+        pass
+
+    assert stat.S_IMODE(root.stat().st_mode) == 0o2775
+    private = root / persistent._CACHE_DIRECTORY
+    assert stat.S_IMODE(private.stat().st_mode) & 0o777 == 0o700
+
+
 def test_filesystem_fstat_failure_falls_back_without_tuning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

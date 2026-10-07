@@ -644,4 +644,6 @@ def run_cache_gc(args: argparse.Namespace) -> int:
             sort_keys=True,
         )
     )
-    return 0
+    # A cleanup script must see that entries it asked to delete are still
+    # there -- another account's, typically, in a shared store.
+    return 1 if args.apply and failed_files else 0

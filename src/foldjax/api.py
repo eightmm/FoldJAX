@@ -1230,8 +1230,25 @@ class _RunLock:
             import fcntl
         except ImportError:  # pragma: no cover - no flock on this platform
             return
-        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(self.path, flags, 0o600)
+        # The umask decides who else may open it, as for every other file in
+        # the run directory: a group sharing one resumes the other's runs.
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT | nofollow, 0o666)
+        except PermissionError as denied:
+            # Another account's lock this one may read: ``flock`` needs no
+            # write access, only the courtesy note of who holds it does.
+            try:
+                fd = os.open(self.path, os.O_RDONLY | nofollow)
+            except FileNotFoundError:
+                raise denied from None  # the directory refuses new files
+            except OSError as error:
+                raise PredictionError(
+                    f"cannot open the run lock {self.path} ({error}); it was "
+                    "probably created by another account. Its owner can share "
+                    f"it with `chmod g+rw {self.path}`, or choose another "
+                    "--output-dir"
+                ) from None
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:

@@ -57,7 +57,7 @@ from typing import Any
 import numpy as np
 
 from foldjax import confidence_arrays
-from foldjax._fsutil import safe_job_name
+from foldjax._fsutil import ordinary_file_mode, safe_job_name
 from foldjax.schema import PredictionOutputError, PredictionResult, PredictionSample
 from foldjax.scores import EXECUTION_FIELDS
 from foldjax.summary import (
@@ -285,7 +285,7 @@ def _write_pae_json(path: Path, pae: np.ndarray, *, maximum: float) -> None:
             handle.close()
             staged.unlink(missing_ok=True)
             raise
-    os.chmod(staged, 0o666 & ~confidence_arrays._umask())
+    os.chmod(staged, ordinary_file_mode())
     os.replace(staged, path)
 
 

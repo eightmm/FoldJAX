@@ -249,6 +249,53 @@ def test_the_lock_is_released_after_each_pair(tmp_path: Path) -> None:
             os.close(fd)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="flock is POSIX")
+def test_the_lock_takes_the_umask_so_a_group_can_resume(tmp_path: Path) -> None:
+    import os
+    import stat
+
+    previous = os.umask(0o002)
+    try:
+        with backend_override("boltz2", lambda: Scripted()):
+            assert foldjax.predict_batch(_batch(tmp_path, "a")).ok
+    finally:
+        os.umask(previous)
+    lock = tmp_path / "out" / "boltz2" / "a" / api_module.LOCK_NAME
+    assert stat.S_IMODE(lock.stat().st_mode) == 0o664
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="flock is POSIX")
+def test_another_accounts_readable_lock_still_locks(tmp_path: Path) -> None:
+    """A ``0644`` lock another member made: this run only needs to read it."""
+    directory = tmp_path / "out" / "boltz2" / "a"
+    directory.mkdir(parents=True)
+    lock = directory / api_module.LOCK_NAME
+    lock.write_text("")
+    lock.chmod(0o444)
+    backend = Scripted()
+    with backend_override("boltz2", lambda: backend):
+        assert foldjax.predict_batch(_batch(tmp_path, "a")).ok
+    assert backend.ran == ["a"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="flock is POSIX")
+def test_an_unopenable_lock_names_itself_and_the_repair(tmp_path: Path) -> None:
+    directory = tmp_path / "out" / "boltz2" / "a"
+    directory.mkdir(parents=True)
+    lock = directory / api_module.LOCK_NAME
+    lock.write_text("")
+    lock.chmod(0o000)
+    try:
+        with backend_override("boltz2", lambda: Scripted()):
+            report = foldjax.predict_batch(_batch(tmp_path, "a"))
+    finally:
+        lock.chmod(0o644)
+    (failure,) = report.failures
+    assert failure.error_type == "PredictionError"
+    assert str(lock) in failure.error
+    assert "chmod g+rw" in failure.error
+
+
 def test_cli_keep_going_records_an_unreadable_fasta_and_runs_the_rest(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:

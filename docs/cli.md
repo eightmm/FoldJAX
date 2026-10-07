@@ -154,7 +154,8 @@ uv run foldjax cache gc --older-than 30 --max-size 20G   # reports; --apply dele
 `models --for` is answered from the input translation table, so it needs no
 weights, no GPU and no network. `cache gc` reports by default and deletes only
 with `--apply`: cache entries are pure derived data, but they are still someone's
-disk. `cache gc --verify` selects entries that no longer decompress (a write cut
+disk. `--apply` exits 1 when any planned removal failed (in a shared store,
+typically another account's entries). `cache gc --verify` selects entries that no longer decompress (a write cut
 short by a full disk or a kill): JAX never overwrites such an entry, so it
 recompiles that program on every run until the file is removed.
 
@@ -2754,12 +2755,15 @@ A cache entry is an executable that JAX runs as found, so FoldJAX uses a cache
 directory only when no other account can write into it or any directory above
 it: each must belong to you (or root) and be writable by neither the world nor
 a group with another member (a root-owned sticky directory such as `/tmp` is
-fine as an ancestor). New cache directories are created without group write
-whatever the umask. Otherwise the run warns once, names the directory and the
-reason, and compiles without a persistent cache. A store shared on purpose --
-a lab's group-writable, setgid cache -- is opted in with
+fine as an ancestor). The check runs before anything is created, and the
+directories it then creates are `0755` whatever the umask, so a private cache
+stays private. Otherwise the run warns once, names the directory and the
+reason, creates nothing, and compiles without a persistent cache. A store
+shared on purpose -- a lab's group-writable, setgid cache -- is opted in with
 `FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1`, which trusts every account that can
-write to it.
+write to it; its new directories then follow the umask. Every member needs it
+from their first run
+([Sharing a store with a group](configuration.md#sharing-a-store-with-a-group)).
 
 Warm the exact request before a production run on its deployment GPU:
 

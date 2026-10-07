@@ -102,6 +102,79 @@ def test_the_environment_opts_in_to_a_shared_store(
     assert trusted_compile_cache_dir(target / "boltz2") == target / "boltz2"
 
 
+def test_a_refused_cache_creates_no_namespace(tmp_path: Path) -> None:
+    """The decision comes first: a refused store gains no empty directories.
+
+    They used to be made 0755 before the refusal, and a later opt-in run by
+    another member of the group then could not write into them.
+    """
+    shared = tmp_path / "compile"
+    shared.mkdir()
+    shared.chmod(0o777)
+    with pytest.warns(RuntimeWarning, match="world-writable"):
+        assert trusted_compile_cache_dir(shared / "boltz2" / "w" / "digest") is None
+    assert not (shared / "boltz2").exists()
+
+
+def test_a_shared_store_namespace_takes_the_umask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = tmp_path / "compile"
+    store.mkdir()
+    store.chmod(0o2775)
+    monkeypatch.setenv(TRUST_SHARED_COMPILE_CACHE_ENV, "1")
+    target = store / "boltz2" / "w" / "digest"
+    previous = os.umask(0o002)
+    try:
+        assert trusted_compile_cache_dir(target) == target
+    finally:
+        os.umask(previous)
+    for directory in (target, target.parent, target.parent.parent):
+        assert _mode(directory) & 0o2070 == 0o2070, directory
+
+
+def test_a_shared_store_that_cannot_be_created_compiles_without_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another account's 0755 namespace: slower, never a crash."""
+    theirs = tmp_path / "compile"
+    theirs.mkdir()
+    theirs.chmod(0o555)
+    monkeypatch.setenv(TRUST_SHARED_COMPILE_CACHE_ENV, "1")
+    try:
+        with pytest.warns(RuntimeWarning, match="cannot be created"):
+            assert trusted_compile_cache_dir(theirs / "boltz2") is None
+    finally:
+        theirs.chmod(0o755)
+
+
+def test_a_shared_namespace_this_account_cannot_write_is_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    namespace = tmp_path / "compile" / "boltz2"
+    namespace.mkdir(parents=True)
+    namespace.chmod(0o555)
+    monkeypatch.setenv(TRUST_SHARED_COMPILE_CACHE_ENV, "1")
+    try:
+        with pytest.warns(RuntimeWarning, match="chmod -R g\\+w"):
+            assert trusted_compile_cache_dir(namespace) == namespace
+    finally:
+        namespace.chmod(0o755)
+
+
+def test_the_trust_verdict_is_read_without_creating_anything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shared = tmp_path / "compile"
+    shared.mkdir()
+    shared.chmod(0o777)
+    target = shared / "boltz2" / "w"
+    assert "world-writable" in cache.compile_cache_untrusted_reason(target)
+    assert not (shared / "boltz2").exists()
+    monkeypatch.setenv(TRUST_SHARED_COMPILE_CACHE_ENV, "1")
+    assert cache.compile_cache_untrusted_reason(target) is None
+
+
 def test_the_scope_compiles_without_a_cache_it_refuses(
     tmp_path: Path, trust_ancestors_above_tmp_path
 ) -> None:

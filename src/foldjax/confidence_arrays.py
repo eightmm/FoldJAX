@@ -42,6 +42,8 @@ from typing import Any
 
 import numpy as np
 
+from foldjax._fsutil import ordinary_file_mode
+
 #: The file in each canonical sample directory.
 FILENAME = "confidence_full.npz"
 #: Suffix of the file a backend writes beside its native structure before
@@ -367,15 +369,9 @@ def write(
     # `NamedTemporaryFile` creates the staging file 0600; give the archive the mode an
     # ordinary write would (``0666 & ~umask``), like `confidence.json` beside it, so a
     # shared results directory stays readable to the group that reads the rest.
-    os.chmod(staged, 0o666 & ~_umask())
+    os.chmod(staged, ordinary_file_mode())
     os.replace(staged, path)
     return record(path, meta)
-
-
-def _umask() -> int:
-    mask = os.umask(0)
-    os.umask(mask)
-    return mask
 
 
 def staged_path(structure_path: str | Path) -> Path:

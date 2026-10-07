@@ -285,7 +285,13 @@ def run_doctor(args: argparse.Namespace) -> int:
         "home": str(paths.foldjax_home()),
     }
 
-    from foldjax.cache import cache_snapshot, runtime_profile
+    from foldjax.cache import (
+        TRUST_SHARED_COMPILE_CACHE_ENV,
+        cache_snapshot,
+        compile_cache_untrusted_reason,
+        runtime_profile,
+        shared_compile_cache_trusted,
+    )
 
     devices: list[str] = []
     backend_name = None
@@ -328,6 +334,13 @@ def run_doctor(args: argparse.Namespace) -> int:
     report_payload["compile_cache"] = {
         "path": str(compile_cache_path),
         **compile_cache,
+    }
+    # Read-only: a refused cache is otherwise only a warning in some run's log.
+    untrusted = compile_cache_untrusted_reason(compile_cache_path)
+    report_payload["compile_cache_trust"] = {
+        "trusted": untrusted is None,
+        "shared_opt_in": shared_compile_cache_trusted(),
+        "reason": untrusted,
     }
 
     models_payload = []
@@ -388,6 +401,15 @@ def run_doctor(args: argparse.Namespace) -> int:
         f"cache     {_format_bytes(compile_cache['bytes'])} in "
         f"{compile_cache['files']} file(s)  {compile_cache_path}"
     )
+    if report_payload["compile_cache_trust"]["shared_opt_in"]:
+        print(f"          trusted as shared ({TRUST_SHARED_COMPILE_CACHE_ENV}=1)")
+    elif untrusted is None:
+        print("          trusted: no other account can write it")
+    else:
+        print(
+            f"          not used: {untrusted}; runs compile without it "
+            f"(set {TRUST_SHARED_COMPILE_CACHE_ENV}=1 for a shared store)"
+        )
     optional_versions = {
         name: version
         for name, version in runtime_versions.items()

@@ -28,6 +28,8 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -89,6 +91,32 @@ def _current_umask() -> int:
     mask = os.umask(0)
     os.umask(mask)
     return mask
+
+
+@contextmanager
+def exclusive_file_lock(path: Path) -> Iterator[bool]:
+    """Hold an exclusive ``flock`` on ``path``; yields whether one was taken.
+
+    The file is created with the umask's mode and opened read-only: ``flock``
+    needs no write access, so a lock another member of a shared store's group
+    created (``0644`` under a 0022 umask) still serializes this process with
+    theirs, where opening it for writing failed with ``EACCES``. ``False``
+    only where the platform has no ``flock``.
+    """
+    fd = os.open(path, os.O_RDONLY | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o666)
+    try:
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - FoldJAX targets Linux/CUDA
+            yield False
+            return
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield True
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def nonempty_file(path: Path) -> bool:

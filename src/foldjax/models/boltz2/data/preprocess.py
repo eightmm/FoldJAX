@@ -17,7 +17,6 @@ from __future__ import annotations
 import os
 import pickle
 import shutil
-import tempfile
 from functools import partial
 from pathlib import Path
 
@@ -29,6 +28,7 @@ from foldjax.models.boltz2.data.mol import load_canonicals, load_mol_pickle
 from foldjax.models.boltz2.data.parse.fasta import parse_fasta
 from foldjax.models.boltz2.data.parse.yaml import parse_yaml
 from foldjax.models.boltz2.data.types import Manifest, Record
+from foldjax.search.msa import staging_directory
 
 
 def check_inputs(data: Path) -> list[Path]:
@@ -269,8 +269,10 @@ def process_inputs(
     # shares (``boltz2_input``), so reusing an existing file answered a second
     # job -- or an edited alignment -- with the first one's MSA, and a stale
     # record from another job joined the manifest. Building under a fresh
-    # private directory also means no write follows a planted symlink.
-    staging = Path(tempfile.mkdtemp(prefix=".processed-", dir=out_dir))
+    # directory also means no write follows a planted symlink. It takes the
+    # umask's mode (``mkdtemp``'s 0700 was published with it, and another
+    # member of a shared run directory's group could not replace it).
+    staging = staging_directory(out_dir, "processed")
     try:
         manifest = _process_into(
             data,

@@ -1112,6 +1112,33 @@ def test_cache_lock_symlink_is_not_followed(tmp_path) -> None:
     assert target.read_bytes() == b"outside"
 
 
+def test_cache_lock_is_shared_with_the_store_group(tmp_path) -> None:
+    """Created with the umask's mode, and taken read-only when another
+    account's lock cannot be opened for writing; it was ``0600`` and opened
+    read-write, so every other member ran unlocked."""
+    import stat
+
+    pytest.importorskip("fcntl")
+    scope = tmp_path / "shared-lock-cache"
+    scope.mkdir()
+    directory_fd = os.open(scope, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    previous = os.umask(0o002)
+    try:
+        with compile_helpers._cache_scope_file_lock(
+            scope, directory_fd=directory_fd
+        ) as acquired:
+            assert acquired
+        assert stat.S_IMODE((scope / ".lockfile").stat().st_mode) == 0o664
+        (scope / ".lockfile").chmod(0o444)
+        with compile_helpers._cache_scope_file_lock(
+            scope, directory_fd=directory_fd
+        ) as acquired:
+            assert acquired
+    finally:
+        os.umask(previous)
+        os.close(directory_fd)
+
+
 def test_first_compile_deletion_is_not_accepted_as_an_empty_baseline(
     tmp_path, monkeypatch
 ) -> None:

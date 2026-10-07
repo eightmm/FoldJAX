@@ -234,7 +234,7 @@ def _make_cache_directories(path: Path) -> None:
     """Create missing components without the umask's group-write bit.
 
     ``Path.mkdir(parents=True)`` under a collaborative umask of 0002 makes
-    every new namespace 0775, which the check below would then refuse.
+    every new namespace 0775, which the check after it would then refuse.
     """
     missing: list[Path] = []
     current = path
@@ -306,37 +306,95 @@ def _untrusted_directory_reason(directory: Path, *, leaf: bool) -> str | None:
     return None
 
 
+def shared_compile_cache_trusted() -> bool:
+    """Whether `TRUST_SHARED_COMPILE_CACHE_ENV` opts in to a shared store."""
+    value = os.environ.get(TRUST_SHARED_COMPILE_CACHE_ENV, "")
+    return value.strip().lower() in _TRUE
+
+
+def _deepest_existing(path: Path) -> Path:
+    """``path`` itself, or the nearest ancestor of it that exists."""
+    current = path
+    while not current.exists() and current.parent != current:
+        current = current.parent
+    return current
+
+
+def compile_cache_untrusted_reason(
+    directory: str | os.PathLike[str],
+) -> str | None:
+    """Why `trusted_compile_cache_dir` would refuse ``directory``, if it would.
+
+    Read-only: nothing is created and nothing is warned, so a report such as
+    `foldjax doctor` can ask before any run has made the namespace.
+    """
+    if shared_compile_cache_trusted():
+        return None
+    try:
+        return _untrusted_cache_reason(
+            _deepest_existing(Path(directory).expanduser())
+        )
+    except OSError as error:
+        return f"it cannot be inspected ({error})"
+
+
+def _warn_once(path: Path, message: str) -> None:
+    if str(path) in _WARNED_CACHE_DIRS:
+        return
+    _WARNED_CACHE_DIRS.add(str(path))
+    import warnings
+
+    warnings.warn(message, RuntimeWarning, stacklevel=3)
+
+
 def trusted_compile_cache_dir(directory: str | os.PathLike[str]) -> Path | None:
     """Prepare ``directory`` and return it when its executables can be trusted.
 
     Returns ``None``, with one warning per directory, when another account can
     write into the cache or its ancestors; the caller then compiles without a
-    persistent cache. ``FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1`` skips the check
-    for a deliberately shared store.
+    persistent cache. The trust decision is taken on the nearest existing
+    ancestor before anything is created, so a refused cache leaves no empty
+    namespace behind. ``FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1`` skips the check
+    for a deliberately shared store, whose new directories then take the
+    umask's mode (and a setgid parent's group) like the rest of it.
     """
     path = Path(directory).expanduser()
-    if os.environ.get(TRUST_SHARED_COMPILE_CACHE_ENV, "").strip().lower() in _TRUE:
-        path.mkdir(parents=True, exist_ok=True)
+    if shared_compile_cache_trusted():
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            _warn_once(
+                path,
+                f"not using the compile cache {path}: it cannot be created "
+                f"({error}). Compiling without a persistent cache; make the "
+                "shared store group-writable (chmod -R g+w) to share it.",
+            )
+            return None
+        if not os.access(path, os.W_OK | os.X_OK):
+            _warn_once(
+                path,
+                f"the compile cache {path} is not writable by this account: "
+                "entries already there load, but what this run compiles is "
+                "not kept, so it compiles again next time. Its owner can "
+                f"repair a shared store with chmod -R g+w {path}.",
+            )
         return path
     try:
-        _make_cache_directories(path)
-        reason = _untrusted_cache_reason(path)
+        reason = _untrusted_cache_reason(_deepest_existing(path))
+        if reason is None:
+            _make_cache_directories(path)
+            reason = _untrusted_cache_reason(path)
     except OSError as error:
         reason = f"it cannot be prepared ({error})"
     if reason is None:
         return path
-    if str(path) not in _WARNED_CACHE_DIRS:
-        _WARNED_CACHE_DIRS.add(str(path))
-        import warnings
-
-        warnings.warn(
-            f"not using the compile cache {path}: {reason}, so another account "
-            "could plant an executable there. Compiling without a persistent "
-            f"cache; set {TRUST_SHARED_COMPILE_CACHE_ENV}=1 to trust a shared "
-            "store, or use a cache directory only you can write.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+    _warn_once(
+        path,
+        f"not using the compile cache {path}: {reason}, so another account "
+        "could plant an executable there. Compiling without a persistent "
+        f"cache; set {TRUST_SHARED_COMPILE_CACHE_ENV}=1 to trust a shared "
+        "store, or use a cache directory only you can write.",
+    )
     return None
 
 

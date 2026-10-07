@@ -279,12 +279,15 @@ def _cache_scope_file_lock(directory: Path, *, directory_fd: int) -> Iterator[bo
             lock.release()
         return
 
+    # Read-only with the umask's mode: ``flock`` needs no write access, and
+    # an owner-only lock left every other member of a shared store's group
+    # running unlocked.
     while True:
         try:
             descriptor = os.open(
                 ".lockfile",
-                os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
-                0o600,
+                os.O_CREAT | os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                0o666,
                 dir_fd=directory_fd,
             )
             break

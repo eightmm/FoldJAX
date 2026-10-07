@@ -227,6 +227,33 @@ def test_models_for_reports_which_backends_can_run_a_job(
     assert rows["boltz2"]["weights_ready"] is False
 
 
+def test_doctor_says_whether_the_compile_cache_is_trusted(
+    monkeypatch, capsys
+) -> None:
+    """A refused cache was only a warning in some run's log."""
+    from foldjax import paths
+    from foldjax.cache import TRUST_SHARED_COMPILE_CACHE_ENV
+
+    monkeypatch.delenv(TRUST_SHARED_COMPILE_CACHE_ENV, raising=False)
+    cache = paths.compile_cache_dir()
+    cache.mkdir(parents=True)
+    cache.chmod(0o777)
+
+    assert main(["doctor", "--json"]) == 0
+    trust = json.loads(capsys.readouterr().out)["compile_cache_trust"]
+    assert trust["trusted"] is False
+    assert trust["shared_opt_in"] is False
+    assert "world-writable" in trust["reason"]
+
+    assert main(["doctor"]) == 0
+    assert "not used:" in capsys.readouterr().out
+
+    monkeypatch.setenv(TRUST_SHARED_COMPILE_CACHE_ENV, "1")
+    assert main(["doctor", "--json"]) == 0
+    trust = json.loads(capsys.readouterr().out)["compile_cache_trust"]
+    assert trust == {"trusted": True, "shared_opt_in": True, "reason": None}
+
+
 def test_doctor_reports_the_runtime_and_what_is_missing(capsys) -> None:
     from foldjax import paths
 
@@ -498,7 +525,8 @@ def test_cache_gc_apply_reports_actual_unlink_failures(monkeypatch, capsys) -> N
 
     monkeypatch.setattr(cli.os, "unlink", fail_entry)
 
-    assert main(["cache", "gc", "--max-size", "1K", "--apply"]) == 0
+    # Non-zero: a cleanup script must not read a failed removal as done.
+    assert main(["cache", "gc", "--max-size", "1K", "--apply"]) == 1
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
 

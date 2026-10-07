@@ -808,6 +808,55 @@ unless it says so here, in its own paragraph.
   the weights beside them followed the umask, so another member of the store's
   group was told the weights were not converted. The records now follow the
   umask too.
+- **A shared compile cache stays usable by the whole group.** Namespace
+  directories were made `0755` before the trust check ran, so a run that then
+  refused the store still left them behind, and a later
+  `FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1` run by another member could not write
+  into them (it recompiled every time) or failed outright (exit 2) creating a
+  new one beneath them. The check now runs on the nearest existing directory
+  first and a refused store gains nothing. With the variable set, new
+  namespaces take the umask's mode and a setgid parent's group, a namespace
+  that cannot be created is a warning and a run without the persistent cache,
+  and one that cannot be written is named in a warning. AlphaFold 3's Tokamax
+  autotuning no longer strips group write from a trusted shared namespace.
+  Existing `0755` namespaces need a one-time repair
+  ([configuration.md](docs/configuration.md#sharing-a-store-with-a-group)).
+- **Another member of the group can rerun or resume a shared run directory.**
+  Its `.foldjax.lock` was created owner-only (`0600`), so anyone else's run
+  there failed with a bare `PermissionError`. The lock now takes the umask's
+  mode, a lock another account made is taken read-only when it cannot be
+  opened for writing, and one that cannot be opened at all is a
+  `PredictionError` naming the lock and its `chmod` repair.
+- **Boltz-2's `processed/` tree takes the umask's mode.** It was built in a
+  `0700` temporary directory and published with that mode, so another member
+  of a shared run directory's group could not replace it on a rerun.
+- **AlphaFold 3's prepared runtime is shared with the store's group, and an
+  unreadable one is never deleted.** A runtime generation was published
+  `0700` from its temporary build directory, so nobody else sharing the store
+  could use it; it now takes the umask's mode. A generation this account
+  cannot read was taken for an interrupted build and deleted to be rebuilt
+  (or failed half way with a bare `PermissionError`); it is now left in place
+  with an error naming it and its `chmod -R g+rX` repair. Another account's
+  abandoned build directory is skipped with a warning.
+- **Lock files another member of the store's group made no longer stop a
+  download, conversion or build.** The weight download and conversion locks
+  and AlphaFold 3's build lock were opened for writing, so a lock the group
+  could only read (`0644`/`0640`, as a 0022 or 0027 umask makes it) failed the
+  first real download or conversion with `EACCES`; OpenFold3's compile-cache
+  lock and the MSA/template search lock went unlocked instead. They are now
+  opened read-only, which `flock` needs, and created with the umask's mode
+  (OpenFold3's was `0600`).
+- `foldjax cache gc --apply` exits 1 when any planned removal failed (in a
+  shared store, typically another account's entries); it exited 0 even when
+  every removal failed.
+- `foldjax doctor` says whether the compile cache is trusted, and why not
+  (`compile_cache_trust` in `--json`); a refused cache was only a warning in
+  some run's log.
+- A conversion no longer fails on another account's abandoned staging
+  directory it cannot remove; it is left in place with a warning.
+- Writing a confidence archive or PAE JSON no longer sets the process umask
+  to `0` to read it, which briefly left any thread creating a file meanwhile
+  world-writable; the umask is read from the kernel as elsewhere.
 - **OpenDDE accepts the unknown-residue letters upstream documents.** Protein
   `X`, and DNA and RNA `N` and `X`, were refused with `NotImplementedError`;
   they now become UNK, DN and N as upstream's parser maps them, with
@@ -1292,10 +1341,10 @@ unless it says so here, in its own paragraph.
   ancestor must belong to the user (or root) and be writable by neither the
   world nor a group with another member; otherwise FoldJAX warns once and
   compiles without a persistent cache. New cache directories are created
-  without group write under any umask. A deliberately shared store opts in
-  with `FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1`. This applies to the request
-  cache and to the Boltz-2, OpenDDE, OpenFold3 and AlphaFold 3 entry points
-  that set the cache themselves. A group-writable, setgid store shared with
+  without group write under any umask, except in a deliberately shared store,
+  which opts in with `FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1`. This applies to
+  the request cache and to the Boltz-2, OpenDDE, OpenFold3 and AlphaFold 3
+  entry points that set the cache themselves. A group-writable, setgid store shared with
   another account (such as a lab's) now misses until that variable is set.
 
 - **Remote MSA, template and structure servers must be https and are not
