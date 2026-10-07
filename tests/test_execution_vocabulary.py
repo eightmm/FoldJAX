@@ -495,3 +495,68 @@ def test_every_native_switch_is_declared_as_one() -> None:
         }
         assert defaulted <= backend.boolean_options, (model, defaulted)
         assert backend.boolean_options <= native, model
+
+
+def _validated_switches(source: str) -> set[str]:
+    """Option names a backend validates as switches, read off its source.
+
+    ``_strict_boolean(..., name="x")`` and OpenDDE's ``_boolean_option``
+    (called with the name, or paired with it in a spec table as
+    ``"x": (_boolean_option, ...)``). A switch with no released-default entry
+    is invisible to the default-table census above; this sees it.
+    """
+    import ast
+
+    def named(node: ast.AST, name: str) -> bool:
+        return isinstance(node, ast.Name) and node.id == name
+
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call) and named(node.func, "_strict_boolean"):
+            for keyword in node.keywords:
+                if keyword.arg == "name" and isinstance(keyword.value, ast.Constant):
+                    found.add(keyword.value.value)
+        elif isinstance(node, ast.Call) and named(node.func, "_boolean_option"):
+            if node.args and isinstance(node.args[0], ast.Constant):
+                found.add(node.args[0].value)
+        elif isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values, strict=True):
+                if (
+                    isinstance(key, ast.Constant)
+                    and isinstance(value, ast.Tuple)
+                    and value.elts
+                    and named(value.elts[0], "_boolean_option")
+                ):
+                    found.add(key.value)
+    return {name for name in found if isinstance(name, str)}
+
+
+def test_every_native_option_validated_as_a_switch_is_declared_as_one() -> None:
+    """The default-table census misses a switch whose default is not a `bool`
+    entry in a ``*DEFAULT*`` table; the validator call sites do not."""
+    import importlib
+    import inspect
+
+    seen: dict[str, set[str]] = {}
+    for model in available_models():
+        backend = get_backend(model)
+        module = importlib.import_module(type(backend).__module__)
+        native = set(backend.native_options or ())
+        validated = _validated_switches(inspect.getsource(module)) & native
+        seen[model] = validated
+        assert validated <= backend.boolean_options, (
+            model,
+            validated - backend.boolean_options,
+        )
+    # Not vacuous: both spellings of the validator are found where they live.
+    assert {"use_template", "use_rna_msa"} <= seen["opendde"]
+    assert seen["esmfold2"]
+
+
+def test_the_switch_census_reads_all_three_call_shapes() -> None:
+    source = (
+        "_strict_boolean(options.get('a'), name='a')\n"
+        "_boolean_option('b', value)\n"
+        "SPECS = {'c': (_boolean_option, None), 'd': (_text_option, None)}\n"
+    )
+    assert _validated_switches(source) == {"a", "b", "c"}
