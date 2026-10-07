@@ -12,6 +12,9 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **`real_store` test marker and fixture** for tests gated on released assets.
+  `ccd_components`, `alphafold3_runtime`, and the `cpu_parity` and
+  `official_parity` markers opt in without it.
 - **Template search: `--templates auto|required`
   (`PredictionRequest(templates="auto")`).** Upstream AlphaFold 3 and OpenFold3
   search templates by default and FoldJAX searched none, so a job without
@@ -707,6 +710,16 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **The test suite no longer reads the developer's FoldJAX store.** With
+  `FOLDJAX_HOME` unset, a source checkout's `.foldjax/` was the store for every
+  test, so a machine with the released `components.cif` ran the CCD bond-atom
+  check that CI (no dictionary) skips. Two tests named atoms their residues do
+  not have -- `SG` on selenomethionine and `C1` on ATP in `tests/test_job.py`,
+  `OG` on threonine in `tests/test_input_ergonomics.py` -- and failed only
+  there. An autouse fixture now points `FOLDJAX_HOME` at a per-session tmp
+  directory and unsets `PROTENIX_CCD_COMPONENTS_FILE`,
+  `PROTENIX_CCD_RDKIT_MOL_FILE` and `PROTENIX_TEMPLATE_MMCIF_DIR`; the atoms are
+  corrected, and the bond test also runs against a two-component dictionary.
 - **A group-shared store's converted weights are usable by the whole group.**
   Conversion and completion records were written owner-only (`0600`) while
   the weights beside them followed the umask, so another member of the store's
