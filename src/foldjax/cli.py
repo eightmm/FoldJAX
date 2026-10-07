@@ -10,7 +10,7 @@ import os
 import sys
 import time
 import warnings
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from typing import Any, NoReturn
@@ -479,6 +479,12 @@ def _parser() -> argparse.ArgumentParser:
         help="with --for: the alignment policy predict would run under "
         "(default 'none', which refuses a protein chain with no alignment "
         "except on ESMFold2)",
+    )
+    models.add_argument(
+        "--profile",
+        help="with --for: the managed weight profile predict would run, for the "
+        "models that offer it (the others answer for their released weights); "
+        "a profile decides, for example, whether Protenix can read a pocket",
     )
     home = commands.add_parser("home", help="show where FoldJAX keeps its files")
     home.add_argument(
@@ -1264,6 +1270,26 @@ def _run_runtime_gc(args: argparse.Namespace) -> int:
     return 0
 
 
+def _models_for_profiles(
+    infos: Mapping[str, Any], profile: str | None
+) -> dict[str, str | None]:
+    """The profile each model answers ``models --for`` with; None is released."""
+    if profile is None or profile == assets.RELEASED_PROFILE:
+        return dict.fromkeys(infos)
+    chosen = {
+        name: profile
+        if any(row["profile"] == profile for row in info.weight_profiles)
+        else None
+        for name, info in infos.items()
+    }
+    if not any(chosen.values()):
+        raise ValueError(
+            f"no model offers the weight profile {profile!r}; "
+            "`foldjax models --json` lists each model's profiles"
+        )
+    return chosen
+
+
 def _run_models_for(args: argparse.Namespace) -> int:
     """Say which models can run one job, before anything is downloaded.
 
@@ -1278,6 +1304,7 @@ def _run_models_for(args: argparse.Namespace) -> int:
         read_job_document,
         read_jobs_file,
     )
+    from foldjax.registry import get_backend
 
     path = Path(args.for_input)
     if path.suffix.lower() in _FASTA_SUFFIXES:
@@ -1294,16 +1321,31 @@ def _run_models_for(args: argparse.Namespace) -> int:
         jobs = [(None, document)]
     rows = []
     infos = {name: model_info(name) for name in available_models()}
+    profiles = _models_for_profiles(infos, getattr(args, "profile", None))
     for job_name, job in jobs:
         for name, info in infos.items():
+            profile = profiles[name]
             reason = compatibility(job, name, msa=args.msa, base=path.parent)
+            if reason is None and isinstance(job, dict):
+                reason = get_backend(name).profile_refusal(job, profile)
+            if profile is None:
+                ready, setup = info.weights_ready, info.setup
+            else:
+                ready = assets.assets_for(name, profile=profile).ready()
+                setup = (
+                    None
+                    if ready
+                    else f"foldjax weights fetch --model {name} --profile {profile}"
+                )
             row = {
                 "model": name,
                 "runs": reason is None,
                 "reason": reason,
-                "weights_ready": info.weights_ready,
-                "setup": info.setup,
+                "weights_ready": ready,
+                "setup": setup,
             }
+            if profile is not None:
+                row["profile"] = profile
             if job_name is not None:
                 row["job"] = job_name
             rows.append(row)

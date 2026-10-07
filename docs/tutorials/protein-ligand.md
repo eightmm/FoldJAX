@@ -28,6 +28,7 @@ records which (`max_distance_source: job` or `upstream`).
 
 ```bash
 foldjax models --for target_atp.yaml        # which models read it, and why the others do not
+foldjax models --for target_atp.yaml --profile base-constraint-v0.5.0   # Protenix's constraint checkpoint
 foldjax predict --model boltz2 openfold3 --input target_atp.yaml --output-dir out
 ```
 

@@ -152,7 +152,10 @@ uv run foldjax cache gc --older-than 30 --max-size 20G   # reports; --apply dele
 ```
 
 `models --for` is answered from the input translation table, so it needs no
-weights, no GPU and no network. `cache gc` reports by default and deletes only
+weights, no GPU and no network. It answers for the released weights unless
+`--profile` names the profile predict would run (a Protenix pocket is readable
+only under `--profile base-constraint-v0.5.0`), and a model that can run the
+job but has no weights installed says so beside its yes. `cache gc` reports by default and deletes only
 with `--apply`: cache entries are pure derived data, but they are still someone's
 disk. `cache gc --verify` selects entries that no longer decompress (a write cut
 short by a full disk or a kill): JAX never overwrites such an entry, so it

@@ -469,6 +469,51 @@ def test_models_for_applies_the_alignment_policy(
     assert "no such file" in reason
 
 
+def test_models_for_answers_for_the_weight_profile_that_would_run(
+    store: Path, workdir: Path, capsys
+) -> None:
+    """A pocket is expressible on Protenix, and readable only by one checkpoint;
+    `plan` refuses the released one, so `models --for` must not say yes to it."""
+    path = _job(
+        workdir,
+        "pocket",
+        f"entities:\n  - {_PROTEIN}\n  - {{type: ligand, id: L, ccd: ATP}}\n"
+        "constraints:\n"
+        "  - pocket: {binder: L, contacts: [[A, 3]], max_distance: 6.0}\n",
+    )
+
+    def rows(*extra: str) -> dict[str, dict]:
+        assert main(["models", "--for", str(path), "--json", *extra]) == 0
+        return {row["model"]: row for row in json.loads(capsys.readouterr().out)}
+
+    released = rows()["protenix"]
+    assert released["runs"] is False
+    assert "--profile base-constraint-v0.5.0" in released["reason"]
+    assert "model_name" not in released["reason"]
+
+    constrained = rows("--profile", "base-constraint-v0.5.0")
+    assert constrained["protenix"]["runs"] is True
+    assert constrained["protenix"]["profile"] == "base-constraint-v0.5.0"
+    assert constrained["protenix"]["weights_ready"] is False
+    assert constrained["protenix"]["setup"] == (
+        "foldjax weights fetch --model protenix --profile base-constraint-v0.5.0"
+    )
+    # A model without that profile answers for its released weights.
+    assert "profile" not in constrained["boltz2"]
+    assert constrained["boltz2"]["runs"] is True
+
+    profile = ["--profile", "base-constraint-v0.5.0"]
+    assert main(["models", "--for", str(path), *profile]) == 0
+    text = capsys.readouterr().out
+    assert (
+        "weights not installed: foldjax weights fetch --model protenix "
+        "--profile base-constraint-v0.5.0"
+    ) in text
+
+    with pytest.raises(ValueError, match="no model offers the weight profile"):
+        main(["models", "--for", str(path), "--profile", "nope"])
+
+
 def test_models_for_answers_a_multi_job_file_per_job(
     store: Path, workdir: Path, capsys
 ) -> None:
