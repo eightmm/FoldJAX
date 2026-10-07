@@ -820,12 +820,22 @@ def test_fast_is_published_only_for_protenix_mini():
             resolve_preset("fast", model, "released")
 
 
-def test_fast_matches_the_mini_checkpoints_own_schedule():
+@pytest.mark.parametrize(
+    "profile",
+    [
+        "mini-default-v0.5.0",
+        "mini-esm-v0.5.0",
+        "mini-ism-v0.5.0",
+        "tiny-default-v0.5.0",
+    ],
+)
+def test_fast_matches_the_mini_checkpoints_own_schedule(profile: str):
+    from foldjax.backends.protenix import _PROFILE_MODEL_NAMES
     from foldjax.models.protenix.runtime_policy import model_inference_defaults
     from foldjax.presets import resolve_preset
 
-    sampling, _ = resolve_preset("fast", "protenix", "mini-ism-v0.5.0")
-    defaults = model_inference_defaults("protenix_mini_ism_v0.5.0")
+    sampling, _ = resolve_preset("fast", "protenix", profile)
+    defaults = model_inference_defaults(_PROFILE_MODEL_NAMES[profile])
     assert sampling == {key: defaults[key] for key in sampling}
 
 

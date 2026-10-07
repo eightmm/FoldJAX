@@ -37,8 +37,9 @@
   changed folder is not resumed.
 - **`--preset fast`** (`PredictionRequest.preset`): the publisher's reduced
   steps and recycles for the checkpoint being run, recorded as `preset` in the
-  manifest. Published only for Protenix's Mini profiles (5 steps, 4 recycles,
-  Protenix `docs/supported_models.md`); refused elsewhere with the reason.
+  manifest. Published only for Protenix's Mini and Tiny profiles (5 steps,
+  4 recycles, Protenix `docs/supported_models.md`); refused elsewhere with the
+  reason.
 - **ModelCIF confidence records in every written mmCIF**: `_ma_qa_metric`
   pLDDT `global` and `local` (`_ma_qa_metric_global`/`_local`) and `_software`
   rows for FoldJAX and the upstream model with versions; categories a writer

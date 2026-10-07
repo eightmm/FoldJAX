@@ -7,10 +7,11 @@ documents one, the preset is refused with the reason, and with the
 publisher's own faster *checkpoint* when that is what it offers instead.
 
 As of this table (upstream sources read 2026-10-06), exactly one reduced
-schedule is published for a checkpoint FoldJAX carries: Protenix's Mini
-models, ``N_cycle`` 4 and ``sample_diffusion.N_step`` 5
+schedule is published for a checkpoint FoldJAX carries: Protenix's Mini and
+Tiny models, ``N_cycle`` 4 and ``sample_diffusion.N_step`` 5
 (Protenix ``docs/supported_models.md``, "Mini & Tiny Models"), which FoldJAX
-runs as the ``mini-esm-v0.5.0`` and ``mini-ism-v0.5.0`` profiles. That is
+runs as the ``mini-default-v0.5.0``, ``mini-esm-v0.5.0``, ``mini-ism-v0.5.0``
+and ``tiny-default-v0.5.0`` profiles. That is
 also those checkpoints' released default, so ``fast`` there records the
 choice rather than changing the run. Every other model publishes only its
 full schedule, or its fast option is a different model.
@@ -24,7 +25,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from foldjax.portspec import PROTENIX_MINI_ESM_PROFILE, PROTENIX_MINI_ISM_PROFILE
+from foldjax.portspec import (
+    PROTENIX_MINI_DEFAULT_PROFILE,
+    PROTENIX_MINI_ESM_PROFILE,
+    PROTENIX_MINI_ISM_PROFILE,
+    PROTENIX_TINY_DEFAULT_PROFILE,
+)
 
 _PROTENIX_MINI_SOURCE = (
     "Protenix docs/supported_models.md, 'Mini & Tiny Models': N_cycle 4, "
@@ -33,14 +39,16 @@ _PROTENIX_MINI_SOURCE = (
 
 #: ``(preset, model, profile) -> (sampling, source)``.
 PUBLISHED: Mapping[tuple[str, str, str], tuple[Mapping[str, int], str]] = {
-    ("fast", "protenix", PROTENIX_MINI_ESM_PROFILE): (
+    ("fast", "protenix", profile): (
         {"num_steps": 5, "num_recycles": 4},
         _PROTENIX_MINI_SOURCE,
-    ),
-    ("fast", "protenix", PROTENIX_MINI_ISM_PROFILE): (
-        {"num_steps": 5, "num_recycles": 4},
-        _PROTENIX_MINI_SOURCE,
-    ),
+    )
+    for profile in (
+        PROTENIX_MINI_DEFAULT_PROFILE,
+        PROTENIX_MINI_ESM_PROFILE,
+        PROTENIX_MINI_ISM_PROFILE,
+        PROTENIX_TINY_DEFAULT_PROFILE,
+    )
 }
 
 #: Why each model has no ``fast`` schedule for what it runs.
@@ -70,9 +78,10 @@ UNPUBLISHED: Mapping[str, str] = {
     "protenix": (
         "Protenix publishes its reduced schedule (N_cycle 4, N_step 5) only "
         "for its Mini/Tiny checkpoints (docs/supported_models.md); the base "
-        "and v2 checkpoints publish 10 cycles and 200 steps. Run the published "
-        f"fast model with --profile {PROTENIX_MINI_ESM_PROFILE} or "
-        f"{PROTENIX_MINI_ISM_PROFILE}"
+        "and v2 checkpoints publish 10 cycles and 200 steps. Run a published "
+        f"fast model with --profile {PROTENIX_MINI_DEFAULT_PROFILE}, "
+        f"{PROTENIX_MINI_ESM_PROFILE}, {PROTENIX_MINI_ISM_PROFILE} or "
+        f"{PROTENIX_TINY_DEFAULT_PROFILE}"
     ),
 }
 

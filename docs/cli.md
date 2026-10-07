@@ -276,9 +276,10 @@ template_dir=...)`.
 **`--preset fast`** sets the reduced diffusion steps and recycles a model's
 publisher documents for the checkpoint being run, and records it under
 `preset` in the manifest. Exactly one is published for what FoldJAX carries:
-Protenix's Mini checkpoints, 5 steps and 4 recycles (Protenix
-`docs/supported_models.md`), i.e. `--profile mini-esm-v0.5.0` or
-`mini-ism-v0.5.0`, whose released default this already is. Everywhere else the
+Protenix's Mini and Tiny checkpoints, 5 steps and 4 recycles (Protenix
+`docs/supported_models.md`), i.e. `--profile mini-default-v0.5.0`,
+`mini-esm-v0.5.0`, `mini-ism-v0.5.0` or `tiny-default-v0.5.0`, whose released
+default this already is. Everywhere else the
 preset is refused with the reason: AlphaFold 3, Boltz-2, OpenDDE and the
 Protenix base/v2 checkpoints publish only their full schedule, OpenFold3's
 presets do not touch steps or recycles, and ESMFold2's fast option is a
