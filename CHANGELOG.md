@@ -1244,10 +1244,10 @@ unless it says so here, in its own paragraph.
   ancestor must belong to the user (or root) and be writable by neither the
   world nor a group with another member; otherwise FoldJAX warns once and
   compiles without a persistent cache. New cache directories are created
-  without group write under any umask. A deliberately shared store opts in
-  with `FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1`. This applies to the request
-  cache and to the Boltz-2, OpenDDE, OpenFold3 and AlphaFold 3 entry points
-  that set the cache themselves. A group-writable, setgid store shared with
+  without group write under any umask, except in a deliberately shared store,
+  which opts in with `FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1`. This applies to
+  the request cache and to the Boltz-2, OpenDDE, OpenFold3 and AlphaFold 3
+  entry points that set the cache themselves. A group-writable, setgid store shared with
   another account (such as a lab's) now misses until that variable is set.
 
 - **Remote MSA, template and structure servers must be https and are not

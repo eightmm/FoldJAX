@@ -234,7 +234,7 @@ def _make_cache_directories(path: Path) -> None:
     """Create missing components without the umask's group-write bit.
 
     ``Path.mkdir(parents=True)`` under a collaborative umask of 0002 makes
-    every new namespace 0775, which the check below would then refuse.
+    every new namespace 0775, which the check after it would then refuse.
     """
     missing: list[Path] = []
     current = path
