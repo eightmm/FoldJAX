@@ -27,6 +27,8 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
+from foldjax.cache import shared_compile_cache_trusted
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover - AlphaFold 3 GPU support is Linux-only
@@ -511,19 +513,28 @@ def _open_cache_directory(cache_dir: Path) -> Iterator[int]:
         # group/other before trusting it.  This is race-safe and also repairs
         # namespaces created by older FoldJAX processes without resolving the
         # path a second time.
+        #
+        # A store shared on purpose (FOLDJAX_TRUST_SHARED_COMPILE_CACHE) keeps
+        # its namespace as the group made it: stripping group write there
+        # locked every other member out of the XLA entries beside this one.
+        # The Tokamax directory below stays private either way.
         root_info = _fstat(root_fd, subject="compilation cache")
-        if stat.S_ISDIR(root_info.st_mode) and (
-            not hasattr(os, "geteuid") or root_info.st_uid == os.geteuid()
-        ):
-            root_mode = stat.S_IMODE(root_info.st_mode)
-            if root_mode & 0o022:
-                try:
-                    os.fchmod(root_fd, root_mode & ~0o022)
-                except OSError as error:
-                    raise _UnsafeCachePathError(
-                        "cannot secure the compilation cache permissions"
-                    ) from error
-        _validate_directory(root_fd, private=False)
+        if shared_compile_cache_trusted():
+            if not stat.S_ISDIR(root_info.st_mode):
+                raise _UnsafeCachePathError("cache path is not a directory")
+        else:
+            if stat.S_ISDIR(root_info.st_mode) and (
+                not hasattr(os, "geteuid") or root_info.st_uid == os.geteuid()
+            ):
+                root_mode = stat.S_IMODE(root_info.st_mode)
+                if root_mode & 0o022:
+                    try:
+                        os.fchmod(root_fd, root_mode & ~0o022)
+                    except OSError as error:
+                        raise _UnsafeCachePathError(
+                            "cannot secure the compilation cache permissions"
+                        ) from error
+            _validate_directory(root_fd, private=False)
         try:
             os.mkdir(_CACHE_DIRECTORY, 0o700, dir_fd=root_fd)
         except FileExistsError:

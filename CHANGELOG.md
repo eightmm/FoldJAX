@@ -712,6 +712,19 @@ unless it says so here, in its own paragraph.
   the weights beside them followed the umask, so another member of the store's
   group was told the weights were not converted. The records now follow the
   umask too.
+- **A shared compile cache stays usable by the whole group.** Namespace
+  directories were made `0755` before the trust check ran, so a run that then
+  refused the store still left them behind, and a later
+  `FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1` run by another member could not write
+  into them (it recompiled every time) or failed outright (exit 2) creating a
+  new one beneath them. The check now runs on the nearest existing directory
+  first and a refused store gains nothing. With the variable set, new
+  namespaces take the umask's mode and a setgid parent's group, a namespace
+  that cannot be created is a warning and a run without the persistent cache,
+  and one that cannot be written is named in a warning. AlphaFold 3's Tokamax
+  autotuning no longer strips group write from a trusted shared namespace.
+  Existing `0755` namespaces need a one-time repair
+  ([configuration.md](docs/configuration.md#sharing-a-store-with-a-group)).
 - **OpenDDE accepts the unknown-residue letters upstream documents.** Protein
   `X`, and DNA and RNA `N` and `X`, were refused with `NotImplementedError`;
   they now become UNK, DN and N as upstream's parser maps them, with
