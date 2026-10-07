@@ -106,6 +106,9 @@ def test_backend_cache_defaults_track_released_config_signature() -> None:
         # atom-graph program into the omitted option's namespace, which is the
         # defect this whole assertion exists to catch.
         "cp_atom_windows": signature["cp_atom_windows"].default,
+        # Same reason: an explicit `true` strips only while it is the
+        # released program.
+        "return_expected_errors": signature["return_expected_errors"].default,
     }
 
     # `dtype` is a string, so it misses the int/bool coercion above and is

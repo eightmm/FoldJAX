@@ -166,8 +166,9 @@ _NO_CHAIN_PAIR_PAE = (
 )
 
 #: Per model: the confidence arrays a default run writes, the ones an existing
-#: native option adds, and why the rest are absent. `foldjax capabilities`
-#: reports `default`; the npz of each sample records exactly what it holds.
+#: native option adds (`opt_in`) or removes (`opt_out`), and why the rest are
+#: absent. `foldjax capabilities` reports `default`; the npz of each sample
+#: records exactly what it holds.
 AVAILABILITY: dict[str, dict[str, Any]] = {
     "alphafold3": {
         "default": (
@@ -199,6 +200,7 @@ AVAILABILITY: dict[str, dict[str, Any]] = {
     "esmfold2": {
         "default": ("pae", "pde", "token_plddt", "atom_plddt", "chain_pair_iptm"),
         "opt_in": {},
+        "opt_out": {"return_expected_errors=false": ("pae", "pde")},
         "unavailable": {},
     },
     "opendde": {
@@ -232,6 +234,7 @@ AVAILABILITY: dict[str, dict[str, Any]] = {
             "chain_pair_iptm_bespoke",
         ),
         "opt_in": {},
+        "opt_out": {"return_expected_errors=false": ("pae", "pde")},
         "unavailable": {},
     },
     "protenix": {

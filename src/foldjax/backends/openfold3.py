@@ -88,6 +88,10 @@ _COMPILE_OPTIONS = (
     "triangle_attention_grid",
     "glu_backend",
     "all_arrays",
+    # Whether the expected PAE/PDE matrices (and the global PDE) are entry
+    # outputs; off also drops the PDE head from the program. Recorded only
+    # when it departs from the released `true`.
+    "return_expected_errors",
     # Two runs that differ only in reduction policy compile different
     # programs, so they must not share one namespace.
     "deterministic",
@@ -216,6 +220,9 @@ _RELEASED_COMPILE_DEFAULTS = {
     # namespace an omitted option selects. ``false`` is a different program and
     # keeps its own.
     "cp_atom_windows": True,
+    # ``released_config``'s value: upstream's writer saves full confidence
+    # scores by default (``write_full_confidence_scores=True``).
+    "return_expected_errors": True,
 }
 
 
@@ -381,6 +388,10 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             "memory_check",
             "diffusion_chunk_size",
             "all_arrays",
+            # Upstream's `write_full_confidence_scores`, by the config field's
+            # name: on by default, `false` drops the expected PAE/PDE matrices
+            # and the global PDE from the program and from what is written.
+            "return_expected_errors",
             "prefix",
             "query_id",
         }
@@ -399,6 +410,7 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             "all_arrays",
             "cp_atom_windows",
             "no_compile",
+            "return_expected_errors",
         }
     )
     # OpenFold3 selects its triangle kernel from an environment variable rather
@@ -505,6 +517,10 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
                 # Native options accept integer spellings; use the same value
                 # that ``predict`` passes into ``released_config``.
                 profile[name] = resolved
+        # The expected errors are read off the confidence heads, which a
+        # trunk-only graph never reaches -- the `all_arrays` rule above.
+        if request.stop_after in ("trunk", "inputs"):
+            profile.pop("return_expected_errors", None)
         # Both widths are recorded as the value the run resolves to, never as
         # the spelling and never stripped. Aliasing still holds -- an omitted
         # `dtype` and an explicit `bfloat16` both write `"bfloat16"`, so they
@@ -613,6 +629,10 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             _strict_boolean(options["all_arrays"], name="all_arrays")
         if "cp_atom_windows" in options:
             _strict_boolean(options["cp_atom_windows"], name="cp_atom_windows")
+        if "return_expected_errors" in options:
+            _strict_boolean(
+                options["return_expected_errors"], name="return_expected_errors"
+            )
         # The neutral translation already rejects an unknown `dtype`; this
         # reaches the native spelling, which bypasses it, and it is the only
         # check `confidence_dtype` gets before the config is built. Compared
@@ -898,6 +918,15 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
                     "constraint to fold without it"
                 )
             overrides["pocket_sampling"] = pocket_sampling
+        # Written only when off, and only where a confidence head runs: an
+        # omitted or explicit `true` leaves `released_config` its own default,
+        # so the released program is built from the call form it always was,
+        # and a trunk-only graph is the same program either way.
+        if not _strict_boolean(
+            options.pop("return_expected_errors", True),
+            name="return_expected_errors",
+        ) and request.stop_after not in ("trunk", "inputs"):
+            overrides["return_expected_errors"] = False
         atom_windows = options.pop("cp_atom_windows", None)
         if atom_windows is not None:
             overrides["cp_atom_windows"] = _strict_boolean(

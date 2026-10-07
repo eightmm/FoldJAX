@@ -155,6 +155,10 @@ _FIXED_COMPILE_DEFAULTS = {
     "lm_mask_pct": 0.0,
     "msa_column_mask_rate": 0.1,
     "full_depth_msa": False,
+    # The expected PAE/PDE matrices are entry outputs of every released
+    # program (`ModelSettings.return_expected_errors`), so spelling `true`
+    # names the namespace an omitted option selects.
+    "return_expected_errors": True,
 }
 
 #: The two rates, each with the interval upstream's draw is meaningful on: a
@@ -583,6 +587,10 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             "lm_mask_pct",
             "msa_column_mask_rate",
             "full_depth_msa",
+            # Spelled through as the settings field is. `false` stops the
+            # expected PAE/PDE matrices being entry outputs of the compiled
+            # program; the head still computes them, so no score moves.
+            "return_expected_errors",
         }
     )
     # The neutral names, against the port's. `max_msa_depth` is the one that is
@@ -594,6 +602,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         {
             "full_depth_msa",
             "no_language_model",
+            "return_expected_errors",
             "structure_sample_sequential",
         }
     )
@@ -629,6 +638,10 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         "lm_mask_pct",
         "msa_column_mask_rate",
         "full_depth_msa",
+        # Decides which arrays are entry outputs of the structure graph, so a
+        # run without them must not be answered out of an executable that
+        # returns them, nor the reverse.
+        "return_expected_errors",
         # Compiled into the executable, on both the structure graph and
         # ESMC's blocks, so it selects its own namespace for the same reason.
         "deterministic",
@@ -1135,6 +1148,10 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             options.get("structure_sample_sequential", False),
             name="structure_sample_sequential",
         )
+        _strict_boolean(
+            options.get("return_expected_errors", True),
+            name="return_expected_errors",
+        )
         _checked_cp_layout(
             options.get("cp_layout", "auto"),
             devices=options.get("cp_devices", 1),
@@ -1275,6 +1292,14 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             options.pop("full_depth_msa", False), name="full_depth_msa"
         ):
             overrides["full_depth_msa"] = True
+        # Written only when off, for the reason above: on is the port's own
+        # default, so an omitted or explicit `true` reaches it in the call
+        # form every released program was compiled from.
+        if not _strict_boolean(
+            options.pop("return_expected_errors", True),
+            name="return_expected_errors",
+        ):
+            overrides["return_expected_errors"] = False
         lm_mask_pct = _checked_rate("lm_mask_pct", options.pop("lm_mask_pct", 0.0))
         if lm_mask_pct > 0.0:
             overrides["lm_mask_pct"] = lm_mask_pct

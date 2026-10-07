@@ -1903,6 +1903,7 @@ def with_overrides(
     confidence_dtype: str | None = None,
     msa_column_mask_rate: float | None = None,
     full_depth_msa: bool | None = None,
+    return_expected_errors: bool | None = None,
 ) -> ModelSettings:
     """The knobs a caller actually varies, applied without reconstruction.
 
@@ -1934,6 +1935,8 @@ def with_overrides(
         updates["max_msa_depth"] = max_msa_depth
     if confidence_dtype is not None:
         updates["confidence_dtype"] = confidence_dtype
+    if return_expected_errors is not None:
+        updates["return_expected_errors"] = return_expected_errors
     # Collected, then applied once: two separate `replace` calls on
     # `settings.diffusion` would each read the *original* sub-settings, so the
     # second assignment to `updates["diffusion"]` would drop the first.

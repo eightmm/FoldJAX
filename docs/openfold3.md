@@ -383,9 +383,20 @@ default: its `*_raw.npz` keeps coordinates, pLDDT, pTM, ipTM, chain-pair ipTM,
 and the experimentally-resolved logits, but omits `pae_logits`, `pde_logits`,
 and `distogram_logits`. Those quadratic native diagnostics are not fields of
 `PredictionResult`; excluding them before tracing lets XLA remove the unused
-PDE/distogram heads and avoids retaining their output buffers. With multiple
+distogram head and avoids retaining their output buffers. With multiple
 samples, serial confidence activates the existing compact PAE-metric route;
 pTM, ipTM, and chain-pair ipTM keep its tested `max_abs <= 1e-3` contract.
+
+The expected PAE and PDE matrices in angstroms, and the global PDE, are still
+returned by default -- they are what upstream's writer saves
+(`write_full_confidence_scores=True`) and what each sample's
+`confidence_full.npz` and `predicted_aligned_error.json` are written from --
+so the PDE head runs for every sample. `--option return_expected_errors=false`
+(`options={"return_expected_errors": False}`) drops all three and the PDE head
+with them; the sample's npz records why `pae` and `pde` are absent, no PAE JSON
+is written, and `gpde` leaves the scores. It is a separate compiled program
+with its own cache namespace; an omitted option and `true` share the released
+one. See [`docs/cli.md`](cli.md#--option-return_expected_errorsfalse-esmfold2-openfold3).
 
 The native pair distributions remain an explicit common-API opt-in with
 `options={"all_arrays": True}` (or `--option all_arrays=true` on the common

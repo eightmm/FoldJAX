@@ -109,17 +109,20 @@ print(arrays.meta["arrays"]["pae"]["axes"], arrays.unavailable)
 What a default run writes, per model (`foldjax capabilities --model M` lists
 the same under `confidence_arrays`):
 
-| model | default arrays | to add PAE/PDE |
+| model | default arrays | to add or drop PAE/PDE |
 |---|---|---|
 | AlphaFold 3 | `pae`, `pde`, `contact_probs`, `atom_plddt`, `chain_ptm`, `chain_iptm`, `chain_pair_iptm`, `chain_pair_pae_min`, `chain_pair_pde_min`, `chain_pair_pde_mean` | — |
 | Boltz-2 | `pae`, `pde`, `token_plddt`, `chain_ptm`, `chain_pair_iptm` | — |
-| ESMFold2 | `pae`, `pde`, `token_plddt`, `atom_plddt`, `chain_pair_iptm` | — |
-| OpenFold3 | `pae`, `pde`, `atom_plddt`, `chain_ptm`, `chain_pair_iptm`, `chain_pair_iptm_bespoke` | — |
-| Protenix | `atom_plddt`, per-chain and chain-pair pTM/ipTM/pLDDT/gPDE, chain-pair PAE mean and minimum | `--option output_format=both` |
-| OpenDDE | `atom_plddt`, per-chain and chain-pair pTM/ipTM/pLDDT/gPDE | `--option include_raw=true` |
+| ESMFold2 | `pae`, `pde`, `token_plddt`, `atom_plddt`, `chain_pair_iptm` | drop: `--option return_expected_errors=false` |
+| OpenFold3 | `pae`, `pde`, `atom_plddt`, `chain_ptm`, `chain_pair_iptm`, `chain_pair_iptm_bespoke` | drop: `--option return_expected_errors=false` |
+| Protenix | `atom_plddt`, per-chain and chain-pair pTM/ipTM/pLDDT/gPDE, chain-pair PAE mean and minimum | add: `--option output_format=both` |
+| OpenDDE | `atom_plddt`, per-chain and chain-pair pTM/ipTM/pLDDT/gPDE | add: `--option include_raw=true` |
 
 The manifest's `confidence_arrays` says, per run and per sample, which arrays
-are present and why any other is absent.
+are present and why any other is absent. Dropping PAE/PDE on ESMFold2 or
+OpenFold3 also drops `predicted_aligned_error.json` and, on OpenFold3, the
+`gpde` score; it compiles a separate program
+([`docs/cli.md`](cli.md#--option-return_expected_errorsfalse-esmfold2-openfold3)).
 
 Wherever a sample has PAE, `predicted_aligned_error.json` sits beside it in
 AlphaFold DB's schema (`predicted_aligned_error`,

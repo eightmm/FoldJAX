@@ -617,6 +617,9 @@ def predict(
     lm_mask_pct: float | None = None,
     msa_column_mask_rate: float | None = None,
     full_depth_msa: bool | None = None,
+    #: Keep the expected PAE/PDE matrices as entry outputs of the compiled
+    #: program. `None` leaves the settings' value, which is on.
+    return_expected_errors: bool | None = None,
     language_model_tokens: int | None = None,
     precomputed_lm_states: jnp.ndarray | None = None,
     precomputed_lm_embedding: jnp.ndarray | None = None,
@@ -714,6 +717,7 @@ def predict(
         confidence_dtype=confidence_dtype,
         msa_column_mask_rate=msa_column_mask_rate,
         full_depth_msa=full_depth_msa,
+        return_expected_errors=return_expected_errors,
     )
     if memory_budget is not None:
         # Before the language model, which is the expensive thing a refusal

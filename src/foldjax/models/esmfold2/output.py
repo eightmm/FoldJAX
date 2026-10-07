@@ -304,7 +304,7 @@ def _write_confidence_arrays(
 
 _WITHHELD_ERRORS = (
     "the program was compiled with return_confidence_logits and "
-    "return_expected_errors both off"
+    "return_expected_errors both off (--option return_expected_errors=false)"
 )
 _WITHHELD_CHAIN_PAIR = (
     "the program projected pair_chains_iptm out (return_auxiliary_outputs=False)"

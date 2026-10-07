@@ -12,6 +12,15 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **`--option return_expected_errors=false` for ESMFold2 and OpenFold3.** Both
+  ports return the expected PAE/PDE matrices by default and wrote them to every
+  sample's `confidence_full.npz` and `predicted_aligned_error.json` with no way
+  to turn them off. `false` takes them out of the compiled program; the npz
+  records why they are absent and no PAE JSON is written. ESMFold2 still
+  computes them inside the head (scores unchanged); OpenFold3 also drops its
+  PDE head and the per-sample `gpde` score. An omitted option and `true` run
+  the released program in its existing cache namespace; `false` compiles and
+  caches separately.
 - **`real_store` test marker and fixture** for tests gated on released assets.
   `ccd_components`, `alphafold3_runtime`, and the `cpu_parity` and
   `official_parity` markers opt in without it.
@@ -1274,6 +1283,9 @@ unless it says so here, in its own paragraph.
   it) and, for Protenix, the chain count, which the confidence summaries take
   as a static argument. The MSA cycle tape width is already pinned under
   padding.
+- ESMFold2's fitted peak law (`memory_policy.ESMFOLD2_PEAK`) predates the
+  expected PAE/PDE matrices being returned by default, so it may under-state
+  a default run's peak; it is being re-measured.
 
 ## 0.1.0 (2026-10-06)
 

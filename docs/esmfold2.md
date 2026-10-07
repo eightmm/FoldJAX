@@ -74,6 +74,20 @@ one input in a single call is refused rather than run, because telling a
 rollout which input it belongs to would mean slicing the pair conditioning
 inside the loop this option exists to narrow.
 
+## Expected errors
+
+Every sample's expected PAE and PDE matrices, `[tokens, tokens]` in angstroms,
+are returned by default and written to its `confidence_full.npz` and
+`predicted_aligned_error.json`. `--option return_expected_errors=false` stops
+them being outputs of the compiled program: the head still computes them, so
+pLDDT, pTM, ipTM and chain-pair ipTM are unchanged, and the npz records why
+`pae` and `pde` are absent. That saves `2 x samples x tokens^2 x 4` bytes of
+program output -- 2.2 GiB at 3,012 tokens and the checkpoint's 32 samples,
+derived rather than measured -- and the host copies the writers make. It is a
+separate compiled program with its own cache namespace; an omitted option and
+`true` share the released one. See
+[`docs/cli.md`](cli.md#--option-return_expected_errorsfalse-esmfold2-openfold3).
+
 ## Managed memory staging
 
 For one semantic input, including a multi-seed sweep of that input, FoldJAX's

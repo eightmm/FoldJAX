@@ -2483,6 +2483,33 @@ Only the diffusion token transformer is fused. The atom encoder and decoder
 feed-forwards inside the same denoiser, the trunk's SwiGLU and transition
 layers, and the ESMC language model's MLP all stay on XLA.
 
+### `--option return_expected_errors=false` (ESMFold2, OpenFold3)
+
+Both ports return the expected PAE and PDE matrices -- `[samples, tokens,
+tokens]` float32, in angstroms -- by default, and each sample's
+`confidence_full.npz` and `predicted_aligned_error.json` are written from them.
+`false` takes them out of the compiled program. The sample's npz then lists
+`pae` and `pde` under `unavailable`, with the option named as the reason, no
+`predicted_aligned_error.json` is written, and `foldjax interfaces` reports
+the model's own chain-pair ipTM but none of its PAE-derived scores.
+Coordinates, pLDDT, pTM, ipTM and chain-pair ipTM do not change.
+
+The two ports differ in what else goes. ESMFold2's confidence head computes
+the matrices either way, so `false` only stops them being outputs of the
+program: `2 x samples x tokens^2 x 4` bytes, 2.2 GiB at 3,012 tokens and the
+checkpoint's 32 samples (derived, not measured), plus the host copies the
+writers make. OpenFold3 also drops its PDE head, which nothing else reads, and
+the global PDE reduced from it, so each sample's `gpde` score leaves the scores
+file too. On OpenFold3 the switch is upstream's
+`OutputWritingSettings.write_full_confidence_scores`, which is on there as
+well; ESMFold2's upstream has no such switch.
+
+Omitting the option and spelling `true` run the released program and share
+its compilation-cache namespace; `false` is a separate executable with its
+own. An OpenFold3 `--stop-after trunk` run ignores the option, since no
+confidence head runs. What `false` does to either port's device peak is
+unmeasured.
+
 ### Upstream run options (`--option`)
 
 Each upstream CLI's own run options that FoldJAX had no spelling for. An

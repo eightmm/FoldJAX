@@ -1076,7 +1076,8 @@ def _write_confidence_arrays(
     for name, array in pair_errors.items():
         if array is None:
             reasons[name] = (
-                "the compiled program was built with return_expected_errors=False"
+                "the compiled program was built with return_expected_errors=False "
+                "(--option return_expected_errors=false)"
             )
     for name in ("chain_pair_iptm", "chain_pair_iptm_bespoke"):
         if chain_arrays[name] is None:
