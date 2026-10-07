@@ -191,6 +191,7 @@ def test_esmfold2_reads_samples_and_steps_off_the_checkpoint(tmp_path: Path) -> 
     }
 
 
+@pytest.mark.real_store
 def test_the_released_esmfold2_numbers_are_the_managed_checkpoints() -> None:
     from foldjax.backends import esmfold2
 

@@ -838,6 +838,7 @@ def _released_checkpoint():
     return next(iter(sorted(store.glob("*.pt"))), None)
 
 
+@pytest.mark.real_store
 def test_the_whole_program_traces_under_bfloat16_on_real_weights() -> None:
     """Every unit test above watches one boundary; this watches the composition.
 

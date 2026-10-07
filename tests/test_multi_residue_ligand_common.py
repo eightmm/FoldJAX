@@ -138,6 +138,7 @@ def _protenix_glycan(tmp_path: Path, bonds):
     return features, atoms, tokens
 
 
+@pytest.mark.real_store
 def test_protenix_featurizer_builds_the_glycan_and_its_inter_residue_bonds(
     tmp_path,
 ) -> None:

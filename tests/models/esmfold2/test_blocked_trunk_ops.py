@@ -1180,6 +1180,7 @@ def _released_predict_text(tokens: int, rows: int) -> str:
 
 
 @pytest.mark.slow
+@pytest.mark.real_store
 def test_the_released_forward_fills_two_pair_buffers_and_not_eight():
     """The count on the model itself, at every site the threading has to reach.
 
@@ -1298,6 +1299,7 @@ def _msa_stack(tokens: int, layers: int, separate: bool) -> dict[str, int]:
 
 
 @pytest.mark.slow
+@pytest.mark.real_store
 def test_the_msa_stack_writes_into_the_buffers_instead_of_concatenating():
     """The census at two token counts, with the arrangement it replaced beside it.
 

@@ -177,6 +177,69 @@ def _restore_process_state() -> Iterator[None]:
                 jax.config.update(name, value)
 
 
+#: Variables that name one file or directory of a store directly. A shell that
+#: exports them reaches the developer's dictionary however `FOLDJAX_HOME` is set.
+_STORE_VARIABLES = (
+    "PROTENIX_CCD_COMPONENTS_FILE",
+    "PROTENIX_CCD_RDKIT_MOL_FILE",
+    "PROTENIX_TEMPLATE_MMCIF_DIR",
+)
+
+#: Markers whose tests exist to run against released assets.
+_REAL_STORE_MARKERS = ("real_store", "cpu_parity", "official_parity")
+
+
+@pytest.fixture(scope="session")
+def _isolated_foldjax_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return tmp_path_factory.mktemp("foldjax-home")
+
+
+@pytest.fixture
+def real_store() -> None:
+    """Let a test read the developer's FoldJAX store.
+
+    A fixture as well as a marker so that the asset gates below
+    (`ccd_components`, `alphafold3_runtime`) opt in for every test that uses
+    them, without each of those tests repeating it.
+    """
+
+
+@pytest.fixture(autouse=True)
+def _isolate_foldjax_store(
+    request: pytest.FixtureRequest,
+    _restore_process_state: None,
+    _isolated_foldjax_home: Path,
+) -> None:
+    """Point the store at a session tmp directory unless a test opts in.
+
+    `foldjax.paths` resolves the store from `FOLDJAX_HOME`, else the checkout's
+    own `.foldjax/`, else `~/.cache/foldjax`, so the same suite read a
+    490 MB `components.cif` on a developer's machine and nothing on CI. The
+    dictionary switches checks on (bond atoms, CCD codes) that a clean store
+    skips, and two tests asserting chemically wrong atom names passed on CI and
+    failed only where the file existed.
+
+    Opting in -- the `real_store` marker or fixture, or a parity marker -- keeps
+    the environment as the session found it, so a weight-gated test still finds
+    the weights wherever the developer keeps them. A store path computed at
+    import time is computed before this fixture runs; a module that does so
+    belongs to a gated test and carries the marker.
+
+    The environment is written directly, after `_restore_process_state` has
+    taken its snapshot, and that fixture puts it back. Through `monkeypatch`
+    it was undone by any test that calls `monkeypatch.undo()` itself, and the
+    snapshot -- taken after this fixture, which a session-scoped dependency
+    orders first -- then restored the tmp store as the session's own.
+    """
+    if "real_store" in request.fixturenames or any(
+        request.node.get_closest_marker(name) for name in _REAL_STORE_MARKERS
+    ):
+        return
+    os.environ["FOLDJAX_HOME"] = str(_isolated_foldjax_home)
+    for name in _STORE_VARIABLES:
+        os.environ.pop(name, None)
+
+
 @pytest.fixture(autouse=True)
 def _restore_release_reclaim() -> Iterator[None]:
     """`foldjax predict` turns the reclaim off for its process; undo that here."""
@@ -202,7 +265,9 @@ def _alphafold3_runtime_error() -> str | None:
 
 
 @pytest.fixture
-def alphafold3_runtime(_alphafold3_runtime_error: str | None) -> None:
+def alphafold3_runtime(
+    _alphafold3_runtime_error: str | None, real_store: None
+) -> None:
     """Skip when FoldJAX's AlphaFold 3 runtime cannot be built on this host.
 
     The runtime is a CMake build of AlphaFold 3's C++ extension. Each test used
@@ -223,7 +288,7 @@ def alphafold3_runtime(_alphafold3_runtime_error: str | None) -> None:
 
 
 @pytest.fixture
-def ccd_components() -> Path:
+def ccd_components(real_store: None) -> Path:
     """The released ``components.cif``, or skip the test.
 
     Anything outside the vendored CCD subset -- an arbitrary ligand, most

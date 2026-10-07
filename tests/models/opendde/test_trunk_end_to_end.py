@@ -39,6 +39,7 @@ def _weights() -> Path:
 
 
 @pytest.mark.slow
+@pytest.mark.real_store
 def test_the_residue_trunk_runs_on_the_released_weights(tmp_path) -> None:
     """A missing feature the trunk reads fails here, and nowhere else.
 

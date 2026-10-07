@@ -28,6 +28,8 @@ from foldjax.paths import downloads_dir
 CHECKPOINT = downloads_dir("boltz2") / "boltz2_conf.ckpt"
 FEATURES = Path(__file__).parent / "fixtures/1UBQ_A.npz"
 
+pytestmark = pytest.mark.real_store
+
 
 @pytest.fixture(scope="module")
 def graph_params():

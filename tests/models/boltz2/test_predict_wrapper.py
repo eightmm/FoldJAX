@@ -695,6 +695,7 @@ def feats():
 
 
 @pytest.mark.slow
+@pytest.mark.real_store
 def test_predict_matches_direct_head_calls(params, feats) -> None:
     key = jax.random.PRNGKey(SEED)
 

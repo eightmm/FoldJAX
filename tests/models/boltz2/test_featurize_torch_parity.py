@@ -94,6 +94,7 @@ def _featurize(
     [_JOB, _ALL_MODALITIES_JOB],
     ids=["protein", "protein-dna-rna-ccd-smiles-ion"],
 )
+@pytest.mark.real_store
 def test_the_numpy_layer_reproduces_the_torch_featurizer(
     tmp_path: Path, job_spec: dict
 ) -> None:
@@ -128,6 +129,7 @@ def test_the_numpy_layer_reproduces_the_torch_featurizer(
     assert mismatched == []
 
 
+@pytest.mark.real_store
 def test_the_torch_backend_reproduces_ref_pos_per_seed(tmp_path: Path) -> None:
     """Upstream's global-RNG draw is replaced on both backends, torch included."""
     pytest.importorskip("torch")

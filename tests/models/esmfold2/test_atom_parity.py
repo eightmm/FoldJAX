@@ -136,6 +136,7 @@ def _released_atom_encoder():
     return modeling, Path(weights), store
 
 
+@pytest.mark.real_store
 def test_the_atom_encoder_matches() -> None:
     """The released atom encoder, both sides on their own real weights.
 

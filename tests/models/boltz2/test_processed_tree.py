@@ -43,6 +43,7 @@ def _job(directory: Path, a3m_rows: list[str], *, name: str = "boltz2_input") ->
     return job
 
 
+@pytest.mark.real_store
 def test_a_second_run_into_one_output_reads_its_own_edited_alignment(
     tmp_path: Path,
 ) -> None:
@@ -60,6 +61,7 @@ def test_a_second_run_into_one_output_reads_its_own_edited_alignment(
     assert len(msa.sequences) == 3
 
 
+@pytest.mark.real_store
 def test_another_jobs_record_never_joins_the_manifest(tmp_path: Path) -> None:
     out = tmp_path / "out"
     featurize_yaml(_job(tmp_path / "a", ["ACDEFG"], name="alpha"), out, _mols())
@@ -74,6 +76,7 @@ def test_another_jobs_record_never_joins_the_manifest(tmp_path: Path) -> None:
     assert not any(p.name.startswith(".processed-") for p in out.iterdir())
 
 
+@pytest.mark.real_store
 def test_a_planted_processed_symlink_is_replaced_not_followed(tmp_path: Path) -> None:
     out = tmp_path / "out"
     out.mkdir()
@@ -88,6 +91,7 @@ def test_a_planted_processed_symlink_is_replaced_not_followed(tmp_path: Path) ->
     assert (out / "processed" / "manifest.json").is_file()
 
 
+@pytest.mark.real_store
 def test_processed_arrays_load_without_pickle(tmp_path: Path) -> None:
     out = tmp_path / "out"
     featurize_yaml(_job(tmp_path / "in", ["ACDEFG", "ACDEYG"]), out, _mols())
@@ -116,6 +120,7 @@ def test_a_pickled_object_field_is_refused(tmp_path: Path) -> None:
         MSA.load(path)
 
 
+@pytest.mark.real_store
 def test_extra_molecules_round_trip_through_the_restricted_unpickler(
     tmp_path: Path,
 ) -> None:

@@ -1880,6 +1880,7 @@ def test_multi_seed_session_keeps_single_route_wrappers_compatible(
     assert calls == {"load": 1, "predict_job": 2}
 
 
+@pytest.mark.real_store
 def test_managed_recycling_is_the_released_checkpoint_loop_count() -> None:
     """The recycle default is the release's `num_loops`, 3 (4 trunk passes).
 

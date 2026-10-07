@@ -320,6 +320,10 @@ markers = [
     # `-m cpu_parity` asks for it. Registered here so the marker is a marker
     # rather than a warning, and so `-m cpu_parity` is a supported selection.
     "cpu_parity: replays a stored native capture on CPU (needs fixtures + weights)",
+    # Every other test runs against an empty store (`tests/conftest.py`,
+    # `_isolate_foldjax_store`), so a developer's weights and CCD cannot decide
+    # what it checks. A test gated on released assets opts back in with this.
+    "real_store: reads the developer's FoldJAX store (weights, CCD, runtime)",
 ]
 
 [tool.coverage.run]

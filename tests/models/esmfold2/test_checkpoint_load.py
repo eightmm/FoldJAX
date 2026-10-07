@@ -143,6 +143,7 @@ def test_parameter_subset_does_not_materialize_unselected_leaves(
     )
 
 
+@pytest.mark.real_store
 def test_the_released_settings_are_read_from_the_file() -> None:
     """Not the dataclass defaults, which differ in almost every field."""
     settings = checkpoint.load_settings(_weights())
@@ -178,6 +179,7 @@ def test_checkpoint_sampling_does_not_override_the_fixed_msa_cap() -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.real_store
 def test_the_whole_model_runs_on_the_released_weights() -> None:
     directory = _weights()
     parameters = checkpoint.load_parameters(directory)
@@ -205,6 +207,7 @@ def test_the_whole_model_runs_on_the_released_weights() -> None:
     assert plddt.min() >= 0.0 and plddt.max() <= 1.0
 
 
+@pytest.mark.real_store
 def test_the_weights_file_resolves_to_its_directory() -> None:
     """The store's `native=` entry names the file; the loader needs the folder.
 
@@ -221,6 +224,7 @@ def test_the_weights_file_resolves_to_its_directory() -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.real_store
 def test_a_job_folds_from_sequence_to_pdb(tmp_path) -> None:
     """Featurise, fold, write -- the whole backend path, without ESMC.
 
@@ -293,6 +297,7 @@ def _realized_trunk_dtypes(monkeypatch, settings, parameters, features, hidden):
 
 
 @pytest.mark.slow
+@pytest.mark.real_store
 def test_the_trunk_runs_at_the_dtype_it_was_configured_for(monkeypatch) -> None:
     """`trunk_dtype` is a claim about tensors, so assert the tensors.
 

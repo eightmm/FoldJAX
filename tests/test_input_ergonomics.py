@@ -759,7 +759,9 @@ def test_compatibility_reports_a_field_the_backend_cannot_express() -> None:
             {"type": "protein", "id": "A", "sequence": SEQUENCE},
             {"type": "ligand", "id": "L", "ccd": "ATP"},
         ],
-        "bonds": [[["A", 3, "OG"], ["L", 1, "PA"]]],
+        # Residue 3 is a threonine, whose hydroxyl is OG1. With a CCD
+        # installed, an atom it lacks is refused before `bonds` is weighed.
+        "bonds": [[["A", 3, "OG1"], ["L", 1, "PA"]]],
     }
 
     assert compatibility(document, "protenix") is None

@@ -402,6 +402,14 @@ and skip with the build's error where it cannot be built (missing zlib headers
 is enough); `FOLDJAX_REQUIRE_AF3_RUNTIME=1`, set on CI's core shard, turns that
 skip into a failure.
 
+Each test runs against an empty FoldJAX store in pytest's tmp directory, with
+`PROTENIX_CCD_*` and `PROTENIX_TEMPLATE_MMCIF_DIR` unset, so the weights and
+CCD in your `FOLDJAX_HOME` (or the checkout's `.foldjax/`) cannot change what
+the suite checks. Tests gated on released assets opt back in with
+`@pytest.mark.real_store` or the `real_store` fixture; the `ccd_components` and
+`alphafold3_runtime` fixtures and the `cpu_parity`/`official_parity` markers do
+so already.
+
 `tests/parity/` is a CPU replay of stored native captures, deselected by
 default and selected with `--run-cpu-parity`. It needs released weights and
 fixtures that are fetched by digest rather than committed, so it does not run

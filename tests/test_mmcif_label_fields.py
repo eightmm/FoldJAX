@@ -216,6 +216,7 @@ def _boltz2_mols() -> Path | None:
     return candidate if candidate.is_dir() else None
 
 
+@pytest.mark.real_store
 def test_boltz2_writer_labels(tmp_path: Path) -> None:
     mols = _boltz2_mols()
     if mols is None:

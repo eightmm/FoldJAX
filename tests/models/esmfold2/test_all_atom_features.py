@@ -542,6 +542,7 @@ def test_ccd_store_cache_releases_a_replaced_file(tmp_path: Path) -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.real_store
 def test_registered_ccd_matches_publisher_tokenization_counts() -> None:
     """Pinned facts independently checked against Biohub's tokenizers."""
 

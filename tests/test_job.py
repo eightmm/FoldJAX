@@ -232,7 +232,43 @@ def test_msa_paths_stay_relative_and_resolve_against_the_document(
     assert str(workdir / "a.a3m") in native.read_text()
 
 
-def test_bonds_and_modifications_reach_the_native_dialect(tmp_path: Path) -> None:
+#: The two components the bond below names, in the released dictionary's
+#: sorted order and with the atom names it gives them.
+_COMPONENTS = """data_ATP
+#
+loop_
+_chem_comp_atom.comp_id
+_chem_comp_atom.atom_id
+_chem_comp_atom.type_symbol
+ATP PA P
+ATP "C1'" C
+#
+data_MSE
+#
+loop_
+_chem_comp_atom.comp_id
+_chem_comp_atom.atom_id
+_chem_comp_atom.type_symbol
+MSE CA C
+MSE SE SE
+#
+"""
+
+
+@pytest.mark.parametrize("dictionary", [False, True], ids=["no-ccd", "ccd"])
+def test_bonds_and_modifications_reach_the_native_dialect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dictionary: bool
+) -> None:
+    """Both with and without a CCD, which switches the bond-atom check on.
+
+    The bond once named a cysteine's ``SG`` on selenomethionine and ``C1`` on
+    ATP; with no dictionary installed nothing checks atom names, so it passed
+    wherever ``components.cif`` was absent and failed where it was present.
+    """
+    if dictionary:
+        components = tmp_path / "components.cif"
+        components.write_text(_COMPONENTS, encoding="utf-8")
+        monkeypatch.setenv("PROTENIX_CCD_COMPONENTS_FILE", str(components))
     (tmp_path / "a.a3m").write_text(f">query\n{SEQUENCE}\n", encoding="utf-8")
     job = Job(
         "demo",
@@ -240,10 +276,13 @@ def test_bonds_and_modifications_reach_the_native_dialect(tmp_path: Path) -> Non
             Protein("A", SEQUENCE, modifications=(Modification("MSE", 3),)),
             Ligand("L", ccd="ATP"),
         ),
-        bonds=(Bond(("A", 3, "SG"), ("L", 1, "C1")),),
+        bonds=(Bond(("A", 3, "SE"), ("L", 1, "C1'")),),
     )
     source = job.write(tmp_path / "job.json")
     native = materialize_native_input(
         source, capabilities("protenix"), tmp_path / "out", seed=0, msa="single"
     ).read_text()
-    assert "MSE" in native and "SG" in native
+    (document,) = json.loads(native)
+    (bond,) = document["covalent_bonds"]
+    assert "CCD_MSE" in native
+    assert (bond["atom1"], bond["atom2"]) == ("SE", "C1'")

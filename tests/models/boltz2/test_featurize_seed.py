@@ -41,6 +41,7 @@ def _featurize(tmp_path: Path, name: str, seed: int) -> dict[str, np.ndarray]:
 
 
 @pytest.mark.slow
+@pytest.mark.real_store
 def test_same_seed_reproduces_every_feature_and_another_seed_moves_only_ref_pos(
     tmp_path: Path,
 ) -> None:
@@ -67,6 +68,7 @@ def test_same_seed_reproduces_every_feature_and_another_seed_moves_only_ref_pos(
 
 
 @pytest.mark.slow
+@pytest.mark.real_store
 def test_the_augmentation_is_rigid_per_conformer(tmp_path: Path) -> None:
     """Two seeds differ by a rotation and translation of each conformer only."""
 

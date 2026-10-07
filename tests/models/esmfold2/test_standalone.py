@@ -57,6 +57,7 @@ def test_featurisation_and_writing_need_no_torch(without_torch) -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.real_store
 def test_the_released_checkpoint_folds_with_no_torch(without_torch, tmp_path) -> None:
     """The real weights, the real model, the real writers -- torch unimportable.
 

@@ -704,6 +704,7 @@ def test_openfold3_features_place_searched_templates_on_their_query_residues(
     assert names[slot][2:28].tolist() == expected[2:28]
 
 
+@pytest.mark.real_store
 def test_alphafold3_reads_searched_templates_where_the_map_points(
     tmp_path, searched, kalign
 ):

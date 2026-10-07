@@ -340,6 +340,7 @@ def test_boltz2_routes_chains_ptm_and_pair_chains_iptm(
         assert not {"chain_ptm", "chain_pair_iptm"} & set(loaded.unavailable)
 
 
+@pytest.mark.real_store
 def test_boltz2_index_maps_agree_with_the_written_mmcif(tmp_path: Path) -> None:
     """Token chain/residue maps, read through atom_token_index, name each CIF atom."""
     gemmi = pytest.importorskip("gemmi")

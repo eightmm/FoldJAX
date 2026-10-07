@@ -41,6 +41,7 @@ def _alignment(path: Path) -> int:
 
 
 @pytest.mark.slow
+@pytest.mark.real_store
 def test_a_deeper_max_msa_depth_reads_past_8192_rows(tmp_path: Path) -> None:
     mols = weights_dir("boltz2") / "mols"
     if not mols.is_dir():

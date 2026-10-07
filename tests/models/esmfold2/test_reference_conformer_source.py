@@ -26,6 +26,7 @@ def _ccd() -> Path:
     return path
 
 
+@pytest.mark.real_store
 def test_an_alignment_does_not_change_the_reference_conformers(tmp_path) -> None:
     ccd = _ccd()
     alignment = tmp_path / "chain.a3m"
