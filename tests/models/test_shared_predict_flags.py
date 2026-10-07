@@ -306,6 +306,7 @@ _PROTENIX_FLAG_ORDER: tuple[str, ...] = (
     "--cpu-only",
     "--compile-cache", "--no-compile-cache", "--prewarm-only",
     "--model-name", "--esm-checkpoint-dir", "--guidance-config",
+    "--use-tfg-guidance",
     "--padding", "--pad-tokens", "--pad-atoms", "--pad-msa",
     "--pad-templates", "--pad-language-model-tokens", "--padding-overflow",
 )
@@ -318,7 +319,7 @@ _OPENDDE_FLAG_ORDER: tuple[str, ...] = (
     "--num-steps", "--n-step",
     "--num-recycles", "--n-cycle",
     "--n-queries", "--n-keys",
-    "--use-template", "--use-rna-msa",
+    "--use-template", "--use-rna-msa", "--use-tfg-guidance",
     "--max-msa-depth", "--max-msa-rows",
     "--deterministic-ops",
     "--diffusion-attention-backend", "--trunk-single-attention-backend",
