@@ -18,7 +18,10 @@ the same layout; the field-by-field contract is in
 │   ├── confidence_full.npz                            per-sample confidence arrays, where the model returns them
 │   └── predicted_aligned_error.json                   PAE for viewers, where the model returned PAE
 ├── seed_<seed>/                                       with several seeds: that seed's native files and manifest
+├── inputs/                                            the job as translated for the model (a common-schema input only)
+├── .foldjax.lock                                      held while a run writes here; kept on purpose (see below)
 └── ...                                                whatever the model's own writer produced, left where it wrote it
+                                                       (Boltz-2: msa/, predictions/, processed/)
 ```
 
 A single run's default `<run>` is `foldjax-outputs/<input stem>`;
@@ -29,6 +32,19 @@ directory, or a `{"jobs": [...]}` file) puts each pair in its own run:
 <output-dir>/<model>/<input stem or job name>/...
 <output-dir>/foldjax_failures.json                     only when a pair failed under --keep-going
 ```
+
+`.foldjax.lock` is how a second process pointed at the same directory is
+refused instead of interleaving its files with the first's. The file is never
+deleted, because removing a lock file lets a third process lock a fresh one
+while the second still holds the old. When no run holds it, it is inert and
+safe to delete.
+
+A run into a directory that already holds a finished run replaces that run's
+`foldjax_run.json` before it writes anything, and deletes nothing else. When
+the earlier run was another model or seed, its sample directories (and a
+`foldjax_report.html` or `compare/` made from it) stay beside the new ones,
+and a warning says so: give each run its own `--output-dir` to keep runs
+apart. `--resume` reuses a finished run that matches the request instead.
 
 `<nn>` is the diffusion sample index, zero-padded, counting from `00` within
 each seed. It is never a rank: Protenix and OpenDDE name their native files by

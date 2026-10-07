@@ -14,7 +14,7 @@ import math
 import os
 import time
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from itertools import groupby
 from pathlib import Path
 from typing import Any
@@ -1460,6 +1460,7 @@ def _predict_once(
     is not ``output_dir`` itself -- a multi-seed run keeps each seed's native
     files apart but gathers every structure under one root.
     """
+    every_seed = request.resolved_seeds
     request = dataclasses.replace(
         request,
         seed=seed,
@@ -1483,6 +1484,13 @@ def _predict_once(
     # that step writes generated dialect files (and, for OpenFold3, MSA links)
     # below the same directory.
     _prepare_output_directory(request.output_dir, boundary=allowed_root)
+    # Only now, once the request has validated: a refused run must not
+    # withdraw the finished one it would have replaced.
+    _retire_previous_run(request.output_dir, request.model, (seed,))
+    if layout_root is not None:
+        # A multi-seed run rewrites the top-level manifest when every seed is
+        # done; the one there now describes a request that is being redone.
+        _retire_previous_run(layout_root, request.model, every_seed)
 
     # Started here rather than at the model call, so `seconds` and the sum of
     # `phases` describe the same span: preparing input is part of what the run
@@ -1726,6 +1734,46 @@ def _write_session_manifest(
         # resumable completed run.
         _discard_manifest(directory)
         raise
+
+
+def _retire_previous_run(
+    directory: Path, model: str, seeds: Sequence[int]
+) -> None:
+    """Withdraw the finished run in ``directory`` that a fresh run now replaces.
+
+    Its manifest goes before anything is written, so an interrupted rerun
+    leaves no completion marker over a mix of old and new files. Nothing else
+    is deleted: what the earlier run wrote under names this one does not reuse
+    -- another seed's sample directories, a `foldjax report` or `compare` made
+    from it -- stays, and when there are such names the warning says so
+    rather than letting two runs share a directory unannounced.
+    """
+    path = Path(directory) / MANIFEST_NAME
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError):
+        document = None
+    _discard_manifest(directory)
+    if not isinstance(document, Mapping):
+        return
+    previous = document.get("seeds")
+    if not isinstance(previous, list):
+        previous = []
+    if document.get("model") == model and set(previous) <= set(seeds):
+        # The same model and seeds rewrite the same names in place.
+        return
+    earlier = ", ".join(map(str, previous)) or "unrecorded"
+    warnings.warn(
+        f"{directory} held a finished {document.get('model', 'unknown')} run "
+        f"(seed {earlier}); this run replaces its {MANIFEST_NAME}, but the "
+        "files only that run wrote stay beside the new ones (its sample "
+        "directories, and any foldjax_report.html or compare/ made from it). "
+        "Give each run its own --output-dir (output_dir=) to keep them apart",
+        UserWarning,
+        stacklevel=2,
+    )
 
 
 def _discard_manifest(directory: Path) -> None:

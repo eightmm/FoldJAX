@@ -1815,3 +1815,93 @@ def test_manifest_score_type_drift_forces_a_rerun(
 
     assert len(calls) == 2
     assert resumed.skipped == ()
+
+
+class _ManifestWitness(_ResumeBackend):
+    """Records whether a finished manifest was still there when the run began."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.saw_manifest: list[bool] = []
+
+    def predict(self, request: PredictionRequest) -> PredictionResult:
+        self.saw_manifest.append((Path(request.output_dir) / MANIFEST_NAME).exists())
+        return super().predict(request)
+
+
+def test_a_rerun_into_a_finished_run_withdraws_it_and_says_what_stays(
+    tmp_path: Path,
+) -> None:
+    """The quickstart's Python block wrote a new seed into the CLI run's
+    directory: a new manifest over the old seed's sample directory, silently."""
+    calls: list[tuple[str, str, int]] = []
+    backend = _ManifestWitness("boltz2", calls)
+    request = _request(tmp_path)
+    with backend_override("boltz2", lambda: backend):
+        foldjax.predict_batch(request)
+        old = sorted(path.name for path in request.output_dir.glob("seed-7_*"))
+        assert old
+
+        with pytest.warns(UserWarning, match=r"held a finished boltz2 run \(seed 7\)"):
+            foldjax.predict_batch(dataclasses.replace(request, seed=8))
+        # Withdrawn before the run, so an interrupted rerun leaves no marker.
+        assert backend.saw_manifest == [False, False]
+        assert json.loads((request.output_dir / MANIFEST_NAME).read_text())[
+            "seeds"
+        ] == [8]
+        # Nothing the earlier run wrote is deleted.
+        assert sorted(p.name for p in request.output_dir.glob("seed-7_*")) == old
+
+        # The same seed rewrites the same names: withdrawn, but nothing to say.
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            foldjax.predict_batch(dataclasses.replace(request, seed=8))
+        assert backend.saw_manifest[-1] is False
+
+
+def test_a_refused_rerun_leaves_the_finished_run_alone(tmp_path: Path) -> None:
+    """Withdrawn only once the rerun has validated where it runs."""
+
+    class _RefusesAtRun(_ResumeBackend):
+        checks = 0
+
+        def validate_request(self, request: PredictionRequest) -> None:
+            super().validate_request(request)
+            if request.seed == 8:
+                # Resolution and the batch preflight validate first; the run
+                # itself validates last, inside `_predict_once`.
+                type(self).checks += 1
+                if type(self).checks == 3:
+                    raise ValueError("refused where it runs")
+
+    calls: list[tuple[str, str, int]] = []
+    backend = _RefusesAtRun("boltz2", calls)
+    request = _request(tmp_path)
+    with backend_override("boltz2", lambda: backend):
+        foldjax.predict_batch(request)
+        manifest = (request.output_dir / MANIFEST_NAME).read_text()
+        with pytest.raises(ValueError, match="refused where it runs"):
+            foldjax.predict_batch(dataclasses.replace(request, seed=8))
+    assert _RefusesAtRun.checks == 3
+    assert (request.output_dir / MANIFEST_NAME).read_text() == manifest
+
+
+def test_a_multiseed_rerun_withdraws_the_single_seed_run_above_it(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str, int]] = []
+    request = _request(tmp_path)
+    with _backends(calls):
+        foldjax.predict_batch(request)
+        with pytest.warns(UserWarning, match=r"run \(seed 7\)") as caught:
+            foldjax.predict_batch(
+                dataclasses.replace(
+                    request, seed=None, seeds=(8, 9), representations=()
+                )
+            )
+    # Said once, for the directory that held it, not once per seed.
+    assert len([w for w in caught if "held a finished" in str(w.message)]) == 1
+    top = json.loads((request.output_dir / MANIFEST_NAME).read_text())
+    assert top["seeds"] == [8, 9]
