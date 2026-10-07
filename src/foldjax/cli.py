@@ -1917,6 +1917,18 @@ def _run_plan(args: argparse.Namespace) -> int:
         payload = []
         for item in resolved:
             preflight(item)
+            if item.templates == "auto" and item.template_dir is None:
+                from foldjax.template_search import missing_template_aligner
+
+                missing = missing_template_aligner(item.model)
+                if missing is not None:
+                    # Predict warns this only once it reaches the search.
+                    warnings.warn(
+                        f"{item.model}: {missing}; --templates auto will fold "
+                        "without templates",
+                        UserWarning,
+                        stacklevel=2,
+                    )
             summary = _plan_summary(item, scratch=jobs)
             if args.json:
                 # Read while the scratch document still exists: the shown

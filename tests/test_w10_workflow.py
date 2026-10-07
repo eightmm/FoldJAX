@@ -765,11 +765,11 @@ def test_a_private_folder_is_refused_without_an_aligner(
         refuse_template_search("boltz2", "auto", None, template_dir=empty)
 
 
-def test_a_server_template_search_without_kalign_is_refused_while_planning(
-    monkeypatch,
+def test_plan_answers_a_server_template_search_without_kalign_as_predict_does(
+    tmp_path: Path, monkeypatch, capsys
 ):
-    """`plan --templates auto --option use_template=true` used to pass where
-    predict then refused: every searched hit is realigned with Kalign."""
+    """`plan` used to pass silently: every searched hit is realigned with
+    Kalign, so `required` fails the run and `auto` folds without templates."""
     import importlib.util
 
     from foldjax.template_search import refuse_template_search
@@ -780,9 +780,22 @@ def test_a_server_template_search_without_kalign_is_refused_while_planning(
         lambda name, *a: None if name == "kalign" else real(name, *a),
     )
     with pytest.raises(ValueError, match="realigns each hit with Kalign"):
-        refuse_template_search("protenix", "auto", {"use_template": True})
+        refuse_template_search("protenix", "required", {"use_template": True})
+    refuse_template_search("protenix", "auto", {"use_template": True})
     # Boltz-2 reads a hit as it comes; nothing to realign.
-    refuse_template_search("boltz2", "auto", None)
+    refuse_template_search("boltz2", "required", None)
+
+    weights = tmp_path / "w.jax"
+    weights.write_bytes(b"w")
+    argv = [
+        "plan", "--model", "protenix", "--sequence", "MKTAYIAKQRQISFVK",
+        "--msa", "single", "--weights", str(weights),
+        "--option", "use_template=true", "--templates",
+    ]
+    with pytest.warns(UserWarning, match="--templates auto will fold without"):
+        assert cli.main([*argv, "auto"]) == 0
+    with pytest.raises(ValueError, match="realigns each hit with Kalign"):
+        cli.main([*argv, "required"])
 
 
 def test_cli_templates_takes_a_directory(tmp_path: Path, folder: Path):

@@ -124,5 +124,6 @@ foldjax plan --model protenix --input target.yaml --templates auto \
 
 `plan` refuses `--templates auto` for ESMFold2, and for Protenix or OpenDDE
 without `--option use_template=true` (drop it above to see the refusal),
-before anything is searched; it also refuses a search whose realignment
-needs Kalign when `kalign-python` (the `templates` extra) is not installed.
+before anything is searched. Without `kalign-python` (the `templates`
+extra), which realigns every hit, it refuses `--templates required` and warns
+that `--templates auto` will fold without templates, as the run would.

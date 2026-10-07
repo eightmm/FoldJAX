@@ -242,15 +242,30 @@ def refuse_template_search(
                 f"{', '.join(_FOLDER_SUFFIXES)} file"
             )
         folder_aligner(POLICIES[model])
-    elif POLICIES[model].mapped:
-        # `search_templates` refuses this before anything is sent; raised here
-        # too, so `foldjax plan` does not pass a run predict then refuses.
-        from foldjax.search.msa import SearchError
+    elif templates == "required":
+        # `search_templates` fails a `required` run on this before anything is
+        # sent; refused here too, so `foldjax plan` does not pass it. (`auto`
+        # folds without templates and warns: `missing_template_aligner`.)
+        missing = missing_template_aligner(model)
+        if missing is not None:
+            raise ValueError(missing)
 
-        try:
-            _require_kalign()
-        except SearchError as error:
-            raise ValueError(str(error)) from None
+
+def missing_template_aligner(model: str) -> str | None:
+    """Why a server template search for ``model`` would keep no hit, if so.
+
+    Every hit of a mapped policy is realigned with Kalign; without it the
+    search is skipped before anything is sent (`search_templates`).
+    """
+    from foldjax.search.msa import SearchError
+
+    if model not in POLICIES or not POLICIES[model].mapped:
+        return None
+    try:
+        _require_kalign()
+    except SearchError as error:
+        return str(error)
+    return None
 
 
 def _local_command(name: str) -> list[str] | None:

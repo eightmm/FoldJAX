@@ -412,7 +412,7 @@ def run_doctor(args: argparse.Namespace) -> int:
     print("\nmodels")
     for row in models_payload:
         refused = any(
-            profile["refused"]
+            profile.get("refused")
             for profile in row["weight_profiles"]
             if profile["profile"] == "released"
         )

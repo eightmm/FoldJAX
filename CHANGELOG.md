@@ -746,8 +746,9 @@ unless it says so here, in its own paragraph.
   answers yes), and the Protenix refusal names `--profile
   base-constraint-v0.5.0` rather than `--option model_name=...`.
 - **Smaller message fixes.** `--msa single` no longer advises `--msa auto`;
-  `plan --templates auto` refuses a Kalign realignment without
-  `kalign-python`, as predict does; the `check` install hint is the one
+  without `kalign-python`, `plan` refuses `--templates required` and warns
+  that `--templates auto` will fold without templates, as predict does
+  (it passed silently); the `check` install hint is the one
   `doctor` prints for this installation; `compare` on single-structure inputs
   says why no pair was written; `plan --padding` shows the estimated token
   bucket (`padding_estimate`); `show` on a missing directory says it does not
