@@ -592,7 +592,11 @@ class MsaSearchPipeline:
         )
 
     def search_complex(
-        self, sequences: Sequence[str], *, mode: str | None = None
+        self,
+        sequences: Sequence[str],
+        *,
+        mode: str | None = None,
+        entries: bool = False,
     ) -> list[dict[str, str]]:
         """Pair the distinct sequences of one complex in a single search.
 
@@ -601,11 +605,19 @@ class MsaSearchPipeline:
         pairing mode, so this never collides with -- or reuses -- a
         per-sequence ``search`` entry, nor a search under the other strategy.
         ``mode`` None is the backend's own (``complex_pairing_mode``).
+
+        ``entries`` is OpenDDE's search, which pairs a job's protein entries
+        even when they share one sequence: two or more sequences are enough,
+        and the ordered list as given, repeats included, joins the cache key.
+        Without it the key is what it always was.
         """
         normalized = [_normalize_sequence(sequence) for sequence in sequences]
         unique = list(dict.fromkeys(normalized))
-        if len(unique) < 2:
-            raise ValueError("complex pairing needs at least two distinct sequences")
+        if len(normalized if entries else unique) < 2:
+            raise ValueError(
+                "complex pairing needs at least two "
+                + ("sequences" if entries else "distinct sequences")
+            )
         if not self.pairs_complexes:
             raise SearchError(
                 f"MSA backend {self.backend.name!r} cannot pair a complex"
@@ -628,6 +640,8 @@ class MsaSearchPipeline:
             "mode": default if mode is None else mode,
             "options": self.options,
         }
+        if entries:
+            identity["entries"] = normalized
         canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
         cache_key = _sha256(canonical.encode())
         directory = self.cache_dir / cache_key
@@ -1214,6 +1228,9 @@ class RemoteMMseqs2Client:
     complex_pairing_modes = COMPLEX_PAIRING_MODES
     #: Whether `search` also runs the per-chain ``paircomplete`` ticket.
     pairs_per_chain = True
+    #: How an unpaired alignment is laid out: the ``uniref.a3m`` block, then
+    #: the ``bfd.mgnify30.metaeuk30.smag30.a3m`` block, each led by the query.
+    unpaired_blocks = ("uniref", "env")
 
     def __init__(
         self,

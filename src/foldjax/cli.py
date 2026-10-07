@@ -237,9 +237,10 @@ def _add_predict_arguments(
         choices=MSA_PAIRINGS,
         default="model",
         help="with --msa auto/required: how the searched alignment pairs a "
-        "complex. 'model' (default) is each model's own: OpenFold3, Boltz-2, "
-        "Protenix and OpenDDE one ColabFold pairgreedy search over the complex, "
-        "AlphaFold 3 a per-chain alignment, ESMFold2 none. 'greedy' and "
+        "complex. 'model' (default) is each model's own: OpenFold3, Boltz-2 "
+        "and OpenDDE one ColabFold pairgreedy search over the complex, "
+        "AlphaFold 3 a per-chain alignment, Protenix (as its ColabFold mode) "
+        "and ESMFold2 none. 'greedy' and "
         "'complete' pair the complex in one search with that ColabFold "
         "strategy, for every model but AlphaFold 3; 'none' delivers "
         "no paired alignment and skips the per-chain pairing search. Part of "

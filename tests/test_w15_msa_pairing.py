@@ -1,10 +1,13 @@
 """W15: a ColabFold pairing alignment pairs the chains of a heteromer.
 
 The server's headers (``>UniRef100_<accession>\\t<scores>``) carry no species,
-so a model that pairs by species pairs none of them. Protenix now takes the
-complex search its upstream submits and reads its rows by number, as
-Protenix's ColabFold mode writes them; OpenDDE's default runs the same search
-with the server's headers and pairs nothing, as upstream OpenDDE does, and an
+so a model that pairs by species pairs none of them. Protenix's default pairs
+nothing, as a run of upstream's ColabFold mode does (its runner never reads the
+complex search's ``pairing.a3m``), and writes its unpaired alignment
+environmental hits first, as that mode does; an explicit greedy/complete runs
+the complex search and reads its rows by number. OpenDDE's default runs the
+search its upstream submits -- every protein entry, sorted, even one sequence
+twice -- with the server's headers and pairs nothing beyond the query, and an
 explicit greedy/complete opts it into the rewrite; AlphaFold 3 is pinned at
 what it does. Nothing here reaches the network: searches are stubs or a fake
 transport.
@@ -170,7 +173,8 @@ class _PlainStub:
         self.complex_calls.append((list(sequences), mode))
         blocks = []
         for index, sequence in enumerate(sequences):
-            second = "-" * len(sequence) if index == 1 else "A" * len(sequence)
+            # OTHER's block has a gap row, wherever it is submitted.
+            second = "-" * len(sequence) if sequence == OTHER else "A" * len(sequence)
             blocks.append(
                 _colabfold_block(sequence, [sequence, second], number=101 + index)
             )
@@ -208,15 +212,15 @@ def _chains(native: Any) -> list[dict[str, Any]]:
 
 
 @pytest.mark.parametrize(
-    ("model", "pairing"), [("protenix", "model"), ("opendde", "greedy")]
+    ("model", "submitted"),
+    [("protenix", [SEQUENCE, OTHER]), ("opendde", sorted([SEQUENCE, OTHER]))],
 )
-def test_the_complex_search_pairs_the_heteromer_by_row(
-    tmp_path: Path, stub, model, pairing
-):
+def test_greedy_pairs_the_heteromer_by_row(tmp_path: Path, stub, model, submitted):
+    pairing = "greedy"
     path = _materialize(
         _job(tmp_path, SEQUENCE, OTHER), model, tmp_path / "out", msa_pairing=pairing
     )
-    assert stub.complex_calls == [([SEQUENCE, OTHER], "pairgreedy")]
+    assert stub.complex_calls == [(submitted, "pairgreedy")]
     chains = _chains(json.loads(path.read_text()))
     texts = [Path(chain["pairedMsaPath"]).read_text() for chain in chains]
     for index, chain in enumerate(chains):
@@ -244,11 +248,15 @@ def test_opendde_default_runs_upstreams_search_and_pairs_nothing(tmp_path: Path,
     still join each chain's unpaired stack (msa_pair_as_unpair).
     """
     path = _materialize(_job(tmp_path, SEQUENCE, OTHER), "opendde", tmp_path / "out")
-    assert stub.complex_calls == [([SEQUENCE, OTHER], "pairgreedy")]
+    # Submitted sorted, as upstream's update_seq_msa does; mapped back by
+    # sequence to the chains in job order.
+    assert stub.complex_calls == [([OTHER, SEQUENCE], "pairgreedy")]
     chains = _chains(json.loads(path.read_text()))
     assert not (tmp_path / "out" / "msa").exists()
     texts = [Path(chain["pairedMsaPath"]).read_text() for chain in chains]
-    assert texts[0] == _colabfold_block(SEQUENCE, [SEQUENCE, "A" * len(SEQUENCE)])
+    assert texts[0] == _colabfold_block(
+        SEQUENCE, [SEQUENCE, "A" * len(SEQUENCE)], number=102
+    )
     a, b = _pair(texts, [SEQUENCE, OTHER])
     assert a["msa_all_seq"].shape[0] == b["msa_all_seq"].shape[0] == 1
     assert msa_search.resolve_pairing("opendde") == {
@@ -272,11 +280,191 @@ def test_complete_pairing_for_protenix_asks_paircomplete(tmp_path: Path, stub):
 @pytest.mark.parametrize("sequences", [(SEQUENCE,), (SEQUENCE, SEQUENCE)])
 def test_monomer_and_homomer_get_no_paired_alignment(tmp_path: Path, stub, sequences):
     """As upstream Protenix's ColabFold mode: no pairing search, no pairing rows."""
-    path = _materialize(_job(tmp_path, *sequences), "protenix", tmp_path / "out")
+    path = _materialize(
+        _job(tmp_path, *sequences), "protenix", tmp_path / "out", msa_pairing="greedy"
+    )
     assert stub.complex_calls == []
     assert all(
         "pairedMsaPath" not in chain for chain in _chains(json.loads(path.read_text()))
     )
+
+
+def test_protenix_default_pairs_nothing_and_says_why(tmp_path: Path, stub):
+    """Upstream's ColabFold mode writes the complex search where its runner
+    never reads it (runner/msa_search.py:177-185), so its heteromer is unpaired.
+    """
+    with pytest.warns(UserWarning, match="taxonomy pairing") as caught:
+        path = _materialize(
+            _job(tmp_path, SEQUENCE, OTHER), "protenix", tmp_path / "out"
+        )
+    notes = [item for item in caught if "taxonomy" in str(item.message)]
+    assert len(notes) == 1 and "--msa-pairing greedy" in str(notes[0].message)
+    assert stub.complex_calls == []
+    chains = _chains(json.loads(path.read_text()))
+    assert all("pairedMsaPath" not in chain for chain in chains)
+    assert all(chain["unpairedMsaPath"] for chain in chains)
+    assert msa_search.resolve_pairing("protenix") == {
+        "requested": "model",
+        "resolved": "none",
+        "mode": None,
+        "paired_by": None,
+    }
+
+
+def test_protenix_homomer_and_opt_in_get_no_notice(tmp_path: Path, stub):
+    import warnings
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _materialize(_job(tmp_path, SEQUENCE, SEQUENCE), "protenix", tmp_path / "a")
+        _materialize(
+            _job(tmp_path, SEQUENCE, OTHER),
+            "protenix",
+            tmp_path / "b",
+            msa_pairing="greedy",
+        )
+    assert not [item for item in caught if "taxonomy" in str(item.message)]
+
+
+class _ColabFoldLayoutStub(_PlainStub):
+    """Unpaired alignments laid out as `RemoteMMseqs2Client` caches them."""
+
+    unpaired_blocks = ("uniref", "env")
+
+    def search(self, sequence: str) -> MsaPayload:
+        return MsaPayload(
+            paired=_colabfold_block(sequence, [sequence]),
+            unpaired=(
+                f">101\n{sequence}\n>UniRef100_U1\t{SCORES}\n{'A' * len(sequence)}\n"
+                f">101\n{sequence}\n>MGYP1\t{SCORES}\n{'C' * len(sequence)}\n"
+            ),
+        )
+
+
+@pytest.mark.parametrize("pairing", ["model", "greedy"])
+def test_protenix_reads_environmental_hits_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pairing
+):
+    """As upstream's ColabFold mode writes non_pairing.a3m
+    (web_service/colab_request_utils.py:290-310); OpenDDE keeps the server's
+    order, as upstream OpenDDE's gather_a3m_lines does.
+    """
+    backend = _ColabFoldLayoutStub()
+    monkeypatch.setattr(
+        msa_search,
+        "_msa_pipeline",
+        lambda: MsaSearchPipeline(tmp_path / "msa-cache", backend),
+    )
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        path = _materialize(
+            _job(tmp_path, SEQUENCE, OTHER),
+            "protenix",
+            tmp_path / "protenix",
+            msa_pairing=pairing,
+        )
+    first = _chains(json.loads(path.read_text()))[0]
+    written = Path(first["unpairedMsaPath"])
+    assert written.parent == (tmp_path / "protenix" / "msa").resolve()
+    assert written.read_text() == (
+        f">query\n{SEQUENCE}\n>MGYP1\t{SCORES}\n{'C' * len(SEQUENCE)}\n"
+        f">UniRef100_U1\t{SCORES}\n{'A' * len(SEQUENCE)}\n"
+    )
+    opendde = _materialize(_job(tmp_path, SEQUENCE), "opendde", tmp_path / "opendde")
+    cached = Path(_chains(json.loads(opendde.read_text()))[0]["unpairedMsaPath"])
+    assert cached.name == "non_pairing.a3m"
+    assert cached.read_text().index("UniRef100_U1") < cached.read_text().index("MGYP1")
+
+
+def test_env_first_leaves_any_other_layout_alone():
+    from foldjax.input import env_first_a3m
+
+    assert env_first_a3m(f">101\n{SEQUENCE}\n>u1\n{SEQUENCE}\n") is None
+    assert env_first_a3m("") is None
+    three = f">101\n{SEQUENCE}\n" * 3
+    assert env_first_a3m(three) is None
+    # A hit identical to the query under another header is a hit, not a block.
+    text = f">101\n{SEQUENCE}\n>u1\n{SEQUENCE}\n>101\n{SEQUENCE}\n>e1\n{OTHER}\n"
+    assert env_first_a3m(text) == (
+        f">query\n{SEQUENCE}\n>e1\n{OTHER}\n>u1\n{SEQUENCE}\n"
+    )
+
+
+# -- OpenDDE submits every protein entry, sorted -----------------------------------
+
+
+def test_opendde_pairs_two_entities_of_one_sequence(tmp_path: Path, stub):
+    """Upstream sorts its proteinChain entries and runs the pairing ticket for
+    more than one (runner/msa_search.py:146-151, msa_service_client.py:390-400);
+    the server is sent the one distinct sequence. The block reaches both chains
+    and joins their unpaired stacks (msa_pair_as_unpair).
+    """
+    path = _materialize(_job(tmp_path, SEQUENCE, SEQUENCE), "opendde", tmp_path / "out")
+    assert stub.complex_calls == [([SEQUENCE], "pairgreedy")]
+    chains = _chains(json.loads(path.read_text()))
+    paired = {chain["pairedMsaPath"] for chain in chains}
+    assert len(chains) == 2 and len(paired) == 1
+    assert Path(paired.pop()).read_text() == _colabfold_block(
+        SEQUENCE, [SEQUENCE, "A" * len(SEQUENCE)]
+    )
+
+
+@pytest.mark.parametrize("ids", [["A"], ["A", "B"]])
+def test_opendde_one_entity_is_never_paired(tmp_path: Path, stub, ids):
+    """One proteinChain entry, whatever its count: upstream's len(seqs) is 1."""
+    source = tmp_path / "job.json"
+    source.write_text(
+        json.dumps(
+            {
+                "name": "w23",
+                "entities": [{"type": "protein", "id": ids, "sequence": SEQUENCE}],
+            }
+        )
+    )
+    path = _materialize(source, "opendde", tmp_path / "out")
+    assert stub.complex_calls == []
+    assert "pairedMsaPath" not in _chains(json.loads(path.read_text()))[0]
+
+
+def test_entries_key_adds_the_ordered_list_and_keeps_the_old_key(tmp_path: Path):
+    """Only OpenDDE's search keys on its entries; every other key is unchanged."""
+    import hashlib
+
+    backend = _PlainStub()
+    pipeline = MsaSearchPipeline(tmp_path / "cache", backend)
+    (first, _) = pipeline.search_complex([SEQUENCE, OTHER])
+    identity = {
+        "schema_version": 1,
+        "kind": "complex_pairing",
+        "sequences": [SEQUENCE, OTHER],
+        "backend": {"name": "stub", "version": "1"},
+        "mode": "pairgreedy-env",
+        "options": {},
+    }
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    assert Path(first["pairedMsaPath"]).parent.name == hashlib.sha256(
+        canonical.encode()
+    ).hexdigest()
+
+    keys = {
+        Path(
+            pipeline.search_complex(entries, entries=True)[0]["pairedMsaPath"]
+        ).parent.name
+        for entries in (
+            [SEQUENCE, OTHER],
+            [SEQUENCE, OTHER, OTHER],
+            [SEQUENCE, SEQUENCE],
+            [SEQUENCE, SEQUENCE, SEQUENCE],
+        )
+    }
+    assert len(keys) == 4
+    assert Path(first["pairedMsaPath"]).parent.name not in keys
+    with pytest.raises(ValueError, match="two distinct"):
+        pipeline.search_complex([SEQUENCE, SEQUENCE])
+    with pytest.raises(ValueError, match="two sequences"):
+        pipeline.search_complex([SEQUENCE], entries=True)
 
 
 def test_a_callers_paired_msa_is_passed_through_untouched(tmp_path: Path, stub):
@@ -314,10 +502,16 @@ def test_blocks_of_different_depths_are_refused(tmp_path: Path, stub, monkeypatc
     monkeypatch.setattr(stub, "search_complex", uneven)
     job = _job(tmp_path, SEQUENCE, OTHER)
     with pytest.raises(ValueError, match="different depths"):
-        _materialize(job, "protenix", tmp_path / "required", msa="required")
+        _materialize(
+            job,
+            "protenix",
+            tmp_path / "required",
+            msa="required",
+            msa_pairing="greedy",
+        )
     # `auto` is a convenience: it folds without the pairing, and says so.
     with pytest.warns(UserWarning, match="different depths"):
-        path = _materialize(job, "protenix", tmp_path / "auto")
+        path = _materialize(job, "protenix", tmp_path / "auto", msa_pairing="greedy")
     chains = _chains(json.loads(path.read_text()))
     assert all("pairedMsaPath" not in chain for chain in chains)
     assert all(chain["unpairedMsaPath"] for chain in chains)

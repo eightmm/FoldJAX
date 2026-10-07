@@ -558,6 +558,7 @@ def _cached_alignment_paths(request: PredictionRequest) -> list[Path] | None:
         from foldjax.msa_search import (
             _msa_pipeline,
             _rna_msa_pipeline,
+            complex_queries,
             resolve_pairing,
         )
         from foldjax.search.msa import _normalize_sequence
@@ -585,7 +586,7 @@ def _cached_alignment_paths(request: PredictionRequest) -> list[Path] | None:
         )
         if bare_rna and _rna_msa_pipeline() is not None:
             return None
-        if complex_pairing and len(set(proteins)) > 1:
+        if complex_pairing and complex_queries(str(request.model), proteins):
             return None
         pipeline = _msa_pipeline() if bare else None
         # Only an asked-for "none" narrows the search; ESMFold2 resolves
