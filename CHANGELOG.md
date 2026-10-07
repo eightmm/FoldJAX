@@ -725,6 +725,12 @@ unless it says so here, in its own paragraph.
   autotuning no longer strips group write from a trusted shared namespace.
   Existing `0755` namespaces need a one-time repair
   ([configuration.md](docs/configuration.md#sharing-a-store-with-a-group)).
+- **Another member of the group can rerun or resume a shared run directory.**
+  Its `.foldjax.lock` was created owner-only (`0600`), so anyone else's run
+  there failed with a bare `PermissionError`. The lock now takes the umask's
+  mode, a lock another account made is taken read-only when it cannot be
+  opened for writing, and one that cannot be opened at all is a
+  `PredictionError` naming the lock and its `chmod` repair.
 - **OpenDDE accepts the unknown-residue letters upstream documents.** Protein
   `X`, and DNA and RNA `N` and `X`, were refused with `NotImplementedError`;
   they now become UNK, DN and N as upstream's parser maps them, with
