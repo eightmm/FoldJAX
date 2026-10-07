@@ -127,7 +127,7 @@
         "label": {"type": ["string", "null"]},
         "identity": {"type": ["string", "null"]},
         "kind": {
-          "description": "Whether the weights path was a file or a directory tree when the run started. Optional: absent when the path could not be stat'ed, and from manifests written before 1.1.",
+          "description": "Whether the weights path was a file or a directory tree when the run started. Optional: absent when the path could not be stat'ed, and from manifests written before it existed.",
           "enum": ["file", "directory"]
         },
         "stat_signature": {
@@ -143,7 +143,7 @@
     },
     "msa": {"type": "string"},
     "msa_search": {
-      "description": "One record per chain msa=auto or msa=required searched: the chain and the alignment and provenance files it got, or the error that left it on its single sequence; null when no search was asked for. Optional: absent from manifests written before 1.1.",
+      "description": "One record per chain msa=auto or msa=required searched: the chain and the alignment and provenance files it got, or the error that left it on its single sequence; null when no search was asked for. Optional: absent from manifests written before it existed.",
       "type": ["array", "null"],
       "items": {
         "type": "object",

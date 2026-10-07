@@ -11,11 +11,11 @@
   checks as plain `plan`, so it refuses what `predict` refuses.
 - **`run.schema.json` names every field the manifest writes.** `msa_search`,
   `weights.kind`, `weights.stat_signature` and AlphaFold 3's per-sample
-  `metadata.native_sample` were written but undeclared. `schema_version` is
-  now `1.1` for both `foldjax_run.json` and `confidence.json` (one shared
-  constant); `1.0` files still validate and still resume, since resume gates on
-  the integer `schema`. A contract test now fails on any written key the
-  schemas do not name.
+  `metadata.native_sample` were written but undeclared. They are declared as
+  optional, so `schema_version` stays `1.0` for both `foldjax_run.json` and
+  `confidence.json` (one shared constant) and a file written before they were
+  named still validates and still resumes. A contract test now fails on any
+  written key the schemas do not name.
 - **OpenFold3 `triangle_kernel=auto` is the omitted default.** It pinned
   `cueq` (attention only), which no omitted run selects; it now resolves as
   omitting the knob does -- `cueq-pallas` on a GPU, `cueq-full` elsewhere,

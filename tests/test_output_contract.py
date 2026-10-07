@@ -205,12 +205,14 @@ def test_searched_alignment_records_are_declared(tmp_path: Path) -> None:
     assert errors(manifest, schema)
 
 
-def test_a_1_0_run_still_validates_and_resumes(tmp_path: Path) -> None:
+def test_a_run_without_the_optional_fields_still_validates_and_resumes(
+    tmp_path: Path,
+) -> None:
     from foldjax.api import resolve_requests
     from foldjax.manifest import request_mismatch
 
     _confidence, manifest, fixture = _run(tmp_path, "boltz2_e9_8reh")
-    manifest["schema_version"] = "1.0"
+    assert manifest["schema_version"] == "1.0"
     for name in ("msa_search", "foldjax_source"):
         manifest.pop(name, None)
     assert errors(manifest, load_schema("run")) == []
