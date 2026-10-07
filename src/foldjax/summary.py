@@ -29,7 +29,7 @@ from typing import Any
 #: Version of the `confidence.json` and `foldjax_run.json` contract. A minor
 #: version only adds optional fields; a reader written for 1.x accepts any 1.y.
 #: A change that removes, renames or reinterprets a field is a new major.
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 #: The sentence every description of the common block carries. One constant so
 #: the docstrings, the JSON Schemas and the files themselves cannot drift.

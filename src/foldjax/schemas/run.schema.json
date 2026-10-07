@@ -125,7 +125,15 @@
         "path": {"type": ["string", "null"]},
         "profile": {"type": ["string", "null"]},
         "label": {"type": ["string", "null"]},
-        "identity": {"type": ["string", "null"]}
+        "identity": {"type": ["string", "null"]},
+        "kind": {
+          "description": "Whether the weights path was a file or a directory tree when the run started. Optional: absent when the path could not be stat'ed, and from manifests written before 1.1.",
+          "enum": ["file", "directory"]
+        },
+        "stat_signature": {
+          "description": "The weights' stat identity at run start (kind; root stat fields; for a tree, entry count and tree_sha256), which resume compares instead of rehashing the checkpoint. Optional, as kind.",
+          "type": "object"
+        }
       }
     },
     "seeds": {"type": "array", "items": {"type": "integer"}},
@@ -134,6 +142,20 @@
       "enum": ["user", "upstream", "random", "job", "foldjax", null]
     },
     "msa": {"type": "string"},
+    "msa_search": {
+      "description": "One record per chain msa=auto or msa=required searched: the chain and the alignment and provenance files it got, or the error that left it on its single sequence; null when no search was asked for. Optional: absent from manifests written before 1.1.",
+      "type": ["array", "null"],
+      "items": {
+        "type": "object",
+        "required": ["chain"],
+        "properties": {
+          "chain": {"type": "string"},
+          "unpaired_msa": {"type": "string"},
+          "provenance": {"type": "string"},
+          "error": {"type": "string"}
+        }
+      }
+    },
     "templates": {
       "description": "The template-search policy: none, auto, or required (search, and fail the run rather than fold without). Optional: absent from manifests written before it existed, which ran with none.",
       "enum": ["none", "auto", "required"]
@@ -218,6 +240,7 @@
             "sample": {"type": "integer", "minimum": 0},
             "native_rank": {"type": "integer", "minimum": 0},
             "job": {"type": "string"},
+            "native_sample": {"description": "The sample's index in the native writer's own output (AlphaFold 3). Optional.", "type": "integer", "minimum": 0},
             "num_recycles": {"type": "number"},
             "confidence_arrays": {"$ref": "#/$defs/confidence_arrays"}
           }

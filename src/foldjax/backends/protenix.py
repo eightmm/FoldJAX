@@ -20,7 +20,7 @@ from foldjax.backends.base import (
     realised_glu_backend,
     validate_memory_policy_options,
 )
-from foldjax.execution import DETERMINISTIC_ARGV_OPTION
+from foldjax.execution import BACKEND_DEFAULT, DETERMINISTIC_ARGV_OPTION
 from foldjax.models import _representations
 from foldjax.models._managed_memory import lease as managed_memory_lease
 from foldjax.models.protenix import runtime_policy
@@ -835,14 +835,25 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         }
     )
     sampling_options = SAMPLING_OPTIONS
+    boolean_options = frozenset(
+        {
+            "cp_atom_windows",
+            "full_depth_msa",
+            "strict_token_limit",
+            "use_rna_msa",
+            "use_template",
+        }
+    )
     # Protenix spells both the names and the values its own way: `bf16` for the
     # dtype, and `_jit` suffixes on the kernels for the traced variants.
     execution_options = {
         **MATMUL_PRECISION_OPTION,
         "dtype": ("trunk_dtype", {"float32": "fp32", "bfloat16": "bf16"}),
+        # `auto` is the omitted default, which the runner resolves itself;
+        # `cueq_jit` is a different program (the traced multiplication too).
         "triangle_kernel": (
             "trunk_triangle_attention_backend",
-            {"auto": "cueq_jit", "cueq": "cueq_jit", "xla": "xla_jit"},
+            {"auto": BACKEND_DEFAULT, "cueq": "cueq_jit", "xla": "xla_jit"},
         ),
         "attention_kernel": (
             "trunk_single_attention_backend",

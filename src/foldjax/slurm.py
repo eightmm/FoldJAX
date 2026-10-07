@@ -75,13 +75,16 @@ def parse_shard(text: str, environ: Mapping[str, str] | None = None) -> tuple[in
     return index, count
 
 
-def _shard_file(source: Path, jobs: Sequence[Mapping[str, Any]]) -> Path:
+def _shard_file(
+    source: Path, jobs: Sequence[Mapping[str, Any]], *, jobs_root: Path | None = None
+) -> Path:
     from foldjax import paths
     from foldjax.input import _write_text_atomic
 
     text = json.dumps({"jobs": list(jobs)}, indent=2)
     digest = hashlib.sha256(text.encode()).hexdigest()[:16]
-    target = paths.runtime_dir("jobs") / "shards" / digest / f"{source.stem}.json"
+    root = Path(jobs_root) if jobs_root is not None else paths.runtime_dir("jobs")
+    target = root / "shards" / digest / f"{source.stem}.json"
     if not (target.is_file() and target.read_text(encoding="utf-8") == text):
         target.parent.mkdir(parents=True, exist_ok=True)
         _write_text_atomic(target, text)
@@ -89,7 +92,11 @@ def _shard_file(source: Path, jobs: Sequence[Mapping[str, Any]]) -> Path:
 
 
 def shard_inputs(
-    inputs: Sequence[Path], index: int, count: int
+    inputs: Sequence[Path],
+    index: int,
+    count: int,
+    *,
+    jobs_root: Path | None = None,
 ) -> tuple[list[Path], dict[str, Any]]:
     """This shard's inputs, and a summary of the split.
 
@@ -120,7 +127,9 @@ def shard_inputs(
             selected.append(path)
         grouped[path].append(_absolute_job_paths(job, path.parent.absolute()))
     resolved = [
-        _shard_file(path, grouped[path]) if path in grouped else path
+        _shard_file(path, grouped[path], jobs_root=jobs_root)
+        if path in grouped
+        else path
         for path in selected
     ]
     summary = {

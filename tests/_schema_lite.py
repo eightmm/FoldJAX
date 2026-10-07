@@ -145,3 +145,60 @@ def errors(
             detail = [errors(instance, sub, root, path) for sub in schema["oneOf"]]
             found.append(f"{path}: matches {sum(matches)} of oneOf: {detail}")
     return found
+
+
+
+def _applicable(
+    instance: Any, schema: dict[str, Any], root: dict[str, Any], path: str
+) -> Iterator[dict[str, Any]]:
+    """``schema`` and every subschema that applies to ``instance`` with it."""
+    yield schema
+    if "$ref" in schema:
+        target = root["$defs"][schema["$ref"].split("/")[-1]]
+        yield from _applicable(instance, target, root, path)
+    for sub in schema.get("allOf", ()):
+        yield from _applicable(instance, sub, root, path)
+    for key in ("anyOf", "oneOf"):
+        for sub in schema.get(key, ()):
+            if not errors(instance, sub, root, path):
+                yield from _applicable(instance, sub, root, path)
+
+
+def undeclared(
+    instance: Any,
+    schema: dict[str, Any],
+    root: dict[str, Any] | None = None,
+    path: str = "$",
+) -> list[str]:
+    """Every key ``instance`` carries that ``schema`` never names.
+
+    Not a violation -- the schemas leave ``additionalProperties`` open so a
+    1.x reader accepts a 1.y file -- but a writer must not emit a field its
+    own published contract does not describe. An object no applicable
+    subschema gives ``properties`` (or one with ``additionalProperties``)
+    declares no key set.
+    """
+    root = schema if root is None else root
+    views = list(_applicable(instance, schema, root, path))
+    found: list[str] = []
+    if isinstance(instance, dict):
+        declared = [view["properties"] for view in views if "properties" in view]
+        extras = [
+            view["additionalProperties"]
+            for view in views
+            if "additionalProperties" in view
+        ]
+        for name, value in instance.items():
+            children = [props[name] for props in declared if name in props]
+            if not children:
+                children = [extra for extra in extras if isinstance(extra, dict)]
+                if declared and not extras:
+                    found.append(f"{path}.{name}")
+            for child in children:
+                found += undeclared(value, child, root, f"{path}.{name}")
+    if isinstance(instance, list):
+        for view in views:
+            if isinstance(view.get("items"), dict):
+                for index, item in enumerate(instance):
+                    found += undeclared(item, view["items"], root, f"{path}[{index}]")
+    return sorted(set(found))

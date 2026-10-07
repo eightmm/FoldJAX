@@ -349,7 +349,7 @@ def test_the_confidence_dtype_option_refuses_an_unknown_value(
 ) -> None:
     """The refusal names the values it would have taken."""
     with pytest.raises(ValueError, match="float32, bfloat16"):
-        _stub_prediction(tmp_path, monkeypatch, {"confidence_dtype": "bf16"})
+        _stub_prediction(tmp_path, monkeypatch, {"confidence_dtype": "fp8"})
 
 
 def test_the_confidence_dtype_option_survives_context_parallelism(
@@ -387,7 +387,7 @@ def test_the_sequential_sampler_option_refuses_text(tmp_path, monkeypatch) -> No
     request = PredictionRequest(
         model="esmfold2",
         input=_job(tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACD"}]),
-        options={"structure_sample_sequential": "true"},
+        options={"structure_sample_sequential": "maybe"},
     )
     with pytest.raises(
         ValueError, match="structure_sample_sequential must be a boolean"

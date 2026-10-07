@@ -54,8 +54,17 @@ through. Where a section below names a port's own flag (`--amp-policy`,
 that is the spelling of the port's native CLI (`protenix-jax-predict`,
 `opendde-jax-predict`); through `foldjax predict` the same setting is
 `--option` with underscores, for example `--option amp_policy=upstream`.
+A width is one value whatever the option or port: `bf16`/`bfloat16` and
+`fp32`/`float32`/`f32` are accepted in `dtype` and in every `*_dtype` option,
+and rewritten to the spelling that port takes. A switch is one value too:
+`true`/`false`, `yes`/`no`, `on`/`off`, `1`/`0` (any case) and real booleans
+all reach the port as a boolean, in every option a backend declares a switch
+(`Backend.boolean_options`) and in `deterministic`. `--resume` reads both
+manifests' options the same way, so `bf16` and `bfloat16`, an old option name
+and its new one, or `auto` and omitting the knob are one request.
 An option a backend does not accept is refused by name, and `foldjax plan`
-checks a spelling without running anything. Seeds fan out the same way — `--seeds 0 1 2` (or `--seed 0
+checks a spelling without running anything or writing into the store (with or
+without `--json` and `--shard`). Seeds fan out the same way — `--seeds 0 1 2` (or `--seed 0
 --num-seeds 3`) runs the job once per seed into `seed_<n>` directories and
 returns every structure together.
 
@@ -340,7 +349,7 @@ where it wrote it; nothing in FoldJAX reads it back.
 
 | field | meaning |
 |---|---|
-| `schema_version` | `"1.0"`; see compatibility below |
+| `schema_version` | `"1.1"`; see compatibility below |
 | `model`, `seed`, `sample`, `native_rank`, `job` | which structure this is |
 | `scores` | the model's own scalar scores under its own names, unchanged; boolean flags such as `has_clash` as 0/1 |
 | `summary` | `plddt` (0-100), `ptm`, `iptm`, `ranking`: see below |
@@ -387,7 +396,12 @@ shipped in the package, `foldjax/schemas/confidence.schema.json` and
 `foldjax/schemas/run.schema.json` (`foldjax.summary.load_schema`).
 **Compatibility:** a minor version only adds optional fields, so a reader for
 `1.x` accepts any `1.y` and ignores fields it does not know; removing, renaming
-or reinterpreting a field is a new major version.
+or reinterpreting a field is a new major version. `1.1` declares fields 1.0
+files already carried without the schema naming them -- the manifest's
+`msa_search`, `weights.kind` and `weights.stat_signature`, and AlphaFold 3's
+per-sample `metadata.native_sample` -- and moves both files' version together.
+A `1.0` run directory still validates and still resumes: resume reads `schema`,
+not `schema_version`.
 
 Reading a directory back:
 
@@ -1954,8 +1968,12 @@ What an omitted setting runs, and how to name either side:
 
 `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=pallas`,
 `PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=pallas`,
-`OPENFOLD3_TRIANGLE_BACKEND=cueq-pallas` and `--option glu_backend=pallas`
-still name the kernels explicitly; off a GPU they refuse to run.
+`OPENFOLD3_TRIANGLE_BACKEND=cueq-pallas` (or `--option
+triangle_kernel=cueq-pallas`) and `--option glu_backend=pallas` still name the
+kernels explicitly; off a GPU they refuse to run. On OpenFold3,
+`triangle_kernel=auto` is the omitted default in every column above -- and
+`xla` under context parallelism -- not a fixed kernel. On Protenix it is the
+omitted trunk triangle attention too, not `cueq` (`cueq_jit`).
 
 Where each default is decided:
 

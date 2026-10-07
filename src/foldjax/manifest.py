@@ -284,6 +284,28 @@ def _option_identity(value: Any) -> Any:
     return _UNVERIFIABLE
 
 
+def _canonical_options(model: str, options: Any) -> Any:
+    """``options`` as the backend reads them, for comparing two runs.
+
+    Manifests record options as the caller typed them -- `bf16` in one run,
+    `bfloat16` in the next, an alias key, `auto` -- so both sides go through
+    `Backend.canonical_options`. A record it refuses (an option this build no
+    longer takes) is compared as written, which then fails as a mismatch.
+    """
+    if not isinstance(options, Mapping):
+        return options
+    from foldjax import execution
+    from foldjax.registry import backend_class
+
+    try:
+        backend = backend_class(model)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", execution.Alias)
+            return backend.canonical_options(options)
+    except (KeyError, ValueError):
+        return dict(options)
+
+
 def _public_options_are_complete(
     request: PredictionRequest, options: Mapping[str, Any]
 ) -> bool:
@@ -1384,7 +1406,13 @@ def request_mismatch(
             _exact_value(document["sampling"], request.sampling),
             "the sampling settings differ",
         ),
-        (_exact_value(document["options"], options), "the options differ"),
+        (
+            _exact_value(
+                _canonical_options(request.model, document["options"]),
+                _canonical_options(request.model, options),
+            ),
+            "the options differ",
+        ),
         (
             _exact_value(document["padding"], expected_padding),
             "the padding differs",

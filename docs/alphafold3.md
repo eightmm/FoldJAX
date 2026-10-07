@@ -152,6 +152,11 @@ what the persisted store removes, and why AlphaFold 3 rows measured before
 | `--option kernel_autotuning=error` | use a persisted result first; fail loudly if any kernel remains uncovered |
 | `--option attention_kernel=xla` | skip the Triton attention kernel entirely (the native spelling `attention_backend=xla` also works) |
 
+An omitted attention (or `attention_kernel=auto`) is upstream's `triton` only
+when the selected device is a GPU; on a CPU or TPU it is `xla`, because
+tokamax's Triton flash attention raises `NotImplementedError` there.
+`attention_backend=triton` still names it explicitly.
+
 Explicit external AlphaFold 3 sources, unverifiable managed assets, CPU runs,
 and `--no-cache` keep Tokamax 0.0.13's process-local behavior on the
 process-default first local GPU. A new persistent measurement is made only on

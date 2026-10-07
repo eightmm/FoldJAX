@@ -315,6 +315,20 @@ def load(path: str | Path) -> Any:
 
 #: Members read by one thread before the pickle needs them.
 _PREFETCH_MAX_WORKERS = 16
+
+
+def pread_into(fd: int, view: memoryview, offset: int) -> int:
+    """Read from ``fd`` at ``offset`` straight into ``view``; bytes read.
+
+    `os.preadv` where the platform has it. CPython drops it from `os` on
+    macOS before 11 (`posixmodule.c`, keyed on the `pwritev` runtime check),
+    which its 3.13 builds still support; there this takes an `os.pread` copy.
+    """
+    if hasattr(os, "preadv"):
+        return os.preadv(fd, [view], offset)
+    data = os.pread(fd, len(view), offset)
+    view[: len(data)] = data
+    return len(data)
 _LOCAL_HEADER = struct.Struct("<4s2B4HL2L2H")
 
 
@@ -369,7 +383,7 @@ def _prefetch_stored_members(
             buffer = np.empty(info.file_size, np.uint8)
             view, done = memoryview(buffer), 0
             while done < info.file_size:
-                count = os.preadv(fd, [view[done:]], start + done)
+                count = pread_into(fd, view[done:], start + done)
                 if count <= 0:
                     raise zipfile.BadZipFile(f"truncated member {info.filename!r}")
                 done += count
@@ -378,7 +392,7 @@ def _prefetch_stored_members(
             return info.filename, buffer
 
         located.sort(key=lambda item: -item[0].file_size)
-        workers = max(1, min(len(os.sched_getaffinity(0)), _PREFETCH_MAX_WORKERS))
+        workers = max(1, min(os.process_cpu_count() or 1, _PREFETCH_MAX_WORKERS))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             return dict(pool.map(read, located))
     finally:

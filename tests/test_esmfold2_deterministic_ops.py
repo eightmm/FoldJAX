@@ -214,4 +214,4 @@ def test_the_policy_travels_with_the_states_helper() -> None:
 def test_a_value_outside_the_vocabulary_is_refused(tmp_path) -> None:
     """A misspelled policy must not look like an ordinary run."""
     with pytest.raises(ValueError, match="deterministic must be one of"):
-        ESMFold2Backend().apply_sampling(_request(tmp_path, deterministic="true"))
+        ESMFold2Backend().apply_sampling(_request(tmp_path, deterministic="maybe"))

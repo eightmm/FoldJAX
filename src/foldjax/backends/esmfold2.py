@@ -590,6 +590,12 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
     # loop* rather than cutting the alignment once, which is the same policy
     # Boltz-2 uses and the opposite of a head-of-file cut.
     sampling_options = SAMPLING_OPTIONS
+    boolean_options = frozenset(
+        {
+            "no_language_model",
+            "structure_sample_sequential",
+        }
+    )
     # No `attention_kernel`: the port's attention is XLA's, and the fused and
     # cuEquivariance paths the torch model selected between do not exist here.
     # `no_language_model` is not a performance knob -- it changes which model

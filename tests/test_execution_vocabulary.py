@@ -92,7 +92,7 @@ def test_openfold3_dtype_is_a_partial_profile(request_with) -> None:
     )
     assert "dtype" not in of3.apply_sampling(request_with())
     with pytest.raises(ValueError, match=r"dtype must be one of"):
-        of3.apply_sampling(request_with(dtype="bf16"))
+        of3.apply_sampling(request_with(dtype="fp8"))
 
 
 def test_a_value_a_model_does_not_have_is_an_error(request_with) -> None:
@@ -177,15 +177,144 @@ def test_auto_resolves_to_the_fused_kernel_where_one_exists(request_with) -> Non
     run two different programs on two machines, which is how a benchmark ends
     up comparing kernels instead of models.
     """
-    for model, native in (
-        ("boltz2", "triangle_backend"),
-        ("protenix", "trunk_triangle_attention_backend"),
-        ("openfold3", "triangle_kernel"),
-    ):
-        resolved = get_backend(model).apply_sampling(
-            request_with(triangle_kernel="auto")
-        )
-        assert resolved[native] in ("cueq", "cueq_jit"), model
+    resolved = get_backend("boltz2").apply_sampling(
+        request_with(triangle_kernel="auto")
+    )
+    assert resolved["triangle_backend"] == "cueq"
+
+
+def test_protenix_auto_is_the_omitted_kernel(request_with) -> None:
+    """`auto` used to pin `cueq_jit`, which no omitted Protenix run selects.
+
+    An omitted trunk triangle attention reaches the runner as None and takes
+    the untraced multiplication; `cueq_jit` traces it too. `auto` now passes
+    nothing, so it is the omitted run and its cache namespace.
+    """
+    protenix = get_backend("protenix")
+    auto = request_with(triangle_kernel="auto")
+    assert "trunk_triangle_attention_backend" not in protenix.apply_sampling(auto)
+    assert protenix.cache_profile(auto) == protenix.cache_profile(request_with())
+    assert protenix.cache_profile(
+        request_with(triangle_kernel="cueq")
+    ) != protenix.cache_profile(request_with())
+
+
+@pytest.mark.parametrize("cp_devices", [1, 4])
+@pytest.mark.parametrize("gpu", [False, True])
+def test_openfold3_auto_is_the_omitted_kernel(
+    request_with, monkeypatch, gpu: bool, cp_devices: int
+) -> None:
+    """OpenFold3's fastest kernel depends on the platform and the device count.
+
+    `auto` used to pin `cueq`, the attention-only kernel no omitted run
+    selects: `cueq-pallas` on a GPU, `cueq-full` elsewhere, `xla` under
+    context parallelism. It now passes nothing, so it names the same kernel
+    and the same cache namespace as omitting the knob.
+    """
+    from foldjax.models import _pallas_pair
+
+    monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: gpu)
+    monkeypatch.delenv("OPENFOLD3_TRIANGLE_BACKEND", raising=False)
+    of3 = get_backend("openfold3")
+    auto = request_with(triangle_kernel="auto", cp_devices=cp_devices)
+    omitted = request_with(cp_devices=cp_devices)
+    assert "triangle_kernel" not in of3.apply_sampling(auto)
+    expected = "xla" if cp_devices > 1 else "cueq-pallas" if gpu else "cueq-full"
+    assert of3.cache_profile(auto)["triangle_kernel"] == expected
+    assert of3.cache_profile(auto) == of3.cache_profile(omitted)
+
+
+def test_cueq_pallas_is_requestable_where_a_port_runs_it(request_with) -> None:
+    """A kernel an omitted OpenFold3 run selects must be nameable in the knob."""
+    of3 = get_backend("openfold3")
+    assert (
+        of3.apply_sampling(request_with(triangle_kernel="cueq-pallas"))[
+            "triangle_kernel"
+        ]
+        == "cueq-pallas"
+    )
+    for model in ("boltz2", "protenix"):
+        with pytest.raises(
+            ValueError, match=f"{model} does not support triangle_kernel='cueq-pallas'"
+        ):
+            get_backend(model).apply_sampling(
+                request_with(triangle_kernel="cueq-pallas")
+            )
+
+
+_LONG = {"bfloat16": "bfloat16", "float32": "float32"}
+_SHORT = {"bfloat16": "bf16", "float32": "fp32"}
+
+#: (model, option as passed, the native option it lands on, what lands there)
+#: through the neutral knob, an alias and each port's own `*_dtype` options.
+_WIDTHS = [
+    ("boltz2", "dtype", "compute_dtype", _LONG),
+    ("boltz2", "compute_dtype", "compute_dtype", _LONG),
+    ("boltz2", "diffusion_compute_dtype", "diffusion_compute_dtype", _LONG),
+    ("boltz2", "pair_residual_dtype", "pair_residual_dtype", _LONG),
+    ("protenix", "dtype", "trunk_dtype", _SHORT),
+    ("protenix", "trunk_dtype", "trunk_dtype", _SHORT),
+    ("opendde", "dtype", "trunk_dtype", _SHORT),
+    ("opendde", "trunk_dtype", "trunk_dtype", _SHORT),
+    ("opendde", "confidence_dtype", "confidence_dtype", _SHORT),
+    ("opendde", "diffusion_dtype", "diffusion_dtype", _SHORT),
+    ("openfold3", "dtype", "dtype", _LONG),
+    ("openfold3", "trunk_dtype", "dtype", _LONG),
+    ("openfold3", "compute_dtype", "dtype", _LONG),
+    ("openfold3", "confidence_dtype", "confidence_dtype", _LONG),
+    ("esmfold2", "confidence_dtype", "confidence_dtype", _LONG),
+]
+_SPELLINGS = {
+    "bfloat16": ("bf16", "bfloat16", "BF16"),
+    "float32": ("fp32", "float32", "f32"),
+}
+
+
+@pytest.mark.parametrize(
+    ("model", "option", "native", "lands"),
+    _WIDTHS,
+    ids=[f"{model}-{option}" for model, option, _native, _lands in _WIDTHS],
+)
+def test_every_width_spelling_reaches_every_port(
+    tmp_path, model: str, option: str, native: str, lands: dict[str, str]
+) -> None:
+    """`bf16` and `bfloat16` name one width on every port and in every option.
+
+    The aliases renamed keys but not values, so `trunk_dtype=bf16` was refused
+    on OpenFold3 and `confidence_dtype=float32` on OpenDDE. The request is
+    also validated, so the port's own check accepts what lands.
+    """
+    import warnings
+
+    job = tmp_path / "job.json"
+    job.write_text("{}")
+    weights = tmp_path / "w"
+    weights.write_bytes(b"x")
+    backend = get_backend(model)
+    for width, spellings in _SPELLINGS.items():
+        for spelling in spellings:
+            request = PredictionRequest(
+                model=model,
+                input=job,
+                input_format="foldjax",
+                weights=weights,
+                output_dir=tmp_path / "out",
+                options={option: spelling},
+            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", execution.Alias)
+                options = backend.apply_sampling(request)
+                assert options[native] == lands[width], spelling
+                backend.validate_request(request)
+
+
+def test_a_width_that_is_not_one_passes_through_to_the_port(request_with) -> None:
+    """Only width spellings are rewritten; the port still judges the rest."""
+    boltz2 = get_backend("boltz2")
+    options = boltz2.apply_sampling(request_with(pair_residual_dtype="auto"))
+    assert options["pair_residual_dtype"] == "auto"
+    with pytest.raises(ValueError, match=r"dtype must be one of"):
+        boltz2.apply_sampling(request_with(dtype="float16"))
 
 
 def test_openfold3_kernel_selection_restores_the_host_environment(
@@ -280,3 +409,89 @@ def test_the_option_is_part_of_every_port_s_compile_identity(
     the program built without them.
     """
     assert native in get_backend(model).compile_options
+
+
+_SWITCH_SPELLINGS = {
+    True: (True, 1, "true", "TRUE", "1", "yes", "Yes", "on"),
+    False: (False, 0, "false", "False", "0", "no", "NO", "off"),
+}
+
+
+@pytest.mark.parametrize(
+    ("model", "option"),
+    [
+        (model, option)
+        for model in available_models()
+        for option in sorted(get_backend(model).boolean_options)
+    ],
+)
+def test_every_switch_spelling_reaches_every_port_as_a_bool(
+    tmp_path, model: str, option: str
+) -> None:
+    """One vocabulary for a switch, whatever the port's own validator takes.
+
+    `_strict_boolean` took only a real `bool` and the Protenix/OpenDDE rules
+    only `true`/`false`; now every spelling lands as a `bool`, which both
+    accept, so the request also validates.
+    """
+    job = tmp_path / "job.json"
+    job.write_text("{}")
+    weights = tmp_path / "w"
+    weights.write_bytes(b"x")
+    backend = get_backend(model)
+    for switch, spellings in _SWITCH_SPELLINGS.items():
+        for spelling in spellings:
+            request = PredictionRequest(
+                model=model,
+                input=job,
+                input_format="foldjax",
+                weights=weights,
+                output_dir=tmp_path / "out",
+                options={option: spelling},
+            )
+            value = backend.apply_sampling(request)[option]
+            assert value is switch, spelling
+            backend.validate_request(request)
+
+
+def test_only_a_declared_switch_is_rewritten(request_with) -> None:
+    """`"1"` is a count elsewhere, and an unknown spelling is the port's to refuse."""
+    protenix = get_backend("protenix")
+    options = protenix.apply_sampling(
+        request_with(diffusion_chunk_size="1", use_template="maybe")
+    )
+    assert options["diffusion_chunk_size"] == "1"
+    assert options["use_template"] == "maybe"
+
+
+def test_the_deterministic_knob_takes_the_switch_spellings(request_with) -> None:
+    assert get_backend("boltz2").apply_sampling(request_with(deterministic="yes"))[
+        "deterministic"
+    ] is True
+    assert get_backend("protenix").apply_sampling(request_with(deterministic=False))[
+        "deterministic_ops"
+    ] == "off"
+
+
+def test_every_native_switch_is_declared_as_one() -> None:
+    """A native option whose released default is a `bool` is a switch.
+
+    Read off the backend module's default tables rather than its validators,
+    so a switch added later -- with its released default named the way every
+    port names one -- fails here until it joins `boolean_options`.
+    """
+    import importlib
+
+    for model in available_models():
+        backend = get_backend(model)
+        module = importlib.import_module(type(backend).__module__)
+        native = set(backend.native_options or ())
+        defaulted = {
+            key
+            for name, table in vars(module).items()
+            if "DEFAULT" in name and isinstance(table, dict)
+            for key, value in table.items()
+            if isinstance(key, str) and isinstance(value, bool) and key in native
+        }
+        assert defaulted <= backend.boolean_options, (model, defaulted)
+        assert backend.boolean_options <= native, model

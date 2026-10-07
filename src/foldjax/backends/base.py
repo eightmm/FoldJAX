@@ -183,10 +183,42 @@ class Backend(ABC):
     #: back silently.
     execution_options: dict[str, tuple[str, dict[str, str]]] = {}
 
+    #: Native options that are switches. `true`/`false`, `yes`/`no`, `on`/
+    #: `off`, `1`/`0` (any case) and real booleans all reach the port as a
+    #: `bool` (`foldjax.execution.spell_booleans`). Only a declared switch is
+    #: rewritten: the value `"1"` means a count elsewhere.
+    boolean_options: frozenset[str] = frozenset()
+
     #: Dynamic shape axes understood by this backend's padding implementation.
     #: The public capability repeats this for discovery; this class attribute is
     #: the validation authority used before any model runtime is imported.
     padding_axes: tuple[str, ...] = ()
+
+    @classmethod
+    def canonical_options(cls, options: Mapping[str, Any]) -> dict[str, Any]:
+        """``options`` in this backend's own names and spellings.
+
+        Alias keys renamed, width and switch spellings unified, neutral knobs
+        translated (`auto` to nothing where it is the omitted default). Two
+        option mappings that mean the same run have equal canonical forms,
+        which is what resume compares. Raises like `apply_sampling` on an
+        option this backend cannot express. A classmethod, because it reads
+        only the class's tables and resume must not construct a backend.
+        """
+        return execution.translate(
+            execution.spell_booleans(
+                execution.spell_dtypes(
+                    execution.normalize(
+                        dict(options),
+                        native={name for name, _ in cls.execution_options.values()},
+                    ),
+                    cls.execution_options,
+                ),
+                cls.boolean_options,
+            ),
+            cls.execution_options,
+            model=getattr(cls, "name", cls.__name__),
+        )
 
     def apply_sampling(self, request: PredictionRequest) -> dict[str, Any]:
         """Merge the request's sampling and execution knobs into native options.
@@ -195,14 +227,7 @@ class Backend(ABC):
         the neutral knob and its native spelling: silently preferring one would
         change how many structures come back without changing the exit code.
         """
-        options = execution.translate(
-            execution.normalize(
-                dict(request.options),
-                native={name for name, _ in self.execution_options.values()},
-            ),
-            self.execution_options,
-            model=self.name,
-        )
+        options = self.canonical_options(request.options)
         for knob, value in request.sampling.items():
             native = self.sampling_options.get(knob)
             if native is None:

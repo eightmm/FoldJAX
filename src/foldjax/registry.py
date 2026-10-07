@@ -49,6 +49,18 @@ def get_backend(name: str) -> Backend:
     return provider(PORTS[normalized].backend)()
 
 
+def backend_class(name: str) -> type[Backend]:
+    """The backend class `get_backend` would construct, without constructing it.
+
+    For reading class-level tables (`Backend.canonical_options`). An override
+    registered as a plain factory rather than a class is called once, since
+    there is no other way to learn what it builds.
+    """
+    normalized = normalize_model_name(name)
+    factory = _OVERRIDES.get(normalized) or provider(PORTS[normalized].backend)
+    return factory if isinstance(factory, type) else type(factory())
+
+
 def capabilities(name: str) -> ModelCapabilities:
     """One backend's capabilities, with the common-schema reach filled in.
 

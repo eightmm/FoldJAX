@@ -24,7 +24,7 @@ from foldjax.registry import backend_override, get_backend
 from foldjax.schema import PredictionRequest, PredictionResult, PredictionSample
 from foldjax.scores import ranked_native_samples
 from foldjax.summary import COMMON_FIELDS_NOTE, SCHEMA_VERSION, load_schema
-from tests._schema_lite import errors, unsupported_keywords
+from tests._schema_lite import errors, undeclared, unsupported_keywords
 
 FIXTURES = Path(__file__).parent / "fixtures" / "outputs"
 CASES = sorted(path.name for path in FIXTURES.iterdir() if path.is_dir())
@@ -185,6 +185,47 @@ def test_written_files_validate_against_the_published_schemas(
     assert errors(confidence, load_schema("confidence")) == []
     assert errors(manifest, load_schema("run")) == []
     assert confidence["schema_version"] == manifest["schema_version"] == SCHEMA_VERSION
+    # Open objects let a 1.x reader take a 1.y file; they must not let a writer
+    # emit a field its own published contract never names.
+    assert undeclared(confidence, load_schema("confidence")) == []
+    assert undeclared(manifest, load_schema("run")) == []
+
+
+def test_searched_alignment_records_are_declared(tmp_path: Path) -> None:
+    _confidence, manifest, _fixture = _run(tmp_path, "boltz2_e9_8reh")
+    schema = load_schema("run")
+    # The two shapes `msa_search._search_alignments` appends.
+    manifest["msa_search"] = [
+        {"chain": "A", "unpaired_msa": "msa/A.a3m", "provenance": "msa/A.json"},
+        {"chain": "B", "error": "server unreachable"},
+    ]
+    assert errors(manifest, schema) == []
+    assert undeclared(manifest, schema) == []
+    manifest["msa_search"] = [{"error": "no chain"}]
+    assert errors(manifest, schema)
+
+
+def test_a_1_0_run_still_validates_and_resumes(tmp_path: Path) -> None:
+    from foldjax.api import resolve_requests
+    from foldjax.manifest import request_mismatch
+
+    _confidence, manifest, fixture = _run(tmp_path, "boltz2_e9_8reh")
+    manifest["schema_version"] = "1.0"
+    for name in ("msa_search", "foldjax_source"):
+        manifest.pop(name, None)
+    assert errors(manifest, load_schema("run")) == []
+    weights = tmp_path / "weights.jax"
+    (request,) = resolve_requests(
+        PredictionRequest(
+            model="boltz2",
+            input=tmp_path / f"{fixture['job']}.json",
+            weights=weights,
+            output_dir=tmp_path / "out",
+            seed=int(fixture["seed"]),
+            use_compile_cache=False,
+        )
+    )
+    assert request_mismatch(manifest, request, seed=int(fixture["seed"])) is None
 
 
 @pytest.mark.parametrize("case_name", CASES)

@@ -41,7 +41,11 @@ from foldjax.backends.base import (
     validate_memory_policy_options,
 )
 from foldjax.cache import compilation_cache_scope
-from foldjax.execution import DETERMINISTIC_API_OPTION, auto_diffusion_chunk_size
+from foldjax.execution import (
+    BACKEND_DEFAULT,
+    DETERMINISTIC_API_OPTION,
+    auto_diffusion_chunk_size,
+)
 from foldjax.models import _representations
 from foldjax.padding import (
     PaddingPlan,
@@ -390,6 +394,13 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
     # already carries upstream's own 1024; the knob narrows a setting the model
     # has rather than imposing one it lacks.
     sampling_options = SAMPLING_OPTIONS
+    boolean_options = frozenset(
+        {
+            "all_arrays",
+            "cp_atom_windows",
+            "no_compile",
+        }
+    )
     # OpenFold3 selects its triangle kernel from an environment variable rather
     # than an argument, because the switch has to reach every triangle attention
     # in the model -- the template stack and the confidence head included --
@@ -432,12 +443,15 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         **MATMUL_PRECISION_OPTION,
         **DETERMINISTIC_API_OPTION,
         "dtype": ("dtype", {"float32": "float32", "bfloat16": "bfloat16"}),
+        # `auto` is the omitted default (`resolve_triangle_kernel`): a GPU,
+        # the CPU and context parallelism each realise a different kernel.
         "triangle_kernel": (
             "triangle_kernel",
             {
-                "auto": "cueq",
+                "auto": BACKEND_DEFAULT,
                 "cueq": "cueq",
                 "cueq-full": "cueq-full",
+                "cueq-pallas": "cueq-pallas",
                 "xla": "xla",
             },
         ),

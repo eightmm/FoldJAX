@@ -84,6 +84,25 @@ def test_the_dtype_cast_happens_on_load(checkpoint) -> None:
     np.testing.assert_array_equal(parameters["embed.weight"], historical)
 
 
+def test_the_cast_on_load_needs_no_cpu_affinity(checkpoint, monkeypatch) -> None:
+    """macOS has no `os.sched_getaffinity`; the cast's thread pool must not need it."""
+    import os
+
+    # As macOS's `os` is: no affinity call, and `process_cpu_count` falls
+    # back to `cpu_count` (Linux's own reads the attribute removed here).
+    monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+    monkeypatch.setattr(os, "process_cpu_count", os.cpu_count)
+    test_the_dtype_cast_happens_on_load(checkpoint)
+
+
+def test_the_cast_on_load_needs_no_preadv(checkpoint, monkeypatch) -> None:
+    """CPython removes `os.preadv` on macOS before 11; `os.pread` must do."""
+    import os
+
+    monkeypatch.delattr(os, "preadv", raising=False)
+    test_the_dtype_cast_happens_on_load(checkpoint)
+
+
 def test_device_transfer_casts_on_host_without_staging(
     checkpoint, monkeypatch: Any
 ) -> None:

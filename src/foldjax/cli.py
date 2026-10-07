@@ -1567,26 +1567,27 @@ def _plan_summary(
     from foldjax.msa_search import resolve_pairing
     from foldjax.presets import preset_record
 
+    def shown(path: Path) -> str:
+        # Written to scratch, not the store: the path predict will give it.
+        # The store layout is content-keyed, so it is known without writing.
+        if scratch is not None and Path(path).is_relative_to(scratch):
+            return str(paths.runtime_dir("jobs") / Path(path).relative_to(scratch))
+        return str(path)
+
     generated = None
-    shown_input = str(request.input)
     if scratch is not None and Path(request.input).is_relative_to(scratch):
-        # Written to scratch, not the store. Show the document itself, and the
-        # path predict will give it: the store layout is content-keyed, so
-        # that path is known without writing it.
         from foldjax.input import read_job_document
 
         generated = read_job_document(Path(request.input))
-        shown_input = str(
-            paths.runtime_dir("jobs") / Path(request.input).relative_to(scratch)
-        )
+    source = request.source.summary() if request.source is not None else None
+    if source is not None:
+        source["path"] = shown(request.source.path)
     summary = {
         "model": request.model,
-        "input": shown_input,
+        "input": shown(request.input),
         "generated_input": generated,
         # The multi-job file and job this generated input came from.
-        "source": (
-            request.source.summary() if request.source is not None else None
-        ),
+        "source": source,
         "input_format": request.input_format,
         "weights": str(request.weights),
         "profile": request.profile,
@@ -1811,6 +1812,51 @@ def _format_warnings() -> None:
     warnings.showwarning = show
 
 
+def _run_plan(args: argparse.Namespace) -> int:
+    """`foldjax plan`: resolve and check the request, writing nothing to the store.
+
+    Generated job documents (a --sequence, FASTA or structure input, a shard's
+    multi-job file, the jobs of a multi-job file) are written to scratch; the
+    stems are the ones predict would use. `--json` adds the `slurm` block.
+    """
+    import tempfile
+
+    from foldjax import slurm, tools_cli
+
+    with tempfile.TemporaryDirectory(prefix="foldjax-plan-") as scratch:
+        jobs = Path(scratch) / "jobs"
+        tools_cli.prepare(args, jobs_root=jobs)
+        handled = tools_cli.dispatch(args)
+        if handled is not None:
+            return handled
+        requested = _request(args, jobs_root=jobs)
+        resolved = resolve_requests(
+            requested, draw_seeds=False, jobs_root=jobs / "split"
+        )
+        payload = []
+        for item in resolved:
+            preflight(item)
+            summary = _plan_summary(item, scratch=jobs)
+            if args.json:
+                # Read while the scratch document still exists: the shown
+                # input is the store path predict would write, not this one.
+                summary["slurm"] = slurm.plan_slurm(
+                    {**summary, "input": str(item.input)},
+                    public_options(item.options) or {},
+                )
+            payload.append(summary)
+    print(
+        json.dumps(
+            payload
+            if requested.models is not None or requested.inputs is not None
+            else payload[0],
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     # Importing or embedding the CLI for discovery/plan commands must not
@@ -1825,6 +1871,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _skip_release_reclaim()
     elif args.command == "plan":
         _validate_mem_fraction(args.mem_fraction)
+        return _run_plan(args)
     tools_cli.prepare(args)
     handled = tools_cli.dispatch(args)
     if handled is not None:
@@ -1871,31 +1918,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.cache_command == "gc":
             return cache_gc.run_cache_gc(args)
         return _run_cache(args)
-    if args.command == "plan":
-        import tempfile
-
-        # Generated job documents (a --sequence, FASTA or structure input, the
-        # jobs of a multi-job file) are written to scratch: a plan writes
-        # nothing into the store. The stems are the ones predict would use.
-        with tempfile.TemporaryDirectory(prefix="foldjax-plan-") as scratch:
-            jobs = Path(scratch) / "jobs"
-            requested = _request(args, jobs_root=jobs)
-            resolved = resolve_requests(
-                requested, draw_seeds=False, jobs_root=jobs / "split"
-            )
-            for item in resolved:
-                preflight(item)
-            payload = [_plan_summary(item, scratch=jobs) for item in resolved]
-        print(
-            json.dumps(
-                payload
-                if requested.models is not None or requested.inputs is not None
-                else payload[0],
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 0
     if args.command == "compare":
         from foldjax.compare import compare_directory
 
