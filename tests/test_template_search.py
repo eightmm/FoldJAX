@@ -670,6 +670,28 @@ def test_alphafold3_skips_an_author_chain_spanning_two_polymers(
     assert [item["pdb_id"] for item in records[0]["templates"]] == ["6abc", "2abc"]
 
 
+@pytest.mark.parametrize("model", ["protenix", "opendde"])
+def test_filtered_hits_take_no_candidate_slot(tmp_path, monkeypatch, kalign, model):
+    """Upstream caps its 20 candidates after prefilter and de-duplication
+    (protenix/data/template/template_utils.py:981-1016): twenty copies of the
+    query ahead of a usable hit must not use the slots up.
+    """
+    structures = dict(STRUCTURES)
+    copies = [f"7{chr(97 + index)}aa" for index in range(20)]
+    for entry in copies:
+        structures[entry] = _mmcif(entry, "2005-01-01", [("A", "A", QUERY, set())])
+    _route(
+        tmp_path,
+        monkeypatch,
+        m8=_m8(*((f"{entry}_A", 1e-40) for entry in copies), ("2abc_X", 1e-20)),
+        structures=structures,
+    )
+    _, records = _materialize(_job(tmp_path), model, options={"use_template": True})
+    (record,) = records
+    assert [item["pdb_id"] for item in record["templates"]] == ["2abc"]
+    assert record["skipped"] == {"filter": 20}
+
+
 def test_openfold3_features_place_searched_templates_on_their_query_residues(
     tmp_path, searched, kalign
 ):
