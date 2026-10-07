@@ -722,7 +722,9 @@ def _alphafold3_structure():
     return built.copy_and_update_atoms(atom_b_factor=plddt)
 
 
-def test_alphafold3_routes_the_inference_result_arrays(tmp_path: Path) -> None:
+def test_alphafold3_routes_the_inference_result_arrays(
+    tmp_path: Path, alphafold3_runtime: None
+) -> None:
     from foldjax.backends.alphafold3 import _samples
 
     predicted = _alphafold3_structure()

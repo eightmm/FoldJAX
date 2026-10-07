@@ -43,6 +43,12 @@ from foldjax.manifest import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _own_sys_path(monkeypatch) -> None:
+    """`drive.main` puts the repository on `sys.path`; keep that to the test."""
+    monkeypatch.setattr(sys, "path", [*sys.path])
+
+
 def _result_identity(tmp_path: Path) -> dict[str, object]:
     job = tmp_path / "job.json"
     checkpoint = tmp_path / "weights.bin"

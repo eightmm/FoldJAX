@@ -8,6 +8,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+# Every test here imports the patched AlphaFold 3 package.
+pytestmark = pytest.mark.usefixtures("alphafold3_runtime")
+
 
 def _generic_chain_pair_pae_reference(
     confidences,

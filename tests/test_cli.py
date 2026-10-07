@@ -658,6 +658,53 @@ def test_predict_cli_prints_result_summary(tmp_path: Path, monkeypatch, capsys) 
     assert seen["request"].options == {"num_steps": 20}
 
 
+@pytest.mark.parametrize("fails", [False, True], ids=["returns", "raises"])
+def test_predict_turns_progress_on_for_the_command_only(
+    tmp_path: Path, monkeypatch, capsys, fails: bool
+) -> None:
+    """An in-process `main(["predict", ...])` must leave the host as it found it."""
+    from foldjax import progress
+
+    (tmp_path / "job.json").write_text("{}")
+    (tmp_path / "weights").mkdir()
+    monkeypatch.setattr(progress, "_enabled", False)
+    monkeypatch.setattr(progress, "_stream", None)
+    monkeypatch.delenv("FOLDJAX_PROGRESS", raising=False)
+    during: list[bool] = []
+
+    def fake_predict(request):
+        from foldjax.schema import BatchReport, PredictionResult
+
+        during.append(progress.enabled())
+        if fails:
+            raise RuntimeError("planned failure")
+        return BatchReport(
+            results=(PredictionResult(model="protenix", output_dir=request.output_dir),)
+        )
+
+    monkeypatch.setattr("foldjax.cli.predict_batch", fake_predict)
+    argv = [
+        "predict",
+        "--model",
+        "protenix",
+        "--input",
+        str(tmp_path / "job.json"),
+        "--weights",
+        str(tmp_path / "weights"),
+        "--output-dir",
+        str(tmp_path / "out"),
+    ]
+    if fails:
+        with pytest.raises(RuntimeError, match="planned failure"):
+            main(argv)
+    else:
+        assert main(argv) == 0
+
+    assert during == [True]
+    assert progress.enabled() is False
+    assert progress._stream is None
+
+
 def test_cache_warm_cli_reports_execute_once_and_cache_delta(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:

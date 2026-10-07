@@ -7,13 +7,15 @@ session: OpenDDE's CLI hands asset paths to the Protenix featurizer through
 ``components.cif`` from a deleted tmp directory instead of skipping.
 
 The product-side fix lives in ``foldjax.backends.opendde``, which restores these
-around its in-process call. This fixture covers tests that invoke the native
-CLIs directly, so no suite can leak into the next regardless of ordering.
+around its in-process call. `_restore_process_state` covers tests that invoke
+the native CLIs directly, so no suite can leak into the next regardless of
+ordering.
 """
 
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -60,28 +62,87 @@ def pytest_report_header(config: pytest.Config) -> list[str]:
     ]
 
 
-_LEAKY_ENVIRONMENT = (
-    "JAX_PLATFORMS",
-    "PROTENIX_CCD_COMPONENTS_FILE",
-    "PROTENIX_CCD_RDKIT_MOL_FILE",
-    "PROTENIX_KALIGN_BINARY",
-    "PROTENIX_TEMPLATE_MMCIF_DIR",
-    "PROTENIX_TEMPLATE_OBSOLETE_FILE",
-    "PROTENIX_TEMPLATE_RELEASE_DATES_FILE",
+#: The JAX persistent-cache settings `foldjax.cache.compilation_cache_scope`
+#: and the AlphaFold 3 session move. JAX holds them process-wide.
+_JAX_CACHE_CONFIG = (
+    "jax_compilation_cache_dir",
+    "jax_enable_compilation_cache",
+    "jax_persistent_cache_min_compile_time_secs",
+    "jax_persistent_cache_min_entry_size_bytes",
 )
 
 
+#: pytest's own record of the running phase; it changes on every test.
+_PYTEST_PHASE = "PYTEST_CURRENT_TEST"
+
+
+def _environment() -> dict[str, str]:
+    return {name: value for name, value in os.environ.items() if name != _PYTEST_PHASE}
+
+
+def _jax_cache_config() -> dict[str, object] | None:
+    # Read only once something else imported JAX: several tests assert that a
+    # code path does not import it, which an import here would decide for them.
+    jax = sys.modules.get("jax")
+    if jax is None:
+        return None
+    return {name: getattr(jax.config, name) for name in _JAX_CACHE_CONFIG}
+
+
 @pytest.fixture(autouse=True)
-def _isolate_native_asset_environment() -> Iterator[None]:
-    saved = {name: os.environ.get(name) for name in _LEAKY_ENVIRONMENT}
+def _restore_process_state() -> Iterator[None]:
+    """Put back the process-wide state a test can change without monkeypatch.
+
+    One session runs every suite, so whatever a test leaves behind is the
+    next test's starting point, and its result then depends on the order the
+    two happened to run in. The audit that added this found tests that passed
+    only because an earlier one had not run: an in-process ``foldjax predict``
+    left progress lines on, a native CLI left asset paths in ``os.environ``,
+    and ``monkeypatch.delenv`` of an unset name, which records nothing to undo,
+    let the code under test keep the value it set.
+
+    The whole environment is restored, not a list of known names: the list
+    is what the next leak is missing from. Progress and the memory policy's
+    one-time warnings and recorded decision are module state with a known
+    fresh-process value, so each test also *starts* from it: a test asserting
+    a ``UserWarning`` is asserting the library channel, which a progress line
+    replaces once progress is on. The JAX persistent-cache settings are
+    process config, and JAX's file-cache object is rebuilt when they move so
+    it does not keep the test's directory.
+    """
+    from foldjax import memory_policy, progress
+
+    environment = _environment()
+    progress_state = (progress._enabled, progress._stream)
+    warned = set(memory_policy._WARNED)
+    recorded = memory_policy._RECORDED.get()
+    jax_config = _jax_cache_config()
+    progress.disable()
+    memory_policy.reset_warnings()
+    memory_policy.clear_record()
     try:
         yield
     finally:
-        for name, value in saved.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
+        # Only what changed, never clear-and-refill: XLA and numba threads
+        # still running read the C environment, and emptying it under them
+        # segfaulted the Boltz-2 suite.
+        current = _environment()
+        for name in current.keys() - environment.keys():
+            del os.environ[name]
+        for name, value in environment.items():
+            if current.get(name) != value:
                 os.environ[name] = value
+        progress._enabled, progress._stream = progress_state
+        memory_policy._WARNED.clear()
+        memory_policy._WARNED.update(warned)
+        memory_policy._RECORDED.set(recorded)
+        if jax_config is not None and _jax_cache_config() != jax_config:
+            import jax
+            from jax.experimental.compilation_cache import compilation_cache
+
+            compilation_cache.reset_cache()
+            for name, value in jax_config.items():
+                jax.config.update(name, value)
 
 
 @pytest.fixture(autouse=True)
@@ -94,6 +155,39 @@ def _restore_release_reclaim() -> Iterator[None]:
         yield
     finally:
         _managed_memory._RECLAIM_AT_RELEASE = saved
+
+
+@pytest.fixture(scope="session")
+def _alphafold3_runtime_error() -> str | None:
+    """Prepare AlphaFold 3's native runtime once; why it failed, or ``None``."""
+    from foldjax.models.alphafold3 import build
+
+    try:
+        build.ensure_ready()
+    except Exception as error:  # noqa: BLE001 - the reason is the skip message
+        return f"{type(error).__name__}: {error}"[:500]
+    return None
+
+
+@pytest.fixture
+def alphafold3_runtime(_alphafold3_runtime_error: str | None) -> None:
+    """Skip when FoldJAX's AlphaFold 3 runtime cannot be built on this host.
+
+    The runtime is a CMake build of AlphaFold 3's C++ extension. Each test used
+    to reach it through ``register_runtime()``, so on a host that cannot build
+    it -- no zlib headers is enough -- every one of them retried the whole
+    build before failing. It is now attempted once per session.
+
+    CI builds the runtime in a step of its own and sets
+    ``FOLDJAX_REQUIRE_AF3_RUNTIME=1`` on that shard, where a runtime that
+    still cannot be prepared is a failure rather than a skip.
+    """
+    if _alphafold3_runtime_error is None:
+        return
+    message = f"AlphaFold 3 runtime could not be prepared: {_alphafold3_runtime_error}"
+    if os.environ.get("FOLDJAX_REQUIRE_AF3_RUNTIME") == "1":
+        pytest.fail(message)
+    pytest.skip(message)
 
 
 @pytest.fixture

@@ -9,6 +9,12 @@ import pytest
 from bench import openbind_triton_attention_probe as probe
 
 
+@pytest.fixture(autouse=True)
+def _own_sys_path(monkeypatch) -> None:
+    """`probe.main` puts the source root on `sys.path`; keep that to the test."""
+    monkeypatch.setattr(sys, "path", [*sys.path])
+
+
 def _launch(case):
     return {
         "grid": [(case.length + 63) // 64, case.rows * 4, 1],

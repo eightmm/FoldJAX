@@ -669,3 +669,53 @@ def test_check_with_posebusters(tmp_path: Path) -> None:
     rows = check_directory(root)
     assert len(rows) == 2 and all(row["ligand"] == "BNZ" for row in rows)
     assert all("pb_valid" in row for row in rows)
+
+
+@pytest.mark.parametrize(
+    ("record", "valid", "failed", "not_computed"),
+    [
+        ({"bond_lengths": True, "clashes": True}, True, [], []),
+        # A check PoseBusters could not compute is not a check that passed.
+        ({"bond_lengths": True, "clashes": None}, False, [], ["clashes"]),
+        ({"bond_lengths": True, "clashes": float("nan")}, False, [], ["clashes"]),
+        ({"bond_lengths": False, "clashes": True}, False, ["bond_lengths"], []),
+        # No checks at all is not "every check passed".
+        ({"mol_pred_loaded_note": "text only"}, False, [], []),
+    ],
+    ids=["all-pass", "none-not-computed", "nan-not-computed", "one-fails", "empty"],
+)
+def test_pb_valid_counts_only_checks_that_passed(
+    tmp_path: Path,
+    monkeypatch,
+    record: dict,
+    valid: bool,
+    failed: list[str],
+    not_computed: list[str],
+) -> None:
+    """The verdict rule, on a stand-in PoseBusters: PB-valid is all-True."""
+    from types import ModuleType, SimpleNamespace
+
+    from foldjax.checks import check_directory
+
+    configs: list[str] = []
+
+    class _PoseBusters:
+        def __init__(self, config: str) -> None:
+            configs.append(config)
+
+        def bust(self, mol_pred, mol_cond=None):
+            assert mol_pred is not None
+            return SimpleNamespace(iloc=[SimpleNamespace(to_dict=lambda: record)])
+
+    posebusters = ModuleType("posebusters")
+    posebusters.PoseBusters = _PoseBusters
+    monkeypatch.setitem(sys.modules, "posebusters", posebusters)
+
+    rows = check_directory(_batch(tmp_path, ligand=True))
+
+    assert configs and len(rows) == len(configs)
+    for row in rows:
+        assert row["ligand"] == "BNZ"
+        assert row["pb_valid"] is valid
+        assert row["pb_failed"] == failed
+        assert row["pb_not_computed"] == not_computed

@@ -1082,6 +1082,12 @@ def _prepare_output_directory(
             raise PredictionOutputError(
                 f"generated output directory escapes its run root: {path}"
             ) from error
+        # `absolute()` keeps `..`, so `root/../x` passes the prefix test above;
+        # refused here, before `mkdir` makes the directory outside the root.
+        if ".." in relative.parts:
+            raise PredictionOutputError(
+                f"generated output directory escapes its run root: {path}"
+            )
         cursor = boundary.absolute()
         for part in relative.parts:
             cursor /= part

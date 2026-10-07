@@ -12,7 +12,11 @@ from __future__ import annotations
 
 import io
 import json
+import pickle
+import sys
+import zipfile
 from pathlib import Path
+from types import ModuleType
 
 import numpy as np
 import pytest
@@ -174,3 +178,209 @@ def test_only_the_first_whole_view_takes_its_storage_buffer() -> None:
     )
     copied = torch_archive._rebuild_tensor_v2(read_only, 0, (6,), (1,))
     assert copied.flags.writeable and copied.flags.owndata
+
+
+# -- hostile archives ---------------------------------------------------------
+#
+# A checkpoint is downloaded input, and the reader's promise is that a forged
+# one is refused at the field it lies about rather than read past its buffer
+# or into anything but the constructors `torch_archive` names. Each archive
+# below is built by hand, with no torch: the pickle is written against stand-in
+# `torch` modules so it spells the same globals `torch.save` does.
+
+
+class _Persistent:
+    """Pickled as the persistent record it carries, as torch writes storages."""
+
+    def __init__(self, *record) -> None:
+        self.record = record
+
+
+class _Tensor:
+    """Pickled as `torch._utils._rebuild_tensor_v2(*args)`."""
+
+    def __init__(self, *args) -> None:
+        self.args = args
+
+    def __reduce__(self):
+        return (sys.modules["torch._utils"]._rebuild_tensor_v2, self.args)
+
+
+def _write_archive(
+    path: Path,
+    payload,
+    *,
+    members: dict[str, bytes] | None = None,
+    pickles: tuple[str, ...] = ("archive/data.pkl",),
+) -> Path:
+    """A zip shaped like `torch.save` output, holding ``payload``'s pickle."""
+    torch = ModuleType("torch")
+    utils = ModuleType("torch._utils")
+
+    def _rebuild_tensor_v2(*args):  # pragma: no cover - only pickled by name
+        raise AssertionError("only pickled by reference")
+
+    _rebuild_tensor_v2.__module__ = "torch._utils"
+    _rebuild_tensor_v2.__qualname__ = "_rebuild_tensor_v2"
+    utils._rebuild_tensor_v2 = _rebuild_tensor_v2
+    torch._utils = utils
+    for name in ("FloatStorage", "LongStorage", "UnheardOfStorage"):
+        setattr(torch, name, type(name, (), {"__module__": "torch"}))
+
+    class _Pickler(pickle.Pickler):
+        def persistent_id(self, obj):
+            if isinstance(obj, _Persistent):
+                return tuple(
+                    getattr(torch, item)
+                    if isinstance(item, str) and item.endswith("Storage")
+                    else item
+                    for item in obj.record
+                )
+            return None
+
+    stream = io.BytesIO()
+    saved = {name: sys.modules.get(name) for name in ("torch", "torch._utils")}
+    sys.modules.update({"torch": torch, "torch._utils": utils})
+    try:
+        _Pickler(stream, protocol=2).dump(payload)
+    finally:
+        for name, module in saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+    with zipfile.ZipFile(path, "w") as archive:
+        for name in pickles:
+            archive.writestr(name, stream.getvalue())
+        for key, data in (members or {}).items():
+            archive.writestr(f"archive/data/{key}", data)
+    return path
+
+
+_FLOATS = np.arange(4, dtype=np.float32).tobytes()
+
+
+def _storage(*, kind="storage", type_="FloatStorage", key="0", numel=4):
+    return _Persistent(kind, type_, key, "cpu", numel)
+
+
+@pytest.mark.parametrize(
+    ("payload", "members", "message"),
+    [
+        pytest.param(
+            _Tensor(_storage(numel=True), 0, (4,), (1,)),
+            {"0": _FLOATS},
+            "storage numel must be an integer$",
+            id="boolean-numel",
+        ),
+        pytest.param(
+            _Tensor(_storage(numel="4"), 0, (4,), (1,)),
+            {"0": _FLOATS},
+            "storage numel must be an integer; got '4'",
+            id="string-numel",
+        ),
+        pytest.param(
+            _Tensor(_storage(), 0, 4, (1,)),
+            {"0": _FLOATS},
+            "size must be an integer sequence",
+            id="scalar-size",
+        ),
+        pytest.param(
+            _Tensor("not a storage", 0, (4,), (1,)),
+            {},
+            "invalid storage object",
+            id="storage-is-not-a-record",
+        ),
+        pytest.param(
+            _Tensor(_storage(), 5, (0,), (1,)),
+            {"0": _FLOATS},
+            "empty tensor offset 5 exceeds storage size 4",
+            id="empty-view-past-its-storage",
+        ),
+        pytest.param(
+            _Tensor(_Persistent("storage", "FloatStorage", "0"), 0, (4,), (1,)),
+            {"0": _FLOATS},
+            "malformed persistent storage record",
+            id="short-record",
+        ),
+        pytest.param(
+            _Tensor(_storage(kind="module"), 0, (4,), (1,)),
+            {"0": _FLOATS},
+            "unknown persistent record: 'module'",
+            id="not-a-storage-record",
+        ),
+        pytest.param(
+            _Tensor(_storage(type_="UnheardOfStorage"), 0, (4,), (1,)),
+            {"0": _FLOATS},
+            "unknown storage dtype: UnheardOfStorage",
+            id="unknown-dtype",
+        ),
+        pytest.param(
+            _Tensor(_storage(key="9"), 0, (4,), (1,)),
+            {"0": _FLOATS},
+            "storage '9' is missing",
+            id="missing-member",
+        ),
+        pytest.param(
+            _Tensor(_storage(numel=8), 0, (4,), (1,)),
+            {"0": _FLOATS},
+            "has 16 bytes; expected 32",
+            id="numel-larger-than-its-bytes",
+        ),
+        pytest.param(
+            [
+                _Tensor(_storage(), 0, (4,), (1,)),
+                _Tensor(_storage(type_="LongStorage", numel=2), 0, (2,), (1,)),
+            ],
+            {"0": _FLOATS},
+            "referenced with inconsistent dtype or size",
+            id="one-storage-two-dtypes",
+        ),
+    ],
+)
+def test_a_forged_archive_is_refused_at_the_field_it_forges(
+    tmp_path: Path, payload, members: dict[str, bytes], message: str
+) -> None:
+    path = _write_archive(tmp_path / "forged.pt", payload, members=members)
+    with pytest.raises(pickle.UnpicklingError, match=message):
+        torch_archive.load(path)
+
+
+def test_the_hand_built_archive_reads_when_nothing_is_forged(tmp_path: Path) -> None:
+    """The control for the refusals above: the same builder, honest fields."""
+    path = _write_archive(
+        tmp_path / "honest.pt",
+        {"weight": _Tensor(_storage(), 0, (2, 2), (2, 1))},
+        members={"0": _FLOATS},
+    )
+    np.testing.assert_array_equal(
+        torch_archive.load(path)["weight"],
+        np.arange(4, dtype=np.float32).reshape(2, 2),
+    )
+
+
+@pytest.mark.parametrize(
+    ("pickles", "message"),
+    [((), "no data.pkl"), (("a/data.pkl", "b/data.pkl"), "multiple data.pkl")],
+    ids=["none", "two"],
+)
+def test_an_archive_needs_exactly_one_pickle(
+    tmp_path: Path, pickles: tuple[str, ...], message: str
+) -> None:
+    path = _write_archive(tmp_path / "archive.pt", {}, pickles=pickles)
+    with pytest.raises(pickle.UnpicklingError, match=message):
+        torch_archive.load(path)
+
+
+def test_a_member_that_comes_back_short_is_refused(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Its size was checked up front; a read that then returns nothing stops."""
+    path = _write_archive(
+        tmp_path / "archive.pt",
+        {"weight": _Tensor(_storage(), 0, (4,), (1,))},
+        members={"0": _FLOATS},
+    )
+    monkeypatch.setattr(torch_archive.os, "preadv", lambda *args: 0)
+    with pytest.raises(zipfile.BadZipFile, match="truncated member"):
+        torch_archive.load(path)

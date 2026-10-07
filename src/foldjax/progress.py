@@ -15,9 +15,10 @@ line on stderr and the `cost.phases` mapping in the manifest -- so the number
 you watch and the number you keep are the same number.
 
 Printing is off by default. A library that wrote to stderr because it was
-imported would be deciding for its host application; the CLI turns it on for
-its own process, and `FOLDJAX_PROGRESS=0` turns it off again for people piping
-stderr somewhere that should stay clean.
+imported would be deciding for its host application; `foldjax predict` turns it
+on while the command runs and puts the host's setting back when it returns, and
+`FOLDJAX_PROGRESS=0` turns it off again for people piping stderr somewhere that
+should stay clean.
 """
 
 from __future__ import annotations

@@ -1974,32 +1974,39 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("\n\n".join(blocks))
         return 0
 
+    # Progress is on for this command, not for the host process: `main` is also
+    # called in-process (tests, notebooks), and a caller that never asked for
+    # stderr lines kept getting them after it returned.
+    host_progress = (progress._enabled, progress._stream)
     if not args.quiet:
         progress.enable()
-    # Stdout carries the result and nothing else: anything a backend or a
-    # native library prints while the request resolves and runs goes to stderr,
-    # so `foldjax predict ... > out.json` stays valid JSON.
-    sources: dict[Path, JobSource] = {}
-    unreadable: list[tuple[Path, Exception]] | None = (
-        [] if getattr(args, "keep_going", False) else None
-    )
-    with _stdout_to_stderr():
-        request = _request(args, sources=sources, unreadable=unreadable)
-        plural = (
-            request.models is not None or request.inputs is not None
-            if request is not None
-            else len(args.model) > 1
-            or len(unreadable or ()) > 1
-            or getattr(args, "_plural_inputs", False)
+    try:
+        # Stdout carries the result and nothing else: anything a backend or a
+        # native library prints while the request resolves and runs goes to
+        # stderr, so `foldjax predict ... > out.json` stays valid JSON.
+        sources: dict[Path, JobSource] = {}
+        unreadable: list[tuple[Path, Exception]] | None = (
+            [] if getattr(args, "keep_going", False) else None
         )
-        outcome = _run_predictions(
-            request,
-            sources=sources,
-            input_failures=_unreadable_failures(
-                args, unreadable or [], plural=plural
-            ),
-            failures_root=args.output_dir,
-        )
+        with _stdout_to_stderr():
+            request = _request(args, sources=sources, unreadable=unreadable)
+            plural = (
+                request.models is not None or request.inputs is not None
+                if request is not None
+                else len(args.model) > 1
+                or len(unreadable or ()) > 1
+                or getattr(args, "_plural_inputs", False)
+            )
+            outcome = _run_predictions(
+                request,
+                sources=sources,
+                input_failures=_unreadable_failures(
+                    args, unreadable or [], plural=plural
+                ),
+                failures_root=args.output_dir,
+            )
+    finally:
+        progress._enabled, progress._stream = host_progress
     results = list(outcome.results)
     if args.json or not sys.stdout.isatty():
         summaries = [result.summary() for result in results]

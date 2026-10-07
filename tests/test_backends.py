@@ -1619,7 +1619,10 @@ def test_registered_runtime_restores_its_libcifpp_environment(
     setattr(module, _upstream._MANAGED_PACKAGE_ATTR, str(package))
     monkeypatch.setitem(sys.modules, "alphafold3", module)
     monkeypatch.setattr(build, "active_package", lambda: package)
-    monkeypatch.delenv("LIBCIFPP_DATA_DIR", raising=False)
+    # Set before deleting: `delenv` on an unset name records nothing to undo,
+    # and the registration below would then leave its value to later tests.
+    monkeypatch.setenv("LIBCIFPP_DATA_DIR", "")
+    monkeypatch.delenv("LIBCIFPP_DATA_DIR")
 
     _upstream.ensure_registered()
 
