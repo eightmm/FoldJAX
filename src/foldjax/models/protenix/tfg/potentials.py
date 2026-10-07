@@ -329,13 +329,19 @@ class PairwiseDistancePotential(Potential):
         lower, upper = self._bounds(feats, resolved)
 
         def apply_projection(value, selected):
+            # Only pairs outside [lower, upper] are projected, each onto the
+            # bound it violates (upstream `_project_masked`); an in-range pair
+            # has zero violation and stays where it is.
             def violations(single_coords):
                 distance = _distance(single_coords, index)
-                target = jnp.where(distance < lower, lower, upper)
-                return distance - target
+                return jnp.where(
+                    distance < lower,
+                    distance - lower,
+                    jnp.where(distance > upper, distance - upper, 0.0),
+                )
 
             def active(violations):
-                return selected & (jnp.abs(violations) > 0.0)
+                return selected & (violations != 0.0)
 
             return _constraint_projection(value, violations, active)
 

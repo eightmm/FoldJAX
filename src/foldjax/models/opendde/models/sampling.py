@@ -275,9 +275,11 @@ def sample_diffusion(
 
     x_l = noise_schedule[0] * init_noise
     guidance_keys = None
-    if guidance_engine is not None and guidance.eps_std != 0.0:
+    if guidance_engine is not None and (
+        guidance.eps_std != 0.0 or guidance.outer_steps > 1
+    ):
         if key is None:
-            raise ValueError("key is required when TFG mc.std > 0")
+            raise ValueError("key is required when TFG mc.std > 0 or tfg_outer > 1")
         guidance_keys = jax.random.split(jax.random.fold_in(key, 0x544647), n_steps)
 
     def one_step(

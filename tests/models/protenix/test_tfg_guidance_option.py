@@ -71,11 +71,7 @@ def _guidance_reaching_the_sampler(tmp_path: Path, monkeypatch, *flags) -> dict:
     )
     monkeypatch.setattr(
         "foldjax.models.protenix.data.geometry.prepare_tfg_features",
-        lambda features: dict(features),
-    )
-    monkeypatch.setattr(
-        "foldjax.models.protenix.data.geometry.require_supported_geometry",
-        lambda features: None,
+        lambda features, **_kwargs: dict(features),
     )
     with pytest.raises(_StopError):
         main([*_toy_argv(tmp_path), *flags])

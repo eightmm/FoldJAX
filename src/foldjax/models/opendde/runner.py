@@ -796,13 +796,17 @@ def _run(
                 if guidance_config is not None:
                     # From the dense featurizer output, before any storage
                     # compaction below rewrites the arrays the potentials read.
+                    from foldjax.models.protenix.data.featurize_json import (
+                        FeaturizerAssets,
+                    )
                     from foldjax.models.protenix.data.geometry import (
                         prepare_tfg_features,
-                        require_supported_geometry,
                     )
 
-                    guidance_features = prepare_tfg_features(features)
-                    require_supported_geometry(guidance_features)
+                    # The run's own CCD cache, as `_featurize` was handed it.
+                    guidance_features = prepare_tfg_features(
+                        features, assets=FeaturizerAssets(**asset_paths)
+                    )
                 features = compact_msa_storage(features)
                 output_features = (
                     None

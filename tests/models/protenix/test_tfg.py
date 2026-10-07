@@ -173,3 +173,49 @@ def test_chiral_projection_preserves_affected_chain_center_and_radius() -> None:
     assert np.linalg.norm(np.asarray(delta)) > 0
     np.testing.assert_allclose(new_center, old_center, atol=2e-6)
     np.testing.assert_allclose(new_rg, old_rg, rtol=2e-5, atol=2e-6)
+
+
+def test_outer_steps_re_denoise_from_a_keyed_re_noise() -> None:
+    """`tfg_outer > 1` repeats upstream's step from x_next re-noised to t_hat."""
+
+    def config(outer: int):
+        return parse_tfg_config(
+            {
+                "enable": True,
+                "mu": 0.1,
+                "steps": {"tfg_outer": outer, "tfg_inner": 1, "projection_outer": 0},
+                "terms": {"InterchainBondPotential": {"weight": 1.0, "buffer": 1.0}},
+            }
+        )
+
+    calls: list[np.ndarray] = []
+
+    def denoise(x, _noise):
+        calls.append(np.asarray(x))
+        return x
+
+    kwargs = dict(
+        denoise_net=denoise,
+        x=_coords(),
+        t_hat=jnp.asarray(2.0),
+        c_tau=jnp.asarray(1.0),
+        step_scale_eta=1.0,
+        step_i=0,
+        num_diffusion_steps=2,
+        input_feature_dict=_features(),
+    )
+    single = TFGEngine(config(1)).step(**kwargs)
+    assert len(calls) == 1
+    keyed = TFGEngine(config(1)).step(key=jr.key(3), **kwargs)
+    np.testing.assert_array_equal(keyed, single)
+
+    calls.clear()
+    twice = TFGEngine(config(2))
+    first = twice.step(key=jr.key(3), **kwargs)
+    assert len(calls) == 2
+    # The second pass starts from the first pass's step plus fresh noise.
+    assert not np.allclose(calls[1], calls[0])
+    np.testing.assert_array_equal(twice.step(key=jr.key(3), **kwargs), first)
+    assert not np.array_equal(twice.step(key=jr.key(4), **kwargs), first)
+    with pytest.raises(ValueError, match="tfg_outer"):
+        twice.step(key=None, **kwargs)

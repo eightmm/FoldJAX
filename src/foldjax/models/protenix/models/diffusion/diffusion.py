@@ -914,9 +914,11 @@ def _sample_diffusion_chunk(
     elif len(step_noises) != n_steps:
         raise ValueError("step_noises length must equal len(noise_schedule) - 1")
     guidance_keys = None
-    if guidance_engine is not None and config.eps_std != 0.0:
+    if guidance_engine is not None and (
+        config.eps_std != 0.0 or config.outer_steps > 1
+    ):
         if key is None:
-            raise ValueError("key is required when TFG mc.std > 0")
+            raise ValueError("key is required when TFG mc.std > 0 or tfg_outer > 1")
         guidance_key = jax.random.fold_in(key, 0x544647)
         guidance_keys = jax.random.split(guidance_key, n_steps)
 
