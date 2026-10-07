@@ -148,7 +148,7 @@ would have run five. How much is not measured on this port at the sizes a mesh
 is for -- at 4,100 tokens the unchunked arm has no wall time because it does not
 run at all, and the nearest number for this knob is Boltz-2's `+33%` at 3k
 tokens in
-[docs/scale-rows-master-2026-09-10.md](scale-rows-master-2026-09-10.md).
+[docs/archive/scale-rows-master-2026-09-10.md](archive/scale-rows-master-2026-09-10.md).
 
 A caller with the room says so, and an explicit value always wins: any width at
 or above the sample count is the unchunked rollout -- `--option
@@ -315,7 +315,7 @@ ring through the trunk's context-parallel dispatcher *and* through the serial
 module's own branch, which is what the MSA stack's private
 `pairformer_no_seq_layer_forward` calls, and until the MSA entry read the
 scope every Boltz-2 row measured with this option -- the grid rows in
-`docs/scale-rows-master-2026-09-10.md` -- ran the fused tile at 94% of the
+`docs/archive/scale-rows-master-2026-09-10.md` -- ran the fused tile at 94% of the
 ring's calls and the shipped body in the MSA stack.
 
 ### Where the body is decided, and what it does to the cache

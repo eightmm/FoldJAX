@@ -4,7 +4,7 @@ Status: 5SAK closed at the user's tolerance -- the port's residual sits inside
 the movement upstream shows against itself when only its fused-kernel choice
 changes, on the same tape, at every recorded trunk boundary and at the
 coordinates. **This scale is 5SAK-specific.** On the ion case 1AAY
-(`docs/ion-case-1aay-master-2026-09-09.md`) upstream's own toggle moves the
+(`docs/archive/ion-case-1aay-master-2026-09-09.md`) upstream's own toggle moves the
 protein by 0.020 Å while the port sits 0.175 Å away on one sample (stable
 across port processes, 0.018 Å), so at the coordinates the port sits about 9x
 upstream's implementation scatter there. The 1AAY section below places it:
@@ -21,7 +21,7 @@ The Boltz-2 5SAK cell was the one residual above 0.5 Å in the common gate:
 MSA module (`delta_z` RMSE 3.2e-2, relative 2.07e-3), with every exposed knob
 excluded and every stage inside the module at bf16-grid level. Native Boltz-2
 is bitwise deterministic across processes and across cuEq torch 0.10.0/0.11.1
-(`docs/openbind-master-cueq-panel-2026-09-09.md`), so there is no process
+(`docs/archive/openbind-master-cueq-panel-2026-09-09.md`), so there is no process
 floor to read the residual against. The OpenBind lesson applies instead: how
 far does upstream move against *itself* when an equivalent implementation of
 the same operators is swapped in?
@@ -56,7 +56,7 @@ RMSE and Pearson correlation over the whole tensor, float64.
 | final `trunk/s` | 5.999e-2 | 9.96e-4 | 0.9999995 |
 
 The port, judged by the same metrics against `native-A`'s lineage on the
-workstation (`docs/boltz2-msa-error-origin-2026-09-09.md`): first
+workstation (`docs/archive/boltz2-msa-error-origin-2026-09-09.md`): first
 `msa_module.delta_z` RMSE 3.227e-2 relative 2.07e-3; `z_trunk` correlation
 0.9999998727.
 

@@ -338,6 +338,25 @@ matmuls as TF32; `--option matmul_precision=highest` asks any model for full
 float32. The measurements behind each row are in
 [docs/engineering-notes.md](https://github.com/eightmm/FoldJAX/blob/main/docs/engineering-notes.md#which-precision-each-model-runs).
 
+## Documentation
+
+[The documentation index](https://github.com/eightmm/FoldJAX/blob/main/docs/README.md)
+lists every page. To start:
+[quickstart](https://github.com/eightmm/FoldJAX/blob/main/docs/quickstart.md) (install to a first
+structure), tutorials for a
+[heteromer with an MSA search](https://github.com/eightmm/FoldJAX/blob/main/docs/tutorials/heteromer-msa.md),
+[protein-ligand constraints](https://github.com/eightmm/FoldJAX/blob/main/docs/tutorials/protein-ligand.md),
+[glycans](https://github.com/eightmm/FoldJAX/blob/main/docs/tutorials/glycan.md),
+[templates](https://github.com/eightmm/FoldJAX/blob/main/docs/tutorials/templates.md),
+[batches and Slurm](https://github.com/eightmm/FoldJAX/blob/main/docs/tutorials/batch-slurm.md) and
+[resuming](https://github.com/eightmm/FoldJAX/blob/main/docs/tutorials/resume.md); then
+[outputs](https://github.com/eightmm/FoldJAX/blob/main/docs/outputs.md),
+[configuration](https://github.com/eightmm/FoldJAX/blob/main/docs/configuration.md) (the store and
+every `FOLDJAX_*` variable) and the [FAQ](https://github.com/eightmm/FoldJAX/blob/main/docs/faq.md).
+Model pages: [Boltz-2](https://github.com/eightmm/FoldJAX/blob/main/docs/boltz2.md) ·
+[Protenix](https://github.com/eightmm/FoldJAX/blob/main/docs/protenix.md) ·
+[OpenDDE](https://github.com/eightmm/FoldJAX/blob/main/docs/opendde.md), beside the three below.
+
 ## Reference
 
 | | |

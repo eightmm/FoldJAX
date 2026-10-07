@@ -4,7 +4,7 @@ The CI asset-isolation repair is verified; universal model parity is **not**.
 These are measured port-to-pinned-upstream residuals, not comparisons with
 experimental structures and not an accuracy leaderboard.
 
-[Per-sample metrics, input audits and provenance](../bench/experiments/fresh-multimodal-parity-2026-09-05.json)
+[Per-sample metrics, input audits and provenance](../../bench/experiments/fresh-multimodal-parity-2026-09-05.json)
 retain unsuccessful attempts as well as measured comparisons.
 This follow-up completed nine fresh comparison cells plus one fixed-tape repeat,
 each with five paired samples, across Boltz-2 and OpenDDE. One earlier

@@ -49,7 +49,7 @@ stage table, the stage table is the later measurement.
 ## Validation checkpoint (2026-09-05)
 
 Boltz update (2026-09-07): [native conditioning and pair-normalization
-repairs](boltz-trunk-pair-norm-2026-09-07.md) are now in the installable code.
+repairs](archive/boltz-trunk-pair-norm-2026-09-07.md) are now in the installable code.
 Full v30 n=5 5SAK still fails (protein/ligand maxima 1.912050/0.149726 Å);
 1URN retains its RNA outlier, while 3GCA passes the structural diagnostic.
 Strict confidence remains open on all three. This is a partial repair
@@ -58,7 +58,7 @@ checkpoint, not Boltz closure or an optimized-profile performance claim.
 The clarified 2026-09-06 objective is native-dtype/operator-policy parity first,
 then separately gated structure/confidence-preserving optimization. Work now
 closes one model at a time. The [AF3 native-precision
-closure](af3-closure-2026-09-06.md) now passes 54/54 gates across nine cases
+closure](archive/af3-closure-2026-09-06.md) now passes 54/54 gates across nine cases
 (five samples each), with bitwise-identical coordinates and confidence on the
 common FoldJAX runtime and matched Tokamax/XLA decisions. Its independent
 35-case preprocessing panel also passes. This is not publisher dependency-lock
@@ -68,23 +68,23 @@ a reduced-precision acceptance claim.
 Precision classification correction (2026-09-06): ESMFold2's released FP32
 checkpoint is not FP32-only GPU inference. The pinned publisher forward
 explicitly enables BF16 autocast for trunk and selected conditioning/confidence
-operations. See the [upstream-first protocol](precision-selection-protocol-2026-09-06.md).
+operations. See the [upstream-first protocol](archive/precision-selection-protocol-2026-09-06.md).
 Historical reports labeling its loader dtype as native compute precision
 must not be used to admit a lower-precision mode.
 
-The later [5SAK boundary diagnosis](boltz-5sak-boundary-followup-2026-09-05.md)
+The later [5SAK boundary diagnosis](archive/boltz-5sak-boundary-followup-2026-09-05.md)
 isolates large mixed-precision discrepancies in trunk and conditioning, repairs
 one proven relative-position rounding defect, and explicitly records that the
 local repair worsened end-to-end RMSD. Other models' remaining validation gaps
 are listed separately; this is not an all-model acceptance checkpoint.
 
-The [fresh multimodal comparisons](benchmark-followup-2026-09-05.md) record
+The [fresh multimodal comparisons](archive/benchmark-followup-2026-09-05.md) record
 nine new five-sample Boltz/OpenDDE comparison cells and a fixed-tape repeat.
 Boltz's native-mixed-precision 5SAK reference remains substantially divergent
 (entity maxima: protein **16.21 Å**, ligand **13.17 Å**). Its FP32 fixed-tape
 repetitions also vary; no bitwise or native-default equivalence is established.
 
-The earlier [independent-input audit](preprocessing-contract-audit.md) identified
+The earlier [independent-input audit](archive/preprocessing-contract-audit.md) identified
 and fixed precision forwarding to fused triangle multiplication. Its reported
 protein **0.003870 Å** / ligand **0.000689 Å** maxima are one historical FP32
 control, not a stable bound on current runs. OpenFold3 cyclic preprocessing/
@@ -344,7 +344,7 @@ Additional input audits on 2026-09-05 found the following:
 
 ### Expanded input-kind panel (2026-09-05)
 
-The follow-up [consumer-contract audit](preprocessing-contract-audit.md)
+The follow-up [consumer-contract audit](archive/preprocessing-contract-audit.md)
 records the subsequently corrected OpenFold3 cyclic input and Protenix ligand
 confidence mask, as well as the fresh, still-failing independent-input Boltz
 5SAK five-sample result. The table below describes the initial bounded panel,

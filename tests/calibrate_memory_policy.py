@@ -139,7 +139,7 @@ PROTENIX_MSA = (
 #: Two completed rows:
 #:
 #: * N_st 1,902 (1,003 residues, 3OG2) -> 21,492 MiB. The serial row of
-#:   `docs/scale-rows-master-2026-09-10.md` (the 1k comparison table and the
+#:   `docs/archive/scale-rows-master-2026-09-10.md` (the 1k comparison table and the
 #:   context-parallel table, which quote the same serial peak).
 #: * N_st 2,978 (1,531 residues) -> 45.76 GiB = 46,858.2 MiB. The blocked-arm
 #:   side of the 2026-08-23 clocked A/B recorded in the `opendde-arena-law-and-
@@ -411,7 +411,7 @@ OPENDDE_BF16_BELOW_DOMAIN_CHECK = (
 #:
 #: OpenDDE at 4,040 structural tokens (L2000_5dei), measured on the shipped
 #: program at 0.9 of the pool: two jobs on 2026-09-24
-#: (docs/opendde-2k-single-card-2026-09-24.md) and the jctc-v3 snapshot.
+#: (docs/archive/opendde-2k-single-card-2026-09-24.md) and the jctc-v3 snapshot.
 OPENDDE_BF16_MEASURED = (
     (4040, None, 78588.0),
     (4040, None, 78616.0),

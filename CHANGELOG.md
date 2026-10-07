@@ -1597,7 +1597,7 @@ unless it says so here, in its own paragraph.
   domain. Both laws, their measurements and their allowances are in
   `src/foldjax/memory_policy.py` and re-derivable with `python
   tests/calibrate_memory_policy.py`; `docs/cli.md` and
-  `docs/scale-rows-master-2026-09-10.md` carry the table.
+  `docs/archive/scale-rows-master-2026-09-10.md` carry the table.
 
   Two things about them are worth knowing before reading a message.
   **OpenDDE's laws are keyed on the structural token count**, which at these
@@ -1890,7 +1890,7 @@ unless it says so here, in its own paragraph.
 
 - **OpenFold3 now defaults its partial token/pair track to bfloat16.**
   `--option dtype=float32` restores upstream's `32-true` inference precision.
-  A [28-row panel over three targets](docs/openfold3-bf16-default-evidence-2026-09-12.md)
+  A [28-row panel over three targets](docs/archive/openfold3-bf16-default-evidence-2026-09-12.md)
   measured bfloat16 faster and smaller at every size — 98.7 → 76.2 s and
   9,273 → 5,552 MiB at 1,003 tokens, 954 → 661 s and 50,412 → 34,893 MiB at
   3,012 — with per-chain deposited RMSD the same on both arms at all three
@@ -2020,7 +2020,7 @@ unless it says so here, in its own paragraph.
   global-fit protein/ligand RMSD fell from 1.018202/14.233100 Å to
   0.003870/0.000689 Å. This is not bitwise equality or all-model output closure.
 - Preserved historical failed controls alongside corrected results in the
-  [validation audit](docs/preprocessing-contract-audit.md). This main-branch
+  [validation audit](docs/archive/preprocessing-contract-audit.md). This main-branch
   checkpoint does not declare a new release or universal scientific parity.
 
 ### Added
@@ -5894,7 +5894,7 @@ mask-aware padding for reusable JAX executables. See the git history and
   projection's three roundings shows the operands are free and only the
   result matters. The fix restores every chain to the released arm's own
   distance and keeps 82% of the policy's wall-time gain and all of its memory
-  gain. Detail in `docs/scale-rows-master-2026-09-10.md`.
+  gain. Detail in `docs/archive/scale-rows-master-2026-09-10.md`.
 
 ### Changed
 

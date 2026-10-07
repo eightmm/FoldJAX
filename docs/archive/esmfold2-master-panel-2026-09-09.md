@@ -55,7 +55,7 @@ of chain B are above native's own scatter by 2-4x (1.07 vs 0.24, 0.53 vs
 smaller chain in a two-chain complex where the port's trajectory departs
 from upstream's on the chaotic samples. It is consistent with the
 workstation's earlier 0.42 Å finding on 5SAK and with the known port-side
-autocast placement work in `docs/esmfold2-native-tape-2026-09-07.md`.
+autocast placement work in `docs/archive/esmfold2-native-tape-2026-09-07.md`.
 
 Frozen pairs for the other five cases (jobs 619-628): every pair is bitwise
 equal. Frozen port C against native A, entity maxima: 5SAK 1.62 (sample 1,

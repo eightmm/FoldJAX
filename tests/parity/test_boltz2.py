@@ -2,7 +2,7 @@
 
 ``protein_dna_ion_1aay`` -- PDB 1AAY, the Zif268 zinc-finger peptide on its DNA
 duplex with three Zn ions, 115 tokens / 1,216 atoms -- is the smallest Boltz-2
-master capture on this host (``docs/ion-case-1aay-master-2026-09-09.md``); no
+master capture on this host (``docs/archive/ion-case-1aay-master-2026-09-09.md``); no
 1UBQ/3GCA/1URN Boltz-2 capture exists here, and the 76-token matched-tape npz
 was stripped from the mirror. The capture is ``native-A``: upstream ``b1ebfc4``,
 cuEquivariance torch kernels, bf16-mixed, ``float32_matmul_precision=highest``,
@@ -32,7 +32,7 @@ either. Split at the boundary instead, each half gets a real detection floor:
 Tier A bounds the trunk drift directly, Tier B bounds the sampler and the tape
 injection at ~0.01 A. The composition of the two -- port trunk feeding port
 sampler -- is therefore NOT asserted end to end here; that remains a GPU-panel
-question (``docs/boltz2-master-kernel-toggle-2026-09-09.md`` "1AAY").
+question (``docs/archive/boltz2-master-kernel-toggle-2026-09-09.md`` "1AAY").
 
 Both tiers go through the same loaders the bench harness uses: this module
 imports ``load_features``/``load_tape``/``captured_sampler_trunk`` from

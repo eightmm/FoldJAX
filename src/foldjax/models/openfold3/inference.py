@@ -705,7 +705,7 @@ def _blocked_width(n_token: int) -> int | None:
 #: this port at the sizes a mesh is for: at 4,100 tokens the unchunked arm has
 #: no wall time because it does not run at all (`docs/openfold3.md`), and the
 #: nearest number for this knob is Boltz-2's +33% at 3k tokens
-#: (`docs/scale-rows-master-2026-09-10.md`). A caller who has the room says so
+#: (`docs/archive/scale-rows-master-2026-09-10.md`). A caller who has the room says so
 #: -- any width at or above the sample count, or ``None`` through the Python
 #: API, is the unchunked rollout -- and serial runs keep the whole axis up to
 #: :data:`SERIAL_DIFFUSION_CHUNK_ABOVE_TOKENS`.

@@ -98,7 +98,7 @@ Do not subtract these maxima to assign additive error contributions: they can
 occur in different samples and the propagation is nonlinear. The 7.755733 Å
 baseline is this fresh capture/replay, not the earlier 5.689754 Å measurement.
 
-[All paired values and provenance](../bench/experiments/boltz-5sak-boundary-2026-09-05.json)
+[All paired values and provenance](../../bench/experiments/boltz-5sak-boundary-2026-09-05.json)
 remain a failed/partial mixed-precision validation, not acceptance. The legacy
 0.5 Å diagnostic exit is not the scientific gate, including for substituted
 controls. Independent raw features retain the explicitly recorded <=1e-4
@@ -123,7 +123,7 @@ relaxed tolerance.
 Panel counts exclude unsupported/rejected cases and do not mean every possible
 input is supported. Common-value agreement is not raw dictionary/dtype identity.
 See [input classification](preprocessing-contract-audit.md),
-[panel results](../bench/experiments/independent-input-entity-parity-2026-09-05.json),
+[panel results](../../bench/experiments/independent-input-entity-parity-2026-09-05.json),
 and [fresh OpenDDE results](benchmark-followup-2026-09-05.md).
 
 ## Verification

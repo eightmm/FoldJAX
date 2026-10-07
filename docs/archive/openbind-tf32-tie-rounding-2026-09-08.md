@@ -69,7 +69,7 @@ Artifact labels contain no machine-specific paths. Full-operator native capture:
 ## Full-shape GPU rounding control
 
 The optional `--operand-rounding rne` in
-[`openbind_projection_boundary_probe.py`](../bench/openbind_projection_boundary_probe.py)
+[`openbind_projection_boundary_probe.py`](../../bench/openbind_projection_boundary_probe.py)
 prequantizes the complete captured teacher and all five projection weights on
 the host, then uses **unchanged current `high` GEMMs only**, at all three full
 shapes. Original and effective operand hashes are both recorded. Native captures,

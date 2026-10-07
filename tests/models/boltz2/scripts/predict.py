@@ -102,7 +102,7 @@ def main() -> None:
         "reproduces upstream v2.2.0+, which zeroes has_deletion, "
         "deletion_value and deletion_mean for every real MSA; 'restored' "
         "reinstates the pre-04d27c71 loop. See "
-        "docs/boltz2-upstream-msa-deletion-regression-2026-09-10.md",
+        "docs/archive/boltz2-upstream-msa-deletion-regression-2026-09-10.md",
     )
     p.add_argument(
         "--msa-server-username",

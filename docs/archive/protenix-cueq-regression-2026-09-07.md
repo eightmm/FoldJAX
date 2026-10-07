@@ -89,7 +89,7 @@ distogram logits by 12.0. These are not waived by the structural gray zone.
 
 ## Evidence and verification
 
-[Portable results, per-sample metrics, confidence failures and artifact hashes](../bench/experiments/protenix-cueq-regression-2026-09-07.json)
+[Portable results, per-sample metrics, confidence failures and artifact hashes](../../bench/experiments/protenix-cueq-regression-2026-09-07.json)
 retain both candidates and all 12 operator controls. New captures distinguish
 requested wrapper options from the actual inference-entry flags and tape
 digests. Inference-entry observations are not device sampler-consumer proof.

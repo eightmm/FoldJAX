@@ -3,7 +3,7 @@
 Status: **pair normalization defect repaired; whole-model parity still open**.
 The user prioritizes Boltz trunk before moving on to OpenBind or another model.
 This follows the [conditioning repair](boltz-conditioning-fma-2026-09-07.md).
-[Portable results](../bench/experiments/boltz-trunk-pair-norm-2026-09-07.json)
+[Portable results](../../bench/experiments/boltz-trunk-pair-norm-2026-09-07.json)
 bind the immutable raw reports by SHA256.
 
 ## Controls that did not resolve the trunk discrepancy
@@ -119,7 +119,7 @@ features and sampler tape, 200 steps, 3 recycles (4 passes), full MSA and
 native BF16/FP32 policy. There are **no substituted native trunk or other
 intermediate tensors** in this full run. One proper whole-system Kabsch per
 original sample pair precedes entity measurements; no entity refit or crystal.
-The [bound full report](../bench/experiments/boltz-amp-5sak-v30-2026-09-07.json)
+The [bound full report](../../bench/experiments/boltz-amp-5sak-v30-2026-09-07.json)
 retains raw confidence, dtype and artifact checks.
 
 | Full FoldJAX snapshot | Protein max RMSD (Å) | Ligand max RMSD (Å) |
@@ -166,8 +166,8 @@ repairs; it does not isolate the effect of the latest pair repair alone.
 at original sample index 1; it is not resolved, and its protein maximum is
 slightly worse than the historical value. **Both raw/public strict confidence
 reports still fail on both cases**. No all-modality improvement is claimed.
-Full reports: [1URN](../bench/experiments/boltz-amp-1urn-v30-2026-09-07.json),
-[3GCA](../bench/experiments/boltz-amp-3gca-v30-2026-09-07.json).
+Full reports: [1URN](../../bench/experiments/boltz-amp-1urn-v30-2026-09-07.json),
+[3GCA](../../bench/experiments/boltz-amp-3gca-v30-2026-09-07.json).
 
 ## Review boundaries and deferred issues
 

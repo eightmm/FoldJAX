@@ -251,7 +251,7 @@ bf16-mixed, same tape) were bitwise equal in coordinates, tape, features and
 every recorded trunk boundary, and a third process under cuEq torch 0.11.1
 was bitwise equal to them as well. Native Boltz-2 has no process floor. The
 scale for its residual is upstream's own kernel toggle instead; see
-`docs/boltz2-master-kernel-toggle-2026-09-09.md`.
+`docs/archive/boltz2-master-kernel-toggle-2026-09-09.md`.
 
 ## Job log
 

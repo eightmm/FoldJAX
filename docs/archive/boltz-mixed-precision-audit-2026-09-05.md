@@ -9,7 +9,7 @@ The numerical reference is pinned Boltz commit
 The starting FoldJAX commit is `3c9e5e8c57c66dbd7975da812c0b9c6502abc9de`.
 No experimental/crystal coordinates or confidence-ranking comparison is used.
 
-[Full per-sample results, input audits and source/artifact hashes](../bench/experiments/boltz-mixed-policy-2026-09-05.json)
+[Full per-sample results, input audits and source/artifact hashes](../../bench/experiments/boltz-mixed-policy-2026-09-05.json)
 record 14 completed n=5 FoldJAX replay cells: six corrected cells and one
 5SAK single-track-only ablation for each of two multiplication backends.
 At completion of these replays, the live source was verified equal to the frozen replay source, SHA-256

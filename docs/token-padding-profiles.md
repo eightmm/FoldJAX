@@ -52,7 +52,7 @@ buffers; it does not promise lower allocator reservation or a measured GPU peak.
 The host union may exceed 1024 without exceeding the per-cycle capacity. Shape
 metadata reports the cycle capacity plus `host_msa_union_rows` and
 `msa_execution=host_streamed_cycles`. Padding OFF keeps the fused native path.
-See [implementation and verification](openfold3-streamed-msa-2026-09-08.md).
+See [implementation and verification](archive/openfold3-streamed-msa-2026-09-08.md).
 
 ## Recycling defaults
 

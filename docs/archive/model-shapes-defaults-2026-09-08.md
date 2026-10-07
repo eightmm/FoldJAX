@@ -48,7 +48,7 @@ ESMFold2 checkpoint의 `d_single=384`를 그대로 trunk single shape로 적으�
 
 ## 기본 반복 횟수와 샘플 수
 
-Recycle은 [모델별 논문 기준 정책](recycling-defaults.md)을 반영했다.
+Recycle은 [모델별 논문 기준 정책](../recycling-defaults.md)을 반영했다.
 AF3는 명시적 선택에 따라 Algorithm 1의 총 4회 실행을 사용한다.
 Diffusion steps/samples는 기존 checkpoint 기본값이며, 전체 논문 재현 설정은 아니다.
 

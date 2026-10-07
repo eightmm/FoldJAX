@@ -2,7 +2,7 @@
 
 Boltz-2 reached repeatability so far by freezing autotuning through a
 process-wide ``XLA_FLAGS`` environment: a frozen pair repeats to 1e-3 A but
-not bitwise (``docs/boltz2-master-kernel-toggle-2026-09-09.md``). An
+not bitwise (``docs/archive/boltz2-master-kernel-toggle-2026-09-09.md``). An
 environment variable is read once when the process starts, so it cannot say
 "this prediction and not the next one", and in a benchmark process it reaches
 every other model whose recorded numbers were measured without it.
