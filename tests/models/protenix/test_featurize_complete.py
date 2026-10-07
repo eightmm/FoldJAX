@@ -570,7 +570,7 @@ def test_sep_atom_tokenization_bonds_and_biological_column_gather(
     template_path = tmp_path / "template.json"
     template_path.write_text("[]", encoding="utf-8")
 
-    def fake_template_dense(_path, *, sequence: str, skip: bool):
+    def fake_template_dense(_path, *, sequence: str, skip: bool, **_assets):
         del skip
         width = len(sequence)
         aatype = np.tile(np.arange(width, dtype=np.int32), (4, 1))
