@@ -15,7 +15,11 @@ than the same job run unpadded.
 | OpenFold3 | 24T, 32-aligned | 1024 per streamed cycle | templates 4 |
 | ESMFold2 | 24T, 32-aligned | 1024 | LM 3T for per-chain BOS/EOS |
 
-T is the selected token bucket, not the real sequence length. The MSA buckets
+T is the selected token bucket, not the real sequence length. `foldjax plan
+--padding` shows it under `padding_estimate` (`tokens`, `token_bucket`) for a
+FoldJAX-format job; the count is estimated before featurization, so a CCD
+ligand it cannot count is listed under `tokens_not_counted` and the run may
+land one bucket higher. The MSA buckets
 are 1, 64, 128, 256, 512, 768, 1024, 1280, 2048, 3072, 4096, 6144, 8192, 10240,
 12288, 14336 and 16384 -- the released profile depths below 2,048 rows, then a
 constant 2,048-row step, so no padded run pays more than one step over the rows

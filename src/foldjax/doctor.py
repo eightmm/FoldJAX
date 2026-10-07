@@ -166,6 +166,15 @@ def _weight_profile_readiness(info: Any) -> list[dict[str, Any]]:
             supplied_present = supplied_total = 0
 
         profile = str(row.get("profile", "released"))
+        if row.get("refused"):
+            # On disk, and refused for a reason that has a name: saying
+            # "missing" sends someone looking for a file that is right there.
+            row["reason"] = f"present but refused: {row['refused']}"
+            row["setup"] = f"foldjax weights fetch --model {info.model}" + (
+                "" if profile == "released" else f" --profile {profile}"
+            )
+            profiles.append(row)
+            continue
         if supplied_present < supplied_total:
             # Not a download FoldJAX can make: the notes say where the file
             # goes and why, and `weights fetch` converts it once it is there.
@@ -424,14 +433,27 @@ def run_doctor(args: argparse.Namespace) -> int:
         )
     print("\nmodels")
     for row in models_payload:
-        state = "ready" if row["weights_ready"] else "missing"
+        refused = any(
+            profile.get("refused")
+            for profile in row["weight_profiles"]
+            if profile["profile"] == "released"
+        )
+        state = (
+            "ready" if row["weights_ready"] else "refused" if refused else "missing"
+        )
         print(f"  {row['model']:<11s}weights {state}")
         if not row["weights_ready"] and row["setup"]:
             print(f"    {row['setup']}")
         if not row["runtime_ready"] and row["runtime_setup"]:
             print(f"    runtime: {row['runtime_setup']}")
         for profile in row["weight_profiles"]:
-            profile_state = "ready" if profile["ready"] else "missing"
+            profile_state = (
+                "ready"
+                if profile["ready"]
+                else "refused"
+                if profile.get("refused")
+                else "missing"
+            )
             print(
                 f"    profile {profile['profile']}: {profile_state}, "
                 f"downloaded {profile['downloaded']}"

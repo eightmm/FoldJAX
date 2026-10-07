@@ -144,8 +144,8 @@ def main(
         help="element width of the embedder and both trunks; the diffusion "
         "sampler, the distogram head and every confidence logit stay FP32 "
         "either way, and the confidence head's own stack is --confidence-dtype. "
-        "Defaults to BF16, which on the eight-case panel is 13-39% faster, "
-        "33-52% lighter and no further from upstream than FP32; pass fp32 for "
+        "Defaults to BF16, which on the eight-case panel is 13-39%% faster, "
+        "33-52%% lighter and no further from upstream than FP32; pass fp32 for "
         "upstream's own trunk policy",
     )
     parser.add_argument(

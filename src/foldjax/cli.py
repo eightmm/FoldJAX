@@ -10,7 +10,7 @@ import os
 import sys
 import time
 import warnings
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from typing import Any, NoReturn
@@ -480,6 +480,12 @@ def _parser() -> argparse.ArgumentParser:
         help="with --for: the alignment policy predict would run under "
         "(default 'none', which refuses a protein chain with no alignment "
         "except on ESMFold2)",
+    )
+    models.add_argument(
+        "--profile",
+        help="with --for: the managed weight profile predict would run, for the "
+        "models that offer it (the others answer for their released weights); "
+        "a profile decides, for example, whether Protenix can read a pocket",
     )
     home = commands.add_parser("home", help="show where FoldJAX keeps its files")
     home.add_argument(
@@ -1265,6 +1271,26 @@ def _run_runtime_gc(args: argparse.Namespace) -> int:
     return 0
 
 
+def _models_for_profiles(
+    infos: Mapping[str, Any], profile: str | None
+) -> dict[str, str | None]:
+    """The profile each model answers ``models --for`` with; None is released."""
+    if profile is None or profile == assets.RELEASED_PROFILE:
+        return dict.fromkeys(infos)
+    chosen = {
+        name: profile
+        if any(row["profile"] == profile for row in info.weight_profiles)
+        else None
+        for name, info in infos.items()
+    }
+    if not any(chosen.values()):
+        raise ValueError(
+            f"no model offers the weight profile {profile!r}; "
+            "`foldjax models --json` lists each model's profiles"
+        )
+    return chosen
+
+
 def _run_models_for(args: argparse.Namespace) -> int:
     """Say which models can run one job, before anything is downloaded.
 
@@ -1279,6 +1305,7 @@ def _run_models_for(args: argparse.Namespace) -> int:
         read_job_document,
         read_jobs_file,
     )
+    from foldjax.registry import get_backend
 
     path = Path(args.for_input)
     if path.suffix.lower() in _FASTA_SUFFIXES:
@@ -1295,16 +1322,31 @@ def _run_models_for(args: argparse.Namespace) -> int:
         jobs = [(None, document)]
     rows = []
     infos = {name: model_info(name) for name in available_models()}
+    profiles = _models_for_profiles(infos, getattr(args, "profile", None))
     for job_name, job in jobs:
         for name, info in infos.items():
+            profile = profiles[name]
             reason = compatibility(job, name, msa=args.msa, base=path.parent)
+            if reason is None and isinstance(job, dict):
+                reason = get_backend(name).profile_refusal(job, profile)
+            if profile is None:
+                ready, setup = info.weights_ready, info.setup
+            else:
+                ready = assets.assets_for(name, profile=profile).ready()
+                setup = (
+                    None
+                    if ready
+                    else f"foldjax weights fetch --model {name} --profile {profile}"
+                )
             row = {
                 "model": name,
                 "runs": reason is None,
                 "reason": reason,
-                "weights_ready": info.weights_ready,
-                "setup": info.setup,
+                "weights_ready": ready,
+                "setup": setup,
             }
+            if profile is not None:
+                row["profile"] = profile
             if job_name is not None:
                 row["job"] = job_name
             rows.append(row)
@@ -1619,6 +1661,9 @@ def _plan_summary(
     }
     if request.padding is not None:
         summary["padding"] = request.padding.summary()
+        bucket = _planned_token_bucket(request, generated)
+        if bucket is not None:
+            summary["padding_estimate"] = bucket
         # Plan refuses what predict refuses up to featurization; the MSA rows a
         # model stores are known only after it, so a pin below them is not.
         summary["not_checked"] = [
@@ -1626,6 +1671,42 @@ def _plan_summary(
             "after featurization; predict refuses a pin below them)"
         ]
     return summary
+
+
+def _planned_token_bucket(
+    request: PredictionRequest, generated: Mapping[str, Any] | None
+) -> dict[str, Any] | None:
+    """The token bucket ``--padding`` would pick, from the job's token estimate.
+
+    The ``padding`` block shows the request, which leaves an unpinned axis
+    null; the bucket itself is chosen from the featurized token count. That
+    count is estimated here as `plan --json`'s Slurm block estimates it, so a
+    ligand it cannot count is named. None for a native input, which carries no
+    common job to count.
+    """
+    from foldjax.padding import resolve_axis
+    from foldjax.slurm import estimate_tokens
+
+    document = generated
+    if document is None and request.input_format == "foldjax":
+        from foldjax.input import read_job_document
+
+        try:
+            document = read_job_document(Path(request.input))
+        except (OSError, ValueError):
+            return None
+    if not isinstance(document, Mapping):
+        return None
+    tokens, notes = estimate_tokens(document)
+    record: dict[str, Any] = {"tokens": tokens}
+    if notes:
+        record["tokens_not_counted"] = notes
+    try:
+        record["token_bucket"] = resolve_axis(tokens, request.padding, "tokens")
+    except ValueError as error:
+        record["token_bucket"] = None
+        record["reason"] = str(error)
+    return record
 
 
 def _effective_sampling(request: PredictionRequest) -> dict[str, Any]:
@@ -1837,6 +1918,18 @@ def _run_plan(args: argparse.Namespace) -> int:
         payload = []
         for item in resolved:
             preflight(item)
+            if item.templates == "auto" and item.template_dir is None:
+                from foldjax.template_search import missing_template_aligner
+
+                missing = missing_template_aligner(item.model)
+                if missing is not None:
+                    # Predict warns this only once it reaches the search.
+                    warnings.warn(
+                        f"{item.model}: {missing}; --templates auto will fold "
+                        "without templates",
+                        UserWarning,
+                        stacklevel=2,
+                    )
             summary = _plan_summary(item, scratch=jobs)
             if args.json:
                 # Read while the scratch document still exists: the shown
@@ -1926,8 +2019,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.path, out=args.out, samples=args.samples
         )
         document = json.loads(written["json"].read_text(encoding="utf-8"))
-        if not any(entry.get("structures") for entry in document.get("inputs") or []):
+        inputs = document.get("inputs") or []
+        if not any(entry.get("structures") for entry in inputs):
             _warn_no_structures(args.path, "compare")
+        elif not any(entry.get("pairs") for entry in inputs):
+            warnings.warn(
+                f"compare found no pair to compare under {args.path}: each input "
+                "there has a single structure, so compare.csv lists no pairs. "
+                "Compare several samples, seeds or models of one input, or "
+                "pass --reference to score against a known structure",
+                UserWarning,
+                stacklevel=2,
+            )
         print(json.dumps({key: str(value) for key, value in written.items()}, indent=2))
         return 0
     if args.command == "show" and (args.format != "table" or args.aggregate):
@@ -1963,6 +2066,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             else []
         )
         if not entries and not failures:
+            if not root.exists():
+                # The same words `show --format csv`, compare and report use.
+                raise FileNotFoundError(f"no such output directory: {args.path}")
             raise FileNotFoundError(
                 f"no {manifest.MANIFEST_NAME} under {args.path}; a run writes one "
                 "when it finishes"

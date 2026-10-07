@@ -241,3 +241,14 @@ def test_show_lists_failures_and_warns_on_zero_structures(
         assert cli.main(["show", str(empty), "--format", "csv"]) == 0
     with pytest.warns(UserWarning, match="compare found 0 structures"):
         assert cli.main(["compare", str(empty), "--out", str(tmp_path / "c")]) == 0
+
+
+@pytest.mark.parametrize("extra", [[], ["--format", "csv"]])
+def test_show_names_a_directory_that_does_not_exist(tmp_path: Path, extra) -> None:
+    """Not "no foldjax_run.json under it": there is no it."""
+    missing = tmp_path / "typo"
+    with pytest.raises(FileNotFoundError, match="no such output directory"):
+        cli.main(["show", str(missing), *extra])
+    missing.mkdir()
+    with pytest.raises(FileNotFoundError, match="no foldjax_run.json under"):
+        cli.main(["show", str(missing)])

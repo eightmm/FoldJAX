@@ -148,7 +148,9 @@ def test_a_token_count_outside_the_fitted_range_is_unknown(n_token: int) -> None
     decision = _decide(BOLTZ2_PEAK, n_token, 80 * _GIB)
     assert decision.state == "unknown"
     assert decision.estimates == ()
-    assert "outside the fitted range" in decision.reason
+    assert "outside the fitted range of released (1,003-4,888 tokens)" in (
+        decision.reason
+    )
     assert BOLTZ2_PEAK.domain_tokens == (1003, 4888)
     assert BOLTZ2_PEAK.covers(1003) and BOLTZ2_PEAK.covers(4888)
 
@@ -344,7 +346,7 @@ def test_an_off_calibration_run_keeps_its_estimate_and_loses_the_refusal() -> No
     """A five-sample law over-predicts a one-sample run, and refusing on an
     over-prediction is a run that never starts."""
     off = memory_policy.off_profile_reason(num_samples=1)
-    assert off and "1 samples" in off[0]
+    assert off and "1 sample rather" in off[0]
     assert memory_policy.off_profile_reason(num_samples=5) == ()
     budget = resolve_budget(
         pool_bytes=16 * _GIB, card_bytes=18 * _GIB, override_gib=None
@@ -593,6 +595,29 @@ def test_an_over_budget_openfold3_run_refuses_like_every_other_port() -> None:
     ]
 
 
+def test_an_unestimated_run_is_not_called_an_advisory_estimate() -> None:
+    """With no estimate, "this estimate is advisory" qualifies nothing; the
+    message names the range the law does cover instead."""
+    budget = resolve_budget(
+        pool_bytes=16 * _GIB, card_bytes=18 * _GIB, override_gib=None
+    )
+    with pytest.warns(RuntimeWarning) as caught:
+        memory_policy.admit(
+            model="boltz2",
+            n_token=78,
+            msa_rows=None,
+            candidates=(("released", BOLTZ2_PEAK),),
+            budget=budget,
+            mode="refuse",
+            off_profile=memory_policy.off_profile_reason(num_samples=1),
+        )
+    (message,) = [str(warning.message) for warning in caught]
+    assert "advisory" not in message
+    assert "1 samples" not in message
+    assert "outside the fitted range of released (1,003-4,888 tokens)" in message
+    assert message.endswith("The run proceeds without the check.")
+
+
 def test_a_run_the_law_was_not_fitted_at_is_warned_rather_than_refused() -> None:
     """`released_config` builds the off-profile list, because it is the layer
     that knows the sample count and the stages. A five-sample law over-predicts
@@ -605,7 +630,7 @@ def test_a_run_the_law_was_not_fitted_at_is_warned_rather_than_refused() -> None
         )
     assert config.pair_chunk_size == inference.RESOLVED_PAIR_CHUNK_SIZE
     assert memory_policy.recorded()["off_profile"] == [
-        "1 samples rather than the 5 the law was fitted at"
+        "1 sample rather than the 5 the law was fitted at"
     ]
 
 
@@ -1177,9 +1202,10 @@ def test_a_below_domain_band_never_refuses() -> None:
         decision = _decide(law, n_token, tiny)
         assert decision.state == "unknown"
         assert decision.estimates and decision.estimates[0].fits is False
-        assert "below the fitted range" in decision.reason
+        low, high = law.domain_tokens
+        span = f"released ({low:,}-{high:,} tokens)"
+        assert f"below the fitted range of {span}" in decision.reason
         # Inside the domain the same comparison still refuses.
-        low = law.domain_tokens[0]
         assert _decide(law, low, law.upper(low) // 2).state == "over_budget"
 
 

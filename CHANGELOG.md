@@ -769,6 +769,49 @@ unless it says so here, in its own paragraph.
   `docs/opendde.md`, the heteromer tutorial) and `foldjax.msa_search` said
   Protenix's ColabFold mode pairs by row and OpenDDE submits distinct
   sequences; neither holds (see Changed).
+- **A rerun into a directory holding a finished run no longer mixes the two
+  unannounced.** The quickstart's Python block, run after its CLI block, wrote
+  a new Boltz-2 seed into `foldjax-outputs/first_fold`: a new manifest over the
+  old seed's sample directory, report and `compare/`, with no word. A fresh run
+  now withdraws the finished run's `foldjax_run.json` before it writes (only
+  once the request has validated), deletes nothing else, and warns when the
+  earlier run was another model or seed, naming what stays. The quickstart's
+  Python example writes to its own directory.
+- **Weights on disk but refused say so, and why.** A symbolic link where the
+  store wants a regular file, or a file whose size or modification time no
+  longer matches its conversion or staging record (a store copied without
+  preserving timestamps), was reported as "no converted ... weights" and as
+  `weights missing` in `doctor`. The error and `doctor` (`refused`) now name
+  the file, the reason and the fix; what is accepted is unchanged.
+- **`opendde-jax-predict --help` works.** An unescaped `%` in one option's
+  help made argparse raise `TypeError`; every console script's `--help` is now
+  tested.
+- **`python -m foldjax` runs the CLI.**
+- **The Boltz-2 MSA client caps an archive's inflated size.** The download was
+  capped at the shared 1 GiB ceiling, but a compressed archive was extracted
+  whole; each member, and the archive in total, is now held to that ceiling
+  before extraction, as the shared client holds the members it reads.
+- **The sdist no longer ships a partial test suite.** setuptools added
+  `tests/test*.py` without the `conftest.py`, fixtures and helpers they import;
+  `MANIFEST.in` now prunes `tests/`.
+- **The memory advisory reads as one statement.** A run outside every law's
+  fitted range was told "this estimate is advisory" although no estimate
+  existed, and "1 samples"; the message now names the fitted token range
+  (`released (1,003-4,888 tokens)`) and adds the advisory note only beside an
+  estimate.
+- **`models --for` answers for the weights that would run.** It said Protenix
+  could run a pocket job that `plan` then refused; it now applies the released
+  checkpoint's refusal, takes `--profile` (`--profile base-constraint-v0.5.0`
+  answers yes), and the Protenix refusal names `--profile
+  base-constraint-v0.5.0` rather than `--option model_name=...`.
+- **Smaller message fixes.** `--msa single` no longer advises `--msa auto`;
+  without `kalign-python`, `plan` refuses `--templates required` and warns
+  that `--templates auto` will fold without templates, as predict does
+  (it passed silently); the `check` install hint is the one
+  `doctor` prints for this installation; `compare` on single-structure inputs
+  says why no pair was written; `plan --padding` shows the estimated token
+  bucket (`padding_estimate`); `show` on a missing directory says it does not
+  exist.
 
 - **The test suite no longer reads the developer's FoldJAX store.** With
   `FOLDJAX_HOME` unset, a source checkout's `.foldjax/` was the store for every

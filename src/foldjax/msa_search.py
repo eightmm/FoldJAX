@@ -667,7 +667,9 @@ def _pair_complex(
             record["paired_provenance"] = result["provenancePath"]
 
 
-def _warn_single_sequence(job: dict[str, Any], model: str) -> None:
+def _warn_single_sequence(
+    job: dict[str, Any], model: str, *, asked: bool = False
+) -> None:
     """Say out loud that a protein chain is being folded without an alignment.
 
     This is the one failure this layer used to have no answer for: the job is
@@ -687,9 +689,15 @@ def _warn_single_sequence(job: dict[str, Any], model: str) -> None:
     import warnings
 
     chains = ", ".join(bare)
+    # ``asked``: msa='single' chose this, so the way out is not news to them.
+    advice = (
+        "as msa='single' asked; the structure is usually worse without one."
+        if asked
+        else "Pass msa='auto' (--msa auto) to search for one."
+    )
     warnings.warn(
         f"{model}: protein chain(s) {chains} have no alignment; predicting from "
-        "a single sequence. Pass msa='auto' (--msa auto) to search for one.",
+        f"a single sequence{',' if asked else '.'} {advice}",
         UserWarning,
         stacklevel=3,
     )

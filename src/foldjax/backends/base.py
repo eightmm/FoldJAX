@@ -547,6 +547,20 @@ class Backend(ABC):
     def validate_session(self, request: PredictionRequest) -> None:
         """Refuse when resources used by this session changed on disk."""
 
+    def profile_refusal(
+        self, document: Mapping[str, Any], profile: str | None
+    ) -> str | None:
+        """Why one asset profile's weights cannot run a common-schema job.
+
+        `foldjax models --for` asks this once the input layer has said the
+        model can express the job, for refusals that depend on which managed
+        checkpoint runs it rather than on the document alone. ``profile`` None
+        is the released one. Answered without weights; None when nothing is
+        known to refuse it.
+        """
+        del document, profile
+        return None
+
     def managed_asset_profile(
         self,
         options: Mapping[str, Any],

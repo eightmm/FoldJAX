@@ -320,13 +320,15 @@ def _clean_build_tree(destination: Path) -> list[Path]:
     """Copy distribution inputs without checkout-only generated artifacts.
 
     This deliberately does not depend on ``.git``: release tests must also run
-    from an unpacked sdist. New source files in the working tree are included,
-    while ignored AlphaFold 3 binaries/pickles and Python caches are excluded.
+    from an exported tree without one. New source files in the working tree are
+    included, while ignored AlphaFold 3 binaries/pickles and Python caches are
+    excluded.
     """
     relative_paths = [
         Path(name)
         for name in (
             "pyproject.toml",
+            "MANIFEST.in",
             "README.md",
             "LICENSE",
             "NOTICE",
@@ -492,6 +494,39 @@ def test_wheel_carries_alphafold3_first_use_build_inputs(tmp_path: Path) -> None
         stderr=subprocess.STDOUT,
     )
     assert probe.returncode == 0, probe.stdout
+
+
+def test_sdist_ships_no_partial_test_suite(tmp_path: Path) -> None:
+    """setuptools' default template adds ``tests/test*.py`` without the
+    ``conftest.py`` and fixtures they import; MANIFEST.in prunes the lot."""
+    source_tree = tmp_path / "source"
+    _clean_build_tree(source_tree)
+    for name in ("conftest.py", "test_distribution.py"):
+        target = source_tree / "tests" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / "tests" / name, target)
+    output = tmp_path / "dist"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from setuptools import build_meta; "
+            "build_meta.build_sdist(sys.argv[1])",
+            str(output),
+        ],
+        cwd=source_tree,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    assert completed.returncode == 0, completed.stdout
+    (sdist,) = output.glob("*.tar.gz")
+    import tarfile
+
+    with tarfile.open(sdist) as archive:
+        names = archive.getnames()
+    assert any(name.endswith("/src/foldjax/cli.py") for name in names)
+    assert not [name for name in names if "/tests/" in name]
 
 
 def test_alphafold3_first_use_outputs_go_to_the_writable_store(

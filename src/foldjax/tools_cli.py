@@ -143,7 +143,7 @@ def register(
     check = commands.add_parser(
         "check",
         help="PoseBusters checks of every predicted ligand (optional extra)",
-        description="Runs PoseBusters (`uv sync --extra posebusters`) on each "
+        description="Runs PoseBusters (the optional posebusters extra) on each "
         "ligand of each sample: pb_valid and one pb.<check> column per test.",
     )
     check.add_argument("path", type=Path, help="a finished output directory")

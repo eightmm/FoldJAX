@@ -131,11 +131,24 @@ def _validate_auth(
 
 
 def _safe_extract(archive_path: Path, result_dir: Path) -> None:
-    """Validate a downloaded archive and extract regular files safely."""
+    """Validate a downloaded archive and extract regular files safely.
+
+    The download cap bounds the compressed bytes only; a gzip stream inflates
+    a thousandfold. Each member, and the archive as a whole, is held to the
+    same ceiling the shared client applies to the members it reads.
+    """
+    limit = _search_msa.MAX_REMOTE_BYTES
     try:
         with tarfile.open(archive_path, mode="r:*") as archive:
             base = result_dir.resolve()
+            total = 0
             for member in archive.getmembers():
+                total += member.size
+                if member.size > limit or total > limit:
+                    raise RuntimeError(
+                        f"MSA result archive entry {member.name} would inflate "
+                        f"past {limit} bytes; refused"
+                    )
                 destination = (base / member.name).resolve()
                 if (
                     member.issym()

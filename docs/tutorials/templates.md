@@ -4,6 +4,13 @@ Give a model a known structure to start from: a file you already have, the
 result of a template search, or a private folder of structures that must not
 leave your machine.
 
+**Files you supply.** The jobs below name `target.a3m`, an alignment for the
+protein, and `templates/1abc.cif`, a template structure whose chain B and
+residue map stand in for yours; none of them ships with FoldJAX. Put your own
+beside the job file, or drop the `unpaired_msa` line and run with `--msa auto`
+(searches, sending the sequence to a server) or `--msa single` (folds from the
+sequence alone) to try the commands first.
+
 Which models read templates at all, and in which form, decides the rest:
 
 | model | template input | by default |
@@ -111,8 +118,12 @@ Python: `PredictionRequest(templates="auto", template_dir="path/to/my_structures
 ## Check before running
 
 ```bash
-foldjax plan --model protenix --input target.yaml --templates auto
+foldjax plan --model protenix --input target.yaml --templates auto \
+    --option use_template=true
 ```
 
 `plan` refuses `--templates auto` for ESMFold2, and for Protenix or OpenDDE
-without `--option use_template=true`, before anything is searched.
+without `--option use_template=true` (drop it above to see the refusal),
+before anything is searched. Without `kalign-python` (the `templates`
+extra), which realigns every hit, it refuses `--templates required` and warns
+that `--templates auto` will fold without templates, as the run would.

@@ -4,6 +4,13 @@ Fold a protein with a ligand, tell the model where the ligand binds, ask
 Boltz-2 for a binding affinity, and check the poses. The residue numbers below
 are placeholders: use your own pocket.
 
+**Files you supply.** The jobs below name `target.a3m`, an alignment for the
+protein (and the last section a deposited structure, `deposited.cif`); none of
+them ships with FoldJAX. Put your own beside the job file, or drop the
+`unpaired_msa` line and run with `--msa auto` (searches, sending the sequence
+to a server) or `--msa single` (folds from the sequence alone) to try the
+commands first.
+
 ## The job
 
 `target_atp.yaml`:
@@ -28,6 +35,7 @@ records which (`max_distance_source: job` or `upstream`).
 
 ```bash
 foldjax models --for target_atp.yaml        # which models read it, and why the others do not
+foldjax models --for target_atp.yaml --profile base-constraint-v0.5.0   # Protenix's constraint checkpoint
 foldjax predict --model boltz2 openfold3 --input target_atp.yaml --output-dir out
 ```
 

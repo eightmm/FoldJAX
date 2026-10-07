@@ -25,6 +25,7 @@ from foldjax.models import _representations
 from foldjax.models._managed_memory import lease as managed_memory_lease
 from foldjax.models.protenix import runtime_policy
 from foldjax.models.protenix.runtime_policy import MODEL_INFERENCE_DEFAULTS
+from foldjax.portspec import PROTENIX_BASE_CONSTRAINT_PROFILE
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -735,8 +736,12 @@ def _constraint_channels(request: PredictionRequest) -> list[str]:
         document = read_job_document(Path(request.input))
     except (OSError, ValueError):
         return []
+    return _document_constraint_channels(document, request.input_format)
+
+
+def _document_constraint_channels(document: Any, input_format: str) -> list[str]:
     found: set[str] = set()
-    if request.input_format == "foldjax":
+    if input_format == "foldjax":
         constraints = (
             document.get("constraints") if isinstance(document, Mapping) else None
         )
@@ -757,6 +762,27 @@ def _constraint_channels(request: PredictionRequest) -> list[str]:
     return [channel for channel in ("pocket", "contact") if channel in found]
 
 
+def _constraint_refusal(channels: Sequence[str], model_name: str) -> str | None:
+    """Why ``model_name`` cannot read ``channels``; None when it can or is unknown."""
+    if (
+        not channels
+        or model_name not in runtime_policy.KNOWN_MODEL_NAMES
+        or model_name in _CONSTRAINT_MODEL_NAMES
+    ):
+        return None
+    profile = PROTENIX_BASE_CONSTRAINT_PROFILE
+    return (
+        f"protenix: the input carries a {' and a '.join(channels)} constraint, "
+        f"but {model_name} has no constraint embedder to read it; upstream "
+        "enables one only for "
+        f"{', '.join(sorted(_CONSTRAINT_MODEL_NAMES))}. Remove the constraint, "
+        f"or select that checkpoint with --profile {profile} "
+        f"(PredictionRequest(profile={profile!r}); "
+        f"`foldjax weights fetch --model protenix --profile {profile}` "
+        "installs it)"
+    )
+
+
 def _refuse_constraint_without_embedder(request: PredictionRequest) -> None:
     """Refuse a constraint the weights cannot read, before featurization.
 
@@ -770,19 +796,9 @@ def _refuse_constraint_without_embedder(request: PredictionRequest) -> None:
     model_name = request.options.get("model_name", "auto")
     if model_name == "auto":
         model_name = runtime_policy.infer_model_name_from_path(request.weights)
-    if (
-        model_name not in runtime_policy.KNOWN_MODEL_NAMES
-        or model_name in _CONSTRAINT_MODEL_NAMES
-    ):
-        return
-    raise ValueError(
-        f"protenix: the input carries a {' and a '.join(channels)} constraint, "
-        f"but {model_name} has no constraint embedder to read it; upstream "
-        "enables one only for "
-        f"{', '.join(sorted(_CONSTRAINT_MODEL_NAMES))}. Remove the constraint, "
-        "or run that checkpoint with --option model_name="
-        f"{next(iter(sorted(_CONSTRAINT_MODEL_NAMES)))}"
-    )
+    refusal = _constraint_refusal(channels, model_name)
+    if refusal is not None:
+        raise ValueError(refusal)
 
 
 class _NativeInvocation(NamedTuple):
@@ -967,6 +983,17 @@ class ProtenixBackend(ManagedCcdSession, Backend):
 
         return managed_memory_lease(
             "protenix_external_ccd", _release_external_ccd_cache
+        )
+
+    def profile_refusal(
+        self, document: Mapping[str, Any], profile: str | None
+    ) -> str | None:
+        """A pocket or contact constraint needs the constraint checkpoint."""
+        model_name = _PROFILE_MODEL_NAMES.get(profile or "released")
+        if model_name is None:
+            return None
+        return _constraint_refusal(
+            _document_constraint_channels(document, "foldjax"), model_name
         )
 
     def validate_request(self, request: PredictionRequest) -> None:

@@ -2102,10 +2102,13 @@ def profile_status(model: str) -> tuple[dict[str, object], ...]:
             if _present_download(item.target(spec.model), item)
         )
         supplied = len(spec.supplied) - len(missing_supplied(spec))
+        ready = spec.ready()
         rows.append(
             {
                 "profile": profile,
-                "ready": spec.ready(),
+                "ready": ready,
+                # Present but refused, and why; None when ready or just absent.
+                "refused": None if ready else present_weights_refusal(spec),
                 "downloaded": f"{downloaded}/{len(spec.downloads)}",
                 "supplied": f"{supplied}/{len(spec.supplied)}",
                 "download_bytes": download_bytes,
@@ -3038,6 +3041,157 @@ def _converted_weights_damage(spec: ModelAssets) -> str | None:
     return None
 
 
+_RESTAMPED = (
+    "its modification time no longer matches the record of when it was "
+    "converted or staged (usually a copy that did not preserve timestamps); "
+    "copy it again with `cp -p` or `rsync -t`"
+)
+_LINKED = (
+    "it is a symbolic link, and the store only accepts this file as a regular "
+    "file; replace the link with a copy of what it points to"
+)
+
+
+def _stat_refusal(
+    path: Path, size: object, mtime_ns: object, *, links_refused: bool
+) -> str | None:
+    """Why ``path`` no longer matches its recorded size and mtime, if it does not."""
+    if links_refused and path.is_symlink():
+        return f"{path}: {_LINKED}"
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    if size != stat.st_size:
+        return (
+            f"{path}: {stat.st_size} bytes where the record says {size} "
+            "(a partial copy or a different file)"
+        )
+    if mtime_ns != stat.st_mtime_ns:
+        return f"{path}: {_RESTAMPED}"
+    return None
+
+
+def _entry_refusal(path: Path, entry: object, *, links_refused: bool) -> str | None:
+    """`_stat_refusal` against a ``{"size", "mtime_ns"}`` record entry."""
+    if links_refused and path.is_symlink():
+        return f"{path}: {_LINKED}"
+    if not isinstance(entry, dict):
+        return None
+    return _stat_refusal(
+        path, entry.get("size"), entry.get("mtime_ns"), links_refused=links_refused
+    )
+
+
+def _read_record(path: Path) -> dict[str, object] | None:
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def present_weights_refusal(spec: ModelAssets) -> str | None:
+    """Why weights that are on disk are still refused, when that can be named.
+
+    `ModelAssets.ready` answers yes or no; this mirrors the refusals that fire
+    on files that *are* there -- a symbolic link where the store wants a
+    regular file, or a file whose size or modification time no longer matches
+    its conversion or staging record -- so the message can name the path and
+    the fix instead of "no converted weights". It never changes what is
+    accepted, and ``None`` means nothing more specific than "missing" is known.
+    """
+    root = weights_dir(spec.model)
+    try:
+        if spec.model == "boltz2":
+            return _boltz_present_refusal(root)
+        if spec.model == "esmfold2":
+            record = _read_record(root / _ESMFOLD2_MARKER)
+            files = record.get("files") if record is not None else None
+            for item in spec.downloads:
+                try:
+                    relative = item.target(spec.model).relative_to(
+                        downloads_dir(spec.model)
+                    )
+                except ValueError:
+                    continue
+                target = root / relative
+                if not (target.is_symlink() or target.is_file()):
+                    continue
+                entry = (
+                    files.get(relative.as_posix()) if isinstance(files, dict) else None
+                )
+                reason = _entry_refusal(target, entry, links_refused=True)
+                if reason is not None:
+                    return reason
+            return None
+        if spec.requires_manifest:
+            for item in spec.requires:
+                if (root / item).is_symlink():
+                    return f"{root / item}: {_LINKED}"
+        if not spec.conversion_sources:
+            return None
+        record = _read_record(root / _NATIVE_MANIFEST)
+        if record is None or not spec.native_path().is_file():
+            return None
+        if record.get("conversion") != _conversion_identity(spec):
+            return (
+                f"{spec.native_path()} was converted from a different release "
+                "or by an older converter than this FoldJAX version expects"
+            )
+        reason = _entry_refusal(
+            spec.native_path(), record.get("native"), links_refused=False
+        )
+        if reason is not None:
+            return reason
+        staged = record.get("staged")
+        if isinstance(staged, dict):
+            for name, entry in staged.items():
+                reason = _entry_refusal(root / str(name), entry, links_refused=False)
+                if reason is not None:
+                    return reason
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+    return None
+
+
+def _boltz_present_refusal(root: Path) -> str | None:
+    if (root / _BOLTZ_CONVERSION_MARKER).exists():
+        return (
+            f"a conversion into {root} did not finish "
+            f"({_BOLTZ_CONVERSION_MARKER} is still there)"
+        )
+    record = _read_record(root / _BOLTZ_NATIVE_MARKER)
+    files = record.get("files") if record is not None else None
+    if isinstance(files, dict):
+        for name in _BOLTZ_NATIVE_FILES:
+            reason = _entry_refusal(root / name, files.get(name), links_refused=False)
+            if reason is not None:
+                return reason
+    # Only a schema-2 molecule index binds each file's identity, and its
+    # inventory skips symbolic links; a legacy store is checked by count alone.
+    molecules = root / "mols"
+    index = _read_record(molecules / _BOLTZ_MOLECULE_INDEX)
+    recorded = index.get("files") if index is not None else None
+    if index is None or index.get("schema") != 2 or not isinstance(recorded, dict):
+        return None
+    linked = sorted(name for name in recorded if (molecules / name).is_symlink())
+    if linked:
+        return (
+            f"{len(linked)} molecule file(s) in {molecules} are symbolic links "
+            f"(first: {linked[0]}), and the store only accepts regular files "
+            "there; replace the links with copies of what they point to"
+        )
+    for name, entry in sorted(recorded.items()):
+        if isinstance(entry, list) and len(entry) == 2:
+            reason = _stat_refusal(
+                molecules / name, entry[0], entry[1], links_refused=True
+            )
+            if reason is not None:
+                return reason
+    return None
+
+
 def resolve_weights(model: str, *, profile: str | None = None) -> Path:
     """Return weights ready for the selected managed profile.
 
@@ -3077,6 +3231,15 @@ def resolve_weights(model: str, *, profile: str | None = None) -> Path:
             f"`foldjax weights fetch --model {public_model}{profile_flag}` to "
             "convert them again, or supply PredictionRequest.weights / "
             "`foldjax predict --weights PATH`."
+        )
+    refused = present_weights_refusal(spec)
+    if refused is not None:
+        raise FileNotFoundError(
+            f"{spec.model} weights are present but refused: {refused}. "
+            f"Or run `foldjax weights fetch --model {public_model}{profile_flag}`, "
+            "which rebuilds them from verified downloads, fetching only what "
+            "is missing or fails verification; or supply "
+            "PredictionRequest.weights / `foldjax predict --weights PATH`."
         )
     raise FileNotFoundError(
         f"no converted {spec.model} weights at {native}. Run "

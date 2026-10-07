@@ -184,8 +184,8 @@ conflicts = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/eightmm/foldjax"
-Issues = "https://github.com/eightmm/foldjax/issues"
+Homepage = "https://github.com/eightmm/FoldJAX"
+Issues = "https://github.com/eightmm/FoldJAX/issues"
 
 [project.scripts]
 foldjax = "foldjax.cli:entrypoint"

@@ -472,8 +472,8 @@ def off_profile_reason(
             else f"{CALIBRATED_NUM_SAMPLES}-{high}"
         )
         reasons.append(
-            f"{num_samples} samples rather than the {fitted} "
-            "the law was fitted at"
+            f"{num_samples} sample{'' if num_samples == 1 else 's'} rather "
+            f"than the {fitted} the law was fitted at"
         )
     reasons.extend(extras)
     return tuple(reasons)
@@ -569,9 +569,14 @@ def resolve_memory_policy(
     missing = [
         name for name, law in candidates if law.needs_msa_rows and msa_rows is None
     ]
+    laws = dict(candidates)
     if outside or missing:
         detail = (
-            f"{n_token} tokens is outside the fitted range of {', '.join(outside)}"
+            f"{n_token} tokens is outside the fitted range of "
+            + ", ".join(
+                f"{name} ({_token_span(laws[name], admitted=True)})"
+                for name in outside
+            )
             if outside
             else f"no processed MSA row count for {', '.join(missing)}"
         )
@@ -621,8 +626,12 @@ def resolve_memory_policy(
             threshold=threshold,
             reason=(
                 f"{n_token} tokens is below the fitted range of "
-                f"{', '.join(below)}, where its estimate bounds the measured "
-                "runs but is not used to refuse one"
+                + ", ".join(
+                    f"{name} ({_token_span(laws[name], admitted=False)})"
+                    for name in below
+                )
+                + ", where its estimate bounds the measured runs but is not "
+                "used to refuse one"
             ),
         )
     return MemoryDecision(
@@ -640,6 +649,15 @@ def resolve_memory_policy(
 
 def _threshold(budget_bytes: int) -> int:
     return int(budget_bytes * ADMISSION_FRACTION)
+
+
+def _token_span(law: PeakLaw, *, admitted: bool) -> str:
+    """The token range ``law`` covers: fitted, or also the band below it
+    where admission still uses it (:meth:`MemoryLaw.bounds`)."""
+    low, high = law.domain_tokens
+    if admitted and law.admits_from is not None:
+        low = min(low, law.admits_from)
+    return f"{low:,}-{high:,} tokens"
 
 
 def _gib(value: int) -> str:
@@ -819,7 +837,8 @@ def check_message(
         lines.append(
             f"--memory-budget-gib held the budget to {_gib(budget.override_bytes)}."
         )
-    if off_profile:
+    # With no estimate there is nothing for the off-profile note to qualify.
+    if off_profile and decision.estimates:
         lines.append(
             "This estimate is advisory rather than binding: the run uses "
             + "; ".join(off_profile)

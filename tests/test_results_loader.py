@@ -235,6 +235,19 @@ def test_show_aggregate_and_legacy_json_are_unchanged(tmp_path: Path, capsys) ->
     assert all("schema_version" in document for document in manifests)
 
 
+def test_compare_on_one_structure_says_why_it_wrote_no_pair(
+    tmp_path: Path, capsys
+) -> None:
+    root = _batch(tmp_path, ("boltz2",))
+    out = tmp_path / "cmp"
+
+    with pytest.warns(UserWarning, match="each input there has a single structure"):
+        assert cli.main(["compare", str(root), "--out", str(out)]) == 0
+    document = json.loads(Path(json.loads(capsys.readouterr().out)["json"]).read_text())
+    (entry,) = document["inputs"]
+    assert len(entry["structures"]) == 1 and entry["pairs"] == []
+
+
 def test_compare_writes_every_ordered_pair_with_its_correspondence(
     tmp_path: Path, capsys
 ) -> None:

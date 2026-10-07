@@ -3371,7 +3371,7 @@ def materialize_native_input(
             output_dir / "msa_search.json", json.dumps(searched, indent=2)
         )
     elif msa in ("none", "single"):
-        _warn_single_sequence(job, model)
+        _warn_single_sequence(job, model, asked=msa == "single")
     if templates != "none":
         from foldjax.template_search import search_templates
 

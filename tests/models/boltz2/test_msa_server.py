@@ -256,3 +256,30 @@ def test_run_mmseqs2_rejects_tar_traversal(tmp_path) -> None:
         mmseqs2.run_mmseqs2("ACD", str(prefix))
 
     assert not (tmp_path / "outside.a3m").exists()
+
+
+def test_run_mmseqs2_refuses_an_archive_that_inflates_past_the_cap(
+    tmp_path, monkeypatch
+) -> None:
+    """The download cap counts compressed bytes; extraction counts inflated ones."""
+    from foldjax.search import msa as search_msa
+
+    prefix = tmp_path / "bomb"
+    result_dir = Path(f"{prefix}_env")
+    result_dir.mkdir()
+    archive = result_dir / "out.tar.gz"
+    archive.write_bytes(
+        _result_tar(
+            {
+                "uniref.a3m": ">101\nACD\n",
+                "bfd.mgnify30.metaeuk30.smag30.a3m": "x" * 64,
+            }
+        )
+    )
+    monkeypatch.setattr(search_msa, "MAX_REMOTE_BYTES", 32)
+
+    with pytest.raises(RuntimeError, match="inflate past 32 bytes"):
+        mmseqs2.run_mmseqs2("ACD", str(prefix))
+
+    assert not archive.exists()
+    assert not (result_dir / "bfd.mgnify30.metaeuk30.smag30.a3m").exists()
