@@ -512,6 +512,28 @@ def test_prefetch_exits_3_when_a_search_fails(tmp_path: Path, monkeypatch, capsy
     assert "server down" in record["error"]
 
 
+def test_a_failed_prefetch_does_not_claim_to_fold(
+    tmp_path: Path, monkeypatch, capsys, recwarn
+):
+    # Prefetch folds nothing, so its failure says what was not cached; the
+    # predict wording ("folding them from single sequence") misled a batch.
+    class _Broken(_Stub):
+        def search(self, sequence):
+            raise OSError("server down")
+
+    monkeypatch.setattr(
+        msa_search,
+        "_msa_pipeline",
+        lambda: MsaSearchPipeline(tmp_path / "msa-cache", _Broken()),
+    )
+    job = _job(tmp_path, SEQUENCE)
+    assert cli.main(["msa", "prefetch", str(job)]) == 3
+    said = capsys.readouterr().err + "".join(str(w.message) for w in recwarn)
+    assert "MSA prefetch failed for chain(s) A (server down)" in said
+    assert "no alignment was cached for them" in said
+    assert "folding" not in said
+
+
 _FAKE_COLABFOLD = '''
 import os
 from pathlib import Path

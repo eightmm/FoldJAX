@@ -56,7 +56,9 @@ def _generic(job: dict[str, Any], pairing: str) -> list[dict[str, Any]]:
         pipeline = _msa_pipeline()
         if pairing == "none":
             pipeline = pipeline.without_per_chain_pairing()
-        records.extend(_run_search(pipeline, wanted, policy="auto", paired=False))
+        records.extend(
+            _run_search(pipeline, wanted, policy="auto", paired=False, prefetch=True)
+        )
         if pairing in ("greedy", "complete"):
             _pair_complex(
                 pipeline,
@@ -66,6 +68,7 @@ def _generic(job: dict[str, Any], pairing: str) -> list[dict[str, Any]]:
                 policy="auto",
                 model="prefetch",
                 mode=COMPLETE_PAIRING_MODE if pairing == "complete" else None,
+                prefetch=True,
             )
     rna = [
         entity
@@ -74,7 +77,9 @@ def _generic(job: dict[str, Any], pairing: str) -> list[dict[str, Any]]:
     ]
     rna_pipeline = _rna_msa_pipeline() if rna else None
     if rna_pipeline is not None:
-        records.extend(_run_search(rna_pipeline, rna, policy="auto", paired=False))
+        records.extend(
+            _run_search(rna_pipeline, rna, policy="auto", paired=False, prefetch=True)
+        )
     return records
 
 
@@ -133,6 +138,7 @@ def prefetch(
                     model=model,
                     pairing=pairing,
                     search_rna=read is None or "rna" in read,
+                    prefetch=True,
                 )
                 records.extend(
                     {"job": label, "model": model, **record} for record in searched

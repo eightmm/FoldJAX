@@ -295,6 +295,7 @@ def _search_alignments(
     model: str,
     search_rna: bool = True,
     pairing: str = "model",
+    prefetch: bool = False,
 ) -> list[dict[str, str]]:
     """Fill in missing alignments, and report what was searched.
 
@@ -304,7 +305,9 @@ def _search_alignments(
     behaviour it had, and ``required`` says why rather than pretending.
     ``search_rna=False`` is for a backend that does not read RNA alignments:
     nothing is searched for its RNA chains, and ``required`` does not demand it.
-    ``pairing`` is ``msa_pairing`` (`resolve_pairing`).
+    ``pairing`` is ``msa_pairing`` (`resolve_pairing`). ``prefetch`` is
+    `foldjax.msa_prefetch`'s call, which folds nothing, so a failure is
+    reported as an alignment not cached rather than a chain folded without one.
     """
     from foldjax.input import _ids
 
@@ -355,6 +358,7 @@ def _search_alignments(
                 policy=policy,
                 paired="paired_msa" in target.features
                 and resolved["resolved"] == "per_chain",
+                prefetch=prefetch,
             )
         )
         if pairs_complex:
@@ -370,9 +374,14 @@ def _search_alignments(
                 model=model,
                 mode=None if mode == COMPLEX_PAIRING_MODE else mode,
                 by_row=resolved["paired_by"] == "row",
+                prefetch=prefetch,
             )
     if rna and rna_pipeline is not None:
-        searched.extend(_run_search(rna_pipeline, rna, policy=policy, paired=False))
+        searched.extend(
+            _run_search(
+                rna_pipeline, rna, policy=policy, paired=False, prefetch=prefetch
+            )
+        )
     return searched
 
 
@@ -382,6 +391,7 @@ def _run_search(
     *,
     policy: str,
     paired: bool,
+    prefetch: bool = False,
 ) -> list[dict[str, str]]:
     """Search for these chains and attach what came back.
 
@@ -416,10 +426,15 @@ def _run_search(
         # must not destroy a job that would have folded from single sequence --
         # but it must also not do so quietly, so the caller sees the reason.
         reasons = dict.fromkeys(str(result) for _, result in failed)
+        consequence = (
+            "no alignment was cached for them"
+            if prefetch
+            else "folding them from single sequence"
+        )
         report_search_failure(
-            f"MSA search failed for chain(s) "
+            f"MSA {'prefetch' if prefetch else 'search'} failed for chain(s) "
             f"{', '.join(_ids(entity)[0] for entity, _ in failed)} "
-            f"({'; '.join(reasons)}); folding them from single sequence"
+            f"({'; '.join(reasons)}); {consequence}"
         )
     for entity, result in zip(entities, found, strict=True):
         if isinstance(result, Exception):
@@ -448,6 +463,7 @@ def _pair_complex(
     model: str,
     mode: str | None = None,
     by_row: bool = True,
+    prefetch: bool = False,
 ) -> None:
     """Pair the whole complex in one search, as OpenFold3 v0.5.0, Boltz-2,
     Protenix and OpenDDE do.
@@ -510,9 +526,14 @@ def _pair_complex(
             )
         return
     if not getattr(pipeline, "pairs_complexes", False):
+        consequence = (
+            "no paired MSA was cached for this heteromer"
+            if prefetch
+            else "this heteromer is folded without a paired MSA"
+        )
         warnings.warn(
             f"{model}: the configured MSA search cannot pair a complex in one "
-            "job, so this heteromer is folded without a paired MSA",
+            f"job, so {consequence}",
             UserWarning,
             stacklevel=3,
         )
@@ -530,7 +551,12 @@ def _pair_complex(
                 f"paired MSA search failed and msa='required': {error}"
             ) from error
         report_search_failure(
-            f"paired MSA search failed ({error}); folding without a paired MSA"
+            f"paired MSA {'prefetch' if prefetch else 'search'} failed ({error}); "
+            + (
+                "no paired MSA was cached"
+                if prefetch
+                else "folding without a paired MSA"
+            )
         )
         for record in searched:
             record.setdefault("paired_error", str(error))
