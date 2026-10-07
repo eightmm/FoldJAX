@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -98,3 +99,47 @@ def test_plan_prints_the_effective_sampling_and_where_it_comes_from(
         == 0
     )
     assert "padding.msa" in json.loads(capsys.readouterr().out)["not_checked"][0]
+
+
+def _console_scripts() -> dict[str, str]:
+    import tomllib
+
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject.open("rb") as handle:
+        return tomllib.load(handle)["project"]["scripts"]
+
+
+@pytest.mark.parametrize("script", sorted(_console_scripts()))
+def test_every_console_script_prints_its_help(script: str, monkeypatch, capsys) -> None:
+    """argparse formats help lazily, so a stray ``%`` only fails on ``--help``."""
+    import importlib
+
+    module_name, _, attribute = _console_scripts()[script].partition(":")
+    entry = getattr(importlib.import_module(module_name), attribute)
+    monkeypatch.setattr("sys.argv", [script, "--help"])
+    with pytest.raises(SystemExit) as stopped:
+        entry()
+    assert stopped.value.code in (0, None)
+    assert "usage:" in capsys.readouterr().out
+
+
+def test_python_dash_m_foldjax_runs_the_cli() -> None:
+    import subprocess
+    import sys
+
+    import foldjax
+
+    environment = dict(os.environ)
+    source = str(Path(foldjax.__file__).resolve().parents[1])
+    environment["PYTHONPATH"] = os.pathsep.join(
+        filter(None, (source, environment.get("PYTHONPATH")))
+    )
+    completed = subprocess.run(
+        [sys.executable, "-m", "foldjax", "--help"],
+        capture_output=True,
+        text=True,
+        env=environment,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.startswith("usage: foldjax")
