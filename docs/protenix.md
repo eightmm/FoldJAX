@@ -78,10 +78,17 @@ of a random subset ([cli.md](cli.md#--msa-seed-protenix)).
 
 ## Inputs
 
-- **Alignments.** Under `--msa auto`, FoldJAX runs the `pairgreedy` ColabFold
-  search Protenix's ColabFold mode submits and writes each chain's block so
-  that row *i* of every chain is paired, as upstream writes its
-  `pairing.a3m` ([heteromer tutorial](tutorials/heteromer-msa.md)). RNA
+- **Alignments.** Under `--msa auto` each chain gets its unpaired ColabFold
+  alignment, environmental hits first, and a heteromer's chains are not
+  paired: that is what a run of upstream's ColabFold mode does, whose runner
+  never reads the complex search it writes. Upstream's default mode pairs by
+  NCBI taxonomy on Protenix's own MSA server, which FoldJAX does not use, and
+  a heteromer run prints a note saying so. `--msa-pairing greedy` (or
+  `complete`) opts into the `pairgreedy` search with each chain's block
+  written so that row *i* of every chain is paired, as upstream's ColabFold
+  mode writes its `pairing.a3m` -- a FoldJAX choice, not measured for
+  accuracy against either upstream mode
+  ([heteromer tutorial](tutorials/heteromer-msa.md)). RNA
   alignments are read only with `--option use_rna_msa=true` (upstream's
   released default is false; allowed for `v2` and the two v1.0.0 base
   checkpoints).

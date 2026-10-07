@@ -2006,8 +2006,7 @@ def released_config(
                     # A second rollout plus the proposal search.
                     ("pocket-guided sampling", pocket_sampling is not None),
                     (
-                        f"{non_protein_tokens} nucleic-acid or ligand tokens "
-                        "(the law was fitted on protein-only inputs)",
+                        memory_policy.non_protein_reason(non_protein_tokens),
                         non_protein_tokens > 0,
                     ),
                 )

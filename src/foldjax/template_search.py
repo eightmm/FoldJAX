@@ -73,7 +73,9 @@ class TemplatePolicy:
     #: 0.95 of it, a hit shorter than 10 residues, one aligning to 0.1 of the
     #: query or less, one with no resolved aligned residue, and duplicates.
     hit_filters: bool
-    #: Hits considered after the cheap filters, before realignment.
+    #: Hits taken as candidates: with ``hit_filters`` those that pass the
+    #: filters and de-duplication, as upstream Protenix caps them; otherwise
+    #: those that reach realignment.
     max_candidates: int | None
     #: Write each template as a single chain of observed residues (see
     #: ``_observed_chain_file``).
@@ -975,7 +977,8 @@ def _select(
                 _Selected({"mmcif": str(path), "chain_id": chain.author_id}, record)
             )
             continue
-        candidates += 1
+        if not policy.hit_filters:
+            candidates += 1
         try:
             mapping = _kalign_mapping(query, chain.sequence)
         except SearchError:
@@ -1004,6 +1007,10 @@ def _select(
                 skipped["duplicate"] += 1
                 continue
             seen_projections.add(projection)
+            # Upstream Protenix/OpenDDE caps the candidates after its
+            # prefilter and de-duplication, so a filtered hit takes no slot
+            # (protenix/data/template/template_utils.py:981-1016).
+            candidates += 1
         pairs = sorted(mapping.items())
         mmcif = path
         if policy.observed_chain_file:

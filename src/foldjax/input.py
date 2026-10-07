@@ -1843,11 +1843,19 @@ def row_species_a3m(paired: str) -> str:
     ``>UniRef100_<accession>_<row>/<rest>``, so the species its featurizer
     reads (``_UNIREF_REGEX``, ``^UniRef100_[^_]+_([^_/]+)``) is the row: rows
     with one number are paired across chains, which is how the server aligned
-    them. Two departures, neither changing a row that upstream pairs: the row
-    is the record's position, where upstream numbers a dict keyed by header
-    text that would shift every later row past a repeated header; and a
-    header without the ``UniRef100_`` prefix gets it, with ``_`` and ``/``
-    in the accession replaced so the regex cannot read another field.
+    them. Upstream's runner never reads that file in ColabFold mode (it is
+    written under ``msa/complex/``, runner/msa_search.py:177-185), so this is
+    FoldJAX's ``greedy``/``complete`` opt-in, not a reproduction of a run.
+
+    Two departures. Upstream numbers the entries of a dict keyed by header
+    text (``parse_fasta_string``): a repeated header keeps its first slot
+    with the later record's sequence and drops a row, so every later row's
+    number shifts down by one and pairs with a different row of the other
+    chains than the server aligned. Here the number is the record's
+    position, which keeps the server's alignment; on a block with a repeated
+    header the two pair different rows. And a header without the
+    ``UniRef100_`` prefix gets it, with ``_`` and ``/`` in the accession
+    replaced so the regex cannot read another field.
     """
     out: list[str] = []
     for index, (header, row) in enumerate(_a3m_records(paired)):
@@ -1899,18 +1907,74 @@ def _protenix_row_paired(
     }
     if not texts:
         return {}
-    msa_root = destination / "msa"
-    if msa_root.is_symlink():
-        raise ValueError(f"generated MSA directory is a symlink: {msa_root}")
-    msa_root.mkdir(parents=True, exist_ok=True)
-    if not msa_root.resolve().is_relative_to(destination.resolve()):
-        raise ValueError(f"generated MSA directory escapes output root: {msa_root}")
+    msa_root = _generated_msa_root(destination)
     paths: dict[int, str] = {}
     for index, text in texts.items():
         target = msa_root / f"entity_{index:04d}_pairing.a3m"
         _write_text_atomic(target, row_species_a3m(text))
         paths[index] = str(target.resolve())
     return paths
+
+
+def env_first_a3m(unpaired: str) -> str | None:
+    """A ColabFold unpaired alignment in the order Protenix's ColabFold mode
+    writes its ``non_pairing.a3m``, or None when it is not one.
+
+    The search caches the server's ``uniref.a3m`` block and then its
+    ``bfd.mgnify30.metaeuk30.smag30.a3m`` block, each led by the query record.
+    Upstream (web_service/colab_request_utils.py:290-310) writes ``>query``,
+    then the environmental hits, then the UniRef hits. Anything that does not
+    split into exactly those two query-led blocks is left as it is.
+
+    One departure: upstream reads each file into a dict keyed by header text
+    (``parse_fasta_string``), so a repeated header keeps its first slot with
+    the later record's sequence and the earlier sequence is dropped. Every
+    record is kept here; Protenix's featurizer drops repeated *sequences*
+    either way.
+    """
+    records = _a3m_records(unpaired)
+    if not records:
+        return None
+    query = records[0]
+    starts = [index for index, record in enumerate(records) if record == query]
+    if len(starts) != 2:
+        return None
+    uniref, env = records[1 : starts[1]], records[starts[1] + 1 :]
+    return f">query\n{query[1]}\n" + "".join(
+        f">{header}\n{row}\n" for header, row in (*env, *uniref)
+    )
+
+
+def _protenix_env_first(
+    job: dict[str, Any], base: Path, destination: Path
+) -> dict[int, str]:
+    """Write each searched unpaired alignment as `env_first_a3m`; index -> path."""
+    from foldjax.msa_search import ENV_FIRST_UNPAIRED_MSA
+
+    paths: dict[int, str] = {}
+    for index, entity in enumerate(job["entities"]):
+        if not (entity.get(ENV_FIRST_UNPAIRED_MSA) and entity.get("unpaired_msa")):
+            continue
+        text = Path(_path(entity["unpaired_msa"], base)).read_text(encoding="utf-8")
+        reordered = env_first_a3m(text)
+        if reordered is None:
+            continue
+        msa_root = _generated_msa_root(destination)
+        target = msa_root / f"entity_{index:04d}_non_pairing.a3m"
+        _write_text_atomic(target, reordered)
+        paths[index] = str(target.resolve())
+    return paths
+
+
+def _generated_msa_root(destination: Path) -> Path:
+    """``destination/msa``, refused when a symlink could send it elsewhere."""
+    msa_root = destination / "msa"
+    if msa_root.is_symlink():
+        raise ValueError(f"generated MSA directory is a symlink: {msa_root}")
+    msa_root.mkdir(parents=True, exist_ok=True)
+    if not msa_root.resolve().is_relative_to(destination.resolve()):
+        raise ValueError(f"generated MSA directory escapes output root: {msa_root}")
+    return msa_root
 
 
 def boltz_server_msa_csv(paired: str, unpaired: str) -> str:
@@ -2344,6 +2408,9 @@ def _protenix(
     # A searched complex block is written as upstream's ColabFold mode writes
     # it, so its rows pair by number; a caller's paired_msa passes untouched.
     row_paired = _protenix_row_paired(job, base, destination)
+    # A searched unpaired alignment, for Protenix, environmental hits first as
+    # its ColabFold mode writes it; OpenDDE's upstream keeps the server order.
+    env_first = _protenix_env_first(job, base, destination)
     for entity_number, entity in enumerate(job["entities"], start=1):
         kind = entity["type"]
         ids = _ids(entity)
@@ -2360,7 +2427,9 @@ def _protenix(
             )
         else:
             body["sequence"] = str(entity["sequence"])
-            if entity.get("unpaired_msa"):
+            if entity_number - 1 in env_first:
+                body["unpairedMsaPath"] = env_first[entity_number - 1]
+            elif entity.get("unpaired_msa"):
                 body["unpairedMsaPath"] = _path(entity["unpaired_msa"], base)
             if entity_number - 1 in row_paired:
                 body["pairedMsaPath"] = row_paired[entity_number - 1]

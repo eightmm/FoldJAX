@@ -419,6 +419,21 @@ ESMFOLD2_PEAK = PeakLaw(
 #: The sample count every law above was fitted at.
 CALIBRATED_NUM_SAMPLES = 5
 
+#: Ports whose admission treats any nucleic-acid or ligand token as outside
+#: the fitted composition, where the estimate is only a lower bound: every
+#: OpenFold3 point was protein-only, and 5NPK (DNA gyrase with DNA and
+#: ligands, 3,061 tokens) peaked at 41,260 MiB against the chunked law's
+#: 29,876 MiB upper estimate.
+PROTEIN_ONLY_LAWS = frozenset({"openfold3"})
+
+
+def non_protein_reason(tokens: int | str) -> str:
+    """Why a `PROTEIN_ONLY_LAWS` estimate is a lower bound for this run."""
+    return (
+        f"{tokens} nucleic-acid or ligand tokens "
+        "(the law was fitted on protein-only inputs)"
+    )
+
 
 def off_profile_reason(
     *,

@@ -55,15 +55,40 @@ _DEFAULT_LOCAL_VERSION = "local"
 #: schema takes no ``paired_msa`` -- only the search attaches one, after
 #: validation -- and the Boltz-2 writer turns the pair into that CSV.
 #:
-#: Protenix 2.0.0 against the ColabFold server (``msa_search(mode="colabfold")``)
-#: submits its distinct sequences as one ``pairgreedy`` job when there are two
-#: or more (web_service/colab_request_parser.py:303-318) and OpenDDE does the
-#: same (opendde/data/msa/msa_service_client.py:390-400).
-_COMPLEX_PAIRING = frozenset({"openfold3", "boltz2", "opendde", "protenix"})
+#: OpenDDE submits its protein entries as one ``pairgreedy`` job whenever
+#: there is more than one (`_PAIRS_EVERY_ENTRY`;
+#: opendde/data/msa/msa_service_client.py:390-400).
+#:
+#: Protenix is not here. Its default server mode (``protenix``) pairs by NCBI
+#: taxonomy on Protenix's own server, which FoldJAX does not use. Its
+#: ColabFold mode submits the same ``pairgreedy`` job
+#: (web_service/colab_request_parser.py:303-318) but writes the blocks to
+#: ``msa/complex/<i>/pairing.a3m`` while the runner attaches only what is under
+#: ``msa/<i>/<i>/`` (runner/msa_search.py:177-185), so a ColabFold-mode run
+#: pairs nothing, and neither does ``msa_pairing="model"``. ``greedy`` /
+#: ``complete`` opt into that complex search, read by row.
+_COMPLEX_PAIRING = frozenset({"openfold3", "boltz2", "opendde"})
 
-#: Of those, the ones whose upstream asks for the pairing without the
-#: environmental databases (``pairgreedy`` / ``paircomplete``).
+#: The ones whose search asks for the pairing without the environmental
+#: databases (``pairgreedy`` / ``paircomplete``): OpenDDE's upstream, and the
+#: search Protenix's ColabFold mode submits.
 _PLAIN_PAIRING = frozenset({"opendde", "protenix"})
+
+#: Backends whose upstream pairs whenever a job lists more than one protein
+#: entry, even one sequence listed twice, and submits the entries sorted, a
+#: repeat kept (the server is sent each distinct sequence once). Upstream
+#: OpenDDE's ``update_seq_msa`` sorts the ``proteinChain`` sequences
+#: (runner/msa_search.py:146-151) and ``search_and_build_msa`` runs the
+#: pairing ticket when ``len(seqs) > 1``. One FoldJAX entity is one such entry:
+#: its copies are the entry's ``count``.
+_PAIRS_EVERY_ENTRY = frozenset({"opendde"})
+
+#: Backends whose upstream writes a searched unpaired alignment environmental
+#: hits first, then UniRef's: Protenix's ColabFold mode
+#: (web_service/colab_request_utils.py:290-310). The cache keeps the server's
+#: UniRef-then-environmental layout the other ports read, and the Protenix
+#: writer reorders it (`foldjax.input.env_first_a3m`).
+_ENV_FIRST_UNPAIRED = frozenset({"protenix"})
 
 #: Backends whose common route reads a per-chain ``paired_msa`` under
 #: ``msa_pairing="model"``. That alignment pairs nothing on a heteromer: the
@@ -80,10 +105,10 @@ _PER_CHAIN_PAIRING = frozenset({"alphafold3"})
 #: 239-246), and Boltz-2 takes upstream's keyed CSV built from the same search
 #: (boltz/main.py:500-520), whose rows sharing a key are paired. Protenix and
 #: OpenDDE pair by the species `featurize_json._species_id` reads from each
-#: header, and a ColabFold header carries none; their writer gives each row
-#: the species upstream Protenix's ColabFold mode gives it, its row number
-#: (`foldjax.input.row_species_a3m`) -- for OpenDDE only when asked
-#: (`_MODEL_PAIRS_BY_SPECIES`). AlphaFold 3 is refused
+#: header, and a ColabFold header carries none; under an explicit
+#: ``greedy``/``complete`` their writer gives each row the species upstream
+#: Protenix's ColabFold mode writes into its ``pairing.a3m``, its row number
+#: (`foldjax.input.row_species_a3m`). AlphaFold 3 is refused
 #: ``greedy``/``complete``: a complex-paired block would reach it unpaired.
 _ROW_PAIRED = frozenset({"boltz2", "openfold3", "opendde", "protenix"})
 
@@ -102,6 +127,36 @@ _MODEL_PAIRS_BY_SPECIES = frozenset({"opendde"})
 #: validation, as it attaches the alignment; a caller cannot.
 ROW_PAIRED_MSA = "_row_paired_msa"
 
+#: Set the same way on an entity of an `_ENV_FIRST_UNPAIRED` model whose
+#: ``unpaired_msa`` the search attached from a backend that lays it out as
+#: ColabFold's UniRef block then its environmental block
+#: (``unpaired_blocks``), so the writer can put the environmental hits first.
+ENV_FIRST_UNPAIRED_MSA = "_env_first_unpaired_msa"
+
+#: Said once per input when a Protenix heteromer is folded unpaired under the
+#: default ``msa_pairing="model"``.
+_PROTENIX_UNPAIRED_NOTE = (
+    "protenix: the chains of this heteromer are not paired, as in upstream's "
+    "ColabFold mode; upstream's default taxonomy pairing needs Protenix's own "
+    "MSA server, which FoldJAX does not use. --msa-pairing greedy (or "
+    "msa_pairing='greedy') opts into pairing the ColabFold rows by number"
+)
+
+
+def complex_queries(model: str, sequences: list[str]) -> list[str] | None:
+    """What one complex pairing search submits for these protein entities.
+
+    The entities' sequences in submission order, or None when ``model``'s
+    upstream pairs none of them: two or more distinct sequences in job order,
+    or, for `_PAIRS_EVERY_ENTRY`, two or more entries sorted with repeats kept.
+    """
+    from foldjax.search.msa import _normalize_sequence
+
+    normalized = [_normalize_sequence(sequence) for sequence in sequences]
+    if model in _PAIRS_EVERY_ENTRY:
+        return sorted(normalized) if len(normalized) > 1 else None
+    return normalized if len(set(normalized)) > 1 else None
+
 
 def resolve_pairing(model: str, pairing: str = "model") -> dict[str, Any]:
     """What ``msa_pairing`` means for ``model``, as the manifest records it.
@@ -113,7 +168,8 @@ def resolve_pairing(model: str, pairing: str = "model") -> dict[str, Any]:
     every block), ``species`` (re-paired by each header's UniProt species,
     which a ColabFold header does not carry, so no row beyond the query is
     paired: AlphaFold 3's per-chain alignment and OpenDDE's default, as their
-    upstreams) or None.
+    upstreams) or None (no paired alignment: Protenix's default, as its
+    ColabFold mode, and ESMFold2).
     """
     from foldjax.schema import MSA_PAIRINGS
     from foldjax.search.msa import (
@@ -181,14 +237,23 @@ def report_search_failure(message: str) -> None:
     once per call site, so in a CLI batch every input after the first failed
     silently.
     """
+    _report(message, "warning")
+
+
+def report_notice(message: str) -> None:
+    """Say how this input is searched, once, the way `report_search_failure` does."""
+    _report(message, "note")
+
+
+def _report(message: str, label: str) -> None:
     from foldjax import progress
 
     if progress.enabled():
-        progress.message(f"  warning: {message}")
+        progress.message(f"  {label}: {message}")
         return
     import warnings
 
-    warnings.warn(message, UserWarning, stacklevel=4)
+    warnings.warn(message, UserWarning, stacklevel=5)
 
 
 def _local_command(name: str) -> list[str] | None:
@@ -361,6 +426,33 @@ def _search_alignments(
                 prefetch=prefetch,
             )
         )
+        backend = getattr(pipeline, "backend", None)
+        if model in _ENV_FIRST_UNPAIRED and getattr(
+            backend, "unpaired_blocks", None
+        ) == ("uniref", "env"):
+            for entity in wanted:
+                if entity.get("unpaired_msa"):
+                    entity[ENV_FIRST_UNPAIRED_MSA] = True
+        if (
+            model == "protenix"
+            and pairing == "model"
+            and not prefetch
+            # A caller's own paired_msa is passed through, so it is paired.
+            and not any(
+                entity.get("paired_msa")
+                for entity in job["entities"]
+                if entity.get("type") == "protein"
+            )
+            and complex_queries(
+                model,
+                [
+                    str(entity["sequence"])
+                    for entity in job["entities"]
+                    if entity.get("type") == "protein"
+                ],
+            )
+        ):
+            report_notice(_PROTENIX_UNPAIRED_NOTE)
         if pairs_complex:
             from foldjax.search.msa import COMPLEX_PAIRING_MODE
 
@@ -465,8 +557,8 @@ def _pair_complex(
     by_row: bool = True,
     prefetch: bool = False,
 ) -> None:
-    """Pair the whole complex in one search, as OpenFold3 v0.5.0, Boltz-2,
-    Protenix and OpenDDE do.
+    """Pair the whole complex in one search, as OpenFold3 v0.5.0, Boltz-2 and
+    OpenDDE do (and Protenix under an explicit ``greedy``/``complete``).
 
     ``mode`` None is the backend's own (``pairgreedy-env``, OpenFold3's);
     otherwise `resolve_pairing`'s mode for the model and strategy.
@@ -481,7 +573,10 @@ def _pair_complex(
     (sample_processing/msa.py:239-246), which per-chain pair jobs do not give.
     Boltz-2 submits the same job over its protein *entities* (``main.py``
     ``compute_msa``); here a common job's entities with one sequence are paired
-    as one query, as OpenFold3's are.
+    as one query, as OpenFold3's are. OpenDDE pairs every job with more than
+    one protein entity, in sorted order, as its upstream does
+    (`complex_queries`); its cache entry is keyed on that ordered list, repeats
+    included.
 
     Only a job whose protein chains were all searched here is paired: pairing
     submits every chain's sequence, and a chain that arrived with its own
@@ -490,13 +585,13 @@ def _pair_complex(
     import warnings
 
     from foldjax.input import _ids
-    from foldjax.search.msa import SearchError
+    from foldjax.search.msa import SearchError, _normalize_sequence
 
     proteins = [
         entity for entity in job["entities"] if entity.get("type") == "protein"
     ]
-    distinct = {"".join(str(entity["sequence"]).split()).upper() for entity in proteins}
-    if len(distinct) < 2:
+    queries = complex_queries(model, [str(entity["sequence"]) for entity in proteins])
+    if queries is None:
         return
     searched_ids = {id(entity) for entity in wanted}
     if not all(
@@ -538,13 +633,11 @@ def _pair_complex(
             stacklevel=3,
         )
         return
+    keyword: dict[str, Any] = {} if mode is None else {"mode": mode}
+    if model in _PAIRS_EVERY_ENTRY:
+        keyword["entries"] = True
     try:
-        sequences = [str(entity["sequence"]) for entity in proteins]
-        found = (
-            pipeline.search_complex(sequences)
-            if mode is None
-            else pipeline.search_complex(sequences, mode=mode)
-        )
+        found = pipeline.search_complex(queries, **keyword)
     except (SearchError, TimeoutError, OSError, ValueError) as error:
         if policy == "required":
             raise ValueError(
@@ -562,7 +655,9 @@ def _pair_complex(
             record.setdefault("paired_error", str(error))
         return
     records = {record["chain"]: record for record in searched}
-    for entity, result in zip(proteins, found, strict=True):
+    by_sequence = dict(zip(queries, found, strict=True))
+    for entity in proteins:
+        result = by_sequence[_normalize_sequence(str(entity["sequence"]))]
         entity["paired_msa"] = result["pairedMsaPath"]
         if by_row:
             entity[ROW_PAIRED_MSA] = True
