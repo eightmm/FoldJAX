@@ -732,6 +732,94 @@ def test_alphafold3_never_reuses_unmarked_checkout_artifacts(
     assert source_extension.read_bytes() == b"stale extension"
 
 
+def _fake_alphafold3_source(tmp_path: Path, monkeypatch) -> None:
+    from foldjax.models.alphafold3 import build
+
+    upstream = tmp_path / "checkout" / "_upstream"
+    package = upstream / "alphafold3"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (upstream / "CMakeLists.txt").write_text("# build\n")
+    (upstream / "pyproject.toml").write_text("# package\n")
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(build, "_UPSTREAM", upstream)
+    monkeypatch.setattr(build, "_PACKAGE", package)
+
+
+def _fresh_build(runtime_package: Path, runtime_root: Path) -> None:
+    from foldjax.models.alphafold3 import build
+
+    (runtime_package / f"cpp{build._extension_suffix()}").write_bytes(b"fresh")
+    for name in build._LIBCIFPP_FILES:
+        target = runtime_root / "share/libcifpp" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"fresh dictionary")
+
+
+def test_alphafold3_runtime_is_published_with_the_umask(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``mkdtemp``'s 0700 was published, so a group sharing the store could
+    not import the runtime one member built."""
+    import stat
+
+    from foldjax.models.alphafold3 import build
+
+    _fake_alphafold3_source(tmp_path, monkeypatch)
+    monkeypatch.setattr(build, "_build_extension", _fresh_build)
+    previous = os.umask(0o002)
+    try:
+        build.ensure_extensions()
+    finally:
+        os.umask(previous)
+
+    assert stat.S_IMODE(build.runtime_root().stat().st_mode) == 0o775
+
+
+def test_alphafold3_an_unreadable_runtime_is_an_error_not_a_rebuild(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Another account's ``0700`` runtime is not incomplete; it stays."""
+    from foldjax.models.alphafold3 import build
+
+    _fake_alphafold3_source(tmp_path, monkeypatch)
+    monkeypatch.setattr(build, "_build_extension", _fresh_build)
+    build.ensure_extensions()
+    root = build.runtime_root()
+    monkeypatch.setattr(
+        build,
+        "_build_extension",
+        lambda *args: pytest.fail("an unreadable runtime must not be rebuilt"),
+    )
+    root.chmod(0o000)
+    try:
+        with pytest.raises(RuntimeError, match="cannot read it.*chmod -R g\\+rX"):
+            build.ensure_extensions()
+        assert root.exists()
+    finally:
+        root.chmod(0o755)
+    assert (root / build._EXTENSION_MARKER).is_file()
+
+
+def test_alphafold3_another_accounts_abandoned_build_is_skipped(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from foldjax.models.alphafold3 import build
+
+    _fake_alphafold3_source(tmp_path, monkeypatch)
+    monkeypatch.setattr(build, "_build_extension", _fresh_build)
+    debris = build.runtime_base() / ".0123abcd-stale" / "alphafold3"
+    debris.mkdir(parents=True)
+    (debris / "partial.py").write_text("")
+    debris.chmod(0o500)
+    try:
+        with pytest.warns(RuntimeWarning, match="abandoned AlphaFold 3 build"):
+            build.ensure_extensions()
+    finally:
+        debris.chmod(0o755)
+    assert build.compiled_module() is not None
+
+
 def test_alphafold3_interrupted_ccd_generation_repairs_on_retry(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -734,6 +734,14 @@ unless it says so here, in its own paragraph.
 - **Boltz-2's `processed/` tree takes the umask's mode.** It was built in a
   `0700` temporary directory and published with that mode, so another member
   of a shared run directory's group could not replace it on a rerun.
+- **AlphaFold 3's prepared runtime is shared with the store's group, and an
+  unreadable one is never deleted.** A runtime generation was published
+  `0700` from its temporary build directory, so nobody else sharing the store
+  could use it; it now takes the umask's mode. A generation this account
+  cannot read was taken for an interrupted build and deleted to be rebuilt
+  (or failed half way with a bare `PermissionError`); it is now left in place
+  with an error naming it and its `chmod -R g+rX` repair. Another account's
+  abandoned build directory is skipped with a warning.
 - **OpenDDE accepts the unknown-residue letters upstream documents.** Protein
   `X`, and DNA and RNA `N` and `X`, were refused with `NotImplementedError`;
   they now become UNK, DN and N as upstream's parser maps them, with

@@ -487,6 +487,51 @@ def _build_extension(package: Path, root: Path) -> None:
         _extract_build_wheel(built[0], package, root)
 
 
+def _staging_root() -> Path:
+    """A fresh hidden sibling to build a generation in, with the umask's mode.
+
+    ``tempfile.mkdtemp`` makes it 0700, which the published runtime kept, so
+    nobody else sharing the store could import it.
+    """
+    base = runtime_base()
+    while True:
+        path = base / f".{runtime_key()}-{os.urandom(6).hex()}"
+        try:
+            os.mkdir(path)
+        except FileExistsError:
+            continue
+        return path
+
+
+def _refuse_unreadable(root: Path) -> None:
+    """Raise when an existing generation is unreadable rather than incomplete.
+
+    The readiness checks treat every ``OSError`` as "not there yet", so
+    another account's runtime this one cannot read looked incomplete and was
+    deleted to be rebuilt -- that account's build, or as much of it as the
+    directory modes let go.
+    """
+
+    def denied(error: OSError) -> None:
+        raise error
+
+    try:
+        for directory, _, files in os.walk(root, onerror=denied):
+            if not os.access(directory, os.R_OK | os.X_OK):
+                raise PermissionError(f"cannot read {directory}")
+            for name in files:
+                path = os.path.join(directory, name)
+                if not os.path.islink(path) and not os.access(path, os.R_OK):
+                    raise PermissionError(f"cannot read {path}")
+    except PermissionError as error:
+        raise RuntimeError(
+            f"the AlphaFold 3 runtime {root} exists but this account cannot "
+            f"read it ({error}), so it is left in place rather than rebuilt. "
+            f"Its owner can share it with `chmod -R g+rX {root}`; otherwise "
+            "point FOLDJAX_HOME at a store of your own."
+        ) from error
+
+
 def _ensure_extensions_locked() -> Path:
     if _runtime_extensions_complete():
         extension = _extension(runtime_package())
@@ -495,11 +540,23 @@ def _ensure_extensions_locked() -> Path:
 
     root = runtime_root()
     if root.exists():
+        _refuse_unreadable(root)
         shutil.rmtree(root)
     for abandoned in runtime_base().glob(".*-*"):
         if abandoned.is_dir() and abandoned.name != ".build.lock":
-            shutil.rmtree(abandoned)
-    staged = Path(tempfile.mkdtemp(prefix=f".{runtime_key()}-", dir=runtime_base()))
+            try:
+                shutil.rmtree(abandoned)
+            except OSError as error:
+                # Another account's debris: in the way of nothing, since this
+                # build stages under a fresh name.
+                import warnings
+
+                warnings.warn(
+                    f"left an abandoned AlphaFold 3 build in place: {error}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+    staged = _staging_root()
     try:
         package = _copy_source_tree(staged / "alphafold3")
         # Ignored ``cpp*.so`` files in a source checkout carry no provenance
