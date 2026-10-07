@@ -1458,7 +1458,7 @@ class Boltz2Backend(Backend):
         if (
             options.get("subsample_msa") is True
             and type(options.get("cp_devices", 1)) is int
-            and options["cp_devices"] > 1
+            and options.get("cp_devices", 1) > 1
         ):
             # The row draw is a permutation of the MSA depth the trunk holds,
             # which under a mesh can be one device's share of it. Upstream has
@@ -1483,7 +1483,8 @@ class Boltz2Backend(Backend):
                     "use_potentials runs the eager steering sampler, which "
                     "builds no executable for deterministic=true to carry"
                 )
-            if type(options.get("cp_devices", 1)) is int and options["cp_devices"] > 1:
+            devices = options.get("cp_devices", 1)
+            if type(devices) is int and devices > 1:
                 raise ValueError(
                     "use_potentials runs the eager steering sampler, which "
                     "context parallelism cannot partition"

@@ -195,6 +195,13 @@ def test_plan_refuses_what_the_run_would(
 
 
 @pytest.mark.parametrize("name", ["subsample_msa", "use_potentials"])
+def test_plan_accepts_the_switch_without_cp_devices(tmp_path: Path, name: str) -> None:
+    # `foldjax plan --option use_potentials=true` carries no cp_devices; the
+    # mesh check read it by key and died with KeyError: 'cp_devices'.
+    Boltz2Backend().validate_request(_request(tmp_path, **{name: True}))
+
+
+@pytest.mark.parametrize("name", ["subsample_msa", "use_potentials"])
 def test_padding_refuses_the_options_it_cannot_carry(tmp_path: Path, name: str) -> None:
     request = dataclasses.replace(
         _request(tmp_path, **{name: True}), padding=PaddingConfig()
