@@ -2712,7 +2712,10 @@ token/atom/MSA combination was compiled.
 
 A zero cache delta is reported neutrally as `no_new_entry_observed`: directory
 contents alone cannot prove an XLA cache hit, and FoldJAX does not pretend that
-they can.
+they can. For the same reason a warm always executes: which programs a request
+compiles is known only by running it, so warming a shape that is already warm
+runs the model once more (on a CPU, the whole prediction) and reports
+`no_new_entry_observed`.
 
 The cache setting is scoped to one FoldJAX request even though JAX exposes it
 as process-wide configuration: FoldJAX serializes its own predictions, applies

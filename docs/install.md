@@ -38,6 +38,7 @@ same when adding one. That is the form `foldjax doctor` prints in a checkout.
 | `alphafold3` | AlphaFold 3's runtime dependencies (Haiku and friends) |
 | `openfold3-preprocess` | OpenFold3 raw-job featurization; includes `kalign-python` |
 | `templates` | `kalign-python` alone: the realignment behind `--templates auto`/`required` for AlphaFold 3, Protenix, OpenDDE and OpenFold3 |
+| `posebusters` | PoseBusters, for `foldjax check` (ligand plausibility checks) |
 
 `kalign-python` is an extra rather than a base dependency because it publishes
 x86-64 Linux and macOS wheels only; in the base set every aarch64 Linux install

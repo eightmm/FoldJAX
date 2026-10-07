@@ -3,6 +3,13 @@
 Run many jobs, through several models, as one restartable batch, and split it
 over a Slurm array.
 
+**Files you supply.** The jobs below name `target.a3m`, an alignment for the
+protein, and a ligand library `library.smi` (one SMILES per line, a name after
+it); none of them ships with FoldJAX. Put your own beside the job file, or drop
+the `unpaired_msa` line and run with `--msa auto` (searches, sending the
+sequence to a server) or `--msa single` (folds from the sequence alone) to try
+the commands first.
+
 ## A batch is a list of inputs
 
 Every model runs on every input; each pair gets its own run directory.

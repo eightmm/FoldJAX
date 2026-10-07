@@ -23,7 +23,15 @@ export UV_NO_DEFAULT_GROUPS=1
 uv sync
 ```
 
-CUDA 12, pip, a container image and the optional extras are in
+Without a checkout, pip installs the same package (no extra is the CPU build;
+add `[cuda13]` or `[cuda12]` on a GPU machine); every `uv run foldjax` below
+is then just `foldjax`:
+
+```bash
+pip install 'foldjax @ git+https://github.com/eightmm/FoldJAX@v0.1.0'
+```
+
+CUDA 12, a container image and the optional extras are in
 [install.md](install.md).
 
 ## 2. Check the install
@@ -70,9 +78,12 @@ uv run foldjax predict --model boltz2 --name first_fold --msa single \
 - Boltz-2 seeds nothing by default upstream, so FoldJAX draws a seed, prints
   it and records it.
 
-Stage timings go to stderr and a summary table to stdout. The first run of a
-shape spends most of its time compiling; the compiled program is cached under
-the store, so the same shape runs again in a fraction of the time.
+Stage timings go to stderr and the result to stdout: a summary table in a
+terminal, JSON when stdout is a pipe or a file (`--json` asks for JSON in a
+terminal too). The compiled program is cached under the store, so the same
+shape does not compile again. On a GPU the first run of a shape spends most of
+its time compiling, and a rerun takes a fraction of it; on a CPU executing the
+model dominates, and a rerun takes about as long.
 
 To check a request without running it (the weights must be installed, but
 nothing loads and nothing is written):
@@ -91,11 +102,14 @@ uv run foldjax show foldjax-outputs/first_fold
 ```
 foldjax-outputs/first_fold/
 ├── foldjax_run.json                                  the run manifest: input, weights, seed, options, cost
-└── seed-<seed>_sample-00/
-    ├── first_fold_seed-<seed>_sample-00.cif          the structure; pLDDT in the B-factor column
-    ├── confidence.json                               the model's scores, plus a common summary
-    ├── confidence_full.npz                           PAE, PDE, per-token pLDDT, chain-pair ipTM
-    └── predicted_aligned_error.json                  PAE in AlphaFold DB's format, for viewers
+├── seed-<seed>_sample-00/
+│   ├── first_fold_seed-<seed>_sample-00.cif          the structure; pLDDT in the B-factor column
+│   ├── confidence.json                               the model's scores, plus a common summary
+│   ├── confidence_full.npz                           PAE, PDE, per-token pLDDT, chain-pair ipTM
+│   └── predicted_aligned_error.json                  PAE in AlphaFold DB's format, for viewers
+├── inputs/                                           the job as translated for Boltz-2
+├── msa/, predictions/, processed/                    Boltz-2's own working files, where it wrote them
+└── .foldjax.lock                                     held while a run writes here; left in place on purpose
 ```
 
 Open the `.cif` in PyMOL, ChimeraX or Mol\*; colouring by B-factor shows
@@ -103,14 +117,23 @@ pLDDT. In `confidence.json`, `summary.plddt`, `summary.ptm` and
 `summary.ranking` are the numbers to read first; `scores` keeps Boltz-2's own
 names. Everything in these files is described in [outputs.md](outputs.md).
 
-The same run from Python:
+The same run from Python, into a directory of its own. Boltz-2 draws a new
+seed each time, so writing into `foldjax-outputs/first_fold` again would put a
+second run beside the first (FoldJAX warns when that happens):
 
 ```python
 from foldjax import Job, PredictionRequest, predict
 
 sequence = "MKTAYIAKQRQISFVKSHFSRQDILDLWIYHTQGYFPDWQNYTPGPGIRYPLTFGWCFKLVPVDPEEVVEELEKAGVE"
 job = Job.from_sequences(protein=(sequence,), name="first_fold")
-result = predict(PredictionRequest(model="boltz2", input=job.store(), msa="single"))
+result = predict(
+    PredictionRequest(
+        model="boltz2",
+        input=job.store(),
+        msa="single",
+        output_dir="foldjax-outputs/first_fold_python",
+    )
+)
 for sample in result.samples:
     print(sample.structure_path, sample.scores)
 ```

@@ -3,6 +3,12 @@
 Fold a protein carrying an N-linked glycan: a ligand chain made of several
 CCD components, bonded to an asparagine and to each other.
 
+**Files you supply.** The jobs below name `glycoprotein.a3m`, an alignment for
+the protein; none of them ships with FoldJAX. Put your own beside the job file,
+or drop the `unpaired_msa` line and run with `--msa auto` (searches, sending
+the sequence to a server) or `--msa single` (folds from the sequence alone) to
+try the commands first.
+
 ## The job
 
 `glycoprotein.yaml`:
