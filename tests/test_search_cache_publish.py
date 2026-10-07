@@ -182,3 +182,34 @@ def test_a_failed_structure_publish_leaves_no_debris(
     with pytest.raises(OSError, match="No space"):
         store.path("1abc")
     assert [p for p in tmp_path.rglob("*") if p.is_file()] == []
+
+
+def _locked_by_another_open(lock: Path) -> bool:
+    """Whether a separate open of ``lock`` is refused its exclusive ``flock``."""
+    import fcntl
+
+    fd = os.open(lock, os.O_RDONLY)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
+def test_another_accounts_read_only_search_lock_still_serializes(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("fcntl")
+    from foldjax.search.msa import cache_key_lock
+
+    cache = tmp_path / "msa"
+    cache.mkdir()
+    lock = cache / ".key.lock"
+    lock.write_bytes(b"")
+    lock.chmod(0o444)
+    with cache_key_lock(cache, "key"):
+        assert _locked_by_another_open(lock)

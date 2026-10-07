@@ -742,6 +742,14 @@ unless it says so here, in its own paragraph.
   (or failed half way with a bare `PermissionError`); it is now left in place
   with an error naming it and its `chmod -R g+rX` repair. Another account's
   abandoned build directory is skipped with a warning.
+- **Lock files another member of the store's group made no longer stop a
+  download, conversion or build.** The weight download and conversion locks
+  and AlphaFold 3's build lock were opened for writing, so a lock the group
+  could only read (`0644`/`0640`, as a 0022 or 0027 umask makes it) failed the
+  first real download or conversion with `EACCES`; OpenFold3's compile-cache
+  lock and the MSA/template search lock went unlocked instead. They are now
+  opened read-only, which `flock` needs, and created with the umask's mode
+  (OpenFold3's was `0600`).
 - **OpenDDE accepts the unknown-residue letters upstream documents.** Protein
   `X`, and DNA and RNA `N` and `X`, were refused with `NotImplementedError`;
   they now become UNK, DN and N as upstream's parser maps them, with

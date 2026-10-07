@@ -820,6 +820,28 @@ def test_alphafold3_another_accounts_abandoned_build_is_skipped(
     assert build.compiled_module() is not None
 
 
+def test_alphafold3_build_lock_another_account_made_still_serializes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import fcntl
+
+    from foldjax.models.alphafold3 import build
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "home"))
+    lock = build.runtime_base() / ".build.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(b"")
+    lock.chmod(0o444)
+
+    with build._runtime_lock():
+        fd = os.open(lock, os.O_RDONLY)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(fd)
+
+
 def test_alphafold3_interrupted_ccd_generation_repairs_on_retry(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -1401,6 +1401,45 @@ def test_conversion_lock_cleans_only_known_abandoned_staging(
         assert unrelated.is_dir()
 
 
+def _locked_by_another_open(lock: Path) -> bool:
+    """Whether a separate open of ``lock`` is refused its exclusive ``flock``."""
+    import fcntl
+
+    fd = os.open(lock, os.O_RDONLY)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
+def test_another_accounts_read_only_locks_still_serialize(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A ``0644`` lock another member of the store's group made: opening it
+    for writing failed with ``EACCES`` on the first download or conversion."""
+    pytest.importorskip("fcntl")
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    root = paths.weights_dir("boltz2")
+    root.mkdir(parents=True)
+    target = root / "boltz2_conf.ckpt"
+    conversion = root / ".conversion.lock"
+    download = target.with_name(f".{target.name}.lock")
+    for lock in (conversion, download):
+        lock.write_bytes(b"")
+        lock.chmod(0o444)
+
+    with assets._conversion_lock("boltz2"):
+        assert _locked_by_another_open(conversion)
+    with assets._download_lock(target):
+        assert _locked_by_another_open(download)
+    assert not _locked_by_another_open(download)
+
+
 def test_esmfold2_ready_rejects_same_size_corruption(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -27,8 +27,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from foldjax._fsutil import exclusive_file_lock, ordinary_file_mode
 from foldjax._fsutil import nonempty_file as _nonempty_file
-from foldjax._fsutil import ordinary_file_mode
 from foldjax._fsutil import sha256_file as _digest
 from foldjax.paths import assets_dir, downloads_dir, weights_dir
 
@@ -2216,18 +2216,8 @@ def _verify_supplied(spec: ModelAssets) -> None:
 @contextmanager
 def _download_lock(path: Path) -> Iterator[None]:
     """Serialize writers of one published file across local processes."""
-    lock = path.with_name(f".{path.name}.lock")
-    with lock.open("a+b") as handle:
-        try:
-            import fcntl
-        except ImportError:  # pragma: no cover - FoldJAX targets Linux/CUDA
-            yield
-        else:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with exclusive_file_lock(path.with_name(f".{path.name}.lock")):
+        yield
 
 
 @contextmanager
@@ -2235,19 +2225,10 @@ def _conversion_lock(model: str) -> Iterator[None]:
     """Serialize publication of one model's native bundle."""
     root = weights_dir(model)
     root.mkdir(parents=True, exist_ok=True)
-    lock = root / ".conversion.lock"
-    with lock.open("a+b") as handle:
-        try:
-            import fcntl
-        except ImportError:  # pragma: no cover - FoldJAX targets Linux/CUDA
-            yield
-        else:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                _cleanup_abandoned_staging(model)
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with exclusive_file_lock(root / ".conversion.lock") as locked:
+        if locked:
+            _cleanup_abandoned_staging(model)
+        yield
 
 
 def _cleanup_abandoned_staging(model: str) -> None:

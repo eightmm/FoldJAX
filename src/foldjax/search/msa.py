@@ -277,7 +277,9 @@ def cache_key_lock(cache_dir: Path, cache_key: str) -> Iterator[None]:
         cache_dir.mkdir(parents=True, exist_ok=True)
         handle = os.open(
             cache_dir / f".{cache_key}.lock",
-            os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0),
+            # Read-only: ``flock`` needs no write access, and another
+            # account's 0644 lock would otherwise go unlocked.
+            os.O_RDONLY | os.O_CREAT | getattr(os, "O_CLOEXEC", 0),
             0o666,
         )
     except OSError:

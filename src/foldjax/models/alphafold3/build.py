@@ -330,19 +330,12 @@ def _managed_package_on_path(package: Path) -> Iterator[None]:
 def _runtime_lock() -> Iterator[None]:
     """Serialize first use across FoldJAX threads and Linux GPU processes."""
     with _THREAD_LOCK:
+        from foldjax._fsutil import exclusive_file_lock
+
         base = runtime_base()
         base.mkdir(parents=True, exist_ok=True)
-        with (base / ".build.lock").open("a+b") as handle:
-            try:
-                import fcntl
-            except ImportError:  # pragma: no cover - FoldJAX targets Linux/CUDA
-                yield
-            else:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                try:
-                    yield
-                finally:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        with exclusive_file_lock(base / ".build.lock"):
+            yield
 
 
 def _copy_source_tree(destination: Path) -> Path:
