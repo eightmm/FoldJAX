@@ -151,10 +151,13 @@ directory above it
 - is writable neither by the world nor by a group with another member (a
   root-owned sticky directory such as `/tmp` is fine as an ancestor).
 
-New cache directories are created without the group-write bit whatever the
-umask. When the check fails, the run warns once, names the directory and the
-reason, and compiles without a persistent cache: it is slower, never wrong,
-and an untrusted directory is never read.
+The check is made on the nearest directory that already exists, before
+anything is created, and the directories FoldJAX then creates under it are
+`0755` whatever the umask, so a private cache stays private. When the check
+fails, the run warns once, names the directory and the reason, creates
+nothing, and compiles without a persistent cache: it is slower, never wrong,
+and an untrusted directory is never read. `foldjax doctor` prints the same
+verdict without running anything.
 
 A cache shared on purpose, such as a lab's group-writable setgid directory, is
 opted in with
@@ -164,4 +167,71 @@ export FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1
 ```
 
 which trusts every account that can write into it. Use it only when that is
-true of everyone in the group.
+true of everyone in the group. With it set, new cache directories follow the
+umask (and inherit a setgid parent's group) like the rest of the store; a
+cache directory that cannot be created is a warning and a run without the
+persistent cache, and one this account cannot write is named in a warning,
+since its entries load but nothing new is kept. Every member needs the
+variable from their first run: see
+[Sharing a store with a group](#sharing-a-store-with-a-group).
+
+## Sharing a store with a group
+
+One `FOLDJAX_HOME` can serve a lab, so weights are fetched once and compiled
+programs, alignments and AlphaFold 3's runtime are shared. FoldJAX creates
+every file with the process umask, so the group's access is decided by the
+umask and the store's group, set up once:
+
+```bash
+# once, by whoever creates the store; `lab` is the shared Unix group
+mkdir -p /shared/foldjax
+chgrp lab /shared/foldjax
+chmod 2775 /shared/foldjax    # setgid: everything below it joins group lab
+```
+
+and by every member, before their first run (in the shell profile, or the
+batch script):
+
+```bash
+umask 0002                                # new files group-writable
+export FOLDJAX_HOME=/shared/foldjax
+export FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1
+```
+
+What each part of the store needs:
+
+- **Weights.** Fetch and convert each model once (`foldjax weights fetch`),
+  so the rest of the group finds it ready; its conversion records follow the
+  umask like the weights. A member who fetches or converts later needs group
+  write on that model's directories, which the umask gives; a lock file
+  another member made is taken read-only, so a group-readable one is enough.
+- **Compile cache.** Shared only with `FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1`,
+  set for every member from the first run, because it trusts every account
+  that can write `compile/` to run code as you
+  ([Compile-cache trust](#compile-cache-trust)). A run without it creates
+  `0755` namespaces whatever the umask: the rest of the group can load their
+  entries but not add to them, so their runs compile those programs again
+  every time, with a warning naming the directory. AlphaFold 3's Tokamax
+  autotuning results stay with the account that measured them.
+- **MSA and template caches.** Shared by the umask alone; the recorded
+  hashes detect a damaged entry, not a hostile writer.
+- **Run directories.** Members can rerun or resume each other's runs when the
+  run directory and its files are group-writable, as a 0002 umask leaves
+  them. The run lock (`.foldjax.lock`) follows the umask too; a lock another
+  account made `0600` is refused with an error naming it.
+- **AlphaFold 3's runtime.** The first member to use AlphaFold 3 builds
+  `runtime/alphafold3/<key>/`, and the others use it. A generation this
+  account cannot read is an error naming it, never rebuilt in place.
+
+A store used before this setup (or by a member without the umask or the
+variable) holds directories and lock files the rest of the group cannot
+write. Each member repairs what they own, since `chmod` refuses anyone
+else's files:
+
+```bash
+find "$FOLDJAX_HOME" -user "$USER" ! -type l -exec chmod g+rwX {} +
+find "$FOLDJAX_HOME" -user "$USER" -type d -exec chmod g+s {} +
+```
+
+For the compile cache alone, `chmod -R g+w "$FOLDJAX_HOME/compile"` by the
+owner of its `0755` namespaces is enough.

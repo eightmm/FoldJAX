@@ -165,7 +165,16 @@ FoldJAX uses a compile cache only when no other account can write into it,
 because a cache entry is an executable JAX runs as found. A group-writable
 store is refused with a warning, and the run compiles without a persistent
 cache. If the sharing is deliberate, set `FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1`
-([configuration.md](configuration.md#compile-cache-trust)).
+([configuration.md](configuration.md#compile-cache-trust)). `foldjax doctor`
+says whether the cache is trusted.
+
+## Can a lab share one store?
+
+Yes: one group-owned, setgid `FOLDJAX_HOME`, a `0002` umask and
+`FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1` for every member from their first run.
+[Sharing a store with a group](configuration.md#sharing-a-store-with-a-group)
+has the setup, what each part of the store needs, and the `chmod` repair for
+a store some member used before.
 
 ## Where did my files go?
 
