@@ -437,6 +437,12 @@ def _search_alignments(
             model == "protenix"
             and pairing == "model"
             and not prefetch
+            # A caller's own paired_msa is passed through, so it is paired.
+            and not any(
+                entity.get("paired_msa")
+                for entity in job["entities"]
+                if entity.get("type") == "protein"
+            )
             and complex_queries(
                 model,
                 [

@@ -486,6 +486,17 @@ def test_a_callers_paired_msa_is_passed_through_untouched(tmp_path: Path, stub):
     assert stub.complex_calls == []
     for chain in _chains(json.loads(path.read_text())):
         assert chain["pairedMsaPath"] == str(paired)
+    # Unpaired alignments searched, the caller's pairing kept: no "unpaired" note.
+    import warnings
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _materialize(
+            _job(tmp_path, SEQUENCE, OTHER, paired_msa=str(paired)),
+            "protenix",
+            tmp_path / "searched",
+        )
+    assert not [item for item in caught if "taxonomy" in str(item.message)]
 
 
 def test_blocks_of_different_depths_are_refused(tmp_path: Path, stub, monkeypatch):
