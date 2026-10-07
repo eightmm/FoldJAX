@@ -1,0 +1,4 @@
+# setuptools' default sdist template adds tests/test*.py, but not the
+# conftest.py, fixtures and helper modules those tests import, so the tree it
+# shipped could not run. The suite is run from a checkout, not from an sdist.
+prune tests
