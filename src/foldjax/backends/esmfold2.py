@@ -109,7 +109,31 @@ _FIXED_COMPILE_DEFAULTS = {
     # describes, it is upstream's own width, and no `config.json` key reaches
     # it either.
     "confidence_dtype": "float32",
+    # Upstream `forward`'s inference-time augmentations
+    # (`modeling_esmfold2.py:877-884`): no LM masking (`config.lm_mask_pct`,
+    # 0.0 and absent from the released `config.json`), a 0.1 MSA column mask,
+    # and the per-loop row subsample on (`msa_subsample_at_inference`).
+    "lm_mask_pct": 0.0,
+    "msa_column_mask_rate": 0.1,
+    "full_depth_msa": False,
 }
+
+#: The two rates, each with the interval upstream's draw is meaningful on: a
+#: mask rate of 1 would replace every residue the LM sees.
+_RATE_OPTIONS = {"lm_mask_pct": False, "msa_column_mask_rate": True}
+
+
+def _checked_rate(name: str, value: object) -> float:
+    """A probability, refused by name before anything is loaded."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a number; got {value!r}")
+    rate = float(value)
+    upper_inclusive = _RATE_OPTIONS[name]
+    if not (0.0 <= rate <= 1.0 if upper_inclusive else 0.0 <= rate < 1.0):
+        interval = "[0, 1]" if upper_inclusive else "[0, 1)"
+        raise ValueError(f"{name} must lie in {interval}; got {rate}")
+    return rate
 
 #: The layouts `cp_layout` accepts, and the resolution of an omitted one.
 #: `foldjax.models._cp.resolve_cp_layout` is the authority for both, but it
@@ -515,6 +539,11 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             # field has this name, so there is no translation entry to get
             # backwards and grepping the option finds every hop.
             "structure_sample_sequential",
+            # Upstream's inference-time augmentations, by upstream's names
+            # except the subsample switch, spelled as Protenix spells its own.
+            "lm_mask_pct",
+            "msa_column_mask_rate",
+            "full_depth_msa",
         }
     )
     # The neutral names, against the port's. `max_msa_depth` is the one that is
@@ -548,6 +577,12 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # Traced into the program rather than read at run time, so it selects
         # its own compilation namespace.
         "structure_sample_sequential",
+        # The column-mask rate and the row subsample are traced into the
+        # structure graph. The LM mask is drawn on the host, but it changes
+        # what ESMC is handed, so a cache entry must not answer a masked run.
+        "lm_mask_pct",
+        "msa_column_mask_rate",
+        "full_depth_msa",
         # Compiled into the executable, on both the structure graph and
         # ESMC's blocks, so it selects its own namespace for the same reason.
         "deterministic",
@@ -881,6 +916,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         *,
         packed_length: int | None,
         deterministic: bool = False,
+        masking: Mapping[str, Any] | None = None,
     ) -> Any | None:
         """Return raw ESMC states for a legacy split inference wrapper."""
 
@@ -899,6 +935,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             model,
             packed_length=packed_length,
             **_reduction_policy(deterministic),
+            **dict(masking or {}),
         )
 
     def _language_model_embedding(
@@ -909,8 +946,15 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         *,
         packed_length: int | None,
         deterministic: bool = False,
+        masking: Mapping[str, Any] | None = None,
     ) -> Any | None:
-        """Return one compact ESMC embedding, retaining at most one input."""
+        """Return one compact ESMC embedding, retaining at most one input.
+
+        ``masking`` is upstream's `lm_mask_pct` with the key it draws from.
+        A masked embedding depends on that key, so the key joins the
+        retention identity and one seed's masked input never serves another.
+        """
+        masking = dict(masking or {})
 
         # Derived state is reusable only when this session owns the exact model
         # object that produced it. Unverifiable checkpoints are deliberately
@@ -934,6 +978,15 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                     inference.LANGUAGE_MODEL_FEATURES,
                 ),
             )
+            if masking:
+                import jax
+
+                key += (
+                    (
+                        float(masking["lm_mask_pct"]),
+                        np.asarray(jax.random.key_data(masking["mask_key"])).tobytes(),
+                    ),
+                )
             if self._lm_embedding is not None and self._lm_embedding_key == key:
                 return self._lm_embedding
         if not model.has_language_model:
@@ -944,6 +997,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                 model,
                 packed_length=packed_length,
                 **_reduction_policy(deterministic),
+                **masking,
             )
         # Drop the prior compact result before ESMC and the projection allocate
         # the next input. The transient raw stack is owned only by the helper;
@@ -955,6 +1009,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             model,
             packed_length=packed_length,
             **_reduction_policy(deterministic),
+            **masking,
         )
         self._lm_embedding = embedding
         self._lm_embedding_key = key
@@ -984,6 +1039,12 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # depends on: an omitted `cp_devices` is the fixed default and an
         # omitted `cp_layout` never entered the profile at all.
         resolved_cp_layout = square_grid_cp_layout(profile)
+        # One spelling per rate: `0` and `0.0` are one draw. A malformed value
+        # keeps its own spelling for `validate_native_options` to refuse.
+        for name in _RATE_OPTIONS:
+            value = profile.get(name)
+            if isinstance(value, int) and not isinstance(value, bool):
+                profile[name] = float(value)
         self._strip_released_defaults(profile, _FIXED_COMPILE_DEFAULTS)
         # Every distributed run records the layout it resolved rather than the
         # one it spelled: `auto` is the square grid on a perfect-square device
@@ -1027,6 +1088,25 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         _checked_confidence_dtype(
             options.get("confidence_dtype", _FIXED_COMPILE_DEFAULTS["confidence_dtype"])
         )
+        rates = {
+            name: _checked_rate(name, options[name])
+            for name in _RATE_OPTIONS
+            if name in options
+        }
+        if _strict_boolean(
+            options.get("full_depth_msa", False), name="full_depth_msa"
+        ) and options.get("max_msa_depth") is not None:
+            raise ValueError(
+                "full_depth_msa reads every alignment row, and max_msa_depth "
+                "caps them; pass one of the two"
+            )
+        if rates.get("lm_mask_pct", 0.0) > 0.0 and _strict_boolean(
+            options.get("no_language_model", False), name="no_language_model"
+        ):
+            raise ValueError(
+                "lm_mask_pct masks the language model's input, and "
+                "no_language_model=true runs none"
+            )
 
     def capabilities(self) -> ModelCapabilities:
         return ModelCapabilities(
@@ -1116,6 +1196,20 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             overrides["confidence_dtype"] = _checked_confidence_dtype(
                 options.pop("confidence_dtype")
             )
+        # Upstream's inference-time augmentations, written into the overrides
+        # only when they depart from the port's own values, for the reason
+        # above: an unrequested run reaches the port in its usual call form.
+        if "msa_column_mask_rate" in options:
+            overrides["msa_column_mask_rate"] = _checked_rate(
+                "msa_column_mask_rate", options.pop("msa_column_mask_rate")
+            )
+        if _strict_boolean(
+            options.pop("full_depth_msa", False), name="full_depth_msa"
+        ):
+            overrides["full_depth_msa"] = True
+        lm_mask_pct = _checked_rate("lm_mask_pct", options.pop("lm_mask_pct", 0.0))
+        if lm_mask_pct > 0.0:
+            overrides["lm_mask_pct"] = lm_mask_pct
         # `translate` has already turned `off`/`on` into this port's own bool,
         # so an absent key means unasked. Written into `overrides` only when
         # asked, for the reason `structure_sample_sequential` above is: an
@@ -1267,8 +1361,22 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                     if language_model_enabled and request.padding is not None
                     else None
                 )
-                configured_msa_depth = overrides.get(
-                    "max_msa_depth", model.settings.max_msa_depth
+                configured_msa_depth = (
+                    None
+                    if overrides.get("full_depth_msa")
+                    else overrides.get("max_msa_depth", model.settings.max_msa_depth)
+                )
+                # The LM mask's draw, off the same key the structure graph
+                # would derive it from had it run ESMC itself.
+                masking = (
+                    {
+                        "masking": {
+                            "lm_mask_pct": lm_mask_pct,
+                            "mask_key": inference.lm_mask_key(prediction_key),
+                        }
+                    }
+                    if lm_mask_pct > 0.0
+                    else {}
                 )
                 active_msa_depth = (
                     configured_msa_depth
@@ -1334,6 +1442,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                             model,
                             packed_length=lm_target,
                             deterministic=deterministic,
+                            **masking,
                         )
                     if (
                         language_model_enabled
@@ -1363,6 +1472,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                                 model,
                                 packed_length=lm_target,
                                 deterministic=deterministic,
+                                **masking,
                             )
                     if self._loaded_model_staged:
                         model = self._materialize_structure_model(
@@ -1381,6 +1491,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                             model,
                             packed_length=lm_target,
                             deterministic=deterministic,
+                            **masking,
                         )
                     }
                 with matmul_precision():

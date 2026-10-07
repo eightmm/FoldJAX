@@ -144,6 +144,7 @@ class PredictionConfig(NamedTuple):
     model_name: str
     esm_checkpoint_dir: Path | None
     guidance_config: Path | None
+    use_tfg_guidance: bool
     padding: bool
     pad_tokens: int | None
     pad_atoms: int | None
@@ -305,7 +306,7 @@ def _run(
                 "padding currently supports generated --input-json features only; "
                 "static NPZ schemas may contain unregistered semantic axes"
             )
-        if config.guidance_config is not None:
+        if config.guidance_config is not None or config.use_tfg_guidance:
             raise SystemExit(
                 "padding with TFG guidance is not yet supported; use one or the other"
             )
@@ -315,7 +316,19 @@ def _run(
         # not depend on the draw. See the tape call in the seed loop.
 
     guidance_config = None
-    if config.guidance_config is not None:
+    if config.use_tfg_guidance:
+        if config.guidance_config is not None:
+            raise SystemExit(
+                "--use-tfg-guidance runs upstream's guidance mapping and "
+                "--guidance-config names another; pass one of them"
+            )
+        from foldjax.models.protenix.tfg.config import upstream_guidance_config
+
+        guidance_config = upstream_guidance_config()
+        if config.sampler_scan:
+            config = config._replace(sampler_scan=False)
+            print("TFG enabled: using the non-scan diffusion sampler")
+    elif config.guidance_config is not None:
         try:
             guidance_config = json.loads(
                 config.guidance_config.read_text(encoding="utf-8")

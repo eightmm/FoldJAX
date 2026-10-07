@@ -87,6 +87,9 @@ _CLI_OPTIONS = {
     "trunk_single_attention_backend",
     "use_rna_msa",
     "use_template",
+    # Upstream's `--use_tfg_guidance`, released false. A compile option: the
+    # guided sampler is the eager, unrolled program, not the compiled one.
+    "use_tfg_guidance",
 }
 
 #: The members of :data:`_CLI_OPTIONS` that decide whether the run starts
@@ -120,6 +123,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "use_template": False,
     "use_rna_msa": False,
     "deterministic_ops": "off",
+    "use_tfg_guidance": False,
 }
 
 #: Every `PredictionConfig` field's own parser default, so a resolved request
@@ -152,6 +156,7 @@ _PARSER_DEFAULTS: dict[str, object] = {
     "n_keys": 128,
     "use_template": False,
     "use_rna_msa": False,
+    "use_tfg_guidance": False,
     "max_msa_depth": 16384,
     "deterministic_ops": "off",
     "diffusion_attention_backend": "xla_jit",
@@ -276,6 +281,7 @@ _OPTION_SPECS: dict[
     "trunk_single_attention_backend": (_text_option, ("xla", "xla_jit", "xla_sdpa")),
     "use_rna_msa": (_boolean_option, None),
     "use_template": (_boolean_option, None),
+    "use_tfg_guidance": (_boolean_option, None),
 }
 
 
@@ -375,6 +381,29 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
         _strict_boolean(options.get("use_template", False), name="use_template")
         _strict_boolean(options.get("use_rna_msa", False), name="use_rna_msa")
         _strict_boolean(options.get("cp_atom_windows", True), name="cp_atom_windows")
+        if _strict_boolean(
+            options.get("use_tfg_guidance", False), name="use_tfg_guidance"
+        ):
+            # The runner's refusals, here too so `foldjax plan` reaches them:
+            # the guided sampler is eager and unrolled.
+            if options.get("deterministic_ops", "off") == "on":
+                raise ValueError(
+                    "use_tfg_guidance runs the eager guided sampler, which "
+                    "builds no executable for deterministic reductions"
+                )
+            if int(options.get("cp_devices", 1)) > 1:
+                raise ValueError(
+                    "use_tfg_guidance runs the eager guided sampler, which "
+                    "context parallelism cannot partition"
+                )
+
+    def validate_request(self, request: PredictionRequest) -> None:
+        super().validate_request(request)
+        if request.padding is not None and request.options.get("use_tfg_guidance"):
+            raise ValueError(
+                "padding with TFG guidance is not yet supported; drop "
+                "use_tfg_guidance or --padding"
+            )
 
     def cache_profile(self, request: PredictionRequest) -> dict[str, object]:
         """Keep explicit released defaults in the omitted cache namespace.

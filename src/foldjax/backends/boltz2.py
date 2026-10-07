@@ -532,6 +532,13 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "glu_backend": "tokamax",
     "deterministic": False,
     "msa_deletions": "released",
+    # Upstream's own run options (`boltz/main.py`), at the values `boltz
+    # predict` runs with when none is given. `method` is absent: its default
+    # is `None`, the featurizer's choice, and a `None` never strips.
+    "step_scale": 1.5,
+    "subsample_msa": False,
+    "num_subsampled_msa": 1024,
+    "use_potentials": False,
 }
 
 
@@ -698,6 +705,7 @@ class Boltz2Backend(Backend):
             # cache namespace.
             "memory_check",
             "memory_budget_gib",
+            "method",
             "msa_api_key_header",
             "msa_api_key_value",
             "msa_deletions",
@@ -705,8 +713,11 @@ class Boltz2Backend(Backend):
             "msa_server_password",
             "msa_server_url",
             "msa_server_username",
+            "num_subsampled_msa",
             "return_confidence_logits",
+            "step_scale",
             "steering_args",
+            "subsample_msa",
             "token_attention_chunk",
             "triangle_attention_q_chunk",
             # Carried by a scope rather than by `**options`, the way
@@ -724,6 +735,7 @@ class Boltz2Backend(Backend):
             "cp_fused_attention",
             "trunk_atom_attention_backend",
             "use_msa_server",
+            "use_potentials",
             "write_fmt",
         }
     )
@@ -819,6 +831,17 @@ class Boltz2Backend(Backend):
         # cache entry stands for the prediction, not just the program: a
         # `restored` request must not be answered out of a `released` run.
         "msa_deletions",
+        # Upstream's run options. `step_scale` is a trace-time constant of the
+        # sampler and `subsample_msa`/`num_subsampled_msa` change the trunk's
+        # MSA gather, so each is a different program. `method` changes one
+        # feature array and `use_potentials` swaps the compiled sampler for
+        # the eager steering loop; both are here for `msa_deletions`'s
+        # reason, so a cache entry never answers another configuration.
+        "step_scale",
+        "subsample_msa",
+        "num_subsampled_msa",
+        "method",
+        "use_potentials",
     )
 
     def __init__(self) -> None:
@@ -1001,6 +1024,14 @@ class Boltz2Backend(Backend):
         profile["matmul_precision"] = _realised_matmul_precision(
             profile.get("matmul_precision")
         )
+        # One spelling per value: `2` and `2.0` are one sampler, and the
+        # featurizer reads `method` case-insensitively. A malformed value keeps
+        # its own spelling for `validate_native_options` to refuse.
+        step_scale = profile.get("step_scale")
+        if isinstance(step_scale, (int, float)) and not isinstance(step_scale, bool):
+            profile["step_scale"] = float(step_scale)
+        if isinstance(profile.get("method"), str):
+            profile["method"] = profile["method"].lower()
         # ... and keep the three out of the strip, which would otherwise put
         # the released spelling back to absent the moment it equals a default.
         # The two diffusion widths need no `skip`: the native option's default
@@ -1410,6 +1441,53 @@ class Boltz2Backend(Backend):
             raise ValueError(
                 "msa_deletions must be one of 'released' or 'restored'"
             )
+        from foldjax.models.boltz2.run_options import validate_upstream_run_options
+
+        validate_upstream_run_options(
+            **{
+                name: options.get(name, _RELEASED_COMPILE_DEFAULTS.get(name))
+                for name in (
+                    "step_scale",
+                    "subsample_msa",
+                    "num_subsampled_msa",
+                    "method",
+                    "use_potentials",
+                )
+            }
+        )
+        if (
+            options.get("subsample_msa") is True
+            and type(options.get("cp_devices", 1)) is int
+            and options["cp_devices"] > 1
+        ):
+            # The row draw is a permutation of the MSA depth the trunk holds,
+            # which under a mesh can be one device's share of it. Upstream has
+            # no mesh to define the answer, so it is refused, not guessed.
+            raise ValueError(
+                "subsample_msa draws alignment rows the serial trunk holds; "
+                "under context parallelism that depth is sharded, so drop "
+                "subsample_msa or cp_devices"
+            )
+        if options.get("use_potentials") is True:
+            # The steering loop is eager: no outer executable to carry
+            # repeatable reductions, no partitioned graph, and no stable
+            # padded profile (`data/bucket.py` refuses it after featurizing).
+            # Refused here so `foldjax plan` says so first.
+            if options.get("steering_args") is not None:
+                raise ValueError(
+                    "use_potentials selects upstream's steering configuration; "
+                    "pass it or steering_args, not both"
+                )
+            if options.get("deterministic") is True:
+                raise ValueError(
+                    "use_potentials runs the eager steering sampler, which "
+                    "builds no executable for deterministic=true to carry"
+                )
+            if type(options.get("cp_devices", 1)) is int and options["cp_devices"] > 1:
+                raise ValueError(
+                    "use_potentials runs the eager steering sampler, which "
+                    "context parallelism cannot partition"
+                )
         if "write_fmt" in options and options["write_fmt"] not in {
             None,
             "cif",
@@ -1452,6 +1530,21 @@ class Boltz2Backend(Backend):
                 "the shared 256-token grid, which pads the MSA axis instead "
                 "of cropping it, or omit it for an exact-shape run"
             )
+        if request.padding is not None:
+            for name, reason in (
+                (
+                    "subsample_msa",
+                    "draws from the stored alignment depth, which padding "
+                    "widens with masked rows",
+                ),
+                (
+                    "use_potentials",
+                    "runs the eager steering sampler, which has no padded "
+                    "profile",
+                ),
+            ):
+                if request.options.get(name) is True:
+                    raise ValueError(f"{name} {reason}; drop it or --padding")
         super().validate_request(request)
 
     def predict(self, request: PredictionRequest) -> PredictionResult:

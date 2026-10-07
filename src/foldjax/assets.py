@@ -38,8 +38,11 @@ from foldjax.portspec import (
     OPENDDE_ABAG_PROFILE,
     PORTS,
     PROTENIX_BASE_20250630_PROFILE,
+    PROTENIX_BASE_CONSTRAINT_PROFILE,
+    PROTENIX_MINI_DEFAULT_PROFILE,
     PROTENIX_MINI_ESM_PROFILE,
     PROTENIX_MINI_ISM_PROFILE,
+    PROTENIX_TINY_DEFAULT_PROFILE,
     PROTENIX_V2_PROFILE,
     RELEASED_PROFILE,
     STRUCTURE_ONLY_PROFILE,
@@ -820,6 +823,82 @@ _PROTENIX_PROFILE_BY_INTERNAL_MODEL[_PROTENIX_BASE_20250630_MODEL] = (
     PROTENIX_BASE_20250630_PROFILE
 )
 _PROTENIX_PROFILE_BY_INTERNAL_MODEL[_PROTENIX_V2_MODEL] = PROTENIX_V2_PROFILE
+
+
+@dataclass(frozen=True, slots=True)
+class _ProtenixCheckpoint:
+    """One published checkpoint that converts alone, with no encoder beside it."""
+
+    model: str
+    checkpoint: Download
+    native: str
+    notes: str
+
+
+def _protenix_checkpoint(name: str, sha256: str, size: int) -> Download:
+    return Download(
+        name=f"{name}.pt",
+        url=f"https://protenix.tos-cn-beijing.volces.com/checkpoint/{name}.pt",
+        sha256=sha256,
+        size=size,
+    )
+
+
+#: Verified by one download each on 2026-10-06. The publisher serves no
+#: checksum, so these are FoldJAX's own hashes of the files at these URLs, the
+#: way the release checkpoint's was recorded. Each gets its own storage root
+#: for the reason `_PROTENIX_BASE_20250630_MODEL` does.
+_PROTENIX_CHECKPOINTS = {
+    PROTENIX_BASE_CONSTRAINT_PROFILE: _ProtenixCheckpoint(
+        model="protenix-base-constraint",
+        checkpoint=_protenix_checkpoint(
+            "protenix_base_constraint_v0.5.0",
+            "5358025b20b2212853ad75579be04387859557915f398a1d60f6a1a9a0c8c887",
+            1_475_206_741,
+        ),
+        native="protenix_base_constraint_v0.5.0.jax",
+        notes=(
+            "Protenix's base architecture fine-tuned with pocket, contact, "
+            "substructure and atom-contact constraint embedders, which read a "
+            "native job's `constraint` block. Upstream's config enables ESM "
+            "conditioning for it, but the checkpoint carries no "
+            "`input_embedder.linear_esm` and upstream zero-initialises that "
+            "projection (`embedders.py:62-66`), so the ESM term is exactly "
+            "zero there; FoldJAX runs it without the 3B encoder."
+        ),
+    ),
+    PROTENIX_MINI_DEFAULT_PROFILE: _ProtenixCheckpoint(
+        model="protenix-mini-default",
+        checkpoint=_protenix_checkpoint(
+            "protenix_mini_default_v0.5.0",
+            "3803340c5d9958c038e799ddd2b53b532db21855f261592ad455a5f003791f81",
+            537_049_294,
+        ),
+        native="protenix_mini_default_v0.5.0.jax",
+        notes=(
+            "Protenix-mini without a language model: 16 Pairformer blocks, one "
+            "MSA block, 8 diffusion transformer blocks, and upstream's small "
+            "sampler (5 steps, 4 cycles, gamma0 0, eta 1.0)."
+        ),
+    ),
+    PROTENIX_TINY_DEFAULT_PROFILE: _ProtenixCheckpoint(
+        model="protenix-tiny-default",
+        checkpoint=_protenix_checkpoint(
+            "protenix_tiny_default_v0.5.0",
+            "7ad252e023d61f94572f51ab60c2a58f3a12205271898fe581fa38d20de9566b",
+            443_171_586,
+        ),
+        native="protenix_tiny_default_v0.5.0.jax",
+        notes=(
+            "Protenix-tiny without a language model: 8 Pairformer blocks, one "
+            "MSA block, 8 diffusion transformer blocks, and upstream's small "
+            "sampler (5 steps, 4 cycles, gamma0 0, eta 1.0)."
+        ),
+    ),
+}
+for _profile, _checkpoint in _PROTENIX_CHECKPOINTS.items():
+    _PROTENIX_PROFILE_BY_INTERNAL_MODEL[_checkpoint.model] = _profile
+del _profile, _checkpoint
 
 #: Storage root -> (public model, the profile that root *is*). These are not
 #: models: they exist so an alternate checkpoint's converted files cannot
@@ -1847,6 +1926,28 @@ def _protenix_base_20250630_assets(spec: ModelAssets, profile: str) -> ModelAsse
             "it for practical use and keeps the release for benchmarks, "
             "because comparing against AlphaFold 3 needs AlphaFold 3's cutoff."
         ),
+    )
+
+
+def _protenix_plain_checkpoint_assets(spec: ModelAssets, profile: str) -> ModelAssets:
+    """One published checkpoint on the release's converter, its own root.
+
+    `base-20250630` without its history: the same shared chemistry and
+    template assets, one structure checkpoint, no encoder staged beside it.
+    """
+    variant = _PROTENIX_CHECKPOINTS[profile]
+    base = REGISTRY["protenix"]
+    shared = tuple(item for item in base.downloads if item.shared)
+    return dataclasses.replace(
+        base,
+        model=variant.model,
+        downloads=(variant.checkpoint, *shared),
+        native=variant.native,
+        requires=(variant.native,),
+        in_default_setup=False,
+        conversion_sources=(variant.checkpoint.name,),
+        conversion_schema=f"{variant.model}-native-v1",
+        notes=variant.notes,
     )
 
 

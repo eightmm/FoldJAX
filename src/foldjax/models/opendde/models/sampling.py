@@ -115,8 +115,18 @@ def sample_diffusion(
     use_scan: bool = False,
     atom_mask: jnp.ndarray | None = None,
     preserve_prefix_rng: bool = False,
+    guidance_config=None,
+    guidance_features=None,
 ) -> jnp.ndarray:
     """Run OpenDDE's loop sampler with optional shared random tapes.
+
+    ``guidance_config`` is upstream's training-free guidance mapping
+    (`opendde/model/generator.py:151-154,234-256`). OpenDDE's TFG engine,
+    potentials and config are Protenix's with Fold-CP plumbing added
+    (`opendde/tfg/*.py` against `protenix/tfg/*.py`), so the guided step is
+    Protenix's port, in the unrolled loop only, exactly where upstream calls
+    it: after the rigid augmentation and the churn noise, in place of the
+    Euler update.
 
     ``use_scan`` rolls the step loop into ``lax.scan`` instead of writing one
     copy of the denoiser per step into the graph. Every other repeated stack in
@@ -130,6 +140,23 @@ def sample_diffusion(
     n_steps = int(noise_schedule.shape[0]) - 1
     if n_steps < 1:
         raise ValueError("noise schedule must contain at least two levels")
+    guidance_engine = None
+    if guidance_config is not None:
+        from foldjax.models.protenix.tfg import TFGConfig, TFGEngine, parse_tfg_config
+
+        guidance = (
+            guidance_config
+            if isinstance(guidance_config, TFGConfig)
+            else parse_tfg_config(guidance_config)
+        )
+        if guidance.enable:
+            if guidance_features is None:
+                raise ValueError("guidance_features are required when TFG is enabled")
+            if use_scan:
+                raise ValueError("TFG guidance currently requires use_scan=False")
+            if preserve_prefix_rng:
+                raise ValueError("padding with TFG guidance is not yet supported")
+            guidance_engine = TFGEngine(guidance)
     if atom_mask is not None:
         atom_mask = jnp.asarray(atom_mask, dtype=dtype)
         if tuple(atom_mask.shape) != (n_atom,):
@@ -247,8 +274,15 @@ def sample_diffusion(
         )
 
     x_l = noise_schedule[0] * init_noise
+    guidance_keys = None
+    if guidance_engine is not None and guidance.eps_std != 0.0:
+        if key is None:
+            raise ValueError("key is required when TFG mc.std > 0")
+        guidance_keys = jax.random.split(jax.random.fold_in(key, 0x544647), n_steps)
 
-    def one_step(x_current, c_tau_last, c_tau, step_noise, rotation, translation):
+    def one_step(
+        x_current, c_tau_last, c_tau, step_noise, rotation, translation, step_i=None
+    ):
         """One Algorithm 18 step. Shared by the rolled and unrolled paths."""
         augmented = centre_random_augmentation(
             x_current,
@@ -270,6 +304,21 @@ def sample_diffusion(
         if atom_mask is not None:
             x_noisy = x_noisy * atom_mask[..., None]
         t_hat = jnp.full(x_noisy.shape[:-2], t_hat_scalar, dtype=dtype)
+        if guidance_engine is not None:
+            x_next = guidance_engine.step(
+                denoise_fn,
+                x=x_noisy,
+                t_hat=t_hat,
+                c_tau=jnp.full(x_noisy.shape[:-2], c_tau, dtype=dtype),
+                step_scale_eta=step_scale_eta,
+                step_i=step_i,
+                num_diffusion_steps=n_steps,
+                input_feature_dict=guidance_features,
+                key=None if guidance_keys is None else guidance_keys[step_i],
+            )
+            if atom_mask is not None:
+                x_next = x_next * atom_mask[..., None]
+            return x_next
         x_denoised = denoise_fn(x_noisy, t_hat)
         delta = (x_noisy - x_denoised) / t_hat[..., None, None]
         dt = c_tau - t_hat
@@ -320,5 +369,6 @@ def sample_diffusion(
             step_noise,
             rotations[step_index],
             translations[step_index],
+            step_i=step_index,
         )
     return x_l

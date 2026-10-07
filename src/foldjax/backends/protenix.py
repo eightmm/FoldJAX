@@ -81,6 +81,10 @@ _CLI_OPTIONS = {
     # namespace; under padding the tape is the padded MSA width whatever the
     # draw.
     "msa_seed",
+    # Upstream's `--use_tfg_guidance` (`runner/batch_inference.py:697-702`),
+    # released false: training-free guidance with upstream's default mapping.
+    # A compile option: guidance runs the unrolled, eager sampler.
+    "use_tfg_guidance",
     # Upstream's MC dropout on the recycle pair update, both released 0.4
     # (configs/configs_base.py:109-110). The apply rate is a per-seed coin,
     # not a compile option for the reason `msa_seed` is not: whichever way the
@@ -144,12 +148,21 @@ _PROFILE_MODEL_NAMES = {
     "base-20250630": "protenix_base_20250630_v1.0.0",
     "mini-esm-v0.5.0": "protenix_mini_esm_v0.5.0",
     "mini-ism-v0.5.0": "protenix_mini_ism_v0.5.0",
+    "base-constraint-v0.5.0": "protenix_base_constraint_v0.5.0",
+    "mini-default-v0.5.0": "protenix_mini_default_v0.5.0",
+    "tiny-default-v0.5.0": "protenix_tiny_default_v0.5.0",
 }
 #: Options the native CLI takes as a bare switch rather than a value. Passing
 #: `--strict-token-limit true` makes argparse reject the whole command, and
 #: the usage dump that comes back says nothing about which argument was wrong.
 _FLAG_OPTIONS = frozenset(
-    {"strict_token_limit", "use_rna_msa", "use_template", "full_depth_msa"}
+    {
+        "strict_token_limit",
+        "use_rna_msa",
+        "use_template",
+        "full_depth_msa",
+        "use_tfg_guidance",
+    }
 )
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"0", "false", "no", "off", ""})
@@ -291,6 +304,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "use_template": False,
     "full_depth_msa": False,
     "mc_dropout_rate": 0.4,
+    "use_tfg_guidance": False,
 }
 
 #: What an omitted `diffusion_attention_backend` runs when a context-parallel
@@ -448,6 +462,7 @@ _PARSER_DEFAULTS: dict[str, Any] = {
     "model_name": "auto",
     "esm_checkpoint_dir": None,
     "guidance_config": None,
+    "use_tfg_guidance": False,
     "padding": False,
     "pad_tokens": None,
     "pad_atoms": None,
@@ -593,6 +608,7 @@ _OPTION_SPECS: dict[str, tuple[Callable[[str, Any], Any], tuple[str, ...] | None
     ),
     "use_rna_msa": (_switch_option, None),
     "use_template": (_switch_option, None),
+    "use_tfg_guidance": (_switch_option, None),
 }
 
 
@@ -880,6 +896,8 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         "use_rna_msa",
         # Whether the job's templates reach the template embedder; the same.
         "use_template",
+        # The guided sampler is unrolled and eager, a different program.
+        "use_tfg_guidance",
         "cli_args",
         # Two policies, two programs: the value becomes the `precision`
         # attribute on every float32 dot XLA lowers, it selects the
@@ -944,6 +962,13 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         # Here, where `foldjax plan` sees it, rather than at the embedder,
         # which only answers after featurization and the weights load.
         _refuse_constraint_without_embedder(request)
+        # The runner's own refusal (`runner.py`, "padding with TFG guidance"),
+        # raised here too so `foldjax plan` reaches it.
+        if request.padding is not None and request.options.get("use_tfg_guidance"):
+            raise ValueError(
+                "padding with TFG guidance is not yet supported; drop "
+                "use_tfg_guidance or --padding"
+            )
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
         _extra_cli_args(options.get("cli_args", ()))
@@ -1005,6 +1030,22 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         use_template = _strict_boolean(
             options.get("use_template", False), name="use_template"
         )
+        if _strict_boolean(
+            options.get("use_tfg_guidance", False), name="use_tfg_guidance"
+        ):
+            # The guided sampler is eager (`models/predict.py`, at `guided`),
+            # so it has no executable to carry repeatable reductions and no
+            # graph to partition. Refused here so `foldjax plan` says so.
+            if options.get("deterministic_ops", "off") == "on":
+                raise ValueError(
+                    "use_tfg_guidance runs the eager guided sampler, which "
+                    "builds no executable for deterministic reductions"
+                )
+            if _strict_cp_devices(options.get("cp_devices", 1)) > 1:
+                raise ValueError(
+                    "use_tfg_guidance runs the eager guided sampler, which "
+                    "context parallelism cannot partition"
+                )
         if (
             use_template
             and model_name in runtime_policy.KNOWN_MODEL_NAMES

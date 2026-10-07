@@ -422,6 +422,12 @@ def main(
         help="JSON file containing the original Protenix TFG guidance mapping.",
     )
     parser.add_argument(
+        "--use-tfg-guidance",
+        action="store_true",
+        help="Upstream's --use_tfg_guidance: run training-free guidance with "
+        "upstream's default guidance mapping (configs_base.py).",
+    )
+    parser.add_argument(
         "--padding",
         action="store_true",
         help="Pad generated feature axes to a reusable, fully masked shape profile.",

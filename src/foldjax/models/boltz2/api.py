@@ -48,6 +48,7 @@ from foldjax.models.boltz2.data.ownership import (
     compact_token_to_rep_atom_storage,
     drop_token_to_rep_atom_storage,
 )
+from foldjax.models.boltz2.run_options import validate_upstream_run_options
 from foldjax.padding import square_grid_auto_layout
 from foldjax.schema import PaddingConfig
 
@@ -335,6 +336,7 @@ def featurize(
     feature_cache: str | Path | None = None,
     max_msa_depth: int | None = None,
     msa_deletions: str = "released",
+    method: str | None = None,
     seed: int = 0,
 ) -> tuple[dict[str, np.ndarray], str, Path]:
     """Featurize a YAML path or bare entities.
@@ -382,6 +384,7 @@ def featurize(
             cache_dir=Path(feature_cache) if feature_cache is not None else None,
             max_msa_depth=max_msa_depth,
             msa_deletions=msa_deletions,
+            method=method,
             seed=seed,
         )
     if manifest is not None:
@@ -599,6 +602,15 @@ UPSTREAM_STEERING_ARGS: Mapping[str, object] = {
     "num_gd_steps": 20,
 }
 
+#: What `boltz predict --use_potentials` passes: the same
+#: `BoltzSteeringParams()` with `fk_steering` and `physical_guidance_update`
+#: switched on and contact guidance left on (`boltz/main.py:1309-1311`).
+UPSTREAM_POTENTIALS_STEERING_ARGS: Mapping[str, object] = {
+    **UPSTREAM_STEERING_ARGS,
+    "fk_steering": True,
+    "physical_guidance_update": True,
+}
+
 
 def _carries_guidance_constraints(feats: Mapping[str, object]) -> bool:
     """Whether contact guidance has anything to steer toward.
@@ -784,6 +796,23 @@ def predict(
     write_fmt: str | None = None,
     max_msa_depth: int | None = None,
     msa_deletions: str = "released",
+    #: Upstream's `--step_scale`: `boltz predict` resolves an omitted value to
+    #: 1.5 for Boltz-2 (`boltz/main.py:1226-1228`). The sampler's step size,
+    #: lower values give more diverse samples.
+    step_scale: float = 1.5,
+    #: Upstream's `--subsample_msa` / `--num_subsampled_msa`. The flag is a
+    #: click `is_flag`, so the shipped CLI does not subsample; `True` redraws
+    #: `num_subsampled_msa` rows on every trunk pass, as `MSAModule` does.
+    subsample_msa: bool = False,
+    num_subsampled_msa: int = 1024,
+    #: Upstream's `--method`: the method-conditioning value every token's
+    #: `method_feature` takes (`const.method_types_ids`, case-insensitive).
+    #: `None` keeps the featurizer's own choice, `x-ray diffraction`.
+    method: str | None = None,
+    #: Upstream's `--use_potentials`: Feynman-Kac steering and physical
+    #: guidance on top of `UPSTREAM_STEERING_ARGS`
+    #: (`boltz/main.py:1309-1311`). Exclusive with `steering_args`.
+    use_potentials: bool = False,
     #: What to do when this port's fitted peak law says the run does not fit
     #: the device: refuse before the graph is built, or warn and let the
     #: allocator answer. See `foldjax.memory_policy`.
@@ -824,6 +853,27 @@ def predict(
         raise ValueError("num_samples must be positive")
     if cp_devices < 1:
         raise ValueError("cp_devices must be positive")
+    method = validate_upstream_run_options(
+        step_scale=step_scale,
+        subsample_msa=subsample_msa,
+        num_subsampled_msa=num_subsampled_msa,
+        method=method,
+        use_potentials=use_potentials,
+    )
+    if subsample_msa and padding is not None:
+        # The draw is a permutation of the stored depth, which padding widens
+        # with masked rows upstream never has to choose from.
+        raise ValueError(
+            "subsample_msa draws from the stored alignment depth, which "
+            "padding widens with masked rows; drop one of the two"
+        )
+    if use_potentials:
+        if steering_args is not None:
+            raise ValueError(
+                "use_potentials selects upstream's steering configuration; "
+                "pass it or steering_args, not both"
+            )
+        steering_args = dict(UPSTREAM_POTENTIALS_STEERING_ARGS)
     if not isinstance(cp_atom_windows, bool):
         raise ValueError("cp_atom_windows must be a boolean")
     if attention_backend not in ATTENTION_BACKENDS:
@@ -968,6 +1018,7 @@ def predict(
         feature_cache=feature_cache,
         max_msa_depth=max_msa_depth,
         msa_deletions=msa_deletions,
+        method=method,
         seed=seed,
     )
     # Read now, while `atom_to_token` is still the featurizer's dense map;
@@ -1328,6 +1379,12 @@ def predict(
         "pair_chains_capacity": (
             pair_chains_capacity(feats_np["asym_id"]) if "asym_id" in feats_np else None
         ),
+        # Upstream's `--step_scale`, `--subsample_msa` and
+        # `--num_subsampled_msa`; the affinity stage inherits all three below,
+        # as upstream hands both models one `diffusion_params` and `msa_args`.
+        "step_scale": float(step_scale),
+        "subsample_msa": subsample_msa,
+        "num_subsampled_msa": int(num_subsampled_msa),
         "recompute_nonpolymer_frames": bool(np.any(feats_np["mol_type"] == 3)),
         # The featurizer always emits template_* arrays, zero-filled when no
         # template was given. Whether they are real is a value question, so it

@@ -176,17 +176,42 @@ def load(
     )
 
 
+#: Stream folded into a run's key for upstream's `lm_mask_pct` draw, so the
+#: masking moves no other random draw of the run.
+_LM_MASK_STREAM = 0x4C4D4D
+
+#: Upstream's `forward` defaults (`modeling_esmfold2.py:877-884`) for the
+#: three inference-time augmentations a caller may move: `lm_mask_pct` falls
+#: back to `config.lm_mask_pct`, which the released config leaves at 0.0.
+LM_MASK_PCT = 0.0
+
+
+def lm_mask_key(key: jnp.ndarray) -> jnp.ndarray:
+    """The key `lm_mask_pct` draws from, for a run keyed by ``key``."""
+
+    return jax.random.fold_in(key, _LM_MASK_STREAM)
+
+
 def language_model_states(
     features: Mapping[str, np.ndarray],
     model: LoadedModel,
     *,
     packed_length: int | None = None,
     deterministic: bool = False,
+    lm_mask_pct: float = LM_MASK_PCT,
+    mask_key: jnp.ndarray | None = None,
 ) -> jnp.ndarray | None:
     """ESMC's stacked hidden states for these tokens, or `None` without it."""
     if model.esmc_parameters is None or model.esmc_settings is None:
         return None
     values = [np.asarray(features[name]) for name in LANGUAGE_MODEL_FEATURES]
+    # Named only when asked, so an unmasked run reaches ESMC in the call form
+    # it always used.
+    masking = (
+        {"lm_mask_pct": float(lm_mask_pct), "mask_key": mask_key}
+        if lm_mask_pct > 0.0
+        else {}
+    )
     with progress.part("language model"):
         return esmc_model.lm_hidden_states(
             *values,
@@ -194,6 +219,7 @@ def language_model_states(
             settings=model.esmc_settings,
             packed_length=packed_length,
             deterministic=deterministic,
+            **masking,
         )
 
 
@@ -369,14 +395,22 @@ def language_model_embedding(
     *,
     packed_length: int | None = None,
     deterministic: bool = False,
+    lm_mask_pct: float = LM_MASK_PCT,
+    mask_key: jnp.ndarray | None = None,
 ) -> jnp.ndarray | None:
-    """Return the compact seed-independent ESMC embedding for one input."""
+    """Return the compact ESMC embedding for one input.
+
+    Seed-independent unless ``lm_mask_pct`` masks residues, which draws from
+    ``mask_key``.
+    """
 
     hidden_states = language_model_states(
         features,
         model,
         packed_length=packed_length,
         deterministic=deterministic,
+        lm_mask_pct=lm_mask_pct,
+        mask_key=mask_key,
     )
     if hidden_states is None:
         return None
@@ -575,6 +609,14 @@ def predict(
     #: `"bfloat16"` opens AlphaFold 3's narrowed re-embedding. Scores only
     #: -- the head cannot reach the coordinates.
     confidence_dtype: str | None = None,
+    #: Upstream's inference-time augmentations (`modeling_esmfold2.py:877-884`).
+    #: `None` leaves the released value: no LM masking, a 0.1 MSA column mask
+    #: and the per-loop row subsample. `lm_mask_pct` applies only where this
+    #: call runs ESMC itself; a caller handing in precomputed states masked
+    #: them (or not) already.
+    lm_mask_pct: float | None = None,
+    msa_column_mask_rate: float | None = None,
+    full_depth_msa: bool | None = None,
     language_model_tokens: int | None = None,
     precomputed_lm_states: jnp.ndarray | None = None,
     precomputed_lm_embedding: jnp.ndarray | None = None,
@@ -670,6 +712,8 @@ def predict(
         structure_sample_sequential=structure_sample_sequential,
         glu_backend=glu_backend,
         confidence_dtype=confidence_dtype,
+        msa_column_mask_rate=msa_column_mask_rate,
+        full_depth_msa=full_depth_msa,
     )
     if memory_budget is not None:
         # Before the language model, which is the expensive thing a refusal
@@ -762,11 +806,14 @@ def predict(
         else precomputed_lm_states
     )
     if hidden is None and not stop_after_inputs:
+        resolved_lm_mask_pct = LM_MASK_PCT if lm_mask_pct is None else lm_mask_pct
         hidden = language_model_states(
             features,
             model,
             packed_length=language_model_tokens,
             deterministic=deterministic,
+            lm_mask_pct=resolved_lm_mask_pct,
+            mask_key=lm_mask_key(key) if resolved_lm_mask_pct > 0.0 else None,
         )
     # Read on the host: it sizes the confidence head's per-chain matrix, and a
     # traced maximum cannot size anything.
@@ -1225,6 +1272,7 @@ __all__ = [
     "LoadedModel",
     "build_job_features",
     "build_common_job_features",
+    "lm_mask_key",
     "esmc_directory",
     "language_model_length",
     "language_model_embedding",

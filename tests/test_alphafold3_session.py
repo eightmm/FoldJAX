@@ -320,6 +320,17 @@ def test_cache_defaults_track_vendored_model_config() -> None:
         # cache-key option whose released value is "the run as measured".
         "deterministic": False,
     }
+    # `run_alphafold.py`'s data-pipeline flags, at the defaults the vendored
+    # `predict_structure` hands `featurise_input`. `conformer_max_iterations`
+    # defaults to `None` and so is not in the strip table.
+    pipeline_defaults = _function_keyword_defaults(
+        af3_backend.VENDORED_RUNNER, "predict_structure"
+    )
+    assert pipeline_defaults["conformer_max_iterations"] is None
+    expected.update(
+        resolve_msa_overlaps=pipeline_defaults["resolve_msa_overlaps"],
+        fix_standalone_glycans=pipeline_defaults["fix_standalone_glycans"],
+    )
 
     for name, default in expected.items():
         assert type(af3_backend._RELEASED_COMPILE_DEFAULTS[name]) is type(default)
