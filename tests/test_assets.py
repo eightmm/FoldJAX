@@ -12,6 +12,7 @@ import dataclasses
 import hashlib
 import http.client
 import json
+import os
 import tarfile
 from pathlib import Path
 
@@ -2547,3 +2548,16 @@ def test_protenix_v2_converts_a_placed_file_and_refuses_another(
     assert spec.ready()
     assert assets.fetch("protenix", profile="v2") == native
     assert loaded == [placed], "a recorded conversion is not redone"
+
+
+def test_an_asset_record_is_readable_by_the_store_group(tmp_path: Path) -> None:
+    # A store shared by a group is unusable if its conversion and completion
+    # records are owner-only while the weights beside them are not.
+    previous = os.umask(0o002)
+    try:
+        record = tmp_path / ".foldjax-conversion.json"
+        assets._write_text_atomic(record, "{}\n")
+    finally:
+        os.umask(previous)
+
+    assert record.stat().st_mode & 0o777 == 0o664

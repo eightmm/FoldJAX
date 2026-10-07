@@ -5,13 +5,9 @@ compared and deliberately left where they are, because sharing them would have
 changed what a caller gets:
 
 - the two ``_write_text_atomic`` implementations (``assets.py``, ``input.py``)
-  differ in the mode of the file they leave behind. `assets` stages through
-  `tempfile.NamedTemporaryFile`, which `mkstemp`s at ``0600``, so the replaced
-  file ends up owner-only; `input` stages inside a `TemporaryDirectory` and
-  writes with `Path.write_text`, so the replaced file ends up ``0666 & ~umask``
-  (``0664`` here). They also leave different debris mid-write -- a dotted
-  ``.tmp`` sibling versus a temporary directory -- which the readiness scans in
-  `assets` walk.
+  leave different debris mid-write -- a dotted ``.tmp`` sibling versus a
+  temporary directory -- which the readiness scans in `assets` walk. Both
+  leave the replaced file at ``0666 & ~umask``.
 - ``cli._format_bytes`` and ``report._bytes`` render different text. The CLI
   prints whole bytes without decimals (``512 B``) and accepts only an `int`;
   the report prints one decimal at every scale (``512.0 B``) and renders

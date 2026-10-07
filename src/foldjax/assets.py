@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from foldjax._fsutil import nonempty_file as _nonempty_file
+from foldjax._fsutil import ordinary_file_mode
 from foldjax._fsutil import sha256_file as _digest
 from foldjax.paths import assets_dir, downloads_dir, weights_dir
 
@@ -575,6 +576,9 @@ def _write_text_atomic(path: Path, contents: str) -> None:
         ) as handle:
             handle.write(contents)
             temporary = Path(handle.name)
+        # `NamedTemporaryFile` creates the file 0600; a group-shared store
+        # needs these records readable by everyone who reads its weights.
+        os.chmod(temporary, ordinary_file_mode())
         os.replace(temporary, path)
     finally:
         if temporary is not None:
