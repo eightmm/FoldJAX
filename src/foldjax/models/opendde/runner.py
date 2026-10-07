@@ -276,6 +276,7 @@ def _predict(
     import jax
 
     from foldjax.models.opendde.models.model import (
+        _resolve_cp_layout,
         opendde_infer_compiled,
         opendde_infer_static,
     )
@@ -322,6 +323,11 @@ def _predict(
             "deterministic reductions are carried by the compiled graph; "
             "drop --no-graph-jit or deterministic"
         )
+    if not graph_jit:
+        # The compiled entry resolves `auto` against the mesh it opens; the
+        # eager one -- which TFG guidance always takes -- checks the layout it
+        # is given against the active mesh, and serially there is none.
+        cp_layout = _resolve_cp_layout(cp_layout, cp_shards)
     infer = opendde_infer_compiled if graph_jit else opendde_infer_static
     # Rolling the repeated stacks into `lax.scan` only pays once the whole graph
     # is traced: unrolled, 20 diffusion steps become 20 copies of the module in

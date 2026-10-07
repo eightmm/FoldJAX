@@ -14,6 +14,7 @@ import ast
 import dataclasses
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import jax
@@ -291,6 +292,53 @@ def test_predict_hands_the_guidance_to_the_eager_entry_point(monkeypatch) -> Non
     assert seen["guidance_config"] is mapping
     assert seen["guidance_features"] == {"marker": 1}
     assert "use_sampler_scan" not in seen, "the unrolled sampler is the default"
+
+
+def test_the_guided_sampler_runs_without_a_mesh(monkeypatch) -> None:
+    """The eager entry point checks the layout against the active mesh.
+
+    The compiled entry resolves ``cp_layout="auto"`` itself; the eager one,
+    which TFG guidance always takes, was handed ``"auto"`` unresolved and
+    refused it against no mesh at all before the first step.
+    """
+    from foldjax.models.opendde.data.featurize_json import featurize_opendde_json
+    from foldjax.models.opendde.models import model as model_impl
+
+    expected = jnp.ones((3, 4), dtype=jnp.float32)
+    monkeypatch.setattr(
+        model_impl, "_validate_static_structural_features", lambda *a, **k: (3, 6, 9)
+    )
+    monkeypatch.setattr(model_impl, "_require_realised_confidence_params", _no_op)
+    monkeypatch.setattr(model_impl, "_require_realised_diffusion_params", _no_op)
+    monkeypatch.setattr(model_impl, "input_feature_embedder", lambda *a, **k: expected)
+    job = {
+        "name": "tiny",
+        "modelSeeds": [101],
+        "sequences": [{"proteinChain": {"sequence": "ACDEFGHIK"}}],
+    }
+    features = featurize_opendde_json(job, n_queries=2, n_keys=4, seed=101)
+    output = predict_runner._predict(
+        features,
+        SimpleNamespace(input_embedder=None),
+        seed=101,
+        num_samples=1,
+        num_steps=2,
+        num_recycles=1,
+        n_queries=2,
+        n_keys=4,
+        diffusion_attention_backend="xla_jit",
+        trunk_single_attention_backend="xla_jit",
+        structural_single_attention_backend="xla_jit",
+        graph_jit=False,
+        guidance_config=upstream_guidance_config(),
+        guidance_features={"marker": 1},
+        stop_after_inputs=True,
+    )
+    np.testing.assert_array_equal(output["single_inputs"], expected)
+
+
+def _no_op(*args, **kwargs) -> None:
+    return None
 
 
 def test_the_opendde_featurization_satisfies_the_guidance_contract() -> None:
