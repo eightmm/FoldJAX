@@ -31,9 +31,6 @@
 
 ### Changed
 
-- **Version 0.1.1.dev0.** AlphaFold 3's Tokamax autotune identity includes the
-  FoldJAX version, so a GPU host re-autotunes AlphaFold 3 once after upgrading.
-
 - **CI finishes again.** The single 30-minute job had not completed since
   2026-09-11 (the suite needs 75-90 minutes on one runner). It is now six
   parallel shards (`.github/workflows/tests.yml`: the orchestration suite, one
