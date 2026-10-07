@@ -12,23 +12,29 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
-- **Template search: `--templates auto` (`PredictionRequest(templates="auto")`).**
-  Upstream AlphaFold 3 and OpenFold3 search templates by default and FoldJAX
-  searched none, so a job without templates folded template-free. `auto` takes
-  the ColabFold MMseqs2 server's PDB70 hits (or `FOLDJAX_TEMPLATE_COMMAND`),
-  fetches the structures from RCSB (or `FOLDJAX_TEMPLATE_MMCIF_DIR`), realigns
-  with Kalign and keeps what each model's released inference keeps: AlphaFold
-  3, Protenix and OpenDDE a 2021-09-30 cutoff and AlphaFold 3's hit filters,
-  OpenFold3 no cutoff and e-value order, four templates each; Boltz-2, which
-  has no upstream search, the first four files to align itself.
-  `--template-max-date` overrides the cutoff. The default stays `none`, since
-  the search sends the sequence to the server; Protenix and OpenDDE refuse it
-  without `--option use_template=true`, ESMFold2 always. `foldjax_run.json`
-  records `templates`, `template_max_date` and `template_search` (hits, cutoff
-  and its source, each template kept). Common-schema templates now also reach
-  OpenFold3, which refused them: a mapped one as its template cache, a bare
-  file as `template_cif_paths`. Template indices are 0-based, as AlphaFold 3's,
-  and a query index outside the sequence is refused.
+- **Template search: `--templates auto|required`
+  (`PredictionRequest(templates="auto")`).** Upstream AlphaFold 3 and OpenFold3
+  search templates by default and FoldJAX searched none, so a job without
+  templates folded template-free. `auto` takes the ColabFold MMseqs2 server's
+  PDB70 hits (or `FOLDJAX_TEMPLATE_COMMAND`), fetches the structures from RCSB
+  (or `FOLDJAX_TEMPLATE_MMCIF_DIR`), realigns with Kalign and keeps what each
+  model's released inference keeps: AlphaFold 3, Protenix and OpenDDE a
+  2021-09-30 cutoff and AlphaFold 3's hit filters, OpenFold3 no cutoff and
+  e-value order, four templates each; Boltz-2, which has no upstream search,
+  the first four files to align itself. `required` searches exactly as `auto`
+  does and fails the run when the search cannot run, when a searched chain
+  keeps no template, or when the job has no protein chain to search -- where
+  `auto` warns and folds template-free, which a batch only sees as a
+  successful run. `--template-max-date` overrides the cutoff under either
+  searching policy. The default stays `none`, since the search sends the
+  sequence to the server; Protenix and OpenDDE refuse it without `--option
+  use_template=true`, ESMFold2 always. `foldjax_run.json` records `templates`
+  (`none`, `auto` or `required`), `template_max_date` and `template_search`
+  (hits, cutoff and its source, each template kept). Common-schema templates
+  now also reach OpenFold3, which refused them: a mapped one as its template
+  cache, a bare file as `template_cif_paths`. Template indices are 0-based, as
+  AlphaFold 3's, and a query index outside the sequence is refused. The
+  Kalign realignment is in a new `templates` extra (below).
 
 - **OpenFold3 folds a native query's `pocket_constraint` as upstream v0.5.0
   does,** instead of refusing it: the `pocket_sampling_*` features with
@@ -50,21 +56,6 @@ unless it says so here, in its own paragraph.
   those three models' `native_only_features` to `common_schema_features`. See
   [docs/input.md](docs/input.md#pocket-constraints).
 
-- **Multi-residue ligands (glycans) in the common schema:** a ligand's `ccd`
-  may be a list, `ccd: [NAG, NAG, BMA]` (Python: `Ligand("G", ccd=("NAG",
-  "NAG", "BMA"))`), one chain whose residues the common `bonds` number 1, 2,
-  ... AlphaFold 3 receives `ccdCodes`, Boltz-2 a `ccd` list, Protenix and
-  OpenDDE `CCD_NAG_NAG_BMA` with `covalent_bonds` positions counting the codes
-  from 1, and ESMFold2 tokenizes it as Biohub's `prepare_input` does (on the
-  released CCD, all 18 feature arrays of an N-linked NAG-NAG-BMA match
-  upstream's). OpenFold3 refuses more than one code, as its v0.5.0 raises
-  `NotImplementedError`; Protenix and OpenDDE refuse a code containing `_`;
-  Boltz-2 refuses affinity for such a ligand while validating, as its parser
-  does.
-  `multi_residue_ligand` moves from `native_only_features` to
-  `common_schema_features` for the five that translate it. See
-  [docs/input.md](docs/input.md#multi-residue-ligands-glycans).
-
 - **A common-schema contact constraint:** `constraints: [{contact: {token1:
   [A, 2], token2: [B, 3], max_distance}}]` (Python: `Job(contacts=[Contact(...)])`),
   in the same list as pockets. Boltz-2 receives its own `contact` constraint
@@ -81,6 +72,308 @@ unless it says so here, in its own paragraph.
   `native_only_features` to `common_schema_features` for Boltz-2 and
   Protenix. See [docs/input.md](docs/input.md#contact-constraints).
 
+- **Multi-residue ligands (glycans) in the common schema:** a ligand's `ccd`
+  may be a list, `ccd: [NAG, NAG, BMA]` (Python: `Ligand("G", ccd=("NAG",
+  "NAG", "BMA"))`), one chain whose residues the common `bonds` number 1, 2,
+  ... AlphaFold 3 receives `ccdCodes`, Boltz-2 a `ccd` list, Protenix and
+  OpenDDE `CCD_NAG_NAG_BMA` with `covalent_bonds` positions counting the codes
+  from 1, and ESMFold2 tokenizes it as Biohub's `prepare_input` does (on the
+  released CCD, all 18 feature arrays of an N-linked NAG-NAG-BMA match
+  upstream's). OpenFold3 refuses more than one code, as its v0.5.0 raises
+  `NotImplementedError`; Protenix and OpenDDE refuse a code containing `_`;
+  Boltz-2 refuses affinity for such a ligand while validating, as its parser
+  does. `multi_residue_ligand` moves from `native_only_features` to
+  `common_schema_features` for the five that translate it. See
+  [docs/input.md](docs/input.md#multi-residue-ligands-glycans).
+
+- **Boltz-2 affinity reaches the run's files.** The affinity head's results
+  were computed and then dropped by `foldjax predict`. A run with an affinity
+  binder now writes upstream's `affinity_<record>.json` beside the native
+  structures (`affinity_pred_value`, `affinity_probability_binary`, and the
+  two ensemble members `affinity_pred_value1`/`2` and
+  `affinity_probability_binary1`/`2`, spelled as upstream spells them), and
+  the same fields go into the `scores` of the one sample whose coordinates the
+  affinity was computed on -- not every sample's, because affinity is scored
+  on a single structure. `scores` already admits any numeric key, so
+  `confidence.json` stays schema 1.x with no version change.
+
+- **`foldjax.api.preflight(request)`**: everything `predict` refuses before
+  weights load, for one resolved request -- the backend's request checks and,
+  for a FoldJAX job, the common-schema translation check, the alignment
+  policy, the files the job names, CCD codes, SMILES and bond atoms -- with
+  nothing searched or written. `plan` and `predict_batch` both call it.
+
+- **Common-layer chemistry checks.** A ligand or modification CCD code absent
+  from the shared `components.cif`, and a bond atom its residue's component
+  does not have (named by the job's 1-based residue index), are refused before
+  any model loads (`foldjax.ccd`). Skipped where no `components.cif` is
+  installed. A SMILES string RDKit cannot parse or sanitize is refused the
+  same way when RDKit is installed.
+
+- **`foldjax models --for JOB --msa POLICY`** applies the alignment policy, so
+  a protein chain with no alignment is "no" under the default `none` except on
+  ESMFold2, and a missing alignment file is named. A `{jobs: [...]}` file is
+  answered one job at a time instead of "unsupported top-level fields: 'jobs'".
+
+- **`plan` shows the effective sampling**: `sampling` holds the value each
+  neutral knob runs at and `sampling_source` says whether it came from the
+  request, a native option or profile, the adapter's released default, or the
+  checkpoint configuration (shown as null). `plan` also prints a generated job
+  as `generated_input`, and with padding a `not_checked` note: the MSA rows a
+  model stores are known only after featurization, so a `--pad-msa` below them
+  is refused by `predict`, not by `plan`.
+
+- **`foldjax capabilities`** reports `sampling_defaults`, and `--model` on
+  `capabilities`, `runtime` and `weights path` lists every model and alias.
+  `boltz-2` is an alias of `boltz2`; `home --path` accepts `msa` and
+  `templates`.
+
+- **`show`** names each run's input (a multi-job file's job by name) and ends
+  with a footer listing recorded failures; `show` and `compare` warn when they
+  find no structure.
+
+- **`foldjax report DIR`.** One static, self-contained HTML page per output
+  directory (no external script, stylesheet or font): per input, one card per
+  model with the run metadata and warnings, the model's own scores per sample,
+  a per-residue pLDDT plot and, where the model wrote PAE, a PAE heatmap. A
+  run without PAE says why.
+
+- **`foldjax interfaces DIR`** and **`show --format csv|json --interfaces`.**
+  ipSAE (with its d0chn/d0dom variants and the PAE-only ipTM), pDockQ, pDockQ2
+  and LIS per sample and chain pair, ported from the reference `ipsae.py` v4
+  and matching its output; the model's own chain-pair ipTM is reported beside
+  them as `native`, the rest as `derived`. Samples without PAE are listed with
+  the reason.
+
+- **`foldjax compare DIR --reference X.cif --metrics ...`.** Accuracy against a
+  deposited structure -- all-atom lDDT, CA-lDDT, TM-score, CA RMSD, DockQ and
+  ligand RMSD -- under a homomer-aware chain assignment, as `reference:<name>`
+  rows of `compare.csv` and columns of `compare_structures.csv`
+  (`compare_directory(..., reference=, metrics=)` in Python). Agrees with
+  US-align `-TMscore 1`, DockQ 2.1.3 and the benchmark's lDDT and ligand RMSD
+  to four decimals on the benchmark's FoldJAX outputs. DockQ pins `numpy<2`,
+  so it runs as a separately installed tool (`uv tool install --python 3.12
+  DockQ==2.1.3`, or `FOLDJAX_DOCKQ`); without it the column is empty and says
+  how to get it.
+
+- **`foldjax jobs expand --target T --ligands LIB [--affinity]`** and
+  **`foldjax jobs pulldown --baits A --candidates B [--all-vs-all]`** write
+  multi-job files for ligand and protein-protein screens, with names that do
+  not depend on library order and the target's alignments reused.
+  **`show --screen`** tabulates each job's top sample with its affinity
+  outputs, ranked within each model only.
+
+- **`--structure-format {cif,pdb,both}`** (predict) writes a PDB copy beside
+  each mmCIF and refuses structures the PDB format cannot hold (more than
+  99,999 atoms, multi-character chain ids, residue names over three
+  characters, atom names over four, residue numbers past 9,999), which gemmi
+  would otherwise write as hybrid-36 or shifted columns. The mmCIF stays the
+  record.
+
+- **`foldjax check DIR`**: PoseBusters checks of every predicted ligand
+  (`pb_valid`, `pb.<check>`), with the new optional extra `posebusters`.
+
+- **`--shard I/N` / `--shard auto`** (predict, plan) runs one round-robin shard
+  of a batch, splitting multi-job files per job, into the same directories and
+  resume identities as the whole batch; `auto` reads Slurm's array variables.
+  **`plan --json`** adds a `slurm` block with `--gres` and the minimum card
+  memory from the model's fitted peak law (`--mem` is left unset: no host
+  memory law is calibrated).
+
+- **`results_table(..., as_frame=True)`** returns a pandas DataFrame.
+
+- **`cost.breakdown` in `foldjax_run.json`:** seconds spent in weight load,
+  featurize, the language model, trace, lower, compile and cache restore
+  (from JAX's own monitoring events), the derived `execute and host`
+  remainder of `predict`, and counts of compiled programs and cache hits.
+
+- **`foldjax_source` in `foldjax_run.json`:** the package version and, in a
+  checkout, `git describe --always --dirty` (null for an installed wheel or
+  without git). Optional, like the other fields added within schema 1.0.
+
+- **A `templates` extra (`kalign-python`)** for the Kalign realignment behind
+  template search, so it no longer needs the whole `openfold3-preprocess`
+  extra (which still includes it). Not a base dependency: its wheels cover
+  x86-64 Linux and macOS only, and an aarch64 install would build it from C.
+
+- **A `Dockerfile`** (CUDA 13 base, `uv sync --frozen` from the lockfile,
+  weights and caches on a store mounted at `FOLDJAX_HOME=/foldjax`), with
+  `CUDA_EXTRA`, `ALPHAFOLD3`, `OPENFOLD3_PREPROCESS` and `TEMPLATES` build
+  arguments; the AlphaFold 3 variant carries the toolchain its first-use
+  extension build needs. See docs/install.md#docker.
+
+- **A pre-commit configuration:** `ruff check`, and `ruff format` applied to
+  the staged lines only (`scripts/ruff_format_changed_lines.py`), since most
+  files predate `ruff format` and the stock hook would reformat them whole.
+
+- **OpenFold3 writes upstream's full confidence outputs by default:** expected
+  PAE and PDE in angstroms per sample (`pae`, `pde` in each
+  `confidence_full.npz`, as upstream's `write_full_confidence_scores=True`
+  writes them), the contact-weighted `gpde` per sample in `confidence.json`
+  scores, and per-chain pTM (`chain_ptm`) and upstream's ligand-aware bespoke
+  chain-pair ipTM (`chain_pair_iptm_bespoke`) in the archive and in
+  `<job>_confidences.json`. The expectation is taken inside the per-sample
+  confidence map, so the 64-bin logits still never leave it; the PDE head now
+  runs for every sample. `InferenceConfig.return_expected_errors` (and
+  `released_config(return_expected_errors=False)`) turns the arrays off. A new
+  config field changes every OpenFold3 compiled program, so the first run after
+  upgrading recompiles. Values match upstream v0.5.0's own CPU results to 2e-5
+  (`tests/models/openfold3/fixtures/full_confidence_upstream.npz`).
+
+- **OpenFold3's `sample_ranking_score` for protein inputs.** The disorder term
+  of upstream's `0.8*ipTM + 0.2*pTM + 0.5*disorder - 100*has_clash` is now
+  computed on the host as upstream's RASA does (biotite SASA with ProtOr radii,
+  Sander maximum areas, 25-residue reflect-padded smoothing, threshold 0.581),
+  so protein runs report `disorder` and the exact `sample_ranking_score`, rank
+  their samples and get a `best`. Without biotite (the `openfold3-preprocess`
+  extra) or without decodable atom identities the run keeps reporting
+  `sample_ranking_score_no_disorder` and says why in `disorder_unavailable`.
+
+- **ESMFold2 writes `pae`, `pde` and `chain_pair_iptm` by default.**
+  `ModelSettings.return_expected_errors` (default on) keeps the expected
+  PAE/PDE matrices without the 64-bin logits `return_confidence_logits` still
+  withholds; derived cost `2*S*L^2*4` bytes, 2.2 GiB at 3,012 tokens and the
+  checkpoint's 32 samples against a fitted 67.7 GiB peak (3.2%, not yet
+  measured on a GPU). The head's `pair_chains_iptm` is no longer projected out
+  of the managed program.
+
+- **Boltz-2 writes `chain_ptm` and `chain_pair_iptm`** (upstream's
+  `chains_ptm`/`pair_chains_iptm`, `writer.py`) into `confidence_full.npz`, with
+  `chain_id` naming the axis. The program computes them densely over a
+  power-of-two chain bucket (32 by default) instead of one static dictionary per
+  chain-label set, so inputs with up to 32 chains share one executable; `raw`
+  carries the present chains' `pair_chains_iptm` and its diagonal `chains_ptm`.
+  The affinity program is unchanged.
+
+- **Viewer-ready exports for every model.** Each canonical sample directory
+  now holds an AlphaFold-DB-schema `predicted_aligned_error.json`
+  (`predicted_aligned_error`, `max_predicted_aligned_error` = 31.75 for all six
+  models) whenever the model returned PAE, and every mmCIF is guaranteed to
+  carry the model's pLDDT (0-100) in `B_iso_or_equiv`: the column is checked
+  against `confidence_full.npz` and filled only where a writer left something
+  else (all six native writers already write it). The outcome is recorded per
+  sample under `metadata.confidence_arrays.exports`. At 3,012 tokens the JSON is
+  up to 57 MiB per sample and takes about 1.3 s to write (CPU, measured on a
+  random matrix); OpenFold3's host-side RASA adds about 3.6 s for five samples
+  of ~23,000 protein atoms.
+
+- **`foldjax cache gc --verify`** decompresses every JAX compile-cache entry
+  with the codec this environment's JAX reads it with and selects the ones
+  that do not decode, such as a write cut short by a full disk or a kill. JAX
+  only warns about such an entry on each lookup and, because it never
+  overwrites an existing entry, recompiles that program on every run until the
+  file is removed. Like the other selectors it reports by default and deletes
+  with `--apply`; it can be given alone or with `--older-than`/`--max-size`.
+  JAX writes entries in place rather than through a temporary file, so entries
+  modified in the last 10 minutes are left for a later pass. The JSON report
+  gains a `verify` block (`checked_files`, `corrupt_files`, `corrupt_bytes`,
+  `skipped_recent_files`, `unreadable_files`).
+
+- **Upstream run options FoldJAX lacked**, each as `--option`, at upstream's
+  value when omitted and part of the compilation-cache identity when spelled
+  (table in [cli](docs/cli.md#upstream-run-options---option)):
+  - Boltz-2: `step_scale`, `subsample_msa`, `num_subsampled_msa`, `method`
+    (also keys the feature cache) and `use_potentials` (upstream's
+    `--use_potentials` steering configuration, refused with `steering_args`,
+    padding, `deterministic=on` and context parallelism).
+  - Protenix and OpenDDE: `use_tfg_guidance`, training-free guidance with
+    upstream's default guidance mapping on the eager, unrolled sampler;
+    OpenDDE reuses Protenix's TFG port, whose upstream it matches. Both
+    native CLIs gain `--use-tfg-guidance`; padding, deterministic reductions
+    and context parallelism are refused at plan time.
+  - AlphaFold 3: `resolve_msa_overlaps`, `fix_standalone_glycans` and
+    `conformer_max_iterations` reach `featurise_input` on every route, and
+    `ref_max_modified_date` follows `--template-max-date` when set.
+  - ESMFold2: `lm_mask_pct`, `msa_column_mask_rate` and `full_depth_msa`.
+- **Protenix profiles `base-constraint-v0.5.0`, `mini-default-v0.5.0` and
+  `tiny-default-v0.5.0`**: upstream's three other public v0.5.0 checkpoints,
+  each in its own storage root and pinned by FoldJAX's SHA-256 of one
+  download (the publisher serves none).
+
+- **`--msa-pairing {model,greedy,complete,none}`** (`PredictionRequest.msa_pairing`,
+  `ModelConfig.msa_pairing`), with `--msa auto`/`required`. `model` (default)
+  is each model's existing choice, and keeps every existing MSA-cache entry.
+  `greedy`/`complete` pair the complex in one ColabFold search
+  (`pairgreedy-env`/`paircomplete-env`) for OpenFold3, and for Boltz-2 as
+  upstream Boltz's keyed CSV (`boltz/main.py` `compute_msa`); AlphaFold 3,
+  Protenix and OpenDDE, which re-pair by UniProt species that ColabFold
+  pairing headers do not carry, refuse them. `none` delivers no paired
+  alignment and skips the per-chain pairing ticket (a local wrapper sees
+  `FOLDJAX_MSA_PAIRING=none`). The pairing mode is in the MSA cache key, in
+  `foldjax_run.json` (`msa_pairing`), in `plan`, and in the resume identity.
+- **Alignment depth and Neff per chain**: `foldjax_run.json` `msa_stats`
+  (rows, and effective sequences at 80% identity with its definition), an
+  `alignment` line in `foldjax show`, and an `msa_stats` column in
+  `show --format csv|json` / `foldjax.results_table`.
+- **`foldjax show --rank-by KEY`** (`plddt`, `ptm`, `iptm`, `ranking`, or a
+  numeric column such as `score.<name>`; `KEY:asc` for smallest first): samples
+  ordered within each model and configuration only, with
+  `rank_within_model`, for table, CSV and JSON (`foldjax.results.rank_rows`).
+- **`foldjax msa prefetch INPUTS [--model M ...] [--msa-pairing P]`**: search
+  and cache every chain's alignment without loading weights or writing
+  outputs; exits 3 when a chain's search failed. **`foldjax msa wrapper`**
+  prints the path of `foldjax/search/colabfold_local.py`, a reference
+  `FOLDJAX_MSA_COMMAND` running ColabFold's MMseqs2 search against local
+  databases (optional `--gpu`) under ColabFold's own interpreter; no new
+  FoldJAX dependency.
+- **`--templates DIR`** (`PredictionRequest.template_dir`): a private folder of
+  mmCIF files as the template source, searched on this machine with
+  `mmseqs easy-search` or, without it, Kalign, then selected and delivered per
+  model as `--templates auto` is; refused before anything runs when the needed
+  aligner is missing. No release-date cutoff unless `--template-max-date`.
+  The manifest records the folder's content digest (`template_dir`), and a
+  changed folder is not resumed.
+- **`--preset fast`** (`PredictionRequest.preset`): the publisher's reduced
+  steps and recycles for the checkpoint being run, recorded as `preset` in the
+  manifest. Published only for Protenix's Mini and Tiny profiles (5 steps,
+  4 recycles, Protenix `docs/supported_models.md`); refused elsewhere with the
+  reason.
+- **ModelCIF confidence records in every written mmCIF**: `_ma_qa_metric`
+  pLDDT `global` and `local` (`_ma_qa_metric_global`/`_local`) and `_software`
+  rows for FoldJAX and the upstream model with versions; categories a writer
+  already wrote (AlphaFold 3's, Boltz-2's local pLDDT) are kept and only the
+  missing ones added.
+
+- **`THIRD_PARTY_NOTICES`** lists every third-party file FoldJAX carries with
+  its licence and copyright: AlphaFold 3, the OpenFold3 data pipeline, the
+  adapted Boltz preprocessing, Biohub's ESMFold2 constants, the
+  Transformers-derived chemistry tables, and the Biotite functions inside the
+  OpenFold3 pipeline, whose BSD-3-Clause text it reproduces. It also names the
+  installed dependencies whose terms are not permissive, among them NVIDIA's
+  proprietary cuEquivariance ops and CUDA library wheels. The wheel installs it
+  in `foldjax-*.dist-info/licenses/` beside `LICENSE` and `NOTICE`
+  (`license-files`), and the Docker image copies it.
+- **Nightly dependency audit**: `pip-audit` checks the lockfile's default,
+  all-extras CUDA 13 and all-extras CUDA 12 environments and fails the nightly
+  on a known vulnerability, and the run uploads CycloneDX SBOMs of both CUDA
+  generations. PR CI is unchanged, so a newly published upstream advisory
+  cannot fail an unrelated pull request.
+
+- Tests for refusals that had none or that a mutant survived: a negative,
+  one-sided or one-past-the-end template index map; the reason each changed
+  request field gives on `--resume` (now including `templates`,
+  `template_max_date`, the resolved input path and unverifiable recorded
+  dependencies); an MSA cache entry recorded under another key; every
+  generated-directory symlink and escape refusal in `foldjax.api`,
+  `foldjax.output`, `foldjax.input` and `foldjax.template_search`; hand-forged
+  `torch.save` archives; and the `pb_valid` rule that a check PoseBusters could
+  not compute does not count as passed. The OpenFold3 trunk-only and Protenix
+  confidence-backend tests now run the code instead of reading its source.
+
+- **User documentation.** A documentation index (`docs/README.md`, linked from
+  the README's new "Documentation" section); a quickstart from install to a
+  first structure; six tutorials (`docs/tutorials/`: a heteromer with an MSA
+  search and pairing, protein-ligand pocket and contact constraints with
+  Boltz-2 affinity, glycans, templates, batches and Slurm arrays, resuming);
+  `docs/outputs.md` (the output tree, `confidence.json`, `confidence_full.npz`,
+  `predicted_aligned_error.json`, `foldjax_run.json` and `cost.breakdown`);
+  `docs/configuration.md` (the store under `FOLDJAX_HOME`, every `FOLDJAX_*`
+  variable with its default, compile-cache trust); `docs/faq.md`; and model
+  pages for Boltz-2, Protenix and OpenDDE beside the existing three.
+- `tests/test_docs_links.py`: every relative link in `docs/**/*.md` names a
+  file that exists and, for a Markdown target, a heading that exists; the
+  archive index lists every archived note.
+
 ### Changed
 
 - **Protenix v2 weights are no longer downloaded; you supply them.** Upstream's
@@ -89,7 +382,7 @@ unless it says so here, in its own paragraph.
   information of the rights holder, are not released under any open-source
   license, and may not be reproduced, distributed, sublicensed, disclosed, or
   otherwise transferred to any third party in any form without the express
-  prior written consent of the rights holder" — unlike the Protenix code and
+  prior written consent of the rights holder" -- unlike the Protenix code and
   v1.x weights, which stay Apache-2.0. `--profile v2` had fetched them from a
   third-party mirror; that URL is gone and nothing requests the file. Put
   `protenix-v2.pt`, obtained with the rights holder's consent, in
@@ -103,6 +396,66 @@ unless it says so here, in its own paragraph.
   names its source `protenix-v2.pt`, so an existing v2 conversion reads as not
   ready until the file is placed and converted again.
 
+- **OpenFold3's confidence Pairformer runs float32 by default, as upstream's
+  does.** Upstream pins that stack to float32 in every regime
+  (`heads/head_modules.py:106`, `heads/prediction_heads.py:224`); this port
+  let it follow `dtype`, so the shipped bfloat16 trunk ran it bfloat16.
+  `confidence_dtype` now defaults to `float32` whatever `dtype` is, and
+  `--option confidence_dtype=bfloat16` restores the old head. A float32 head
+  behind the bfloat16 trunk did not trace before -- the trunk's bfloat16
+  single entered the stack's scan carry narrow and left it float32 -- so the
+  head now widens its inputs at entry. The head reads predicted coordinates
+  and emits scores, so structures are unchanged, but every confidence score
+  -- and therefore the ranking and `best` sample -- of a default OpenFold3 run
+  can differ, and the run gets a new cache namespace.
+
+- **ESMFold2 takes its reference conformers from one source, whether or not
+  an MSA is attached.** A bare single protein chain was featurized by the
+  transformers fork's protein-only builder and its built-in conformer table,
+  while the same chain with an alignment (or any multi-chain or non-protein
+  job) went through Biohub's all-atom pipeline and the CCD's ideal
+  conformers, so attaching an MSA also moved `ref_pos`. Every job now uses the
+  all-atom pipeline (Biohub's released end-to-end path). A bare single chain
+  therefore gets different `ref_pos` and the all-atom `entity_id` numbering
+  (from 0 rather than 1), and can predict a different structure; it now needs
+  the `ccd.pkl` staged beside the weights, as every other job already did. It
+  is still folded by one `predict` call, as before.
+
+- **ESMFold2 keys entities on sequence alone, as Biohub does.** Two polymer
+  chains with one sequence and different modifications were two entities;
+  Biohub's `_get_sequence_key` makes them one, so `entity_id` and `sym_id`
+  change for such a job, and the prediction can.
+
+- **Protenix featurizes each seed with that seed.** Native-JSON featurization
+  -- the reference-conformer augmentation and the seeded chemistry draws --
+  was keyed to the job's `modelSeeds[0]` (or 101) and computed once, so every
+  seed of a run, and a `--seed` run, folded the first seed's input. Upstream
+  reseeds before its dataloader builds each seed's input
+  (`runner/inference.py:565-566`), and OpenDDE here already featurized per
+  seed. A common-schema job is written with `modelSeeds` set to the run's
+  seed, so it is unchanged; for native Protenix JSON, every seed but the first
+  of a multi-seed run, and every request whose seed is not the job's first
+  `modelSeeds` entry, now gets a different input and can predict a different
+  structure. The ESM/ISM embedding depends on the sequence alone and is still
+  computed once per job; a multi-seed native run holds one prepared feature
+  set per seed.
+
+- **`--msa auto` pairs a Boltz-2 heteromer, as Boltz-2's own server search
+  does.** The search gave every chain an unpaired alignment only. Boltz-2
+  submits its protein entities together as one `pairgreedy-env` job when
+  there are two or more and writes each a CSV whose paired rows share a key
+  (`main.py` `compute_msa`); a searched heteromer now gets the same: one
+  complex pairing job, then one `<out>/inputs/msa/entity_NNNN.csv` per
+  distinct sequence, named after the first entity carrying it (Boltz refuses
+  two chains of one sequence naming two alignments), built exactly as
+  upstream builds it (paired rows first, capped at 8,192, all-gap rows
+  dropped; then the unpaired rows to 16,384 in all). Entities with one
+  sequence are one query, as for OpenFold3 (upstream submits each entity,
+  duplicates included); a homomer or monomer stays unpaired; a chain that
+  arrived with its own alignment keeps the complex unpaired, with a warning.
+  A common job still cannot name an `.csv` alignment. Searched heteromers can
+  predict different structures.
+
 - **A Boltz-2 template's `chain_id` now names the author chain, as it does for
   every other backend.** FoldJAX used to copy the common `chain_id` into
   Boltz's `template_id`, which Boltz reads as a label chain
@@ -114,6 +467,243 @@ unless it says so here, in its own paragraph.
   chain's label id warns and takes the author reading. A label id that is not
   an author id is passed on unchanged, so a job that already named the label
   chain behaves as before.
+
+- **A common template map means one thing for every backend: AlphaFold 3's
+  indices.** This changes what a Protenix or OpenDDE job reads. `query_indices`
+  and `template_indices` are 0-based, a template index counting the template
+  chain's full `_entity_poly_seq`, unresolved residues included, and
+  `chain_id` naming its author chain. AlphaFold 3 receives them verbatim, as
+  before. Protenix and OpenDDE received them verbatim too, but read them as
+  ordinals of the *first* chain's resolved residues, ignoring `chain_id`; the
+  writer now restates the map in those terms: the named chain is moved first
+  (the file is passed unchanged when it already is), each template index
+  becomes that residue's ordinal, and a pair whose template residue is
+  unresolved is dropped, since neither reader has coordinates for it. A
+  template index past the chain's sequence, or a `chain_id` the file does not
+  have, is refused. A single chain whose every residue is resolved -- what a
+  hand-made Protenix template usually is -- maps as before; a map written for
+  the old reading against any other file now selects different residues.
+
+- **`plan` refuses what `predict` refuses**, with the same message: every
+  malformed job `predict` refuses now fails `plan` too. It writes no generated
+  job into the store; `predict` checks every run of a batch up front, before
+  any runs (`--keep-going` records a refused run with `seed: null` and runs
+  the rest).
+
+- **Input auto-detection**: a JSON/YAML mapping without a native signature key
+  (`sequences`, `modelSeeds`, `dialect`, `version`, `queries`) is validated as
+  a FoldJAX job, so `entitys:` gets "did you mean 'entities'?" instead of a
+  backend `KeyError`; an empty `{}` is therefore refused rather than passed to
+  a backend. A `.json`/`.yaml` that does not parse is a one-line error
+  (`... is not readable as YAML: <problem> (line L, column C)`) instead of a
+  traceback; ESMFold2 no longer JSON-parses a `.yaml` job.
+
+- **Generated jobs are content-keyed**: `Job.store()` writes
+  `runtime/jobs/<digest>/<stem>.json` (it takes an optional `root` and
+  `stem`), so the stem -- and the default output directory -- never depends on
+  what was stored before. An unnamed `--sequence` job now runs into
+  `foldjax-outputs/job-<8 hex of its SHA-256>`; `--name NAME` into
+  `foldjax-outputs/NAME` (docs/input.md). A `--sequence` run finished before
+  this change is recorded under its old input path, so `--resume` reruns it
+  once.
+
+- **Multi-seed sample numbers are per seed.** The merged result records each
+  sample's per-seed number (`metadata.sample`), so `show`, the CSV/JSON rows,
+  `compare` and `best` no longer count samples across seeds, and
+  `best_within_model` survives a best sample in a later seed. Merged manifests
+  written before are read with per-seed numbering, `best` matched by structure
+  path. A script that joined on the old cross-seed sample number must join on
+  (seed, sample).
+
+- **A seed is drawn only after the run is validated**, so a refused job no
+  longer first announces a seed it never used.
+
+- **`predict` stdout is the result only**: everything printed while a request
+  resolves and runs -- Python `print` and file descriptor 1 alike, such as
+  Boltz-2's "Found explicit empty MSA" and the Protenix/OpenDDE runners'
+  `compile cache:`/`job:`/`wrote:` lines -- goes to stderr, so
+  `predict ... > out.json` is valid JSON (`cache warm` likewise).
+
+- **CLI warnings** print once per command as `foldjax: warning: <message>`,
+  without the source file and line.
+
+- **`--seeds` help** describes the layout written: native files and a manifest
+  per seed in `seed_<n>`, structures in `seed-<n>_sample-<NN>`, all listed in
+  the top-level `foldjax_run.json`.
+
+- **Memory admission no longer reports `fits` for a run whose estimate is a
+  lower bound.** The peak laws were fitted at each port's released dtype and
+  precision without `--padding`, and padded runs and runs with a precision
+  option (OpenFold3 `dtype=float32`; Boltz-2 `pair_residual_dtype=float32` or
+  `matmul_precision=highest`) measured up to 1.69x the upper estimate while
+  the manifest said `fits`. Such a run now proceeds as `unknown`, with one
+  warning naming the options, and the manifest's `memory` block lists them
+  under `exceeds_profile`. An over-budget estimate still refuses under
+  `--memory-check refuse`, and `off_profile` -- runs that need less than the
+  law -- is unchanged. OpenFold3 under `--padding` is now admitted once, at
+  the padded shape, rather than first at the unpadded one.
+
+- **Admission says `fits` for measured small OpenFold3 and OpenDDE runs, and
+  admits OpenDDE at 4,040 structural tokens.** Below their fitted domains
+  (OpenFold3 from 129 tokens, OpenDDE bf16 from 246 structural tokens) every
+  completed benchmark run sits under the law's upper estimate, so admission
+  now reports `fits` there -- and still never refuses in that band. At
+  exactly 4,040 structural tokens (a 2,096-residue entry, 5DEI), measured
+  completing at 78,616 MiB, the bound is that measurement plus its 28 MiB
+  repeat spread, 131 MiB under the 0.9-pool threshold, instead of the law's
+  80.9 GiB refusal.
+
+- **AlphaFold 3 warm processes can read their persistent-cache entry back.**
+  XLA refused AlphaFold 3 GPU cache entries on load (`RET_CHECK ... Invalid
+  metadata payload id 201 with payloads size 192`), so the warm process
+  recompiled the main program (in the benchmark, 143 of 160 AlphaFold 3 warm
+  processes: all 70 of DeepMind's runner and 73 of 90 FoldJAX ones). The
+  failing check reads only Tokamax's HLO metadata payloads; the executed
+  program is now traced without them, while the autotuning discovery lowering
+  keeps them under a separate trace. The compiled kernels are unchanged;
+  cache keys change once.
+
+- **`kernel_autotuning=heuristics` runs AlphaFold 3 on sm_120 cards.** Tokamax's
+  heuristic GLU tile asked for more than the 99 KiB of shared memory per block;
+  on compute capability 12.x it now drops pipeline stages (then tile width)
+  until it fits. The default stays `autotune`.
+
+- **OpenFold3 denoises one sample at a time above 4,888 tokens on a serial
+  run** when `diffusion_chunk_size` is omitted. 4,888 is the largest serial
+  size with a completed unchunked rollout; above it the `f32[5, N, N, 128]`
+  pair conditioning alone is 102.9 GiB at 6,568 tokens. Every measured size
+  keeps its program; an explicit width, `None` included, still wins.
+
+- **Padding steps its token grid by 128 below 1,024 tokens** (128 ... 896,
+  then 1,024 ... 8,192 by 256; 36 buckets). The derived axes follow: OpenDDE's
+  8RG4 pads 373 -> 384 tokens, 720 -> 768 structural tokens and 3,058 -> 9,216
+  atoms, where it padded to 512 / 1,024 / 12,288 at 1.62x its unpadded wall.
+  Padded executables below 1,024 tokens are new shapes and compile once.
+
+- **Fewer small compiled programs per process.** Weight trees move to the
+  device with `device_put` and are narrowed in one grouped convert; integer
+  feature checks run in NumPy. On two small CPU inputs Protenix compiled 145 ->
+  23 programs, OpenDDE 209 -> 36, ESMFold2 177 -> 159, with every output array,
+  structure and confidence file bitwise identical.
+
+- **`foldjax doctor`** checks template realignment the way the search does
+  (`find_spec("kalign")`), lists the `FOLDJAX_TEMPLATE_*` variables, labels
+  the Protenix-native template lines `protenix-native` and points them at
+  `--option template_mmcif_dir` rather than an internal environment variable,
+  prints `pip install 'foldjax[extra]'` or `uv sync --inexact --extra extra`
+  to match how FoldJAX was installed (`--inexact`, because a bare `uv sync`
+  uninstalls the extras it is not given), and reports the checkout's
+  `git describe` and any stale editable-install metadata version.
+
+- **`foldjax compare` help** says nucleic acids are fitted on C4' and names
+  `compare_structures.csv`.
+
+- **CI finishes again.** The single 30-minute job had not completed since
+  2026-09-11 (the suite needs 75-90 minutes on one runner). It is now six
+  parallel shards (`.github/workflows/tests.yml`: the orchestration suite, one
+  per large port, and a catch-all for the rest of `tests/models`), with
+  coverage combined across shards for the 80% gate, lint and the lockfile check
+  in their own job, AlphaFold 3's compiled runtime cached instead of rebuilt
+  inside a test, runners pinned to `ubuntu-24.04`, and actions on current
+  Node 24 majors (`checkout@v7`, `setup-uv@v10`, `cache@v6`,
+  `upload-artifact@v7`, `download-artifact@v8`). Tests marked `slow` -- now
+  also three multi-minute context-parallel compiles -- and the RCSB `network`
+  tests run in a new nightly workflow. The CPU parity subset stays manual: it
+  needs weights beyond the Actions cache and fixtures that exist on one host
+  (docs/parity-cpu.md).
+
+- **`--resume` no longer reuses a run whose featurizer or input writer has
+  since changed.** Each port's recorded implementation files were a
+  hand-picked list of model files, so an edit to Protenix's featurizer
+  (`models/protenix/data/featurize_json.py`), its CCD tables
+  (`ccd_nucleotides.npz` and the other two), or the common-job writer in
+  `foldjax/input.py` (including its template map) changed predictions while an
+  old run still resumed. Every port now binds its whole source tree, its
+  packaged `.npz` tables, its adapter, the modules of another port its code
+  imports (OpenDDE: all of Protenix; ESMFold2 and OpenFold3: Boltz-2's native
+  norm), the shared `models/_*.py` helpers, `backends/base.py` and
+  `input.py`; Boltz-2 and OpenFold3 also bind `template_search.py`, and
+  OpenFold3 `_openfold3_compile.py`. Runs made before upgrading to this version
+  are rerun rather than reused, once.
+- **ESMFold2 binds the `ccd.pkl` beside its checkpoint.** An
+  all-biomolecule job is featurized from it, and the run manifest recorded
+  only the checkpoint and its config; it is now recorded (as absent when it
+  is), so replacing or placing it reruns the job under `--resume`.
+
+- **Boltz-2's `matmul_precision` reaches triangle attention.** The four
+  triangle-attention projections take an explicit op-level precision that
+  `api.predict` never set, so they ran `highest` under every request while
+  the rest of the trunk followed the knob. `predict` now passes the resolved
+  knob there, and `resolve_matmul_precision` accepts `high`. At the released
+  bfloat16 trunk those matmuls are bfloat16 on both operands, so the result
+  is unchanged: bit-identical on CPU, and a unified build measured the same
+  on GPU (81.96 against 82.17 s at 1,003 tokens). Under
+  `--option dtype=float32` an omitted knob now runs them at TF32 on a GPU
+  like the rest of the trunk; that arm has no GPU accuracy row, and
+  `--option matmul_precision=highest` still selects the whole float32
+  program. The compiled program's precision attribute changes, so the first
+  Boltz-2 run after upgrading recompiles.
+
+- **One job-name rule for every output path.** FoldJAX's layout, the
+  Protenix/OpenDDE original-style tree and OpenFold3's native files each
+  sanitized a job name their own way; all three now use
+  `foldjax._fsutil.safe_job_name`. A name of ASCII letters, digits, `_`, `.`
+  and `-` is written exactly as before. What moves: Protenix and OpenDDE keep
+  non-ASCII letters (a Korean or Greek job name used to collapse to
+  `prediction`, so two such jobs shared one directory) and shorten names over
+  120 bytes with a digest; OpenFold3 sanitizes a name with a separator,
+  whitespace or a control character instead of failing the finished
+  prediction at the writer.
+
+- **Duplicated helpers are one each.** Device identity is
+  `cache.device_identity` (unchanged, so every compile-cache namespace keeps
+  its digest), and the AlphaFold 3 runner and Boltz-2 parameter sessions key
+  on `cache.device_key` built from it instead of their own attribute lists.
+  AlphaFold 3's parameter filename families are one table,
+  `assets.AF3_PARAMETER_PATTERNS`, read by both the readiness check and the
+  adapter's replay of upstream's selector. Boltz-2's feature-cache digest
+  streams referenced files through `_fsutil.update_digest_from_file`, with the
+  key byte-for-byte what it was, and its representation-archive notice is a
+  progress line instead of a `print` to stdout.
+
+- **`hydra-core` is no longer a dependency.** Nothing imported it (or
+  `omegaconf`), and it carried GHSA-2cp2-2r3c-7p7r; `omegaconf` and
+  `antlr4-python3-runtime` leave the lock with it.
+- **Security patch releases in the lock**: urllib3 2.8.0, multidict 6.9.1,
+  oauthlib 4.0.0 and werkzeug 3.1.9 (all transitive). `pip-audit` reports no
+  known vulnerability in any exported environment.
+- **`docs/licences.md`** says which AlphaFold 3 terms ship in the wheel
+  (`OUTPUT_TERMS_OF_USE.md` among them) and which installs pull in NVIDIA's
+  proprietary GPU wheels: the CUDA extras, the default `gpu` group of a bare
+  `uv sync`, and the Docker image.
+
+- **The 2x2-grid arms of the Protenix and OpenFold3 atom context-parallel
+  tests run nightly** (`slow`). Pull requests keep the 1-D arm and the 3x3 grid,
+  whose odd side is what tells a ring hop's direction apart.
+- **AlphaFold 3 runtime tests build the runtime once per session** and skip
+  with the build's error where it cannot be built, instead of each retrying a
+  multi-minute CMake build. `FOLDJAX_REQUIRE_AF3_RUNTIME=1` (set on CI's core
+  shard) makes that a failure.
+- **Every test starts from fresh process state.** An autouse fixture restores
+  `os.environ`, the JAX persistent-cache settings, progress, and the memory
+  policy's one-time warnings and recorded decision after each test, and resets
+  the last three before it; six tests that passed only because no earlier test
+  had turned progress on now pass either way.
+
+- `foldjax_run.json` `msa_pairing` records `paired_by` (`row`, `species` or
+  null) beside requested, resolved and mode; `species` means no row beyond the
+  query is paired.
+- AlphaFold 3 follows its upstream, which has no reader of ColabFold output: it
+  keeps its per-chain alignment and still refuses `greedy`/`complete`. The docs
+  now say that this alignment pairs no rows of a heteromer either: its
+  ColabFold headers carry no UniProt species.
+
+- The 49 dated engineering notes and one-off reports (`docs/*-2026-09-*.md`
+  and `preprocessing-contract-audit.md`) moved to `docs/archive/`, indexed by
+  `docs/archive/README.md`. Every reference to them -- docs, CHANGELOG, test
+  and source comments, the parity manifests' notes and
+  `bench/experiments/independent-input-entity-parity-2026-09-05.json` -- now
+  names the new path. `docs/EXPERIMENTS.jsonl` stays where it was.
 
 ### Fixed
 
@@ -144,26 +734,48 @@ unless it says so here, in its own paragraph.
   A token without exactly one representative atom is now refused at
   featurization instead of being padded silently.
 
-- **Memory admission no longer reports `fits` for a run whose estimate is a
-  lower bound.** The peak laws were fitted at each port's released dtype and
-  precision without `--padding`, and padded runs and runs with a precision
-  option (OpenFold3 `dtype=float32`; Boltz-2 `pair_residual_dtype=float32` or
-  `matmul_precision=highest`) measured up to 1.69x the upper estimate while
-  the manifest said `fits`. Such a run now proceeds as `unknown`, with one
-  warning naming the options, and the manifest's `memory` block lists them
-  under `exceeds_profile`. An over-budget estimate still refuses under
-  `--memory-check refuse`, and `off_profile` -- runs that need less than the
-  law -- is unchanged. OpenFold3 under `--padding` is now admitted once, at
-  the padded shape, rather than first at the unpadded one.
+- **Boltz-2's affinity input is upstream's first-ranked sample.** The affinity
+  stage re-featurized the sample with the highest ipTM; upstream scores the
+  sample it ranks first by `confidence_score` (`data/write/writer.py:73-79,
+  178`), which is also the sample `best` names. With more than one sample the
+  affinity values can change.
 
-- **OpenFold3's capability record no longer lists `multi_residue_ligand` or
-  `ligand_file`.** OpenFold3 v0.5.0 declares `ccd_codes` lists and
-  `sdf_file_path` but raises `NotImplementedError` on both, upstream and in the
-  port, so `foldjax capabilities --model openfold3` advertised two native inputs
-  that never ran. Its native-only features are now `templates` and
-  `cyclic_polymer`. A common job with bonds is refused with the reason (the
-  featurizer never applies them) instead of a pointer to the native format,
-  which refuses them too.
+- **A Boltz-2 `--max-msa-depth` above 8,192 reaches the features.**
+  Preprocessing read at most 8,192 rows of each alignment file (upstream's
+  released `--max_msa_seqs`) whatever depth was asked, so a deeper
+  `max_msa_depth` changed nothing. The parse cap now follows `max_msa_depth`
+  when that is larger, through the per-run `processed/` tree, and the feature
+  cache keys on it, so an entry parsed at the old cap misses once; at or below
+  8,192 nothing changes.
+
+- **Boltz-2 no longer answers a run with an earlier run's MSA.** Every common
+  job is written as `boltz2_input.yaml`, so every run shares one record id, and
+  preprocessing kept an existing `processed/msa/boltz2_input_0.npz`: a second
+  job into the same `--output-dir`, or the same job after its `.a3m` was
+  edited, silently folded with the first run's alignment, and a record left by
+  another job joined the manifest. Each run now builds its `processed/` tree in
+  a fresh private directory and then replaces `<output>/processed`, so an
+  existing `processed/` is regenerated rather than reused, and a symlink
+  planted at that name is replaced instead of written through.
+
+- **Boltz-2 runs off a GPU without naming a GLU.** The released
+  `glu_backend` is the fused Tokamax kernel, which refuses to run off a GPU,
+  so every CPU Boltz-2 run failed unless it said `--option glu_backend=xla`
+  -- while `doctor` reported that every model runs on CPU. An omitted
+  `glu_backend` now resolves to `xla` off a GPU (and still to `pallas` on a
+  serial GPU process); the cache namespace records the realised value. An
+  explicit `tokamax` is still refused off a GPU. The native
+  `foldjax.models.boltz2.api.predict` keeps its released default.
+
+- **Boltz-2 runs off a GPU without naming a matmul policy.** The released
+  `matmul_precision` is `high`, which is TF32: off a GPU the cuEquivariance
+  reference path handed `TF32_TF32_F32` to `dot_general`, which the CPU
+  refuses, so every CPU affinity stage failed unless the run said
+  `--option matmul_precision=highest`. An omitted policy now resolves to
+  `highest` off a GPU (and stays `high` on one); the cache namespace records
+  the realised value, so a CPU run shares the explicit `highest` entry. An
+  explicit `high` off a GPU is refused while planning, with the spelling that
+  runs. The native `foldjax.models.boltz2.api.predict` keeps its pin.
 
 - **A common job's `.csv` `unpaired_msa` is refused for Boltz-2.** Boltz
   reads a CSV alignment by suffix and pairs its rows by the `key` column, so
@@ -179,6 +791,14 @@ unless it says so here, in its own paragraph.
   ligand one). Atom names are still checked by each backend, whose chemistry
   decides which atoms a residue has.
 
+- **Protenix refuses a constraint its weights cannot read while planning.** A
+  common pocket or contact constraint, or a native `constraint.pocket`/`contact`,
+  on a checkpoint without a constraint embedder -- every released one but
+  `protenix_base_constraint_v0.5.0` -- failed only at the embedder, after
+  featurization and the weight load; `foldjax plan` and `predict` now refuse
+  it up front, naming the channel. The embedder's own refusal now names every
+  unweighted channel in a fixed order instead of one arbitrary one.
+
 - **AlphaFold 3 featurizes with `run_alphafold.py`'s `ref_max_modified_date`,
   2021-09-30.** FoldJAX called the runner and featurisation without it, so a
   chemical component whose RDKit conformer failed and whose CCD entry has no
@@ -188,6 +808,22 @@ unless it says so here, in its own paragraph.
   external `source` runner whose `predict_structure` has no such parameter is
   called as before.
 
+- **OpenFold3 zeroes unused reference atoms before centring, as upstream.** An
+  atom with no conformer position (NaN) and `annot_used_atom_mask` false
+  poisoned the masked centre of its whole molecule, and an all-unused
+  molecule kept its NaNs; either way validation then refused the job.
+  Upstream (`featurization/conformer.py:141-156`) zeroes those rows first and
+  refuses only a used atom without a position, which this port now does too.
+
+- **OpenFold3's capability record no longer lists `multi_residue_ligand` or
+  `ligand_file`.** OpenFold3 v0.5.0 declares `ccd_codes` lists and
+  `sdf_file_path` but raises `NotImplementedError` on both, upstream and in the
+  port, so `foldjax capabilities --model openfold3` advertised two native inputs
+  that never ran. With templates now in the common schema (template search,
+  above), its only native-only feature is `cyclic_polymer`. A common job with
+  bonds is refused with the reason (the featurizer never applies them) instead
+  of a pointer to the native format, which refuses them too.
+
 - **A native OpenDDE job's dropped `templatesPath` and RNA `unpairedMsaPath`
   are recorded in the run manifest.** Under the released `use_template=false`
   and `use_rna_msa=false` the featurizer drops them with a warning, as
@@ -196,23 +832,430 @@ unless it says so here, in its own paragraph.
   entity, chains, path), as `ignored_constraints` lists a dropped
   `constraint`, and are empty lists when nothing was dropped.
 
-### Changed
+- **`foldjax weights fetch --model protenix-v2` fetches the v2 bundle.** It
+  printed the v2 bundle's header but passed the public model with no profile,
+  which selected the public Protenix release. A storage root now supplies its
+  own profile to the fetch.
 
-- **A common template map means one thing for every backend: AlphaFold 3's
-  indices.** This changes what a Protenix or OpenDDE job reads. `query_indices`
-  and `template_indices` are 0-based, a template index counting the template
-  chain's full `_entity_poly_seq`, unresolved residues included, and
-  `chain_id` naming its author chain. AlphaFold 3 receives them verbatim, as
-  before. Protenix and OpenDDE received them verbatim too, but read them as
-  ordinals of the *first* chain's resolved residues, ignoring `chain_id`; the
-  writer now restates the map in those terms: the named chain is moved first
-  (the file is passed unchanged when it already is), each template index
-  becomes that residue's ordinal, and a pair whose template residue is
-  unresolved is dropped, since neither reader has coordinates for it. A
-  template index past the chain's sequence, or a `chain_id` the file does not
-  have, is refused. A single chain whose every residue is resolved -- what a
-  hand-made Protenix template usually is -- maps as before; a map written for
-  the old reading against any other file now selects different residues.
+- **`--resume` with `--msa single`** reuses a finished run: it searches
+  nothing, as `none` does, and was treated as unverifiable. With `--msa auto`
+  or `required`, the MSA-cache entry each searched chain reads (alignments
+  and the `provenance.json` holding their SHA-256) is recorded in
+  `input_dependencies`, so a finished run is reused while those files are
+  unchanged (RNA searches and OpenFold3's complex pairing stay unverifiable).
+  A directory whose finished run is not reused now says why
+  (`[foldjax] not resumable: ...`).
+
+- **No traceback on bad user input**: an unknown CCD code, an invalid SMILES,
+  a bond to an atom its residue lacks, a missing alignment file, and a YAML
+  syntax error are one `foldjax:` line each.
+
+- **The remote MSA client rides out a busy server.** A submission answered
+  `RATELIMIT` or `UNKNOWN` is submitted again with backoff, as ColabFold's and
+  Boltz's clients do, instead of polling a job that does not exist. A 5xx, a
+  dropped connection or a truncated body (`http.client.IncompleteRead`, which
+  escaped every caller's `except`) is retried up to five times with
+  exponential backoff for searches and template-structure downloads alike; a
+  failure that persists is a search error naming the server. Waits print a
+  progress line instead of sitting silent, a timeout names the server, and the
+  one-hour ceiling is `FOLDJAX_MSA_MAX_WAIT_SECONDS`.
+
+- **Search caches survive concurrent runs and damaged entries.** Two runs on
+  one sequence raced to publish, and the loser failed: renaming onto a
+  non-empty directory raises `ENOTEMPTY`, which was not caught. Publishing
+  now reads the winner's entry, and an advisory lock per cache key makes the
+  second run wait and reuse the first one's search instead of asking the
+  server again. An MSA, RNA-MSA or template-hits entry that fails its hash or
+  completeness check used to fail every later run of that sequence; it is now
+  moved aside as `.<key>.damaged` with a warning naming it, and searched
+  again. Entries are published with the umask's mode instead of 0700, so a
+  group-shared cache is readable by the group, and a failed mmCIF download no
+  longer leaves its staging file behind.
+
+- **Uncached sequences share the unpaired MSA ticket.** Twenty unique
+  sequences cost forty serial tickets; their unpaired (`env`) searches now go
+  to the server together, up to 16 per ticket, as ColabFold's and Boltz's own
+  clients submit them, and each query's block is renumbered to the `>101` a
+  single-query ticket writes, so the cached files are byte-identical either
+  way (the server answering each query independently of its ticket-mates is
+  taken from those clients, not re-measured). The per-chain paired search stays
+  one ticket per sequence, since what it pairs depends on the ticket.
+
+- **A failed MSA search under `--msa auto` is recorded and keeps what
+  succeeded.** One chain's failure dropped every chain's alignment; each chain
+  now keeps its own result, and a failed chain is recorded with its `error` in
+  `msa_search.json` and in a new `msa_search` field of `foldjax_run.json`
+  (`null` when no search was asked for; not part of the resume identity, so
+  existing manifests still resume). In the CLI the failure, and a failed
+  template search, is a progress line for every input instead of a Python
+  warning, which the warning registry printed only for the first identical
+  one in a batch; library callers still get the warning.
+
+- **`confidence_full.npz`, `representations.npz`, OpenFold3's feature archive
+  (`save_features`) and its pre-parsed MSA and template caches
+  (`save_preparsed_msas`, `save_template_cache`) are written with the umask
+  mode,** not `tempfile`'s owner-only `0600`, as the template mmCIF cache
+  already was. The umask is read without being reset, and Boltz-2's affinity
+  summary is written atomically.
+
+- **The OpenDDE port notes say its native writer has no
+  `full_data_sample_*.json`.** Upstream writes one by default; its pair
+  arrays are program outputs here only under `--option include_raw=true`, so
+  writing it by default would add quadratic outputs to every run
+  (`docs/ports/opendde/README.md`).
+
+- **Documentation drift:** README's CPU-only recipe (undone by the next
+  `uv run`; now `UV_NO_DEFAULT_GROUPS=1`), README links made absolute for
+  PyPI, a pip install section, examples linked and corrected (`--msa auto`,
+  no Chai or "OpenFold3 refuses any other name" claims), the Colab notebook
+  pinned to the `v0.1.0` tag (and a test that the pin is a tag), AlphaFold 3's
+  recycle count in python-api.md (3; upstream's CLI default is 10),
+  nonexistent `--no-compile`/`--msa-deletions` in cli.md, the Protenix weights
+  label in cli.md's example, `Job.write` bonds in input.md, the Kalign version
+  claim in model-versions.md.
+
+- **Test suite:** the banner naming the vendored Boltz-2 parity modules left
+  uncollected without torch (24 modules) never printed --
+  `pytest_report_header` sat in `tests/models/conftest.py`, where pytest does
+  not call it; it now runs from `tests/conftest.py`, and a test asserts it
+  reaches the session header. `tests/models/boltz2/conftest.py` no longer sets
+  the deprecated `JAX_PLATFORM_NAME` at import, which was inert or forced
+  every later suite onto the CPU depending on collection order.
+
+- **`--keep-going` (`on_error="continue"`) now survives any error of one
+  model/input pair.** It absorbed only a fixed list of exception types, so an
+  unconverted checkpoint (`UnpicklingError`, a safetensors error), a kernel
+  the device cannot run (`NotImplementedError`), a non-OOM XLA runtime error
+  or a `KeyError` from a malformed input ended the whole batch. Every
+  `Exception` is now recorded in `foldjax_failures.json` and the batch moves
+  on; `KeyboardInterrupt` still stops it. A run directory that cannot be
+  created, and an input that cannot be resolved or converted (an empty FASTA
+  file in an input directory), are now that pair's recorded failure instead
+  of a batch abort; without `--keep-going` both still refuse before anything
+  runs.
+- **A stale `foldjax_failures.json` is removed by a batch that has no
+  failures,** so the file never describes an earlier invocation.
+- **A run manifest the disk cannot take is a failure.** A full disk or a
+  read-only directory turned the missing completion marker into a warning
+  and exit status 0; it is now an `OSError` naming the manifest (exit 2, or a
+  recorded failure and exit 3 under `--keep-going`), with the disk-full hint.
+  A manifest whose provenance cannot be introspected still only warns.
+- **Two runs into one output directory no longer share files.** Each
+  model/input run holds an exclusive lock on `<run dir>/.foldjax.lock` for
+  its whole duration; a second process is refused with the holder's process
+  id and the lock path (a recorded failure under `--keep-going`). The lock is
+  released by the kernel if its holder dies.
+- **A structure whose header rewrite fails is left whole.** The canonical
+  CIF's data-block title was rewritten in place, and any error was ignored,
+  so a write cut short left a truncated structure that the manifest then
+  digested as the result. It is now written to a sibling file and renamed
+  over the original, and a failure is a `RuntimeWarning` naming the file.
+- **Protenix runs on a CPU-only host.** The released denoiser attention is
+  tokamax's fused kernel, which tokamax implements for GPUs only, so the
+  default configuration failed off a GPU with `NotImplementedError` under a
+  ~200-line traceback. An omitted `diffusion_attention_backend` now resolves
+  to `xla_jit` there (as it already did under context parallelism); the
+  resolved value is in the cache namespace and the native argv. A spelled
+  `tokamax` attention option off a GPU is refused before featurization in one
+  line that names the `--option` to use instead.
+- **Failures name the file you wrote.** A FASTA or structure input is run
+  through a generated job document under the store's `runtime/jobs/`; the
+  failure line, `foldjax_failures.json` and the run manifest's
+  `input.source` now name the original file (`source.kind` is `fasta` or
+  `structure`; absent, as before, for a multi-job file).
+- **OpenFold3 `attach_msas` without a `backend` raised `TypeError`.** The
+  documented `attach_msas(spec, alignment_dir=...)` built its default
+  `RemoteMMseqs2Client` with no endpoint. It now uses the same server and
+  cache label as `--msa auto` (`FOLDJAX_MSA_SERVER_URL`,
+  `FOLDJAX_MSA_SERVER_VERSION`, else the public ColabFold endpoint).
+- **ESMFold2 `build_msa(msa_depth=...)` exceeded its cap and starved later
+  chains.** The cap was checked against the shared row list inside the
+  per-chain loop: the first chain filled it and every later chain still added
+  one row past it. `msa_depth` is now one cap on the total row count (query
+  included), shared one row at a time across the aligned chains; an uncapped
+  or under-cap alignment is unchanged.
+- **Managed-memory cleanup no longer swallows `KeyboardInterrupt` or
+  `SystemExit`,** and a release that fails with an ordinary error is reported
+  as a `RuntimeWarning` instead of passing silently (`models/_managed_memory`,
+  the CCD session stack, ESMFold2's session).
+- **An optional kernel that failed to import now says why when selected.**
+  tokamax (Boltz-2/shared and Protenix wrappers, `cp_fused_attention`,
+  `triangle_attention_ring_kernel='tokamax'`) and Boltz-2's Pallas triangle
+  attention keep the import exception and chain it, with its type and message,
+  into the error an explicit selection raises.
+- **Input files with a UTF-8 byte-order mark are read.** A FASTA saved by a
+  Windows editor failed with "FASTA must start with a '>' header line" and a
+  JSON job with "Unexpected UTF-8 BOM"; the mark is now dropped. A file in
+  another encoding (Latin-1, say) is refused naming the file and telling you to
+  save it as UTF-8, instead of the bare codec message.
+- **A trailing `*` stop codon in a FASTA protein is dropped.** UniProt and
+  every translator write it; it used to be refused as an unsupported residue.
+  An internal `*` is still refused.
+- **`--name -dash` says how to pass it.** argparse reads the value as an
+  option and only reported a missing argument; the error now adds
+  `--name=-dash`.
+- **Protenix's "cannot tell which model" error names the FoldJAX spelling.**
+  It told `foldjax predict` users to pass `--model-name`, which that command
+  does not have; it now names `--option model_name=NAME` (and `--model-name`
+  for the native Protenix CLI).
+- **A truncated converted checkpoint in the store is reported as truncated.**
+  It was reported as "no converted weights" beside the file that was there.
+  When the conversion record names a different size, the error now says
+  `truncated: N bytes where their conversion wrote M` (or that an empty file
+  is unreadable) and gives the `weights fetch` line that converts it again.
+
+- **`capabilities` and `plan` report the sampling each backend runs.**
+  `ModelCapabilities.sampling_defaults` read the adapters' native tables, so
+  AlphaFold 3 said 10 recycles where its adapter runs 3, OpenFold3 said 4
+  where the neutral count is 3 (4 is its trunk passes), and Protenix's steps
+  and recycles, ESMFold2's samples and steps and Boltz-2's MSA depth were
+  null although each runs a definite value. Both now come from
+  `Backend.sampling_resolution`, the translation a run takes: AlphaFold 3
+  5/200/3/1,024, Boltz-2 1/200/3/16,384, ESMFold2 32/14/3/1,024 (its released
+  `config.json`, or the named checkpoint's), OpenDDE 5/200/10/16,384,
+  OpenFold3 5/200/3/1,024, Protenix 5/200/10/16,384 (the model variant's
+  schedule, read off the model name). `plan`'s `sampling` shows the value a
+  knob runs at rather than the one spelled where a port narrows it, and
+  `sampling_source` says `checkpoint` with a value where the checkpoint
+  decides. `docs/cli.md` now documents `sampling`, `sampling_source`,
+  `generated_input` and `not_checked`, and `docs/model-interface.md`
+  `sampling_defaults`.
+
+- **A resumed random-seed run no longer says it drew its seed.** `--resume`
+  takes the seed back from the finished run's manifest, but the "has no
+  upstream default seed; drew N" line printed anyway, beside the line saying
+  the run was reused. It now prints only when the seed was actually drawn.
+
+- **Boltz-2's MSA-server download is streamed under the 1 GiB ceiling.** The
+  native client read the whole result archive into memory with no bound; it
+  now streams it to disk and refuses more than `MAX_REMOTE_BYTES`, the cap the
+  shared search client already applies. A body that breaks off mid-transfer is
+  retried like a failed request, and a refused or failed download leaves no
+  partial archive to be reused.
+
+- **Protenix refuses a feature archive that cannot say which tokens are
+  ligand.** An archive without `token_is_ligand`, `is_ligand` or
+  `token_polymer_type` fell back to reading the unknown residue type as
+  ligand identity, which every modified residue shares, so chain pTM/ipTM
+  scored modified polymers as ligands. `--features` with such an archive now
+  stops before any weights load and asks for the job to be re-featurized;
+  a trunk-only or confidence-free run, which reads no ligand identity, is
+  unaffected.
+
+- **OpenFold3 no longer calls a nucleic-acid or ligand input a fit.** Its peak
+  law keys on the token count alone and every point it was fitted on is
+  protein-only; 5NPK (DNA gyrase with DNA and ligands, 3,061 tokens) peaked at
+  41,260 MiB against the law's 29,876 MiB upper estimate. A run with any real
+  non-protein token is now admitted as `unknown` with that reason named, the
+  way a padded or float32 run already was; a refusal still binds.
+
+- **AlphaFold 3, Boltz-2 and OpenDDE select their compile cache through the
+  shared scope.** Each set `jax_compilation_cache_dir` with a raw
+  `jax.config.update` that stayed in force after the call, and on a directory
+  the trust check refused left the host's cache in place rather than
+  compiling without one. All three now enter `compilation_cache_scope` for the
+  run, as Protenix and OpenFold3 already did, so a direct caller gets its JAX
+  config back and an untrusted directory is never read.
+
+- **OpenDDE no longer exports its asset paths to the environment.**
+  `components_cif`, `ccd_rdkit_cache` and the template files
+  (`template_mmcif_dir`, `template_release_dates`, `template_obsolete_map`,
+  `kalign_binary`) were written to `PROTENIX_*` variables for the whole
+  process; they are now passed to the featurizer for the run
+  (`featurize_protein_json(..., assets=FeaturizerAssets(...))`), and the
+  Protenix runner passes its `--template-mmcif-dir` the same way instead of
+  exporting `PROTENIX_TEMPLATE_MMCIF_DIR`. An explicit path comes before the
+  environment, which stays a fallback for anyone who sets it, and before the
+  managed store; a run naming a different RDKit CCD cache reloads it rather
+  than reading the molecules a previous run loaded. The run manifest records
+  the CCD files the options name, where it used to record the environment's
+  or the managed ones.
+
+- **`plan --json` and `plan --shard` write nothing into the store.** `--json`
+  took a second code path that stored a `--sequence`, FASTA or structure
+  job and the split jobs of a multi-job file under `runtime/jobs`, and
+  `--shard` wrote its shard file to `runtime/jobs/shards`. Both now go to a
+  scratch directory, as plain `plan` already did, and the paths shown are the
+  ones `predict` would write. `--json` now also runs the same `preflight`
+  checks as plain `plan`, so it refuses what `predict` refuses.
+- **`run.schema.json` names every field the manifest writes.** `msa_search`,
+  `weights.kind`, `weights.stat_signature` and AlphaFold 3's per-sample
+  `metadata.native_sample` were written but undeclared. They are declared as
+  optional, so `schema_version` stays `1.0` for both `foldjax_run.json` and
+  `confidence.json` (one shared constant) and a file written before they were
+  named still validates and still resumes. A contract test now fails on any
+  written key the schemas do not name.
+- **OpenFold3 `triangle_kernel=auto` is the omitted default.** It pinned
+  `cueq` (attention only), which no omitted run selects; it now resolves as
+  omitting the knob does -- `cueq-pallas` on a GPU, `cueq-full` elsewhere,
+  `xla` under context parallelism -- and shares that cache namespace.
+- **`triangle_kernel=cueq-pallas` is requestable** through the neutral knob on
+  OpenFold3, the kernel its omitted GPU run selects; Boltz-2 and Protenix
+  refuse it by name.
+- **Width values have one vocabulary.** `bf16`/`bfloat16` and
+  `fp32`/`float32`/`f32` are accepted in `dtype` and every `*_dtype` option on
+  every port and rewritten to the port's own spelling, so `trunk_dtype=bf16`
+  on OpenFold3 and `confidence_dtype=float32` on OpenDDE are no longer
+  refused.
+- **Switch values have one vocabulary.** `true`/`false`, `yes`/`no`,
+  `on`/`off`, `1`/`0` (any case) and real booleans reach every port as a
+  `bool` in each option it declares in the new `Backend.boolean_options`, and
+  as `on`/`off` in `deterministic`. Previously most ports took only a real
+  `bool` and Protenix/OpenDDE only `true`/`false` text. Only declared switches
+  are rewritten; other spellings still reach the port's validator and are
+  refused there.
+- **`--resume` compares options as the backend reads them.** Both the
+  recorded and the requested options go through `Backend.canonical_options`
+  (alias keys, width and switch spellings, `auto`), so `bf16` vs `bfloat16`
+  or `trunk_dtype` vs `compute_dtype` no longer forces a rerun; manifests from
+  earlier runs, which recorded options as typed, resume the same way.
+- **AlphaFold 3 runs off a GPU with the default attention.** An omitted
+  attention (or `attention_kernel=auto`) was upstream's `triton`, which
+  tokamax refuses with `NotImplementedError` on a CPU (and TPU). It is now
+  `triton` only on a GPU device and `xla` elsewhere, decided from the selected
+  device at run time and from the `platform` option or JAX's default backend
+  in the cache namespace, so an omitted CPU run shares the explicit `xla`
+  namespace.
+- **Checkpoint loading no longer needs `os.sched_getaffinity`**, which macOS
+  lacks: the torch-archive prefetch and the ESMC cast-on-load size their
+  thread pools with `os.process_cpu_count()` (the CPUs this process may use,
+  Python 3.13+).
+- **Protenix `triangle_kernel=auto` is the omitted default** too. It pinned
+  `cueq_jit`, which also traces the triangle multiplication, where an omitted
+  run leaves the trunk triangle attention to the runner; `auto` now passes
+  nothing and shares the omitted cache namespace.
+- **Checkpoint loading no longer needs `os.preadv`.** CPython 3.13 removes it
+  from `os` on macOS before 11 (`posixmodule.c` drops `preadv`/`pwritev` when
+  the macOS 11 runtime check fails), which python.org 3.13 builds still
+  support; the torch-archive prefetch and the ESMC cast fall back to
+  `os.pread` there (`foldjax.torch_archive.pread_into`).
+
+- **Attribution text.** The root `NOTICE` no longer calls all five ports
+  independent reimplementations: it names the upstream source the Boltz-2,
+  OpenFold3 and ESMFold2 ports carry, gives OpenFold3's holder as upstream's
+  LICENSE does (AlQuraishi Laboratory) and OpenDDE's as its source headers do
+  (Aureka AI Research), and drops a stale OpenFold3 line count and an edit
+  marker for a file that is not vendored. The Boltz-2 `NOTICE` lists the
+  adapted `parse/{a3m,csv}.py`, `write/{mmcif,pdb}.py` and
+  `crop/{affinity,cropper}.py`; its `LICENSE` names the real path
+  (`src/foldjax/models/boltz2/data/`); the OpenDDE `NOTICE`'s copyright line
+  names a holder; the OpenFold3 `NOTICE` uses upstream's holder and points to
+  the Biotite licence.
+
+- **An in-process `foldjax predict` leaves progress as it found it.**
+  `cli.main(["predict", ...])` without `--quiet` turned progress lines on for
+  the rest of the process, so a notebook or test that called it kept getting
+  stage lines on stderr -- and search warnings that should have been
+  `UserWarning`s arrived as progress lines instead. The command now restores
+  the host's setting when it returns or raises.
+- **A generated output directory containing `..` is refused before it is
+  created.** The run-root check compared unnormalized paths, so
+  `<root>/../x` passed it, the directory was created outside the root, and only
+  then refused.
+
+- **Protenix now pairs a searched heteromer's alignment.** Under `--msa auto`
+  it used to read each chain's own ColabFold `paircomplete` alignment as
+  `pairedMsaPath`. Those rows are not aligned across chains, and their
+  `>UniRef100_<accession>\t<scores>` headers carry no species for the
+  featurizer's `_UNIREF_REGEX`, so a heteromer was paired on the query row
+  alone. `msa_pairing="model"` now runs the one ColabFold `pairgreedy` search
+  over the complex that Protenix 2.0.0's ColabFold mode submits (`complete`
+  runs `paircomplete`; both are accepted, no longer refused). Each chain's
+  block is written to `msa/entity_NNNN_pairing.a3m` the way upstream Protenix
+  writes it (`>UniRef100_<accession>_<row>/...`), so the species is the row
+  number and row *i* of every chain is paired. A caller's `paired_msa` is
+  passed through untouched. This changes predictions: heteromers gain paired
+  rows. A monomer or homomer no longer reads a per-chain pairing alignment, as
+  in upstream Protenix's ColabFold mode, and neither does a heteromer searched
+  by a local wrapper (`FOLDJAX_MSA_COMMAND`), which cannot pair a complex and
+  now says so.
+- **OpenDDE's default now runs what upstream OpenDDE runs**: the same
+  `pairgreedy` complex search, with the blocks passed as the server wrote them
+  (`opendde/data/msa/msa_service_client.py` `search_and_build_msa`). Its
+  species re-pairing therefore pairs only the query row, as upstream's does,
+  and the block's rows join each chain's unpaired stack
+  (`msa_pair_as_unpair`); a monomer or homomer gets no pairing alignment, as
+  upstream writes it a query-only `pairing.a3m`. The manifest records
+  `paired_by: species`. An explicit `--msa-pairing greedy`/`complete` opts
+  OpenDDE into Protenix's row reading (`paired_by: row`), unmeasured for
+  accuracy against upstream.
+- A complex pairing search whose blocks differ in depth is refused before it is
+  cached (any model): `msa="required"` fails, `auto` folds without the pairing
+  and warns.
+
+### Security
+
+- **The persistent compile cache is used only when no other account can write
+  it.** JAX runs a cached executable as found. The cache directory and every
+  ancestor must belong to the user (or root) and be writable by neither the
+  world nor a group with another member; otherwise FoldJAX warns once and
+  compiles without a persistent cache. New cache directories are created
+  without group write under any umask. A deliberately shared store opts in
+  with `FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1`. This applies to the request
+  cache and to the Boltz-2, OpenDDE, OpenFold3 and AlphaFold 3 entry points
+  that set the cache themselves. A group-writable, setgid store shared with
+  another account (such as a lab's) now misses until that variable is set.
+
+- **Remote MSA, template and structure servers must be https and are not
+  followed through redirects.** `FOLDJAX_MSA_SERVER_URL`,
+  `FOLDJAX_TEMPLATE_STRUCTURE_URL`, `--msa-remote-url` and Boltz-2's MSA server
+  URL must be `https://`, plain `http://` being accepted for loopback hosts or
+  with `FOLDJAX_ALLOW_INSECURE_HTTP=1`. A redirect is now an error instead of
+  being followed: urllib resent `Authorization` and API-key headers to whatever
+  host it named, `http://` included, and requests strips only `Authorization`.
+  A server job id must be `[A-Za-z0-9_-]+` before it is put in a URL, and one
+  response or result-archive member is capped at 1 GiB.
+
+- **Boltz-2 loads its processed arrays and molecule pickles without arbitrary
+  pickle.** `processed/` structures, MSAs and constraints are read with
+  `allow_pickle=False` (the absent `pocket` field is no longer stored as a
+  pickled `None`, and feature-cache entries written before this change miss
+  once and are rebuilt). The CCD molecule pickles beside the weights and the
+  `processed/mols/*.pkl` file preprocessing writes go through a restricted
+  unpickler that admits only `rdkit.Chem.rdchem.Mol`, as ESMFold2's CCD reader
+  already did.
+
+- **Representation archives are written with `allow_pickle=False`**, so an
+  object array is refused at write time rather than stored as a pickle.
+
+- **Search provenance and `foldjax doctor` redact the search setup.** A local
+  search command's argv (`FOLDJAX_MSA_COMMAND`, `FOLDJAX_TEMPLATE_COMMAND`)
+  and a server URL were written verbatim to the MSA and template caches'
+  `provenance.json`, to `template_search.json` and the run manifest's
+  `template_search`, and printed by `doctor`; a `--password`/`--api-key`
+  argument or URL userinfo now reads `[REDACTED]` there. Cache identities keep
+  the raw values, so existing cache entries still hit.
+
+- **Generated files stay inside their output directory.** The
+  `template_search/` directory that Protenix and OpenDDE template files are
+  written to gets the symlink and containment checks `msa/` already had (a
+  planted symlink now fails that chain's template search with the reason
+  recorded); the OpenDDE CLI's `--stop-after inputs|trunk` representation
+  directory sanitizes the native document's `name` as the structure writer
+  does (`"../../x"` escaped `--out`); and an AlphaFold 3 build wheel member
+  under `share/libcifpp/` cannot climb out of that directory.
+
+- **A weight download stops at its registered size.** A server that sent more
+  than the registry's byte count was written to disk until it stopped; the
+  download now fails at the first byte past it and discards the prefix.
+
+- **A cached template mmCIF is checked before it is used.** A downloaded or
+  unpacked structure must name the requested PDB id in its data block (and
+  parse, where gemmi is installed); one that does not is fetched or unpacked
+  again, and a download naming another entry is refused before it is cached.
+  The local mirror (`FOLDJAX_TEMPLATE_MMCIF_DIR`) stays trusted as is.
+
+### Known issues
+
+- The OpenFold3 blocked-pair peak law under-estimates a nucleic/ligand-heavy
+  input inside its domain: a 3,061-token nucleic/ligand-heavy input (5NPK) peaked at 41,260 MiB
+  against an upper estimate of 29,876 MiB, so admission called a run 11 GiB
+  over its estimate a fit. The law keys on tokens only.
+- In-bucket recompiles under `--padding` come from the per-input MSA bucket
+  (Boltz-2, Protenix, OpenFold3; by design, to bound peak -- `--pad-msa` pins
+  it) and, for Protenix, the chain count, which the confidence summaries take
+  as a static argument. The MSA cycle tape width is already pinned under
+  padding.
 
 ## 0.1.0 (2026-10-06)
 
