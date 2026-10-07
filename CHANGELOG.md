@@ -707,6 +707,29 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **Protenix and OpenDDE `use_tfg_guidance=true` guides what upstream
+  guides.** Only under that option; the unguided sampler is unchanged. Three
+  departures from upstream's guidance, each of which moved coordinates:
+  - Geometry was built per chain, so a protein chain, which carries no
+    chemical bonds in the features, gave every atom pair a clash floor and
+    one guided step stretched N-CA from 1.45 to 2.96 A (and the pair list
+    grew quadratically with chain length). It is now built per residue as
+    upstream's `GeometryFeaturizer(..., exclude_std_residue=True)` builds it:
+    standard polymer residues get no geometry terms, a metal-containing
+    component is skipped, a CCD ligand or modified residue is read from the
+    CCD RDKit cache with its hydrogens and leaving atoms, and a SMILES ligand
+    is rebuilt with explicit hydrogens. For a protein + SMILES-ligand job and
+    a protein-only job every geometry array equals upstream Protenix 2.0.0's;
+    for a CCD ligand and modified residue every index, flag and torsion
+    does, and the distance bounds agree to RDKit's own version drift.
+    A component RDKit cannot process now warns and gets no geometry terms,
+    as upstream, instead of failing the run.
+  - The distance projection moved bond and angle pairs already inside their
+    bounds onto the upper bound; it now projects only pairs outside them.
+  - Each step refined and then projected; it now projects (chirality, then
+    distances, then the rest) and then refines, and a guidance file with
+    `steps.tfg_outer > 1` runs upstream's re-denoise and re-noise loop.
+  One guided step now matches upstream's to 1e-7 A, against 0.087 A before.
 - **A group-shared store's converted weights are usable by the whole group.**
   Conversion and completion records were written owner-only (`0600`) while
   the weights beside them followed the umask, so another member of the store's

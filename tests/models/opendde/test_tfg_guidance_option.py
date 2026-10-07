@@ -145,8 +145,9 @@ def _run_cli(tmp_path: Path, monkeypatch, *argv: str) -> list[dict[str, Any]]:
         lambda _path, _dtype: inference_params(),
     )
 
-    def prepare(raw):
+    def prepare(raw, *, assets=None):
         prepared.append(raw)
+        assert assets is not None, "the run's CCD assets reach the geometry"
         return {**raw, "geometry_unsupported": False}
 
     monkeypatch.setattr(
@@ -354,13 +355,15 @@ def _no_op(*args, **kwargs) -> None:
 
 
 def test_the_opendde_featurization_satisfies_the_guidance_contract() -> None:
-    """The geometry terms read the featurizer's own arrays, unmodified."""
+    """The geometry terms read the featurizer's own arrays, unmodified.
+
+    Standard residues get no geometry constraint (upstream's
+    `GeometryFeaturizer(..., exclude_std_residue=True)`), so a protein-only
+    job carries the full contract with every geometry family empty.
+    """
 
     from foldjax.models.opendde.data.featurize_json import featurize_opendde_json
-    from foldjax.models.protenix.data.geometry import (
-        prepare_tfg_features,
-        require_supported_geometry,
-    )
+    from foldjax.models.protenix.data.geometry import prepare_tfg_features
     from foldjax.models.protenix.tfg.config import parse_tfg_config, validate_features
 
     job = {
@@ -370,8 +373,41 @@ def test_the_opendde_featurization_satisfies_the_guidance_contract() -> None:
     }
     features = featurize_opendde_json(job, n_queries=2, n_keys=4, seed=101)
     guided = prepare_tfg_features(features)
-    require_supported_geometry(guided)
     validate_features(guided, parse_tfg_config(upstream_guidance_config()).terms)
-    n_atom = int(np.asarray(features["atom_to_token_idx"]).shape[0])
-    index = np.asarray(guided["pairwise_distance_index"])
-    assert index.size and index.max() < n_atom
+    for key in (
+        "pairwise_distance_index",
+        "experimental_torsion_index",
+        "linear_triple_bond_index",
+        "chiral_index",
+        "stereo_bond_index",
+        "planar_improper_index",
+    ):
+        assert np.asarray(guided[key]).shape[-1] == 0, key
+    assert guided["geometry_provenance"]["residues"] == []
+
+
+def test_opendde_ligand_geometry_is_upstreams() -> None:
+    """OpenDDE's `geometry_featurizer.py` is Protenix's with its imports renamed.
+
+    So the Protenix fixture is OpenDDE's answer too: SMILES ligands featurized
+    per residue, the protein chain's standard residues left out.
+    """
+
+    from foldjax.models.opendde.data.featurize_json import featurize_opendde_json
+    from foldjax.models.protenix.data.geometry import prepare_tfg_features
+
+    fixture = Path(__file__).parents[1] / "protenix" / "fixtures" / "tfg_upstream.npz"
+    with np.load(fixture) as upstream:
+        job = json.loads(str(upstream["geometry_jobs"]))["smiles"]
+        features = featurize_opendde_json(job, n_queries=2, n_keys=4, seed=101)
+        guided = prepare_tfg_features(features)
+        for name in upstream.files:
+            key = name.removeprefix("geometry_smiles_")
+            if key == name or key not in guided:
+                continue
+            np.testing.assert_allclose(
+                np.asarray(guided[key]).reshape(upstream[name].shape),
+                upstream[name],
+                atol=1e-6,
+                err_msg=key,
+            )

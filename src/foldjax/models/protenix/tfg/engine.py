@@ -11,6 +11,10 @@ from jax.scipy.special import logsumexp
 
 from .config import TFGConfig, validate_features
 
+#: Upstream projects chirality first, then pairwise distances, then the rest
+#: (Protenix `tfg/engine.py:87-93`); projection order changes the result.
+_PROJECTION_RANK = {"ChiralAtomPotential": 0, "PairwiseDistancePotential": 1}
+
 
 class TFGEngine:
     def __init__(
@@ -18,6 +22,9 @@ class TFGEngine:
     ) -> None:
         del device, dtype
         self.cfg = cfg
+        self._projection_terms = tuple(
+            sorted(cfg.terms, key=lambda term: _PROJECTION_RANK.get(term.name, 2))
+        )
 
     def _energy_and_grad(self, coords, feats, *, t: float, step_i: int):
         energy = jnp.zeros(coords.shape[:-2], dtype=coords.dtype)
@@ -70,21 +77,23 @@ class TFGEngine:
         key=None,
         eps=None,
     ):
+        """Project the denoised ``coords``, then refine them on log p(x0).
+
+        One pass of upstream's per-outer-step x0 update (Protenix
+        `tfg/engine.py:449-475`): projection first, then `inner_steps`
+        gradient-ascent steps of size `mu` from the projected coordinates.
+        """
         if not self.cfg.enable:
             return coords
         validate_features(feats, self.cfg.terms)
         if eps is None:
             eps = self._sample_eps(key, coords.shape, coords.dtype)
-        result = coords
-        for _ in range(self.cfg.outer_steps):
-            for _ in range(self.cfg.inner_steps):
-                if self.cfg.mu == 0.0:
-                    break
-                _, gradient = self._logp_and_grad(
-                    result, eps, feats, t=t, step_i=step_i
-                )
-                result = result + self.cfg.mu * gradient
-            result = result + self._project(result, feats, t=t, step_i=step_i)
+        result = coords + self._project(coords, feats, t=t, step_i=step_i)
+        for _ in range(self.cfg.inner_steps):
+            if self.cfg.mu == 0.0:
+                break
+            _, gradient = self._logp_and_grad(result, eps, feats, t=t, step_i=step_i)
+            result = result + self.cfg.mu * gradient
         return result
 
     def _project(self, coords, feats, *, t: float, step_i: int):
@@ -92,7 +101,7 @@ class TFGEngine:
         if not self.cfg.enable:
             return delta
         for _ in range(self.cfg.projection_outer_steps):
-            for term in self.cfg.terms:
+            for term in self._projection_terms:
                 if not term.active(step_i) or not term.enable_projection:
                     continue
                 for _ in range(self.cfg.projection_inner_steps):
@@ -118,6 +127,8 @@ class TFGEngine:
         **denoise_kwargs: Any,
     ):
         validate_features(input_feature_dict, self.cfg.terms)
+        if self.cfg.outer_steps > 1 and key is None:
+            raise ValueError("a JAX PRNG key is required when TFG tfg_outer > 1")
         t = 1.0 - float(step_i) / max(1, num_diffusion_steps)
         eps = self._sample_eps(key, x.shape, x.dtype)
 
@@ -130,28 +141,41 @@ class TFGEngine:
                 )
             return denoise_net(value, t_hat)
 
-        if self.cfg.rho:
-
-            def objective(value):
-                prediction = denoise(value)
-                return jnp.sum(
-                    self._logp(
-                        prediction,
-                        eps,
-                        input_feature_dict,
-                        t=t,
-                        step_i=step_i,
-                    )
+        def objective(value):
+            prediction = denoise(value)
+            return jnp.sum(
+                self._logp(
+                    prediction,
+                    eps,
+                    input_feature_dict,
+                    t=t,
+                    step_i=step_i,
                 )
+            )
 
-            x = x + self.cfg.rho * jax.grad(objective)(x)
-        denoised = denoise(x)
-        denoised = self.refine(
-            denoised,
-            input_feature_dict,
-            t=t,
-            step_i=step_i,
-            eps=eps,
-        )
-        direction = (x - denoised) / t_hat[..., None, None]
-        return x + step_scale_eta * (c_tau - t_hat)[..., None, None] * direction
+        # Upstream's outer loop (Protenix `tfg/engine.py:390-495`): each outer
+        # step re-denoises, takes the sampler step, and re-noises the result
+        # back to `t_hat` for the next pass; the last pass's step is returned.
+        x_work = x
+        for outer in range(self.cfg.outer_steps):
+            shifted = x_work
+            if self.cfg.rho:
+                shifted = x_work + self.cfg.rho * jax.grad(objective)(x_work)
+            denoised = self.refine(
+                denoise(shifted),
+                input_feature_dict,
+                t=t,
+                step_i=step_i,
+                eps=eps,
+            )
+            direction = (shifted - denoised) / t_hat[..., None, None]
+            x_next = (
+                shifted + step_scale_eta * (c_tau - t_hat)[..., None, None] * direction
+            )
+            if outer + 1 < self.cfg.outer_steps:
+                sigma = jnp.sqrt(t_hat**2 - c_tau**2)
+                noise = jax.random.normal(
+                    jax.random.fold_in(key, outer + 1), x_next.shape, x_next.dtype
+                )
+                x_work = x_next + sigma[..., None, None] * noise
+        return x_next

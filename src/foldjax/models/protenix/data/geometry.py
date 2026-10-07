@@ -1,9 +1,21 @@
-"""Reconstruct RDKit geometry guidance features from static chemical topology."""
+"""RDKit geometry guidance features, built per residue as upstream builds them.
+
+Upstream's guided run featurizes with ``GeometryFeaturizer(atom_array,
+exclude_std_residue=True)`` (Protenix ``data/core/geometry_featurizer.py``,
+``data/inference/json_to_feature.py:396-402``; OpenDDE ships the same file).
+That walks residues, not chains: standard polymer residues get no geometry
+constraints at all, a component holding a metal atom is skipped, and every
+other residue -- a ligand, an ion, a modified residue -- is featurized from
+its own reference molecule, with the constraints kept only when all of their
+atoms are present in the structure.
+"""
 
 from __future__ import annotations
 
+import re
+import warnings
 from collections.abc import Mapping
-from itertools import combinations
+from itertools import chain, combinations
 from typing import Any
 
 import numpy as np
@@ -12,15 +24,74 @@ from rdkit import Chem
 from rdkit.Chem.rdDistGeom import GetExperimentalTorsions, GetMoleculeBoundsMatrix
 from rdkit.Chem.rdMolTransforms import GetDihedralRad
 
+#: Protenix ``data/constants.py`` ``STD_RESIDUES``: the 20 amino acids and
+#: UNK, then RNA and DNA (with their unknown N/DN).
+STD_RESIDUES = frozenset(
+    {
+        "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
+        "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
+        "UNK", "A", "G", "C", "U", "N", "DA", "DG", "DC", "DT", "DN",
+    }
+)  # fmt: skip
+#: Protenix ``geometry_featurizer.py`` ``METAL_ATOMIC_NUMBERS``.
+METAL_ATOMIC_NUMBERS = frozenset(
+    chain(
+        (3, 4),
+        range(11, 14),
+        range(19, 32),
+        range(37, 52),
+        range(55, 85),
+        range(87, 119),
+    )
+)
+#: Upstream names a SMILES or FILE_ ligand ``l01``..``l99`` and featurizes it
+#: from the input molecule; every other residue name is a CCD code.
+_INPUT_LIGAND = re.compile(r"l\d\d")
+_ANNOTATIONS = (
+    "output_atom_name",
+    "output_atom_res_name",
+    "output_atom_res_id",
+    "output_atom_chain_id",
+    "output_atom_polymer_type",
+)
+#: Each constraint family's atom-index key and the per-constraint values that
+#: travel with it (upstream's ``RDKIT_GEOMETRY_FEATURES`` grouping).
+_FAMILIES = {
+    "pairwise_distance": (
+        "pairwise_distance_upper_bound",
+        "pairwise_distance_lower_bound",
+        "pairwise_distance_is_bond",
+        "pairwise_distance_is_angle",
+    ),
+    "experimental_torsion": (
+        "experimental_torsion_force_constant",
+        "experimental_torsion_sign",
+    ),
+    "linear_triple_bond": (),
+    "chiral": ("chiral_orientation",),
+    "stereo_bond": ("stereo_bond_orientation",),
+    "planar_improper": ("planar_improper_is_carbonyl",),
+}
 
-def prepare_tfg_features(features: Mapping[str, Any]) -> dict[str, Any]:
+
+def prepare_tfg_features(
+    features: Mapping[str, Any], *, assets: Any = None
+) -> dict[str, Any]:
     """Return ``features`` augmented with every JAX TFG feature contract.
 
-    Reference positions are interpreted in Angstrom, matching the featurizer.
-    Exact reference distances are used only for graph bonds and two-bond angle
-    endpoints. They are not treated as general conformer bounds.
+    ``assets`` is the run's ``FeaturizerAssets``: a CCD component (a CCD
+    ligand or a modified residue) reads its reference molecule from the same
+    ``components.cif.rdkit_mol.pkl`` the featurizer used. A job of standard
+    polymer residues and SMILES/FILE_ ligands never opens that cache.
     """
 
+    from foldjax.models.protenix.data.featurize_json import _assets_in_force
+
+    with _assets_in_force(assets):
+        return _prepare_tfg_features(features)
+
+
+def _prepare_tfg_features(features: Mapping[str, Any]) -> dict[str, Any]:
     result = dict(features)
     coordinates = np.asarray(features["ref_pos"], dtype=np.float32)
     if coordinates.ndim != 2 or coordinates.shape[1] != 3:
@@ -47,67 +118,170 @@ def prepare_tfg_features(features: Mapping[str, Any]) -> dict[str, Any]:
     interchain = [pair for pair in covalent if atom_asym[pair[0]] != atom_asym[pair[1]]]
     result["interchain_bond_index"] = _index(interchain, 2)
 
-    mol_ids = np.asarray(features.get("mol_id", np.zeros(n_atom)), dtype=np.int64)
-    if mol_ids.shape != (n_atom,):
-        raise ValueError("mol_id must have shape (n_atom,)")
+    missing = [key for key in _ANNOTATIONS if key not in features]
+    if missing:
+        raise ValueError(
+            "TFG geometry needs the featurizer's per-atom residue annotations; "
+            f"missing {missing}"
+        )
+    annotations = {key: np.asarray(features[key]) for key in _ANNOTATIONS}
+    for key, value in annotations.items():
+        if value.shape != (n_atom,):
+            raise ValueError(f"{key} must have shape (n_atom,)")
+    atom_names = annotations["output_atom_name"].astype(str)
+    res_names = annotations["output_atom_res_name"].astype(str)
+    symbols = _elements(features, n_atom)
+    periodic_table = Chem.GetPeriodicTable()
+
     accumulated = _empty_rdkit_lists()
     provenance: list[dict[str, Any]] = []
-    unsupported_ids: list[int] = []
-    for mol_id in sorted(np.unique(mol_ids).tolist()):
-        atom_indices = np.flatnonzero(mol_ids == mol_id).astype(np.int64)
-        bond_mask = np.isin(bonds[:, 0], atom_indices) & np.isin(
-            bonds[:, 1], atom_indices
-        )
-        try:
-            mol = _reconstruct_rdkit_mol(
-                features,
-                atom_indices,
-                bonds[bond_mask],
-                orders[bond_mask],
-                stereos[bond_mask],
-                coordinates,
+    ccd_geometry: dict[str, tuple[dict[str, Any], dict[str, int]] | None] = {}
+    for start, stop in _residue_spans(annotations):
+        res_name = str(res_names[start])
+        hetero = str(annotations["output_atom_polymer_type"][start]) == "non-polymer"
+        if res_name in STD_RESIDUES and not hetero:
+            continue
+        record: dict[str, Any] = {
+            "chain_id": str(annotations["output_atom_chain_id"][start]),
+            "res_id": int(annotations["output_atom_res_id"][start]),
+            "res_name": res_name,
+            "atom_indices": [start, stop],
+            "status": "featurized",
+            "error": None,
+        }
+        provenance.append(record)
+        # Upstream checks the reference molecule's atoms; a metal present here
+        # is one of them, and finding it first spares a CCD cache load.
+        if any(_atomic_number(periodic_table, symbol) in METAL_ATOMIC_NUMBERS
+               for symbol in symbols[start:stop]):  # fmt: skip
+            record["status"] = "metal"
+            continue
+        if _INPUT_LIGAND.fullmatch(res_name):
+            atom_indices = np.arange(start, stop, dtype=np.int64)
+            local_to_global = {
+                local: int(global_idx) for local, global_idx in enumerate(atom_indices)
+            }
+            within = np.isin(bonds[:, 0], atom_indices) & np.isin(
+                bonds[:, 1], atom_indices
             )
-            local = _extract_rdkit_geometry(mol)
-            _accumulate_rdkit_geometry(accumulated, local, atom_indices)
-            provenance.append(
-                {
-                    "mol_id": int(mol_id),
-                    "atom_indices": atom_indices.tolist(),
-                    "supported": True,
-                    "error": None,
-                }
-            )
-        except Exception as exc:
-            unsupported_ids.append(int(mol_id))
-            provenance.append(
-                {
-                    "mol_id": int(mol_id),
-                    "atom_indices": atom_indices.tolist(),
-                    "supported": False,
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
-            )
+            try:
+                mol = _reconstruct_rdkit_mol(
+                    features,
+                    atom_indices,
+                    bonds[within],
+                    orders[within],
+                    stereos[within],
+                    coordinates,
+                )
+                # Upstream's SMILES molecule carries explicit hydrogens
+                # (`json_parser.py` `smiles_to_atom_info`), and some torsion
+                # patterns -- a secondary amide's -- match differently with them.
+                mol = Chem.AddHs(mol, addCoords=True)
+                Chem.GetSymmSSSR(mol)
+                local = _extract_rdkit_geometry(mol)
+            except Exception as exc:
+                local = _failed(record, exc)
+        else:
+            if res_name not in ccd_geometry:
+                ccd_geometry[res_name] = _ccd_geometry(res_name)
+            cached = ccd_geometry[res_name]
+            if cached is None:
+                record["status"] = "unknown component"
+                continue
+            local, atom_map = cached
+            if local.get("_metal"):
+                record["status"] = "metal"
+                continue
+            if local.get("_error") is not None:
+                local = _failed(record, local["_error"])
+            local_to_global = {}
+            for global_idx in range(start, stop):
+                name = str(atom_names[global_idx])
+                if name not in atom_map:
+                    raise ValueError(
+                        f"atom {name!r} is not in CCD component {res_name!r}"
+                    )
+                local_to_global[int(atom_map[name])] = global_idx
+        _accumulate_rdkit_geometry(accumulated, local, local_to_global)
     result.update(_finalize_rdkit_geometry(accumulated))
-    result["geometry_unsupported"] = bool(unsupported_ids)
-    result["geometry_unsupported_mol_ids"] = np.asarray(unsupported_ids, dtype=np.int64)
+    result["geometry_unsupported"] = any(
+        record["status"] == "failed" for record in provenance
+    )
     result["geometry_provenance"] = {
         "backend": "rdkit",
         "rdkit_version": rdkit.__version__,
-        "molecules": provenance,
+        "residues": provenance,
     }
     return result
 
 
-def require_supported_geometry(features: Mapping[str, Any]) -> None:
-    """Fail before guided sampling when any molecule lacked RDKit geometry."""
-    if bool(features.get("geometry_unsupported", False)):
-        molecule_ids = np.asarray(
-            features.get("geometry_unsupported_mol_ids", []), dtype=np.int64
-        ).tolist()
-        raise ValueError(
-            "TFG geometry is unavailable for molecule IDs "
-            f"{molecule_ids}; active geometry terms must not run with empty fallback"
+def _residue_spans(annotations: Mapping[str, np.ndarray]) -> list[tuple[int, int]]:
+    """Contiguous atom runs of one residue, as biotite's residue starts."""
+
+    keys = (
+        annotations["output_atom_chain_id"].astype(str),
+        annotations["output_atom_res_id"].astype(np.int64),
+        annotations["output_atom_res_name"].astype(str),
+    )
+    n_atom = len(keys[0])
+    if n_atom == 0:
+        return []
+    change = np.zeros((n_atom,), dtype=bool)
+    change[0] = True
+    for key in keys:
+        change[1:] |= key[1:] != key[:-1]
+    starts = np.flatnonzero(change).tolist()
+    return list(zip(starts, [*starts[1:], n_atom], strict=True))
+
+
+def _atomic_number(periodic_table: Any, symbol: str) -> int:
+    symbol = str(symbol).strip()
+    try:
+        return int(
+            periodic_table.GetAtomicNumber(symbol[:1].upper() + symbol[1:].lower())
         )
+    except RuntimeError:
+        return 0
+
+
+def _ccd_geometry(code: str) -> tuple[dict[str, Any], dict[str, int]] | None:
+    """Upstream's ``get_ccd_geometry_features`` on the CCD RDKit cache's molecule.
+
+    The cached molecule keeps its hydrogens and leaving atoms and is not
+    re-sanitized; conformer 0 orients chirality and E/Z, as upstream reads it.
+    ``None`` is an unknown code, which upstream skips.
+    """
+
+    from foldjax.models.protenix.data.featurize_json import _external_ccd_molecule
+
+    source = _external_ccd_molecule(code, missing_ok=True)
+    if source is None or source.GetNumAtoms() == 0:
+        return None
+    atom_map = {str(name): int(index) for name, index in source.atom_map.items()}
+    if any(atom.GetAtomicNum() in METAL_ATOMIC_NUMBERS for atom in source.GetAtoms()):
+        return {"_metal": True}, atom_map
+    mol = Chem.Mol(source)
+    try:
+        mol.UpdatePropertyCache(strict=False)
+        Chem.AssignStereochemistry(mol, force=True, cleanIt=True)
+        Chem.GetSymmSSSR(mol)
+        return _extract_rdkit_geometry(mol), atom_map
+    except Exception as exc:
+        return {"_error": exc}, atom_map
+
+
+def _failed(record: dict[str, Any], exc: BaseException) -> dict[str, list[Any]]:
+    """Upstream's fallback: warn, and give the component no geometry terms."""
+
+    record["status"] = "failed"
+    record["error"] = f"{type(exc).__name__}: {exc}"
+    warnings.warn(
+        f"TFG geometry for {record['res_name']} (chain {record['chain_id']}, "
+        f"residue {record['res_id']}) failed ({record['error']}); it gets no "
+        "geometry constraints",
+        stacklevel=4,
+    )
+    return _empty_rdkit_lists()
 
 
 _INDEX_WIDTHS = {
@@ -398,17 +572,21 @@ def _extract_rdkit_geometry(mol: Chem.Mol) -> dict[str, list[Any]]:
 def _accumulate_rdkit_geometry(
     accumulated: dict[str, list[Any]],
     local: dict[str, list[Any]],
-    atom_indices: np.ndarray,
+    local_to_global: Mapping[int, int],
 ) -> None:
-    for key, values in local.items():
-        if key in _INDEX_WIDTHS:
-            accumulated[key].extend(
-                atom_indices[np.asarray(values, dtype=np.int64)].tolist()
-                if values
-                else []
-            )
-        else:
-            accumulated[key].extend(values)
+    """Keep the constraints whose atoms are all present, in global indices."""
+
+    for family, value_keys in _FAMILIES.items():
+        index_key = f"{family}_index"
+        kept = []
+        for row, atoms in enumerate(local[index_key]):
+            if all(int(atom) in local_to_global for atom in atoms):
+                kept.append(row)
+                accumulated[index_key].append(
+                    [local_to_global[int(atom)] for atom in atoms]
+                )
+        for key in value_keys:
+            accumulated[key].extend(local[key][row] for row in kept)
 
 
 def _finalize_rdkit_geometry(values: dict[str, list[Any]]) -> dict[str, np.ndarray]:

@@ -2044,8 +2044,13 @@ def _managed_ccd_asset(name: str) -> Path:
     return assets_dir() / name
 
 
-def _external_ccd_molecule(code: str) -> Any:
-    """Return one source molecule without racing process-cache cleanup."""
+def _external_ccd_molecule(code: str, *, missing_ok: bool = False) -> Any:
+    """Return one source molecule without racing process-cache cleanup.
+
+    ``missing_ok`` returns ``None`` for a code the cache does not hold, where
+    upstream's ``get_ccd_ref_info`` returns an empty record; an absent cache
+    still raises.
+    """
 
     global _EXTERNAL_CCD_MOLS, _EXTERNAL_CCD_MOLS_PATH
     with _EXTERNAL_CCD_LOCK:
@@ -2077,7 +2082,7 @@ def _external_ccd_molecule(code: str) -> Any:
                 ) from exc
             _EXTERNAL_CCD_MOLS_PATH = cache_path
         source_mol = _EXTERNAL_CCD_MOLS.get(code)
-    if source_mol is None:
+    if source_mol is None and not missing_ok:
         raise ValueError(f"unknown CCD code: {code!r}")
     return source_mol
 

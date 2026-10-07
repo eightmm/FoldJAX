@@ -2506,6 +2506,28 @@ spelling the upstream value selects the namespace omitting it selects.
 | ESMFold2 | `msa_column_mask_rate=FLOAT` | `forward(msa_column_mask_rate=)` (`:882`) | `0.1` | inference-time MSA column mask |
 | ESMFold2 | `full_depth_msa=true` | `forward(msa_subsample_at_inference=False)` (`:883`) | `false` | every loop reads the whole alignment; refused with `max_msa_depth` |
 
+What `use_tfg_guidance` constrains, for Protenix and OpenDDE alike, is what
+upstream's `GeometryFeaturizer(..., exclude_std_residue=True)` builds. The
+geometry terms -- bond and angle distance bounds with a clash floor,
+chirality, E/Z double bonds, sp2 planarity, triple-bond linearity and RDKit's
+experimental torsions -- act on ligands, ions and modified residues, one
+residue at a time. Standard protein, RNA and DNA residues get none, and a
+component holding a metal atom is skipped; the inter-chain bond and
+inter-chain steric terms still apply to every chain. A CCD ligand or modified
+residue is read from `components.cif.rdkit_mol.pkl` (fetched with the model;
+OpenDDE's `--ccd-rdkit-cache` names another), hydrogens and leaving atoms
+included, and a constraint on an atom the structure lacks is dropped. A SMILES
+ligand is rebuilt from its featurized graph with explicit hydrogens, as
+upstream's SMILES molecule carries them. A component RDKit cannot process is
+warned about and gets no geometry terms, as upstream does, rather than
+failing the run. Each step projects the denoised structure first --
+chirality, then the bond and angle pairs outside their bounds -- and then
+refines it; a guidance file with `steps.tfg_outer > 1` repeats upstream's
+re-denoise and re-noise loop. One departure: a `FILE_` ligand is rebuilt with
+hydrogens too, where upstream reads the file without them, so a
+hydrogen-dependent torsion pattern such as a secondary amide's can differ by
+a torsion term.
+
 AlphaFold 3's `ref_max_modified_date`, the CCD cutoff below which a
 component's model coordinates may stand in for a failed RDKit conformer,
 follows `--template-max-date` when one is set, as `run_alphafold.py` derives

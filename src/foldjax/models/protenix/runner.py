@@ -993,13 +993,9 @@ def _run(
         padding_plan = job.get("padding_plan")
         guidance_features = None
         if guidance_config is not None and guidance_config.get("enable"):
-            from foldjax.models.protenix.data.geometry import (
-                prepare_tfg_features,
-                require_supported_geometry,
-            )
+            from foldjax.models.protenix.data.geometry import prepare_tfg_features
 
             guidance_features = prepare_tfg_features(features)
-            require_supported_geometry(guidance_features)
         n_token = int(features["restype"].shape[-2])
         # Resolved here, from this job's own token count, because that is what
         # upstream's `update_inference_configs` keys on and what the port's own

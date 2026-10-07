@@ -7,11 +7,20 @@ import pytest
 from rdkit import Chem
 from rdkit.Chem.rdDistGeom import GetExperimentalTorsions, GetMoleculeBoundsMatrix
 
-from foldjax.models.protenix.data.geometry import (
-    prepare_tfg_features,
-    require_supported_geometry,
-)
+from foldjax.models.protenix.data.geometry import prepare_tfg_features
 from foldjax.models.protenix.tfg.config import parse_tfg_config, validate_features
+
+
+def _input_ligand(n_atom: int, res_name: str = "l01") -> dict[str, np.ndarray]:
+    """Per-atom annotations of one SMILES/FILE_ ligand residue."""
+
+    return {
+        "output_atom_name": np.asarray([f"C{i + 1}" for i in range(n_atom)]),
+        "output_atom_res_name": np.full((n_atom,), res_name),
+        "output_atom_res_id": np.ones((n_atom,), dtype=np.int64),
+        "output_atom_chain_id": np.full((n_atom,), "B"),
+        "output_atom_polymer_type": np.full((n_atom,), "non-polymer"),
+    }
 
 
 def _features(
@@ -40,6 +49,7 @@ def _features(
         ),
         "ligand_stereo": np.zeros((n_atom,), dtype=np.int64),
         "covalent_atom_indices": np.empty((0, 2), dtype=np.int64),
+        **_input_ligand(n_atom),
     }
 
 
@@ -160,18 +170,44 @@ def test_double_triple_planar_and_chiral_annotations_from_graph_and_reference() 
     assert abs(float(chiral_result["chiral_orientation"][0])) == 1.0
 
 
-def test_empty_polymer_geometry_is_safe_and_does_not_fabricate_annotations() -> None:
-    features = {
-        "ref_pos": np.zeros((2, 3), dtype=np.float32),
-        "ref_element": np.zeros((2, 128), dtype=np.float32),
-        "atom_to_token_idx": np.array([0, 1], dtype=np.int64),
-        "asym_id": np.array([0, 0], dtype=np.int64),
-    }
+def _polymer(res_names: list[str], atoms_per_residue: int = 3) -> dict[str, np.ndarray]:
+    """A bonded chain of standard residues, as the featurizer annotates it."""
 
-    result = prepare_tfg_features(features)
+    n_atom = len(res_names) * atoms_per_residue
+    coords = np.stack([[1.4 * i, float(i % 2), 0.0] for i in range(n_atom)]).astype(
+        np.float32
+    )
+    features = _features(coords, bonds=[(i, i + 1) for i in range(n_atom - 1)])
+    features.update(
+        {
+            "output_atom_name": np.asarray(["N", "CA", "C"] * len(res_names)),
+            "output_atom_res_name": np.repeat(res_names, atoms_per_residue),
+            "output_atom_res_id": np.repeat(
+                np.arange(1, len(res_names) + 1), atoms_per_residue
+            ),
+            "output_atom_chain_id": np.full((n_atom,), "A"),
+            "output_atom_polymer_type": np.full((n_atom,), "polypeptide(L)"),
+        }
+    )
+    return features
+
+
+def _no_ccd_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(code, **_kwargs):
+        raise AssertionError(f"the CCD cache was opened for {code!r}")
+
+    monkeypatch.setattr(
+        "foldjax.models.protenix.data.featurize_json._external_ccd_molecule", refuse
+    )
+
+
+def test_standard_polymer_residues_get_no_geometry(monkeypatch) -> None:
+    """Upstream's `exclude_std_residue=True`: no constraint, no CCD lookup."""
+
+    _no_ccd_cache(monkeypatch)
+    result = prepare_tfg_features(_polymer(["ALA", "GLY", "SER"]))
 
     for key in (
-        "interchain_bond_index",
         "pairwise_distance_index",
         "experimental_torsion_index",
         "linear_triple_bond_index",
@@ -179,9 +215,30 @@ def test_empty_polymer_geometry_is_safe_and_does_not_fabricate_annotations() -> 
         "stereo_bond_index",
         "planar_improper_index",
     ):
-        assert result[key].shape[-1] == 0
+        assert result[key].shape[-1] == 0, key
     assert result["experimental_torsion_force_constant"].shape == (0, 6)
-    assert result["experimental_torsion_sign"].shape == (0, 6)
+    assert result["geometry_provenance"]["residues"] == []
+
+
+def test_a_metal_component_is_skipped_without_its_reference(monkeypatch) -> None:
+    _no_ccd_cache(monkeypatch)
+    features = _features(np.zeros((1, 3), dtype=np.float32))
+    features.update(_input_ligand(1, res_name="ZN"))
+    features["output_atom_element"] = np.asarray(["ZN"])
+
+    result = prepare_tfg_features(features)
+
+    assert result["pairwise_distance_index"].shape == (2, 0)
+    (record,) = result["geometry_provenance"]["residues"]
+    assert (record["res_name"], record["status"]) == ("ZN", "metal")
+
+
+def test_missing_residue_annotations_are_refused() -> None:
+    features = _features(np.zeros((2, 3), dtype=np.float32), bonds=[(0, 1)])
+    del features["output_atom_res_name"]
+
+    with pytest.raises(ValueError, match="output_atom_res_name"):
+        prepare_tfg_features(features)
 
 
 def _features_from_rdkit(mol: Chem.Mol) -> dict[str, np.ndarray]:
@@ -204,7 +261,6 @@ def _features_from_rdkit(mol: Chem.Mol) -> dict[str, np.ndarray]:
         ),
         "atom_to_token_idx": np.arange(n_atom, dtype=np.int64),
         "asym_id": np.zeros((n_atom,), dtype=np.int64),
-        "mol_id": np.zeros((n_atom,), dtype=np.int64),
         "chemical_bond_atom_indices": np.asarray(bonds, dtype=np.int64),
         "chemical_bond_order": np.asarray(
             [bond.GetBondTypeAsDouble() for bond in mol.GetBonds()], dtype=np.float32
@@ -216,14 +272,17 @@ def _features_from_rdkit(mol: Chem.Mol) -> dict[str, np.ndarray]:
             [int(atom.GetChiralTag()) for atom in mol.GetAtoms()], dtype=np.int64
         ),
         "covalent_atom_indices": np.empty((0, 2), dtype=np.int64),
+        **_input_ligand(n_atom),
     }
 
 
 def test_rdkit_all_pair_bounds_match_direct_fixture() -> None:
+    """Bounds of the hydrogenated molecule, as upstream's SMILES ligand has."""
+
     mol = Chem.MolFromSmiles("CCCO")
     features = _features_from_rdkit(mol)
     result = prepare_tfg_features(features)
-    direct = GetMoleculeBoundsMatrix(mol)
+    direct = GetMoleculeBoundsMatrix(Chem.AddHs(mol))
     pairs = np.asarray(list(combinations(range(mol.GetNumAtoms()), 2)), dtype=np.int64)
 
     np.testing.assert_array_equal(result["pairwise_distance_index"], pairs.T)
@@ -238,13 +297,26 @@ def test_rdkit_all_pair_bounds_match_direct_fixture() -> None:
         rtol=1e-6,
     )
     assert result["geometry_unsupported"] is False
-    assert result["geometry_provenance"]["molecules"][0]["supported"] is True
+    (record,) = result["geometry_provenance"]["residues"]
+    assert record["status"] == "featurized"
 
 
-def test_rdkit_experimental_torsions_match_direct_fixture() -> None:
-    mol = Chem.MolFromSmiles("CCCCC")
+def test_rdkit_experimental_torsions_keep_only_heavy_atom_matches() -> None:
+    """Torsions are matched with hydrogens present, then kept if all-heavy.
+
+    N-cyclohexylacetamide's secondary amide matches a hydrogen-bearing
+    pattern; without explicit hydrogens RDKit returns one torsion more, which
+    upstream's SMILES ligand never sees.
+    """
+
+    mol = Chem.MolFromSmiles("CC(=O)NC1CCCCC1")
     result = prepare_tfg_features(_features_from_rdkit(mol))
-    direct = GetExperimentalTorsions(mol, useSmallRingTorsions=True)
+    n_heavy = mol.GetNumAtoms()
+    direct = [
+        item
+        for item in GetExperimentalTorsions(Chem.AddHs(mol), useSmallRingTorsions=True)
+        if max(item["atomIndices"]) < n_heavy
+    ]
 
     np.testing.assert_array_equal(
         result["experimental_torsion_index"].T,
@@ -258,14 +330,16 @@ def test_rdkit_experimental_torsions_match_direct_fixture() -> None:
         result["experimental_torsion_sign"],
         np.asarray([item["signs"] for item in direct], dtype=np.float32),
     )
+    heavy_only = GetExperimentalTorsions(mol, useSmallRingTorsions=True)
+    assert len(heavy_only) == len(direct) + 1
 
 
-def test_rdkit_reconstruction_is_scoped_by_mol_id() -> None:
+def test_geometry_is_scoped_by_residue() -> None:
     features = _features(
         np.asarray([[0, 0, 0], [1, 0, 0], [5, 0, 0], [6, 0, 0]], np.float32),
         bonds=[(0, 1), (2, 3)],
     )
-    features["mol_id"] = np.asarray([10, 10, 20, 20], dtype=np.int64)
+    features["output_atom_res_name"] = np.asarray(["l01", "l01", "l02", "l02"])
 
     result = prepare_tfg_features(features)
 
@@ -273,22 +347,28 @@ def test_rdkit_reconstruction_is_scoped_by_mol_id() -> None:
         result["pairwise_distance_index"],
         np.asarray([[0, 2], [1, 3]], dtype=np.int64),
     )
-    assert [item["mol_id"] for item in result["geometry_provenance"]["molecules"]] == [
-        10,
-        20,
-    ]
+    assert [
+        record["res_name"] for record in result["geometry_provenance"]["residues"]
+    ] == ["l01", "l02"]
 
 
-def test_unsanitizable_molecule_has_explicit_unsupported_provenance() -> None:
-    features = _features(np.zeros((2, 3), dtype=np.float32), bonds=[(0, 1)])
-    features["output_atom_element"] = np.asarray(["NotAnElement", "C"])
-    features["mol_id"] = np.zeros((2,), dtype=np.int64)
+def test_a_component_rdkit_rejects_warns_and_gets_no_constraints() -> None:
+    """Upstream warns and returns empty features for it; the run goes on."""
 
-    result = prepare_tfg_features(features)
+    features = _features(
+        np.asarray([[0, 0, 0], [1, 0, 0], [5, 0, 0], [6, 0, 0]], np.float32),
+        bonds=[(0, 1), (2, 3)],
+    )
+    features["output_atom_res_name"] = np.asarray(["l01", "l01", "l02", "l02"])
+    features["output_atom_element"] = np.asarray(["NotAnElement", "C", "C", "C"])
+
+    with pytest.warns(UserWarning, match="l01 .* no geometry constraints"):
+        result = prepare_tfg_features(features)
 
     assert result["geometry_unsupported"] is True
-    assert result["geometry_unsupported_mol_ids"].tolist() == [0]
-    assert result["geometry_provenance"]["molecules"][0]["supported"] is False
-    assert result["pairwise_distance_index"].shape == (2, 0)
-    with pytest.raises(ValueError, match="must not run with empty fallback"):
-        require_supported_geometry(result)
+    failed, kept = result["geometry_provenance"]["residues"]
+    assert failed["status"] == "failed" and "unknown atom element" in failed["error"]
+    assert kept["status"] == "featurized"
+    np.testing.assert_array_equal(
+        result["pairwise_distance_index"], np.asarray([[2], [3]], dtype=np.int64)
+    )
