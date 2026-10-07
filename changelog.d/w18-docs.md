@@ -8,7 +8,7 @@
   search and pairing, protein-ligand pocket and contact constraints with
   Boltz-2 affinity, glycans, templates, batches and Slurm arrays, resuming);
   `docs/outputs.md` (the output tree, `confidence.json`, `confidence_full.npz`,
-  `predicted_aligned_error.json`, `foldjax_run.json` 1.1 and `cost.breakdown`);
+  `predicted_aligned_error.json`, `foldjax_run.json` and `cost.breakdown`);
   `docs/configuration.md` (the store under `FOLDJAX_HOME`, every `FOLDJAX_*`
   variable with its default, compile-cache trust); `docs/faq.md`; and model
   pages for Boltz-2, Protenix and OpenDDE beside the existing three.

@@ -55,11 +55,11 @@ structure is refused rather than written in a non-standard dialect.
 
 ## `confidence.json`
 
-One per sample. Schema version `1.1`.
+One per sample. Schema version `1.0`.
 
 | field | meaning |
 |---|---|
-| `schema_version` | `"1.1"`; a reader of `1.x` accepts any `1.y` |
+| `schema_version` | `"1.0"`; a reader of `1.x` accepts any `1.y` |
 | `model`, `seed`, `sample`, `native_rank`, `job` | which structure this is |
 | `scores` | the model's own scalar scores, under the model's own names, unchanged (flags such as `has_clash` as 0/1) |
 | `summary` | `plddt`, `ptm`, `iptm` and `ranking` on one name and one scale |
@@ -131,12 +131,12 @@ chain-pair ipTM (`native.chain_pair_iptm`).
 
 ## `foldjax_run.json`
 
-The run manifest, schema version `1.1`. Two version fields: `schema` (an
+The run manifest, schema version `1.0`. Two version fields: `schema` (an
 integer, what makes a run safe to resume) and `schema_version` (this file
-contract). A `1.0` manifest still validates and still resumes; `1.1` names
-fields 1.0 files already carried (`msa_search`, `weights.kind`,
-`weights.stat_signature`, AlphaFold 3's per-sample `metadata.native_sample`)
-and moves both files' version together.
+contract, shared with `confidence.json`). `msa_search`, `weights.kind`,
+`weights.stat_signature` and AlphaFold 3's per-sample `metadata.native_sample`
+are declared as optional fields, so a manifest written before the schema named
+them still validates and still resumes.
 
 | field | what it records |
 |---|---|
