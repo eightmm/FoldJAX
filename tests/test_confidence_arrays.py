@@ -817,3 +817,36 @@ def test_the_archive_gets_the_mode_an_ordinary_write_would(tmp_path):
         assert stat.S_IMODE(path.stat().st_mode) == 0o644
     finally:
         os.umask(mask)
+
+
+def test_the_archive_mode_is_read_without_moving_the_process_umask(
+    tmp_path, monkeypatch
+):
+    """Setting the umask to read it left any thread creating a file meanwhile
+    at umask 0; the kernel reports it in ``/proc/self/status`` instead."""
+    import os
+    import stat
+
+    import numpy as np
+
+    from foldjax import confidence_arrays, output
+
+    if not os.path.exists("/proc/self/status"):
+        pytest.skip("the kernel does not report the umask here")
+
+    def moved(_mask):
+        pytest.fail("the umask was set to read it")
+
+    mask = os.umask(0o002)
+    try:
+        monkeypatch.setattr(os, "umask", moved)
+        archive = tmp_path / "confidence_full.npz"
+        pae = np.zeros((2, 2), np.float32)
+        confidence_arrays.write(archive, model="boltz2", arrays={"pae": pae})
+        pae_json = tmp_path / "pae.json"
+        output._write_pae_json(pae_json, pae, maximum=31.75)
+    finally:
+        monkeypatch.undo()
+        os.umask(mask)
+    assert stat.S_IMODE(archive.stat().st_mode) == 0o664
+    assert stat.S_IMODE(pae_json.stat().st_mode) == 0o664

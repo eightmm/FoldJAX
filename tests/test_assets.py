@@ -1440,6 +1440,29 @@ def test_another_accounts_read_only_locks_still_serialize(
     assert not _locked_by_another_open(download)
 
 
+def test_conversion_lock_skips_staging_it_cannot_remove(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Another account's abandoned tree is warned about, not a failed run."""
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    root = paths.weights_dir("boltz2")
+    theirs = root / ".foldjax-mols-dead" / "inner"
+    theirs.mkdir(parents=True)
+    (theirs / "partial").write_bytes(b"partial")
+    theirs.chmod(0o500)
+    entered = False
+    try:
+        with (
+            pytest.warns(RuntimeWarning, match="abandoned staging"),
+            assets._conversion_lock("boltz2"),
+        ):
+            entered = True
+    finally:
+        theirs.chmod(0o755)
+    assert entered
+    assert (theirs / "partial").is_file()
+
+
 def test_esmfold2_ready_rejects_same_size_corruption(
     tmp_path: Path, monkeypatch
 ) -> None:

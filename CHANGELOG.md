@@ -750,6 +750,17 @@ unless it says so here, in its own paragraph.
   lock and the MSA/template search lock went unlocked instead. They are now
   opened read-only, which `flock` needs, and created with the umask's mode
   (OpenFold3's was `0600`).
+- `foldjax cache gc --apply` exits 1 when any planned removal failed (in a
+  shared store, typically another account's entries); it exited 0 even when
+  every removal failed.
+- `foldjax doctor` says whether the compile cache is trusted, and why not
+  (`compile_cache_trust` in `--json`); a refused cache was only a warning in
+  some run's log.
+- A conversion no longer fails on another account's abandoned staging
+  directory it cannot remove; it is left in place with a warning.
+- Writing a confidence archive or PAE JSON no longer sets the process umask
+  to `0` to read it, which briefly left any thread creating a file meanwhile
+  world-writable; the umask is read from the kernel as elsewhere.
 - **OpenDDE accepts the unknown-residue letters upstream documents.** Protein
   `X`, and DNA and RNA `N` and `X`, were refused with `NotImplementedError`;
   they now become UNK, DN and N as upstream's parser maps them, with

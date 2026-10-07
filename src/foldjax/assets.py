@@ -2247,10 +2247,21 @@ def _cleanup_abandoned_staging(model: str) -> None:
         for candidate in item.directory(root).glob(item.pattern)
     ]
     for candidate in candidates:
-        if candidate.is_symlink() or candidate.is_file():
-            candidate.unlink(missing_ok=True)
-        elif candidate.is_dir():
-            shutil.rmtree(candidate)
+        try:
+            if candidate.is_symlink() or candidate.is_file():
+                candidate.unlink(missing_ok=True)
+            elif candidate.is_dir():
+                shutil.rmtree(candidate)
+        except OSError as error:
+            # Another account's debris in a shared store: every conversion
+            # stages under a fresh name, so it is in nobody's way.
+            import warnings
+
+            warnings.warn(
+                f"left abandoned staging {candidate} in place: {error}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
 
 def download(item: Download, model: str, *, on_progress=None) -> Path:
