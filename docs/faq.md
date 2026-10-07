@@ -123,6 +123,19 @@ supply yourself, for a different reason: upstream declares them proprietary
 ([protenix.md](protenix.md#weights-and-profiles)). Per-model parameter terms:
 [licences.md](licences.md).
 
+## The weights are there, but doctor says "refused"
+
+`weights fetch` records the size and modification time of every file it
+converts or stages, and checks them before a run instead of re-reading
+gigabytes. A store copied without preserving timestamps, or assembled from
+symbolic links, no longer matches that record, and those files are refused
+rather than trusted. `foldjax doctor` and the prediction error name the file
+and the reason. Copy the store with `rsync -aL` or `cp -RL --preserve=timestamps`
+(both copy what a link points to, with its timestamps), or run
+`foldjax weights fetch --model <model>`,
+which rebuilds the record from verified downloads and fetches only what is
+missing or fails verification.
+
 ## Why do two runs of the same job give different structures?
 
 Usually because they were not the same run:

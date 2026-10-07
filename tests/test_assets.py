@@ -543,6 +543,144 @@ def test_a_truncated_converted_checkpoint_is_not_reported_as_missing(
     assert "foldjax weights fetch --model protenix" in message
 
 
+def test_a_restamped_converted_checkpoint_says_why_it_is_refused(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A copy without ``cp -p`` keeps every byte and loses the recorded mtime."""
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    spec = assets.REGISTRY["protenix"]
+    native = spec.native_path()
+    native.parent.mkdir(parents=True)
+    native.write_bytes(b"x" * 1000)
+    assets._write_native_manifest(spec)
+    assert spec.ready()
+    stat = native.stat()
+    os.utime(native, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+    assert not spec.ready()
+
+    with pytest.raises(FileNotFoundError) as error:
+        assets.resolve_weights("protenix")
+
+    message = str(error.value)
+    assert f"present but refused: {native}: its modification time" in message
+    assert "`cp -p`" in message
+    assert "no converted" not in message
+    assert "foldjax weights fetch --model protenix" in message
+
+
+def test_a_symlinked_checkpoint_that_must_be_a_file_is_named(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "home"))
+    spec = dataclasses.replace(assets.REGISTRY["protenix"], requires_manifest=True)
+    monkeypatch.setattr(assets, "REGISTRY", {**assets.REGISTRY, "protenix": spec})
+    elsewhere = tmp_path / "elsewhere.jax"
+    elsewhere.write_bytes(b"x" * 1000)
+    native = spec.native_path()
+    native.parent.mkdir(parents=True)
+    native.symlink_to(elsewhere)
+    assets._write_native_manifest(spec)
+    # The policy stands: a link is refused even with a matching record.
+    assert not spec.ready()
+
+    with pytest.raises(FileNotFoundError) as error:
+        assets.resolve_weights("protenix")
+
+    assert f"{native}: it is a symbolic link" in str(error.value)
+
+
+def _ready_boltz_store(root: Path, monkeypatch) -> Path:
+    monkeypatch.setattr(
+        assets, "_BOLTZ_MOLECULE_COUNT", len(assets._BOLTZ_CANONICAL_MOLECULES)
+    )
+    _write_boltz_native_bundle(root)
+    assets._write_boltz_native_manifest(root)
+    molecules = root / "mols"
+    molecules.mkdir()
+    for name in assets._BOLTZ_CANONICAL_MOLECULES:
+        (molecules / name).write_bytes(b"molecule")
+    assets._write_boltz_molecule_completion(molecules)
+    assert assets.assets_for("boltz2").ready()
+    return molecules
+
+
+def test_symlinked_boltz_molecules_are_reported_as_refused_not_missing(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from foldjax.doctor import _weight_profile_readiness
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "home"))
+    molecules = _ready_boltz_store(paths.weights_dir("boltz2"), monkeypatch)
+    name = assets._BOLTZ_CANONICAL_MOLECULES[0]
+    original = tmp_path / name
+    (molecules / name).replace(original)
+    (molecules / name).symlink_to(original)
+    assert not assets.assets_for("boltz2").ready()
+
+    with pytest.raises(FileNotFoundError) as error:
+        assets.resolve_weights("boltz2")
+    message = str(error.value)
+    assert "no converted" not in message
+    assert f"1 molecule file(s) in {molecules} are symbolic links" in message
+    assert f"(first: {name})" in message
+
+    (row,) = [
+        row
+        for row in _weight_profile_readiness(model_info("boltz2"))
+        if row["profile"] == "released"
+    ]
+    assert row["reason"].startswith("present but refused: 1 molecule file(s)")
+    assert row["setup"] == "foldjax weights fetch --model boltz2"
+
+
+def test_a_restamped_boltz_bundle_names_the_file(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    root = paths.weights_dir("boltz2")
+    _ready_boltz_store(root, monkeypatch)
+    conf = root / "boltz2_conf.safetensors"
+    stat = conf.stat()
+    os.utime(conf, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+
+    assert not assets.assets_for("boltz2").ready()
+    assert assets.present_weights_refusal(assets.assets_for("boltz2")) == (
+        f"{conf}: {assets._RESTAMPED}"
+    )
+
+
+def test_a_symlinked_esmfold2_file_is_named(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "home"))
+    payload = b"published"
+    item = assets.Download(
+        name="model.safetensors",
+        url="https://example.invalid/model.safetensors",
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size=len(payload),
+    )
+    spec = dataclasses.replace(
+        assets.REGISTRY["esmfold2"], downloads=(item,), requires=(item.name,)
+    )
+    monkeypatch.setattr(assets, "REGISTRY", {**assets.REGISTRY, "esmfold2": spec})
+    source = paths.downloads_dir("esmfold2") / item.name
+    source.parent.mkdir(parents=True)
+    source.write_bytes(payload)
+    assets._stage_esmfold2("esmfold2", paths.downloads_dir("esmfold2"))
+    assert spec.ready()
+    target = paths.weights_dir("esmfold2") / item.name
+    target.unlink()
+    target.symlink_to(source)
+
+    assert not spec.ready()
+    assert assets.present_weights_refusal(spec) == (f"{target}: {assets._LINKED}")
+
+
+def test_absent_weights_still_read_as_missing(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    for model in ("boltz2", "protenix", "esmfold2", "opendde", "openfold3"):
+        assert assets.present_weights_refusal(assets.assets_for(model)) is None
+    with pytest.raises(FileNotFoundError, match="no converted protenix weights"):
+        assets.resolve_weights("protenix")
+
+
 def test_an_empty_converted_checkpoint_is_reported_as_unreadable(
     tmp_path: Path, monkeypatch
 ) -> None:
