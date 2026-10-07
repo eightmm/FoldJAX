@@ -45,11 +45,13 @@ default ([cli.md](cli.md#a-bfloat16-trunk---option-trunk_dtypebf16),
 ## Inputs
 
 - **Alignments.** Under `--msa auto` FoldJAX submits the same `pairgreedy`
-  ColabFold search upstream OpenDDE submits and passes the blocks as the
-  server wrote them. OpenDDE's species re-pairing then pairs only the query
-  row, as upstream does, and the block's rows join each chain's unpaired
-  alignment (`paired_by: species` in the manifest). `--msa-pairing greedy` or
-  `complete` opts into Protenix's row pairing instead: a departure from
+  ColabFold search upstream OpenDDE submits -- its protein entities sorted by
+  sequence, whenever there is more than one, even two entities with one
+  sequence -- and passes the blocks as the server wrote them. OpenDDE's
+  species re-pairing then pairs only the query row, as upstream does, and the
+  block's rows join each chain's unpaired alignment (`paired_by: species` in
+  the manifest). `--msa-pairing greedy` or `complete` opts into the row
+  pairing Protenix's opt-in uses instead: a departure from
   OpenDDE's released behaviour that has not been measured for accuracy
   ([heteromer tutorial](tutorials/heteromer-msa.md)). RNA alignments are read
   only with `--option use_rna_msa=true`.

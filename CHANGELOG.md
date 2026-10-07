@@ -298,9 +298,10 @@ unless it says so here, in its own paragraph.
   is each model's existing choice, and keeps every existing MSA-cache entry.
   `greedy`/`complete` pair the complex in one ColabFold search
   (`pairgreedy-env`/`paircomplete-env`) for OpenFold3, and for Boltz-2 as
-  upstream Boltz's keyed CSV (`boltz/main.py` `compute_msa`); AlphaFold 3,
-  Protenix and OpenDDE, which re-pair by UniProt species that ColabFold
-  pairing headers do not carry, refuse them. `none` delivers no paired
+  upstream Boltz's keyed CSV (`boltz/main.py` `compute_msa`), and for
+  Protenix and OpenDDE read by row (Fixed, below); AlphaFold 3, which re-pairs
+  by UniProt species that ColabFold pairing headers do not carry, refuses
+  them. `none` delivers no paired
   alignment and skips the per-chain pairing ticket (a local wrapper sees
   `FOLDJAX_MSA_PAIRING=none`). The pairing mode is in the MSA cache key, in
   `foldjax_run.json` (`msa_pairing`), in `plan`, and in the resume identity.
@@ -378,6 +379,36 @@ unless it says so here, in its own paragraph.
   archive index lists every archived note.
 
 ### Changed
+
+- **Protenix's default no longer pairs a searched heteromer, and reads its
+  unpaired alignment environmental hits first** -- what a run of upstream's
+  ColabFold mode does. That mode submits the `pairgreedy` complex search but
+  writes its blocks to `msa/complex/<i>/pairing.a3m`, while its runner
+  attaches only `msa/<i>/<i>/` (`runner/msa_search.py:177-185`), so no pairing
+  alignment reaches the model; its `non_pairing.a3m` holds the environmental
+  hits, then UniRef's (`web_service/colab_request_utils.py:290-310`), where
+  FoldJAX gave the server's UniRef-first order. Upstream's default mode pairs
+  by NCBI taxonomy on Protenix's own MSA server, which FoldJAX does not use; a
+  Protenix heteromer under `msa_pairing="model"` now says so in one note, and
+  `--msa-pairing greedy`/`complete` opts into the row pairing the default had
+  (unmeasured for accuracy against either upstream mode). The manifest
+  records `resolved: none`, `paired_by: null`. The reordered alignment is
+  written to `msa/entity_NNNN_non_pairing.a3m`; the cache is unchanged. This
+  changes Protenix predictions for heteromers (no paired rows) and for any
+  chain whose alignment is cropped (which rows survive the depth cap).
+- **OpenDDE pairs as upstream OpenDDE submits**: every protein entity, sorted
+  by sequence, whenever a job has more than one -- including two entities
+  with one sequence, which used to get no pairing search
+  (`runner/msa_search.py:146-151`; the server is sent each distinct sequence
+  once). Blocks are mapped back to chains by sequence, and the default still
+  pairs nothing beyond the query and folds the block into each chain's
+  unpaired stack (`msa_pair_as_unpair`). The complex cache entry is keyed on
+  the sorted entity list, repeats included; entries cached before stay valid
+  under their own keys, and OpenFold3's and Boltz-2's keys are unchanged. This
+  changes OpenDDE predictions for heteromers whose job order was not sorted
+  and for jobs listing one sequence as several entities. The live server's
+  answer to a one-sequence `pairgreedy` ticket was not probed; if it fails,
+  `auto` folds without the pairing and says so.
 
 - **Protenix v2 weights are no longer downloaded; you supply them.** Upstream's
   README ([bytedance/Protenix](https://github.com/bytedance/Protenix)) now
@@ -709,6 +740,26 @@ unless it says so here, in its own paragraph.
   names the new path. `docs/EXPERIMENTS.jsonl` stays where it was.
 
 ### Fixed
+
+- **`foldjax plan --json` no longer sizes an OpenFold3 card from a law that
+  does not cover the job.** The `slurm` block applied OpenFold3's token-only
+  peak law to nucleic-acid and ligand jobs, which the run's own admission
+  already calls `unknown` (5NPK peaked 11 GiB over the law's upper estimate),
+  so the plan undersized such a job. It is now `unknown` with that reason; the
+  estimate is kept as a lower bound and no `min_device_memory_gib` is given.
+- **Protenix and OpenDDE count their 20 template candidates after the hit
+  filters, as upstream does** (`protenix/data/template/template_utils.py:981-1016`).
+  A hit dropped by the filters or as a duplicate used to take a slot, so a
+  search led by near-copies of the query could stop before a usable template.
+  This changes which templates such a search keeps.
+- **Docstrings and docs no longer overstate pairing fidelity.**
+  `row_species_a3m` said its position numbering changed no row upstream pairs;
+  upstream's header-keyed dict shifts every row past a repeated header, so the
+  two pair different rows on such a block (FoldJAX keeps the server's
+  alignment). The pairing docs (`docs/cli.md`, `docs/protenix.md`,
+  `docs/opendde.md`, the heteromer tutorial) and `foldjax.msa_search` said
+  Protenix's ColabFold mode pairs by row and OpenDDE submits distinct
+  sequences; neither holds (see Changed).
 
 - **The test suite no longer reads the developer's FoldJAX store.** With
   `FOLDJAX_HOME` unset, a source checkout's `.foldjax/` was the store for every
@@ -1171,32 +1222,33 @@ unless it says so here, in its own paragraph.
   `<root>/../x` passed it, the directory was created outside the root, and only
   then refused.
 
-- **Protenix now pairs a searched heteromer's alignment.** Under `--msa auto`
+- **Protenix can pair a searched heteromer's alignment.** Under `--msa auto`
   it used to read each chain's own ColabFold `paircomplete` alignment as
   `pairedMsaPath`. Those rows are not aligned across chains, and their
   `>UniRef100_<accession>\t<scores>` headers carry no species for the
   featurizer's `_UNIREF_REGEX`, so a heteromer was paired on the query row
-  alone. `msa_pairing="model"` now runs the one ColabFold `pairgreedy` search
+  alone. `msa_pairing="greedy"` runs the one ColabFold `pairgreedy` search
   over the complex that Protenix 2.0.0's ColabFold mode submits (`complete`
   runs `paircomplete`; both are accepted, no longer refused). Each chain's
   block is written to `msa/entity_NNNN_pairing.a3m` the way upstream Protenix
   writes it (`>UniRef100_<accession>_<row>/...`), so the species is the row
-  number and row *i* of every chain is paired. A caller's `paired_msa` is
-  passed through untouched. This changes predictions: heteromers gain paired
-  rows. A monomer or homomer no longer reads a per-chain pairing alignment, as
-  in upstream Protenix's ColabFold mode, and neither does a heteromer searched
-  by a local wrapper (`FOLDJAX_MSA_COMMAND`), which cannot pair a complex and
-  now says so.
+  number and row *i* of every chain is paired. (This was briefly the default;
+  upstream's ColabFold-mode runner never reads that file, so the default now
+  pairs nothing -- see Changed.) A caller's `paired_msa` is passed through
+  untouched. No chain reads a per-chain pairing alignment any more, and a
+  heteromer searched by a local wrapper (`FOLDJAX_MSA_COMMAND`), which cannot
+  pair a complex, says so under `greedy`/`complete`.
 - **OpenDDE's default now runs what upstream OpenDDE runs**: the same
   `pairgreedy` complex search, with the blocks passed as the server wrote them
   (`opendde/data/msa/msa_service_client.py` `search_and_build_msa`). Its
   species re-pairing therefore pairs only the query row, as upstream's does,
   and the block's rows join each chain's unpaired stack
-  (`msa_pair_as_unpair`); a monomer or homomer gets no pairing alignment, as
-  upstream writes it a query-only `pairing.a3m`. The manifest records
+  (`msa_pair_as_unpair`); a monomer, or a homomer written as one entity, gets
+  no pairing alignment, as upstream writes it a query-only `pairing.a3m` (for
+  the entities it submits, and their order, see Changed). The manifest records
   `paired_by: species`. An explicit `--msa-pairing greedy`/`complete` opts
-  OpenDDE into Protenix's row reading (`paired_by: row`), unmeasured for
-  accuracy against upstream.
+  OpenDDE into the row reading (`paired_by: row`), unmeasured for accuracy
+  against upstream.
 - A complex pairing search whose blocks differ in depth is refused before it is
   cached (any model): `msa="required"` fails, `auto` folds without the pairing
   and warns.
@@ -1265,10 +1317,12 @@ unless it says so here, in its own paragraph.
 
 ### Known issues
 
-- The OpenFold3 blocked-pair peak law under-estimates a nucleic/ligand-heavy
-  input inside its domain: a 3,061-token nucleic/ligand-heavy input (5NPK) peaked at 41,260 MiB
-  against an upper estimate of 29,876 MiB, so admission called a run 11 GiB
-  over its estimate a fit. The law keys on tokens only.
+- OpenFold3 has no memory law for nucleic-acid or ligand inputs. Its
+  blocked-pair peak law keys on tokens only and was fitted on protein-only
+  runs; a 3,061-token nucleic/ligand-heavy input (5NPK) peaked at 41,260 MiB
+  against an upper estimate of 29,876 MiB. Admission and `foldjax plan --json`
+  therefore report such a run as `unknown` (a refusal still binds) rather than
+  estimate it; how much more it needs is unmeasured.
 - In-bucket recompiles under `--padding` come from the per-input MSA bucket
   (Boltz-2, Protenix, OpenFold3; by design, to bound peak -- `--pad-msa` pins
   it) and, for Protenix, the chain count, which the confidence summaries take

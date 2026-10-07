@@ -55,13 +55,15 @@ across chains, which is where much of the inter-chain signal comes from.
 | model | `--msa-pairing model` (default) | `greedy` / `complete` |
 |---|---|---|
 | OpenFold3, Boltz-2 | one ColabFold `pairgreedy-env` search over the complex's distinct sequences | that search with ColabFold's greedy or complete strategy |
-| Protenix | one `pairgreedy` search, each chain's block written so that row *i* of every chain is paired, as Protenix's ColabFold mode writes it | the same with that strategy |
-| OpenDDE | the same search, passed as the server wrote it: OpenDDE's species re-pairing then pairs only the query row, exactly as upstream OpenDDE does | opts into Protenix's row pairing; a departure from OpenDDE's released behaviour, not measured for accuracy |
+| Protenix | no paired alignment, as a run of Protenix's ColabFold mode (its runner never reads the complex search it writes); upstream's default taxonomy pairing needs Protenix's own server, and the run prints a note saying so | one `pairgreedy` / `paircomplete` search, each chain's block written so that row *i* of every chain is paired, as Protenix's ColabFold mode writes its `pairing.a3m`; not measured for accuracy |
+| OpenDDE | one `pairgreedy` search over its protein entities, sorted, passed as the server wrote it: OpenDDE's species re-pairing then pairs only the query row, exactly as upstream OpenDDE does | opts into the row pairing above; a departure from OpenDDE's released behaviour, not measured for accuracy |
 | AlphaFold 3 | each chain's own alignment; AlphaFold 3 re-pairs by UniProt species, which ColabFold headers do not carry | refused |
 | ESMFold2 | no paired alignment | refused |
 
 `--msa-pairing none` delivers no paired alignment and skips the pairing
-search. A monomer or homomer is never complex-paired. A complex search whose
+search. A monomer or homomer is never complex-paired, except that OpenDDE,
+as its upstream, runs the search for two entities that share a sequence. A
+complex search whose
 per-chain blocks come back with different depths is refused before it is
 cached (`required` fails; `auto` folds without the pairing and warns).
 
