@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from foldjax.models.protenix.models.diffusion.atom import (
     AtomAttentionEncoderParams,
     atom_attention_encoder,
 )
-from foldjax.models.protenix.models.primitives.primitives import LinearParams, linear
+from foldjax.models.protenix.models.primitives.primitives import (
+    LayerNormParams,
+    LinearParams,
+    layer_norm,
+    linear,
+)
 from foldjax.models.protenix.relative_position import (
     COMPACT_RELP_CHAIN_BIN,
     COMPACT_RELP_COMPONENTS,
@@ -50,13 +56,34 @@ class SubstructureMlpParams(NamedTuple):
     layers: tuple[LinearParams, ...]
 
 
+class SubstructureTransformerLayerParams(NamedTuple):
+    """One post-norm ReLU ``nn.TransformerEncoderLayer`` (LayerNorm eps 1e-5)."""
+
+    self_attn_in_proj: LinearParams
+    self_attn_out_proj: LinearParams
+    linear1: LinearParams
+    linear2: LinearParams
+    norm1: LayerNormParams
+    norm2: LayerNormParams
+
+
+class SubstructureTransformerParams(NamedTuple):
+    """Parameters for transformer-mode ``SubstructureEmbedder``."""
+
+    input_proj: LinearParams
+    layers: tuple[SubstructureTransformerLayerParams, ...]
+    output_proj: LinearParams
+
+
 class ConstraintEmbedderParams(NamedTuple):
     """Parameters for ``ConstraintEmbedder`` optional projections."""
 
     pocket_z: LinearParams | None = None
     contact_z: LinearParams | None = None
     contact_atom_z: LinearParams | None = None
-    substructure_z: SubstructureMlpParams | None = None
+    substructure_z: SubstructureMlpParams | SubstructureTransformerParams | None = (
+        None
+    )
 
 
 def fourier_embedding(
@@ -374,11 +401,123 @@ def substructure_mlp(
     return linear(x, params.layers[-1])
 
 
+#: Why the transformer-mode embedder is computed as one vector. Upstream's
+#: inference featurizer never parses ``constraint.structure`` (a TODO in
+#: ``constraint_featurizer.py:378-390``) and always attaches the all-padding
+#: map, which one-hot encodes to zeros; the module itself runs self-attention
+#: over all ``N_token**2`` pairs, which nothing could afford at real sizes.
+_SUBSTRUCTURE_ZERO_ONLY = (
+    "the transformer substructure embedder (protenix_base_constraint_v0.5.0) "
+    "is evaluated for its only inference input, an all-zero map: upstream "
+    "never parses constraint.structure, and the module attends over every "
+    "token pair. A nonzero substructure feature is refused"
+)
+
+STALE_CONSTRAINT_CONVERSION = (
+    "these Protenix weights carry the constraint embedder's pocket and contact "
+    "projections but not its substructure embedder: they were converted "
+    "before FoldJAX mapped its transformer form, and would silently drop the "
+    "term upstream adds to every run. Reconvert them with `foldjax weights "
+    "fetch --model protenix --profile base-constraint-v0.5.0`"
+)
+
+
+def require_complete_constraint_embedder(params: Any) -> None:
+    """Refuse a constraint embedder converted without its substructure half.
+
+    Upstream enables all four constraint embedders together
+    (``configs_model_type.py:117-135``), so projections without a
+    substructure embedder can only be an earlier, incomplete conversion.
+    """
+
+    constraint = getattr(
+        getattr(params, "pairformer_output", None), "constraint", None
+    )
+    if constraint is None or constraint.substructure_z is not None:
+        return
+    projections = (constraint.pocket_z, constraint.contact_z, constraint.contact_atom_z)
+    if any(value is not None for value in projections):
+        raise ValueError(STALE_CONSTRAINT_CONVERSION)
+
+
+def substructure_transformer_constant(
+    params: SubstructureTransformerParams,
+) -> jnp.ndarray:
+    """``SubstructureEmbedder`` (transformer mode) on an all-zero map, ``[c_z]``.
+
+    A zero map projects to identical tokens, so every softmax row averages
+    identical values and self-attention returns the value projection itself;
+    every pair therefore leaves as the same vector, independent of
+    ``N_token``, the head count and the query/key weights.
+    """
+
+    n_classes = params.input_proj.weight.shape[-1]
+    x = linear(
+        jnp.zeros((n_classes,), params.input_proj.weight.dtype), params.input_proj
+    )
+    for layer in params.layers:
+        in_proj = layer.self_attn_in_proj
+        hidden = in_proj.weight.shape[-1]
+        value = linear(
+            x,
+            LinearParams(
+                weight=in_proj.weight[2 * hidden :],
+                bias=None if in_proj.bias is None else in_proj.bias[2 * hidden :],
+            ),
+        )
+        x = layer_norm(x + linear(value, layer.self_attn_out_proj), layer.norm1)
+        feed_forward = linear(
+            jnp.maximum(linear(x, layer.linear1), 0.0), layer.linear2
+        )
+        x = layer_norm(x + feed_forward, layer.norm2)
+    return linear(x, params.output_proj)
+
+
+def _require_zero_substructure(x: Any) -> None:
+    if isinstance(x, jax.core.Tracer):
+        return
+    if np.any(np.asarray(x) != 0):
+        raise ValueError(_SUBSTRUCTURE_ZERO_ONLY)
+
+
+def validate_zero_substructure(
+    features: Mapping[str, Any], params: ConstraintEmbedderParams | None
+) -> None:
+    """Refuse, on host arrays before tracing, a map the embedder cannot read."""
+
+    if not isinstance(
+        getattr(params, "substructure_z", None), SubstructureTransformerParams
+    ):
+        return
+    constraint = features.get("constraint_feature")
+    if isinstance(constraint, Mapping) and "substructure" in constraint:
+        _require_zero_substructure(constraint["substructure"])
+
+
+def substructure_transformer(
+    x: jnp.ndarray,
+    params: SubstructureTransformerParams,
+) -> jnp.ndarray:
+    """Apply transformer-mode ``SubstructureEmbedder`` to an all-zero map."""
+
+    _require_zero_substructure(x)
+    constant = substructure_transformer_constant(params)
+    return jnp.broadcast_to(constant, x.shape[:-1] + constant.shape)
+
+
 def constraint_embedder(
     constraint_feature_dict: dict[str, jnp.ndarray],
     params: ConstraintEmbedderParams,
 ) -> jnp.ndarray | None:
-    """Apply Protenix ``ConstraintEmbedder`` optional pair projections."""
+    """Apply Protenix ``ConstraintEmbedder`` optional pair projections.
+
+    Weights carrying the transformer substructure embedder contribute its
+    constant even when no feature reaches here: upstream attaches the
+    constraint features to every job, constraint or not
+    (``json_to_feature.py:363-378``), so on that checkpoint every ``z_init``
+    gains the vector. The other channels are bias-free projections of zero
+    maps there, so their absence changes nothing.
+    """
 
     supported = {
         "pocket": params.pocket_z,
@@ -391,7 +530,10 @@ def constraint_embedder(
     if unknown:
         raise ValueError(f"unsupported constraint feature channels: {sorted(unknown)}")
     present_channels = set(constraint_feature_dict) & set(supported)
-    if not present_channels:
+    always_substructure = isinstance(
+        params.substructure_z, SubstructureTransformerParams
+    )
+    if not present_channels and not always_substructure:
         return None
     # In `supported`'s order, every one named: iterating the set named one
     # arbitrary channel when several had no weights.
@@ -401,10 +543,15 @@ def constraint_embedder(
         if channel in present_channels and supported[channel] is None
     ]
     if missing:
+        if missing == ["substructure"] and any(
+            supported[channel] is not None for channel in supported
+        ):
+            raise ValueError(STALE_CONSTRAINT_CONVERSION)
         raise ValueError(
             f"constraint channel(s) {', '.join(map(repr, missing))} have no "
-            "matching embedder weights; upstream enables the constraint "
-            "embedder only for protenix_base_constraint_v0.5.0"
+            "matching embedder weights: these weights carry no constraint "
+            "embedder, which upstream enables only for "
+            "protenix_base_constraint_v0.5.0"
         )
 
     z_constraint = None
@@ -424,12 +571,17 @@ def constraint_embedder(
         z_constraint = (
             z_contact_atom if z_constraint is None else z_constraint + z_contact_atom
         )
-    if "substructure" in constraint_feature_dict:
-        assert params.substructure_z is not None
-        z_substructure = substructure_mlp(
-            constraint_feature_dict["substructure"],
-            params.substructure_z,
-        )
+    if "substructure" in constraint_feature_dict or always_substructure:
+        substructure = constraint_feature_dict.get("substructure")
+        if isinstance(params.substructure_z, SubstructureTransformerParams):
+            z_substructure = (
+                substructure_transformer_constant(params.substructure_z)
+                if substructure is None
+                else substructure_transformer(substructure, params.substructure_z)
+            )
+        else:
+            assert params.substructure_z is not None
+            z_substructure = substructure_mlp(substructure, params.substructure_z)
         z_constraint = (
             z_substructure if z_constraint is None else z_constraint + z_substructure
         )

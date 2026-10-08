@@ -57,6 +57,8 @@ from foldjax.models.protenix.models.trunk_blocks.embedders import (
     InputFeatureEmbedderParams,
     RelativePositionParams,
     SubstructureMlpParams,
+    SubstructureTransformerLayerParams,
+    SubstructureTransformerParams,
 )
 from foldjax.models.protenix.models.trunk_blocks.msa import (
     MSABlockParams,
@@ -455,18 +457,70 @@ def map_substructure_mlp_state_dict(
     )
 
 
+def map_substructure_transformer_state_dict(
+    state_dict: Mapping[str, Any],
+    prefix: str,
+) -> SubstructureTransformerParams:
+    """Map transformer-mode ``SubstructureEmbedder`` (``nn.TransformerEncoder``)."""
+
+    layers_prefix = f"{prefix}.transformer.layers"
+    layers = []
+    for index in _module_list_indices(state_dict, layers_prefix):
+        layer = f"{layers_prefix}.{index}"
+        layers.append(
+            SubstructureTransformerLayerParams(
+                self_attn_in_proj=LinearParams(
+                    weight=jnp.asarray(
+                        require_key(state_dict, f"{layer}.self_attn.in_proj_weight")
+                    ),
+                    bias=jnp.asarray(
+                        require_key(state_dict, f"{layer}.self_attn.in_proj_bias")
+                    ),
+                ),
+                self_attn_out_proj=map_linear_state_dict(
+                    state_dict, f"{layer}.self_attn.out_proj"
+                ),
+                linear1=map_linear_state_dict(state_dict, f"{layer}.linear1"),
+                linear2=map_linear_state_dict(state_dict, f"{layer}.linear2"),
+                norm1=map_layer_norm_state_dict(state_dict, f"{layer}.norm1"),
+                norm2=map_layer_norm_state_dict(state_dict, f"{layer}.norm2"),
+            )
+        )
+    return SubstructureTransformerParams(
+        input_proj=map_linear_state_dict(
+            state_dict, f"{prefix}.input_proj", bias=False
+        ),
+        layers=tuple(layers),
+        output_proj=map_linear_state_dict(
+            state_dict, f"{prefix}.output_proj", bias=False
+        ),
+    )
+
+
 def map_constraint_embedder_state_dict(
     state_dict: Mapping[str, Any],
     prefix: str,
 ) -> ConstraintEmbedderParams:
     """Map optional ``ConstraintEmbedder`` projections when present."""
 
-    substructure_prefix = f"{prefix}.substructure_z_embedder.network"
-    substructure_z = (
-        map_substructure_mlp_state_dict(state_dict, substructure_prefix)
-        if f"{substructure_prefix}.0.weight" in state_dict
-        else None
-    )
+    substructure = f"{prefix}.substructure_z_embedder"
+    substructure_z: SubstructureMlpParams | SubstructureTransformerParams | None
+    if f"{substructure}.network.0.weight" in state_dict:
+        substructure_z = map_substructure_mlp_state_dict(
+            state_dict, f"{substructure}.network"
+        )
+    elif f"{substructure}.input_proj.weight" in state_dict:
+        substructure_z = map_substructure_transformer_state_dict(
+            state_dict, substructure
+        )
+    elif any(str(key).startswith(f"{substructure}.") for key in state_dict):
+        # Mapping neither form would drop a term upstream adds to every run.
+        raise ValueError(
+            f"{substructure} weights are in neither the MLP nor the "
+            "transformer layout this converter maps"
+        )
+    else:
+        substructure_z = None
     return ConstraintEmbedderParams(
         pocket_z=_map_optional_linear_state_dict(
             state_dict,

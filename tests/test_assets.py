@@ -2534,6 +2534,32 @@ def test_protenix_v0_5_0_checkpoints_are_their_own_bundles(
     assert managed_asset_profile({"model_name": model_name}) == profile
 
 
+def test_a_base_constraint_conversion_without_its_substructure_embedder_is_stale(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The converter that dropped the transformer embedder recorded this name."""
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    spec = assets.assets_for("protenix", profile="base-constraint-v0.5.0")
+    assert spec.conversion_schema == (
+        "protenix-base-constraint-substructure-transformer-native-v1"
+    )
+    for profile in ("mini-default-v0.5.0", "tiny-default-v0.5.0"):
+        other = assets.assets_for("protenix", profile=profile)
+        assert other.conversion_schema == f"{other.model}-native-v1"
+    native = spec.native_path()
+    native.parent.mkdir(parents=True)
+    native.write_bytes(b"converted weights")
+
+    assets._write_native_manifest(
+        dataclasses.replace(
+            spec, conversion_schema="protenix-base-constraint-native-v1"
+        )
+    )
+    assert not spec.ready()
+    assets._write_native_manifest(spec)
+    assert spec.ready()
+
+
 def _no_network(monkeypatch) -> None:
     """Fail the test on any download or socket-level request."""
 

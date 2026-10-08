@@ -165,6 +165,9 @@ def _load_prepared_params(path: Path, trunk_dtype: str) -> Any:
         _load_native_weights_with_field_dtype,
         load_native_weights,
     )
+    from foldjax.models.protenix.models.trunk_blocks.embedders import (
+        require_complete_constraint_embedder,
+    )
 
     if trunk_dtype == "bf16":
         import jax.numpy as jnp
@@ -178,10 +181,14 @@ def _load_prepared_params(path: Path, trunk_dtype: str) -> Any:
             jnp.bfloat16,
             frozenset({"pairformer_output"}),
         )
-        return params._replace(
+        params = params._replace(
             input_embedder=native_input_autocast_params(params.input_embedder)
         )
-    return load_native_weights(path)
+    else:
+        params = load_native_weights(path)
+    # At load, before any job compiles against weights that would run wrong.
+    require_complete_constraint_embedder(params)
+    return params
 
 
 def _amp_realised_params(params, policy, cache):

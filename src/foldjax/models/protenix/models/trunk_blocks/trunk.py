@@ -18,6 +18,7 @@ from foldjax.models.protenix.models.primitives.primitives import (
 from foldjax.models.protenix.models.trunk_blocks.embedders import (
     ConstraintEmbedderParams,
     RelativePositionParams,
+    SubstructureTransformerParams,
     constraint_embedder,
     relative_position_encoding,
     resolve_relative_position_features,
@@ -184,10 +185,16 @@ def pairformer_output_from_s_inputs(
     conditioning_s_inputs = s_inputs
     s_inputs = s_inputs.astype(trunk_dtype)
 
+    # Without features too on the constraint checkpoint: its substructure
+    # embedder adds a constant to every run, as upstream's always-attached
+    # features do.
     z_constraint = None
-    if "constraint_feature" in input_feature_dict:
+    if "constraint_feature" in input_feature_dict or isinstance(
+        getattr(getattr(params, "constraint", None), "substructure_z", None),
+        SubstructureTransformerParams,
+    ):
         z_constraint = constraint_embedder(
-            input_feature_dict["constraint_feature"],
+            input_feature_dict.get("constraint_feature", {}),
             params.constraint,
         )
 
