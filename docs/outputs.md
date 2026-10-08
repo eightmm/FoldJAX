@@ -153,8 +153,8 @@ chain-pair ipTM (`native.chain_pair_iptm`).
 The run manifest, schema version `1.0`. Two version fields: `schema` (an
 integer, what makes a run safe to resume) and `schema_version` (this file
 contract, shared with `confidence.json`). `msa_search`, `weights.kind`,
-`weights.stat_signature` and AlphaFold 3's per-sample `metadata.native_sample`
-are declared as optional fields, so a manifest written before the schema named
+`weights.stat_signature`, AlphaFold 3's per-sample `metadata.native_sample`
+and its `kernel_tuning` are declared as optional fields, so a manifest written before the schema named
 them still validates and still resumes.
 
 | field | what it records |
