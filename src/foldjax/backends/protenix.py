@@ -320,6 +320,18 @@ _CP_DIFFUSION_ATTENTION_BACKEND = "xla_jit"
 #: tokamax's fused kernel is not implemented: the same traced XLA path.
 _OFF_GPU_ATTENTION_BACKEND = "xla_jit"
 
+#: What an omitted `diffusion_attention_backend` runs under `use_tfg_guidance`.
+#: The guided sampler is eager, and an eager `pallas_call` binds through a
+#: fresh `jax.jit` closure on every call (`jax/_src/pallas/pallas_call.py`,
+#: `_pallas_call_impl`), so tokamax's kernel was traced, lowered and compiled
+#: once per denoiser attention rather than once per process -- and the entries
+#: it persisted carry Tokamax's HLO payload, which XLA refuses to read back
+#: (`backends/_tokamax_autotune.py`). On one RTX PRO 6000 at 153 tokens that was
+#: 4,147 `RET_CHECK ... Invalid metadata payload id` reads of `jit__jit_run`,
+#: about two a second, and a 60-minute timeout against a 2.5-minute unguided
+#: run. This port's module-level jitted attention compiles once per shape.
+_GUIDED_DIFFUSION_ATTENTION_BACKEND = "xla_jit"
+
 #: Attention options whose `tokamax` value runs a GPU-only fused kernel.
 _TOKAMAX_ATTENTION_OPTIONS = (
     "diffusion_attention_backend",
@@ -1091,6 +1103,21 @@ class ProtenixBackend(ManagedCcdSession, Backend):
                     "use_tfg_guidance runs the eager guided sampler, which "
                     "context parallelism cannot partition"
                 )
+            # Eager there means the trunk too: only its `*_jit` backends trace.
+            # An omitted denoiser attention resolves away (`apply_sampling`).
+            named = [
+                key
+                for key in _TOKAMAX_ATTENTION_OPTIONS
+                if str(options.get(key, "")).strip().lower() == "tokamax"
+            ]
+            if named:
+                spelled = ", ".join(f"{key}=tokamax" for key in named)
+                raise ValueError(
+                    f"use_tfg_guidance runs the eager guided sampler, where "
+                    f"{spelled} recompiles tokamax's fused attention on every "
+                    f"call; omit the option or pass --option "
+                    f"{named[0]}={_GUIDED_DIFFUSION_ATTENTION_BACKEND}"
+                )
         if (
             use_template
             and model_name in runtime_policy.KNOWN_MODEL_NAMES
@@ -1206,6 +1233,11 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         Boltz-2 GLU default resolves off-GPU through it too), and the resolved
         value reaches the cache profile and the rendered argv. A spelled
         `tokamax` off a GPU is refused by `_refuse_gpu_only_kernels`.
+
+        Under `use_tfg_guidance` it resolves the same way on a GPU too: the
+        guided sampler is eager, where the fused kernel recompiles per call
+        (see `_GUIDED_DIFFUSION_ATTENTION_BACKEND`). A spelled `tokamax` there
+        is refused by `validate_native_options`.
         """
 
         options = super().apply_sampling(request)
@@ -1216,6 +1248,12 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             if _strict_cp_devices(options.get("cp_devices", 1)) > 1:
                 options["diffusion_attention_backend"] = (
                     _CP_DIFFUSION_ATTENTION_BACKEND
+                )
+            elif options.get("use_tfg_guidance") is True:
+                # `is True`: switch spellings are booleans by now, and a
+                # malformed one is `validate_native_options`'s to refuse.
+                options["diffusion_attention_backend"] = (
+                    _GUIDED_DIFFUSION_ATTENTION_BACKEND
                 )
             elif not _gpu_process():
                 options["diffusion_attention_backend"] = _OFF_GPU_ATTENTION_BACKEND

@@ -340,6 +340,18 @@ def _run(
         if guidance_config.get("enable") and config.sampler_scan:
             config = config._replace(sampler_scan=False)
             print("TFG enabled: using the non-scan diffusion sampler")
+    if (
+        guidance_config is not None
+        and guidance_config.get("enable")
+        and config.diffusion_attention_backend == "tokamax"
+    ):
+        # The guided sampler is eager, and an eager `pallas_call` binds a fresh
+        # `jit` per call, so tokamax compiled once per denoiser attention (the
+        # adapter resolves this before rendering argv; `backends/protenix.py`,
+        # `_GUIDED_DIFFUSION_ATTENTION_BACKEND`). This parser defaults to
+        # tokamax and cannot tell that default from a spelled one.
+        config = config._replace(diffusion_attention_backend="xla_jit")
+        print("TFG enabled: diffusion attention runs xla_jit, not tokamax")
 
     # Exact atom categories are a private managed-input optimization, not a new
     # public feature ABI. Static archives can be custom, and the eager/TFG
