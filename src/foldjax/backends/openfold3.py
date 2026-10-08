@@ -108,17 +108,13 @@ _COMPILE_OPTIONS = (
     "matmul_precision",
 )
 
-#: ``released_config``'s dtype. Named rather than spelled twice so the
-#: namespace-stripping rule below cannot drift from the model's default.
-#: Copied rather than imported for the same reason as `_GLU_BACKENDS` --
-#: resolving a cache directory must not import the model package or JAX --
-#: and a test pins the copy to `released_config`'s signature.
+#: ``released_config``'s dtype, which `confidence_dtype` follows when unset.
+#: Named rather than spelled twice so the namespace-stripping rule below
+#: cannot drift from the model's default. Copied rather than imported for the
+#: same reason as `_GLU_BACKENDS` -- resolving a cache directory must not
+#: import the model package or JAX -- and a test pins the copy to
+#: `released_config`'s signature.
 _DEFAULT_DTYPE = "bfloat16"
-
-#: What an omitted `confidence_dtype` resolves to, whatever `dtype` is:
-#: upstream's float32 (`models/openfold3/dtype.DEFAULT_CONFIDENCE_DTYPE`).
-#: Copied for the same reason, and pinned the same way.
-_DEFAULT_CONFIDENCE_DTYPE = "float32"
 
 #: The diffusion sample width `released_config` resolves an omitted
 #: `diffusion_chunk_size` to under a context-parallel mesh. Serially it
@@ -440,10 +436,13 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
     # models/openfold3/dtype.py carries the reading with line numbers.
     #
     # The confidence head is a second narrowing group with its own native
-    # knob, `confidence_dtype`, float32 unless set whatever `dtype` is,
-    # because upstream pins that stack to float32 in every regime; `bfloat16`
-    # narrows it on request. Narrowing it alone measured as nothing (+0.4%
-    # wall / -0.1% peak at 1,003 tokens). It is
+    # knob, `confidence_dtype`, which follows `dtype` unless set -- so a narrow
+    # trunk narrows it too, and the knob is there to hold that one region
+    # wide against a narrowed trunk (`float32`, upstream's arrangement), or
+    # narrow it against a wide one. It follows rather than defaulting to
+    # upstream's float32 for memory: a float32 head behind the bfloat16 trunk
+    # raised the 3,012-token warm peak by 11.6 GiB and ran out of memory at
+    # 4,888 tokens (models/openfold3/dtype.py). It is
     # not a third neutral value, for the same reason Boltz-2's
     # `diffusion_compute_dtype` is not: the neutral vocabulary names what
     # every port means by "dtype", and a region only one port has does not
@@ -533,15 +532,13 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         # written", the way Boltz-2's `pair_residual_dtype` does for the same
         # reason.
         #
-        # `confidence_dtype` is float32 when unset, whatever `dtype` is, so an
-        # omitted knob and a spelled `float32` name one namespace. Spelled
-        # always, as `dtype` is: a record written while the head followed the
-        # trunk says `bfloat16` here, and this program is a different one.
+        # `confidence_dtype` follows `dtype` when unset, so its resolved value
+        # is the request's `dtype` unless the knob is spelled -- read from the
+        # request rather than from a literal, because under `dtype=float32`
+        # the head is float32 too.
         trunk_dtype = str(options.get("dtype", _DEFAULT_DTYPE))
         profile["dtype"] = trunk_dtype
-        profile["confidence_dtype"] = str(
-            options.get("confidence_dtype", _DEFAULT_CONFIDENCE_DTYPE)
-        )
+        profile["confidence_dtype"] = str(options.get("confidence_dtype", trunk_dtype))
         # Same shape again: a string, so it misses the int/bool coercion, and
         # this port pins its own value rather than inheriting JAX's. An
         # omitted knob runs `_MATMUL_PRECISION`, so spelling it must not open
@@ -945,13 +942,11 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             overrides["glu_backend"] = str(glu_backend)
         dtype = str(options.pop("dtype", _DEFAULT_DTYPE))
         overrides["dtype"] = dtype
-        # Resolved to upstream's float32 here rather than left as `None`: this
-        # value is also the weight-cache key below, and two spellings of one
-        # program must not name two cached parameter trees. `released_config`
-        # applies the same rule for direct callers.
-        confidence_dtype = str(
-            options.pop("confidence_dtype", _DEFAULT_CONFIDENCE_DTYPE)
-        )
+        # Resolved to `dtype` here rather than left as `None`: this value is
+        # also the weight-cache key below, and two spellings of one program
+        # must not name two cached parameter trees. `released_config` applies
+        # the same rule for direct callers.
+        confidence_dtype = str(options.pop("confidence_dtype", dtype))
         overrides["confidence_dtype"] = confidence_dtype
         available = _representations.specs_for("openfold3")
         if request.stop_after == "inputs":

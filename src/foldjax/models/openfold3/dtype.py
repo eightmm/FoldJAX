@@ -66,15 +66,21 @@ while keeping the embedder float32 recovers it (pLDDT -0.001, CA RMSD 0.040 A
 against a 0.005 A rerun floor, at 1,003 tokens on 2026-08-10).
 
 The confidence head is therefore its own narrowing group, with its own knob
-(``confidence_dtype``). Unset, it is float32 whatever ``dtype`` is
-(``DEFAULT_CONFIDENCE_DTYPE``), because upstream pins this stack to float32 in
-every regime; it used to follow ``dtype`` and so ran bfloat16 under the
-shipped trunk. ``confidence_dtype="bfloat16"`` narrows it on request.
-Narrowing it alone buys nothing measurable -- +0.4% wall and -0.1%
-peak at 1,003 tokens, -1.1% and -0.0% at 2,096 -- and under a narrowed trunk
-it is already subsumed: ``dtype=bfloat16`` and ``dtype=bfloat16
-confidence_dtype=bfloat16`` reported byte-identical peaks (5,553 MiB at 1k,
-19,107 MiB at 2k) and walls within 0.3%.
+(``confidence_dtype``). That knob *follows* ``dtype`` when unset, so opting
+into a bfloat16 trunk narrows the head with it and there is no second value
+to set; what the knob is for is holding this one region wide against a
+narrowed trunk (``confidence_dtype="float32"``, upstream's arrangement of this
+head and the option that matches it), or narrowing it against a wide one.
+
+Following the trunk is a memory decision, not an accuracy one. Narrowing the
+head against a float32 trunk measured small at moderate sizes -- +0.4% wall
+and -0.1% peak at 1,003 tokens, -1.1% and -0.0% at 2,096 -- but holding it
+wide behind the bfloat16 trunk is not cheap at scale: its triangle
+multiplications then run float32, and the warm peak at 3,012 tokens rose
+from 23.7 to 35.4 GiB (+11.6 GiB), above the chunked peak law admission
+estimates from; at 4,888 tokens the run needed 87.6 GiB and ran out of
+memory under the 0.9 device pool, where admission had called it a fit. The bfloat16
+head is also the profile the 0.1.0 benchmark ran.
 
 It is separable for a reason: it consumes predicted coordinates and emits
 scores, never coordinates, so narrowing it cannot move a structure at all --
@@ -347,18 +353,11 @@ from foldjax.models.openfold3.models.primitives import LayerNormParams
 #: one definition.
 DTYPES: tuple[str, ...] = ("float32", "bfloat16")
 
-#: What a request that says nothing gets for the trunk. Every other layer reads
-#: it: the config fields, ``released_config``'s signature and the backend's
-#: cache-namespace strip.
+#: What a request that says nothing gets. One value rather than two --
+#: ``confidence_dtype`` follows it when unset, so this single definition sets
+#: both regions. Every other layer reads it: the config fields,
+#: ``released_config``'s signature and the backend's cache-namespace strip.
 DEFAULT_DTYPE = "bfloat16"
-
-#: What a request that says nothing gets for the confidence head's
-#: re-embedding Pairformer, whatever ``dtype`` is. Upstream pins that stack to
-#: float32 in every regime -- ``pairformer_dtype`` defaults to ``torch.float32``
-#: (``heads/head_modules.py:106``, ``heads/prediction_heads.py:131,192,261``)
-#: and no caller passes another -- so this port does too. ``bfloat16`` stays
-#: available as an explicit ``confidence_dtype``.
-DEFAULT_CONFIDENCE_DTYPE = "float32"
 
 
 def narrow_dtype(name: str) -> Any:

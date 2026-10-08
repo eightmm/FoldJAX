@@ -439,18 +439,26 @@ unless it says so here, in its own paragraph.
   names its source `protenix-v2.pt`, so an existing v2 conversion reads as not
   ready until the file is placed and converted again.
 
-- **OpenFold3's confidence Pairformer runs float32 by default, as upstream's
-  does.** Upstream pins that stack to float32 in every regime
-  (`heads/head_modules.py:106`, `heads/prediction_heads.py:224`); this port
-  let it follow `dtype`, so the shipped bfloat16 trunk ran it bfloat16.
-  `confidence_dtype` now defaults to `float32` whatever `dtype` is, and
-  `--option confidence_dtype=bfloat16` restores the old head. A float32 head
-  behind the bfloat16 trunk did not trace before -- the trunk's bfloat16
-  single entered the stack's scan carry narrow and left it float32 -- so the
-  head now widens its inputs at entry. The head reads predicted coordinates
-  and emits scores, so structures are unchanged, but every confidence score
-  -- and therefore the ranking and `best` sample -- of a default OpenFold3 run
-  can differ, and the run gets a new cache namespace.
+- **OpenFold3's confidence Pairformer follows the trunk dtype by default;
+  `--option confidence_dtype=float32` is the upstream-matching opt-in.**
+  Upstream pins that stack to float32 in every regime
+  (`heads/head_modules.py:106`, `heads/prediction_heads.py:224`), and for a
+  while after 0.1.0 an omitted `confidence_dtype` resolved to `float32` here
+  too. That widened the head's triangle-multiplication buffers behind the
+  bfloat16 trunk: the warm GPU peak at 3,012 tokens rose from 23.7 to 35.4 GiB
+  (+11.6 GiB), above OpenFold3's admission law, and at 4,888 tokens a default
+  run needed 87.6 GiB and ran out of memory under the 0.9 device pool while
+  admission reported it as fitting. The omitted option therefore follows
+  `dtype` again -- bfloat16 under the shipped trunk, float32 under
+  `dtype=float32` -- which is the head 0.1.0 shipped and benchmarked, in the
+  same cache namespace as a spelled `confidence_dtype=bfloat16`; against
+  0.1.0 this head's default does not change. `--option confidence_dtype=float32` (or `fp32`,
+  `f32`) keeps the head wide behind the bfloat16 trunk, in its own cache
+  namespace, and now traces there: the head widens the trunk's bfloat16 single
+  and pair representations at its entry, where the narrow single used to
+  enter the stack's scan carry and leave it float32. The head reads predicted
+  coordinates and emits scores, so the option moves confidence scores, and
+  with them the ranking and `best` sample, but no sample's coordinates.
 
 - **ESMFold2 takes its reference conformers from one source, whether or not
   an MSA is attached.** A bare single protein chain was featurized by the

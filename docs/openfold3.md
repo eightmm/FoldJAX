@@ -473,8 +473,11 @@ Prediction runs inside the shipped `openfold3_precision` scope at matmul
 precision `high` (TF32), matching upstream's
 `torch.set_float32_matmul_precision("high")` for ordinary matmuls. Element
 storage is the partial bfloat16 track since 2026-09-12 — the token/pair
-representation narrows and everything atom- or coordinate-shaped stays fp32;
-`--option dtype=float32` restores upstream's `32-true` storage, and the
+representation narrows and everything atom- or coordinate-shaped stays fp32,
+and the confidence head's Pairformer follows the trunk (`--option
+confidence_dtype=float32` holds it wide, as upstream's is, at a memory cost
+[`cli.md`](cli.md#separating-openfold3s-confidence-head---option-confidence_dtype)
+records); `--option dtype=float32` restores upstream's `32-true` storage, and the
 verification gates below are run on that arm. `models/openfold3/dtype.py`
 carries the split and the measurement.
 The fused cuEquivariance triangle contractions explicitly pin

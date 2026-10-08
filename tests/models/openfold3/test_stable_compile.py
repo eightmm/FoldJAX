@@ -113,18 +113,11 @@ def test_backend_cache_defaults_track_released_config_signature() -> None:
 
     # `dtype` is a string, so it misses the int/bool coercion above and is
     # stripped from the namespace by its own comparison; it needs the same
-    # pin. `confidence_dtype`'s signature default is a `None` that
-    # `released_config` resolves to upstream's float32, so the adapter's copy
-    # is pinned to that resolution.
+    # pin. `confidence_dtype` has no default of its own to pin -- it follows
+    # `dtype`, and the sentinel that says so is the thing to hold, because a
+    # literal here would silently stop following.
     assert openfold3_backend._DEFAULT_DTYPE == signature["dtype"].default
     assert signature["confidence_dtype"].default is None
-    from foldjax.models.openfold3.dtype import DEFAULT_CONFIDENCE_DTYPE
-
-    assert openfold3_backend._DEFAULT_CONFIDENCE_DTYPE == DEFAULT_CONFIDENCE_DTYPE
-    assert (
-        inference.released_config(n_token=8, n_atom=32).confidence_dtype
-        == DEFAULT_CONFIDENCE_DTYPE
-    )
 
     # `matmul_precision` is not a `released_config` parameter either: the port
     # pins it around the whole inference call rather than in the model config,
