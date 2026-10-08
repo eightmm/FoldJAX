@@ -612,12 +612,20 @@ range. Tokens are estimated from the common job (one per residue, one per
 SMILES heavy atom; CCD ligands and per-atom modified residues are listed as
 not counted). It is `unknown`, with the reason, outside a law's fitted range
 (it never extrapolates), for AlphaFold 3 (no law), OpenDDE (keyed on
-structural tokens) and Protenix (needs the processed MSA row count). For
-OpenFold3, whose law was fitted on protein-only inputs at the bfloat16 trunk
-and confidence head, a job with any nucleic-acid or ligand entity, or one
-run with `--option dtype=float32` or `--option confidence_dtype=float32`, is
-`unknown` too, as the run's own admission calls it: the estimate is kept as a
-lower bound and no `min_device_memory_gib` is suggested. `mem` is
+structural tokens) and Protenix (needs the processed MSA row count). A run
+configured to need more than its law was fitted at is `unknown` too, as the
+run's own admission calls it, and the block lists why under
+`exceeds_profile` in admission's words: `--padding` on every port (the laws
+were fitted unpadded); on OpenFold3, whose law was fitted on protein-only
+inputs at the bfloat16 trunk and confidence head, any nucleic-acid or ligand
+entity, `--option dtype=float32`, `--option confidence_dtype=float32`, or a
+pocket constraint (it samples pocket-guided); on Boltz-2 a float32 pair
+residual stream (`pair_residual_dtype=float32`, or `dtype=float32` under the
+default `auto`) or `--option matmul_precision=highest`. An omitted Boltz-2
+precision counts as the released `high` a GPU node runs. The estimate is kept
+as a lower bound and no `min_device_memory_gib` is suggested; on Protenix and
+OpenDDE, already `unknown`, `exceeds_profile` still names `serving padding`.
+`mem` is
 left `null`: the laws describe device memory and no host-memory law is
 calibrated.
 

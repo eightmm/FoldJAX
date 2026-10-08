@@ -786,6 +786,20 @@ unless it says so here, in its own paragraph.
   not tokamax's; the unguided release, its kernel and its cache namespace are
   unchanged. Guidance still costs about 12x the unguided wall time (OpenDDE,
   same sampler: 2,525 s against 202 s).
+- **`foldjax plan --json` no longer sizes a card for a run its admission
+  calls `unknown`.** Every port's admission records a `--padding` run's fit
+  as `unknown` (the laws were fitted unpadded; padded runs measured up to
+  1.69x over the upper estimate), as Boltz-2's does for a float32 pair
+  residual stream or `matmul_precision=highest` and OpenFold3's for
+  pocket-guided sampling, but the `slurm` block still suggested a
+  `min_device_memory_gib` from the law for all of them -- including the
+  padded screen `docs/tutorials/batch-slurm.md` plans. They are now
+  `unknown` with the estimate kept as a lower bound, and the block lists the
+  reasons under a new `exceeds_profile` field in admission's words (Protenix
+  and OpenDDE, already `unknown`, list `serving padding` there too). Boltz-2's
+  options are read as the run resolves them (`dtype=float32` under the
+  default `auto` pair stream counts); an omitted precision counts as the
+  released `high` a GPU node runs. Nothing about what runs changes.
 - **OpenFold3 admission no longer calls a float32 confidence head a fit.**
   `--option confidence_dtype=float32` behind the default bfloat16 trunk was
   judged against the peak law fitted on the bfloat16 head, though it needs

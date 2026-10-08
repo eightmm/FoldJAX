@@ -679,13 +679,151 @@ def test_plan_resources_does_not_size_a_card_for_a_float32_openfold3_region(
     assert record["min_device_memory_gib"] is None
     assert record["reason"].startswith(f"{reason}: the estimate is a lower bound")
     assert record["upper_gib"]
-    # Only OpenFold3 has this knob; another port's law is untouched by it.
-    assert (
-        slurm.plan_resources("boltz2", {"entities": [protein]}, options=options)[
-            "state"
-        ]
-        == "estimated"
+    assert record["exceeds_profile"] == [reason]
+    # Only OpenFold3 has a confidence head knob; another port's law is
+    # untouched by it. (A float32 trunk is Boltz-2's float32 pair stream too.)
+    if "dtype" not in options and "compute_dtype" not in options:
+        assert (
+            slurm.plan_resources("boltz2", {"entities": [protein]}, options=options)[
+                "state"
+            ]
+            == "estimated"
+        )
+
+
+_PADDING_PROTEIN = {"type": "protein", "id": ["A", "B"], "sequence": "M" * 1050}
+
+
+@pytest.mark.parametrize("model", ["boltz2", "openfold3", "esmfold2"])
+def test_plan_resources_does_not_size_a_card_for_a_padded_run(model: str) -> None:
+    """Every port's law was fitted unpadded, and its admission records a padded
+    run's "fits" as unknown (measured, padded runs exceeded the upper estimate
+    by up to 1.69x), so the plan must not size a card for one either.
+    """
+    document = {"entities": [_PADDING_PROTEIN]}
+    unpadded = slurm.plan_resources(model, document)
+    assert unpadded["state"] == "estimated" and unpadded["min_device_memory_gib"]
+    assert "exceeds_profile" not in unpadded
+    record = slurm.plan_resources(model, document, padding=True)
+    assert record["state"] == "unknown"
+    assert record["min_device_memory_gib"] is None
+    assert record["exceeds_profile"] == ["serving padding"]
+    assert record["reason"].startswith(
+        "serving padding: the estimate is a lower bound"
     )
+    # The estimate itself stays, as a lower bound.
+    assert record["upper_gib"] == unpadded["upper_gib"]
+
+
+@pytest.mark.parametrize("model", ["protenix", "opendde"])
+def test_plan_resources_lists_padding_where_the_state_is_already_unknown(
+    model: str,
+) -> None:
+    document = {"entities": [_PADDING_PROTEIN]}
+    assert "exceeds_profile" not in slurm.plan_resources(model, document)
+    record = slurm.plan_resources(model, document, padding=True)
+    assert record["state"] == "unknown" and record["min_device_memory_gib"] is None
+    assert record["exceeds_profile"] == ["serving padding"]
+    # AlphaFold 3 has no law, so its admission has no profile to exceed.
+    assert "exceeds_profile" not in slurm.plan_resources(
+        "alphafold3", document, padding=True
+    )
+
+
+@pytest.mark.parametrize(
+    ("options", "reasons"),
+    [
+        ({}, []),
+        ({"matmul_precision": "high"}, []),
+        ({"compute_dtype": "bfloat16", "pair_residual_dtype": "auto"}, []),
+        ({"pair_residual_dtype": "float32"}, ["a float32 pair residual stream"]),
+        ({"pair_residual_dtype": "fp32"}, ["a float32 pair residual stream"]),
+        ({"dtype": "float32"}, ["a float32 pair residual stream"]),
+        ({"compute_dtype": "fp32"}, ["a float32 pair residual stream"]),
+        ({"matmul_precision": "highest"}, ["matmul_precision=highest"]),
+        (
+            {"compute_dtype": "float32", "matmul_precision": "highest"},
+            ["a float32 pair residual stream", "matmul_precision=highest"],
+        ),
+    ],
+)
+def test_plan_resources_reads_boltz2_precision_options(
+    options: dict[str, str], reasons: list[str]
+) -> None:
+    """Boltz-2's law was fitted at the bfloat16 pair stream and `high`
+    matmuls; its admission records a float32 stream (spelled, or "auto" under
+    a float32 compute dtype) or `matmul_precision=highest` as unknown.
+    """
+    document = {"entities": [_PADDING_PROTEIN]}
+    record = slurm.plan_resources("boltz2", document, options=options)
+    if not reasons:
+        assert record["state"] == "estimated" and "exceeds_profile" not in record
+        return
+    assert record["state"] == "unknown" and record["min_device_memory_gib"] is None
+    assert record["exceeds_profile"] == reasons
+    # Admission's order: serving padding first.
+    padded = slurm.plan_resources("boltz2", document, options=options, padding=True)
+    assert padded["exceeds_profile"] == ["serving padding", *reasons]
+    assert padded["reason"].startswith("; ".join(["serving padding", *reasons]))
+
+
+def test_plan_resources_calls_openfold3_pocket_guided_sampling_unknown() -> None:
+    """OpenFold3 samples pocket-guided for every query with a pocket
+    constraint -- a second rollout plus the proposal search -- which its
+    admission records as unknown.
+    """
+    from foldjax import memory_policy
+
+    ligand = {"type": "ligand", "id": "L", "smiles": "c1ccccc1"}
+    document = {
+        "entities": [_PADDING_PROTEIN, ligand],
+        "constraints": [{"pocket": {"binder": "L", "contacts": [["A", 5]]}}],
+    }
+    record = slurm.plan_resources(
+        "openfold3", document, options={"dtype": "float32"}, padding=True
+    )
+    assert record["state"] == "unknown" and record["min_device_memory_gib"] is None
+    # `released_config`'s order and words.
+    assert record["exceeds_profile"] == [
+        "serving padding",
+        "a float32 trunk",
+        "pocket-guided sampling",
+        memory_policy.non_protein_reason(6),
+    ]
+    # A pocket is OpenFold3's sampler; Boltz-2's law does not read it.
+    assert "exceeds_profile" not in slurm.plan_resources("boltz2", document)
+
+
+def test_plan_resources_stays_jax_free() -> None:
+    """`foldjax plan` must not import JAX, including the Boltz-2 and OpenFold3
+    adapter tables the profile check reads."""
+    import subprocess
+
+    script = r"""
+import sys
+from foldjax import slurm
+
+protein = {"type": "protein", "id": ["A", "B"], "sequence": "M" * 1050}
+pocket = {"entities": [protein, {"type": "ligand", "id": "L", "smiles": "CCO"}],
+          "constraints": [{"pocket": {"binder": "L", "contacts": [["A", 5]]}}]}
+for model, options in (
+    ("boltz2", {"dtype": "fp32", "matmul_precision": "highest"}),
+    ("openfold3", {"confidence_dtype": "fp32"}),
+):
+    assert slurm.plan_resources(model, pocket, options=options, padding=True)[
+        "exceeds_profile"
+    ]
+assert "jax" not in sys.modules, "plan imported jax"
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout
 
 
 def test_plan_json_adds_the_slurm_block(tmp_path: Path, capsys) -> None:
@@ -740,6 +878,34 @@ def test_plan_json_reads_openfold3_confidence_dtype(
     assert block["tokens_estimate"] == 1200
     assert block["state"] == state
     assert (block["min_device_memory_gib"] is None) == (state == "unknown")
+
+
+@pytest.mark.parametrize("padding", [False, True])
+def test_plan_json_reads_padding(tmp_path: Path, capsys, padding: bool) -> None:
+    weights = tmp_path / "w.jax"
+    weights.write_bytes(b"x")
+    argv = [
+        "plan",
+        "--model",
+        "boltz2",
+        "--sequence",
+        "M" * 1200,
+        "--msa",
+        "single",
+        "--weights",
+        str(weights),
+        "--json",
+    ]
+    if padding:
+        argv.append("--padding")
+    assert cli.main(argv) == 0
+    block = json.loads(capsys.readouterr().out)["slurm"]
+    assert block["tokens_estimate"] == 1200
+    if not padding:
+        assert block["state"] == "estimated" and block["min_device_memory_gib"]
+        return
+    assert block["state"] == "unknown" and block["min_device_memory_gib"] is None
+    assert block["exceeds_profile"] == ["serving padding"]
 
 
 @pytest.mark.parametrize(
