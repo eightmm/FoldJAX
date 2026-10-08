@@ -773,6 +773,19 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **Protenix `use_tfg_guidance=true` finishes on a GPU.** The guided sampler is
+  eager, and there the released tokamax denoiser attention compiled afresh on
+  every call -- an eager Pallas call binds a new `jit` each time, and its
+  persisted entry carried Tokamax's HLO payload, which XLA would not read back
+  -- so a 153-token guided run timed out at 60 minutes against 2.5 unguided.
+  Under guidance an omitted `diffusion_attention_backend` now runs the port's
+  jitted XLA attention (`xla_jit`, what the guided path already ran off a GPU),
+  recorded in the cache namespace and the rendered command, and the native
+  `--use-tfg-guidance` does the same; a spelled `tokamax` attention with
+  guidance is refused. Guided coordinates on a GPU come from that attention,
+  not tokamax's; the unguided release, its kernel and its cache namespace are
+  unchanged. Guidance still costs about 12x the unguided wall time (OpenDDE,
+  same sampler: 2,525 s against 202 s).
 - **`foldjax plan --json` no longer sizes an OpenFold3 card from a law that
   does not cover the job.** The `slurm` block applied OpenFold3's token-only
   peak law to nucleic-acid and ligand jobs, which the run's own admission

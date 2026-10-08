@@ -2565,7 +2565,7 @@ spelling the upstream value selects the namespace omitting it selects.
 | Boltz-2 | `num_subsampled_msa=N` | `--num_subsampled_msa` (`main.py:1027-1031`) | `1024` | rows per pass when subsampling |
 | Boltz-2 | `method=NAME` | `--method` (`main.py:979-984`) | none | method conditioning, case-insensitive, one of `const.method_types_ids`; also keys the feature cache; affinity keeps `other` |
 | Boltz-2 | `use_potentials=true` | `--use_potentials` (`main.py:969-972,1309-1311`) | `false` | Feynman-Kac steering and physical guidance on top of contact guidance; eager, so refused with `steering_args`, `--padding`, `deterministic=on` and `cp_devices>1` |
-| Protenix | `use_tfg_guidance=true` | `--use_tfg_guidance` (`batch_inference.py:697-702,410`) | `false` | training-free guidance with `configs_base.py`'s default mapping, unrolled eager sampler; refused with `--padding`, `deterministic=on` and `cp_devices>1`; native CLI `--use-tfg-guidance` |
+| Protenix | `use_tfg_guidance=true` | `--use_tfg_guidance` (`batch_inference.py:697-702,410`) | `false` | training-free guidance with `configs_base.py`'s default mapping, unrolled eager sampler; the denoiser attention resolves to `xla_jit`; refused with `--padding`, `deterministic=on`, `cp_devices>1` and any `tokamax` attention; native CLI `--use-tfg-guidance` (which also runs `xla_jit`) |
 | OpenDDE | `use_tfg_guidance=true` | `--use_tfg_guidance` (`batch_inference.py:848-853,487`) | `false` | the same mapping on Protenix's TFG port (OpenDDE's `tfg` is Protenix's plus Fold-CP plumbing); eager entry point; the same refusals; native CLI `--use-tfg-guidance true` |
 | AlphaFold 3 | `resolve_msa_overlaps=false` | `--resolve_msa_overlaps` (`run_alphafold.py:286-294`) | `true` | keep a hand-built unpaired MSA exactly as given |
 | AlphaFold 3 | `fix_standalone_glycans=true` | `--fix_standalone_glycans` (`run_alphafold.py:312-319`) | `false` | outside the trained regime, as upstream warns |
@@ -2595,6 +2595,18 @@ re-denoise and re-noise loop. One departure: a `FILE_` ligand is rebuilt with
 hydrogens too, where upstream reads the file without them, so a
 hydrogen-dependent torsion pattern such as a secondary amide's can differ by
 a torsion term.
+
+Guidance is slow by construction: the sampler is unrolled and runs eagerly,
+one dispatch per operation, with the guidance gradient on every step. OpenDDE
+at 153 tokens, five samples and 200 steps took 2,525 s guided against 202 s
+unguided on one RTX PRO 6000 Blackwell, about 12x; Protenix runs the same
+sampler and should cost the same order. Its released denoiser attention,
+tokamax's fused kernel, cannot run there at all in practice -- an eager Pallas
+call compiles afresh on every call, which timed a guided Protenix run out at
+60 minutes against 2.5 unguided -- so under `use_tfg_guidance` an omitted
+`diffusion_attention_backend` runs the port's jitted XLA attention, which
+compiles once per shape, in its own cache namespace, and a spelled `tokamax`
+attention is refused. The unguided release keeps tokamax.
 
 AlphaFold 3's `ref_max_modified_date`, the CCD cutoff below which a
 component's model coordinates may stand in for a failed RDKit conformer,

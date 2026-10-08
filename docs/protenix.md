@@ -108,7 +108,7 @@ of a random subset ([cli.md](cli.md#--msa-seed-protenix)).
 | option | default | effect |
 |---|---|---|
 | `output_format=both` | | also write PAE, PDE and contact probabilities to `confidence_full.npz` (and `predicted_aligned_error.json`) |
-| `use_tfg_guidance=true` | `false` | upstream's training-free guidance with its default mapping, on an eager sampler: geometry terms on ligands, ions and modified residues only, never on standard residues ([what it constrains](cli.md#upstream-run-options---option)); refused with `--padding`, `deterministic=on` and context parallelism |
+| `use_tfg_guidance=true` | `false` | upstream's training-free guidance with its default mapping, on an eager sampler: geometry terms on ligands, ions and modified residues only, never on standard residues ([what it constrains](cli.md#upstream-run-options---option)); the denoiser attention runs `xla_jit`, and a spelled `tokamax` attention is refused, because the eager sampler recompiles it on every call; refused with `--padding`, `deterministic=on` and context parallelism; expect an order of magnitude more wall time ([why](cli.md#upstream-run-options---option)) |
 | `attention_kernel=tokamax` | | fused pair-bias attention |
 | `amp_policy=upstream\|fp32\|bf16` | `auto` | which stages narrow to bfloat16 |
 | `deterministic=on` | `off` | repeatable reductions, at a cost in wall time |

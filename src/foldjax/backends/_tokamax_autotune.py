@@ -93,11 +93,20 @@ def _tokamax_api():
 # ``RET_CHECK ... Invalid metadata payload id 201 with payloads size 192`` and
 # the warm process recompiles (jctc-v3 E9: 143 of 160 AlphaFold 3 warm
 # processes -- all 70 of DeepMind's own runner, 73 of 90 FoldJAX ones; the
-# bucket-padded FoldJAX arm read its entries back; no other port). That check
-# only reads instructions that carry a payload, so a program with none cannot
-# fail it. The payload has no effect on the compiled code; the one reader this
-# backend has is the discovery lowering below (``get_bound_args`` finds the ops
-# by it), which keeps it.
+# bucket-padded FoldJAX arm read its entries back; no other port's compiled
+# program). That check only reads instructions that carry a payload, so a
+# program with none cannot fail it. The payload has no effect on the compiled
+# code; the one reader this backend has is the discovery lowering below
+# (``get_bound_args`` finds the ops by it), which keeps it.
+#
+# Protenix's eager guided sampler hit the same check from outside any compiled
+# program: an eager `pallas_call` binds a fresh `jit` per call, so every tokamax
+# denoiser attention persisted its own `jit__jit_run` entry and failed to read
+# it back on the next call (4,147 times in one 60-minute TFG run, 2026-10-07).
+# That path resolves its attention to `xla_jit` instead
+# (`backends/protenix.py`, `_GUIDED_DIFFUSION_ATTENTION_BACKEND`) rather than
+# dropping the payload here, because a readable entry still re-traces and
+# re-lowers on every call.
 #
 # Discovery and execution lower the same jitted callable, and JAX shares one
 # trace between ``lower`` and the call when the context at the jit boundary is
