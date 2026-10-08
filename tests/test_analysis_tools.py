@@ -649,6 +649,45 @@ def test_plan_resources_does_not_size_a_card_outside_the_fitted_composition() ->
     assert slurm.plan_resources("boltz2", mixed)["state"] == "estimated"
 
 
+@pytest.mark.parametrize(
+    ("options", "reason"),
+    [
+        ({}, None),
+        ({"confidence_dtype": "bfloat16"}, None),
+        ({"confidence_dtype": "float32"}, "a float32 confidence head"),
+        ({"confidence_dtype": "fp32"}, "a float32 confidence head"),
+        ({"dtype": "bf16", "confidence_dtype": "f32"}, "a float32 confidence head"),
+        ({"dtype": "float32"}, "a float32 trunk"),
+        ({"compute_dtype": "fp32"}, "a float32 trunk"),
+        ({"dtype": "float32", "confidence_dtype": "bfloat16"}, "a float32 trunk"),
+    ],
+)
+def test_plan_resources_does_not_size_a_card_for_a_float32_openfold3_region(
+    options, reason
+) -> None:
+    """OpenFold3's law was fitted at the bfloat16 trunk and head. A float32
+    head behind that trunk measured +11.6 GiB at 3,012 tokens and ran out of
+    memory at 4,888 where the law admitted it, so admission records either
+    float32 region as unknown, and the plan must say the same.
+    """
+    protein = {"type": "protein", "id": ["A", "B"], "sequence": "M" * 600}
+    record = slurm.plan_resources("openfold3", {"entities": [protein]}, options=options)
+    if reason is None:
+        assert record["state"] == "estimated" and record["min_device_memory_gib"]
+        return
+    assert record["state"] == "unknown"
+    assert record["min_device_memory_gib"] is None
+    assert record["reason"].startswith(f"{reason}: the estimate is a lower bound")
+    assert record["upper_gib"]
+    # Only OpenFold3 has this knob; another port's law is untouched by it.
+    assert (
+        slurm.plan_resources("boltz2", {"entities": [protein]}, options=options)[
+            "state"
+        ]
+        == "estimated"
+    )
+
+
 def test_plan_json_adds_the_slurm_block(tmp_path: Path, capsys) -> None:
     job = write_job(tmp_path / "jobs", "pair")
     weights = tmp_path / "w.jax"
@@ -671,6 +710,36 @@ def test_plan_json_adds_the_slurm_block(tmp_path: Path, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["slurm"]["gres"] == "gpu:1"
     assert payload["slurm"]["tokens_estimate"] == 54
+
+
+@pytest.mark.parametrize(
+    ("option", "state"),
+    [(None, "estimated"), ("bfloat16", "estimated"), ("fp32", "unknown")],
+)
+def test_plan_json_reads_openfold3_confidence_dtype(
+    tmp_path: Path, capsys, option: str | None, state: str
+) -> None:
+    weights = tmp_path / "w.safetensors"
+    weights.write_bytes(b"x")
+    argv = [
+        "plan",
+        "--model",
+        "openfold3",
+        "--sequence",
+        "M" * 1200,
+        "--msa",
+        "single",
+        "--weights",
+        str(weights),
+        "--json",
+    ]
+    if option is not None:
+        argv += ["--option", f"confidence_dtype={option}"]
+    assert cli.main(argv) == 0
+    block = json.loads(capsys.readouterr().out)["slurm"]
+    assert block["tokens_estimate"] == 1200
+    assert block["state"] == state
+    assert (block["min_device_memory_gib"] is None) == (state == "unknown")
 
 
 @pytest.mark.parametrize(

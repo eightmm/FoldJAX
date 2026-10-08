@@ -15,8 +15,10 @@ is byte-identical to the unsharded run's. ``--shard auto`` reads
 into a suggested ``--gres`` and a minimum card size. The laws describe device
 memory only: no host-memory law is calibrated, so ``--mem`` is left to the
 caller rather than guessed. A job outside a law's fitted composition (a
-nucleic acid or ligand under OpenFold3's protein-only law) is ``unknown``
-with no card size, as the run's own admission would call it.
+nucleic acid or ligand under OpenFold3's protein-only law), or configured to
+need more than the law was fitted at (OpenFold3's float32 trunk, or its
+float32 confidence head behind the bfloat16 trunk), is ``unknown`` with no
+card size, as the run's own admission would call it.
 """
 
 from __future__ import annotations
@@ -220,14 +222,53 @@ def _outside_composition(model: str, document: Mapping[str, Any]) -> str | None:
     )
 
 
+def _exceeding_options(model: str, options: Mapping[str, Any]) -> list[str]:
+    """The options that put a run above the profile ``model``'s law was fitted at.
+
+    The plan-time half of OpenFold3's ``exceeds_profile`` admission
+    (``released_config``): a float32 trunk, or a float32 confidence head
+    behind the bfloat16 one, needs more than its bfloat16 law describes. Read
+    from the backend's canonical options, so `fp32`, `f32` and the
+    `compute_dtype` alias resolve as the run resolves them, and an omitted
+    head follows the trunk.
+    """
+    if model != "openfold3" or not options:
+        return []
+    # `_DEFAULT_DTYPE` is the adapter's JAX-free copy of `released_config`'s
+    # default, which a test pins; the model package would import JAX here.
+    import warnings
+
+    from foldjax import execution, registry
+    from foldjax.backends.openfold3 import _DEFAULT_DTYPE
+
+    try:
+        with warnings.catch_warnings():
+            # The request's own validation has already warned about an alias.
+            warnings.simplefilter("ignore", execution.Alias)
+            canonical = registry.backend_class(model).canonical_options(options)
+    except ValueError:
+        return []
+    trunk = str(canonical.get("dtype", _DEFAULT_DTYPE))
+    if trunk == "float32":
+        return ["a float32 trunk"]
+    if str(canonical.get("confidence_dtype", trunk)) == "float32":
+        return ["a float32 confidence head"]
+    return []
+
+
 def plan_resources(
     model: str,
     document: Mapping[str, Any] | None,
     *,
     num_samples: int | None = None,
     cp_devices: int = 1,
+    options: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Suggested Slurm resources for one run, from the model's peak law."""
+    """Suggested Slurm resources for one run, from the model's peak law.
+
+    ``options`` are the request's backend options, read only for the ones
+    that put a run above the law's profile (:func:`_exceeding_options`).
+    """
     record: dict[str, Any] = {
         "gres": f"gpu:{max(1, cp_devices)}",
         "mem": None,
@@ -286,17 +327,21 @@ def plan_resources(
             ),
         }
     )
+    exceeding = _exceeding_options(model, options or {})
     composition = _outside_composition(model, document)
     if composition is not None:
-        # What the run's own admission says (`memory_policy.PROTEIN_ONLY_LAWS`):
-        # the estimate stays, as a lower bound, and no card is sized from it.
+        exceeding.append(composition)
+    if exceeding:
+        # What the run's own admission says (`memory_policy.exceeding_profile`,
+        # `memory_policy.PROTEIN_ONLY_LAWS`): the estimate stays, as a lower
+        # bound, and no card is sized from it.
         record.update(
             {
                 "state": "unknown",
                 "min_device_memory_gib": None,
                 "reason": (
-                    f"{composition}: the estimate is a lower bound here, so no "
-                    "card size is suggested"
+                    f"{'; '.join(exceeding)}: the estimate is a lower bound "
+                    "here, so no card size is suggested"
                 ),
             }
         )
@@ -344,4 +389,5 @@ def plan_slurm(
         if isinstance(sampling, Mapping)
         else None,
         cp_devices=cp,
+        options=options,
     )

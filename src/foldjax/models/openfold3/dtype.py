@@ -79,8 +79,10 @@ wide behind the bfloat16 trunk is not cheap at scale: its triangle
 multiplications then run float32, and the warm peak at 3,012 tokens rose
 from 23.7 to 35.4 GiB (+11.6 GiB), above the chunked peak law admission
 estimates from; at 4,888 tokens the run needed 87.6 GiB and ran out of
-memory under the 0.9 device pool, where admission had called it a fit. The bfloat16
-head is also the profile the 0.1.0 benchmark ran.
+memory under the 0.9 device pool, where admission had called it a fit; it now
+records that configuration as ``unknown`` (``released_config``'s
+``exceeds_profile``). The bfloat16 head is also the profile the 0.1.0
+benchmark ran.
 
 It is separable for a reason: it consumes predicted coordinates and emits
 scores, never coordinates, so narrowing it cannot move a structure at all --
