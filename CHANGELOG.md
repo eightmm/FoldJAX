@@ -773,6 +773,18 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **OpenFold3 admission no longer calls a float32 confidence head a fit.**
+  `--option confidence_dtype=float32` behind the default bfloat16 trunk was
+  judged against the peak law fitted on the bfloat16 head, though it needs
+  more: +11.6 GiB warm peak at 3,012 tokens, and 87.6 GiB at 4,888 tokens,
+  where the law's upper estimate (about 62.5 GiB) admitted it and the run ran
+  out of memory. Admission now records such a run as `unknown`, naming
+  `a float32 confidence head` under `exceeds_profile` (a refusal still binds),
+  as it already did for a float32 trunk. `foldjax plan --json` matches it: an
+  OpenFold3 run with a float32 trunk or a float32 confidence head (any
+  accepted spelling, `fp32` and `f32` included) is `unknown` with no
+  `min_device_memory_gib`, where the `slurm` block used to size a card from
+  the bfloat16 law for both. Nothing about what runs changes.
 - **`foldjax plan --json` no longer sizes an OpenFold3 card from a law that
   does not cover the job.** The `slurm` block applied OpenFold3's token-only
   peak law to nucleic-acid and ligand jobs, which the run's own admission

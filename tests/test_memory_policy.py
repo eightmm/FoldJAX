@@ -746,6 +746,11 @@ def test_an_omitted_option_and_an_explicit_unblocked_run_stay_distinguishable() 
         ({"padded": True}, ["serving padding"]),
         ({"dtype": "float32"}, ["a float32 trunk"]),
         ({"padded": True, "dtype": "float32"}, ["serving padding", "a float32 trunk"]),
+        # A float32 head behind the bfloat16 trunk: +11.6 GiB warm peak at
+        # 3,012 tokens, and out of memory at 4,888 where the law admitted it.
+        ({"confidence_dtype": "float32"}, ["a float32 confidence head"]),
+        # Under a float32 trunk the trunk's reason already covers the head.
+        ({"dtype": "float32", "confidence_dtype": "float32"}, ["a float32 trunk"]),
         # 5NPK, DNA gyrase with DNA and ligands at 3,061 tokens, peaked at
         # 41,260 MiB against this law's 29,876 MiB upper estimate.
         (
@@ -783,6 +788,26 @@ def test_a_padded_or_float32_openfold3_run_is_not_called_a_fit(
         )
     if "padded" in kwargs or "non_protein_tokens" in kwargs:
         assert config == unpadded
+
+
+@pytest.mark.parametrize("confidence_dtype", [None, "bfloat16"])
+def test_a_bfloat16_confidence_head_on_the_bfloat16_trunk_still_fits(
+    confidence_dtype,
+) -> None:
+    """An omitted head follows the bfloat16 trunk, which is the profile the
+    law was fitted at; spelling that value out is the same run.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        inference.released_config(
+            n_token=3012,
+            n_atom=3012 * 24,
+            memory_budget=_budget(90 * _GIB, card=96 * _GIB),
+            confidence_dtype=confidence_dtype,
+        )
+    block = memory_policy.recorded()
+    assert block["state"] == "fits"
+    assert block["exceeds_profile"] == []
 
 
 def test_an_unpadded_bfloat16_openfold3_run_still_fits() -> None:

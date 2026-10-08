@@ -613,10 +613,11 @@ SMILES heavy atom; CCD ligands and per-atom modified residues are listed as
 not counted). It is `unknown`, with the reason, outside a law's fitted range
 (it never extrapolates), for AlphaFold 3 (no law), OpenDDE (keyed on
 structural tokens) and Protenix (needs the processed MSA row count). For
-OpenFold3, whose law was fitted on protein-only inputs, a job with any
-nucleic-acid or ligand entity is `unknown` too, as the run's own admission
-calls it: the estimate is kept as a lower bound and no
-`min_device_memory_gib` is suggested. `mem` is
+OpenFold3, whose law was fitted on protein-only inputs at the bfloat16 trunk
+and confidence head, a job with any nucleic-acid or ligand entity, or one
+run with `--option dtype=float32` or `--option confidence_dtype=float32`, is
+`unknown` too, as the run's own admission calls it: the estimate is kept as a
+lower bound and no `min_device_memory_gib` is suggested. `mem` is
 left `null`: the laws describe device memory and no host-memory law is
 calibrated.
 
@@ -823,8 +824,9 @@ configured to need *more* keeps its refusal, but a `fits` from it is recorded
 and warned as `unknown`, because its estimate is a lower bound: measured,
 padded runs and runs with a precision option exceeded the upper estimate by up
 to 1.69x. Those configurations are `--padding` on every port, `dtype=float32`
-on OpenFold3, and a float32 pair residual stream or `matmul_precision=highest`
-on Boltz-2. The manifest's `memory` block names them under `exceeds_profile`,
+or a float32 confidence head behind the bfloat16 trunk
+(`confidence_dtype=float32`) on OpenFold3, and a float32 pair residual stream
+or `matmul_precision=highest` on Boltz-2. The manifest's `memory` block names them under `exceeds_profile`,
 beside `off_profile`. OpenDDE's float32 trunk is not one of them: it has its
 own fitted law.
 
@@ -1109,9 +1111,11 @@ float32 trunk measured small (+0.4% wall / -0.1% peak at 1,003 tokens, -1.1% /
 scale: its triangle multiplications then run float32, and the warm peak at
 3,012 tokens rose from 23.7 to 35.4 GiB (+11.6 GiB), above the peak law
 admission estimates from. At 4,888 tokens that run needed 87.6 GiB and ran out
-of memory under the 0.9 device pool, where admission had called it a fit:
-admission's law was fitted on the bfloat16 head, so leave headroom of your
-own when you set `confidence_dtype=float32` at that scale. A float32 head
+of memory under the 0.9 device pool, where admission had called it a fit.
+Admission's law was fitted on the bfloat16 head, so it now reports such a run
+`unknown` instead of `fits` (a refusal still binds), and `plan --json` sizes
+no card for it: leave headroom of your own when you set
+`confidence_dtype=float32` at that scale. A float32 head
 behind the bfloat16 trunk widens the trunk's single and pair representations
 at its entry, so its Pairformer runs entirely float32.
 
