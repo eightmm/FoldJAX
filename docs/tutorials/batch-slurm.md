@@ -88,6 +88,10 @@ Size the request first. `plan --json` adds a `slurm` block per run with the
 `gres` to ask for and `min_device_memory_gib`, the model's fitted peak-law
 estimate for that run (or `unknown` with the reason, outside a law's range,
 for AlphaFold 3, and for models whose estimate needs the processed input).
+A `--padding` run is `unknown` as well, with `serving padding` under
+`exceeds_profile`: the laws were fitted unpadded and padded runs measured up
+to 1.69x over the upper estimate, so the block keeps that estimate
+(`upper_gib`) as a lower bound and sizes no card; leave headroom of your own.
 `mem` is left null: no host-memory law is calibrated. `plan` checks the whole
 batch without writing anything into the store.
 

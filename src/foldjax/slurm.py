@@ -16,9 +16,10 @@ into a suggested ``--gres`` and a minimum card size. The laws describe device
 memory only: no host-memory law is calibrated, so ``--mem`` is left to the
 caller rather than guessed. A job outside a law's fitted composition (a
 nucleic acid or ligand under OpenFold3's protein-only law), or configured to
-need more than the law was fitted at (OpenFold3's float32 trunk, or its
-float32 confidence head behind the bfloat16 trunk), is ``unknown`` with no
-card size, as the run's own admission would call it.
+need more than the law was fitted at (serving padding on any port,
+OpenFold3's float32 trunk or confidence head or pocket-guided sampling,
+Boltz-2's float32 pair stream or ``matmul_precision=highest``), is
+``unknown`` with no card size, as the run's own admission would call it.
 """
 
 from __future__ import annotations
@@ -222,38 +223,96 @@ def _outside_composition(model: str, document: Mapping[str, Any]) -> str | None:
     )
 
 
-def _exceeding_options(model: str, options: Mapping[str, Any]) -> list[str]:
-    """The options that put a run above the profile ``model``'s law was fitted at.
+#: The ports whose admission names serving padding under ``exceeds_profile``:
+#: every one with a fitted law, each fitted unpadded.
+_PADDING_EXCEEDS = frozenset({"boltz2", "protenix", "openfold3", "esmfold2", "opendde"})
 
-    The plan-time half of OpenFold3's ``exceeds_profile`` admission
-    (``released_config``): a float32 trunk, or a float32 confidence head
-    behind the bfloat16 one, needs more than its bfloat16 law describes. Read
-    from the backend's canonical options, so `fp32`, `f32` and the
-    `compute_dtype` alias resolve as the run resolves them, and an omitted
-    head follows the trunk.
-    """
-    if model != "openfold3" or not options:
-        return []
-    # `_DEFAULT_DTYPE` is the adapter's JAX-free copy of `released_config`'s
-    # default, which a test pins; the model package would import JAX here.
+
+def _canonical(model: str, options: Mapping[str, Any]) -> dict[str, Any] | None:
+    """``options`` as the run resolves them, or ``None`` if they do not resolve."""
     import warnings
 
     from foldjax import execution, registry
-    from foldjax.backends.openfold3 import _DEFAULT_DTYPE
 
     try:
         with warnings.catch_warnings():
             # The request's own validation has already warned about an alias.
             warnings.simplefilter("ignore", execution.Alias)
-            canonical = registry.backend_class(model).canonical_options(options)
+            return registry.backend_class(model).canonical_options(options)
     except ValueError:
-        return []
-    trunk = str(canonical.get("dtype", _DEFAULT_DTYPE))
-    if trunk == "float32":
-        return ["a float32 trunk"]
-    if str(canonical.get("confidence_dtype", trunk)) == "float32":
-        return ["a float32 confidence head"]
-    return []
+        return None
+
+
+def _exceeding_profile(
+    model: str,
+    document: Mapping[str, Any] | None,
+    options: Mapping[str, Any],
+    *,
+    padding: bool,
+) -> list[str]:
+    """What puts this run above the profile ``model``'s law was fitted at.
+
+    The plan-time half of each port's ``exceeds_profile`` admission, in the
+    port's order and words, for what is known without JAX or the featurizer:
+    serving padding on every port with a law; OpenFold3's float32 trunk, its
+    float32 confidence head behind the bfloat16 one, pocket-guided sampling
+    (any pocket constraint in the job) and a nucleic-acid or ligand entity;
+    Boltz-2's float32 pair residual stream and ``matmul_precision=highest``.
+    Options are read in the backend's canonical form, so `fp32`, `f32` and
+    the `compute_dtype` alias resolve as the run resolves them. An omitted
+    Boltz-2 matmul precision is the released `high`, which is what a GPU node
+    runs; only a process without a GPU falls back to `highest`, and telling
+    the two apart needs JAX.
+    """
+    reasons: list[str] = []
+    if padding and model in _PADDING_EXCEEDS:
+        reasons.append("serving padding")
+    if model == "openfold3":
+        # `_DEFAULT_DTYPE` is the adapter's JAX-free copy of `released_config`'s
+        # default, which a test pins; the model package would import JAX here.
+        from foldjax.backends.openfold3 import _DEFAULT_DTYPE
+
+        canonical = _canonical(model, options) if options else {}
+        if canonical is not None:
+            trunk = str(canonical.get("dtype", _DEFAULT_DTYPE))
+            if trunk == "float32":
+                reasons.append("a float32 trunk")
+            # An omitted head follows the trunk, so only an explicit one can
+            # be wider than it.
+            elif str(canonical.get("confidence_dtype", trunk)) == "float32":
+                reasons.append("a float32 confidence head")
+        # Upstream samples pocket-guided for every query with a pocket
+        # constraint, and FoldJAX exposes no switch to turn that off.
+        constraints = (document or {}).get("constraints")
+        if isinstance(constraints, list) and any(
+            isinstance(item, Mapping) and "pocket" in item for item in constraints
+        ):
+            reasons.append("pocket-guided sampling")
+        if document is not None:
+            composition = _outside_composition(model, document)
+            if composition is not None:
+                reasons.append(composition)
+    elif model == "boltz2" and options:
+        # The adapter's JAX-free table of the released compile defaults.
+        from foldjax.backends.boltz2 import _RELEASED_COMPILE_DEFAULTS
+
+        canonical = _canonical(model, options)
+        if canonical is not None:
+            residual = canonical.get(
+                "pair_residual_dtype",
+                _RELEASED_COMPILE_DEFAULTS["pair_residual_dtype"],
+            )
+            if residual == "auto":
+                # "auto" follows the compute dtype (`models/boltz2/api.py`).
+                compute = canonical.get(
+                    "compute_dtype", _RELEASED_COMPILE_DEFAULTS["compute_dtype"]
+                )
+                residual = "bfloat16" if compute == "bfloat16" else "float32"
+            if residual == "float32":
+                reasons.append("a float32 pair residual stream")
+            if canonical.get("matmul_precision") == "highest":
+                reasons.append("matmul_precision=highest")
+    return reasons
 
 
 def plan_resources(
@@ -263,11 +322,13 @@ def plan_resources(
     num_samples: int | None = None,
     cp_devices: int = 1,
     options: Mapping[str, Any] | None = None,
+    padding: bool = False,
 ) -> dict[str, Any]:
     """Suggested Slurm resources for one run, from the model's peak law.
 
-    ``options`` are the request's backend options, read only for the ones
-    that put a run above the law's profile (:func:`_exceeding_options`).
+    ``options`` are the request's backend options and ``padding`` whether it
+    asks for serving padding, read only for what puts a run above the law's
+    profile (:func:`_exceeding_profile`), listed under ``exceeds_profile``.
     """
     record: dict[str, Any] = {
         "gres": f"gpu:{max(1, cp_devices)}",
@@ -279,6 +340,11 @@ def plan_resources(
         "min_device_memory_gib": None,
         "state": "unknown",
     }
+    # Listed on every path, the manifest's `memory.exceeds_profile`: a run
+    # unknown for another reason is still above the law once that is known.
+    exceeding = _exceeding_profile(model, document, options or {}, padding=padding)
+    if exceeding:
+        record["exceeds_profile"] = exceeding
     if model in _NO_LAW:
         record["reason"] = _NO_LAW[model]
         return record
@@ -327,10 +393,6 @@ def plan_resources(
             ),
         }
     )
-    exceeding = _exceeding_options(model, options or {})
-    composition = _outside_composition(model, document)
-    if composition is not None:
-        exceeding.append(composition)
     if exceeding:
         # What the run's own admission says (`memory_policy.exceeding_profile`,
         # `memory_policy.PROTEIN_ONLY_LAWS`): the estimate stays, as a lower
@@ -390,4 +452,6 @@ def plan_slurm(
         else None,
         cp_devices=cp,
         options=options,
+        # `_plan_summary` adds this block exactly when the request pads.
+        padding=summary.get("padding") is not None,
     )
