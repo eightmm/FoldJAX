@@ -100,7 +100,15 @@ of a random subset ([cli.md](cli.md#--msa-seed-protenix)).
 - **Constraints.** Pocket and contact constraints need the
   `base-constraint-v0.5.0` profile; every other checkpoint refuses them, because
   it has no constraint embedder to read them
-  ([protein-ligand tutorial](tutorials/protein-ligand.md)).
+  ([protein-ligand tutorial](tutorials/protein-ligand.md)). On that profile
+  every run adds the constraint embedder's substructure term to the initial
+  pair representation, constraint or not, as upstream does: upstream attaches
+  an all-zero substructure map to every job (it never parses
+  `constraint.structure`), and its transformer embedder turns that map into
+  one constant pair vector, which FoldJAX computes directly. A nonzero
+  substructure feature is refused. A conversion made before FoldJAX mapped
+  that embedder is reported as stale; `foldjax weights fetch --model protenix
+  --profile base-constraint-v0.5.0` rebuilds it.
 - **Native only**: ligands read from a file need a native Protenix job.
 
 ## Options worth knowing

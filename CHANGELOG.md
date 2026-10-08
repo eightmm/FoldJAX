@@ -786,6 +786,20 @@ unless it says so here, in its own paragraph.
   not tokamax's; the unguided release, its kernel and its cache namespace are
   unchanged. Guidance still costs about 12x the unguided wall time (OpenDDE,
   same sampler: 2,525 s against 202 s).
+- **Protenix `base-constraint-v0.5.0` reads pocket and contact constraints,
+  and matches upstream without one.** Its checkpoint carries a transformer
+  substructure embedder the converter did not map, so every pocket or contact
+  job was refused ("constraint channel(s) 'substructure' have no matching
+  embedder weights"), and a job without a constraint silently differed from
+  upstream, which attaches all-zero constraint features to every job and adds
+  the embedder's output to the initial pair representation. That output is one
+  constant pair vector (norm 5.22 for this checkpoint); FoldJAX now converts
+  the embedder, adds the vector to every run on this profile, and refuses a
+  nonzero substructure feature. This changes the predictions of every
+  `base-constraint-v0.5.0` run; other profiles are unchanged. An earlier
+  conversion of this profile is reported as stale and is rebuilt by `foldjax
+  weights fetch --model protenix --profile base-constraint-v0.5.0`; a
+  converted file passed with `--weights` is refused with the same advice.
 - **`foldjax plan --json` no longer sizes an OpenFold3 card from a law that
   does not cover the job.** The `slurm` block applied OpenFold3's token-only
   peak law to nucleic-acid and ligand jobs, which the run's own admission

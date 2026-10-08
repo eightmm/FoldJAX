@@ -63,7 +63,9 @@ from foldjax.models.protenix.models.primitives.primitives import (
 from foldjax.models.protenix.models.trunk_blocks.embedders import (
     InputFeatureEmbedderParams,
     input_feature_embedder,
+    require_complete_constraint_embedder,
     resolve_relative_position_features,
+    validate_zero_substructure,
 )
 from foldjax.models.protenix.models.trunk_blocks.msa import MSACycleIndexTape
 from foldjax.models.protenix.models.trunk_blocks.trunk import (
@@ -301,6 +303,13 @@ def cast_trunk_params(
     )
 
 
+def _validate_zero_substructure(features: Mapping[str, Any], params: Any) -> None:
+    validate_zero_substructure(
+        features,
+        getattr(getattr(params, "pairformer_output", None), "constraint", None),
+    )
+
+
 #: Feature keys any one of which says which tokens are ligand.
 LIGAND_IDENTITY_KEYS = ("token_is_ligand", "is_ligand", "token_polymer_type")
 
@@ -508,6 +517,8 @@ def protenix_infer_static(
         confidence_autocast=confidence_autocast,
         diffusion_autocast=diffusion_autocast,
     )
+    require_complete_constraint_embedder(params)
+    _validate_zero_substructure(input_feature_dict, params)
     n_token = int(input_feature_dict["restype"].shape[-2])
     token_padding_mask = input_feature_dict.get("token_padding_mask")
     atom_padding_mask = input_feature_dict.get("atom_padding_mask")
@@ -923,6 +934,8 @@ def protenix_infer_compiled(
     """
     validate_compact_ref_atom_categories(input_feature_dict)
     validate_zero_template_geometry(input_feature_dict)
+    require_complete_constraint_embedder(params)
+    _validate_zero_substructure(input_feature_dict, params)
     restype = input_feature_dict.get("restype")
     relp_token_count = int(
         restype.shape[-2]

@@ -837,6 +837,8 @@ class _ProtenixCheckpoint:
     checkpoint: Download
     native: str
     notes: str
+    #: The converter identity when it is not the derived ``<model>-native-v1``.
+    conversion_schema: str | None = None
 
 
 def _protenix_checkpoint(name: str, sha256: str, size: int) -> Download:
@@ -861,6 +863,11 @@ _PROTENIX_CHECKPOINTS = {
             1_475_206_741,
         ),
         native="protenix_base_constraint_v0.5.0.jax",
+        # Renamed, not renumbered, when the converter started mapping the
+        # transformer substructure embedder: a conversion recorded under the
+        # old `protenix-base-constraint-native-v1` lacks it and must not read
+        # as ready.
+        conversion_schema="protenix-base-constraint-substructure-transformer-native-v1",
         notes=(
             "Protenix's base architecture fine-tuned with pocket, contact, "
             "substructure and atom-contact constraint embedders, which read a "
@@ -1963,7 +1970,7 @@ def _protenix_plain_checkpoint_assets(spec: ModelAssets, profile: str) -> ModelA
         requires=(variant.native,),
         in_default_setup=False,
         conversion_sources=(variant.checkpoint.name,),
-        conversion_schema=f"{variant.model}-native-v1",
+        conversion_schema=variant.conversion_schema or f"{variant.model}-native-v1",
         notes=variant.notes,
     )
 
