@@ -747,7 +747,7 @@ def predict(
                 # 46,284.8 at the released 32, at 2,096 tokens. Treating the
                 # released count as off profile would mean a refusal that
                 # never fires on a default run.
-                samples_validated=32,
+                samples_validated=memory_policy.SAMPLES_VALIDATED["esmfold2"],
                 extras=tuple(
                     reason
                     for reason, active in (

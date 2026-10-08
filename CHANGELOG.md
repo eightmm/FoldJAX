@@ -814,6 +814,12 @@ unless it says so here, in its own paragraph.
   options are read as the run resolves them (`dtype=float32` under the
   default `auto` pair stream counts); an omitted precision counts as the
   released `high` a GPU node runs. Nothing about what runs changes.
+- **`foldjax plan --json` takes ESMFold2's measured sample range.** Its
+  admission treats the released 32 samples as inside the law (measured: the
+  peak moved 0.53% between 5 and 32), but the `slurm` block judged sample
+  counts against the 5 the laws were fitted at, so a default ESMFold2 plan
+  carried an `off_profile` its run did not. Both now read the one table
+  (`memory_policy.SAMPLES_VALIDATED`).
 - **OpenFold3 admission no longer calls a float32 confidence head a fit.**
   `--option confidence_dtype=float32` behind the default bfloat16 trunk was
   judged against the peak law fitted on the bfloat16 head, though it needs

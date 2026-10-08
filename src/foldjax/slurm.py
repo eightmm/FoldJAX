@@ -413,7 +413,10 @@ def plan_resources(
             "peak is lower but not fitted"
         )
     if num_samples is not None:
-        reasons = memory_policy.off_profile_reason(num_samples=num_samples)
+        reasons = memory_policy.off_profile_reason(
+            num_samples=num_samples,
+            samples_validated=memory_policy.SAMPLES_VALIDATED.get(model),
+        )
         if reasons:
             record["off_profile"] = list(reasons)
     return record

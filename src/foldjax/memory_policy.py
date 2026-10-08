@@ -419,6 +419,13 @@ ESMFOLD2_PEAK = PeakLaw(
 #: The sample count every law above was fitted at.
 CALIBRATED_NUM_SAMPLES = 5
 
+#: Per port, the highest sample count it measured its law still describes:
+#: :func:`off_profile_reason`'s ``samples_validated``, read by the port's own
+#: admission and by `foldjax plan`, so the two agree. Only ESMFold2 measured
+#: one (46,041.8 MiB at 5 samples against 46,284.8 at its released 32, at
+#: 2,096 tokens).
+SAMPLES_VALIDATED: dict[str, int] = {"esmfold2": 32}
+
 #: Ports whose admission treats any nucleic-acid or ligand token as outside
 #: the fitted composition, where the estimate is only a lower bound: every
 #: OpenFold3 point was protein-only, and 5NPK (DNA gyrase with DNA and

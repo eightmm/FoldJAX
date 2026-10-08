@@ -617,6 +617,21 @@ def test_plan_resources_from_the_law() -> None:
     assert small["state"] == "unknown" and "does not extrapolate" in small["reason"]
 
 
+def test_plan_resources_takes_the_sample_range_admission_takes() -> None:
+    """ESMFold2's admission measured its law through 32 samples, its released
+    count; the plan called that in-range run off profile.
+    """
+    protein = {"type": "protein", "id": "A", "sequence": "M" * 2500}
+    record = slurm.plan_resources("esmfold2", {"entities": [protein]}, num_samples=32)
+    assert record["state"] == "estimated" and "off_profile" not in record
+    assert slurm.plan_resources(
+        "esmfold2", {"entities": [protein]}, num_samples=33
+    )["off_profile"] == ["33 samples rather than the 5-32 the law was fitted at"]
+    assert "off_profile" in slurm.plan_resources(
+        "boltz2", {"entities": [protein]}, num_samples=32
+    )
+
+
 def test_plan_resources_does_not_size_a_card_outside_the_fitted_composition() -> None:
     """OpenFold3's law is protein-only; its admission calls a nucleic-acid or
     ligand run unknown (5NPK peaked 11 GiB over the upper estimate), and the
