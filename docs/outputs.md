@@ -176,6 +176,7 @@ them still validates and still resumes.
 | `constraints` | pocket and contact constraints as the native input carries them, with `max_distance_source` |
 | `sampling`, `options`, `options_verifiable` | the schedule knobs and native options as run |
 | `padding`, `shape_profile` | the padding request and the concrete shapes executed |
+| `kernel_tuning` | AlphaFold 3 only: the `kernel_autotuning` value, whether the persistent Tokamax store was installed, and per source (`store`, `measured`, `tokamax`) how many model calls took their kernel configurations from it -- the option is a cache-miss policy, so it alone does not say which program ran |
 | `runtime` | JAX, jaxlib, platform and device identity |
 | `cost` | what the run cost (below) |
 | `memory` | what the memory policy predicted before the run, beside `cost.peak_bytes` |

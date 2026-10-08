@@ -37,6 +37,9 @@ from foldjax.backends._tokamax_autotune import (
 )
 from foldjax.backends._tokamax_autotune import install_store as _install_tokamax_store
 from foldjax.backends._tokamax_autotune import (
+    start_record as _start_tokamax_record,
+)
+from foldjax.backends._tokamax_autotune import (
     without_tokamax_hlo_payload as _without_tokamax_hlo_payload,
 )
 from foldjax.backends._weight_session import WeightAnchors
@@ -287,7 +290,11 @@ def _tokamax_kernel_fallback(strategy: str):
     and keeps one that fits, so the same command works across a fleet of
     different cards. It costs time on the first compile of each shape and is
     cached afterwards. Pass ``kernel_autotuning=heuristics`` for upstream's
-    default, or ``error`` to make a cache miss loud.
+    cache-miss policy, or ``error`` to make a cache miss loud. Every value
+    applies only on a miss: a configuration already in FoldJAX's persistent
+    store is used whichever value is asked, so a ``heuristics`` run on a cache
+    an ``autotune`` run filled executes the autotuned program. The manifest's
+    ``kernel_tuning`` records which source each model call took.
     """
     from tokamax import config as tokamax_config
 
@@ -940,7 +947,12 @@ class AlphaFold3Backend(Backend):
     }
     compile_options = (
         "matmul_precision",
-        # Unlike `kernel_autotuning`, this one is compiled into the program.
+        # Compiled into the program. `kernel_autotuning` is not here: on a
+        # store miss its values compile different programs, but a stored
+        # result is used whichever value is asked -- by design, so `error`
+        # can read what `autotune` wrote -- and the option alone does not
+        # name the program. The compilation cache keys each program by its
+        # HLO; the manifest's `kernel_tuning` records which configurations ran.
         "deterministic",
         "num_samples",
         "num_steps",
@@ -1311,10 +1323,13 @@ class AlphaFold3Backend(Backend):
                     _RELEASED_COMPILE_DEFAULTS["kernel_autotuning"],
                 )
             )
-            # Out before the leftover-option check: it is not a config field
-            # and upstream's runner does not take it. It is deliberately kept
-            # out of `config_identity` too -- that identity keys the Tokamax
-            # store, whose kernel choices this option does not change.
+            # `deterministic` comes out before the leftover-option check: it is
+            # not a config field and upstream's runner does not take it. It is
+            # deliberately kept out of `config_identity` too -- that identity
+            # keys the Tokamax store, whose kernel choices it does not change.
+            # (Nor is `kernel_autotuning` in it, which does choose kernels on a
+            # store miss: it decides whether the store is written, not what a
+            # stored result means, so every value shares one store.)
             deterministic = _strict_boolean(
                 options.pop(
                     "deterministic", _RELEASED_COMPILE_DEFAULTS["deterministic"]
@@ -1480,6 +1495,10 @@ class AlphaFold3Backend(Backend):
                     tokamax_store_installed = _install_tokamax_store(
                         model_runner, tokamax_store
                     )
+                _start_tokamax_record(
+                    strategy=kernel_fallback,
+                    persistent_installed=tokamax_store_installed,
+                )
                 _ensure_safe_tokamax_route(
                     device=device,
                     strategy=kernel_fallback,

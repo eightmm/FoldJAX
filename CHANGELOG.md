@@ -12,6 +12,18 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **AlphaFold 3 manifests record where their kernel configurations came
+  from (`kernel_tuning`).** `kernel_autotuning` is Tokamax's cache-miss
+  policy and every value shares one cache namespace and one persistent
+  Tokamax store, so the option alone never said which program ran: measured
+  on the GPU, `heuristics` and `autotune` compile different programs from
+  empty caches, and `heuristics` on a cache an `autotune` run filled runs the
+  autotuned one. No executable is reused wrongly -- the compilation cache keys
+  each by its HLO -- but the result depended on the cache's history
+  unrecorded. The new optional manifest field names the option, whether the
+  store was installed, and how many model calls took their configurations from
+  the store, measured them, or left them to Tokamax. Schema stays `1.0`; the
+  field is declared optional. What runs is unchanged.
 - **`--option return_expected_errors=false` for ESMFold2 and OpenFold3.** Both
   ports return the expected PAE/PDE matrices by default and wrote them to every
   sample's `confidence_full.npz` and `predicted_aligned_error.json` with no way

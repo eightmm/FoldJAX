@@ -23,6 +23,7 @@ import numpy as np
 
 from foldjax import memory_policy, progress
 from foldjax._fsutil import nonempty_file as _nonempty_file
+from foldjax.backends._tokamax_autotune import clear_record as clear_kernel_record
 from foldjax.backends.base import Backend
 from foldjax.cache import (
     cache_namespace,
@@ -1625,6 +1626,8 @@ def _predict_once(
     # previous seed's. A backend with no fitted law records nothing and the
     # block stays null, which is the honest answer rather than a stale one.
     memory_policy.clear_record()
+    # The same for the `kernel_tuning` block, which only AlphaFold 3 writes.
+    clear_kernel_record()
     # And so an OOM here is attributed to this prediction's mesh, or to no mesh
     # when it ran serially. The record outlives the context that set it, which
     # is what makes it readable below; that is also what would let the previous

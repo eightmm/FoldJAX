@@ -2475,19 +2475,21 @@ def test_every_stripped_default_is_part_of_the_compile_identity():
     }
 
     # Deliberately outside the identity. An allow-list rather than an
-    # absence, because one name really does belong here: AlphaFold 3's
-    # autotuning strategy is claimed to be a cache-miss policy rather than a
-    # program shape, on the line above `deterministic` in that backend's
-    # `compile_options`. Naming it keeps the assertion sharp instead of
-    # weakening it to "warn".
-    #
-    # UNVERIFIED, and deliberately recorded as such: that claim is a comment,
-    # and a comment is not a measurement. If the strategy does select a
-    # different Triton kernel then two values compile two executables and
-    # share one namespace -- the exact defect this test exists to catch,
-    # hiding behind this test's own exemption. Settling it needs a GPU
-    # compile of both values with the released weights; until someone runs
-    # that, this entry is a deferral rather than a finding.
+    # absence, because one name belongs here, for a reason narrower than
+    # "it does not change the program". AlphaFold 3's `kernel_autotuning` is
+    # Tokamax's cache-miss policy. Measured on the GPU (v020-gpu-final
+    # `af3-autotune`, 2026-10-08): from empty caches `autotune` and
+    # `heuristics` compile two different `jit_apply_fn` programs under one
+    # namespace, and `heuristics` on the cache `autotune` filled compiles
+    # nothing new -- it reads the stored configurations and runs the autotuned
+    # program. That sharing is the design, not a leak: `heuristics` and
+    # `error` are documented to use a persisted result first, and `error` is
+    # only usable as a reader of what `autotune` wrote (docs/alphafold3.md).
+    # Putting the option in the identity would split the namespace and the
+    # store with it and break exactly that. Nothing reuses a wrong
+    # executable: JAX's cache key hashes the HLO. What the option cannot say
+    # -- which configurations a run executed -- the manifest's
+    # `kernel_tuning` records instead.
     outside_the_identity = {"alphafold3": {"kernel_autotuning"}}
 
     for name, (backend, defaults) in tables.items():

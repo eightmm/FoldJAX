@@ -196,6 +196,24 @@
     "cost": {"type": ["object", "null"]},
     "memory": {"type": ["object", "null"]},
     "shape_profile": {"type": "object"},
+    "kernel_tuning": {
+      "description": "AlphaFold 3 only: where each model call's Tokamax kernel configurations came from. `kernel_autotuning` is the option as run -- Tokamax's cache-miss policy, so it does not by itself say which program ran. `persistent_store` is whether FoldJAX's persistent Tokamax store was installed (a managed GPU run with a compilation cache). `sources` counts model calls by source: `store` (a result read from that store, whichever kernel_autotuning value measured it), `measured` (benchmarked by this run), `tokamax` (neither: Tokamax resolved it itself, from its bundled autotuning data or else the cache-miss policy); null without a store, where Tokamax resolves every call itself. Recorded per prediction: a multi-seed run's top-level manifest carries its last prediction's. Optional: absent for every other model and from manifests written before it existed.",
+      "type": "object",
+      "required": ["kernel_autotuning", "persistent_store", "sources"],
+      "properties": {
+        "kernel_autotuning": {"enum": ["autotune", "heuristics", "error"]},
+        "persistent_store": {"type": "boolean"},
+        "sources": {
+          "type": ["object", "null"],
+          "properties": {
+            "store": {"type": "integer", "minimum": 0},
+            "measured": {"type": "integer", "minimum": 0},
+            "tokamax": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": false
+        }
+      }
+    },
     "confidence_arrays": {
       "description": "The run's per-sample confidence_full.npz record (file, schema_version, samples, arrays, unavailable), or null when none was written.",
       "oneOf": [{"$ref": "#/$defs/confidence_arrays"}, {"type": "null"}]

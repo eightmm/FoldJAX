@@ -205,6 +205,56 @@ def test_searched_alignment_records_are_declared(tmp_path: Path) -> None:
     assert errors(manifest, schema)
 
 
+def test_alphafold3_kernel_sources_reach_the_manifest_and_do_not_leak(
+    tmp_path: Path,
+) -> None:
+    """The option is a cache-miss policy, so the manifest records what each
+    model call actually took; the next prediction must not inherit it."""
+    from foldjax.backends import _tokamax_autotune
+
+    case = FIXTURES / "alphafold3_e9_8reh"
+    replay, fixture = _replay_backend("alphafold3", case)
+
+    class Tuned(replay):  # type: ignore[misc, valid-type]
+        def predict(self, request: PredictionRequest) -> PredictionResult:
+            # What a `heuristics` run on a cache an `autotune` run filled does.
+            _tokamax_autotune.start_record(
+                strategy="heuristics", persistent_installed=True
+            )
+            _tokamax_autotune._note_source("store")
+            return super().predict(request)
+
+    out = tmp_path / "af3"
+    job = write_job(tmp_path, fixture["job"])
+    weights = tmp_path / "weights.jax"
+    weights.write_bytes(b"replayed")
+    with backend_override("alphafold3", Tuned):
+        foldjax.predict(
+            PredictionRequest(
+                model="alphafold3",
+                input=job,
+                weights=weights,
+                output_dir=out,
+                seed=int(fixture["seed"]),
+                use_compile_cache=False,
+            )
+        )
+    manifest = json.loads((out / MANIFEST_NAME).read_text())
+    assert manifest["kernel_tuning"] == {
+        "kernel_autotuning": "heuristics",
+        "persistent_store": True,
+        "sources": {"store": 1},
+    }
+    schema = load_schema("run")
+    assert errors(manifest, schema) == []
+    assert undeclared(manifest, schema) == []
+    manifest["kernel_tuning"]["sources"] = {"guessed": 1}
+    assert errors(manifest, schema)
+
+    _confidence, other, _fixture = _run(tmp_path / "next", "boltz2_e9_8reh")
+    assert "kernel_tuning" not in other
+
+
 def test_a_run_without_the_optional_fields_still_validates_and_resumes(
     tmp_path: Path,
 ) -> None:

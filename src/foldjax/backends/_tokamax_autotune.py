@@ -1059,6 +1059,57 @@ def _discover_complete_result(
     )
 
 
+# Where each model call's Tokamax configurations came from, for the run
+# manifest. ``kernel_autotuning`` alone cannot say: it is Tokamax's cache-miss
+# fallback and this store is a cache in front of it, so a ``heuristics`` run on
+# a namespace an ``autotune`` run already filled reads the measured
+# configurations and executes the autotuned program. The two values do compile
+# different programs on a miss; the persistent compilation cache keys them by
+# their HLO, so neither reuses the other's executable -- but which one ran
+# depends on the store's history, and this is where that is written down. Read
+# from a context variable rather than the store: `install_store` keeps an
+# earlier prediction's store when the runner is reused. `foldjax.api` clears it
+# before each prediction, as it does `memory_policy`'s record.
+_KERNEL_RECORD: ContextVar[dict[str, Any] | None] = ContextVar(
+    "foldjax_tokamax_kernel_record", default=None
+)
+
+
+def start_record(*, strategy: str, persistent_installed: bool) -> None:
+    """Begin this prediction's record; ``sources`` stays null without a store,
+    where nothing sees the calls and Tokamax resolves every one itself."""
+
+    _KERNEL_RECORD.set(
+        {
+            "kernel_autotuning": str(strategy),
+            "persistent_store": bool(persistent_installed),
+            "sources": {} if persistent_installed else None,
+        }
+    )
+
+
+def _note_source(source: str) -> None:
+    record = _KERNEL_RECORD.get()
+    if record is not None and record["sources"] is not None:
+        record["sources"][source] = record["sources"].get(source, 0) + 1
+
+
+def recorded() -> dict[str, Any] | None:
+    """This prediction's record, or ``None`` when it ran no AlphaFold 3 model."""
+
+    record = _KERNEL_RECORD.get()
+    if record is None:
+        return None
+    sources = record["sources"]
+    return {**record, "sources": dict(sources) if sources is not None else None}
+
+
+def clear_record() -> None:
+    """Forget the last record, so the next prediction reports only its own."""
+
+    _KERNEL_RECORD.set(None)
+
+
 class _PersistentTokamaxStore:
     def __init__(
         self,
@@ -1075,6 +1126,8 @@ class _PersistentTokamaxStore:
         self._device_kind = device_kind
         self._can_tune = can_tune
         self._results: dict[str, Any] = {}
+        # Signatures whose result is on disk: read from it, or written to it.
+        self._persisted: set[str] = set()
         self._warned: set[str] = set()
         self._thread_lock = threading.RLock()
         self.compatibility_key = (
@@ -1111,14 +1164,18 @@ class _PersistentTokamaxStore:
             self._warn_once("ignored an invalid cache entry")
             return None
 
-    def _invoke_with_result(self, result: Any, invoke: Callable[[], Any]) -> Any:
+    def _invoke_with_result(
+        self, result: Any, invoke: Callable[[], Any], *, source: str
+    ) -> Any:
         tokamax = _tokamax_api()
+        _note_source(source)
         with result, tokamax.config.autotuning_cache_miss_fallback("error"):
             return invoke()
 
     def _invoke_fallback(self, invoke: Callable[[], Any]) -> Any:
         if self._strategy == "autotune" and not self._can_tune:
             _raise_nondefault_autotune_miss()
+        _note_source("tokamax")
         return invoke()
 
     def call(
@@ -1143,7 +1200,11 @@ class _PersistentTokamaxStore:
                 return self._invoke_fallback(invoke)
 
             if (result := self._results.get(signature)) is not None:
-                return self._invoke_with_result(result, invoke)
+                return self._invoke_with_result(
+                    result,
+                    invoke,
+                    source="store" if signature in self._persisted else "measured",
+                )
 
             try:
                 with _open_cache_directory(self._cache_dir) as directory_fd:
@@ -1153,7 +1214,8 @@ class _PersistentTokamaxStore:
                 return self._invoke_fallback(invoke)
             if result is not None:
                 self._results[signature] = result
-                return self._invoke_with_result(result, invoke)
+                self._persisted.add(signature)
+                return self._invoke_with_result(result, invoke, source="store")
 
             if self._strategy == "autotune" and not self._can_tune:
                 # Tokamax 0.0.13 compiles candidates in worker threads. JAX's
@@ -1169,11 +1231,13 @@ class _PersistentTokamaxStore:
 
             tokamax = _tokamax_api()
             result = None
+            source = "store"
             try:
                 with _open_cache_directory(self._cache_dir) as directory_fd:
                     with _exclusive_lock(directory_fd, signature):
                         result = self._load_result(directory_fd, signature, call_sha256)
                         if result is None:
+                            source = "measured"
                             try:
                                 result = _discover_complete_result(
                                     lower,
@@ -1198,6 +1262,7 @@ class _PersistentTokamaxStore:
                                         f"{signature}.json",
                                         payload,
                                     )
+                                    self._persisted.add(signature)
                                 except _CacheError:
                                     # The complete in-memory result is still safe
                                     # for this call even when persistence failed.
@@ -1209,7 +1274,9 @@ class _PersistentTokamaxStore:
             if result is None:
                 return self._invoke_fallback(invoke)
             self._results[signature] = result
-            return self._invoke_with_result(result, invoke)
+            if source == "store":
+                self._persisted.add(signature)
+            return self._invoke_with_result(result, invoke, source=source)
 
 
 class _PersistentModelCall:
@@ -1316,4 +1383,11 @@ def install_store(model_runner: Any, store: _PersistentTokamaxStore) -> bool:
     return True
 
 
-__all__ = ["create_store", "ensure_safe_autotuning_route", "install_store"]
+__all__ = [
+    "clear_record",
+    "create_store",
+    "ensure_safe_autotuning_route",
+    "install_store",
+    "recorded",
+    "start_record",
+]

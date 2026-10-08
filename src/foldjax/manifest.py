@@ -1506,6 +1506,9 @@ def describe_run(
     (`foldjax.msa_stats`); ``None`` for native input.
     """
     from foldjax import __version__, confidence_arrays
+    from foldjax.backends._tokamax_autotune import (
+        recorded as recorded_kernel_tuning,
+    )
     from foldjax.cache import runtime_profile, weight_identity
     from foldjax.msa_stats import NEFF_DEFINITION
     from foldjax.output import best_sample
@@ -1668,6 +1671,11 @@ def describe_run(
     }
     if result.shape_profile is not None:
         manifest["shape_profile"] = dict(result.shape_profile)
+    # Where AlphaFold 3's Tokamax kernel configurations came from: the option
+    # names a cache-miss policy, so it cannot say which program ran.
+    kernel_tuning = recorded_kernel_tuning()
+    if kernel_tuning is not None:
+        manifest["kernel_tuning"] = kernel_tuning
     return manifest
 
 

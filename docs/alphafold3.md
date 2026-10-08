@@ -152,6 +152,20 @@ what the persisted store removes, and why AlphaFold 3 rows measured before
 | `--option kernel_autotuning=error` | use a persisted result first; fail loudly if any kernel remains uncovered |
 | `--option attention_kernel=xla` | skip the Triton attention kernel entirely (the native spelling `attention_backend=xla` also works) |
 
+All three values are cache-miss policies and share one cache namespace and one
+store, so what a run executes depends on what that store already holds as well
+as on the option. Measured on an RTX PRO 6000 Blackwell: from empty caches,
+`autotune` and `heuristics` compile two different programs; `heuristics` on the
+cache an `autotune` run filled compiles nothing new and runs the autotuned
+program. Neither reuses the other's executable -- the compilation cache keys
+each by its HLO -- but the option alone does not say which one ran. The run
+manifest's `kernel_tuning` does: per model call, whether the configurations
+came from the store (`store`), were measured by this run (`measured`), or were
+left to Tokamax (`tokamax`: its bundled data, else the cache-miss policy). It
+is `null` without a store (CPU runs, `--no-cache`, an external source), where
+every call is Tokamax's own. For upstream's heuristic programs whatever the
+store holds, run `heuristics` with its own `--cache-dir`.
+
 An omitted attention (or `attention_kernel=auto`) is upstream's `triton` only
 when the selected device is a GPU; on a CPU or TPU it is `xla`, because
 tokamax's Triton flash attention raises `NotImplementedError` there.

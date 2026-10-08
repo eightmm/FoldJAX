@@ -681,6 +681,93 @@ def test_serialization_failure_keeps_the_complete_in_memory_result(
     assert not list((root / persistent._CACHE_DIRECTORY).glob("*.json"))
 
 
+@pytest.fixture
+def kernel_record():
+    yield persistent.recorded
+    persistent.clear_record()
+
+
+def test_kernel_record_names_the_source_each_call_took(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kernel_record
+) -> None:
+    """`heuristics` on a cache `autotune` filled runs the measured config (GPU,
+    v020-gpu-final `af3-autotune`); only the record can say which one ran."""
+    tokamax = _FakeTokamax()
+    monkeypatch.setattr(persistent, "_tokamax_api", lambda: tokamax)
+    root = tmp_path / "cache"
+    rng_key, batch = _inputs()
+    bound_args = (_FakeBoundArguments("one"),)
+
+    def must_not_lower():
+        pytest.fail("a stored result must not lower")
+
+    persistent.start_record(strategy="autotune", persistent_installed=True)
+    store = _store(root)
+    for _ in range(2):
+        store.call(
+            rng_key=rng_key, batch=batch, lower=lambda: bound_args, invoke=lambda: None
+        )
+    assert kernel_record() == {
+        "kernel_autotuning": "autotune",
+        "persistent_store": True,
+        "sources": {"measured": 1, "store": 1},
+    }
+
+    persistent.start_record(strategy="heuristics", persistent_installed=True)
+    heuristics = _store(root, strategy="heuristics")
+    assert heuristics.call(
+        rng_key=rng_key,
+        batch=batch,
+        lower=must_not_lower,
+        invoke=lambda: bool(_FakeResult.active),
+    )
+    assert kernel_record()["sources"] == {"store": 1}
+
+    persistent.start_record(strategy="heuristics", persistent_installed=True)
+    empty = _store(tmp_path / "empty", strategy="heuristics")
+    assert not empty.call(
+        rng_key=rng_key,
+        batch=batch,
+        lower=must_not_lower,
+        invoke=lambda: bool(_FakeResult.active),
+    )
+    assert kernel_record()["sources"] == {"tokamax": 1}
+    assert tokamax.tune_calls == 1
+
+
+def test_kernel_record_keeps_an_unpersisted_measurement_apart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kernel_record
+) -> None:
+    tokamax = _FakeTokamax()
+    monkeypatch.setattr(persistent, "_tokamax_api", lambda: tokamax)
+
+    def fail_manifest(*_args, **_kwargs):
+        raise persistent._InvalidManifestError("simulated serialization failure")
+
+    monkeypatch.setattr(persistent, "_manifest_bytes", fail_manifest)
+    store = _store(tmp_path / "cache")
+    rng_key, batch = _inputs()
+    bound_args = (_FakeBoundArguments("one"),)
+    persistent.start_record(strategy="autotune", persistent_installed=True)
+    for _ in range(2):
+        store.call(
+            rng_key=rng_key, batch=batch, lower=lambda: bound_args, invoke=lambda: None
+        )
+    # Nothing reached the store, so neither call may claim it did.
+    assert kernel_record()["sources"] == {"measured": 2}
+
+
+def test_kernel_record_without_a_store_says_nothing_was_seen(kernel_record) -> None:
+    assert kernel_record() is None
+    persistent.start_record(strategy="heuristics", persistent_installed=False)
+    persistent._note_source("store")
+    assert kernel_record() == {
+        "kernel_autotuning": "heuristics",
+        "persistent_store": False,
+        "sources": None,
+    }
+
+
 @pytest.mark.parametrize(
     "corruption", ("schema", "signature", "identity", "result_version", "device")
 )
