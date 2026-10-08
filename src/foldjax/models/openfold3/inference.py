@@ -1999,13 +1999,22 @@ def released_config(
                 ),
             ),
             # Each of these needs *more* than the law, which was fitted
-            # unpadded at the released bfloat16 trunk: a refusal still binds,
-            # and a "fits" is recorded as unknown.
+            # unpadded at the released bfloat16 trunk and head: a refusal
+            # still binds, and a "fits" is recorded as unknown.
             exceeds_profile=tuple(
                 reason
                 for reason, active in (
                     ("serving padding", padded),
                     ("a float32 trunk", dtype == "float32"),
+                    # Its triangle multiplications then run float32: +11.6 GiB
+                    # warm peak at 3,012 tokens, and 87.6 GiB at 4,888 where
+                    # the law's upper estimate admitted it. An omitted head
+                    # follows the trunk, so only an explicit one can be wider
+                    # than it; under a float32 trunk the reason above holds.
+                    (
+                        "a float32 confidence head",
+                        confidence_dtype == "float32" and dtype != "float32",
+                    ),
                     # A second rollout plus the proposal search.
                     ("pocket-guided sampling", pocket_sampling is not None),
                     (
