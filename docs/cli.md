@@ -2528,7 +2528,12 @@ tokens]` float32, in angstroms -- by default, and each sample's
 `pae` and `pde` under `unavailable`, with the option named as the reason, no
 `predicted_aligned_error.json` is written, and `foldjax interfaces` reports
 the model's own chain-pair ipTM but none of its PAE-derived scores.
-Coordinates, pLDDT, pTM, ipTM and chain-pair ipTM do not change.
+Coordinates, pLDDT, pTM, ipTM and chain-pair ipTM are still the same model's,
+but from a different compiled program, so they are not bitwise the same as an
+omitted option's. Measured for ESMFold2, whose chaotic structure head amplifies
+the difference: on a GPU at 3,012 tokens each mode reproduced itself bitwise,
+while a seed's samples moved 0.55-3.54 A CA RMSD between the two modes
+([`docs/esmfold2.md`](esmfold2.md#expected-errors)).
 
 The two ports differ in what else goes. ESMFold2's confidence head computes
 the matrices either way, so `false` only stops them being outputs of the

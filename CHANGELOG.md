@@ -29,10 +29,13 @@ unless it says so here, in its own paragraph.
   sample's `confidence_full.npz` and `predicted_aligned_error.json` with no way
   to turn them off. `false` takes them out of the compiled program; the npz
   records why they are absent and no PAE JSON is written. ESMFold2 still
-  computes them inside the head (scores unchanged); OpenFold3 also drops its
-  PDE head and the per-sample `gpde` score. An omitted option and `true` run
-  the released program in its existing cache namespace; `false` compiles and
-  caches separately.
+  computes them inside the head; OpenFold3 also drops its PDE head and the
+  per-sample `gpde` score. An omitted option and `true` run the released
+  program in its existing cache namespace; `false` compiles and caches
+  separately -- a different program, so its coordinates and scores are the
+  same model's but not bitwise the same (ESMFold2 on a GPU at 3,012 tokens:
+  0.55-3.54 A CA RMSD per sample between the modes, each mode bitwise
+  reproducible).
 - **`real_store` test marker and fixture** for tests gated on released assets.
   `ccd_components`, `alphafold3_runtime`, and the `cpu_parity` and
   `official_parity` markers opt in without it.

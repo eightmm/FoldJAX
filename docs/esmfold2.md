@@ -80,8 +80,14 @@ Every sample's expected PAE and PDE matrices, `[tokens, tokens]` in angstroms,
 are returned by default and written to its `confidence_full.npz` and
 `predicted_aligned_error.json`. `--option return_expected_errors=false` stops
 them being outputs of the compiled program: the head still computes them, so
-pLDDT, pTM, ipTM and chain-pair ipTM are unchanged, and the npz records why
-`pae` and `pde` are absent. That saves `2 x samples x tokens^2 x 4` bytes of
+coordinates, pLDDT, pTM, ipTM and chain-pair ipTM come from the same model, and
+the npz records why `pae` and `pde` are absent. They do not come from the same
+program, though, and are not bitwise equal: the two programs round differently
+and ESMFold2's structure head is chaotic enough to amplify that. On a GPU at
+3,012 tokens each mode reproduced itself bitwise, while the same seed's samples
+moved 0.55-3.54 A CA RMSD between the modes (0.015-0.36 A at 2,096 tokens) and
+the median TM-score to the deposited structure by at most 0.007. Compare the two
+as two draws, not as one result. That saves `2 x samples x tokens^2 x 4` bytes of
 program output -- 2.2 GiB at 3,012 tokens and the checkpoint's 32 samples,
 derived rather than measured -- and the host copies the writers make. It is a
 separate compiled program with its own cache namespace; an omitted option and
