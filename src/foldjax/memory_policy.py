@@ -407,6 +407,11 @@ OPENDDE_FP32_PEAK = PeakLaw(
 #: allocator fragmentation asking a 66.5 GiB contiguous arena while less
 #: than a tenth of the pool is in use. The law describes the program, not
 #: the allocator; the CLI leaves the JAX default in place.
+#:
+#: The fit predates the expected PAE/PDE matrices being returned by default
+#: (``return_expected_errors``). Re-measured on that default program at
+#: 3,012 tokens: 69,508.4 MiB against the law's upper 69,645.8 MiB, so the
+#: head's matrices sit inside the allowance and the fit stands.
 ESMFOLD2_PEAK = PeakLaw(
     model="esmfold2",
     profile="released schedule, 5-32 samples, sequential confidence head",

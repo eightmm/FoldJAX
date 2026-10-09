@@ -7196,8 +7196,10 @@ unless it says so here, in its own paragraph.
   as a static argument. The MSA cycle tape width is already pinned under
   padding.
 - ESMFold2's fitted peak law (`memory_policy.ESMFOLD2_PEAK`) predates the
-  expected PAE/PDE matrices being returned by default, so it may under-state
-  a default run's peak; it is being re-measured.
+  expected PAE/PDE matrices being returned by default. Re-measured on the
+  default program at 3,012 tokens: 69,508 MiB against the law's upper
+  69,646 MiB, so admission does not under-state a default run; the law and
+  its allowance are unchanged.
 
 ## Pre-release development
 
