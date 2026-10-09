@@ -68,14 +68,25 @@ upstream v2.2.0 and later zero for every real alignment; the default
   model's own pocket rule after the run and ranks a satisfying sample first;
   the conditioning is unchanged
   ([cli.md](cli.md#--option-pocket_samplingselect)).
+- **`force`** (bool, default `false`) on a pocket or contact asks upstream's
+  own steering: a forced job turns on `contact_guidance_update` automatically
+  (`main.py:156`), the same `BoltzSteeringParams()` `boltz predict` passes
+  without `--use_potentials`, and runs the eager sampler for it. That sampler
+  builds no outer executable, so it refuses `--padding`, `cp_devices > 1` and
+  `deterministic=true`; `foldjax plan` refuses the same combination before
+  anything runs. Pass `--option steering_args='{"fk_steering": false,
+  "physical_guidance_update": false, "contact_guidance_update": false}'` to
+  keep `force` for the record and skip the guidance on purpose. Every other
+  model is refused: none has a steering potential to turn on. Off (the
+  default), a job runs exactly as it always has.
 - **Affinity**: `properties: [{affinity: {binder: L}}]`, or
   `--affinity-binder CHAIN` for a generated job. The affinity stage follows
   upstream's two-stage contract (rank the structure samples, crop the
   receptor-ligand complex, run the separate affinity checkpoint and average its
   ensemble members), and `confidence.json` reports `affinity_pred_value`,
   `affinity_probability_binary` and the per-member values.
-- **Native only**: cyclic polymers and Boltz-2's `force` steering need a native
-  Boltz YAML (`--input-format boltz` or auto-detection).
+- **Native only**: cyclic polymers need a native Boltz YAML
+  (`--input-format boltz` or auto-detection).
 
 ## Upstream run options
 

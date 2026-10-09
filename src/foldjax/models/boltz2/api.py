@@ -626,6 +626,43 @@ def _carries_guidance_constraints(feats: Mapping[str, object]) -> bool:
     return force is not None and bool(np.any(np.asarray(force)))
 
 
+def blocked_by_eager_steering(
+    *, deterministic: bool, cp_devices: int, padding: bool
+) -> list[str]:
+    """Options that cannot run with upstream's automatic eager steering.
+
+    A forced pocket/contact constraint or a forced template turns on
+    ``UPSTREAM_STEERING_ARGS`` (contact guidance) automatically, below, and
+    that loop is eager: no outer executable to carry ``deterministic``,
+    context parallelism or a padded shape into. Shared with
+    `foldjax.backends.boltz2.Boltz2Backend.validate_request` so a plan
+    refuses what predict refuses, in the same words.
+    """
+    return [
+        name
+        for name, active in (
+            ("deterministic=true", deterministic),
+            ("context parallelism (cp_devices > 1)", cp_devices > 1),
+            ("padding", padding),
+        )
+        if active
+    ]
+
+
+def steering_conflict_message(blocked: Sequence[str]) -> str:
+    """Why ``blocked`` options cannot combine with the automatic steering."""
+    return (
+        "this Boltz-2 job has a forced contact/pocket constraint or a "
+        "forced template, and upstream steers the sampler toward it "
+        "with contact guidance (contact_guidance_update=True, "
+        "boltz/main.py:156). The guidance runs eagerly, so it cannot "
+        f"be combined with {' or '.join(blocked)}. Drop that, or skip "
+        "the guidance on purpose with --option steering_args="
+        '\'{"fk_steering": false, "physical_guidance_update": false, '
+        '"contact_guidance_update": false}\''
+    )
+
+
 @_pinned_matmul_precision
 @_scoped_compile_cache
 def predict(
@@ -1103,26 +1140,13 @@ def predict(
         # forced contact/pocket constraint or a forced template, so it is
         # turned on for exactly those; every other job keeps the compiled
         # sampler. The guidance runs eagerly, which three options cannot.
-        blocked = [
-            name
-            for name, active in (
-                ("deterministic=true", deterministic),
-                ("context parallelism (cp_devices > 1)", cp_devices > 1),
-                ("padding", padding is not None),
-            )
-            if active
-        ]
+        blocked = blocked_by_eager_steering(
+            deterministic=deterministic,
+            cp_devices=cp_devices,
+            padding=padding is not None,
+        )
         if blocked:
-            raise ValueError(
-                "this Boltz-2 job has a forced contact/pocket constraint or a "
-                "forced template, and upstream steers the sampler toward it "
-                "with contact guidance (contact_guidance_update=True, "
-                "boltz/main.py:156). The guidance runs eagerly, so it cannot "
-                f"be combined with {' or '.join(blocked)}. Drop that, or skip "
-                "the guidance on purpose with --option steering_args="
-                '\'{"fk_steering": false, "physical_guidance_update": false, '
-                '"contact_guidance_update": false}\''
-            )
+            raise ValueError(steering_conflict_message(blocked))
         steering_args = dict(UPSTREAM_STEERING_ARGS)
 
     steering_active = steering_args is not None and any(

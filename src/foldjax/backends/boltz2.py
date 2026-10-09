@@ -679,6 +679,35 @@ def _resolved_diffusion_width(chunk: Any, multiplicity: Any) -> Any:
     return None if width is not None and width >= samples else width
 
 
+def _forced_constraint_kinds(path: str | Path) -> tuple[str, ...]:
+    """Pocket/contact kinds a common-schema job's ``constraints`` force.
+
+    Read from the document alone, before any validation or chemistry, so
+    `Boltz2Backend.validate_request` can refuse what the native API refuses
+    once featurized (`foldjax.models.boltz2.api.blocked_by_eager_steering`)
+    at plan time instead. A document that cannot be read yet (a scalar
+    request not yet written to scratch) answers as unforced; the later
+    common-schema validation reports that failure in its own words.
+    """
+    from foldjax.input import read_job_document
+
+    try:
+        document = read_job_document(Path(path))
+    except (OSError, ValueError):
+        return ()
+    if not isinstance(document, dict):
+        return ()
+    kinds = []
+    for item in document.get("constraints") or ():
+        if not isinstance(item, dict):
+            continue
+        for kind in ("pocket", "contact"):
+            body = item.get(kind)
+            if isinstance(body, dict) and body.get("force") is True:
+                kinds.append(kind)
+    return tuple(kinds)
+
+
 class Boltz2Backend(Backend):
     name = "boltz2"
     session_reuse = True
@@ -1559,9 +1588,13 @@ class Boltz2Backend(Backend):
                 "the shared 256-token grid, which pads the MSA axis instead "
                 "of cropping it, or omit it for an exact-shape run"
             )
+        options = (
+            self.canonical_options(request.options)
+            if request.padding is not None or request.input_format == "foldjax"
+            else None
+        )
         if request.padding is not None:
             # The canonical form, where every switch spelling is a `bool`.
-            options = self.canonical_options(request.options)
             for name, reason in (
                 (
                     "subsample_msa",
@@ -1576,6 +1609,28 @@ class Boltz2Backend(Backend):
             ):
                 if options.get(name) is True:
                     raise ValueError(f"{name} {reason}; drop it or --padding")
+        if (
+            request.input_format == "foldjax"
+            and options.get("steering_args") is None
+            and _forced_constraint_kinds(request.input)
+        ):
+            # Mirrors `models/boltz2/api.py:predict`'s own refusal: a common
+            # job's forced pocket/contact turns on the same automatic eager
+            # steering a native ``force`` does, read here from the document
+            # alone so `foldjax plan` refuses it before any job runs.
+            from foldjax.models.boltz2.api import (
+                blocked_by_eager_steering,
+                steering_conflict_message,
+            )
+
+            devices = options.get("cp_devices", 1)
+            blocked = blocked_by_eager_steering(
+                deterministic=options.get("deterministic") is True,
+                cp_devices=devices if type(devices) is int else 1,
+                padding=request.padding is not None,
+            )
+            if blocked:
+                raise ValueError(steering_conflict_message(blocked))
         super().validate_request(request)
 
     def predict(self, request: PredictionRequest) -> PredictionResult:

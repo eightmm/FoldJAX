@@ -301,7 +301,7 @@ def test_models_without_a_contact_field_refuse_it(tmp_path, model) -> None:
         ({**_CONTACT, "token1": ["A", True]}, "must be an integer"),
         ({**_CONTACT, "max_distance": -1}, "positive and finite"),
         ({**_CONTACT, "max_distance": "6"}, "must be a number"),
-        ({**_CONTACT, "force": True}, "contact fields"),
+        ({**_CONTACT, "force": "yes"}, "contact force must be a boolean"),
         ({**_CONTACT, "min_distance": 1}, "contact fields"),
     ],
 )
@@ -411,3 +411,56 @@ def test_results_and_compare_carry_the_contact_record(tmp_path) -> None:
     (structure,) = entry["structures"]
     assert structure["constraints"] == [dict(record)]
     assert not errors(dict(run.manifest), load_schema("run"))
+
+
+# -- common-schema ``force`` (Boltz-2's native steering spelling) --------
+
+
+def test_boltz2_writes_force_into_its_native_contact(tmp_path) -> None:
+    records: list = []
+    native = json.loads(
+        _materialize(
+            _job(tmp_path, _contact(force=True)), "boltz2", records=records
+        ).read_text()
+    )
+    assert native["constraints"][0]["contact"]["force"] is True
+    assert records[0]["force"] is True
+    # Off (the default) writes the same document as before `force` existed.
+    unforced = json.loads(
+        _materialize(_job(tmp_path, _contact()), "boltz2").read_text()
+    )
+    assert "force" not in unforced["constraints"][0]["contact"]
+
+
+def test_contact_force_is_refused_where_no_upstream_has_a_steering_potential(
+    tmp_path,
+) -> None:
+    with pytest.raises(ValueError, match="force.*no such potential"):
+        _materialize(
+            _job(tmp_path, _contact(force=True, max_distance=7.5)), "protenix"
+        )
+
+
+def test_job_builder_round_trips_contact_force() -> None:
+    document = {
+        "name": "j",
+        "entities": [
+            {"type": "protein", "id": "A", "sequence": "ACDEF"},
+            {"type": "protein", "id": "B", "sequence": "MKV"},
+        ],
+        "constraints": [
+            {
+                "contact": {
+                    "token1": ["A", 2],
+                    "token2": ["B", 3],
+                    "max_distance": 5.0,
+                    "force": True,
+                }
+            }
+        ],
+    }
+    job = Job.from_document(document)
+    assert job.contacts == (
+        Contact(("A", 2), ("B", 3), max_distance=5.0, force=True),
+    )
+    assert job.to_document()["constraints"] == document["constraints"]

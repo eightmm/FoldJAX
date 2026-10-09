@@ -94,13 +94,16 @@ class Pocket:
     ``contacts`` are ``(chain_id, residue_index)`` pairs in the same 1-based
     numbering as modifications and bonds. ``max_distance`` (Å) left ``None``
     takes each model's own upstream default, which the run manifest records.
-    Which models can apply it is decided at materialization; see
-    ``docs/input.md``.
+    ``force`` asks Boltz-2's native steering toward the pocket (upstream's own
+    ``force``, default ``False``); every other model refuses it, having no
+    such potential. Which models can apply it is decided at materialization;
+    see ``docs/input.md``.
     """
 
     binder: str
     contacts: tuple[tuple[str, int], ...]
     max_distance: float | None = None
+    force: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -114,6 +117,8 @@ class Pocket:
         }
         if self.max_distance is not None:
             body["max_distance"] = self.max_distance
+        if self.force:
+            body["force"] = True
         return {"pocket": body}
 
 
@@ -123,14 +128,16 @@ class Contact:
 
     Each token is ``(chain_id, residue_index)`` in the 1-based numbering of
     modifications and bonds. ``max_distance`` left ``None`` takes the model's
-    own upstream default, which the run manifest records. Which models can
-    apply it, and to which residues, is decided at materialization; see
-    ``docs/input.md``.
+    own upstream default, which the run manifest records. ``force`` asks
+    Boltz-2's native steering toward the contact; every other model refuses
+    it. Which models can apply it, and to which residues, is decided at
+    materialization; see ``docs/input.md``.
     """
 
     token1: tuple[str, int]
     token2: tuple[str, int]
     max_distance: float | None = None
+    force: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "token1", tuple(self.token1))
@@ -143,6 +150,8 @@ class Contact:
         }
         if self.max_distance is not None:
             body["max_distance"] = self.max_distance
+        if self.force:
+            body["force"] = True
         return {"contact": body}
 
 
@@ -481,6 +490,7 @@ class Job:
                 pocket["binder"],
                 tuple(pocket["contacts"]),
                 max_distance=pocket["max_distance"],
+                force=pocket["force"],
             )
             for pocket in _pocket_constraints(document, kinds, lengths)
         )
@@ -490,6 +500,7 @@ class Job:
                 contact["token1"],
                 contact["token2"],
                 max_distance=contact["max_distance"],
+                force=contact["force"],
             )
             for contact in _contact_constraints(document, kinds, residues)
         )

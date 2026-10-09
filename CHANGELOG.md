@@ -10,6 +10,24 @@ unless it says so here, in its own paragraph.
 
 ## Unreleased
 
+### Added
+
+- **A common pocket or contact constraint can ask Boltz-2's own `force`
+  steering.** `constraints: [{pocket: {..., force: true}}]` (and `contact`)
+  carries upstream's `force` field into the native Boltz-2 document exactly
+  as a hand-written YAML would; every other model refuses it, having no
+  steering potential of its own to turn on. A forced job turns on
+  upstream's automatic `contact_guidance_update` sampler
+  (`models/boltz2/api.py:predict`), which is eager and therefore refuses
+  `--padding`, `cp_devices > 1` and `deterministic=true`; `foldjax plan`
+  now refuses the same combination before anything runs
+  (`Boltz2Backend.validate_request`), mirroring the predict-time refusal.
+  `foldjax_run.json`'s `constraints` records `force: true` on a forced
+  pocket or contact; an unforced one (the default) is recorded exactly as
+  before. Off, nothing about a run changes. See
+  [docs/input.md](docs/input.md#pocket-constraints) and
+  [docs/boltz2.md](docs/boltz2.md#templates-constraints-and-affinity).
+
 ### Fixed
 
 - **`--keep-going` says which job preflight refused when it refuses it.** A

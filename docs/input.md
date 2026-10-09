@@ -452,8 +452,13 @@ residue_index]` pairs on polymer chains other than the binder, in the same
 1-based numbering as `modifications` and `bonds`, checked against each
 chain's length. `max_distance` (Å) is optional; omitted, each model runs its
 own upstream default, and `foldjax_run.json` records the value used under
-`constraints` with `max_distance_source` `job` or `upstream`. There are no
-model-specific knobs here; Boltz-2's `force`, for instance, stays native-only.
+`constraints` with `max_distance_source` `job` or `upstream`. `force` (bool,
+default `false`) asks Boltz-2's own steering toward the pocket -- upstream's
+`force` field, unchanged -- and is refused on every other model: none has an
+equivalent potential to turn on. Off (the default), nothing about the run
+changes; on, Boltz-2 runs upstream's automatic contact-guidance sampler,
+which is eager and so refuses `--padding`, `cp_devices > 1` and
+`deterministic=true` ([docs/boltz2.md](boltz2.md#templates-constraints-and-affinity)).
 
 `max_distance` does not mean the same thing to every model. For Boltz-2 and
 Protenix it is a conditioning input: the trunk is told the binder should sit
@@ -510,8 +515,10 @@ contact by an atom name of its first residue, never by residue
 spans several tokens -- every ligand residue, and a modified polymer residue
 -- uses one token drawn at random with `torch.randint`
 (`constraint_featurizer.py` `ContactFeaturizer.generate_spec_constraint`),
-which a common job cannot reproduce. Write such a contact, or Boltz-2's
-`force`, in the model's native input.
+which a common job cannot reproduce. Write such a contact in the model's
+native input. `force` (bool, default `false`) is the same spelling the
+pocket takes above: Boltz-2 steers toward the contact, every other model
+refuses it.
 
 | model | what the contact becomes | omitted `max_distance` |
 |---|---|---|

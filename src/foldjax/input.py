@@ -762,7 +762,7 @@ def _affinity_binder(job: dict[str, Any], chains: set[str]) -> str | None:
     return binder
 
 
-_POCKET_KEYS = frozenset({"binder", "contacts", "max_distance"})
+_POCKET_KEYS = frozenset({"binder", "contacts", "max_distance", "force"})
 
 #: Each upstream's own ``max_distance`` (Å) for a pocket that omits it.
 #: Boltz-2 ``parse/schema.py:1573`` (``.get("max_distance", 6.0)``); OpenFold3
@@ -812,7 +812,8 @@ def _pocket_constraints(
     polymer chain to its residue count; both omitted skips those checks, for
     writers re-reading a document that was already validated. Contacts are
     polymer residues in the 1-based numbering modifications and bonds use.
-    ``max_distance`` is ``None`` when the job leaves it to the model.
+    ``max_distance`` is ``None`` when the job leaves it to the model. ``force``
+    defaults false; only Boltz-2 reads it (`_validate_pockets`).
     """
     pockets: list[dict[str, Any]] = []
     for body in _constraint_items(job, "pocket"):
@@ -868,8 +869,14 @@ def _pocket_constraints(
             distance = float(distance)
             if not math.isfinite(distance) or distance <= 0:
                 raise ValueError("pocket max_distance must be positive and finite")
+        force = _strict_boolean(body.get("force", False), name="pocket force")
         pockets.append(
-            {"binder": binder, "contacts": residues, "max_distance": distance}
+            {
+                "binder": binder,
+                "contacts": residues,
+                "max_distance": distance,
+                "force": force,
+            }
         )
     return pockets
 
@@ -881,7 +888,7 @@ def _pocket_max_distance(model: str, pocket: Mapping[str, Any]) -> float:
     return _POCKET_MAX_DISTANCE_DEFAULTS[model]
 
 
-_CONTACT_KEYS = frozenset({"token1", "token2", "max_distance"})
+_CONTACT_KEYS = frozenset({"token1", "token2", "max_distance", "force"})
 
 #: Each upstream's own ``max_distance`` (Å) for a contact that omits it.
 #: Boltz-2 ``data/parse/schema.py:1574`` (``.get("max_distance", 6.0)``).
@@ -899,7 +906,8 @@ def _contact_constraints(
 ) -> list[dict[str, Any]]:
     """Return validated contact restraints: ``token1``, ``token2``, ``max_distance``.
 
-    A token is ``(chain_id, residue_index)``, 1-based as in ``bonds``: a
+    ``force`` defaults false; only Boltz-2 reads it (`_validate_contacts`). A
+    token is ``(chain_id, residue_index)``, 1-based as in ``bonds``: a
     polymer residue, or residue *i* of a ligand (code *i* of a ``ccd`` list;
     1 for any other ligand). ``chains`` maps chain ids to entity types and
     ``residues`` every chain to its residue count; omitted, those checks are
@@ -944,10 +952,25 @@ def _contact_constraints(
             distance = float(distance)
             if not math.isfinite(distance) or distance <= 0:
                 raise ValueError("contact max_distance must be positive and finite")
+        force = _strict_boolean(body.get("force", False), name="contact force")
         contacts.append(
-            {"token1": tokens[0], "token2": tokens[1], "max_distance": distance}
+            {
+                "token1": tokens[0],
+                "token2": tokens[1],
+                "max_distance": distance,
+                "force": force,
+            }
         )
     return contacts
+
+
+def _with_force(record: dict[str, Any], force: bool) -> dict[str, Any]:
+    """``record`` plus ``force: true`` when set; unchanged otherwise.
+
+    Keeps an unforced manifest ``constraints`` record exactly the shape it
+    had before ``force`` existed.
+    """
+    return {**record, "force": True} if force else record
 
 
 def _contact_max_distance(model: str, contact: Mapping[str, Any]) -> float:
@@ -1548,6 +1571,32 @@ def _validate_pocket_constraints(
     contacts = _contact_constraints(job, kinds, lengths)
     if not pockets and not contacts:
         return
+    # Ahead of ``pocket_sampling=select``'s carve-out, which could otherwise
+    # take a forced pocket out of the job silently (as one the native input
+    # cannot condition on at all) rather than refuse what force asked for.
+    # Gated on the model actually having the field (`target.features`): a
+    # model with none reports that instead, in `_validate_pockets` or
+    # `_validate_contacts` below.
+    if model != "boltz2" and "pocket_constraints" in target.features:
+        for pocket in pockets:
+            if pocket["force"]:
+                _reject(
+                    model,
+                    "a pocket constraint with force",
+                    "only Boltz-2's native pocket field reads force and "
+                    "steers its sampler toward it (parse/schema.py:1607); "
+                    f"upstream {model} has no such potential",
+                )
+    if model != "boltz2" and "contact_constraints" in target.features:
+        for contact in contacts:
+            if contact["force"]:
+                _reject(
+                    model,
+                    "a contact constraint with force",
+                    "only Boltz-2's native contact field reads force and "
+                    "steers its sampler toward it (parse/schema.py:1639); "
+                    f"upstream {model} has no such potential",
+                )
     if pockets and requested(options) == "select":
         conditioned = (
             pocket_conditioned(model)
@@ -2143,29 +2192,29 @@ def _boltz(
             for left, right in bonds
         ]
     # Boltz's own pocket form (`parse/schema.py:1561-1595`): polymer contacts
-    # are [chain, 1-based residue]; ``force`` stays upstream's default, off.
+    # are [chain, 1-based residue]. ``force`` (upstream's own field, default
+    # off) is carried through when the job asks for it; omitted otherwise, so
+    # a job that leaves it off writes the same document it always has.
     for pocket in _pocket_constraints(job):
-        native.setdefault("constraints", []).append(
-            {
-                "pocket": {
-                    "binder": pocket["binder"],
-                    "contacts": [list(contact) for contact in pocket["contacts"]],
-                    "max_distance": _pocket_max_distance("boltz2", pocket),
-                }
-            }
-        )
+        body: dict[str, Any] = {
+            "binder": pocket["binder"],
+            "contacts": [list(contact) for contact in pocket["contacts"]],
+            "max_distance": _pocket_max_distance("boltz2", pocket),
+        }
+        if pocket["force"]:
+            body["force"] = True
+        native.setdefault("constraints", []).append({"pocket": body})
     # And its contact form (`parse/schema.py:1562-1597`): validation leaves
-    # polymer tokens, [chain, 1-based residue]; ``force`` stays off.
+    # polymer tokens, [chain, 1-based residue]; ``force`` as the pocket form.
     for contact in _contact_constraints(job):
-        native.setdefault("constraints", []).append(
-            {
-                "contact": {
-                    "token1": list(contact["token1"]),
-                    "token2": list(contact["token2"]),
-                    "max_distance": _contact_max_distance("boltz2", contact),
-                }
-            }
-        )
+        body = {
+            "token1": list(contact["token1"]),
+            "token2": list(contact["token2"]),
+            "max_distance": _contact_max_distance("boltz2", contact),
+        }
+        if contact["force"]:
+            body["force"] = True
+        native.setdefault("constraints", []).append({"contact": body})
     # Boltz keeps templates at the top level and aligns each one itself
     # (`parse/schema.py:1633`), so there is no residue map to carry across.
     templates = []
@@ -2815,8 +2864,11 @@ def foldjax_only_features(model: str) -> tuple[str, ...]:
 #: it). OpenDDE shares the Protenix featurizer but not the embedder, and its
 #: upstream inference build ignores ``constraint``
 #: (``_IGNORED_CONSTRAINT_MODELS``), so the port drops either as upstream
-#: does. A contact on a ligand atom, Boltz-2's ``force`` and Protenix atom
-#: contacts have no common spelling and stay native input.
+#: does. A contact on a ligand atom and Protenix atom contacts have no
+#: common spelling and stay native input. A pocket or contact's ``force``
+#: (Boltz-2's own steering field) is now a common spelling too
+#: (`_pocket_constraints`, `_contact_constraints`); every other model
+#: refuses it rather than silently dropping it.
 #:
 #: - ``user_ccd``: a caller-defined chemical component (AlphaFold 3
 #:   ``userCCD``/``userCCDPath``).
@@ -3394,41 +3446,50 @@ def materialize_native_input(
         ignored_constraints.extend(dropped_constraints)
     if constraints is not None:
         constraints.extend(
-            {
-                "kind": "pocket",
-                "binder": pocket["binder"],
-                "contacts": [list(contact) for contact in pocket["contacts"]],
-                "max_distance": _pocket_max_distance(model, pocket),
-                "max_distance_source": (
-                    "job" if pocket["max_distance"] is not None else "upstream"
-                ),
-                **pocket_route,
-            }
+            _with_force(
+                {
+                    "kind": "pocket",
+                    "binder": pocket["binder"],
+                    "contacts": [list(contact) for contact in pocket["contacts"]],
+                    "max_distance": _pocket_max_distance(model, pocket),
+                    "max_distance_source": (
+                        "job" if pocket["max_distance"] is not None else "upstream"
+                    ),
+                    **pocket_route,
+                },
+                pocket["force"],
+            )
             for pocket in _pocket_constraints(job)
         )
         # Validation left these an explicit distance (no upstream default to
         # inherit), so the value is the job's.
         constraints.extend(
-            {
-                "kind": "pocket",
-                "binder": pocket["binder"],
-                "contacts": [list(contact) for contact in pocket["contacts"]],
-                "max_distance": float(pocket["max_distance"]),
-                "max_distance_source": "job",
-                "route": "selection",
-            }
+            _with_force(
+                {
+                    "kind": "pocket",
+                    "binder": pocket["binder"],
+                    "contacts": [list(contact) for contact in pocket["contacts"]],
+                    "max_distance": float(pocket["max_distance"]),
+                    "max_distance_source": "job",
+                    "route": "selection",
+                },
+                pocket["force"],
+            )
             for pocket in selection_pockets
         )
         constraints.extend(
-            {
-                "kind": "contact",
-                "token1": list(contact["token1"]),
-                "token2": list(contact["token2"]),
-                "max_distance": _contact_max_distance(model, contact),
-                "max_distance_source": (
-                    "job" if contact["max_distance"] is not None else "upstream"
-                ),
-            }
+            _with_force(
+                {
+                    "kind": "contact",
+                    "token1": list(contact["token1"]),
+                    "token2": list(contact["token2"]),
+                    "max_distance": _contact_max_distance(model, contact),
+                    "max_distance_source": (
+                        "job" if contact["max_distance"] is not None else "upstream"
+                    ),
+                },
+                contact["force"],
+            )
             for contact in _contact_constraints(job)
         )
 

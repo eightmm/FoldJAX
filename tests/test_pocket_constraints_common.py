@@ -243,7 +243,8 @@ def test_models_without_a_pocket_field_refuse_it(tmp_path, model) -> None:
         ({"binder": "A", "contacts": [["A", 2]]}, "on the binder chain"),
         ({**_POCKET, "max_distance": 0}, "positive and finite"),
         ({**_POCKET, "max_distance": "6"}, "must be a number"),
-        ({**_POCKET, "force": True}, "pocket fields"),
+        ({**_POCKET, "force": "yes"}, "pocket force must be a boolean"),
+        ({**_POCKET, "unknown": 1}, "pocket fields"),
     ],
 )
 def test_malformed_pockets_are_refused_for_every_model(tmp_path, pocket, match) -> None:
@@ -460,3 +461,130 @@ def test_protenix_refuses_a_native_contact_its_weights_cannot_read(tmp_path) -> 
     plan = _protenix_request(tmp_path, source, "protenix_base_default_v1.0.0.jax")
     with pytest.raises(ValueError, match="contact constraint.*no constraint embedder"):
         plan()
+
+
+# -- common-schema ``force`` (Boltz-2's native steering spelling) --------
+
+
+def test_boltz2_writes_force_into_its_native_pocket_and_contact(tmp_path) -> None:
+    pocket = {**_POCKET, "force": True}
+    records: list = []
+    native = json.loads(
+        _materialize(_job(tmp_path, pocket), "boltz2", records=records).read_text()
+    )
+    assert native["constraints"] == [
+        {
+            "pocket": {
+                "binder": "L",
+                "contacts": [["A", 2], ["A", 5]],
+                "max_distance": 6.0,
+                "force": True,
+            }
+        }
+    ]
+    assert records[0]["force"] is True
+    # Off (the default) writes the same document as before `force` existed:
+    # no key at all, not an explicit `false`.
+    unforced = json.loads(_materialize(_job(tmp_path, _POCKET), "boltz2").read_text())
+    assert "force" not in unforced["constraints"][0]["pocket"]
+
+
+def test_force_is_refused_where_no_upstream_has_a_steering_potential(
+    tmp_path,
+) -> None:
+    forced = {**_POCKET, "force": True, "max_distance": 6.0}
+    for model in ("protenix", "openfold3"):
+        with pytest.raises(ValueError, match="force.*no such potential"):
+            _materialize(_job(tmp_path, forced), model)
+    # ``pocket_sampling=select``'s carve-out takes a pocket the native input
+    # cannot condition on out of the job for the selection alone, which would
+    # otherwise quietly turn a forced pocket into a selection-only one (no
+    # native steering at all, silently). ``pocket_conditioning=False`` is
+    # what a checkpoint without a constraint embedder resolves to at run
+    # time (`Backend.pocket_conditioning`); forced here instead to exercise
+    # the carve-out path without a real checkpoint.
+    with pytest.raises(ValueError, match="force.*no such potential"):
+        materialize_native_input(
+            _job(tmp_path, forced),
+            capabilities("openfold3"),
+            tmp_path / "out-select",
+            seed=1,
+            msa="none",
+            options={"pocket_sampling": "select"},
+            pocket_conditioning=False,
+        )
+
+
+def test_job_builder_round_trips_force() -> None:
+    document = {
+        "name": "j",
+        "entities": [
+            {"type": "protein", "id": "A", "sequence": "ACDEF"},
+            {"type": "ligand", "id": "L", "ccd": "ATP"},
+        ],
+        "constraints": [
+            {
+                "pocket": {
+                    "binder": "L",
+                    "contacts": [["A", 2]],
+                    "max_distance": 5.0,
+                    "force": True,
+                }
+            }
+        ],
+    }
+    job = Job.from_document(document)
+    assert job.pockets == (Pocket("L", (("A", 2),), max_distance=5.0, force=True),)
+    assert job.to_document()["constraints"] == document["constraints"]
+
+
+def test_boltz2_plan_mirrors_the_eager_steering_refusal(tmp_path) -> None:
+    """A common ``force`` turns on upstream's automatic steering, same as a
+    native ``force`` does (`models/boltz2/api.py:predict`); `foldjax plan`
+    must refuse what that steering cannot combine with before anything runs.
+    """
+    from foldjax.api import resolve_request
+    from foldjax.schema import PaddingConfig
+
+    weights = tmp_path / "weights.bin"
+    weights.write_bytes(b"not really weights")
+
+    def plan(source: Path, **kwargs):
+        return resolve_request(
+            PredictionRequest(
+                model="boltz2",
+                input=source,
+                weights=weights,
+                output_dir=tmp_path / "out",
+                seed=1,
+                msa="none",
+                use_compile_cache=False,
+                **kwargs,
+            )
+        )
+
+    (tmp_path / "forced").mkdir()
+    forced = _job(tmp_path / "forced", {**_POCKET, "force": True})
+    with pytest.raises(ValueError, match="padding"):
+        plan(forced, padding=PaddingConfig())
+    with pytest.raises(ValueError, match="deterministic=true"):
+        plan(forced, options={"deterministic": True})
+    with pytest.raises(ValueError, match="context parallelism"):
+        plan(forced, options={"cp_devices": 2})
+    # Opting out of the automatic steering on purpose runs.
+    plan(
+        forced,
+        options={
+            "steering_args": {
+                "fk_steering": False,
+                "physical_guidance_update": False,
+                "contact_guidance_update": False,
+            }
+        },
+        padding=PaddingConfig(),
+    )
+    # Unforced (the default): none of this applies.
+    (tmp_path / "unforced").mkdir()
+    unforced = _job(tmp_path / "unforced", _POCKET)
+    plan(unforced, padding=PaddingConfig())
+    plan(unforced, options={"cp_devices": 2})

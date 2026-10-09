@@ -102,7 +102,11 @@
               "token1": {"description": "[chain_id, residue_index].", "type": "array"},
               "token2": {"description": "[chain_id, residue_index].", "type": "array"},
               "max_distance": {"type": "number"},
-              "max_distance_source": {"enum": ["job", "upstream"]}
+              "max_distance_source": {"enum": ["job", "upstream"]},
+              "force": {
+                "description": "True when Boltz-2's native field steers the sampler toward this contact. Optional: absent (false) is every other model, and every job that leaves it off.",
+                "type": "boolean"
+              }
             }
           }
         ]
@@ -235,7 +239,11 @@
         "contacts": {"description": "[chain_id, residue_index] pairs.", "type": "array", "items": {"type": "array"}},
         "max_distance": {"type": "number"},
         "max_distance_source": {"enum": ["job", "upstream"]},
-        "route": {"enum": ["native", "selection"]}
+        "route": {"enum": ["native", "selection"]},
+        "force": {
+          "description": "True when Boltz-2's native field steers the sampler toward this pocket. Optional: absent (false) is every other model, and every job that leaves it off.",
+          "type": "boolean"
+        }
       }
     },
     "pocket_score": {
