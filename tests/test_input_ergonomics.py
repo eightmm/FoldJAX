@@ -1094,6 +1094,25 @@ def test_protenix_reads_the_named_template_chain_at_alphafold3s_indices(
     assert aatype[1] == aatype[len(SEQUENCE) - 1]  # an unmapped query: a gap
 
 
+def test_protenix_sidecar_carries_only_the_keys_upstream_defines(
+    tmp_path: Path,
+) -> None:
+    """A named chain is moved first in the file, not named in the entry.
+
+    Upstream's ``parse_json_templates`` reads ``mmcif``, ``queryIndices`` and
+    ``templateIndices`` and takes the file's first chain; the port's mapped-JSON
+    reader does the same (``template_features.py:415``). A ``chainId`` key
+    would be an extension neither side reads.
+    """
+    template = _structure_cif(tmp_path)
+    source = _mapped_job(
+        tmp_path, template, chain_id="B", query_indices=[0], template_indices=[1]
+    )
+    for model in ("protenix", "opendde"):
+        (entry,) = _protenix_payload(source, tmp_path / model, model)
+        assert set(entry) == {"mmcif", "queryIndices", "templateIndices"}
+
+
 def test_entities_declared_only_in_struct_asym_still_count_the_sequence(
     tmp_path: Path,
 ) -> None:

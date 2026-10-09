@@ -39,6 +39,12 @@ unless it says so here, in its own paragraph.
   reads nothing by that name, yet the port refused the document as an
   unsupported top-level field. It is ignored now, as OpenDDE already ignored
   it. Features are unchanged.
+- **The Protenix and OpenDDE template sidecar carries only the keys
+  upstream reads.** The per-chain `templatesPath` JSON the translation writes
+  added a `chainId` next to `mmcif`, `queryIndices` and `templateIndices`;
+  upstream's `parse_json_templates` defines no such key, and both readers
+  take the file's first chain, where the writer already puts the named one.
+  The key is dropped; which chain is read is unchanged.
 
 ## 0.1.0 (2026-10-09)
 

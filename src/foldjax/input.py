@@ -2339,14 +2339,15 @@ def _protenix_templates(
             template["mapping"],
             path,
         )
-        entry: dict[str, Any] = {
-            "mmcif": mmcif,
-            "queryIndices": [pair[0] for pair in mapping],
-            "templateIndices": [pair[1] for pair in mapping],
-        }
-        if template["chain_id"] is not None:
-            entry["chainId"] = template["chain_id"]
-        payload.append(entry)
+        # The three keys upstream's `parse_json_templates` reads; the named
+        # chain is already first in `mmcif`, which is how both readers pick it.
+        payload.append(
+            {
+                "mmcif": mmcif,
+                "queryIndices": [pair[0] for pair in mapping],
+                "templateIndices": [pair[1] for pair in mapping],
+            }
+        )
     directory = destination / "templates"
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / f"entity_{entity_index:04d}.json"
