@@ -9,14 +9,14 @@
     "jax_platforms": null,
     "foldjax_home": "<workspace>/foldjax-bench/stage-parity-gpu/fjhome",
     "cpu_affinity": 8,
-    "git_commit": "a951484bca2e4a515354fffe8d87fc21c767e623",
+    "git_commit": "242c47651e3227b092f9dcdc265c792b71a406dd",
     "jax": "0.11.1",
     "jaxlib": "0.11.1",
     "device": "gpu",
     "device_kind": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
     "cuda_visible_devices": "0"
   },
-  "wall_s": 218.5,
+  "wall_s": 278.9,
   "stages": {
     "S1_features": {
       "status": "measured",
@@ -637,9 +637,9 @@
       "runtime_s": 0.4,
       "notes": "Derived fields (relp, local-atom padding, polymer flags) are checked by the capture's own semantic gate (check_inputs), whose verdict is recorded, rather than by name.",
       "source": {
-        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "git": "242c47651e3227b092f9dcdc265c792b71a406dd",
         "cpu_affinity": 8,
-        "recorded": "2026-10-10 00:51:31"
+        "recorded": "2026-10-10 02:30:20"
       }
     },
     "S2_weights": {
@@ -735,12 +735,12 @@
           "sorted_max_abs": 0.0
         }
       },
-      "runtime_s": 79.8,
+      "runtime_s": 140.4,
       "notes": "",
       "source": {
-        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "git": "242c47651e3227b092f9dcdc265c792b71a406dd",
         "cpu_affinity": 8,
-        "recorded": "2026-10-10 00:51:31"
+        "recorded": "2026-10-10 02:30:20"
       }
     },
     "S3_trunk": {
@@ -759,33 +759,33 @@
       },
       "headline": {
         "metric": "relative RMS single / pair",
-        "value": "3.409e-03 / 1.395e-02"
+        "value": "3.556e-03 / 1.400e-02"
       },
       "metrics": {
         "arrays": {
           "single_inputs": {
-            "relative_rms": 0.002289585142811652,
+            "relative_rms": 0.002232367018515489,
             "max_abs": 0.0078125,
             "native_max_abs_value": 1.15625
           },
           "single": {
-            "relative_rms": 0.003408961008266601,
+            "relative_rms": 0.003555914547829669,
             "max_abs": 16.0,
             "native_max_abs_value": 1392.0
           },
           "pair": {
-            "relative_rms": 0.013946137631703739,
-            "max_abs": 32.0,
+            "relative_rms": 0.01399772833391358,
+            "max_abs": 36.0,
             "native_max_abs_value": 2384.0
           }
         }
       },
-      "runtime_s": 59.5,
+      "runtime_s": 58.9,
       "notes": "",
       "source": {
-        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "git": "242c47651e3227b092f9dcdc265c792b71a406dd",
         "cpu_affinity": 8,
-        "recorded": "2026-10-10 00:51:31"
+        "recorded": "2026-10-10 02:30:20"
       }
     },
     "S4_diffusion": {
@@ -807,34 +807,34 @@
       },
       "headline": {
         "metric": "per-sample all-atom RMSD (A), worst sample",
-        "value": "0.1682"
+        "value": "0.1690"
       },
       "metrics": {
         "samples": 5,
         "atoms": 602,
         "all_atom_rmsd_angstrom": [
-          0.0035056174843229584,
-          0.16821485375897144,
-          0.02360725111381599,
-          0.09448241443269507,
-          0.0028174584890006574
+          0.002616804426424446,
+          0.16899534532008686,
+          0.009434311915130186,
+          0.09295018276868736,
+          0.003830290134356667
         ],
-        "max_unaligned_displacement_angstrom": 3.488322716392015,
+        "max_unaligned_displacement_angstrom": 3.492909635666794,
         "ca_atoms": 76,
         "ca_rmsd_angstrom": [
-          0.0026899731879433584,
-          0.05846424096814758,
-          0.011329677424940027,
-          0.05613575837726027,
-          0.002256370389078998
+          0.0026373213262585824,
+          0.05849803751370982,
+          0.005516846576287819,
+          0.052728666087293034,
+          0.004184138467688279
         ],
         "entity_rmsd_angstrom_panel_metric": {
           "A": [
-            0.0035056174843230777,
-            0.1682148537589715,
-            0.023607251113816362,
-            0.09448241443269507,
-            0.0028174584890012454
+            0.0026168044264243545,
+            0.16899534532008678,
+            0.009434311915130021,
+            0.09295018276868736,
+            0.0038302901343552974
           ]
         },
         "injection_calls": 1
@@ -842,9 +842,9 @@
       "runtime_s": 5.2,
       "notes": "",
       "source": {
-        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "git": "242c47651e3227b092f9dcdc265c792b71a406dd",
         "cpu_affinity": 8,
-        "recorded": "2026-10-10 00:51:31"
+        "recorded": "2026-10-10 02:30:20"
       }
     },
     "S5_confidence": {
@@ -860,12 +860,12 @@
         "triangle_attention_realised": "cueq_jit",
         "triangle_multiplication": "pallas",
         "injected_native": "confidence-input.npz s_inputs/s_trunk/z_trunk replace the trunk; x_pred_coords replace the sampler",
-        "confidence_dtype": "float32 (native confidence_skip_amp=true)",
+        "confidence_dtype": "bfloat16 (--amp-policy auto (shipped default), confidence=bf16 diffusion=fp32, n_token=76)",
         "confidence_triangle_attention": "follows trunk (cueq_jit)"
       },
       "headline": {
         "metric": "max |d| atom pLDDT (0-1) / PAE (A) / pTM",
-        "value": "0.000156 / 0.0132 / 4.05e-06"
+        "value": "0.00167 / 0.0561 / 0.000289"
       },
       "metrics": {
         "port_output_keys": [
@@ -902,64 +902,64 @@
           "token_pair_pde"
         ],
         "plddt_logits": {
-          "max_abs": 0.008631706237792969,
-          "relative_rms": 0.0002433952713031537,
+          "max_abs": 0.045177459716796875,
+          "relative_rms": 0.0020977469852810566,
           "native_range": [
             -5.612892150878906,
             11.331131935119629
           ]
         },
         "pae_logits": {
-          "max_abs": 0.013405799865722656,
-          "relative_rms": 0.00016706089117811233,
+          "max_abs": 0.04518938064575195,
+          "relative_rms": 0.001983368300185391,
           "native_range": [
             -4.897112846374512,
             9.85096263885498
           ]
         },
         "pde_logits": {
-          "max_abs": 0.008039474487304688,
-          "relative_rms": 0.00016888925267722585,
+          "max_abs": 0.030562400817871094,
+          "relative_rms": 0.0018620705959913667,
           "native_range": [
             -3.0652413368225098,
             12.700990676879883
           ]
         },
         "atom_plddt": {
-          "max_abs": 0.00015556812286376953,
-          "relative_rms": 2.6250213563290314e-05,
+          "max_abs": 0.0016728043556213379,
+          "relative_rms": 0.0002697144654436302,
           "native_range": [
             0.5391746163368225,
             0.9879209399223328
           ]
         },
         "token_pair_pae_angstrom": {
-          "max_abs": 0.013173103332519531,
-          "relative_rms": 0.0001728706244733732,
+          "max_abs": 0.05606651306152344,
+          "relative_rms": 0.0015887022506417385,
           "native_range": [
             0.3044578433036804,
             24.15086555480957
           ]
         },
         "token_pair_pde_angstrom": {
-          "max_abs": 0.0026581287384033203,
-          "relative_rms": 0.00022833906814050556,
+          "max_abs": 0.013088703155517578,
+          "relative_rms": 0.0016952371482969937,
           "native_range": [
             0.26914238929748535,
             2.9298501014709473
           ]
         },
         "ptm": {
-          "max_abs": 4.0531158447265625e-06,
-          "relative_rms": 2.9957614336265053e-06,
+          "max_abs": 0.0002891421318054199,
+          "relative_rms": 0.0003057104522855867,
           "native_range": [
             0.9215142130851746,
             0.9228091835975647
           ]
         },
         "summary_plddt": {
-          "max_abs": 0.0008087158203125,
-          "relative_rms": 6.940454684440912e-06,
+          "max_abs": 0.00496673583984375,
+          "relative_rms": 5.118958299266667e-05,
           "native_range": [
             93.99903106689453,
             94.08255004882812
@@ -975,12 +975,12 @@
         },
         "atom_plddt_scale_factor_applied_to_port": 1.0
       },
-      "runtime_s": 22.2,
+      "runtime_s": 22.6,
       "notes": "",
       "source": {
-        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "git": "242c47651e3227b092f9dcdc265c792b71a406dd",
         "cpu_affinity": 8,
-        "recorded": "2026-10-10 00:51:31"
+        "recorded": "2026-10-10 02:30:20"
       }
     },
     "S6_final": {
@@ -1003,43 +1003,43 @@
       },
       "headline": {
         "metric": "per-sample all-atom / CA RMSD (A), worst sample",
-        "value": "0.0344 / 0.0295"
+        "value": "0.1125 / 0.0387"
       },
       "metrics": {
         "samples": 5,
         "atoms": 602,
         "all_atom_rmsd_angstrom": [
-          0.02044894939733716,
-          0.01527246377169675,
-          0.00997005291097525,
-          0.029947314784879803,
-          0.03437542424367279
+          0.03835575244912797,
+          0.11252546869772041,
+          0.011854459371858306,
+          0.02301842514200694,
+          0.021409572657607664
         ],
-        "max_unaligned_displacement_angstrom": 0.6842716415120988,
+        "max_unaligned_displacement_angstrom": 2.0021342794269983,
         "ca_atoms": 76,
         "ca_rmsd_angstrom": [
-          0.022558788790036286,
-          0.00960917189901817,
-          0.008070099616418637,
-          0.029509272906811684,
-          0.005804023920068489
+          0.03872882905267278,
+          0.020739785988180534,
+          0.007277886966591205,
+          0.019305995443854664,
+          0.018756965374608
         ],
         "entity_rmsd_angstrom_panel_metric": {
           "A": [
-            0.020448949397337435,
-            0.0152724637716978,
-            0.009970052910973618,
-            0.029947314784879702,
-            0.034375424243672806
+            0.03835575244912751,
+            0.11252546869772027,
+            0.011854459371858448,
+            0.023018425142007297,
+            0.021409572657607866
           ]
         }
       },
-      "runtime_s": 49.9,
+      "runtime_s": 49.6,
       "notes": "",
       "source": {
-        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "git": "242c47651e3227b092f9dcdc265c792b71a406dd",
         "cpu_affinity": 8,
-        "recorded": "2026-10-10 00:51:31"
+        "recorded": "2026-10-10 02:30:20"
       }
     }
   }
