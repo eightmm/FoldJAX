@@ -343,7 +343,6 @@ def test_device_condition_and_precision_scope_follow_the_device(monkeypatch) -> 
 
     monkeypatch.setattr(sp, "DEVICE", "gpu")
     monkeypatch.setattr(jax, "devices", lambda: [type("D", (), {"device_kind": "k"})()])
-    sp._OBSERVED_MATMUL_PRECISION.clear()
     with sp.precision_scope("boltz2"):
         assert jax.config.jax_default_matmul_precision == "high"
     with sp.precision_scope("opendde"):

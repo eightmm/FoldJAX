@@ -566,12 +566,6 @@ SHIPPED_MATMUL_PRECISION: dict[str, str | None] = {
     "esmfold2": None,
 }
 
-#: `jax_default_matmul_precision` as read inside each port's `precision_scope`
-#: on the GPU, so the condition records the value that was in force rather
-#: than the one this table intends.
-_OBSERVED_MATMUL_PRECISION: dict[str, str] = {}
-
-
 def require_device(device: str) -> None:
     """Refuse a process whose JAX backend is not the condition asked for."""
     if device not in DEVICES:
@@ -608,18 +602,22 @@ def precision_scope(port: str) -> Iterator[None]:
         contextlib.nullcontext() if pin is None else jax.default_matmul_precision(pin)
     )
     with scope:
-        _OBSERVED_MATMUL_PRECISION[port] = str(jax.config.jax_default_matmul_precision)
         yield
 
 
 def device_condition(port: str) -> dict[str, Any]:
-    """The ``backend``/``matmul_precision`` entries of a stage's condition."""
+    """The ``backend``/``matmul_precision`` entries of a stage's condition.
+
+    On the GPU the precision is read inside the scope the stages open, so the
+    record is the value in force there rather than the one the table intends.
+    """
     if DEVICE == "cpu":
         return dict(CPU_CONDITION)
     import jax
 
     pin = SHIPPED_MATMUL_PRECISION[port]
-    observed = _OBSERVED_MATMUL_PRECISION.get(port, "not yet opened")
+    with precision_scope(port):
+        observed = str(jax.config.jax_default_matmul_precision)
     return {
         "backend": f"gpu ({jax.devices()[0].device_kind})",
         "matmul_precision": (
@@ -4021,7 +4019,12 @@ def environment() -> dict[str, Any]:
             check=True,
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
-        record["git_commit"] = None
+        # A frozen `git archive` export is not a repository; the suite's
+        # freeze writes the exported SHA beside it.
+        commit_file = REPO / "COMMIT"
+        record["git_commit"] = (
+            commit_file.read_text().strip() if commit_file.is_file() else None
+        )
     try:
         import jax
         import jaxlib
@@ -4052,7 +4055,6 @@ def run_model(
     if model not in NO_PARITY_MANIFEST:
         require_device(device)
     DEVICE = device
-    _OBSERVED_MATMUL_PRECISION.clear()
     started = time.perf_counter()
     if model in STAGE_CAPTURES:
         results = MODELS[model](capture, stages, stage_capture)
