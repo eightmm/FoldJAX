@@ -1,0 +1,1046 @@
+{
+  "model": "protenix",
+  "device": "gpu",
+  "capture": "<workspace>/foldjax-bench/protenix-master-native-20260909-9yET4f/protein_1ubq/native-A",
+  "environment": {
+    "host": "master",
+    "python": "3.13.15",
+    "omp_num_threads": null,
+    "jax_platforms": null,
+    "foldjax_home": "<workspace>/foldjax-bench/stage-parity-gpu/fjhome",
+    "cpu_affinity": 8,
+    "git_commit": "a951484bca2e4a515354fffe8d87fc21c767e623",
+    "jax": "0.11.1",
+    "jaxlib": "0.11.1",
+    "device": "gpu",
+    "device_kind": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "cuda_visible_devices": "0"
+  },
+  "wall_s": 218.5,
+  "stages": {
+    "S1_features": {
+      "status": "measured",
+      "condition": {
+        "backend": "host (featurizer; no model run)",
+        "matmul_precision": "n/a",
+        "port_featurizer": "foldjax.models.protenix.data.featurize_json.featurize_protein_json, re-run in this checkout (bench.protenix_foldjax_capture.featurize)",
+        "input_document": "<workspace>/foldjax-bench/upstream-default-multimodal-n5-20260904/work/protein_1ubq/foldjax/protenix-v2/inputs/protenix_input.json",
+        "native": "native-input.npz + native-derived.npz + native-identity.npz",
+        "name_mapping": "bench.protenix_closure_report.COMMON_FIELDS (the 41 fields both sides spell the same)"
+      },
+      "headline": {
+        "metric": "min exact-match fraction (categorical) / max |d| (float)",
+        "value": "1.0 / 0.0"
+      },
+      "metrics": {
+        "summary": {
+          "arrays_compared": 40,
+          "categorical_arrays": 21,
+          "float_arrays": 19,
+          "shape_mismatches": [],
+          "min_exact_match_fraction": 1.0,
+          "arrays_not_exact": [],
+          "max_float_max_abs": 0.0,
+          "max_float_relative_rms": 0.0
+        },
+        "arrays": {
+          "asym_id": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "atom_to_tokatom_idx": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "atom_to_token_idx": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "d_lm": {
+            "port_shape": [
+              19,
+              32,
+              128,
+              3
+            ],
+            "native_shape": [
+              19,
+              32,
+              128,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "deletion_mean": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "deletion_value": {
+            "port_shape": [
+              1025,
+              76
+            ],
+            "native_shape": [
+              1025,
+              76
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "distogram_rep_atom_mask": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0,
+            "exact_match_fraction": 1.0
+          },
+          "entity_id": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "frame_atom_index": {
+            "port_shape": [
+              76,
+              3
+            ],
+            "native_shape": [
+              76,
+              3
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "has_deletion": {
+            "port_shape": [
+              1025,
+              76
+            ],
+            "native_shape": [
+              1025,
+              76
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "has_frame": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "is_ligand": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "mol_id": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "msa": {
+            "port_shape": [
+              1025,
+              76
+            ],
+            "native_shape": [
+              1025,
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "output_atom_chain_id": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "<U1",
+            "native_dtype": "<U16",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "output_atom_element": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "<U1",
+            "native_dtype": "<U2",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "output_atom_name": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "<U3",
+            "native_dtype": "<U6",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "output_atom_res_id": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "output_atom_res_name": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "<U3",
+            "native_dtype": "<U5",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "pad_info.mask_trunked": {
+            "port_shape": [
+              19,
+              32,
+              128
+            ],
+            "native_shape": [
+              19,
+              32,
+              128
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "profile": {
+            "port_shape": [
+              76,
+              32
+            ],
+            "native_shape": [
+              76,
+              32
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "ref_atom_name_chars": {
+            "port_shape": [
+              602,
+              4,
+              64
+            ],
+            "native_shape": [
+              602,
+              4,
+              64
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0,
+            "exact_match_fraction": 1.0
+          },
+          "ref_charge": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0,
+            "exact_match_fraction": 1.0
+          },
+          "ref_element": {
+            "port_shape": [
+              602,
+              128
+            ],
+            "native_shape": [
+              602,
+              128
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0,
+            "exact_match_fraction": 1.0
+          },
+          "ref_mask": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0,
+            "exact_match_fraction": 1.0
+          },
+          "ref_pos": {
+            "port_shape": [
+              602,
+              3
+            ],
+            "native_shape": [
+              602,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "ref_space_uid": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "residue_index": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "restype": {
+            "port_shape": [
+              76,
+              32
+            ],
+            "native_shape": [
+              76,
+              32
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "sym_id": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "template_aatype": {
+            "port_shape": [
+              4,
+              76
+            ],
+            "native_shape": [
+              4,
+              76
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "template_atom_mask": {
+            "port_shape": [
+              4,
+              76,
+              24
+            ],
+            "native_shape": [
+              4,
+              76,
+              24
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "template_atom_positions": {
+            "port_shape": [
+              4,
+              76,
+              24,
+              3
+            ],
+            "native_shape": [
+              4,
+              76,
+              24,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_backbone_frame_mask": {
+            "port_shape": [
+              4,
+              76,
+              76
+            ],
+            "native_shape": [
+              4,
+              76,
+              76
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_distogram": {
+            "port_shape": [
+              4,
+              76,
+              76,
+              39
+            ],
+            "native_shape": [
+              4,
+              76,
+              76,
+              39
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_pseudo_beta_mask": {
+            "port_shape": [
+              4,
+              76,
+              76
+            ],
+            "native_shape": [
+              4,
+              76,
+              76
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_unit_vector": {
+            "port_shape": [
+              4,
+              76,
+              76,
+              3
+            ],
+            "native_shape": [
+              4,
+              76,
+              76,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "token_bonds": {
+            "port_shape": [
+              76,
+              76
+            ],
+            "native_shape": [
+              76,
+              76
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "token_index": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "v_lm": {
+            "port_shape": [
+              19,
+              32,
+              128,
+              1
+            ],
+            "native_shape": [
+              19,
+              32,
+              128,
+              1
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0,
+            "exact_match_fraction": 1.0
+          }
+        },
+        "semantic_input_gate": {
+          "passed": true,
+          "failures": [],
+          "derived_mappings": [
+            "32/128 local atom padding",
+            "native dense vs independent compact139 relative position",
+            "all-valid native MSA mask",
+            "atom polymer and token ligand identity",
+            "inactive native constraints"
+          ]
+        },
+        "rerun_vs_capture_time_port_features_equal": true,
+        "rerun_vs_capture_time_port_features_value_mismatches": {}
+      },
+      "runtime_s": 0.4,
+      "notes": "Derived fields (relp, local-atom padding, polymer flags) are checked by the capture's own semantic gate (check_inputs), whose verdict is recorded, rather than by name.",
+      "source": {
+        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "cpu_affinity": 8,
+        "recorded": "2026-10-10 00:51:31"
+      }
+    },
+    "S2_weights": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu (host NumPy; no model run)",
+        "native_checkpoint": "<workspace>/foldjax-bench/protenix-master-native-20260909-9yET4f/protein_1ubq/native-A/checkpoint/protenix_base_default_v1.0.0.pt",
+        "native_sha256": "2b7d5a8b30494514fc47fd2271a16260528cdba170ba09cc112fdecd8f85ec04",
+        "converted": "<workspace>/foldjax-bench/stage-parity-gpu/fjhome/weights/protenix/protenix_base_default_v1.0.0.jax",
+        "mapper": "foldjax.models.protenix.bridge.torch_mapping.map_protenix_inference_state_dict",
+        "reader": "foldjax.torch_archive.load (no torch)"
+      },
+      "headline": {
+        "metric": "max |stored - map(native)| over groups (storage dtype)",
+        "value": 0.0
+      },
+      "metrics": {
+        "stored_vs_mapped": {
+          "groups": {
+            "input_embedder": {
+              "leaves": 99,
+              "elements": 1041478,
+              "max_abs": 0.0,
+              "dtypes": [
+                "bool",
+                "float32"
+              ]
+            },
+            "pairformer_output": {
+              "leaves": 3161,
+              "elements": 151275552,
+              "max_abs": 0.0,
+              "dtypes": [
+                "bool",
+                "float32"
+              ]
+            },
+            "diffusion": {
+              "leaves": 826,
+              "elements": 203257645,
+              "max_abs": 0.0,
+              "dtypes": [
+                "bool",
+                "float32"
+              ]
+            },
+            "distogram": {
+              "leaves": 2,
+              "elements": 8256,
+              "max_abs": 0.0,
+              "dtypes": [
+                "float32"
+              ]
+            },
+            "confidence": {
+              "leaves": 256,
+              "elements": 12901974,
+              "max_abs": 0.0,
+              "dtypes": [
+                "bool",
+                "float32"
+              ]
+            }
+          },
+          "leaves": 4344,
+          "elements": 368484905,
+          "max_abs": 0.0
+        },
+        "coverage_direct_reads": {
+          "checkpoint_tensors": 4174,
+          "tensors_read": 4174,
+          "checkpoint_elements": 368484735,
+          "elements_read": 368484735,
+          "unread_tensors": [],
+          "unread_tensor_count": 0
+        },
+        "value_containment_port_in_checkpoint": {
+          "checkpoint_float_elements": 368484735,
+          "port_float_elements": 368484735,
+          "checkpoint_non_float_elements": 0,
+          "port_non_float_elements": 170,
+          "port_values_absent_from_checkpoint": 0,
+          "max_distance_to_nearest_checkpoint_value": 0.0,
+          "multiplicity_excess": 0
+        },
+        "value_multiset_checkpoint_vs_port": {
+          "native_elements": 368484735,
+          "port_elements": 368484735,
+          "native_non_float_elements": 0,
+          "port_non_float_elements": 170,
+          "comparable": true,
+          "nonfinite_mismatch": 0,
+          "sorted_max_abs": 0.0
+        }
+      },
+      "runtime_s": 79.8,
+      "notes": "",
+      "source": {
+        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "cpu_affinity": 8,
+        "recorded": "2026-10-10 00:51:31"
+      }
+    },
+    "S3_trunk": {
+      "status": "measured",
+      "condition": {
+        "backend": "gpu (NVIDIA RTX PRO 6000 Blackwell Server Edition)",
+        "matmul_precision": "high (port pin; jax_default_matmul_precision in the scope: high)",
+        "input": "port-featurized foldjax-input.npz (port-A of the same capture; its input gate certified it equal to native-input.npz)",
+        "msa": "native per-cycle MSA rows injected (msa-tape.npz)",
+        "trunk_dtype": "bfloat16 (native AMP match: upstream autocast bf16)",
+        "triangle_attention": "cueq_jit (port default, as in the parity subset)",
+        "glu_backend": "xla",
+        "triangle_attention_realised": "cueq_jit",
+        "triangle_multiplication": "pallas",
+        "recycles": 10
+      },
+      "headline": {
+        "metric": "relative RMS single / pair",
+        "value": "3.409e-03 / 1.395e-02"
+      },
+      "metrics": {
+        "arrays": {
+          "single_inputs": {
+            "relative_rms": 0.002289585142811652,
+            "max_abs": 0.0078125,
+            "native_max_abs_value": 1.15625
+          },
+          "single": {
+            "relative_rms": 0.003408961008266601,
+            "max_abs": 16.0,
+            "native_max_abs_value": 1392.0
+          },
+          "pair": {
+            "relative_rms": 0.013946137631703739,
+            "max_abs": 32.0,
+            "native_max_abs_value": 2384.0
+          }
+        }
+      },
+      "runtime_s": 59.5,
+      "notes": "",
+      "source": {
+        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "cpu_affinity": 8,
+        "recorded": "2026-10-10 00:51:31"
+      }
+    },
+    "S4_diffusion": {
+      "status": "measured",
+      "condition": {
+        "backend": "gpu (NVIDIA RTX PRO 6000 Blackwell Server Edition)",
+        "matmul_precision": "high (port pin; jax_default_matmul_precision in the scope: high)",
+        "input": "port-featurized foldjax-input.npz (port-A of the same capture; its input gate certified it equal to native-input.npz)",
+        "msa": "native per-cycle MSA rows injected (msa-tape.npz)",
+        "trunk_dtype": "n/a (trunk not run; native trunk injected)",
+        "triangle_attention": "cueq_jit (port default, as in the parity subset)",
+        "glu_backend": "xla",
+        "triangle_attention_realised": "cueq_jit",
+        "triangle_multiplication": "pallas",
+        "injected_native": "trunk.npz s_inputs/s/z (float32) replace pairformer_output_from_s_inputs; sampler-tape.npz; noise schedule",
+        "samples_x_steps": "5 x 200",
+        "diffusion_attention": "tokamax",
+        "diffusion_dtype": "float32 (native diffusion_skip_amp=true)"
+      },
+      "headline": {
+        "metric": "per-sample all-atom RMSD (A), worst sample",
+        "value": "0.1682"
+      },
+      "metrics": {
+        "samples": 5,
+        "atoms": 602,
+        "all_atom_rmsd_angstrom": [
+          0.0035056174843229584,
+          0.16821485375897144,
+          0.02360725111381599,
+          0.09448241443269507,
+          0.0028174584890006574
+        ],
+        "max_unaligned_displacement_angstrom": 3.488322716392015,
+        "ca_atoms": 76,
+        "ca_rmsd_angstrom": [
+          0.0026899731879433584,
+          0.05846424096814758,
+          0.011329677424940027,
+          0.05613575837726027,
+          0.002256370389078998
+        ],
+        "entity_rmsd_angstrom_panel_metric": {
+          "A": [
+            0.0035056174843230777,
+            0.1682148537589715,
+            0.023607251113816362,
+            0.09448241443269507,
+            0.0028174584890012454
+          ]
+        },
+        "injection_calls": 1
+      },
+      "runtime_s": 5.2,
+      "notes": "",
+      "source": {
+        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "cpu_affinity": 8,
+        "recorded": "2026-10-10 00:51:31"
+      }
+    },
+    "S5_confidence": {
+      "status": "measured",
+      "condition": {
+        "backend": "gpu (NVIDIA RTX PRO 6000 Blackwell Server Edition)",
+        "matmul_precision": "high (port pin; jax_default_matmul_precision in the scope: high)",
+        "input": "port-featurized foldjax-input.npz (port-A of the same capture; its input gate certified it equal to native-input.npz)",
+        "msa": "native per-cycle MSA rows injected (msa-tape.npz)",
+        "trunk_dtype": "n/a (native trunk injected)",
+        "triangle_attention": "cueq_jit (port default, as in the parity subset)",
+        "glu_backend": "xla",
+        "triangle_attention_realised": "cueq_jit",
+        "triangle_multiplication": "pallas",
+        "injected_native": "confidence-input.npz s_inputs/s_trunk/z_trunk replace the trunk; x_pred_coords replace the sampler",
+        "confidence_dtype": "float32 (native confidence_skip_amp=true)",
+        "confidence_triangle_attention": "follows trunk (cueq_jit)"
+      },
+      "headline": {
+        "metric": "max |d| atom pLDDT (0-1) / PAE (A) / pTM",
+        "value": "0.000156 / 0.0132 / 4.05e-06"
+      },
+      "metrics": {
+        "port_output_keys": [
+          "atom_plddt",
+          "chain_gpde",
+          "chain_iptm",
+          "chain_pair_gpde",
+          "chain_pair_iptm",
+          "chain_pair_iptm_global",
+          "chain_pair_pae_mean",
+          "chain_pair_pae_min",
+          "chain_pair_plddt",
+          "chain_plddt",
+          "chain_ptm",
+          "contact_probs",
+          "coordinate",
+          "disorder",
+          "distogram_logits",
+          "has_clash",
+          "has_vdw_clash",
+          "num_recycles",
+          "pae",
+          "pde",
+          "plddt",
+          "ranking_score",
+          "resolved",
+          "summary_gpde",
+          "summary_iptm",
+          "summary_plddt",
+          "summary_ptm",
+          "summary_ranking_score",
+          "summary_ranking_score_vdw_penalized",
+          "token_pair_pae",
+          "token_pair_pde"
+        ],
+        "plddt_logits": {
+          "max_abs": 0.008631706237792969,
+          "relative_rms": 0.0002433952713031537,
+          "native_range": [
+            -5.612892150878906,
+            11.331131935119629
+          ]
+        },
+        "pae_logits": {
+          "max_abs": 0.013405799865722656,
+          "relative_rms": 0.00016706089117811233,
+          "native_range": [
+            -4.897112846374512,
+            9.85096263885498
+          ]
+        },
+        "pde_logits": {
+          "max_abs": 0.008039474487304688,
+          "relative_rms": 0.00016888925267722585,
+          "native_range": [
+            -3.0652413368225098,
+            12.700990676879883
+          ]
+        },
+        "atom_plddt": {
+          "max_abs": 0.00015556812286376953,
+          "relative_rms": 2.6250213563290314e-05,
+          "native_range": [
+            0.5391746163368225,
+            0.9879209399223328
+          ]
+        },
+        "token_pair_pae_angstrom": {
+          "max_abs": 0.013173103332519531,
+          "relative_rms": 0.0001728706244733732,
+          "native_range": [
+            0.3044578433036804,
+            24.15086555480957
+          ]
+        },
+        "token_pair_pde_angstrom": {
+          "max_abs": 0.0026581287384033203,
+          "relative_rms": 0.00022833906814050556,
+          "native_range": [
+            0.26914238929748535,
+            2.9298501014709473
+          ]
+        },
+        "ptm": {
+          "max_abs": 4.0531158447265625e-06,
+          "relative_rms": 2.9957614336265053e-06,
+          "native_range": [
+            0.9215142130851746,
+            0.9228091835975647
+          ]
+        },
+        "summary_plddt": {
+          "max_abs": 0.0008087158203125,
+          "relative_rms": 6.940454684440912e-06,
+          "native_range": [
+            93.99903106689453,
+            94.08255004882812
+          ]
+        },
+        "distogram_logits_from_native_z": {
+          "max_abs": 1.0,
+          "relative_rms": 0.00030569067196394413,
+          "native_range": [
+            -338.0,
+            692.0
+          ]
+        },
+        "atom_plddt_scale_factor_applied_to_port": 1.0
+      },
+      "runtime_s": 22.2,
+      "notes": "",
+      "source": {
+        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "cpu_affinity": 8,
+        "recorded": "2026-10-10 00:51:31"
+      }
+    },
+    "S6_final": {
+      "status": "measured",
+      "condition": {
+        "backend": "gpu (NVIDIA RTX PRO 6000 Blackwell Server Edition)",
+        "matmul_precision": "high (port pin; jax_default_matmul_precision in the scope: high)",
+        "input": "port-featurized foldjax-input.npz (port-A of the same capture; its input gate certified it equal to native-input.npz)",
+        "msa": "native per-cycle MSA rows injected (msa-tape.npz)",
+        "trunk_dtype": "bfloat16 (native AMP match: upstream autocast bf16)",
+        "triangle_attention": "cueq_jit (port default, as in the parity subset)",
+        "glu_backend": "xla",
+        "triangle_attention_realised": "cueq_jit",
+        "triangle_multiplication": "pallas",
+        "tape": "native sampler-tape.npz (init/step noise, rotations, translations, noise schedule) + MSA cycle rows",
+        "schedule": "native, pinned",
+        "samples_x_steps": "5 x 200",
+        "diffusion_attention": "tokamax (shipped)",
+        "confidence": "off"
+      },
+      "headline": {
+        "metric": "per-sample all-atom / CA RMSD (A), worst sample",
+        "value": "0.0344 / 0.0295"
+      },
+      "metrics": {
+        "samples": 5,
+        "atoms": 602,
+        "all_atom_rmsd_angstrom": [
+          0.02044894939733716,
+          0.01527246377169675,
+          0.00997005291097525,
+          0.029947314784879803,
+          0.03437542424367279
+        ],
+        "max_unaligned_displacement_angstrom": 0.6842716415120988,
+        "ca_atoms": 76,
+        "ca_rmsd_angstrom": [
+          0.022558788790036286,
+          0.00960917189901817,
+          0.008070099616418637,
+          0.029509272906811684,
+          0.005804023920068489
+        ],
+        "entity_rmsd_angstrom_panel_metric": {
+          "A": [
+            0.020448949397337435,
+            0.0152724637716978,
+            0.009970052910973618,
+            0.029947314784879702,
+            0.034375424243672806
+          ]
+        }
+      },
+      "runtime_s": 49.9,
+      "notes": "",
+      "source": {
+        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "cpu_affinity": 8,
+        "recorded": "2026-10-10 00:51:31"
+      }
+    }
+  }
+}

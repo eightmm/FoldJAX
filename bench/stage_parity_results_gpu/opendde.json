@@ -1,0 +1,2047 @@
+{
+  "model": "opendde",
+  "device": "gpu",
+  "capture": "<workspace>/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A",
+  "environment": {
+    "host": "master",
+    "python": "3.13.15",
+    "omp_num_threads": null,
+    "jax_platforms": null,
+    "foldjax_home": "<workspace>/foldjax-bench/stage-parity-gpu/fjhome",
+    "cpu_affinity": 8,
+    "git_commit": "a951484bca2e4a515354fffe8d87fc21c767e623",
+    "jax": "0.11.1",
+    "jaxlib": "0.11.1",
+    "device": "gpu",
+    "device_kind": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "cuda_visible_devices": "0"
+  },
+  "wall_s": 903.2,
+  "stages": {
+    "S1_features": {
+      "status": "measured",
+      "condition": {
+        "backend": "host (featurizer; no model run)",
+        "matmul_precision": "n/a",
+        "port_featurizer": "foldjax.models.opendde.data.featurize_json.featurize_opendde_json, re-run in this checkout (n_queries 32, n_keys 128, max_msa_depth 16384)",
+        "input_document": "<workspace>/foldjax-bench/upstream-default-multimodal-n5-20260904/work/protein_1ubq/foldjax/opendde/inputs/opendde_input.json",
+        "input_sha256_matches_capture": true,
+        "use_template": true,
+        "native": "native-input.npz + native-derived.npz + native-identity.npz",
+        "name_mapping": "fields both sides spell the same; derived fields (relp, MSA mask, counts) are listed as only-in-one-side"
+      },
+      "headline": {
+        "metric": "min exact-match fraction (categorical) / max |d| (float)",
+        "value": "1.0 / 0.0"
+      },
+      "metrics": {
+        "summary": {
+          "arrays_compared": 63,
+          "categorical_arrays": 49,
+          "float_arrays": 14,
+          "shape_mismatches": [],
+          "min_exact_match_fraction": 1.0,
+          "arrays_not_exact": [],
+          "max_float_max_abs": 0.0,
+          "max_float_relative_rms": 0.0
+        },
+        "only_in_port": [
+          "_foldjax_compact_relp",
+          "_foldjax_relp_chain_bin",
+          "_foldjax_relp_residue_bin",
+          "_foldjax_relp_same_entity",
+          "_foldjax_relp_token_bin",
+          "atom_copy_id",
+          "atom_entity_id",
+          "atom_input_index",
+          "atom_residue_index",
+          "chemical_bond_atom_indices",
+          "chemical_bond_order",
+          "chemical_bond_stereo",
+          "covalent_atom_indices",
+          "covalent_token_indices",
+          "ligand_stereo",
+          "output_atom_polymer_type",
+          "token_ccd_code_chars",
+          "token_copy_id",
+          "token_entity_id",
+          "token_is_ligand",
+          "token_is_modified",
+          "token_is_standard_polymer",
+          "token_polymer_type",
+          "token_reference_is_mse"
+        ],
+        "only_in_native": [
+          "bond_mask",
+          "deletion_matrix",
+          "entity_mol_id",
+          "inference_seed",
+          "mol_atom_index",
+          "msa_mask",
+          "pad_info.k_pad_left",
+          "pad_info.k_pad_right",
+          "pad_info.q_pad",
+          "prot_pair_num_alignments",
+          "prot_paired_num_alignments",
+          "prot_unpair_num_alignments",
+          "prot_unpaired_num_alignments",
+          "resolution",
+          "rna_pair_num_alignments",
+          "rna_paired_num_alignments",
+          "rna_unpair_num_alignments",
+          "rna_unpaired_num_alignments"
+        ],
+        "arrays": {
+          "asym_id": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "atom_to_structural_tokatom_idx": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "atom_to_structural_token_idx": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "atom_to_tokatom_idx": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "atom_to_token_idx": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "d_lm": {
+            "port_shape": [
+              19,
+              32,
+              128,
+              3
+            ],
+            "native_shape": [
+              19,
+              32,
+              128,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "deletion_mean": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "deletion_value": {
+            "port_shape": [
+              1025,
+              76
+            ],
+            "native_shape": [
+              1025,
+              76
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "distogram_rep_atom_mask": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "entity_id": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "frame_atom_index": {
+            "port_shape": [
+              76,
+              3
+            ],
+            "native_shape": [
+              76,
+              3
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "has_deletion": {
+            "port_shape": [
+              1025,
+              76
+            ],
+            "native_shape": [
+              1025,
+              76
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "has_frame": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "is_dna": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "is_ligand": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "is_protein": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "is_rna": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "modified_res_mask": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "mol_id": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "msa": {
+            "port_shape": [
+              1025,
+              76
+            ],
+            "native_shape": [
+              1025,
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "next_parent_residue_idx": {
+            "port_shape": [
+              146
+            ],
+            "native_shape": [
+              146
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "output_atom_chain_id": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "<U1",
+            "native_dtype": "<U16",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "output_atom_element": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "<U1",
+            "native_dtype": "<U2",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "output_atom_name": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "<U3",
+            "native_dtype": "<U6",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "output_atom_res_id": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "output_atom_res_name": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "<U3",
+            "native_dtype": "<U5",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "pad_info.mask_trunked": {
+            "port_shape": [
+              19,
+              32,
+              128
+            ],
+            "native_shape": [
+              19,
+              32,
+              128
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "pae_rep_atom_mask": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "parent_residue_idx": {
+            "port_shape": [
+              146
+            ],
+            "native_shape": [
+              146
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "plddt_m_rep_atom_mask": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "prev_parent_residue_idx": {
+            "port_shape": [
+              146
+            ],
+            "native_shape": [
+              146
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "profile": {
+            "port_shape": [
+              76,
+              32
+            ],
+            "native_shape": [
+              76,
+              32
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "ref_atom_name_chars": {
+            "port_shape": [
+              602,
+              4,
+              64
+            ],
+            "native_shape": [
+              602,
+              4,
+              64
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "ref_charge": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "ref_element": {
+            "port_shape": [
+              602,
+              128
+            ],
+            "native_shape": [
+              602,
+              128
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "ref_mask": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "ref_pos": {
+            "port_shape": [
+              602,
+              3
+            ],
+            "native_shape": [
+              602,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "ref_space_uid": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "residue_index": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "residue_token_group_id": {
+            "port_shape": [
+              146
+            ],
+            "native_shape": [
+              146
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "restype": {
+            "port_shape": [
+              76,
+              32
+            ],
+            "native_shape": [
+              76,
+              32
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "structural_distogram_rep_atom_mask": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "structural_frame_atom_index": {
+            "port_shape": [
+              146,
+              3
+            ],
+            "native_shape": [
+              146,
+              3
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "structural_has_frame": {
+            "port_shape": [
+              146
+            ],
+            "native_shape": [
+              146
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "structural_is_polymer": {
+            "port_shape": [
+              146
+            ],
+            "native_shape": [
+              146
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "structural_pae_rep_atom_mask": {
+            "port_shape": [
+              602
+            ],
+            "native_shape": [
+              602
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "structural_polymer_type": {
+            "port_shape": [
+              146
+            ],
+            "native_shape": [
+              146
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "structural_seq_pos": {
+            "port_shape": [
+              146
+            ],
+            "native_shape": [
+              146
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "structural_token_index": {
+            "port_shape": [
+              146
+            ],
+            "native_shape": [
+              146
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "subtoken_role": {
+            "port_shape": [
+              146
+            ],
+            "native_shape": [
+              146
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "subtoken_role_id": {
+            "port_shape": [
+              146
+            ],
+            "native_shape": [
+              146
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "sym_id": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "template_aatype": {
+            "port_shape": [
+              4,
+              76
+            ],
+            "native_shape": [
+              4,
+              76
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "template_atom_mask": {
+            "port_shape": [
+              4,
+              76,
+              24
+            ],
+            "native_shape": [
+              4,
+              76,
+              24
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "template_atom_positions": {
+            "port_shape": [
+              4,
+              76,
+              24,
+              3
+            ],
+            "native_shape": [
+              4,
+              76,
+              24,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_backbone_frame_mask": {
+            "port_shape": [
+              4,
+              76,
+              76
+            ],
+            "native_shape": [
+              4,
+              76,
+              76
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_distogram": {
+            "port_shape": [
+              4,
+              76,
+              76,
+              39
+            ],
+            "native_shape": [
+              4,
+              76,
+              76,
+              39
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_pseudo_beta_mask": {
+            "port_shape": [
+              4,
+              76,
+              76
+            ],
+            "native_shape": [
+              4,
+              76,
+              76
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "template_unit_vector": {
+            "port_shape": [
+              4,
+              76,
+              76,
+              3
+            ],
+            "native_shape": [
+              4,
+              76,
+              76,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "token_bonds": {
+            "port_shape": [
+              76,
+              76
+            ],
+            "native_shape": [
+              76,
+              76
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "token_index": {
+            "port_shape": [
+              76
+            ],
+            "native_shape": [
+              76
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "twin_token_idx": {
+            "port_shape": [
+              146
+            ],
+            "native_shape": [
+              146
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "v_lm": {
+            "port_shape": [
+              19,
+              32,
+              128,
+              1
+            ],
+            "native_shape": [
+              19,
+              32,
+              128,
+              1
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0,
+            "exact_match_fraction": 1.0
+          }
+        },
+        "capture_time_input_audit_passed": true,
+        "rerun_vs_capture_time_port_features_equal": true,
+        "rerun_vs_capture_time_port_features_value_mismatches": {}
+      },
+      "runtime_s": 1.1,
+      "notes": "",
+      "source": {
+        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "cpu_affinity": 8,
+        "recorded": "2026-10-10 00:54:04"
+      }
+    },
+    "S2_weights": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu (host NumPy; no model run)",
+        "native_checkpoint": "<workspace>/foldjax-bench/stage-parity-gpu/fjhome/downloads/opendde/opendde.pt",
+        "native_sha256": "7b826620390afad877ee2babc6a4d0df81b94d3a0be030959853d6a7da0807cc",
+        "capture_checkpoint_sha256": "7b826620390afad877ee2babc6a4d0df81b94d3a0be030959853d6a7da0807cc",
+        "converted": "<workspace>/foldjax-bench/stage-parity-gpu/fjhome/weights/opendde/opendde.jax",
+        "mapper": "foldjax.models.opendde.bridge.torch_mapping.map_opendde_inference_state_dict",
+        "reader": "foldjax.torch_archive.load (no torch)"
+      },
+      "headline": {
+        "metric": "max |stored - map(native)| over groups (storage dtype)",
+        "value": 0.0
+      },
+      "metrics": {
+        "stored_vs_mapped": {
+          "groups": {
+            "input_embedder": {
+              "leaves": 99,
+              "elements": 1041478,
+              "max_abs": 0.0,
+              "dtypes": [
+                "bool",
+                "float32"
+              ]
+            },
+            "pairformer_output": {
+              "leaves": 3174,
+              "elements": 385887456,
+              "max_abs": 0.0,
+              "dtypes": [
+                "bool",
+                "float32"
+              ]
+            },
+            "structural_expander": {
+              "leaves": 17,
+              "elements": 7827923,
+              "max_abs": 0.0,
+              "dtypes": [
+                "float32"
+              ]
+            },
+            "structural_refiner": {
+              "leaves": 236,
+              "elements": 26623496,
+              "max_abs": 0.0,
+              "dtypes": [
+                "bool",
+                "float32"
+              ]
+            },
+            "diffusion": {
+              "leaves": 828,
+              "elements": 203307181,
+              "max_abs": 0.0,
+              "dtypes": [
+                "bool",
+                "float32"
+              ]
+            },
+            "distogram": {
+              "leaves": 2,
+              "elements": 36960,
+              "max_abs": 0.0,
+              "dtypes": [
+                "float32"
+              ]
+            },
+            "confidence": {
+              "leaves": 256,
+              "elements": 31067222,
+              "max_abs": 0.0,
+              "dtypes": [
+                "bool",
+                "float32"
+              ]
+            }
+          },
+          "leaves": 4612,
+          "elements": 655791716,
+          "max_abs": 0.0
+        },
+        "coverage_direct_reads": {
+          "checkpoint_tensors": 4482,
+          "tensors_read": 4482,
+          "checkpoint_elements": 655791538,
+          "elements_read": 655791538,
+          "unread_tensors": [],
+          "unread_tensor_count": 0
+        },
+        "value_containment_port_in_checkpoint": {
+          "checkpoint_float_elements": 655791538,
+          "port_float_elements": 655791538,
+          "checkpoint_non_float_elements": 0,
+          "port_non_float_elements": 178,
+          "port_values_absent_from_checkpoint": 0,
+          "max_distance_to_nearest_checkpoint_value": 0.0,
+          "multiplicity_excess": 0
+        },
+        "value_multiset_checkpoint_vs_port": {
+          "native_elements": 655791538,
+          "port_elements": 655791538,
+          "native_non_float_elements": 0,
+          "port_non_float_elements": 178,
+          "comparable": true,
+          "nonfinite_mismatch": 0,
+          "sorted_max_abs": 0.0
+        }
+      },
+      "runtime_s": 287.5,
+      "notes": "",
+      "source": {
+        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "cpu_affinity": 8,
+        "recorded": "2026-10-10 00:54:04"
+      }
+    },
+    "S3_trunk": {
+      "status": "measured",
+      "condition": {
+        "backend": "gpu (NVIDIA RTX PRO 6000 Blackwell Server Edition)",
+        "matmul_precision": "JAX default: the port pins none (TF32 float32 dots on a GPU; jax_default_matmul_precision in the scope: None)",
+        "stage_capture": "<workspace>/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
+        "input": "re-capture native-input.npz + native-derived.npz (bitwise equal to the stored capture's: True / True)",
+        "tape": "re-capture torch/tape.npz + torch/msa.npz (bitwise equal to the stored capture's: True / True)",
+        "kernels": "port defaults: single/diffusion attention xla_jit, triangle attention cueq_jit, triangle multiplication xla on the narrow trunk (_with_cueq_triangle_defaults)",
+        "trunk_dtype": "bfloat16 (shipped default; native TF32 float32 trunk)",
+        "recycles": 10
+      },
+      "headline": {
+        "metric": "relative RMS single (s) / pair (z); residue trunk, then structural refiner",
+        "value": "8.690e-03 / 3.941e-02; 4.082e-03 / 1.928e-02"
+      },
+      "metrics": {
+        "arrays": {
+          "single_inputs": {
+            "relative_rms": 0.0011247099047185791,
+            "max_abs": 0.002022385597229004,
+            "native_max_abs_value": 1.1251652240753174,
+            "native_key": "residue_trunk.out.s_inputs"
+          },
+          "single": {
+            "relative_rms": 0.008689902449132703,
+            "max_abs": 14.4820556640625,
+            "native_max_abs_value": 662.153564453125,
+            "native_key": "residue_trunk.out.s"
+          },
+          "pair": {
+            "relative_rms": 0.039406228791797046,
+            "max_abs": 103.3255615234375,
+            "native_max_abs_value": 547.2071533203125,
+            "native_key": "residue_trunk.out.z"
+          },
+          "structural_single_inputs": {
+            "relative_rms": 0.001519754977001666,
+            "max_abs": 0.0045473575592041016,
+            "native_max_abs_value": 2.195190668106079,
+            "native_key": "structural_trunk.out.s_inputs"
+          },
+          "structural_single": {
+            "relative_rms": 0.004081570730650268,
+            "max_abs": 21.466552734375,
+            "native_max_abs_value": 2167.331298828125,
+            "native_key": "structural_trunk.out.s"
+          },
+          "structural_pair": {
+            "relative_rms": 0.01927666541029127,
+            "max_abs": 256.997314453125,
+            "native_max_abs_value": 4748.5615234375,
+            "native_key": "structural_trunk.out.z"
+          }
+        },
+        "native_boundary_identity": {
+          "structural_trunk.out.s_inputs == diffusion.in.s_inputs": true,
+          "structural_trunk.out.s == diffusion.in.s": true,
+          "structural_trunk.out.z == diffusion.in.z": true,
+          "residue_trunk.out.s_inputs == confidence.in.s_inputs": true,
+          "residue_trunk.out.s == confidence.in.s_trunk": true,
+          "residue_trunk.out.z == confidence.in.z_trunk": true,
+          "diffusion.out.coordinate == confidence.in.x_pred_coords": true
+        },
+        "native_rerun_vs_stored_capture": {
+          "stored": "<workspace>/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A",
+          "new": "<workspace>/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
+          "bitwise": {
+            "native-input.npz": {
+              "all_equal": true,
+              "arrays": {
+                "asym_id": true,
+                "atom_to_structural_tokatom_idx": true,
+                "atom_to_structural_token_idx": true,
+                "atom_to_tokatom_idx": true,
+                "atom_to_token_idx": true,
+                "bond_mask": true,
+                "deletion_matrix": true,
+                "deletion_mean": true,
+                "deletion_value": true,
+                "distogram_rep_atom_mask": true,
+                "entity_id": true,
+                "entity_mol_id": true,
+                "frame_atom_index": true,
+                "has_deletion": true,
+                "has_frame": true,
+                "inference_seed": true,
+                "is_dna": true,
+                "is_ligand": true,
+                "is_protein": true,
+                "is_rna": true,
+                "modified_res_mask": true,
+                "mol_atom_index": true,
+                "mol_id": true,
+                "msa": true,
+                "msa_mask": true,
+                "next_parent_residue_idx": true,
+                "pae_rep_atom_mask": true,
+                "parent_residue_idx": true,
+                "plddt_m_rep_atom_mask": true,
+                "prev_parent_residue_idx": true,
+                "profile": true,
+                "prot_pair_num_alignments": true,
+                "prot_paired_num_alignments": true,
+                "prot_unpair_num_alignments": true,
+                "prot_unpaired_num_alignments": true,
+                "ref_atom_name_chars": true,
+                "ref_charge": true,
+                "ref_element": true,
+                "ref_mask": true,
+                "ref_pos": true,
+                "ref_space_uid": true,
+                "residue_index": true,
+                "residue_token_group_id": true,
+                "resolution": true,
+                "restype": true,
+                "rna_pair_num_alignments": true,
+                "rna_paired_num_alignments": true,
+                "rna_unpair_num_alignments": true,
+                "rna_unpaired_num_alignments": true,
+                "structural_distogram_rep_atom_mask": true,
+                "structural_frame_atom_index": true,
+                "structural_has_frame": true,
+                "structural_is_polymer": true,
+                "structural_pae_rep_atom_mask": true,
+                "structural_polymer_type": true,
+                "structural_seq_pos": true,
+                "structural_token_index": true,
+                "subtoken_role": true,
+                "subtoken_role_id": true,
+                "sym_id": true,
+                "template_aatype": true,
+                "template_atom_mask": true,
+                "template_atom_positions": true,
+                "template_backbone_frame_mask": true,
+                "template_distogram": true,
+                "template_pseudo_beta_mask": true,
+                "template_unit_vector": true,
+                "token_bonds": true,
+                "token_index": true,
+                "twin_token_idx": true
+              }
+            },
+            "native-derived.npz": {
+              "all_equal": true,
+              "arrays": {
+                "d_lm": true,
+                "pad_info.k_pad_left": true,
+                "pad_info.k_pad_right": true,
+                "pad_info.mask_trunked": true,
+                "pad_info.q_pad": true,
+                "v_lm": true
+              }
+            },
+            "native-identity.npz": {
+              "all_equal": true,
+              "arrays": {
+                "output_atom_chain_id": true,
+                "output_atom_element": true,
+                "output_atom_name": true,
+                "output_atom_res_id": true,
+                "output_atom_res_name": true
+              }
+            },
+            "torch/tape.npz": {
+              "all_equal": true,
+              "arrays": {
+                "init_noise": true,
+                "noise_schedule": true,
+                "rotations": true,
+                "step_noises": true,
+                "translations": true
+              }
+            },
+            "torch/msa.npz": {
+              "all_equal": true,
+              "arrays": {
+                "input_deletion_value": true,
+                "input_has_deletion": true,
+                "input_msa": true,
+                "input_msa_mask": true,
+                "rows": true,
+                "selected_deletion_value": true,
+                "selected_has_deletion": true,
+                "selected_msa": true
+              }
+            }
+          },
+          "coordinates": {
+            "samples": 5,
+            "atoms": 602,
+            "all_atom_rmsd_angstrom": [
+              0.0021296722610245557,
+              0.005899904644330506,
+              0.0019594732133872464,
+              0.002064420056174577,
+              0.0027827459291688995
+            ],
+            "max_unaligned_displacement_angstrom": 0.10537579941821044,
+            "ca_atoms": 76,
+            "ca_rmsd_angstrom": [
+              0.002412569240065699,
+              0.0021468146997103707,
+              0.002529870898930651,
+              0.002505620842772041,
+              0.003832837444315633
+            ]
+          },
+          "values_max_abs": {
+            "raw.npz:plddt": 0.004605293273925781,
+            "raw.npz:pae": 0.011854171752929688,
+            "raw.npz:pde": 0.00487518310546875,
+            "raw.npz:summary_confidence.0.ptm": 4.172325134277344e-07,
+            "raw.npz:summary_confidence.1.ptm": 4.231929779052734e-06,
+            "raw.npz:summary_confidence.2.ptm": 3.2782554626464844e-06,
+            "raw.npz:summary_confidence.3.ptm": 4.291534423828125e-06,
+            "raw.npz:summary_confidence.4.ptm": 5.245208740234375e-06,
+            "raw.npz:summary_confidence.0.plddt": 0.00017547607421875,
+            "raw.npz:summary_confidence.1.plddt": 0.00035858154296875,
+            "raw.npz:summary_confidence.2.plddt": 0.000885009765625,
+            "raw.npz:summary_confidence.3.plddt": 0.00031280517578125,
+            "raw.npz:summary_confidence.4.plddt": 0.00016021728515625
+          },
+          "stored_rerun_floor_native_A_vs_B": {
+            "file": "<workspace>/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A-vs-native-B.json",
+            "entity_rmsd": {
+              "A": [
+                0.002070975353390085,
+                0.006316567823634157,
+                0.002115521549282173,
+                0.0019792040895455654,
+                0.0019034006491851722
+              ]
+            },
+            "global_rmsd": [
+              0.002070975353390085,
+              0.006316567823634157,
+              0.002115521549282173,
+              0.0019792040895455654,
+              0.0019034006491851722
+            ]
+          }
+        }
+      },
+      "runtime_s": 147.4,
+      "notes": "",
+      "source": {
+        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "cpu_affinity": 8,
+        "recorded": "2026-10-10 00:54:04"
+      }
+    },
+    "S4_diffusion": {
+      "status": "measured",
+      "condition": {
+        "backend": "gpu (NVIDIA RTX PRO 6000 Blackwell Server Edition)",
+        "matmul_precision": "JAX default: the port pins none (TF32 float32 dots on a GPU; jax_default_matmul_precision in the scope: None)",
+        "stage_capture": "<workspace>/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
+        "input": "re-capture native-input.npz + native-derived.npz (bitwise equal to the stored capture's: True / True)",
+        "tape": "re-capture torch/tape.npz + torch/msa.npz (bitwise equal to the stored capture's: True / True)",
+        "kernels": "port defaults: single/diffusion attention xla_jit, triangle attention cueq_jit, triangle multiplication xla on the narrow trunk (_with_cueq_triangle_defaults)",
+        "trunk_dtype": "n/a (native trunk injected)",
+        "diffusion_dtype": "float32 (native skip_amp.sample_diffusion=true)",
+        "injected_native": "stages.npz diffusion.in.{s_inputs, s, z} (the structural tensors run_sample_diffusion_stage received) at structural_token_expand / structural_refiner_stack; residue trunk from residue_trunk.out; torch/tape.npz noise schedule, initial/step noise, rotations, translations",
+        "samples_x_steps": "5 x 200"
+      },
+      "headline": {
+        "metric": "per-sample all-atom / CA RMSD (A), worst sample",
+        "value": "0.0052 / 0.0028"
+      },
+      "metrics": {
+        "samples": 5,
+        "atoms": 602,
+        "all_atom_rmsd_angstrom": [
+          0.002330591957273952,
+          0.0052065720453673215,
+          0.0022463290678152587,
+          0.0021276780339740736,
+          0.002591308697490177
+        ],
+        "max_unaligned_displacement_angstrom": 0.07580906403810657,
+        "ca_atoms": 76,
+        "ca_rmsd_angstrom": [
+          0.002711246852511229,
+          0.002824945199508156,
+          0.002698946568583959,
+          0.002678964466404544,
+          0.0027665610169927655
+        ],
+        "injection_calls": {
+          "residue_trunk": 1,
+          "structural_expand": 1,
+          "structural_refiner": 1
+        },
+        "injected_width": {
+          "residue_trunk.out.s": "float32",
+          "residue_trunk.out.z": "float32",
+          "residue_trunk.out.s_inputs": "float32",
+          "diffusion.in.s_inputs": "float32",
+          "diffusion.in.s": "float32",
+          "diffusion.in.z": "float32"
+        },
+        "native_boundary_identity": {
+          "structural_trunk.out.s_inputs == diffusion.in.s_inputs": true,
+          "structural_trunk.out.s == diffusion.in.s": true,
+          "structural_trunk.out.z == diffusion.in.z": true,
+          "residue_trunk.out.s_inputs == confidence.in.s_inputs": true,
+          "residue_trunk.out.s == confidence.in.s_trunk": true,
+          "residue_trunk.out.z == confidence.in.z_trunk": true,
+          "diffusion.out.coordinate == confidence.in.x_pred_coords": true
+        },
+        "native_rerun_vs_stored_capture": {
+          "stored": "<workspace>/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A",
+          "new": "<workspace>/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
+          "bitwise": {
+            "native-input.npz": {
+              "all_equal": true,
+              "arrays": {
+                "asym_id": true,
+                "atom_to_structural_tokatom_idx": true,
+                "atom_to_structural_token_idx": true,
+                "atom_to_tokatom_idx": true,
+                "atom_to_token_idx": true,
+                "bond_mask": true,
+                "deletion_matrix": true,
+                "deletion_mean": true,
+                "deletion_value": true,
+                "distogram_rep_atom_mask": true,
+                "entity_id": true,
+                "entity_mol_id": true,
+                "frame_atom_index": true,
+                "has_deletion": true,
+                "has_frame": true,
+                "inference_seed": true,
+                "is_dna": true,
+                "is_ligand": true,
+                "is_protein": true,
+                "is_rna": true,
+                "modified_res_mask": true,
+                "mol_atom_index": true,
+                "mol_id": true,
+                "msa": true,
+                "msa_mask": true,
+                "next_parent_residue_idx": true,
+                "pae_rep_atom_mask": true,
+                "parent_residue_idx": true,
+                "plddt_m_rep_atom_mask": true,
+                "prev_parent_residue_idx": true,
+                "profile": true,
+                "prot_pair_num_alignments": true,
+                "prot_paired_num_alignments": true,
+                "prot_unpair_num_alignments": true,
+                "prot_unpaired_num_alignments": true,
+                "ref_atom_name_chars": true,
+                "ref_charge": true,
+                "ref_element": true,
+                "ref_mask": true,
+                "ref_pos": true,
+                "ref_space_uid": true,
+                "residue_index": true,
+                "residue_token_group_id": true,
+                "resolution": true,
+                "restype": true,
+                "rna_pair_num_alignments": true,
+                "rna_paired_num_alignments": true,
+                "rna_unpair_num_alignments": true,
+                "rna_unpaired_num_alignments": true,
+                "structural_distogram_rep_atom_mask": true,
+                "structural_frame_atom_index": true,
+                "structural_has_frame": true,
+                "structural_is_polymer": true,
+                "structural_pae_rep_atom_mask": true,
+                "structural_polymer_type": true,
+                "structural_seq_pos": true,
+                "structural_token_index": true,
+                "subtoken_role": true,
+                "subtoken_role_id": true,
+                "sym_id": true,
+                "template_aatype": true,
+                "template_atom_mask": true,
+                "template_atom_positions": true,
+                "template_backbone_frame_mask": true,
+                "template_distogram": true,
+                "template_pseudo_beta_mask": true,
+                "template_unit_vector": true,
+                "token_bonds": true,
+                "token_index": true,
+                "twin_token_idx": true
+              }
+            },
+            "native-derived.npz": {
+              "all_equal": true,
+              "arrays": {
+                "d_lm": true,
+                "pad_info.k_pad_left": true,
+                "pad_info.k_pad_right": true,
+                "pad_info.mask_trunked": true,
+                "pad_info.q_pad": true,
+                "v_lm": true
+              }
+            },
+            "native-identity.npz": {
+              "all_equal": true,
+              "arrays": {
+                "output_atom_chain_id": true,
+                "output_atom_element": true,
+                "output_atom_name": true,
+                "output_atom_res_id": true,
+                "output_atom_res_name": true
+              }
+            },
+            "torch/tape.npz": {
+              "all_equal": true,
+              "arrays": {
+                "init_noise": true,
+                "noise_schedule": true,
+                "rotations": true,
+                "step_noises": true,
+                "translations": true
+              }
+            },
+            "torch/msa.npz": {
+              "all_equal": true,
+              "arrays": {
+                "input_deletion_value": true,
+                "input_has_deletion": true,
+                "input_msa": true,
+                "input_msa_mask": true,
+                "rows": true,
+                "selected_deletion_value": true,
+                "selected_has_deletion": true,
+                "selected_msa": true
+              }
+            }
+          },
+          "coordinates": {
+            "samples": 5,
+            "atoms": 602,
+            "all_atom_rmsd_angstrom": [
+              0.0021296722610245557,
+              0.005899904644330506,
+              0.0019594732133872464,
+              0.002064420056174577,
+              0.0027827459291688995
+            ],
+            "max_unaligned_displacement_angstrom": 0.10537579941821044,
+            "ca_atoms": 76,
+            "ca_rmsd_angstrom": [
+              0.002412569240065699,
+              0.0021468146997103707,
+              0.002529870898930651,
+              0.002505620842772041,
+              0.003832837444315633
+            ]
+          },
+          "values_max_abs": {
+            "raw.npz:plddt": 0.004605293273925781,
+            "raw.npz:pae": 0.011854171752929688,
+            "raw.npz:pde": 0.00487518310546875,
+            "raw.npz:summary_confidence.0.ptm": 4.172325134277344e-07,
+            "raw.npz:summary_confidence.1.ptm": 4.231929779052734e-06,
+            "raw.npz:summary_confidence.2.ptm": 3.2782554626464844e-06,
+            "raw.npz:summary_confidence.3.ptm": 4.291534423828125e-06,
+            "raw.npz:summary_confidence.4.ptm": 5.245208740234375e-06,
+            "raw.npz:summary_confidence.0.plddt": 0.00017547607421875,
+            "raw.npz:summary_confidence.1.plddt": 0.00035858154296875,
+            "raw.npz:summary_confidence.2.plddt": 0.000885009765625,
+            "raw.npz:summary_confidence.3.plddt": 0.00031280517578125,
+            "raw.npz:summary_confidence.4.plddt": 0.00016021728515625
+          },
+          "stored_rerun_floor_native_A_vs_B": {
+            "file": "<workspace>/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A-vs-native-B.json",
+            "entity_rmsd": {
+              "A": [
+                0.002070975353390085,
+                0.006316567823634157,
+                0.002115521549282173,
+                0.0019792040895455654,
+                0.0019034006491851722
+              ]
+            },
+            "global_rmsd": [
+              0.002070975353390085,
+              0.006316567823634157,
+              0.002115521549282173,
+              0.0019792040895455654,
+              0.0019034006491851722
+            ]
+          }
+        }
+      },
+      "runtime_s": 167.1,
+      "notes": "Reference: the re-capture's own sampler output (diffusion.out.coordinate), from the tensors injected here.",
+      "source": {
+        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "cpu_affinity": 8,
+        "recorded": "2026-10-10 00:54:04"
+      }
+    },
+    "S5_confidence": {
+      "status": "measured",
+      "condition": {
+        "backend": "gpu (NVIDIA RTX PRO 6000 Blackwell Server Edition)",
+        "matmul_precision": "JAX default: the port pins none (TF32 float32 dots on a GPU; jax_default_matmul_precision in the scope: None)",
+        "stage_capture": "<workspace>/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
+        "input": "re-capture native-input.npz + native-derived.npz (bitwise equal to the stored capture's: True / True)",
+        "tape": "re-capture torch/tape.npz + torch/msa.npz (bitwise equal to the stored capture's: True / True)",
+        "kernels": "port defaults: single/diffusion attention xla_jit, triangle attention cueq_jit, triangle multiplication xla on the narrow trunk (_with_cueq_triangle_defaults)",
+        "trunk_dtype": "n/a (native trunk injected)",
+        "confidence_dtype": "bfloat16 (shipped default, cast_confidence_params; native skip_amp.confidence_head=true)",
+        "injected_native": "stages.npz confidence.in.{s_inputs, s_trunk, z_trunk} replace pairformer_output_from_s_inputs; confidence.in.x_pred_coords replace sample_diffusion; summaries vs the re-capture's raw.npz"
+      },
+      "headline": {
+        "metric": "max |d| atom pLDDT (0-1) / PAE (A) / pTM",
+        "value": "0.00194 / 0.172 / 4.17e-05"
+      },
+      "metrics": {
+        "plddt_logits": {
+          "port_name": "plddt",
+          "max_abs": 0.0905148983001709,
+          "relative_rms": 0.0029594804720912984,
+          "native_range": [
+            -5.209647178649902,
+            9.300817489624023
+          ]
+        },
+        "pae_logits": {
+          "port_name": "pae",
+          "max_abs": 0.09482801705598831,
+          "relative_rms": 0.0025819813708221383,
+          "native_range": [
+            -3.7261600494384766,
+            13.648001670837402
+          ]
+        },
+        "pde_logits": {
+          "port_name": "pde",
+          "max_abs": 0.05399465560913086,
+          "relative_rms": 0.002081647424628684,
+          "native_range": [
+            -4.249044895172119,
+            12.183917045593262
+          ]
+        },
+        "resolved_logits": {
+          "port_name": "resolved",
+          "max_abs": 0.025848388671875,
+          "relative_rms": 0.0027932868750601744,
+          "native_range": [
+            -4.376829624176025,
+            4.376148700714111
+          ]
+        },
+        "atom_plddt": {
+          "port_name": "atom_plddt",
+          "max_abs": 0.001938939094543457,
+          "relative_rms": 0.00035349511489206483,
+          "native_range": [
+            0.7025092244148254,
+            0.9883438944816589
+          ]
+        },
+        "token_pair_pae": {
+          "port_name": "token_pair_pae",
+          "max_abs": 0.17222023010253906,
+          "relative_rms": 0.003725271354998896,
+          "native_range": [
+            0.27670204639434814,
+            22.300363540649414
+          ]
+        },
+        "ptm": {
+          "port_name": "summary_ptm",
+          "max_abs": 4.166364669799805e-05,
+          "relative_rms": 3.256699141406852e-05,
+          "native_range": [
+            0.9458062052726746,
+            0.9459925293922424
+          ]
+        },
+        "summary_plddt": {
+          "port_name": "summary_plddt",
+          "max_abs": 0.0168609619140625,
+          "relative_rms": 0.00014638245014841696,
+          "native_range": [
+            96.31158447265625,
+            96.3253402709961
+          ]
+        },
+        "port_output_keys": [
+          "atom_plddt",
+          "chain_gpde",
+          "chain_iptm",
+          "chain_pair_gpde",
+          "chain_pair_iptm",
+          "chain_pair_iptm_global",
+          "chain_pair_plddt",
+          "chain_plddt",
+          "chain_ptm",
+          "contact_probs",
+          "coordinate",
+          "disorder",
+          "distogram_logits",
+          "has_clash",
+          "num_recycles",
+          "pae",
+          "pde",
+          "plddt",
+          "ranking_score",
+          "resolved",
+          "summary_gpde",
+          "summary_iptm",
+          "summary_plddt",
+          "summary_ptm",
+          "summary_ranking_score",
+          "token_pair_pae",
+          "token_pair_pde"
+        ],
+        "injection_calls": {
+          "residue_trunk": 1,
+          "structural_expand": 1,
+          "structural_refiner": 1,
+          "sample_diffusion": 1
+        },
+        "injected_width": {
+          "confidence.in.s_trunk": "float32",
+          "confidence.in.z_trunk": "float32",
+          "confidence.in.x_pred_coords": "float32",
+          "confidence.in.s_inputs": "float32",
+          "diffusion.in.s_inputs": "float32",
+          "diffusion.in.s": "float32",
+          "diffusion.in.z": "float32"
+        },
+        "native_boundary_identity": {
+          "structural_trunk.out.s_inputs == diffusion.in.s_inputs": true,
+          "structural_trunk.out.s == diffusion.in.s": true,
+          "structural_trunk.out.z == diffusion.in.z": true,
+          "residue_trunk.out.s_inputs == confidence.in.s_inputs": true,
+          "residue_trunk.out.s == confidence.in.s_trunk": true,
+          "residue_trunk.out.z == confidence.in.z_trunk": true,
+          "diffusion.out.coordinate == confidence.in.x_pred_coords": true
+        },
+        "native_rerun_vs_stored_capture": {
+          "stored": "<workspace>/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A",
+          "new": "<workspace>/foldjax-bench/stage-captures-20261001/opendde/protein_1ubq/native-A",
+          "bitwise": {
+            "native-input.npz": {
+              "all_equal": true,
+              "arrays": {
+                "asym_id": true,
+                "atom_to_structural_tokatom_idx": true,
+                "atom_to_structural_token_idx": true,
+                "atom_to_tokatom_idx": true,
+                "atom_to_token_idx": true,
+                "bond_mask": true,
+                "deletion_matrix": true,
+                "deletion_mean": true,
+                "deletion_value": true,
+                "distogram_rep_atom_mask": true,
+                "entity_id": true,
+                "entity_mol_id": true,
+                "frame_atom_index": true,
+                "has_deletion": true,
+                "has_frame": true,
+                "inference_seed": true,
+                "is_dna": true,
+                "is_ligand": true,
+                "is_protein": true,
+                "is_rna": true,
+                "modified_res_mask": true,
+                "mol_atom_index": true,
+                "mol_id": true,
+                "msa": true,
+                "msa_mask": true,
+                "next_parent_residue_idx": true,
+                "pae_rep_atom_mask": true,
+                "parent_residue_idx": true,
+                "plddt_m_rep_atom_mask": true,
+                "prev_parent_residue_idx": true,
+                "profile": true,
+                "prot_pair_num_alignments": true,
+                "prot_paired_num_alignments": true,
+                "prot_unpair_num_alignments": true,
+                "prot_unpaired_num_alignments": true,
+                "ref_atom_name_chars": true,
+                "ref_charge": true,
+                "ref_element": true,
+                "ref_mask": true,
+                "ref_pos": true,
+                "ref_space_uid": true,
+                "residue_index": true,
+                "residue_token_group_id": true,
+                "resolution": true,
+                "restype": true,
+                "rna_pair_num_alignments": true,
+                "rna_paired_num_alignments": true,
+                "rna_unpair_num_alignments": true,
+                "rna_unpaired_num_alignments": true,
+                "structural_distogram_rep_atom_mask": true,
+                "structural_frame_atom_index": true,
+                "structural_has_frame": true,
+                "structural_is_polymer": true,
+                "structural_pae_rep_atom_mask": true,
+                "structural_polymer_type": true,
+                "structural_seq_pos": true,
+                "structural_token_index": true,
+                "subtoken_role": true,
+                "subtoken_role_id": true,
+                "sym_id": true,
+                "template_aatype": true,
+                "template_atom_mask": true,
+                "template_atom_positions": true,
+                "template_backbone_frame_mask": true,
+                "template_distogram": true,
+                "template_pseudo_beta_mask": true,
+                "template_unit_vector": true,
+                "token_bonds": true,
+                "token_index": true,
+                "twin_token_idx": true
+              }
+            },
+            "native-derived.npz": {
+              "all_equal": true,
+              "arrays": {
+                "d_lm": true,
+                "pad_info.k_pad_left": true,
+                "pad_info.k_pad_right": true,
+                "pad_info.mask_trunked": true,
+                "pad_info.q_pad": true,
+                "v_lm": true
+              }
+            },
+            "native-identity.npz": {
+              "all_equal": true,
+              "arrays": {
+                "output_atom_chain_id": true,
+                "output_atom_element": true,
+                "output_atom_name": true,
+                "output_atom_res_id": true,
+                "output_atom_res_name": true
+              }
+            },
+            "torch/tape.npz": {
+              "all_equal": true,
+              "arrays": {
+                "init_noise": true,
+                "noise_schedule": true,
+                "rotations": true,
+                "step_noises": true,
+                "translations": true
+              }
+            },
+            "torch/msa.npz": {
+              "all_equal": true,
+              "arrays": {
+                "input_deletion_value": true,
+                "input_has_deletion": true,
+                "input_msa": true,
+                "input_msa_mask": true,
+                "rows": true,
+                "selected_deletion_value": true,
+                "selected_has_deletion": true,
+                "selected_msa": true
+              }
+            }
+          },
+          "coordinates": {
+            "samples": 5,
+            "atoms": 602,
+            "all_atom_rmsd_angstrom": [
+              0.0021296722610245557,
+              0.005899904644330506,
+              0.0019594732133872464,
+              0.002064420056174577,
+              0.0027827459291688995
+            ],
+            "max_unaligned_displacement_angstrom": 0.10537579941821044,
+            "ca_atoms": 76,
+            "ca_rmsd_angstrom": [
+              0.002412569240065699,
+              0.0021468146997103707,
+              0.002529870898930651,
+              0.002505620842772041,
+              0.003832837444315633
+            ]
+          },
+          "values_max_abs": {
+            "raw.npz:plddt": 0.004605293273925781,
+            "raw.npz:pae": 0.011854171752929688,
+            "raw.npz:pde": 0.00487518310546875,
+            "raw.npz:summary_confidence.0.ptm": 4.172325134277344e-07,
+            "raw.npz:summary_confidence.1.ptm": 4.231929779052734e-06,
+            "raw.npz:summary_confidence.2.ptm": 3.2782554626464844e-06,
+            "raw.npz:summary_confidence.3.ptm": 4.291534423828125e-06,
+            "raw.npz:summary_confidence.4.ptm": 5.245208740234375e-06,
+            "raw.npz:summary_confidence.0.plddt": 0.00017547607421875,
+            "raw.npz:summary_confidence.1.plddt": 0.00035858154296875,
+            "raw.npz:summary_confidence.2.plddt": 0.000885009765625,
+            "raw.npz:summary_confidence.3.plddt": 0.00031280517578125,
+            "raw.npz:summary_confidence.4.plddt": 0.00016021728515625
+          },
+          "stored_rerun_floor_native_A_vs_B": {
+            "file": "<workspace>/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A-vs-native-B.json",
+            "entity_rmsd": {
+              "A": [
+                0.002070975353390085,
+                0.006316567823634157,
+                0.002115521549282173,
+                0.0019792040895455654,
+                0.0019034006491851722
+              ]
+            },
+            "global_rmsd": [
+              0.002070975353390085,
+              0.006316567823634157,
+              0.002115521549282173,
+              0.0019792040895455654,
+              0.0019034006491851722
+            ]
+          }
+        }
+      },
+      "runtime_s": 4.3,
+      "notes": "Logits are compared with the re-capture's confidence-head outputs; the released summaries with its raw.npz (the port's postprocess on the port's logits).",
+      "source": {
+        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "cpu_affinity": 8,
+        "recorded": "2026-10-10 00:54:04"
+      }
+    },
+    "S6_final": {
+      "status": "measured",
+      "condition": {
+        "backend": "gpu (NVIDIA RTX PRO 6000 Blackwell Server Edition)",
+        "matmul_precision": "JAX default: the port pins none (TF32 float32 dots on a GPU; jax_default_matmul_precision in the scope: None)",
+        "input": "native-input.npz + native-derived.npz (upstream featurizer output; core-only)",
+        "trunk_dtype": "bfloat16 (shipped default; native TF32 float32 trunk)",
+        "kernels": "port defaults: single/diffusion attention xla_jit, triangle attention cueq_jit, triangle multiplication xla on the narrow trunk (_with_cueq_triangle_defaults)",
+        "injected_native": "tape.npz (noise schedule, initial/churn noise, rotations, translations) + msa.npz per-recycle MSA rows",
+        "samples_x_steps": "5 x 200 (all samples; the parity subset replays sample 0 only)",
+        "confidence": "on"
+      },
+      "headline": {
+        "metric": "per-sample all-atom / CA RMSD (A), worst sample",
+        "value": "0.1551 / 0.0218"
+      },
+      "metrics": {
+        "samples": 5,
+        "atoms": 602,
+        "all_atom_rmsd_angstrom": [
+          0.013064377641648955,
+          0.1551399160276232,
+          0.012927684239873978,
+          0.013438668295598939,
+          0.013177603373983566
+        ],
+        "max_unaligned_displacement_angstrom": 2.4842535701872657,
+        "ca_atoms": 76,
+        "ca_rmsd_angstrom": [
+          0.013389460653526076,
+          0.021849343707645852,
+          0.014576461434073266,
+          0.01463458265453089,
+          0.013342489941338282
+        ],
+        "entity_rmsd_angstrom_panel_metric": [
+          {
+            "0": 0.013064377641648955
+          },
+          {
+            "0": 0.1551399160276232
+          },
+          {
+            "0": 0.012927684239873978
+          },
+          {
+            "0": 0.013438668295598939
+          },
+          {
+            "0": 0.013177603373983566
+          }
+        ],
+        "port_output_keys": [
+          "atom_plddt",
+          "chain_gpde",
+          "chain_iptm",
+          "chain_pair_gpde",
+          "chain_pair_iptm",
+          "chain_pair_iptm_global",
+          "chain_pair_plddt",
+          "chain_plddt",
+          "chain_ptm",
+          "contact_probs",
+          "coordinate",
+          "disorder",
+          "distogram_logits",
+          "has_clash",
+          "num_recycles",
+          "pae",
+          "pde",
+          "plddt",
+          "ranking_score",
+          "resolved",
+          "summary_gpde",
+          "summary_iptm",
+          "summary_plddt",
+          "summary_ptm",
+          "summary_ranking_score",
+          "token_pair_pae",
+          "token_pair_pde"
+        ],
+        "end_to_end_confidence": {
+          "plddt_logits": {
+            "port_name": "plddt",
+            "max_abs": 0.10068464279174805,
+            "relative_rms": 0.004564223618895025,
+            "native_range": [
+              -5.209954261779785,
+              9.300931930541992
+            ]
+          },
+          "pae_logits": {
+            "port_name": "pae",
+            "max_abs": 0.33154964447021484,
+            "relative_rms": 0.010362959322727325,
+            "native_range": [
+              -3.7281641960144043,
+              13.648130416870117
+            ]
+          },
+          "pde_logits": {
+            "port_name": "pde",
+            "max_abs": 0.2772970199584961,
+            "relative_rms": 0.009386633072048163,
+            "native_range": [
+              -4.2475152015686035,
+              12.18323040008545
+            ]
+          },
+          "atom_plddt": {
+            "port_name": "atom_plddt",
+            "max_abs": 0.007250070571899414,
+            "relative_rms": 0.0008932604325295976,
+            "native_range": [
+              0.7024821043014526,
+              0.9883439540863037
+            ]
+          },
+          "token_pair_pae": {
+            "port_name": "token_pair_pae",
+            "max_abs": 0.22236919403076172,
+            "relative_rms": 0.008462259196642176,
+            "native_range": [
+              0.27672523260116577,
+              22.30453109741211
+            ]
+          },
+          "ptm": {
+            "port_name": "summary_ptm",
+            "max_abs": 0.00024574995040893555,
+            "relative_rms": 0.00022385723220528318,
+            "native_range": [
+              0.9458019733428955,
+              0.9459872841835022
+            ]
+          }
+        }
+      },
+      "runtime_s": 280.7,
+      "notes": "end_to_end_confidence compares the replay's own confidence with raw.npz; it is not S5, which needs the native trunk injected.",
+      "source": {
+        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "cpu_affinity": 8,
+        "recorded": "2026-10-10 00:54:04"
+      }
+    }
+  }
+}

@@ -1,0 +1,1697 @@
+{
+  "model": "alphafold3",
+  "device": "gpu",
+  "capture": "<workspace>/foldjax-bench/stage-parity-gpu/captures/alphafold3/e9_8reh/harness-native",
+  "environment": {
+    "host": "master",
+    "python": "3.13.15",
+    "omp_num_threads": null,
+    "jax_platforms": null,
+    "foldjax_home": "<workspace>/foldjax-bench/stage-parity-gpu/fjhome",
+    "cpu_affinity": 8,
+    "git_commit": "a951484bca2e4a515354fffe8d87fc21c767e623",
+    "jax": "0.11.1",
+    "jaxlib": "0.11.1",
+    "device": "gpu",
+    "device_kind": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "cuda_visible_devices": "0"
+  },
+  "wall_s": 1.0,
+  "stages": {
+    "S1_features": {
+      "status": "measured",
+      "condition": {
+        "backend": "gpu (both arms; kernel selection autotune)",
+        "matmul_precision": "AF3 default (bfloat16: 'all'; not pinned)",
+        "native": "DeepMind run_alphafold.py v3.0.4 (archived checkout deepmind-af3-85c4d20): ModelRunner + predict_structure",
+        "port": "FoldJAX vendored AF3 through foldjax.predict, options buckets=DeepMind's list",
+        "environment": "the common FoldJAX JAX environment for both arms",
+        "samples_x_steps": "5 x 200; recycles 10",
+        "attention": "triton",
+        "buckets": [
+          256,
+          512,
+          768,
+          1024,
+          1280,
+          1536,
+          2048,
+          2560,
+          3072,
+          3584,
+          4096,
+          4608,
+          5120
+        ],
+        "seed": 101,
+        "alphafold3_python_source": "9 of 86 files of the imported alphafold3 package differ between the arms (FoldJAX's vendored copy carries its own edits); run_alphafold.py itself byte-identical: True",
+        "compared": "the featurised batch each arm handed ModelRunner.run_inference (input.npz + input-metadata.json)"
+      },
+      "headline": {
+        "metric": "arrays bitwise identical (count) / max |d| (float)",
+        "value": "59/59 identical (all, metadata equal) / 0.0"
+      },
+      "metrics": {
+        "summary": {
+          "arrays_compared": 59,
+          "categorical_arrays": 54,
+          "float_arrays": 5,
+          "shape_mismatches": [],
+          "min_exact_match_fraction": 1.0,
+          "arrays_not_exact": [],
+          "max_float_max_abs": 0.0,
+          "max_float_relative_rms": 0.0
+        },
+        "bitwise_identical": true,
+        "bitwise": {
+          "aatype": true,
+          "asym_id": true,
+          "deletion_matrix": true,
+          "deletion_mean": true,
+          "entity_id": true,
+          "frames_mask": true,
+          "is_dna": true,
+          "is_ligand": true,
+          "is_nonstandard_polymer_chain": true,
+          "is_protein": true,
+          "is_rna": true,
+          "is_water": true,
+          "msa": true,
+          "msa_mask": true,
+          "num_alignments": true,
+          "pred_dense_atom_mask": true,
+          "profile": true,
+          "queries_to_keys:gather_idxs": true,
+          "queries_to_keys:gather_mask": true,
+          "queries_to_keys:input_shape": true,
+          "queries_to_token_atoms:gather_idxs": true,
+          "queries_to_token_atoms:gather_mask": true,
+          "queries_to_token_atoms:input_shape": true,
+          "ref_atom_name_chars": true,
+          "ref_charge": true,
+          "ref_element": true,
+          "ref_mask": true,
+          "ref_pos": true,
+          "ref_space_uid": true,
+          "residue_center_index": true,
+          "residue_index": true,
+          "seq_length": true,
+          "seq_mask": true,
+          "sym_id": true,
+          "template_aatype": true,
+          "template_atom_mask": true,
+          "template_atom_positions": true,
+          "token_atoms_to_polymer_ligand_bonds:gather_idxs": true,
+          "token_atoms_to_polymer_ligand_bonds:gather_mask": true,
+          "token_atoms_to_polymer_ligand_bonds:input_shape": true,
+          "token_atoms_to_pseudo_beta:gather_idxs": true,
+          "token_atoms_to_pseudo_beta:gather_mask": true,
+          "token_atoms_to_pseudo_beta:input_shape": true,
+          "token_atoms_to_queries:gather_idxs": true,
+          "token_atoms_to_queries:gather_mask": true,
+          "token_atoms_to_queries:input_shape": true,
+          "token_index": true,
+          "tokens_to_keys:gather_idxs": true,
+          "tokens_to_keys:gather_mask": true,
+          "tokens_to_keys:input_shape": true,
+          "tokens_to_ligand_ligand_bonds:gather_idxs": true,
+          "tokens_to_ligand_ligand_bonds:gather_mask": true,
+          "tokens_to_ligand_ligand_bonds:input_shape": true,
+          "tokens_to_polymer_ligand_bonds:gather_idxs": true,
+          "tokens_to_polymer_ligand_bonds:gather_mask": true,
+          "tokens_to_polymer_ligand_bonds:input_shape": true,
+          "tokens_to_queries:gather_idxs": true,
+          "tokens_to_queries:gather_mask": true,
+          "tokens_to_queries:input_shape": true
+        },
+        "metadata_equal": true,
+        "only_in_port": [],
+        "only_in_native": [],
+        "arrays": {
+          "aatype": {
+            "port_shape": [
+              256
+            ],
+            "native_shape": [
+              256
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "asym_id": {
+            "port_shape": [
+              256
+            ],
+            "native_shape": [
+              256
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "deletion_matrix": {
+            "port_shape": [
+              16384,
+              256
+            ],
+            "native_shape": [
+              16384,
+              256
+            ],
+            "port_dtype": "int8",
+            "native_dtype": "int8",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "deletion_mean": {
+            "port_shape": [
+              256
+            ],
+            "native_shape": [
+              256
+            ],
+            "port_dtype": "float64",
+            "native_dtype": "float64",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "entity_id": {
+            "port_shape": [
+              256
+            ],
+            "native_shape": [
+              256
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "frames_mask": {
+            "port_shape": [
+              256
+            ],
+            "native_shape": [
+              256
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "is_dna": {
+            "port_shape": [
+              256
+            ],
+            "native_shape": [
+              256
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "is_ligand": {
+            "port_shape": [
+              256
+            ],
+            "native_shape": [
+              256
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "is_nonstandard_polymer_chain": {
+            "port_shape": [
+              256
+            ],
+            "native_shape": [
+              256
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "is_protein": {
+            "port_shape": [
+              256
+            ],
+            "native_shape": [
+              256
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "is_rna": {
+            "port_shape": [
+              256
+            ],
+            "native_shape": [
+              256
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "is_water": {
+            "port_shape": [
+              256
+            ],
+            "native_shape": [
+              256
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "msa": {
+            "port_shape": [
+              16384,
+              256
+            ],
+            "native_shape": [
+              16384,
+              256
+            ],
+            "port_dtype": "int8",
+            "native_dtype": "int8",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "msa_mask": {
+            "port_shape": [
+              16384,
+              256
+            ],
+            "native_shape": [
+              16384,
+              256
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "num_alignments": {
+            "port_shape": [],
+            "native_shape": [],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "pred_dense_atom_mask": {
+            "port_shape": [
+              256,
+              24
+            ],
+            "native_shape": [
+              256,
+              24
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "profile": {
+            "port_shape": [
+              256,
+              31
+            ],
+            "native_shape": [
+              256,
+              31
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "queries_to_keys:gather_idxs": {
+            "port_shape": [
+              192,
+              128
+            ],
+            "native_shape": [
+              192,
+              128
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "queries_to_keys:gather_mask": {
+            "port_shape": [
+              192,
+              128
+            ],
+            "native_shape": [
+              192,
+              128
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "queries_to_keys:input_shape": {
+            "port_shape": [
+              2
+            ],
+            "native_shape": [
+              2
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "queries_to_token_atoms:gather_idxs": {
+            "port_shape": [
+              256,
+              24
+            ],
+            "native_shape": [
+              256,
+              24
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "queries_to_token_atoms:gather_mask": {
+            "port_shape": [
+              256,
+              24
+            ],
+            "native_shape": [
+              256,
+              24
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "queries_to_token_atoms:input_shape": {
+            "port_shape": [
+              2
+            ],
+            "native_shape": [
+              2
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "ref_atom_name_chars": {
+            "port_shape": [
+              256,
+              24,
+              4
+            ],
+            "native_shape": [
+              256,
+              24,
+              4
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "ref_charge": {
+            "port_shape": [
+              256,
+              24
+            ],
+            "native_shape": [
+              256,
+              24
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "ref_element": {
+            "port_shape": [
+              256,
+              24
+            ],
+            "native_shape": [
+              256,
+              24
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "ref_mask": {
+            "port_shape": [
+              256,
+              24
+            ],
+            "native_shape": [
+              256,
+              24
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "ref_pos": {
+            "port_shape": [
+              256,
+              24,
+              3
+            ],
+            "native_shape": [
+              256,
+              24,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "ref_space_uid": {
+            "port_shape": [
+              256,
+              24
+            ],
+            "native_shape": [
+              256,
+              24
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "residue_center_index": {
+            "port_shape": [
+              256
+            ],
+            "native_shape": [
+              256
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "residue_index": {
+            "port_shape": [
+              256
+            ],
+            "native_shape": [
+              256
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "seq_length": {
+            "port_shape": [],
+            "native_shape": [],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "seq_mask": {
+            "port_shape": [
+              256
+            ],
+            "native_shape": [
+              256
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "sym_id": {
+            "port_shape": [
+              256
+            ],
+            "native_shape": [
+              256
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "template_aatype": {
+            "port_shape": [
+              4,
+              256
+            ],
+            "native_shape": [
+              4,
+              256
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "template_atom_mask": {
+            "port_shape": [
+              4,
+              256,
+              24
+            ],
+            "native_shape": [
+              4,
+              256,
+              24
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "template_atom_positions": {
+            "port_shape": [
+              4,
+              256,
+              24,
+              3
+            ],
+            "native_shape": [
+              4,
+              256,
+              24,
+              3
+            ],
+            "port_dtype": "float32",
+            "native_dtype": "float32",
+            "shape_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "token_atoms_to_polymer_ligand_bonds:gather_idxs": {
+            "port_shape": [
+              256,
+              2
+            ],
+            "native_shape": [
+              256,
+              2
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "token_atoms_to_polymer_ligand_bonds:gather_mask": {
+            "port_shape": [
+              256,
+              2
+            ],
+            "native_shape": [
+              256,
+              2
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "token_atoms_to_polymer_ligand_bonds:input_shape": {
+            "port_shape": [
+              2
+            ],
+            "native_shape": [
+              2
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "token_atoms_to_pseudo_beta:gather_idxs": {
+            "port_shape": [
+              256
+            ],
+            "native_shape": [
+              256
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "token_atoms_to_pseudo_beta:gather_mask": {
+            "port_shape": [
+              256
+            ],
+            "native_shape": [
+              256
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "token_atoms_to_pseudo_beta:input_shape": {
+            "port_shape": [
+              2
+            ],
+            "native_shape": [
+              2
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "token_atoms_to_queries:gather_idxs": {
+            "port_shape": [
+              192,
+              32
+            ],
+            "native_shape": [
+              192,
+              32
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "token_atoms_to_queries:gather_mask": {
+            "port_shape": [
+              192,
+              32
+            ],
+            "native_shape": [
+              192,
+              32
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "token_atoms_to_queries:input_shape": {
+            "port_shape": [
+              2
+            ],
+            "native_shape": [
+              2
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "token_index": {
+            "port_shape": [
+              256
+            ],
+            "native_shape": [
+              256
+            ],
+            "port_dtype": "int32",
+            "native_dtype": "int32",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "tokens_to_keys:gather_idxs": {
+            "port_shape": [
+              192,
+              128
+            ],
+            "native_shape": [
+              192,
+              128
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "tokens_to_keys:gather_mask": {
+            "port_shape": [
+              192,
+              128
+            ],
+            "native_shape": [
+              192,
+              128
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "tokens_to_keys:input_shape": {
+            "port_shape": [
+              1
+            ],
+            "native_shape": [
+              1
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "tokens_to_ligand_ligand_bonds:gather_idxs": {
+            "port_shape": [
+              2560,
+              2
+            ],
+            "native_shape": [
+              2560,
+              2
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "tokens_to_ligand_ligand_bonds:gather_mask": {
+            "port_shape": [
+              2560,
+              2
+            ],
+            "native_shape": [
+              2560,
+              2
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "tokens_to_ligand_ligand_bonds:input_shape": {
+            "port_shape": [
+              1
+            ],
+            "native_shape": [
+              1
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "tokens_to_polymer_ligand_bonds:gather_idxs": {
+            "port_shape": [
+              256,
+              2
+            ],
+            "native_shape": [
+              256,
+              2
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "tokens_to_polymer_ligand_bonds:gather_mask": {
+            "port_shape": [
+              256,
+              2
+            ],
+            "native_shape": [
+              256,
+              2
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "tokens_to_polymer_ligand_bonds:input_shape": {
+            "port_shape": [
+              1
+            ],
+            "native_shape": [
+              1
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "tokens_to_queries:gather_idxs": {
+            "port_shape": [
+              192,
+              32
+            ],
+            "native_shape": [
+              192,
+              32
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "tokens_to_queries:gather_mask": {
+            "port_shape": [
+              192,
+              32
+            ],
+            "native_shape": [
+              192,
+              32
+            ],
+            "port_dtype": "bool",
+            "native_dtype": "bool",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          },
+          "tokens_to_queries:input_shape": {
+            "port_shape": [
+              1
+            ],
+            "native_shape": [
+              1
+            ],
+            "port_dtype": "int64",
+            "native_dtype": "int64",
+            "shape_equal": true,
+            "exact_match_fraction": 1.0
+          }
+        },
+        "port_input_audit": {
+          "dtype_mismatches": {},
+          "equal": true,
+          "max_absolute_error": {
+            "aatype": 0.0,
+            "asym_id": 0.0,
+            "deletion_matrix": 0.0,
+            "deletion_mean": 0.0,
+            "entity_id": 0.0,
+            "msa": 0.0,
+            "num_alignments": 0.0,
+            "profile": 0.0,
+            "queries_to_keys:gather_idxs": 0.0,
+            "queries_to_keys:input_shape": 0.0,
+            "queries_to_token_atoms:gather_idxs": 0.0,
+            "queries_to_token_atoms:input_shape": 0.0,
+            "ref_atom_name_chars": 0.0,
+            "ref_charge": 0.0,
+            "ref_element": 0.0,
+            "ref_pos": 0.0,
+            "ref_space_uid": 0.0,
+            "residue_center_index": 0.0,
+            "residue_index": 0.0,
+            "seq_length": 0.0,
+            "sym_id": 0.0,
+            "template_aatype": 0.0,
+            "template_atom_positions": 0.0,
+            "token_atoms_to_polymer_ligand_bonds:gather_idxs": 0.0,
+            "token_atoms_to_polymer_ligand_bonds:input_shape": 0.0,
+            "token_atoms_to_pseudo_beta:gather_idxs": 0.0,
+            "token_atoms_to_pseudo_beta:input_shape": 0.0,
+            "token_atoms_to_queries:gather_idxs": 0.0,
+            "token_atoms_to_queries:input_shape": 0.0,
+            "token_index": 0.0,
+            "tokens_to_keys:gather_idxs": 0.0,
+            "tokens_to_keys:input_shape": 0.0,
+            "tokens_to_ligand_ligand_bonds:gather_idxs": 0.0,
+            "tokens_to_ligand_ligand_bonds:input_shape": 0.0,
+            "tokens_to_polymer_ligand_bonds:gather_idxs": 0.0,
+            "tokens_to_polymer_ligand_bonds:input_shape": 0.0,
+            "tokens_to_queries:gather_idxs": 0.0,
+            "tokens_to_queries:input_shape": 0.0
+          },
+          "missing_from_left": [],
+          "missing_from_right": [],
+          "shape_mismatches": {},
+          "value_mismatches": {}
+        }
+      },
+      "runtime_s": 0.1,
+      "notes": "",
+      "source": {
+        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "cpu_affinity": 8,
+        "recorded": "2026-10-10 01:07:59"
+      }
+    },
+    "S2_weights": {
+      "status": "measured",
+      "condition": {
+        "backend": "cpu (host hashes; no model run)",
+        "parameter_file": "af3.bin, sha256 9cfa13c7b3f2ece6d28dbf73bcfaec39a8f691b794173003f6c3ef8438a0a55c",
+        "compared": "per-parameter sha256 of the arrays each arm's ModelRunner.model_params held at inference"
+      },
+      "headline": {
+        "metric": "same parameter file / parameters with differing hash",
+        "value": "True / 0 of 405"
+      },
+      "metrics": {
+        "weights_sha256": {
+          "deepmind": "9cfa13c7b3f2ece6d28dbf73bcfaec39a8f691b794173003f6c3ef8438a0a55c",
+          "foldjax": "9cfa13c7b3f2ece6d28dbf73bcfaec39a8f691b794173003f6c3ef8438a0a55c"
+        },
+        "same_parameter_file": true,
+        "parameters": 405,
+        "differing": []
+      },
+      "runtime_s": 0.0,
+      "notes": "",
+      "source": {
+        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "cpu_affinity": 8,
+        "recorded": "2026-10-10 01:07:59"
+      }
+    },
+    "S3_trunk": {
+      "status": "not_captured",
+      "condition": {},
+      "headline": {},
+      "metrics": {},
+      "runtime_s": null,
+      "notes": "Not a stage-injection row: AlphaFold 3 is compared as two complete CPU runs (DeepMind's run_alphafold.py and FoldJAX's vendored AF3) on the same input and seed; no intermediate trunk or sampler boundary is taped or injected, so S3/S4 have no separate measurement.",
+      "source": {
+        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "cpu_affinity": 8,
+        "recorded": "2026-10-10 01:07:59"
+      }
+    },
+    "S4_diffusion": {
+      "status": "not_captured",
+      "condition": {},
+      "headline": {},
+      "metrics": {},
+      "runtime_s": null,
+      "notes": "Not a stage-injection row: AlphaFold 3 is compared as two complete CPU runs (DeepMind's run_alphafold.py and FoldJAX's vendored AF3) on the same input and seed; no intermediate trunk or sampler boundary is taped or injected, so S3/S4 have no separate measurement.",
+      "source": {
+        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "cpu_affinity": 8,
+        "recorded": "2026-10-10 01:07:59"
+      }
+    },
+    "S5_confidence": {
+      "status": "measured",
+      "condition": {
+        "backend": "gpu (both arms; kernel selection autotune)",
+        "matmul_precision": "AF3 default (bfloat16: 'all'; not pinned)",
+        "native": "DeepMind run_alphafold.py v3.0.4 (archived checkout deepmind-af3-85c4d20): ModelRunner + predict_structure",
+        "port": "FoldJAX vendored AF3 through foldjax.predict, options buckets=DeepMind's list",
+        "environment": "the common FoldJAX JAX environment for both arms",
+        "samples_x_steps": "5 x 200; recycles 10",
+        "attention": "triton",
+        "buckets": [
+          256,
+          512,
+          768,
+          1024,
+          1280,
+          1536,
+          2048,
+          2560,
+          3072,
+          3584,
+          4096,
+          4608,
+          5120
+        ],
+        "seed": 101,
+        "alphafold3_python_source": "9 of 86 files of the imported alphafold3 package differ between the arms (FoldJAX's vendored copy carries its own edits); run_alphafold.py itself byte-identical: True",
+        "compared": "every numeric confidence leaf"
+      },
+      "headline": {
+        "metric": "max |d| atom pLDDT / PAE / pTM; leaves bitwise identical",
+        "value": "0 / 0 / 0; 130/130"
+      },
+      "metrics": {
+        "leaves": {
+          "0.atom_plddt": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.metadata.chain_pair_iptm": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.metadata.chain_pair_pae_min": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.metadata.chain_pair_pde_mean": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.metadata.chain_pair_pde_min": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.metadata.cross_chain_single_pde": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.metadata.fraction_disordered": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.metadata.has_clash": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.metadata.interface_predicted_tm_score": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "0.metadata.intra_chain_single_pde": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.metadata.iptm": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "0.metadata.iptm_ichain": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.metadata.iptm_xchain": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "0.metadata.pae_ichain": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.metadata.pae_xchain": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "0.metadata.predicted_distance_error": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.metadata.predicted_tm_score": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.metadata.ptm": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.metadata.ptm_iptm_average": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "0.metadata.ranking_confidence": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.metadata.ranking_confidence_pae": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.metadata.ranking_score": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.metadata.token_res_ids": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.numerical.contact_probs": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.numerical.full_pae": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "0.numerical.full_pde": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.atom_plddt": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.metadata.chain_pair_iptm": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.metadata.chain_pair_pae_min": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.metadata.chain_pair_pde_mean": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.metadata.chain_pair_pde_min": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.metadata.cross_chain_single_pde": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.metadata.fraction_disordered": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.metadata.has_clash": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.metadata.interface_predicted_tm_score": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "1.metadata.intra_chain_single_pde": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.metadata.iptm": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "1.metadata.iptm_ichain": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.metadata.iptm_xchain": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "1.metadata.pae_ichain": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.metadata.pae_xchain": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "1.metadata.predicted_distance_error": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.metadata.predicted_tm_score": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.metadata.ptm": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.metadata.ptm_iptm_average": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "1.metadata.ranking_confidence": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.metadata.ranking_confidence_pae": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.metadata.ranking_score": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.metadata.token_res_ids": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.numerical.contact_probs": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.numerical.full_pae": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "1.numerical.full_pde": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.atom_plddt": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.metadata.chain_pair_iptm": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.metadata.chain_pair_pae_min": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.metadata.chain_pair_pde_mean": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.metadata.chain_pair_pde_min": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.metadata.cross_chain_single_pde": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.metadata.fraction_disordered": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.metadata.has_clash": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.metadata.interface_predicted_tm_score": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "2.metadata.intra_chain_single_pde": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.metadata.iptm": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "2.metadata.iptm_ichain": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.metadata.iptm_xchain": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "2.metadata.pae_ichain": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.metadata.pae_xchain": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "2.metadata.predicted_distance_error": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.metadata.predicted_tm_score": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.metadata.ptm": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.metadata.ptm_iptm_average": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "2.metadata.ranking_confidence": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.metadata.ranking_confidence_pae": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.metadata.ranking_score": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.metadata.token_res_ids": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.numerical.contact_probs": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.numerical.full_pae": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "2.numerical.full_pde": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.atom_plddt": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.metadata.chain_pair_iptm": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.metadata.chain_pair_pae_min": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.metadata.chain_pair_pde_mean": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.metadata.chain_pair_pde_min": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.metadata.cross_chain_single_pde": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.metadata.fraction_disordered": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.metadata.has_clash": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.metadata.interface_predicted_tm_score": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "3.metadata.intra_chain_single_pde": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.metadata.iptm": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "3.metadata.iptm_ichain": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.metadata.iptm_xchain": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "3.metadata.pae_ichain": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.metadata.pae_xchain": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "3.metadata.predicted_distance_error": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.metadata.predicted_tm_score": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.metadata.ptm": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.metadata.ptm_iptm_average": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "3.metadata.ranking_confidence": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.metadata.ranking_confidence_pae": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.metadata.ranking_score": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.metadata.token_res_ids": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.numerical.contact_probs": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.numerical.full_pae": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "3.numerical.full_pde": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.atom_plddt": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.metadata.chain_pair_iptm": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.metadata.chain_pair_pae_min": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.metadata.chain_pair_pde_mean": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.metadata.chain_pair_pde_min": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.metadata.cross_chain_single_pde": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.metadata.fraction_disordered": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.metadata.has_clash": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.metadata.interface_predicted_tm_score": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "4.metadata.intra_chain_single_pde": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.metadata.iptm": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "4.metadata.iptm_ichain": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.metadata.iptm_xchain": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "4.metadata.pae_ichain": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.metadata.pae_xchain": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "4.metadata.predicted_distance_error": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.metadata.predicted_tm_score": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.metadata.ptm": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.metadata.ptm_iptm_average": {
+            "max_abs": "nan",
+            "bitwise_identical": true
+          },
+          "4.metadata.ranking_confidence": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.metadata.ranking_confidence_pae": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.metadata.ranking_score": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.metadata.token_res_ids": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.numerical.contact_probs": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.numerical.full_pae": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "4.numerical.full_pde": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          }
+        },
+        "raw_model_outputs": {
+          "average_pde": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "diffusion_samples.atom_positions": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "diffusion_samples.mask": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "distogram.bin_edges": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "distogram.contact_probs": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "full_pae": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "full_pde": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "predicted_experimentally_resolved": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "predicted_lddt": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "tmscore_adjusted_pae_global": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          },
+          "tmscore_adjusted_pae_interface": {
+            "max_abs": 0.0,
+            "bitwise_identical": true
+          }
+        }
+      },
+      "runtime_s": 0.1,
+      "notes": "raw_model_outputs compares run_inference's padded outputs (predicted lDDT, PAE/PDE, distogram contact probabilities, the diffusion samples) before extraction.",
+      "source": {
+        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "cpu_affinity": 8,
+        "recorded": "2026-10-10 01:07:59"
+      }
+    },
+    "S6_final": {
+      "status": "measured",
+      "condition": {
+        "backend": "gpu (both arms; kernel selection autotune)",
+        "matmul_precision": "AF3 default (bfloat16: 'all'; not pinned)",
+        "native": "DeepMind run_alphafold.py v3.0.4 (archived checkout deepmind-af3-85c4d20): ModelRunner + predict_structure",
+        "port": "FoldJAX vendored AF3 through foldjax.predict, options buckets=DeepMind's list",
+        "environment": "the common FoldJAX JAX environment for both arms",
+        "samples_x_steps": "5 x 200; recycles 10",
+        "attention": "triton",
+        "buckets": [
+          256,
+          512,
+          768,
+          1024,
+          1280,
+          1536,
+          2048,
+          2560,
+          3072,
+          3584,
+          4096,
+          4608,
+          5120
+        ],
+        "seed": 101,
+        "alphafold3_python_source": "9 of 86 files of the imported alphafold3 package differ between the arms (FoldJAX's vendored copy carries its own edits); run_alphafold.py itself byte-identical: True",
+        "cli_route": "jctc-v2/e9/run_af3_deepmind.py (AF3CMP_CPU_SMOKE=1) vs foldjax.cli predict --option buckets=..., CIF coordinates"
+      },
+      "headline": {
+        "metric": "max |dxyz| (A) over all samples / all-atom RMSD worst sample",
+        "value": "0 / 0 (bitwise identical)"
+      },
+      "metrics": {
+        "samples": 5,
+        "atoms": 1001,
+        "all_atom_rmsd_angstrom": [
+          2.4320487713169177e-15,
+          9.275004753737441e-15,
+          5.126156611343926e-15,
+          2.6902554033027848e-15,
+          5.0570170172137e-15
+        ],
+        "max_unaligned_displacement_angstrom": 0.0,
+        "max_abs_dxyz_angstrom": 0.0,
+        "bitwise_identical": true,
+        "masks_equal": true,
+        "alphafold3_source_files_differing": [
+          "constants/chemical_components.py",
+          "data/featurisation.py",
+          "data/pipeline.py",
+          "model/confidences.py",
+          "model/features.py",
+          "model/model.py",
+          "model/network/diffusion_head.py",
+          "structure/chemical_components.py",
+          "structure/parsing.py"
+        ]
+      },
+      "runtime_s": 0.0,
+      "notes": "",
+      "source": {
+        "git": "a951484bca2e4a515354fffe8d87fc21c767e623",
+        "cpu_affinity": 8,
+        "recorded": "2026-10-10 01:07:59"
+      }
+    }
+  }
+}
