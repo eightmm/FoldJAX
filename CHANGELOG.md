@@ -8,86 +8,7 @@ upstream defaults and scientific results are documented beside their model and
 benchmark records: a release never changes what a recorded command predicts
 unless it says so here, in its own paragraph.
 
-## Unreleased
-
-### Added
-
-- **A common pocket or contact constraint can ask Boltz-2's own `force`
-  steering.** `constraints: [{pocket: {..., force: true}}]` (and `contact`)
-  carries upstream's `force` field into the native Boltz-2 document exactly
-  as a hand-written YAML would; every other model refuses it, having no
-  steering potential of its own to turn on. A forced job turns on
-  upstream's automatic `contact_guidance_update` sampler
-  (`models/boltz2/api.py:predict`), which is eager and therefore refuses
-  `--padding`, `cp_devices > 1` and `deterministic=true`; `foldjax plan`
-  now refuses the same combination before anything runs
-  (`Boltz2Backend.validate_request`), mirroring the predict-time refusal.
-  `foldjax_run.json`'s `constraints` records `force: true` on a forced
-  pocket or contact; an unforced one (the default) is recorded exactly as
-  before. Off, nothing about a run changes. See
-  [docs/input.md](docs/input.md#pocket-constraints) and
-  [docs/boltz2.md](docs/boltz2.md#templates-constraints-and-affinity).
-- **`foldjax capabilities` separates a profile- or option-gated feature
-  from an unconditional one.** `common_schema_features` said a dialect
-  *can carry* a field without saying whether today's released run *reads*
-  it: Protenix's `pocket_constraints`/`contact_constraints` need the
-  constraint embedder (`--profile base-constraint-v0.5.0`), and Protenix's
-  and OpenDDE's `templates` are dropped at the released `use_template=false`.
-  Two new fields narrow it: `profile_gated_features` (needs a named
-  profile) and `option_gated_features` (needs a non-default option), both
-  subsets of `common_schema_features`. Every other field is unchanged. See
-  `docs/python-api.md` and `docs/input.md`.
-
-### Fixed
-
-- **`--keep-going` says which job preflight refused when it refuses it.** A
-  job refused before the batch ran (no alignment, an unknown CCD code) was
-  recorded and reported only in the summary after every other run had
-  finished, so a refusal could surface hours later. The refusal is now a
-  progress line on stderr the moment it is recorded (`--quiet` suppresses
-  it, as every progress line); the end summary and `foldjax_failures.json`
-  are unchanged. The Python API is unaffected unless progress is enabled.
-- **A resumed run's summary reports `coordinate_shape` again.** A sample
-  rebuilt from a manifest carried no coordinates, so `coordinate_shape` was
-  `null` where the fresh run had reported `[atoms, 3]`. The resumed sample
-  now reads its coordinates back from the recorded structure file (the
-  rounded values on disk, not the model's); a structure with no atoms keeps
-  `null`, and an unreadable one still resumes. Schema and manifest are
-  unchanged.
-- **Boltz-2's data-layer notices no longer reach a library caller's
-  stdout.** The vendored parser and featurizer printed "Found explicit
-  empty MSA", the affinity ligand-size notice, the conformer fallback and
-  the MSA-mismatch notice with `print`; `foldjax predict` redirected them
-  to stderr, but `foldjax.api.predict` in a notebook or pipeline wrote
-  them to stdout. Each is a `UserWarning` now, same text, so both callers
-  see it on stderr (the CLI formats it once). Features are unchanged.
-- **Protenix accepts `assembly_id` at the top level of a native job.**
-  Upstream's shipped examples carry it
-  (`examples/examples_with_template/example_9fm7.json`) and its inference
-  reads nothing by that name, yet the port refused the document as an
-  unsupported top-level field. It is ignored now, as OpenDDE already ignored
-  it. Features are unchanged.
-- **The Protenix and OpenDDE template sidecar carries only the keys
-  upstream reads.** The per-chain `templatesPath` JSON the translation writes
-  added a `chainId` next to `mmcif`, `queryIndices` and `templateIndices`;
-  upstream's `parse_json_templates` defines no such key, and both readers
-  take the file's first chain, where the writer already puts the named one.
-  The key is dropped; which chain is read is unchanged.
-- **SMILES conformers are documented as unseeded.** `docs/faq.md` and
-  `docs/cli.md` say that Boltz-2, Protenix and OpenDDE embed a SMILES ligand
-  with RDKit's default `EmbedMolecule`, as upstream does: the draw comes from
-  RDKit's process-global stream, which `--seed` never reaches, so a later job
-  in one process -- or a later seed on Protenix and OpenDDE, which featurize
-  per seed -- can start from a different conformer than a fresh process
-  would. Behaviour is unchanged.
-- **OpenFold3's own pairing is documented as reachable only through a
-  `uniprot_hits` alignment.** `docs/openfold3.md` says upstream's online
-  species pairing reads a main alignment stemmed `uniprot_hits` alone
-  (`msas_to_pair`), that the translation links every `unpaired_msa` as
-  `colabfold_main`, so OpenFold3 never pairs it, and how an alignment
-  directory reaches the pairing. Behaviour is unchanged.
-
-## 0.1.0 (2026-10-09)
+## 0.1.0 (2026-10-10)
 
 ### Added
 
@@ -535,6 +456,32 @@ unless it says so here, in its own paragraph.
 - `tests/test_docs_links.py`: every relative link in `docs/**/*.md` names a
   file that exists and, for a Markdown target, a heading that exists; the
   archive index lists every archived note.
+
+- **A common pocket or contact constraint can ask Boltz-2's own `force`
+  steering.** `constraints: [{pocket: {..., force: true}}]` (and `contact`)
+  carries upstream's `force` field into the native Boltz-2 document exactly
+  as a hand-written YAML would; every other model refuses it, having no
+  steering potential of its own to turn on. A forced job turns on
+  upstream's automatic `contact_guidance_update` sampler
+  (`models/boltz2/api.py:predict`), which is eager and therefore refuses
+  `--padding`, `cp_devices > 1` and `deterministic=true`; `foldjax plan`
+  now refuses the same combination before anything runs
+  (`Boltz2Backend.validate_request`), mirroring the predict-time refusal.
+  `foldjax_run.json`'s `constraints` records `force: true` on a forced
+  pocket or contact; an unforced one (the default) is recorded exactly as
+  before. Off, nothing about a run changes. See
+  [docs/input.md](docs/input.md#pocket-constraints) and
+  [docs/boltz2.md](docs/boltz2.md#templates-constraints-and-affinity).
+- **`foldjax capabilities` separates a profile- or option-gated feature
+  from an unconditional one.** `common_schema_features` said a dialect
+  *can carry* a field without saying whether today's released run *reads*
+  it: Protenix's `pocket_constraints`/`contact_constraints` need the
+  constraint embedder (`--profile base-constraint-v0.5.0`), and Protenix's
+  and OpenDDE's `templates` are dropped at the released `use_template=false`.
+  Two new fields narrow it: `profile_gated_features` (needs a named
+  profile) and `option_gated_features` (needs a non-default option), both
+  subsets of `common_schema_features`. Every other field is unchanged. See
+  `docs/python-api.md` and `docs/input.md`.
 
 ### Changed
 
@@ -1609,6 +1556,53 @@ unless it says so here, in its own paragraph.
 - A complex pairing search whose blocks differ in depth is refused before it is
   cached (any model): `msa="required"` fails, `auto` folds without the pairing
   and warns.
+
+- **`--keep-going` says which job preflight refused when it refuses it.** A
+  job refused before the batch ran (no alignment, an unknown CCD code) was
+  recorded and reported only in the summary after every other run had
+  finished, so a refusal could surface hours later. The refusal is now a
+  progress line on stderr the moment it is recorded (`--quiet` suppresses
+  it, as every progress line); the end summary and `foldjax_failures.json`
+  are unchanged. The Python API is unaffected unless progress is enabled.
+- **A resumed run's summary reports `coordinate_shape` again.** A sample
+  rebuilt from a manifest carried no coordinates, so `coordinate_shape` was
+  `null` where the fresh run had reported `[atoms, 3]`. The resumed sample
+  now reads its coordinates back from the recorded structure file (the
+  rounded values on disk, not the model's); a structure with no atoms keeps
+  `null`, and an unreadable one still resumes. Schema and manifest are
+  unchanged.
+- **Boltz-2's data-layer notices no longer reach a library caller's
+  stdout.** The vendored parser and featurizer printed "Found explicit
+  empty MSA", the affinity ligand-size notice, the conformer fallback and
+  the MSA-mismatch notice with `print`; `foldjax predict` redirected them
+  to stderr, but `foldjax.api.predict` in a notebook or pipeline wrote
+  them to stdout. Each is a `UserWarning` now, same text, so both callers
+  see it on stderr (the CLI formats it once). Features are unchanged.
+- **Protenix accepts `assembly_id` at the top level of a native job.**
+  Upstream's shipped examples carry it
+  (`examples/examples_with_template/example_9fm7.json`) and its inference
+  reads nothing by that name, yet the port refused the document as an
+  unsupported top-level field. It is ignored now, as OpenDDE already ignored
+  it. Features are unchanged.
+- **The Protenix and OpenDDE template sidecar carries only the keys
+  upstream reads.** The per-chain `templatesPath` JSON the translation writes
+  added a `chainId` next to `mmcif`, `queryIndices` and `templateIndices`;
+  upstream's `parse_json_templates` defines no such key, and both readers
+  take the file's first chain, where the writer already puts the named one.
+  The key is dropped; which chain is read is unchanged.
+- **SMILES conformers are documented as unseeded.** `docs/faq.md` and
+  `docs/cli.md` say that Boltz-2, Protenix and OpenDDE embed a SMILES ligand
+  with RDKit's default `EmbedMolecule`, as upstream does: the draw comes from
+  RDKit's process-global stream, which `--seed` never reaches, so a later job
+  in one process -- or a later seed on Protenix and OpenDDE, which featurize
+  per seed -- can start from a different conformer than a fresh process
+  would. Behaviour is unchanged.
+- **OpenFold3's own pairing is documented as reachable only through a
+  `uniprot_hits` alignment.** `docs/openfold3.md` says upstream's online
+  species pairing reads a main alignment stemmed `uniprot_hits` alone
+  (`msas_to_pair`), that the translation links every `unpaired_msa` as
+  `colabfold_main`, so OpenFold3 never pairs it, and how an alignment
+  directory reaches the pairing. Behaviour is unchanged.
 
 ### Security
 
