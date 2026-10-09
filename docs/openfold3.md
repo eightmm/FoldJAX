@@ -306,6 +306,20 @@ An alignment that already carries a recognized stem is passed through untouched,
 since upstream then knows its row cap. `tests/test_input_openfold3.py` covers
 both, plus the two-chain collision and the suffix.
 
+The stem also decides whether OpenFold3 pairs chains itself. Its online
+species pairing reads only a main alignment stemmed `uniprot_hits` (or
+`uniprot`; `msas_to_pair`, `dataset_config_components.py:97`), and such a file
+feeds nothing else -- it is absent from `aln_order`, so it contributes no main
+rows. A common-schema `unpaired_msa` is linked as `colabfold_main`, so
+OpenFold3 never pairs it; paired rows reach the model only through
+`paired_msa`, linked as `colabfold_paired`, which is what `--msa auto`'s one
+ColabFold `pairgreedy-env` search supplies
+([cli.md](cli.md#alignment-pairing-prefetch-private-templates-and-presets)).
+To let OpenFold3 pair for itself, give `unpaired_msa` an alignment
+*directory* -- the translation hands a directory over untouched, as upstream
+reads one -- holding a main-stem file beside a `uniprot_hits.a3m` whose
+headers carry the UniProt species upstream pairs on.
+
 ## The compile cache
 
 Compiling this architecture is the dominant cost and grows with length — minutes

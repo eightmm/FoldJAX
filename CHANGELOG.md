@@ -52,6 +52,12 @@ unless it says so here, in its own paragraph.
   in one process -- or a later seed on Protenix and OpenDDE, which featurize
   per seed -- can start from a different conformer than a fresh process
   would. Behaviour is unchanged.
+- **OpenFold3's own pairing is documented as reachable only through a
+  `uniprot_hits` alignment.** `docs/openfold3.md` says upstream's online
+  species pairing reads a main alignment stemmed `uniprot_hits` alone
+  (`msas_to_pair`), that the translation links every `unpaired_msa` as
+  `colabfold_main`, so OpenFold3 never pairs it, and how an alignment
+  directory reaches the pairing. Behaviour is unchanged.
 
 ## 0.1.0 (2026-10-09)
 
