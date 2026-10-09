@@ -747,6 +747,9 @@ def _result_from_manifest(
     one result per requested run whether or not this invocation produced it.
     ``raw`` is absent by construction: model-specific arrays were never written
     to the manifest, and inventing them would be worse than their absence.
+    A sample's ``coordinates`` are read back from its structure file -- the
+    rounded values on disk, not the model's -- so a resumed summary reports a
+    ``coordinate_shape`` as a fresh one does.
     ``reasons``, when given, receives why a manifest that exists was not
     reused; a directory without one is not news and adds nothing.
     """
@@ -853,6 +856,7 @@ def _restore_from_manifest(
         sample = PredictionSample(
             seed=recorded_seed,
             structure_path=structure_path,
+            coordinates=_structure_coordinates(structure_path),
             scores=restored_scores,
             metadata=dict(metadata),
         )
@@ -879,6 +883,32 @@ def _restore_from_manifest(
         representations=representations,
         shape_profile=dict(shape_profile) if shape_profile is not None else None,
     )
+
+
+def _structure_coordinates(path: Path) -> np.ndarray | None:
+    """Every atom position a written structure holds, or None if it holds none.
+
+    None is only ever the absence of coordinates, never a reason not to reuse
+    the run: the structure's digest was already verified, and a file gemmi
+    cannot read is still the file the manifest recorded.
+    """
+    try:
+        import gemmi
+
+        structure = gemmi.read_structure(str(path))
+        if len(structure) == 0:
+            return None
+        positions = [
+            (atom.pos.x, atom.pos.y, atom.pos.z)
+            for chain in structure[0]
+            for residue in chain
+            for atom in residue
+        ]
+    except Exception:  # noqa: BLE001 - an unreadable structure only loses the shape
+        return None
+    if not positions:
+        return None
+    return np.asarray(positions, dtype=np.float32)
 
 
 def _write_failures(directory: Path, failures: list[PredictionFailure]) -> None:

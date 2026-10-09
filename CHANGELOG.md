@@ -19,6 +19,14 @@ unless it says so here, in its own paragraph.
   progress line on stderr the moment it is recorded (`--quiet` suppresses
   it, as every progress line); the end summary and `foldjax_failures.json`
   are unchanged. The Python API is unaffected unless progress is enabled.
+- **A resumed run's summary reports `coordinate_shape` again.** A sample
+  rebuilt from a manifest carried no coordinates, so `coordinate_shape` was
+  `null` where the fresh run had reported `[atoms, 3]`. The resumed sample
+  now reads its coordinates back from the recorded structure file (the
+  rounded values on disk, not the model's); a structure with no atoms keeps
+  `null`, and an unreadable one still resumes. Schema and manifest are
+  unchanged.
+
 ## 0.1.0 (2026-10-09)
 
 ### Added

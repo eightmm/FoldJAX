@@ -199,10 +199,68 @@ def test_exact_request_reuses_nonempty_recorded_artifacts(tmp_path: Path) -> Non
     assert first.skipped == ()
     assert resumed.skipped == (request.output_dir,)
     assert resumed.results[0].samples[0].structure_path.is_file()
+    assert resumed.results[0].samples[0].coordinates is None
     assert resumed.results[0].representations is not None
     np.testing.assert_array_equal(
         resumed.results[0].representations["single"],
         np.arange(6, dtype=np.float32).reshape(2, 3),
+    )
+
+
+#: Three atoms, the columns every port's writer emits.
+_ATOM_CIF = """data_resumed
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_entity_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.B_iso_or_equiv
+_atom_site.auth_seq_id
+_atom_site.auth_asym_id
+_atom_site.pdbx_PDB_model_num
+ATOM 1 N N . ALA A 1 1 ? 1.000 2.000 3.000 1.00 90.00 1 A 1
+ATOM 2 C CA . ALA A 1 1 ? 4.000 5.000 6.000 1.00 90.00 1 A 1
+ATOM 3 C C . ALA A 1 1 ? 7.000 8.000 9.000 1.00 90.00 1 A 1
+#
+"""
+
+
+def test_resumed_samples_read_their_coordinates_from_the_structure(
+    tmp_path: Path,
+) -> None:
+    """A resumed summary reports the structure's shape, as a fresh run does."""
+    calls: list[tuple[str, str, int]] = []
+    backend = _ResumeBackend("boltz2", calls)
+    run = backend.predict
+
+    def predict(request: PredictionRequest) -> PredictionResult:
+        result = run(request)
+        result.samples[0].structure_path.write_text(_ATOM_CIF, encoding="utf-8")
+        return result
+
+    backend.predict = predict  # type: ignore[method-assign]
+    request = _request(tmp_path)
+    with backend_override("boltz2", lambda: backend):
+        foldjax.predict_batch(request)
+        resumed = foldjax.predict_batch(dataclasses.replace(request, resume=True))
+
+    assert len(calls) == 1
+    assert resumed.skipped == (request.output_dir,)
+    (sample,) = resumed.results[0].samples
+    assert sample.summary()["coordinate_shape"] == [3, 3]
+    np.testing.assert_allclose(
+        sample.coordinates, [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]
     )
 
 
