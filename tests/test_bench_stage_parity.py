@@ -272,7 +272,9 @@ def test_stage_record_and_table_round_trip(tmp_path) -> None:
     }
     (tmp_path / "demo.json").write_text(json.dumps(sp._jsonable(report)))
     table = sp.render_table(tmp_path)
-    assert "| demo | S1_features | not_captured |" in table
+    # A report written before `--device` existed renders as the CPU condition.
+    assert "| demo | S1_features | cpu | not_captured |" in table
+    assert table.startswith(sp.TABLE_PREAMBLE)
     assert "0.01235" in table
     assert "backend=cpu; matmul_precision=highest" in table
     # A metric spelled with |d| must not split the Markdown row.
@@ -281,10 +283,108 @@ def test_stage_record_and_table_round_trip(tmp_path) -> None:
     row = next(
         line for line in sp.render_table(tmp_path).splitlines() if "S3_trunk" in line
     )
-    assert row.count(" | ") == 6
+    assert row.count(" | ") == 7
     assert "max \\|d\\|" in row
     with pytest.raises(ValueError, match="unknown stage status"):
         sp.stage_record("skipped")
+
+
+def test_table_renders_the_gpu_condition_and_refuses_a_mixed_directory(
+    tmp_path,
+) -> None:
+    def report(device: str) -> dict:
+        return {
+            "model": f"demo-{device}",
+            "device": device,
+            "stages": {
+                "S3_trunk": sp.stage_record(
+                    "measured",
+                    condition={"backend": device, "matmul_precision": "x"},
+                    headline={"metric": "relative RMS", "value": 0.5},
+                )
+            },
+        }
+
+    gpu_dir = tmp_path / "gpu"
+    gpu_dir.mkdir()
+    (gpu_dir / "a.json").write_text(json.dumps(sp._jsonable(report("gpu"))))
+    table = sp.render_table(gpu_dir)
+    assert table.startswith(sp.TABLE_PREAMBLE_GPU)
+    assert "| demo-gpu | S3_trunk | gpu | measured |" in table
+    (gpu_dir / "b.json").write_text(json.dumps(sp._jsonable(report("cpu"))))
+    with pytest.raises(ValueError, match="mixes devices"):
+        sp.render_table(gpu_dir)
+
+
+def test_require_device_refuses_the_other_backend(monkeypatch) -> None:
+    import jax
+
+    monkeypatch.setattr(jax, "default_backend", lambda: "cpu")
+    sp.require_device("cpu")
+    with pytest.raises(RuntimeError, match="--device gpu"):
+        sp.require_device("gpu")
+    monkeypatch.setattr(jax, "default_backend", lambda: "gpu")
+    sp.require_device("gpu")
+    with pytest.raises(RuntimeError, match="CPU measurement"):
+        sp.require_device("cpu")
+    with pytest.raises(ValueError, match="device must be one of"):
+        sp.require_device("tpu")
+
+
+def test_device_condition_and_precision_scope_follow_the_device(monkeypatch) -> None:
+    """The GPU rows record the pin each port carries, read inside the scope."""
+    import jax
+
+    monkeypatch.setattr(sp, "DEVICE", "cpu")
+    assert sp.device_condition("boltz2") == sp.CPU_CONDITION
+    assert sp.host_condition() == sp.CPU_CONDITION
+    with sp.precision_scope("opendde"):
+        assert jax.config.jax_default_matmul_precision == "highest"
+
+    monkeypatch.setattr(sp, "DEVICE", "gpu")
+    monkeypatch.setattr(jax, "devices", lambda: [type("D", (), {"device_kind": "k"})()])
+    sp._OBSERVED_MATMUL_PRECISION.clear()
+    with sp.precision_scope("boltz2"):
+        assert jax.config.jax_default_matmul_precision == "high"
+    with sp.precision_scope("opendde"):
+        assert jax.config.jax_default_matmul_precision is None
+    assert sp.device_condition("boltz2") == {
+        "backend": "gpu (k)",
+        "matmul_precision": "high (port pin; jax_default_matmul_precision in the "
+        "scope: high)",
+    }
+    assert sp.device_condition("opendde")["matmul_precision"].startswith(
+        "JAX default: the port pins none"
+    )
+    assert sp.host_condition()["backend"].startswith("host")
+
+
+def test_shipped_precision_table_matches_the_port_pins() -> None:
+    """The GPU rows' pins are the ports' own constants, not this script's."""
+    from foldjax.backends import protenix as protenix_backend
+    from foldjax.models.boltz2 import api as boltz2_api
+    from foldjax.models.openfold3 import inference as openfold3_inference
+
+    assert sp.SHIPPED_MATMUL_PRECISION["boltz2"] == boltz2_api.MATMUL_PRECISION
+    assert (
+        sp.SHIPPED_MATMUL_PRECISION["openfold3"]
+        == openfold3_inference._MATMUL_PRECISION
+    )
+    assert (
+        sp.SHIPPED_MATMUL_PRECISION["protenix"]
+        == protenix_backend._RELEASED_COMPILE_DEFAULTS["matmul_precision"]
+    )
+    assert set(sp.SHIPPED_MATMUL_PRECISION) == set(sp.MODELS) - sp.NO_PARITY_MANIFEST
+
+
+def test_overriding_kwargs_substitutes_and_counts() -> None:
+    import types
+
+    module = types.SimpleNamespace(f=lambda **kwargs: kwargs)
+    with sp.overriding_kwargs(module, "f", backend="shipped") as calls:
+        assert module.f(backend="pinned", other=1) == {"backend": "shipped", "other": 1}
+    assert calls["n"] == 1
+    assert module.f(backend="pinned") == {"backend": "pinned"}
 
 
 def test_run_stage_records_a_failure_instead_of_raising() -> None:

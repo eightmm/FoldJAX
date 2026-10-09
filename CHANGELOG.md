@@ -12,6 +12,19 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **`bench/stage_parity.py --device gpu`: the stage-parity table on the
+  shipped program.** The CPU table (`bench/stage_parity_results/TABLE.md`)
+  runs every port stage on CPU XLA at `highest` with the capture's dtype
+  policy, so each S3-S6 residual carries a CPU-vs-GPU term on top of
+  port-vs-native. The new mode replays the same captures and tapes on a GPU
+  with what `foldjax predict` runs when every option is omitted -- each
+  port's matmul-precision pin, its shipped dtype profile and its shipped
+  kernels (cuEquivariance, Pallas, tokamax) -- records the kernels and the
+  precision the process realised in every row's `condition`, and writes to
+  `bench/stage_parity_results_gpu/`; `--table` renders either directory with
+  a `device` column and refuses a mix. `--device cpu` (the default) is the
+  measurement it was. The Slurm suite that runs it lives in
+  `foldjax-bench/stage-parity-gpu/`. Harness only; no prediction changes.
 - **AlphaFold 3 manifests record where their kernel configurations came
   from (`kernel_tuning`).** `kernel_autotuning` is Tokamax's cache-miss
   policy and every value shares one cache namespace and one persistent
