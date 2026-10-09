@@ -386,6 +386,9 @@ def _featurize_protein_json(
         "sequences",
         "covalent_bonds",
         "constraint",
+        # Upstream's shipped examples carry it (`examples_with_template/
+        # example_9fm7.json`); its inference reads nothing by that name.
+        "assembly_id",
     }
     if unknown_job_keys:
         raise ValueError(

@@ -609,6 +609,21 @@ def test_runner_metadata_fields_are_accepted_but_not_features() -> None:
         )
 
 
+def test_assembly_id_is_accepted_as_benign_job_metadata() -> None:
+    # The top level of upstream's shipped examples
+    # (`examples/examples_with_template/example_9fm7.json`).
+    features = featurize_protein_json(
+        {
+            "name": "9fm7",
+            "modelSeeds": [],
+            "assembly_id": "1",
+            "sequences": [{"proteinChain": {"sequence": "A"}}],
+        }
+    )
+    assert "assembly_id" not in features
+    assert features["restype"].shape[0] == 1
+
+
 def test_deprecated_precomputed_msa_directory_is_supported(tmp_path) -> None:
     msa_dir = tmp_path / "legacy"
     msa_dir.mkdir()

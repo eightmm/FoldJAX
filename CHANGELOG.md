@@ -33,6 +33,12 @@ unless it says so here, in its own paragraph.
   to stderr, but `foldjax.api.predict` in a notebook or pipeline wrote
   them to stdout. Each is a `UserWarning` now, same text, so both callers
   see it on stderr (the CLI formats it once). Features are unchanged.
+- **Protenix accepts `assembly_id` at the top level of a native job.**
+  Upstream's shipped examples carry it
+  (`examples/examples_with_template/example_9fm7.json`) and its inference
+  reads nothing by that name, yet the port refused the document as an
+  unsupported top-level field. It is ignored now, as OpenDDE already ignored
+  it. Features are unchanged.
 
 ## 0.1.0 (2026-10-09)
 
