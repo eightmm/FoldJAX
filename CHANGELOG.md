@@ -10,6 +10,8 @@ unless it says so here, in its own paragraph.
 
 ## Unreleased
 
+## 0.1.0 (2026-10-09)
+
 ### Added
 
 - **AlphaFold 3 manifests record where their kernel configurations came
@@ -1520,25 +1522,6 @@ unless it says so here, in its own paragraph.
   parse, where gemmi is installed); one that does not is fetched or unpacked
   again, and a download naming another entry is refused before it is cached.
   The local mirror (`FOLDJAX_TEMPLATE_MMCIF_DIR`) stays trusted as is.
-
-### Known issues
-
-- OpenFold3 has no memory law for nucleic-acid or ligand inputs. Its
-  blocked-pair peak law keys on tokens only and was fitted on protein-only
-  runs; a 3,061-token nucleic/ligand-heavy input (5NPK) peaked at 41,260 MiB
-  against an upper estimate of 29,876 MiB. Admission and `foldjax plan --json`
-  therefore report such a run as `unknown` (a refusal still binds) rather than
-  estimate it; how much more it needs is unmeasured.
-- In-bucket recompiles under `--padding` come from the per-input MSA bucket
-  (Boltz-2, Protenix, OpenFold3; by design, to bound peak -- `--pad-msa` pins
-  it) and, for Protenix, the chain count, which the confidence summaries take
-  as a static argument. The MSA cycle tape width is already pinned under
-  padding.
-- ESMFold2's fitted peak law (`memory_policy.ESMFOLD2_PEAK`) predates the
-  expected PAE/PDE matrices being returned by default, so it may under-state
-  a default run's peak; it is being re-measured.
-
-## 0.1.0 (2026-10-06)
 
 ### Added
 
@@ -7198,6 +7181,23 @@ unless it says so here, in its own paragraph.
 - `foldjax.progress` resolves its stream at write time. Holding the stream
   meant writing to whatever stderr *was*, which could fail a prediction that
   was otherwise fine.
+
+### Known issues
+
+- OpenFold3 has no memory law for nucleic-acid or ligand inputs. Its
+  blocked-pair peak law keys on tokens only and was fitted on protein-only
+  runs; a 3,061-token nucleic/ligand-heavy input (5NPK) peaked at 41,260 MiB
+  against an upper estimate of 29,876 MiB. Admission and `foldjax plan --json`
+  therefore report such a run as `unknown` (a refusal still binds) rather than
+  estimate it; how much more it needs is unmeasured.
+- In-bucket recompiles under `--padding` come from the per-input MSA bucket
+  (Boltz-2, Protenix, OpenFold3; by design, to bound peak -- `--pad-msa` pins
+  it) and, for Protenix, the chain count, which the confidence summaries take
+  as a static argument. The MSA cycle tape width is already pinned under
+  padding.
+- ESMFold2's fitted peak law (`memory_policy.ESMFOLD2_PEAK`) predates the
+  expected PAE/PDE matrices being returned by default, so it may under-state
+  a default run's peak; it is being re-measured.
 
 ## Pre-release development
 
