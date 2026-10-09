@@ -419,3 +419,50 @@ def test_bitwise_equal_files_names_the_array_that_moved(tmp_path) -> None:
     np.savez(tmp_path / "c.npz", x=np.zeros(3, np.float64), y=np.ones(2))
     other = sp.bitwise_equal_files(tmp_path / "a.npz", tmp_path / "c.npz")
     assert other["arrays"] == {"x": False, "y": True}
+
+
+def test_protenix_s5_confidence_policy_follows_device_and_amp_policy(
+    monkeypatch,
+) -> None:
+    """S5's CPU rows reproduce the native capture's own upstream AMP gate;
+    GPU rows reproduce the shipped default (``--amp-policy auto``, a
+    bfloat16 confidence head at every size) -- both see S5's forced
+    bfloat16 trunk, so neither side falls back to the fp32-everywhere arm."""
+    monkeypatch.setattr(sp, "DEVICE", "cpu")
+    below = sp.protenix_s5_confidence_policy(76)
+    assert (below.confidence_autocast, below.diffusion_autocast) == (False, False)
+    above = sp.protenix_s5_confidence_policy(5000)
+    assert (above.confidence_autocast, above.diffusion_autocast) == (True, True)
+    # protenix-v2 keeps its confidence head under autocast at every size,
+    # even below the upstream gate -- the one case `model_name` moves.
+    v2_below = sp.protenix_s5_confidence_policy(76, "protenix-v2")
+    assert v2_below.confidence_autocast is True
+
+    monkeypatch.setattr(sp, "DEVICE", "gpu")
+    gpu_below = sp.protenix_s5_confidence_policy(76)
+    assert gpu_below.confidence_autocast is True  # shipped default: bf16 head always
+    assert gpu_below.diffusion_autocast is False  # diffusion half unmoved below 3,840
+    gpu_above = sp.protenix_s5_confidence_policy(5000)
+    assert (gpu_above.confidence_autocast, gpu_above.diffusion_autocast) == (
+        True,
+        True,
+    )
+
+
+def test_protenix_confidence_dtype_label_reports_the_realised_policy(
+    monkeypatch,
+) -> None:
+    """The recorded ``confidence_dtype`` comes from the realised policy, not
+    a literal -- a CPU float32 head and a GPU bfloat16 head read differently
+    even at the same token count."""
+    monkeypatch.setattr(sp, "DEVICE", "cpu")
+    cpu_policy = sp.protenix_s5_confidence_policy(76)
+    cpu_label = sp.protenix_confidence_dtype_label(cpu_policy, n_token=76)
+    assert cpu_label.startswith("float32 (native,")
+    assert "n_token=76" in cpu_label
+
+    monkeypatch.setattr(sp, "DEVICE", "gpu")
+    gpu_policy = sp.protenix_s5_confidence_policy(76)
+    gpu_label = sp.protenix_confidence_dtype_label(gpu_policy, n_token=76)
+    assert gpu_label.startswith("bfloat16 (--amp-policy auto (shipped default),")
+    assert "n_token=76" in gpu_label

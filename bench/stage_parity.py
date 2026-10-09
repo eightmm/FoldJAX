@@ -945,6 +945,41 @@ def rerun_agreement(
 # --------------------------------------------------------------------------
 
 
+def protenix_s5_confidence_policy(n_token: int, model_name: str | None = None) -> Any:
+    """The confidence-head AMP policy Protenix's S5 runs under this device.
+
+    Resolved through the same two functions the CLI resolves it with
+    (``foldjax/models/protenix/runner.py`` ``run_prediction``):
+    ``--device cpu`` reproduces the native capture's own upstream gate
+    (``amp_policy_for_tokens``, what ``--amp-policy upstream`` selects);
+    ``--device gpu`` is what ``foldjax predict`` runs with every option
+    omitted (``default_amp_policy_for_tokens``, ``--amp-policy auto``'s
+    table -- the shipped default). S5 always forces a bfloat16 trunk (the
+    trunk itself is injected from the native capture), so
+    ``trunk_is_bf16=True`` on both sides of the branch, exactly as
+    ``realise_amp_policy`` expects.
+    """
+    from foldjax.models.protenix.amp_policy import (
+        amp_policy_for_tokens,
+        default_amp_policy_for_tokens,
+        realise_amp_policy,
+    )
+
+    requested = (
+        amp_policy_for_tokens(n_token, model_name)
+        if DEVICE == "cpu"
+        else default_amp_policy_for_tokens(n_token, model_name)
+    )
+    return realise_amp_policy(requested, trunk_is_bf16=True)
+
+
+def protenix_confidence_dtype_label(policy: Any, *, n_token: int) -> str:
+    """The ``confidence_dtype`` condition entry for a realised S5 policy."""
+    dtype = "bfloat16" if policy.confidence_autocast else "float32"
+    source = "native" if DEVICE == "cpu" else "--amp-policy auto (shipped default)"
+    return f"{dtype} ({source}, {policy.label()}, n_token={n_token})"
+
+
 def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
     import jax
     import jax.numpy as jnp
@@ -1271,6 +1306,11 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
 
     # -- S5 ---------------------------------------------------------------
     def s5() -> dict[str, Any]:
+        from foldjax.models.protenix.models.input_precision import (
+            native_confidence_autocast_params,
+        )
+        from foldjax.models.protenix.runtime_policy import infer_model_name_from_path
+
         _, features, cycles = loaded()
         conf_in = npz(capture / "confidence-input.npz")
         native_pred = npz(capture / "prediction.npz")
@@ -1279,6 +1319,18 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
 
         def native_coords(*args: Any, **kwargs: Any):
             return coords
+
+        n_token = int(features["restype"].shape[-2])
+        model_name = infer_model_name_from_path(parity.CHECKPOINT)
+        amp_policy = protenix_s5_confidence_policy(n_token, model_name)
+        confidence_dtype_label = protenix_confidence_dtype_label(
+            amp_policy, n_token=n_token
+        )
+        params = parity._params()
+        if amp_policy.confidence_autocast:
+            params = params._replace(
+                confidence=native_confidence_autocast_params(params.confidence)
+            )
 
         clear_jit_pools(*pools)
         started = time.perf_counter()
@@ -1297,13 +1349,14 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
                 ) as sampler_calls,
             ):
                 output = prediction.protenix_predict_static(
-                    parity._params(),
+                    params,
                     dict(features),
                     None,
                     num_samples=parity.SAMPLES,
                     num_sampling_steps=parity.SAMPLING_STEPS,
                     recycling_steps=parity.RECYCLES,
                     trunk_dtype=jnp.bfloat16,
+                    confidence_autocast=amp_policy.confidence_autocast,
                     cycle_msa_index_tape=jax.tree.map(jnp.asarray, cycles),
                     use_diffusion_efficient_fusion=True,
                     run_confidence=True,
@@ -1382,7 +1435,7 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
                 "injected_native": "confidence-input.npz s_inputs/s_trunk/z_trunk "
                 "replace the trunk; x_pred_coords replace the sampler",
                 "trunk_dtype": "n/a (native trunk injected)",
-                "confidence_dtype": "float32 (native confidence_skip_amp=true)",
+                "confidence_dtype": confidence_dtype_label,
                 "confidence_triangle_attention": "follows trunk (cueq_jit)",
             },
             headline={
