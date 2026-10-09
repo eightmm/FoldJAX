@@ -136,7 +136,9 @@ not lock files against concurrent replacement during backend execution.
 did, instead of losing seventeen good predictions to the third one's OOM; what
 failed is recorded in `foldjax_failures.json` beside the runs that did not,
 because a successful run leaves a manifest behind and a failed one used to
-leave nothing at all.
+leave nothing at all. A job that preflight refuses (no alignment, an unknown
+CCD code) is named on stderr the moment it is refused, before the batch
+runs, and again in the summary at the end.
 
 Both are request fields, not CLI-only flags:
 `PredictionRequest(resume=True, on_error="continue")`. `foldjax.predict_batch`
