@@ -27,6 +27,16 @@ unless it says so here, in its own paragraph.
   before. Off, nothing about a run changes. See
   [docs/input.md](docs/input.md#pocket-constraints) and
   [docs/boltz2.md](docs/boltz2.md#templates-constraints-and-affinity).
+- **`foldjax capabilities` separates a profile- or option-gated feature
+  from an unconditional one.** `common_schema_features` said a dialect
+  *can carry* a field without saying whether today's released run *reads*
+  it: Protenix's `pocket_constraints`/`contact_constraints` need the
+  constraint embedder (`--profile base-constraint-v0.5.0`), and Protenix's
+  and OpenDDE's `templates` are dropped at the released `use_template=false`.
+  Two new fields narrow it: `profile_gated_features` (needs a named
+  profile) and `option_gated_features` (needs a non-default option), both
+  subsets of `common_schema_features`. Every other field is unchanged. See
+  `docs/python-api.md` and `docs/input.md`.
 
 ### Fixed
 

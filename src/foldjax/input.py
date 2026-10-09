@@ -2844,6 +2844,57 @@ def foldjax_only_features(model: str) -> tuple[str, ...]:
     return _FOLDJAX_ONLY_FEATURES
 
 
+#: Common-schema features (``_TARGETS``) that a model's *released* weight
+#: profile cannot reach, though its dialect carries them and some other
+#: named profile reads them: Protenix's pocket and contact constraints are
+#: embedded by ``trunk_blocks/embedders.py`` ``constraint_embedder``, which
+#: only the managed ``--profile base-constraint-v0.5.0`` (upstream
+#: ``protenix_base_constraint_v0.5.0``) ships weights for (`input.py:144-147`,
+#: `backends/protenix.py` checkpoint gate). Intersected with ``target.features``
+#: in `profile_gated_features`, so renaming or dropping a common feature
+#: cannot leave a stale entry here.
+_PROFILE_GATED_FEATURES: dict[str, frozenset[str]] = {
+    "protenix": frozenset({"pocket_constraints", "contact_constraints"}),
+}
+
+#: Common-schema features a model's dialect carries and its released weight
+#: profile reads, but whose release-default *option* turns off: Protenix and
+#: OpenDDE both write a common ``templates`` field into their native input,
+#: and both drop it with an ``ignored_templates`` record unless the caller
+#: passes ``use_template=true`` (`backends/protenix.py:1112`,
+#: `backends/opendde.py:382`, both released ``False``).
+_OPTION_GATED_FEATURES: dict[str, frozenset[str]] = {
+    "protenix": frozenset({"templates"}),
+    "opendde": frozenset({"templates"}),
+}
+
+
+def profile_gated_features(model: str) -> tuple[str, ...]:
+    """Common-schema features ``model``'s released profile cannot reach.
+
+    A subset of `common_schema_features`: the dialect carries the field, but
+    only a named weight profile has the weights to read it. Reported beside
+    `common_schema_features` so a reader does not take every common feature
+    as something today's default run actually uses.
+    """
+    target = _TARGETS.get(model)
+    features = target.features if target is not None else frozenset()
+    return tuple(sorted(_PROFILE_GATED_FEATURES.get(model, frozenset()) & features))
+
+
+def option_gated_features(model: str) -> tuple[str, ...]:
+    """Common-schema features ``model``'s released *default* turns off.
+
+    A subset of `common_schema_features`, distinct from
+    `profile_gated_features`: the released profile has the weights to read
+    the field, but the released default option leaves it off, as
+    `use_template=false` does.
+    """
+    target = _TARGETS.get(model)
+    features = target.features if target is not None else frozenset()
+    return tuple(sorted(_OPTION_GATED_FEATURES.get(model, frozenset()) & features))
+
+
 #: Scientific inputs a model's *native* dialect carries, through FoldJAX's own
 #: port, that the common schema has no field for. Only what the port consumes
 #: is listed; a native field the port refuses (OpenFold3's ``covalent_bonds``,

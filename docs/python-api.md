@@ -378,7 +378,18 @@ the dialect lacks the field, and the native-only inputs the port consumes --
 `user_ccd` (AlphaFold 3), `ligand_file` (Protenix, OpenDDE), and
 `cyclic_polymer` (Boltz-2, OpenFold3). These are reachable only through native
 input. Templates are the case that matters: backend support does not imply
-that every input route honors a per-job template. `pocket_constraints` is a
+that every input route honors a per-job template. Two more fields narrow
+`common_schema_features` to what today's *released* run actually reaches:
+`profile_gated_features` names ones only a named weight profile reads --
+Protenix's `pocket_constraints` and `contact_constraints` need the
+constraint embedder, which only `--profile base-constraint-v0.5.0` ships
+(the released default refuses them, as a native job would) -- and
+`option_gated_features` names ones the released *default option* turns off:
+Protenix and OpenDDE both carry `templates` into their native input, but
+drop it (`ignored_templates`) unless `options.use_template=true`. Neither
+tier removes a feature from `common_schema_features` itself, which keeps
+answering "can this dialect carry it"; they answer "does today's default
+run read it". `pocket_constraints` is a
 common feature for Boltz-2, Protenix and OpenFold3: `Job(...,
 pockets=[Pocket("L", [("A", 2), ("A", 5)], max_distance=None)])` writes the
 common `constraints` field, `max_distance=None` takes each model's upstream

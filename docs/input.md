@@ -331,7 +331,14 @@ field for any of them; pass the model's native file instead. Pocket and
 contact constraints and ligands of several CCD components are common fields
 ([pocket constraints](#pocket-constraints),
 [contact constraints](#contact-constraints),
-[multi-residue ligands](#multi-residue-ligands-glycans)).
+[multi-residue ligands](#multi-residue-ligands-glycans)). The same report's
+`profile_gated_features` and `option_gated_features` narrow
+`common_schema_features` further, to what a *released* run actually reaches:
+Protenix's pocket and contact constraints are profile-gated (only
+`--profile base-constraint-v0.5.0` has the constraint embedder), and
+Protenix's and OpenDDE's `templates` are option-gated (`use_template=false`
+by default). A feature named there is still in `common_schema_features` --
+the dialect carries it -- but a released default run does not reach it.
 
 OpenDDE reads no constraint, native or common. It shares Protenix's
 native dialect and featurizer, but its model has no constraint embedder, and

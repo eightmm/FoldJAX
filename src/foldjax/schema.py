@@ -243,6 +243,19 @@ class ModelCapabilities:
     # (`foldjax.pocket_selection`). Filled in by `foldjax.capabilities` from
     # `foldjax.input.foldjax_only_features`, like the fields above.
     foldjax_only_features: tuple[str, ...] = ()
+    # Common-schema features this model's *released* configuration does not
+    # actually reach, though a common document can carry them and every
+    # other field here is unconditional. `profile_gated_features` names ones
+    # only a named weight profile reads (Protenix's pocket and contact
+    # constraints need `--profile base-constraint-v0.5.0`'s constraint
+    # embedder); `option_gated_features` names ones the released default
+    # turns off by option (Protenix and OpenDDE's templates,
+    # `use_template=false`). Both are subsets of `common_schema_features`,
+    # named so a reader of that field alone does not take every common
+    # feature as something today's default run uses. Filled in by
+    # `foldjax.capabilities` from `foldjax.input`, like the fields above.
+    profile_gated_features: tuple[str, ...] = ()
+    option_gated_features: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

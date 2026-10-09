@@ -76,6 +76,8 @@ def capabilities(name: str) -> ModelCapabilities:
         common_schema_features,
         foldjax_only_features,
         native_only_features,
+        option_gated_features,
+        profile_gated_features,
     )
 
     backend = get_backend(name)
@@ -85,6 +87,8 @@ def capabilities(name: str) -> ModelCapabilities:
         common_schema_features=common_schema_features(described.model),
         native_only_features=native_only_features(described.model, described),
         foldjax_only_features=foldjax_only_features(described.model),
+        profile_gated_features=profile_gated_features(described.model),
+        option_gated_features=option_gated_features(described.model),
         confidence_arrays=described.confidence_arrays
         or default_arrays(described.model),
         sampling_defaults=described.sampling_defaults or sampling_defaults(backend),
