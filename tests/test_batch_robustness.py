@@ -6,6 +6,7 @@ happen after it.
 """
 
 import errno
+import io
 import json
 import pickle
 import subprocess
@@ -17,6 +18,7 @@ import pytest
 
 import foldjax
 import foldjax.api as api_module
+from foldjax import progress
 from foldjax.backends.base import Backend
 from foldjax.cli import main
 from foldjax.registry import backend_override
@@ -104,6 +106,41 @@ def test_keep_going_records_any_exception_and_runs_the_rest(
     assert [failure.error_type for failure in report.failures] == [type(error).__name__]
     recorded = json.loads((tmp_path / "out" / "foldjax_failures.json").read_text())
     assert recorded[0]["input"].endswith("a.yaml")
+
+
+def test_keep_going_reports_a_preflight_refusal_when_it_happens(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A refused job is announced before the batch runs, not after it ends."""
+    stream = io.StringIO()
+    monkeypatch.setattr(progress, "_enabled", True)
+    monkeypatch.setattr(progress, "_stream", stream)
+    backend = Scripted()
+    run = backend.predict
+
+    def predict(request: PredictionRequest) -> PredictionResult:
+        stream.write(f"ran {request.output_dir.name}\n")
+        return run(request)
+
+    backend.predict = predict  # type: ignore[method-assign]
+
+    def refuse(request: PredictionRequest, *, backend: Backend | None = None) -> None:
+        if Path(request.input).stem == "a":
+            raise ValueError("protein chain A has no alignment")
+
+    monkeypatch.setattr(api_module, "preflight", refuse)
+    with backend_override("boltz2", lambda: backend):
+        report = foldjax.predict_batch(_batch(tmp_path, "a", "b"))
+
+    assert backend.ran == ["b"]
+    assert [failure.error for failure in report.failures] == [
+        "protein chain A has no alignment"
+    ]
+    lines = stream.getvalue().splitlines()
+    refused = [line for line in lines if "refused" in line]
+    assert len(refused) == 1, lines
+    assert "a.yaml" in refused[0] and "has no alignment" in refused[0]
+    assert lines.index(refused[0]) < lines.index("ran b")
 
 
 def test_keep_going_still_stops_on_an_interrupt(tmp_path: Path) -> None:

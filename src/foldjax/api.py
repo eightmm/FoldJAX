@@ -947,6 +947,10 @@ def _preflight_or_record(
                 source=request.source,
             )
         )
+        # Said now, not only in the batch summary: the batch may run for
+        # hours before that summary, and nothing of this job will run at all.
+        named = request.source.describe() if request.source else request.input
+        progress.message(f"[foldjax] {request.model} · {named} refused: {error}")
         return False
     return True
 

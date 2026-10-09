@@ -10,6 +10,15 @@ unless it says so here, in its own paragraph.
 
 ## Unreleased
 
+### Fixed
+
+- **`--keep-going` says which job preflight refused when it refuses it.** A
+  job refused before the batch ran (no alignment, an unknown CCD code) was
+  recorded and reported only in the summary after every other run had
+  finished, so a refusal could surface hours later. The refusal is now a
+  progress line on stderr the moment it is recorded (`--quiet` suppresses
+  it, as every progress line); the end summary and `foldjax_failures.json`
+  are unchanged. The Python API is unaffected unless progress is enabled.
 ## 0.1.0 (2026-10-09)
 
 ### Added
