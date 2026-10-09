@@ -12,6 +12,27 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **An independent check of the common-job translation
+  (`bench/independent_inputs.py`, `tests/parity/test_independent_inputs.py`).**
+  Every GPU validation recorded that the upstream arm read the native input
+  FoldJAX's own writer produced, which proves both runs saw one document and
+  nothing about whether that document says what the common job says. The
+  harness holds, for fifteen jobs (monomer and heteromer alignments, paired
+  alignments, a homodimer with a CCD ligand, a SMILES ligand, a modified
+  residue, an N-glycan with its bonds, DNA and RNA chains, mapped and bare
+  templates, pocket and contact restraints with and without `max_distance`),
+  a native document per backend written by hand from the upstream's own
+  format reference, featurizes it and the writer's output with the same
+  torch-free featurizer in separate processes and compares the arrays
+  bitwise; it also checks the writer's materialize/refuse/drop outcome
+  against `common_schema_features`. Each arm runs in its own interpreter
+  because Boltz-2's and Protenix's SMILES conformers come from RDKit's
+  unseeded, process-global stream, as upstream's do: two calls in one process
+  draw two conformers. The pytest face is `cpu_parity`-marked and needs a
+  fetched store named by `FOLDJAX_INDEPENDENT_INPUTS_STORE`, read only.
+  AlphaFold 3 (runtime) and ESMFold2's upstream featurizer (torch) are not
+  covered on a CPU host; OpenFold3's mapped template is the port's own cache
+  layout and has no independent form.
 - **AlphaFold 3 manifests record where their kernel configurations came
   from (`kernel_tuning`).** `kernel_autotuning` is Tokamax's cache-miss
   policy and every value shares one cache namespace and one persistent

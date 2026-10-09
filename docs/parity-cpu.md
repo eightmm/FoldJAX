@@ -126,6 +126,37 @@ something, that a default run collects none of it, that every shipped manifest
 validates, and that every test a manifest entry names is actually collected --
 so a fixture cannot end up certified by a test that no longer exists.
 
+### The independent-input check
+
+`tests/parity/test_independent_inputs.py` sits in the same subset but replays
+no capture. It answers a different question: does the native input FoldJAX
+writes for a common job mean what a native input written by hand from the
+upstream's own format reference means? Every GPU check records that the
+upstream arm read the native input the FoldJAX arm wrote, which cannot see a
+translation error. `bench/independent_inputs.py` holds fifteen jobs with a
+hand-written native document per backend, featurizes each pair with the
+backend's torch-free featurizer -- each arm in its own process, because the
+SMILES conformer of Boltz-2 and Protenix is RDKit's unseeded, process-global
+stream -- and compares the arrays bitwise, after a rerun of the native arm
+establishes the featurizer's own floor. It also checks that the writer
+materializes, refuses or drops each job as `common_schema_features` promises,
+and that a match is not vacuous (an alignment with rows, a template mask, a
+restraint class that is not `UNSELECTED`).
+
+```
+FOLDJAX_INDEPENDENT_INPUTS_STORE=/path/to/.foldjax FOLDJAX_HOME=<scratch> \
+  JAX_PLATFORMS=cpu pytest --run-cpu-parity tests/parity/test_independent_inputs.py
+FOLDJAX_HOME=<scratch> JAX_PLATFORMS=cpu python -m bench.independent_inputs \
+  --store /path/to/.foldjax --out results/independent-inputs   # job x model table
+```
+
+The named store is read only: the CCD files are reached through symlinks in
+the scratch `FOLDJAX_HOME`, Boltz-2's `mols` and ESMFold2's `ccd.pkl` by
+explicit path. AlphaFold 3 needs its runtime and ESMFold2's upstream featurizer
+needs torch, so neither is covered on a CPU host; OpenFold3's mapped template
+is the port's own cache layout and has no hand-written form, only its
+CIF-direct bare template does.
+
 ## Where the fixtures live
 
 The repository pack is 22 MB, its largest blob 5.4 MB, and `.gitattributes` is
