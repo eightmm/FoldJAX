@@ -152,6 +152,19 @@ Usually because they were not the same run:
   a seed per run, prints it and records it in `foldjax_run.json`
   (`seed_source: random`). Pass `--seed N` (or `--seeds ...`) to repeat one.
   Protenix (101) and OpenFold3 (42) have fixed upstream defaults.
+- **A SMILES ligand embedded later in the process.** Boltz-2, Protenix and
+  OpenDDE build a SMILES ligand's reference conformer with RDKit's default
+  `EmbedMolecule`, as their upstreams do (`boltz/data/parse/schema.py`
+  `compute_3d_conformer`; Protenix `json_parser.py` `smiles_to_atom_info`,
+  which OpenDDE shares). The call is unseeded: it draws from RDKit's
+  process-global stream, which `--seed` never reaches. A fresh process
+  repeats the first embedding exactly, but every later embedding in the same
+  process continues the stream and can start from a different conformer --
+  the second job of a batch, and on Protenix and OpenDDE every further seed
+  of one job, since both featurize once per seed as upstream does. CCD and
+  file ligands carry their conformers and are unaffected. FoldJAX keeps this
+  for upstream parity; give a job a process of its own when its conformer
+  must repeat.
 - **ESMFold2 is random by design**: random initial pair state, language-model
   dropout per loop and sampler noise, so two seeds give genuinely different
   structures ([esmfold2.md](esmfold2.md)).

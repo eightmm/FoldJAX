@@ -80,6 +80,13 @@ run writes `foldjax_run.json` beside its structures:
 model, input SHA-256, resolved weights and their stat/tree identity, the knobs
 actually used, and each structure's confidence.
 
+The seed does not reach RDKit. A SMILES ligand's reference conformer on
+Boltz-2, Protenix and OpenDDE comes from RDKit's unseeded, process-global
+embedding stream, exactly as upstream draws it, so it repeats only at the same
+position in a fresh process: a later job in the same process, or a later seed
+on Protenix and OpenDDE, can start from another conformer
+([faq.md](faq.md#why-do-two-runs-of-the-same-job-give-different-structures)).
+
 A run reports its stages on stderr and its results as a table on stdout:
 
 ```

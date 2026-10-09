@@ -45,6 +45,13 @@ unless it says so here, in its own paragraph.
   upstream's `parse_json_templates` defines no such key, and both readers
   take the file's first chain, where the writer already puts the named one.
   The key is dropped; which chain is read is unchanged.
+- **SMILES conformers are documented as unseeded.** `docs/faq.md` and
+  `docs/cli.md` say that Boltz-2, Protenix and OpenDDE embed a SMILES ligand
+  with RDKit's default `EmbedMolecule`, as upstream does: the draw comes from
+  RDKit's process-global stream, which `--seed` never reaches, so a later job
+  in one process -- or a later seed on Protenix and OpenDDE, which featurize
+  per seed -- can start from a different conformer than a fresh process
+  would. Behaviour is unchanged.
 
 ## 0.1.0 (2026-10-09)
 
