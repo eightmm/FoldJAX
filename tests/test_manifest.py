@@ -900,3 +900,49 @@ def test_esmfold2_binds_the_ccd_beside_its_checkpoint(tmp_path: Path) -> None:
     (root / "ccd.pkl").write_bytes(b"ccd")
     paths, missing = manifest._esmfold2_weight_assets(request)
     assert root / "ccd.pkl" in paths and not missing
+
+
+def test_manifest_sampling_records_only_the_knobs_a_request_set(
+    tmp_path: Path,
+) -> None:
+    """``sampling`` echoes ``request.sampling`` ("the knobs that were
+    actually set", `schema.PredictionRequest.sampling`), not each backend's
+    resolved default -- the same contract `msa`/`templates`/`options` follow.
+    An omitted AlphaFold 3 `--num-recycles` writes no `num_recycles` key here
+    even though the adapter runs upstream's released 10 (`foldjax plan` and
+    `capabilities` are where that resolved value is reported, through
+    `Backend.sampling_resolution`); an omitted ESMFold2 recycle count already
+    worked the same way, so this is not an AlphaFold 3-specific gap.
+    """
+    from foldjax import manifest
+    from foldjax.registry import get_backend
+
+    request = PredictionRequest(
+        model="alphafold3",
+        input=_job(tmp_path),
+        weights=_weights(tmp_path),
+        output_dir=tmp_path / "out",
+        seed=101,
+    )
+    assert request.sampling == {}
+
+    result = PredictionResult(model="alphafold3", samples=())
+    document = manifest.describe_run(request, result)
+    assert document["sampling"] == {}
+    assert "num_recycles" not in document["sampling"]
+
+    # The adapter's resolved default is reported elsewhere (`plan`,
+    # `capabilities`), not folded into the manifest's echo of the request.
+    resolved = get_backend("alphafold3").sampling_resolution(request)
+    assert resolved["num_recycles"] == (10, "default")
+
+    # An explicit request is recorded exactly as asked, same as any backend.
+    explicit = PredictionRequest(
+        model="alphafold3",
+        input=_job(tmp_path),
+        weights=_weights(tmp_path),
+        output_dir=tmp_path / "out",
+        seed=101,
+        num_recycles=10,
+    )
+    assert manifest.describe_run(explicit, result)["sampling"] == {"num_recycles": 10}
