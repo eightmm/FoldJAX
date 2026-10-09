@@ -105,6 +105,19 @@ unless it says so here, in its own paragraph.
   AlphaFold 3 (runtime) and ESMFold2's upstream featurizer (torch) are not
   covered on a CPU host; OpenFold3's mapped template is the port's own cache
   layout and has no independent form.
+- **`bench/stage_parity.py --device gpu`: the stage-parity table on the
+  shipped program.** The CPU table (`bench/stage_parity_results/TABLE.md`)
+  runs every port stage on CPU XLA at `highest` with the capture's dtype
+  policy, so each S3-S6 residual carries a CPU-vs-GPU term on top of
+  port-vs-native. The new mode replays the same captures and tapes on a GPU
+  with what `foldjax predict` runs when every option is omitted -- each
+  port's matmul-precision pin, its shipped dtype profile and its shipped
+  kernels (cuEquivariance, Pallas, tokamax) -- records the kernels and the
+  precision the process realised in every row's `condition`, and writes to
+  `bench/stage_parity_results_gpu/`; `--table` renders either directory with
+  a `device` column and refuses a mix. `--device cpu` (the default) is the
+  measurement it was. The Slurm suite that runs it lives in
+  `foldjax-bench/stage-parity-gpu/`. Harness only; no prediction changes.
 - **AlphaFold 3 manifests record where their kernel configurations came
   from (`kernel_tuning`).** `kernel_autotuning` is Tokamax's cache-miss
   policy and every value shares one cache namespace and one persistent
@@ -497,6 +510,19 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **AlphaFold 3 runs upstream's 10 recycles when `--num-recycles` is
+  omitted.** The adapter used to supply 3 (four trunk passes, the SI's
+  Algorithm 1 `N_cycle=4`) where DeepMind's `run_alphafold.py --num_recycles`
+  defaults to 10 (eleven passes). A port's omitted defaults follow its
+  upstream's released inference path, as Boltz-2's and ESMFold2's recycle
+  counts already do, so the override is gone: an omitted count now reaches
+  the vendored runner's own 10, `foldjax plan`, `capabilities` and the
+  manifest's `sampling` report 10, and an explicit `--num-recycles 10`
+  shares the compile-cache namespace an omitted request uses. **This changes
+  what a recorded AlphaFold 3 command predicts** when it did not spell the
+  recycle count: the same job now runs seven more trunk passes and its
+  coordinates and scores differ. `--num-recycles 3` reproduces the earlier
+  four-pass run (its own namespace, as before).
 - **Protenix's default no longer pairs a searched heteromer, and reads its
   unpaired alignment environmental hits first** -- what a run of upstream's
   ColabFold mode does. That mode submits the `pairgreedy` complex search but

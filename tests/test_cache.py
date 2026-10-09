@@ -301,7 +301,7 @@ def test_alphafold3_managed_defaults_share_the_omitted_cache_namespace(
         options={
             "num_samples": 5,
             "num_steps": 200,
-            "num_recycles": 3,
+            "num_recycles": 10,
             "max_msa_depth": 1024,
             "buckets": [],
             "attention_backend": "triton",
@@ -314,7 +314,7 @@ def test_alphafold3_managed_defaults_share_the_omitted_cache_namespace(
         omitted,
         num_samples=5,
         num_steps=200,
-        num_recycles=3,
+        num_recycles=10,
         max_msa_depth=1024,
         options={
             "buckets": (),
@@ -325,7 +325,7 @@ def test_alphafold3_managed_defaults_share_the_omitted_cache_namespace(
         },
     )
 
-    assert backend.cache_profile(omitted) == {"num_recycles": 3}
+    assert backend.cache_profile(omitted) == {}
     assert backend.cache_profile(native) == backend.cache_profile(omitted)
     assert backend.cache_profile(neutral) == backend.cache_profile(omitted)
     assert resolve_cache_dir(native, backend) == resolve_cache_dir(omitted, backend)
@@ -347,7 +347,7 @@ def test_alphafold3_external_source_keeps_nested_config_defaults_explicit(
             "source": source,
             "num_samples": 5,
             "num_steps": 200,
-            "num_recycles": 3,
+            "num_recycles": 10,
             "max_msa_depth": 1024,
             "attention_backend": "triton",
             "return_embeddings": False,
@@ -356,9 +356,8 @@ def test_alphafold3_external_source_keeps_nested_config_defaults_explicit(
         },
     )
 
-    assert backend.cache_profile(omitted) == {"num_recycles": 3}
+    assert backend.cache_profile(omitted) == {}
     assert backend.cache_profile(explicit) == {
-        "num_recycles": 3,
         "num_steps": 200,
         "max_msa_depth": 1024,
     }
@@ -1306,24 +1305,29 @@ def test_resolve_cache_dir_requires_a_cache_root(tmp_path: Path) -> None:
         resolve_cache_dir(request, ProfiledBackend())
 
 
-@pytest.mark.parametrize(
-    ("model", "recycles"), [("alphafold3", 3)]
-)
 @pytest.mark.parametrize("padding", [False, True])
-def test_paper_recycling_defaults_preserve_overrides_and_cache_identity(
-    tmp_path: Path, model: str, recycles: int, padding: bool
+def test_alphafold3_recycles_default_to_upstream_ten(
+    tmp_path: Path, padding: bool
 ) -> None:
-    backend = get_backend(model)
-    request = dataclasses.replace(_request(tmp_path), model=model, padding=padding)
-    explicit = dataclasses.replace(request, num_recycles=recycles)
-    native = dataclasses.replace(request, options={"num_recycles": recycles})
-    previous_count = 10 if model == "alphafold3" else 3
-    previous = dataclasses.replace(request, num_recycles=previous_count)
-    assert backend.apply_sampling(request)["num_recycles"] == recycles
-    assert backend.apply_sampling(previous)["num_recycles"] == previous_count
+    """`run_alphafold.py --num_recycles` defaults to 10 (eleven trunk passes).
+
+    The adapter no longer supplies the SI's Algorithm-1 count of 3: an omitted
+    count reaches `_RELEASED_COMPILE_DEFAULTS`, an explicit 10 shares its cache
+    namespace, and the former managed 3 stays a separate program.
+    """
+    backend = get_backend("alphafold3")
+    request = dataclasses.replace(
+        _request(tmp_path), model="alphafold3", padding=padding
+    )
+    explicit = dataclasses.replace(request, num_recycles=10)
+    native = dataclasses.replace(request, options={"num_recycles": 10})
+    former = dataclasses.replace(request, num_recycles=3)
+    assert "num_recycles" not in backend.apply_sampling(request)
+    assert backend.apply_sampling(explicit)["num_recycles"] == 10
+    assert backend.apply_sampling(former)["num_recycles"] == 3
     assert resolve_cache_dir(request, backend) == resolve_cache_dir(explicit, backend)
     assert resolve_cache_dir(request, backend) == resolve_cache_dir(native, backend)
-    assert resolve_cache_dir(request, backend) != resolve_cache_dir(previous, backend)
+    assert resolve_cache_dir(request, backend) != resolve_cache_dir(former, backend)
 
 
 @pytest.mark.parametrize("padding", [False, True])

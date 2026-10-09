@@ -356,9 +356,9 @@ what the request turns into:
 
 `foldjax capabilities --model MODEL` carries the same values for a request
 that names nothing, as `sampling_defaults`: the default profile's checkpoint
-and every knob omitted. They are what that run takes, not each upstream's own
-CLI default -- AlphaFold 3 reports 3 recycles, the four-pass schedule its
-adapter supplies, where upstream `run_alphafold.py` defaults to 10 (see
+and every knob omitted. They are what that run takes, in the knob's own units
+-- OpenFold3 reports 3 recycles where its config stores four trunk passes,
+and AlphaFold 3 reports upstream `run_alphafold.py`'s 10 (see
 [recycling defaults](recycling-defaults.md)).
 
 ### Outputs

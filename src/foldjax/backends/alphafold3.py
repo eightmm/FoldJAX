@@ -985,12 +985,11 @@ class AlphaFold3Backend(Backend):
         self._model_runner: Any | None = None
         self._model_runner_key: tuple[Any, ...] | None = None
 
-    def apply_sampling(self, request: PredictionRequest) -> dict[str, Any]:
-        options = super().apply_sampling(request)
-        # AF3 SI Algorithm 1 uses four total passes; the native loop adds one.
-        # Retain the effective count in cache identity instead of aliasing 10.
-        options.setdefault("num_recycles", 3)
-        return options
+    # No `apply_sampling` override: an omitted `num_recycles` runs upstream's
+    # `run_alphafold.py --num_recycles` default (10, eleven trunk passes) from
+    # `_RELEASED_COMPILE_DEFAULTS`, as every other port runs its upstream's
+    # released inference path. Until 2026-10-09 the adapter supplied 3 here
+    # (the SI's Algorithm 1 `N_cycle=4`); `--num-recycles 3` still selects it.
 
     def _omitted_sampling(
         self, request: PredictionRequest, options: Mapping[str, Any]

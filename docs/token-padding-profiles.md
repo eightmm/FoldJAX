@@ -65,7 +65,7 @@ The common API uses the [recycling policy](recycling-defaults.md); since
 warming keep that same policy. ESMFold2 defaults to the released
 checkpoint's three additional recycles (four total loops), also since
 2026-09-30. Explicit values take precedence. Other managed model defaults are
-AF3 3 (four total passes, explicitly choosing Algorithm 1), Protenix base 10, OpenDDE 10 and OpenFold3/OpenBind 3. The linked audit
+AF3 10 (upstream `run_alphafold.py`'s default since 2026-10-09; it was 3, the four-pass Algorithm 1, before), Protenix base 10, OpenDDE 10 and OpenFold3/OpenBind 3. The linked audit
 separates verified paper settings from publisher fallbacks and explains
 initial-pass counting; not every code default is a paper benchmark setting.
 

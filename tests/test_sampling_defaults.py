@@ -42,7 +42,7 @@ def _values(model: str, request: PredictionRequest) -> dict[str, int | None]:
     return {knob: value for knob, (value, _source) in resolved.items()}
 
 
-def test_alphafold3_reports_the_recycles_its_adapter_runs(tmp_path: Path) -> None:
+def test_alphafold3_reports_upstreams_released_recycles(tmp_path: Path) -> None:
     from foldjax.backends import alphafold3
 
     backend = get_backend("alphafold3")
@@ -54,7 +54,9 @@ def test_alphafold3_reports_the_recycles_its_adapter_runs(tmp_path: Path) -> Non
         knob: options.get(native, alphafold3._RELEASED_COMPILE_DEFAULTS[native])
         for knob, native in backend.sampling_options.items()
     }
-    assert ran["num_recycles"] == 3
+    # Upstream's `run_alphafold.py --num_recycles` default, not the adapter's
+    # former Algorithm-1 count of 3.
+    assert ran["num_recycles"] == 10
     assert _values("alphafold3", request) == ran
     assert capabilities("alphafold3").sampling_defaults == ran
 

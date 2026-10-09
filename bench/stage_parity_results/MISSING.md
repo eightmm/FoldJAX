@@ -109,8 +109,13 @@ afresh with `jax.clear_caches()` on both sides; OpenDDE `models/model.py`
 * **Every S3-S6 port stage runs CPU XLA against a GPU capture.** Triangle
   kernels are XLA where the native run used cuEquivariance, and bf16 is CPU
   bf16. The residuals are therefore a CPU-vs-GPU number on top of
-  port-vs-native (see `docs/parity-cpu.md`); a GPU run of this script would
-  separate the two.
+  port-vs-native (see `docs/parity-cpu.md`). `bench/stage_parity.py --device
+  gpu` separates the two: it replays the same captures and tapes on a GPU with
+  each port's shipped kernels, dtype profile and matmul-precision pin, records
+  what the process realised in each row's `condition`, and writes to
+  `bench/stage_parity_results_gpu/` (the Slurm suite
+  `foldjax-bench/stage-parity-gpu/` runs it). This bullet closes when that
+  directory holds a run.
 * **AlphaFold 3 -- no intermediate stages.** The `alphafold3` row compares two
   complete CPU runs (DeepMind's `run_alphafold.py` v3.0.4 and FoldJAX's
   vendored AF3, whose `alphafold3` package differs from DeepMind's in 9 of 86

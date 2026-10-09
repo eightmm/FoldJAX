@@ -28,16 +28,33 @@ A stage the capture cannot support is written as ``not_captured`` with the
 reason; nothing is synthesized to fill it. ``bench/stage_parity_results/
 MISSING.md`` names the upstream hook a new capture would need.
 
+Two conditions, chosen by ``--device``. ``cpu`` (the default) is the
+upstream-precision measurement above: CPU XLA, float32 matmuls at
+``highest``, the capture's own dtype policy, every fused kernel replaced by
+the port's XLA path. ``gpu`` replays the same captures and tapes on a GPU with
+what ``foldjax predict`` runs when every option is omitted -- each port's own
+matmul-precision pin, its shipped dtype profile and its shipped kernels
+(cuEquivariance, Pallas, tokamax) -- and records the kernels and precision
+the process realised in each stage's ``condition``; its residuals are the
+shipped program against the native run, without the CPU-vs-GPU confound the
+CPU rows carry. The two write to separate result directories
+(``bench/stage_parity_results`` and ``bench/stage_parity_results_gpu``) and
+``--table`` renders either, never a mix.
+
 Usage::
 
     JAX_PLATFORMS=cpu FOLDJAX_HOME=<store> PYTHONPATH=<tree>/src:<tree> \\
         python bench/stage_parity.py --model protenix \\
         --capture <protenix master capture>/protein_1ubq/native-A \\
         --out bench/stage_parity_results/protenix.json
+    python bench/stage_parity.py --model protenix --device gpu \\
+        --capture <the same capture> \\
+        --out bench/stage_parity_results_gpu/protenix.json   # on a GPU
     python bench/stage_parity.py --table bench/stage_parity_results
 
 The metric functions at the top import NumPy only, so their unit tests
-(``tests/test_bench_stage_parity.py``) need neither JAX nor weights.
+(``tests/test_bench_stage_parity.py``) need neither JAX nor weights; the
+device and table tests there import JAX on CPU.
 """
 
 from __future__ import annotations
@@ -519,6 +536,131 @@ def require_cpu() -> None:
         )
 
 
+# --------------------------------------------------------------------------
+# Device condition: the CPU/upstream-precision rows or the GPU/shipped rows
+# --------------------------------------------------------------------------
+
+DEVICES = ("cpu", "gpu")
+
+#: Set once per process by `run_model` from ``--device``; every stage reads
+#: it through the helpers below rather than branching on JAX's backend, so a
+#: CPU process can never produce a row labelled as the shipped GPU program.
+DEVICE = "cpu"
+
+#: What each port pins for float32 matmuls when no request is in flight, the
+#: value the GPU rows run under. The pin sits in the port, not in this
+#: script: Protenix in `models/predict.py` (read through
+#: `resolved_matmul_precision`), Boltz-2 in `api.MATMUL_PRECISION` (opened by
+#: the api wrapper, so the GPU rows open it around the forward they call
+#: directly and pass it as the op-level knob too), OpenFold3 in
+#: `inference._MATMUL_PRECISION` (the traced `predict` is decorated with it).
+#: OpenDDE and ESMFold2 pin nothing and run JAX's own default, which on a GPU
+#: is TF32 for float32 dots. ``None`` means exactly that: nothing is opened.
+#: `tests/test_bench_stage_parity.py` checks the three strings against the
+#: port constants.
+SHIPPED_MATMUL_PRECISION: dict[str, str | None] = {
+    "protenix": "high",
+    "boltz2": "high",
+    "openfold3": "high",
+    "opendde": None,
+    "esmfold2": None,
+}
+
+def require_device(device: str) -> None:
+    """Refuse a process whose JAX backend is not the condition asked for."""
+    if device not in DEVICES:
+        raise ValueError(f"device must be one of {DEVICES}, got {device!r}")
+    if device == "cpu":
+        require_cpu()
+        return
+    import jax
+
+    if jax.default_backend() != "gpu":
+        raise RuntimeError(
+            "--device gpu measures the shipped GPU program; this process is on "
+            f"{jax.default_backend()!r} (unset JAX_PLATFORMS on a GPU host)"
+        )
+
+
+@contextlib.contextmanager
+def precision_scope(port: str) -> Iterator[None]:
+    """The matmul precision a stage of ``port`` runs under on this device.
+
+    CPU: every port at ``highest`` through `highest_precision` (the request
+    ContextVar plus the JAX scope, so ports that pin nothing get it too). GPU:
+    no request is made, so each port keeps its own pin; the JAX scope is
+    opened only where the pin lives outside the function the stage calls.
+    """
+    import jax
+
+    if DEVICE == "cpu":
+        with highest_precision():
+            yield
+        return
+    pin = SHIPPED_MATMUL_PRECISION[port]
+    scope = (
+        contextlib.nullcontext() if pin is None else jax.default_matmul_precision(pin)
+    )
+    with scope:
+        yield
+
+
+def device_condition(port: str) -> dict[str, Any]:
+    """The ``backend``/``matmul_precision`` entries of a stage's condition.
+
+    On the GPU the precision is read inside the scope the stages open, so the
+    record is the value in force there rather than the one the table intends.
+    """
+    if DEVICE == "cpu":
+        return dict(CPU_CONDITION)
+    import jax
+
+    pin = SHIPPED_MATMUL_PRECISION[port]
+    with precision_scope(port):
+        observed = str(jax.config.jax_default_matmul_precision)
+    return {
+        "backend": f"gpu ({jax.devices()[0].device_kind})",
+        "matmul_precision": (
+            f"{pin} (port pin; jax_default_matmul_precision in the scope: "
+            f"{observed})"
+            if pin is not None
+            else "JAX default: the port pins none (TF32 float32 dots on a GPU; "
+            f"jax_default_matmul_precision in the scope: {observed})"
+        ),
+    }
+
+
+def host_condition() -> dict[str, Any]:
+    """S1's condition: the featurizer runs on the host under either device."""
+    if DEVICE == "cpu":
+        return dict(CPU_CONDITION)
+    return {"backend": "host (featurizer; no model run)", "matmul_precision": "n/a"}
+
+
+@contextlib.contextmanager
+def overriding_kwargs(module: Any, name: str, **overrides: Any) -> Iterator[dict]:
+    """Rebind ``module.name`` so every call takes ``overrides``; count calls.
+
+    The parity helpers spell the kernel each CPU residual was calibrated on
+    (``glu_backend="xla"``, ``diffusion_attention_backend="xla_jit"``, ...)
+    as literal keyword arguments to a function they look up on its module at
+    call time. The GPU rows go through the same helpers with the shipped
+    value substituted here, so the replay logic is still theirs.
+    """
+    original = getattr(module, name)
+    calls = {"n": 0}
+
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        return original(*args, **{**kwargs, **overrides})
+
+    setattr(module, name, wrapper)
+    try:
+        yield calls
+    finally:
+        setattr(module, name, original)
+
+
 def npz(path: Path) -> dict[str, np.ndarray]:
     with np.load(path, allow_pickle=False) as archive:
         return {name: archive[name] for name in archive.files}
@@ -818,14 +960,46 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         protenix_model._compiled_protenix_infer,
         protenix_model._compiled_protenix_infer_deterministic,
     )
+    # The shipped denoiser attention is tokamax's fused kernel; the parity
+    # helpers pin the blocked XLA path their tolerances were calibrated on
+    # (`tests/parity/test_protenix.py`), so the GPU rows substitute it there.
+    # The GLU (`xla`) and the triangle attention (`cueq_jit`) are the shipped
+    # values in both conditions; the triangle multiplication is resolved by
+    # the port from the platform (`pallas` on a GPU, `runtime_policy.
+    # PALLAS_DEFAULT`) and recorded from its resolver.
+    denoiser_attention = "xla_jit" if DEVICE == "cpu" else "tokamax"
+
+    def shipped_denoiser() -> Any:
+        if DEVICE == "cpu":
+            return contextlib.nullcontext()
+        return overriding_kwargs(
+            prediction,
+            "protenix_predict_static",
+            diffusion_attention_backend=denoiser_attention,
+        )
+
+    def realised_kernels() -> dict[str, str]:
+        if DEVICE == "cpu":
+            return {}
+        from foldjax.models.protenix.models.triangle.triangle import (
+            _triangle_attention_backend,
+            triangle_multiplication_backend,
+        )
+
+        return {
+            "triangle_attention_realised": _triangle_attention_backend(),
+            "triangle_multiplication": triangle_multiplication_backend(),
+        }
+
     base = {
-        **CPU_CONDITION,
+        **device_condition("protenix"),
         "input": "port-featurized foldjax-input.npz (port-A of the same capture; "
         "its input gate certified it equal to native-input.npz)",
         "msa": "native per-cycle MSA rows injected (msa-tape.npz)",
         "trunk_dtype": "bfloat16 (native AMP match: upstream autocast bf16)",
         "triangle_attention": "cueq_jit (port default, as in the parity subset)",
         "glu_backend": "xla",
+        **realised_kernels(),
     }
 
     def loaded() -> tuple[dict, Any, dict]:
@@ -867,7 +1041,7 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         return stage_record(
             "measured",
             condition={
-                **CPU_CONDITION,
+                **host_condition(),
                 "port_featurizer": "foldjax.models.protenix.data.featurize_json."
                 "featurize_protein_json, re-run in this checkout "
                 "(bench.protenix_foldjax_capture.featurize)",
@@ -951,7 +1125,7 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         _, features, cycles = loaded()
         native = npz(fixture_case("protenix", "protein_1ubq", "A").path("trunk.npz"))
         started = time.perf_counter()
-        with highest_precision():
+        with precision_scope("protenix"):
             port = parity._run_trunk(features, cycles)
         runtime = time.perf_counter() - started
         arrays = {
@@ -1008,7 +1182,11 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         tape = sampler_tape()
         clear_jit_pools(*pools)
         started = time.perf_counter()
-        with highest_precision(), pytest.MonkeyPatch.context() as mp:
+        with (
+            precision_scope("protenix"),
+            shipped_denoiser(),
+            pytest.MonkeyPatch.context() as mp,
+        ):
             port = parity._replay_coordinates(features, cycles, tape, mp)
         runtime = time.perf_counter() - started
         record = coordinate_record(port, native_coordinates(), stored)
@@ -1020,7 +1198,11 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
                 "translations, noise schedule) + MSA cycle rows",
                 "schedule": "native, pinned",
                 "samples_x_steps": "5 x 200",
-                "diffusion_attention": "xla_jit (as calibrated)",
+                "diffusion_attention": (
+                    "xla_jit (as calibrated)"
+                    if DEVICE == "cpu"
+                    else f"{denoiser_attention} (shipped)"
+                ),
                 "confidence": "off",
             },
             headline={
@@ -1051,7 +1233,8 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         started = time.perf_counter()
         try:
             with (
-                highest_precision(),
+                precision_scope("protenix"),
+                shipped_denoiser(),
                 pytest.MonkeyPatch.context() as mp,
                 counted_patch(
                     protenix_model,
@@ -1075,7 +1258,7 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
                 "pairformer_output_from_s_inputs; sampler-tape.npz; noise schedule",
                 "trunk_dtype": "n/a (trunk not run; native trunk injected)",
                 "samples_x_steps": "5 x 200",
-                "diffusion_attention": "xla_jit",
+                "diffusion_attention": denoiser_attention,
                 "diffusion_dtype": "float32 (native diffusion_skip_amp=true)",
             },
             headline={
@@ -1101,7 +1284,7 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         started = time.perf_counter()
         try:
             with (
-                highest_precision(),
+                precision_scope("protenix"),
                 counted_patch(
                     protenix_model,
                     "pairformer_output_from_s_inputs",
@@ -1128,7 +1311,7 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
                     return_confidence_details=True,
                     return_trunk=False,
                     glu_backend="xla",
-                    diffusion_attention_backend="xla_jit",
+                    diffusion_attention_backend=denoiser_attention,
                 )
                 output = jax.device_get(jax.block_until_ready(output))
         finally:
@@ -1265,15 +1448,65 @@ def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
 
     import tests.parity.test_boltz2 as parity
 
-    # Read at call time by the trunk; the parity subset pins it the same way.
-    os.environ[parity.TRIANGLE_MULTIPLICATION_ENV] = "xla"
+    if DEVICE == "cpu":
+        # Read at call time by the trunk; the parity subset pins it the same
+        # way. Left unset on the GPU, where the port resolves it to `pallas`.
+        os.environ[parity.TRIANGLE_MULTIPLICATION_ENV] = "xla"
 
     from bench.boltz_amp_report import compare_coordinates
     from foldjax.models.boltz2.bridge.native import load_params
+    from foldjax.models.boltz2.models.trunk_blocks import trunk as trunk_module
     from foldjax.models.boltz2.models.trunk_blocks.trunk import (
         _cast_trunk_params,
         boltz2_sample_forward,
     )
+
+    # What `foldjax predict --model boltz2` realises on a serial GPU process
+    # with every option omitted: the api's `high` pin, its `cueq` triangle
+    # attention and `tokamax` denoiser attention, the pair residual following
+    # the bfloat16 trunk (`pair_residual_dtype="auto"`), and the Pallas GLU
+    # the adapter substitutes for an omitted option
+    # (`backends/base.realised_glu_backend`). The parity subset's
+    # `SHARED_OPTIONS`/`DENOISER_OPTIONS` are the CPU calibration pins.
+    shipped_options = {
+        "chunk_size": 128,
+        "matmul_precision": "high",
+        "attention_backend": "xla",
+        "triangle_backend": "cueq",
+        "glu_backend": "pallas",
+        "pair_residual_dtype": "auto",
+    }
+    shipped_denoiser = {"diffusion_attention_backend": "tokamax"}
+    if DEVICE == "cpu":
+        forward_options = dict(parity.SHARED_OPTIONS)
+        denoiser_options = dict(parity.DENOISER_OPTIONS)
+    else:
+        forward_options = shipped_options
+        denoiser_options = shipped_denoiser
+
+    def realised_kernels() -> str:
+        if DEVICE == "cpu":
+            return "attention/triangle/GLU = xla; triangle multiplication = xla"
+        from foldjax.models.boltz2.models.triangle.triangle import (
+            triangle_multiplication_backend,
+        )
+
+        return (
+            f"attention = {forward_options['attention_backend']}; triangle "
+            f"attention = {forward_options['triangle_backend']}; GLU = "
+            f"{forward_options['glu_backend']}; diffusion attention = "
+            f"{denoiser_options['diffusion_attention_backend']}; triangle "
+            f"multiplication = {triangle_multiplication_backend()} (resolved by "
+            "the port, env unset)"
+        )
+
+    def shipped_trunk() -> Any:
+        """The parity trunk helper, with its CPU pins replaced on the GPU."""
+        if DEVICE == "cpu":
+            return contextlib.nullcontext()
+        return overriding_kwargs(
+            trunk_module, "boltz2_trunk_forward", **shipped_options
+        )
     from tests.models.boltz2.scripts.parity_matched_tape import (
         captured_sampler_trunk,
         load_features,
@@ -1303,12 +1536,18 @@ def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
     ca_mask = (atom_names == "CA") & (atom_element == 6) & protein_atom & atom_valid
 
     base = {
-        **CPU_CONDITION,
+        **device_condition("boltz2"),
         "input": "native features.npz (upstream featurizer output; core-only)",
         "msa": "all 8,192 native rows (capture ran subsample_msa=false)",
-        "trunk_dtype": "bfloat16 parameters, float32 pair residual "
-        "(native bf16-mixed AMP match; parity-subset pin)",
-        "kernels": "attention/triangle/GLU = xla; triangle multiplication = xla",
+        "trunk_dtype": (
+            "bfloat16 parameters, float32 pair residual "
+            "(native bf16-mixed AMP match; parity-subset pin)"
+            if DEVICE == "cpu"
+            else "bfloat16 parameters, bfloat16 pair residual "
+            "(pair_residual_dtype=auto, the shipped profile; native keeps the "
+            "residual float32)"
+        ),
+        "kernels": realised_kernels(),
         "recycles": 3,
     }
 
@@ -1324,7 +1563,7 @@ def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         tape = load_tape(case("B").path("tape.npz"), meta)
         parity._assert_schedule(meta, tape["sigmas"])
         features = load_features(case("B").path("features.npz"))
-        with highest_precision(), jax.default_matmul_precision("highest"):
+        with precision_scope("boltz2"):
             output = boltz2_sample_forward(
                 params(),
                 features,
@@ -1346,8 +1585,8 @@ def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
                 ),
                 use_scan=True,
                 compute_dtype=jnp.bfloat16,
-                **parity.SHARED_OPTIONS,
-                **parity.DENOISER_OPTIONS,
+                **forward_options,
+                **denoiser_options,
             )
             return np.asarray(jax.device_get(output["sample_atom_coords"]), np.float64)
 
@@ -1359,7 +1598,7 @@ def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
             meta, effective = meta_effective()
             features = load_features(case("A").path("features.npz"))
             started = time.perf_counter()
-            with highest_precision(), jax.default_matmul_precision("highest"):
+            with precision_scope("boltz2"), shipped_trunk():
                 trunk = parity._port_trunk(params(), features, meta, effective)
                 jax.block_until_ready(trunk["s"])
             cache["trunk_seconds"] = time.perf_counter() - started
@@ -1393,7 +1632,7 @@ def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         return stage_record(
             "measured",
             condition={
-                **CPU_CONDITION,
+                **host_condition(),
                 "port_featurizer": "foldjax.models.boltz2.data.featurize."
                 "featurize_yaml "
                 "(torch-free), re-run in this checkout",
@@ -1550,7 +1789,7 @@ def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         z = jnp.asarray(trunk["z"], jnp.float32)
         native_disto = jnp.asarray(native_out["pdistogram"][:, :, :, 0], jnp.float32)
         options = {
-            key: parity.SHARED_OPTIONS[key]
+            key: forward_options[key]
             for key in (
                 "chunk_size",
                 "matmul_precision",
@@ -1576,7 +1815,7 @@ def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
             )
 
         started = time.perf_counter()
-        with highest_precision(), jax.default_matmul_precision("highest"):
+        with precision_scope("boltz2"):
             port_disto = np.asarray(
                 jax.device_get(distogram_forward(disto_params, z)), np.float64
             )
@@ -1695,12 +1934,41 @@ def run_openfold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         raw_input["atom_array.0.annotation.atom_name"],
         raw_input["atom_array.0.annotation.element"],
     )
+    # The shipped profile (`foldjax predict --model openfold3`, every option
+    # omitted): the bfloat16 trunk and confidence head (`DEFAULT_DTYPE`, with
+    # the parameters narrowed by `cast_narrow_params` as the managed loader
+    # does), the Pallas GLU the adapter substitutes for an omitted option, and
+    # the triangle kernel `resolve_triangle_kernel(None)` names on a GPU
+    # (`cueq-pallas`: cuEquivariance attention, Pallas multiplication). The
+    # CPU rows keep the capture's float32 and the XLA kernels.
+    if DEVICE == "cpu":
+        triangle_kernel: str | None = "xla"
+        config_overrides: dict[str, Any] = {}
+        kernel_record = "xla (native ran cuEq; no CPU cuEq)"
+        trunk_dtype_record = "float32 (native 32-true)"
+    else:
+        from foldjax._openfold3_compile import resolve_triangle_kernel
+
+        triangle_kernel = None
+        config_overrides = {
+            "dtype": inference.DEFAULT_DTYPE,
+            "confidence_dtype": inference.DEFAULT_DTYPE,
+            "glu_backend": "pallas",
+        }
+        kernel_record = (
+            f"{resolve_triangle_kernel(None, cp_shards=1)} (resolved by the port "
+            "for an omitted choice); GLU = pallas"
+        )
+        trunk_dtype_record = (
+            f"{inference.DEFAULT_DTYPE} (shipped profile; parameters narrowed by "
+            "cast_narrow_params; native 32-true)"
+        )
     base = {
-        **CPU_CONDITION,
+        **device_condition("openfold3"),
         "input": "native input.npz (upstream featurizer output; core-only)",
         "msa": "native per-cycle MSA row draws (tape randint/randperm) replayed",
-        "trunk_dtype": "float32 (native 32-true)",
-        "triangle_kernel": "xla (native ran cuEq; no CPU cuEq)",
+        "trunk_dtype": trunk_dtype_record,
+        "triangle_kernel": kernel_record,
         "recycles": 4,
     }
 
@@ -1713,18 +1981,24 @@ def run_openfold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         config = parity.replay_config(
             features, tape, effective, stop_after_trunk=stop_after_trunk
         )
+        overrides = {**config_overrides, **overrides}
         if overrides:
             config = config._replace(**overrides)
+        params = parity.inference_params(str(checkpoint))
+        if config_overrides:
+            params = inference.cast_narrow_params(
+                params, *inference.resolve_dtypes(config)
+            )
         program = inference.compile_predict(
-            config, representative_atom_table(), triangle_kernel="xla"
+            config, representative_atom_table(), triangle_kernel=triangle_kernel
         )
         started = time.perf_counter()
-        with highest_precision():
+        with precision_scope("openfold3"):
             result = jax.device_get(
                 program(
                     jax.random.key(101),
                     features,
-                    parity.inference_params(str(checkpoint)),
+                    params,
                     noise_tape=tape.noise,
                     augmentation_tape=tape.augmentation(),
                 )
@@ -1782,7 +2056,7 @@ def run_openfold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         return stage_record(
             "measured",
             condition={
-                **CPU_CONDITION,
+                **host_condition(),
                 "port_featurizer": "foldjax.models.openfold3.data.featurize."
                 "featurize_query (vendored NumPy featurizer), re-run in this checkout",
                 "input_document": str(query),
@@ -1931,7 +2205,13 @@ def run_openfold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
                 "trunk_dtype": "n/a (native trunk injected)",
                 "injected_native": "trunk-00.npz s_inputs/s/z replace "
                 "inference.trunk; tape.npz noise + augmentation",
-                "diffusion_dtype": "float32",
+                "injected_width": "float32 (native 32-true arrays, not narrowed)",
+                "diffusion_dtype": (
+                    "float32"
+                    if DEVICE == "cpu"
+                    else f"float32 score model; {inference.DEFAULT_DTYPE} "
+                    "conditioning (shipped dtype)"
+                ),
                 "samples_x_steps": "5 x 200",
             },
             headline={
@@ -2049,7 +2329,12 @@ def run_openfold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
             condition={
                 **base,
                 "trunk_dtype": "n/a (native trunk injected)",
-                "confidence_dtype": "float32",
+                "confidence_dtype": (
+                    "float32"
+                    if DEVICE == "cpu"
+                    else f"{inference.DEFAULT_DTYPE} (shipped profile)"
+                ),
+                "injected_width": "float32 (native 32-true arrays, not narrowed)",
                 "injected_native": "trunk-00.npz replaces inference.trunk; "
                 "raw-output.npz atom_positions_predicted replaces sample_diffusion",
             },
@@ -2159,7 +2444,7 @@ def run_esmfold2(
         return stage_record(
             "measured",
             condition={
-                **CPU_CONDITION,
+                **host_condition(),
                 "port_featurizer": "foldjax.models.esmfold2.inference."
                 "build_common_job_features (the backend's all-atom path), re-run "
                 "in this checkout",
@@ -2268,7 +2553,7 @@ def run_esmfold2(
 
         parity._compiled_predict = recording
         try:
-            with highest_precision():
+            with precision_scope("esmfold2"):
                 coords, replay_features, seconds = parity.replay_to_coordinates(
                     case, loaded
                 )
@@ -2293,7 +2578,7 @@ def run_esmfold2(
         return stage_record(
             "measured",
             condition={
-                **CPU_CONDITION,
+                **device_condition("esmfold2"),
                 "input": "native features.npz (shared archive; core-only)",
                 "trunk_dtype": "bfloat16 (native CUDA bf16 autocast; replay settings)",
                 "injected_native": "upstream_lm.npz ESM-C hidden states (LM not run); "
@@ -2395,12 +2680,18 @@ def run_esmfold2(
         jitted = jax.jit(program, compiler_options=compiler_control("default"))
         jax.clear_caches()
         previous = jax.config.jax_default_matmul_precision
-        jax.config.update("jax_default_matmul_precision", "highest")
+        if DEVICE == "cpu":
+            jax.config.update("jax_default_matmul_precision", "highest")
         try:
-            started = time.perf_counter()
-            output = jitted(jax.random.key(SEED), arrays, loaded.parameters, dynamic)
-            output = jax.device_get(jax.block_until_ready(output))
-            seconds = time.perf_counter() - started
+            # On the GPU the port pins nothing, so the scope opens nothing;
+            # it only records the precision in force.
+            with precision_scope("esmfold2"):
+                started = time.perf_counter()
+                output = jitted(
+                    jax.random.key(SEED), arrays, loaded.parameters, dynamic
+                )
+                output = jax.device_get(jax.block_until_ready(output))
+                seconds = time.perf_counter() - started
         finally:
             jax.config.update("jax_default_matmul_precision", previous)
             jax.clear_caches()
@@ -2494,7 +2785,7 @@ def run_esmfold2(
     def stage_condition(**extra: Any) -> dict[str, Any]:
         data = staged()
         return {
-            **CPU_CONDITION,
+            **device_condition("esmfold2"),
             "stage_capture": str(stage_capture),
             "input": "re-capture features.npz (bitwise equal to the stored "
             "capture's: "
@@ -2673,6 +2964,61 @@ def run_opendde(
         identity["output_atom_name"], identity["output_atom_element"]
     )
 
+    # The shipped profile (`foldjax predict --model opendde`, every option
+    # omitted): bfloat16 trunk and confidence head (`backends/opendde.py`
+    # DEFAULTS), the parameters prepared as the runner prepares them
+    # (`_load_prepared_native_weights` then `cast_confidence_params`, in that
+    # order), the diffusion float32, and the attention backends the model
+    # entry defaults to (`xla_jit` single/diffusion attention, `cueq_jit`
+    # triangle attention, and the blocked `xla` triangle multiplication a
+    # narrow trunk selects in `_with_cueq_triangle_defaults`). The CPU rows
+    # keep the parity subset's float32 trunk and all-XLA attention.
+    if DEVICE == "cpu":
+        attention_options: dict[str, Any] = {
+            "diffusion_attention_backend": "xla",
+            "trunk_single_attention_backend": "xla",
+            "trunk_triangle_attention_backend": "xla",
+            "structural_single_attention_backend": "xla",
+            "structural_triangle_attention_backend": "xla",
+        }
+        dtype_options: dict[str, Any] = {}
+        kernel_record = "all attention backends xla"
+        trunk_dtype_record = (
+            "float32 (parity condition; the shipped default "
+            "is bfloat16; native TF32 trunk -> CPU "
+            "highest, see docs/parity-cpu.md)"
+        )
+        confidence_dtype_record = "float32 (native skip_amp.confidence_head=true)"
+    else:
+        attention_options = {}
+        dtype_options = {
+            "trunk_dtype": jnp.bfloat16,
+            "confidence_dtype": jnp.bfloat16,
+        }
+        kernel_record = (
+            "port defaults: single/diffusion attention xla_jit, triangle "
+            "attention cueq_jit, triangle multiplication xla on the narrow trunk "
+            "(_with_cueq_triangle_defaults)"
+        )
+        trunk_dtype_record = "bfloat16 (shipped default; native TF32 float32 trunk)"
+        confidence_dtype_record = (
+            "bfloat16 (shipped default, cast_confidence_params; native "
+            "skip_amp.confidence_head=true)"
+        )
+
+    def load_params() -> Any:
+        from foldjax.models.opendde.bridge.weights_io import load_native_weights
+
+        if DEVICE == "cpu":
+            return load_native_weights(parity.weights_path())
+        from foldjax.models.opendde.bridge.weights_io import (
+            _load_prepared_native_weights,
+        )
+        from foldjax.models.opendde.models.model import cast_confidence_params
+
+        params = _load_prepared_native_weights(parity.weights_path(), jnp.bfloat16)
+        return cast_confidence_params(params, jnp.bfloat16)
+
     # -- S1 ---------------------------------------------------------------
     def s1() -> dict[str, Any]:
         from bench.protenix_closure_report import flat_features
@@ -2715,7 +3061,7 @@ def run_opendde(
         return stage_record(
             "measured",
             condition={
-                **CPU_CONDITION,
+                **host_condition(),
                 "port_featurizer": "foldjax.models.opendde.data.featurize_json."
                 "featurize_opendde_json, re-run in this checkout "
                 "(n_queries 32, n_keys 128, max_msa_depth 16384)",
@@ -2790,7 +3136,6 @@ def run_opendde(
 
     # -- S6 ---------------------------------------------------------------
     def s6() -> dict[str, Any]:
-        from foldjax.models.opendde.bridge.weights_io import load_native_weights
         from foldjax.models.opendde.models.model import opendde_infer_static
 
         case = fixture_case("opendde", parity.CASE, parity.TIER)
@@ -2802,9 +3147,9 @@ def run_opendde(
                 name: np.asarray(archive[name], np.float32) for name in archive.files
             }
         steps, samples = tape["step_noises"].shape[:2]
-        params = load_native_weights(parity.weights_path())
+        params = load_params()
         started = time.perf_counter()
-        with highest_precision(), jax.default_matmul_precision(parity.MATMUL_PRECISION):
+        with precision_scope("opendde"):
             output = opendde_infer_static(
                 features,
                 params,
@@ -2814,11 +3159,8 @@ def run_opendde(
                 num_recycles=len(cycle_msa),
                 run_confidence=True,
                 cycle_msa_features=cycle_msa,
-                diffusion_attention_backend="xla",
-                trunk_single_attention_backend="xla",
-                trunk_triangle_attention_backend="xla",
-                structural_single_attention_backend="xla",
-                structural_triangle_attention_backend="xla",
+                **attention_options,
+                **dtype_options,
                 init_noise=jnp.asarray(tape["init_noise"]),
                 step_noises=tuple(
                     jnp.asarray(tape["step_noises"][i]) for i in range(steps)
@@ -2883,13 +3225,11 @@ def run_opendde(
         return stage_record(
             "measured",
             condition={
-                **CPU_CONDITION,
+                **device_condition("opendde"),
                 "input": "native-input.npz + native-derived.npz (upstream "
                 "featurizer output; core-only)",
-                "trunk_dtype": "float32 (parity condition; the shipped default "
-                "is bfloat16; native TF32 trunk -> CPU "
-                "highest, see docs/parity-cpu.md)",
-                "kernels": "all attention backends xla",
+                "trunk_dtype": trunk_dtype_record,
+                "kernels": kernel_record,
                 "injected_native": "tape.npz (noise schedule, initial/churn noise, "
                 "rotations, translations) + msa.npz per-recycle MSA rows",
                 "samples_x_steps": f"{samples} x {steps} (all samples; the parity "
@@ -2933,8 +3273,6 @@ def run_opendde(
 
     def staged() -> dict[str, Any]:
         if "staged" not in cache:
-            from foldjax.models.opendde.bridge.weights_io import load_native_weights
-
             if not (stage_capture / "stages.npz").is_file():
                 raise FileNotFoundError(f"no stages.npz in {stage_capture}")
             case = CaptureCase(stage_capture)
@@ -2963,7 +3301,7 @@ def run_opendde(
                 "tape": tape,
                 "stages": stages_npz,
                 "boundary_identity": boundary_identity,
-                "params": load_native_weights(parity.weights_path()),
+                "params": load_params(),
                 "rerun": rerun_agreement(
                     capture,
                     stage_capture,
@@ -3005,8 +3343,7 @@ def run_opendde(
         cycle_msa = data["cycle_msa"]
         started = time.perf_counter()
         with (
-            highest_precision(),
-            jax.default_matmul_precision(parity.MATMUL_PRECISION),
+            precision_scope("opendde"),
             _capture.capturing(capture_names),
         ):
             output = opendde_infer_static(
@@ -3019,11 +3356,8 @@ def run_opendde(
                 run_confidence=run_confidence,
                 stop_after_trunk=stop_after_trunk,
                 cycle_msa_features=cycle_msa,
-                diffusion_attention_backend="xla",
-                trunk_single_attention_backend="xla",
-                trunk_triangle_attention_backend="xla",
-                structural_single_attention_backend="xla",
-                structural_triangle_attention_backend="xla",
+                **attention_options,
+                **dtype_options,
                 init_noise=jnp.asarray(tape["init_noise"]),
                 step_noises=tuple(
                     jnp.asarray(tape["step_noises"][i]) for i in range(steps)
@@ -3126,7 +3460,7 @@ def run_opendde(
         data = staged()
         bitwise = data["rerun"]["bitwise"]
         return {
-            **CPU_CONDITION,
+            **device_condition("opendde"),
             "stage_capture": str(stage_capture),
             "input": "re-capture native-input.npz + native-derived.npz (bitwise "
             "equal to the stored capture's: "
@@ -3136,7 +3470,7 @@ def run_opendde(
             "the stored capture's: "
             f"{bitwise['torch/tape.npz']['all_equal']} / "
             f"{bitwise['torch/msa.npz']['all_equal']})",
-            "kernels": "all attention backends xla",
+            "kernels": kernel_record,
             **extra,
         }
 
@@ -3177,9 +3511,7 @@ def run_opendde(
         return stage_record(
             "measured",
             condition=stage_condition(
-                trunk_dtype="float32 (parity condition; the shipped default "
-                "is bfloat16; native TF32 trunk -> CPU "
-                "highest, see docs/parity-cpu.md)",
+                trunk_dtype=trunk_dtype_record,
                 recycles=len(data["cycle_msa"]),
             ),
             headline={
@@ -3310,7 +3642,7 @@ def run_opendde(
             "measured",
             condition=stage_condition(
                 trunk_dtype="n/a (native trunk injected)",
-                confidence_dtype="float32 (native skip_amp.confidence_head=true)",
+                confidence_dtype=confidence_dtype_record,
                 injected_native="stages.npz confidence.in.{s_inputs, s_trunk, "
                 "z_trunk} replace pairformer_output_from_s_inputs; "
                 "confidence.in.x_pred_coords replace sample_diffusion; "
@@ -3419,8 +3751,22 @@ def run_alphafold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]
         arm: json.loads((path / "provenance.json").read_text())
         for arm, path in (("deepmind", capture), ("foldjax", port_dir))
     }
+    # This row runs no model: both arms are stored captures of
+    # `bench/af3_closure_capture.py`, so the device is the capture's, and a
+    # capture taken on the other backend must not be read as this condition.
+    backends = {arm: record.get("backend", "cpu") for arm, record in provenance.items()}
+    if any(backend != DEVICE for backend in backends.values()):
+        raise RuntimeError(
+            f"--device {DEVICE} but the AlphaFold 3 capture arms ran on "
+            f"{backends} (provenance.json 'backend')"
+        )
     condition = {
-        "backend": "cpu (JAX_PLATFORMS=cpu, both arms)",
+        "backend": (
+            "cpu (JAX_PLATFORMS=cpu, both arms)"
+            if DEVICE == "cpu"
+            else "gpu (both arms; kernel selection "
+            f"{provenance['deepmind'].get('kernel_selection')})"
+        ),
         "matmul_precision": "AF3 default (bfloat16: 'all'; not pinned)",
         "native": "DeepMind run_alphafold.py v3.0.4 (archived checkout "
         "deepmind-af3-85c4d20): ModelRunner + predict_structure",
@@ -3673,22 +4019,42 @@ def environment() -> dict[str, Any]:
             check=True,
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
-        record["git_commit"] = None
+        # A frozen `git archive` export is not a repository; the suite's
+        # freeze writes the exported SHA beside it.
+        commit_file = REPO / "COMMIT"
+        record["git_commit"] = (
+            commit_file.read_text().strip() if commit_file.is_file() else None
+        )
     try:
         import jax
         import jaxlib
 
         record["jax"] = jax.__version__
         record["jaxlib"] = jaxlib.__version__
+        record["device"] = DEVICE
+        if DEVICE == "gpu":
+            record["device_kind"] = jax.devices()[0].device_kind
+            record["cuda_visible_devices"] = os.environ.get("CUDA_VISIBLE_DEVICES")
     except ImportError:  # pragma: no cover
         pass
     return record
 
 
 def run_model(
-    model: str, capture: Path, stages: set[str], stage_capture: Path | None = None
+    model: str,
+    capture: Path,
+    stages: set[str],
+    stage_capture: Path | None = None,
+    device: str = "cpu",
 ) -> dict[str, Any]:
-    require_cpu()
+    global DEVICE
+    if device not in DEVICES:
+        raise ValueError(f"device must be one of {DEVICES}, got {device!r}")
+    # The AlphaFold 3 row reads two stored captures and runs nothing, so its
+    # device is checked against their provenance inside `run_alphafold3`.
+    if model not in NO_PARITY_MANIFEST:
+        require_device(device)
+    DEVICE = device
     started = time.perf_counter()
     if model in STAGE_CAPTURES:
         results = MODELS[model](capture, stages, stage_capture)
@@ -3713,6 +4079,7 @@ def run_model(
         }
     return {
         "model": model,
+        "device": device,
         "capture": str(capture),
         "environment": env,
         "wall_s": round(time.perf_counter() - started, 1),
@@ -3835,18 +4202,52 @@ def _manifest_context(model: str, report: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+TABLE_PREAMBLE_GPU = """\
+# Stage parity: FoldJAX ports against native references (GPU, shipped defaults)
+
+Generated by `python bench/stage_parity.py --table bench/stage_parity_results_gpu`
+from the per-model JSON files beside this one; edit those, not this table.
+Every model stage except the `alphafold3` row runs on the GPU named in its
+`device` column (`--device gpu`) with what `foldjax predict` runs when every
+option is omitted: each port's own matmul-precision pin (`high` for Protenix,
+Boltz-2 and OpenFold3; JAX's default, TF32, for OpenDDE and ESMFold2, which
+pin nothing), its shipped dtype profile (bfloat16 trunk for every port;
+bfloat16 pair residual for Boltz-2; bfloat16 confidence head for OpenDDE and
+OpenFold3) and its shipped kernels (cuEquivariance triangle attention, the
+Pallas triangle multiplication and GLU, tokamax denoiser attention), each
+recorded per row from the port's own resolvers in the JSON `condition`. The
+captures, tapes, stages, metrics and injection seams are the CPU table's
+(`bench/stage_parity_results/TABLE.md`); only the program under test differs,
+so a row here is the shipped program against the native run, and the
+difference from the CPU row is the shipped kernels, dtypes and precision plus
+GPU-vs-CPU reduction order. Where a native tensor is injected at a seam that
+the shipped program carries in bfloat16, it is handed over at float32 (the
+native values are not bfloat16-representable), and the row's
+`injected_width` says so.
+
+The `alphafold3` row compares the two arms of `bench/af3_closure_capture.py`
+run on the GPU (DeepMind's `run_alphafold.py` and FoldJAX's vendored copy,
+Triton attention, Tokamax autotuning), as the CPU table does on CPU.
+"""
+
+
 def _cell(value: Any) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
 def render_table(results_dir: Path) -> str:
     rows = [
-        "| model | stage | status | metric | value | condition | runtime (s) |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| model | stage | device | status | metric | value | condition "
+        "| runtime (s) |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     cases = []
+    devices: set[str] = set()
     for path in sorted(results_dir.glob("*.json")):
         report = json.loads(path.read_text())
+        # Reports written before `--device` existed are the CPU condition.
+        device = report.get("device", "cpu")
+        devices.add(device)
         capture = Path(report.get("capture", ""))
         cases.append(f"* {report['model']}: `{capture.parent.name}` (`{capture}`)")
         cases.extend(_manifest_context(report["model"], report))
@@ -3868,6 +4269,7 @@ def render_table(results_dir: Path) -> str:
                     for cell in (
                         report["model"],
                         stage,
+                        device,
                         record["status"],
                         metric,
                         value,
@@ -3877,8 +4279,15 @@ def render_table(results_dir: Path) -> str:
                 )
                 + " |"
             )
+    if len(devices) > 1:
+        # One table is one condition; the two result directories keep them
+        # apart, so a mix here is a misplaced file, not a table to render.
+        raise ValueError(
+            f"{results_dir} mixes devices {sorted(devices)}; the CPU and GPU "
+            "results live in separate directories"
+        )
     return (
-        TABLE_PREAMBLE
+        (TABLE_PREAMBLE_GPU if devices == {"gpu"} else TABLE_PREAMBLE)
         + "\nCases:\n\n"
         + "\n".join(cases)
         + "\n\n"
@@ -3892,6 +4301,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--model", choices=sorted(MODELS))
     parser.add_argument("--capture", type=Path)
     parser.add_argument("--out", type=Path)
+    parser.add_argument(
+        "--device",
+        choices=DEVICES,
+        default="cpu",
+        help="cpu: the upstream-precision CPU measurement (default); gpu: the "
+        "shipped kernels, dtypes and precision on a GPU (results belong in "
+        "bench/stage_parity_results_gpu)",
+    )
     parser.add_argument(
         "--stage-capture",
         type=Path,
@@ -3926,9 +4343,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.capture.resolve(),
         stages,
         None if args.stage_capture is None else args.stage_capture.resolve(),
+        device=args.device,
     )
     if args.merge and args.out.is_file():
         previous = json.loads(args.out.read_text())
+        if previous.get("device", "cpu") != args.device:
+            parser.error(
+                f"--merge: {args.out} holds a {previous.get('device', 'cpu')} "
+                f"report, this run is {args.device}"
+            )
         merged = dict(previous.get("stages", {}))
         merged.update(report["stages"])
         report["stages"] = {

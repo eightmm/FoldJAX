@@ -492,7 +492,7 @@ def test_managed_default_aliases_reuse_one_managed_model_runner(
         options={
             "num_samples": 5,
             "num_steps": 200,
-            "num_recycles": 3,
+            "num_recycles": 10,
             "max_msa_depth": 1024,
             "buckets": [],
             "attention_backend": "triton",
@@ -520,7 +520,7 @@ def test_managed_default_aliases_reuse_one_managed_model_runner(
             {
                 "flash_attention_implementation": "triton",
                 "num_diffusion_samples": 5,
-                "num_recycles": 3,
+                "num_recycles": 10,
                 "return_embeddings": False,
                 "return_distogram": False,
             }

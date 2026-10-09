@@ -31,7 +31,12 @@ Protenix. The AlphaFold 3 row is different in kind: DeepMind's
 input, so it has S1, S2, S5 and S6 and no separate trunk or sampler stage.
 [`MISSING.md`](../bench/stage_parity_results/MISSING.md) lists what the table
 still does not measure, including the featurizer draws that are not replayed
-and the CPU-versus-GPU confound shared by every S3-S6 cell.
+and the CPU-versus-GPU confound shared by every S3-S6 cell. The same script
+run with `--device gpu` measures the shipped program instead -- each port's
+own kernels (cuEquivariance, Pallas, tokamax), dtype profile and
+matmul-precision pin on a GPU, against the same captures and tapes -- and
+writes to `bench/stage_parity_results_gpu/`, whose `TABLE.md` carries the
+GPU condition per row once a run has landed there.
 
 Each row runs the precision policy of the capture it is compared with, which
 is upstream's (the per-stage `condition` column records it): Boltz-2 with a

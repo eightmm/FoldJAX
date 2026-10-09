@@ -96,9 +96,9 @@ def sampling_defaults(backend: Backend) -> dict[str, int | None]:
 
     The backend's own resolution (`Backend.sampling_resolution`) of a request
     that names nothing -- the translation a run takes, so a value the adapter
-    supplies at run time (AlphaFold 3's three recycles) is the one reported,
-    in the neutral knob's units (OpenFold3's three recycles, not its four
-    trunk passes). Checkpoint-decided values are the default profile's:
+    supplies at run time (ESMFold2's recycle count) is the one reported, in
+    the neutral knob's units (OpenFold3's three recycles, not its four trunk
+    passes). Checkpoint-decided values are the default profile's:
     Protenix's released base model schedule, ESMFold2's released
     `config.json`. ``None`` only where nothing can be read before a run.
     A managed profile or a named checkpoint can change these; `foldjax plan`
