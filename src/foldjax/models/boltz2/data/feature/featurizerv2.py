@@ -1,4 +1,5 @@
 import math
+import warnings
 from collections import deque
 
 import numba
@@ -354,21 +355,21 @@ def construct_paired_msa(  # noqa: C901, PLR0915, PLR0912
                             "res_type"
                         ]
                     else:
-                        print(
-                            warning,
-                            "1",
-                            residues["res_type"],
-                            first_residues["res_type"],
-                            data.record.id,
+                        # Upstream prints; FoldJAX warns so that a library
+                        # caller's stdout carries results only.
+                        warnings.warn(
+                            f"{warning} 1 {residues['res_type']} "
+                            f"{first_residues['res_type']} {data.record.id}",
+                            UserWarning,
+                            stacklevel=2,
                         )
                         msa[chain_id] = dummy_msa(residues)
             else:
-                print(
-                    warning,
-                    "2",
-                    residues["res_type"],
-                    first_residues["res_type"],
-                    data.record.id,
+                warnings.warn(
+                    f"{warning} 2 {residues['res_type']} "
+                    f"{first_residues['res_type']} {data.record.id}",
+                    UserWarning,
+                    stacklevel=2,
                 )
                 msa[chain_id] = dummy_msa(residues)
         else:

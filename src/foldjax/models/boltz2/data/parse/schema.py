@@ -1,3 +1,4 @@
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -231,10 +232,14 @@ def compute_3d_conformer(mol: Mol, version: str = "v3") -> bool:
         conf_id = AllChem.EmbedMolecule(mol, options)
 
         if conf_id == -1:
-            print(
+            # Upstream prints; FoldJAX warns so that a library caller's
+            # stdout carries results only (the CLI formats warnings once).
+            warnings.warn(
                 f"WARNING: RDKit ETKDGv3 failed to generate a conformer for molecule "
                 f"{Chem.MolToSmiles(AllChem.RemoveHs(mol))}, so the program will start with random coordinates. "
-                f"Note that the performance of the model under this behaviour was not tested."
+                f"Note that the performance of the model under this behaviour was not tested.",
+                UserWarning,
+                stacklevel=2,
             )
             options.useRandomCoords = True
             conf_id = AllChem.EmbedMolecule(mol, options)
@@ -1165,7 +1170,7 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
                     "these in single sequence mode. Keep in mind that the "
                     "model predictions will be suboptimal without an MSA."
                 )
-                print(msg)  # noqa: T201  (was click.echo; click is CLI-only)
+                warnings.warn(msg, UserWarning, stacklevel=2)  # was click.echo
 
             if msa not in (0, -1):
                 is_msa_custom = True
@@ -1241,8 +1246,12 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
                               f"supported in the affinity prediction module"
                         raise ValueError(msg)
                     elif ref_mol.GetNumAtoms() > 56:
-                        print("WARNING: the ligand used for affinity calculation is larger than 56 heavy-atoms, which "
-                              "was the maximum during training, therefore the affinity output might be inaccurate.")
+                        warnings.warn(
+                            "WARNING: the ligand used for affinity calculation is larger than 56 heavy-atoms, which "
+                            "was the maximum during training, therefore the affinity output might be inaccurate.",
+                            UserWarning,
+                            stacklevel=2,
+                        )
 
                 # Parse residue
                 residue = parse_ccd_residue(
@@ -1302,8 +1311,12 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
                     msg = f"The ligand for affinity is too large, ligands with more than 128 atoms are not supported in the affinity prediction module"
                     raise ValueError(msg)
                 elif mol_no_h.GetNumAtoms() > 56:
-                    print("WARNING: the ligand used for affinity calculation is larger than 56 heavy-atoms, "
-                          "which was the maximum during training, therefore the affinity output might be inaccurate.")
+                    warnings.warn(
+                        "WARNING: the ligand used for affinity calculation is larger than 56 heavy-atoms, "
+                        "which was the maximum during training, therefore the affinity output might be inaccurate.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
 
             affinity_mw = Descriptors.MolWt(mol_no_h) if affinity else None
             extra_mols[f"LIG{ligand_id}"] = mol_no_h

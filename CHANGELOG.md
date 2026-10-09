@@ -26,6 +26,13 @@ unless it says so here, in its own paragraph.
   rounded values on disk, not the model's); a structure with no atoms keeps
   `null`, and an unreadable one still resumes. Schema and manifest are
   unchanged.
+- **Boltz-2's data-layer notices no longer reach a library caller's
+  stdout.** The vendored parser and featurizer printed "Found explicit
+  empty MSA", the affinity ligand-size notice, the conformer fallback and
+  the MSA-mismatch notice with `print`; `foldjax predict` redirected them
+  to stderr, but `foldjax.api.predict` in a notebook or pipeline wrote
+  them to stdout. Each is a `UserWarning` now, same text, so both callers
+  see it on stderr (the CLI formats it once). Features are unchanged.
 
 ## 0.1.0 (2026-10-09)
 
