@@ -218,10 +218,10 @@ ranking-score maximum absolute drift was 0.000284.
 
 `--num-samples` and `--num-recycles` set AlphaFold 3's diffusion sample count
 and recycle count (upstream `run_alphafold.py`'s `--num_diffusion_samples` and
-`--num_recycles`). Omitted, FoldJAX runs 5 samples and 3 recycles -- four trunk
-passes, the SI Algorithm 1 count, where `run_alphafold.py` defaults to 10
-recycles; see [recycling defaults](recycling-defaults.md). Pass
-`--num-recycles 10` for upstream's count. AlphaFold 3's own option names
+`--num_recycles`). Omitted, FoldJAX runs what `run_alphafold.py` runs: 5
+samples and 10 recycles (eleven trunk passes). Before 2026-10-09 the omitted
+count was 3, the SI Algorithm 1 `N_cycle=4`; pass `--num-recycles 3` for that
+schedule (see [recycling defaults](recycling-defaults.md)). AlphaFold 3's own option names
 (`diffusion_samples`, `recycles`) are not accepted through `--option`; the
 native options it does take include `buckets`, `kernel_autotuning`,
 `return_embeddings` and `return_distogram`:

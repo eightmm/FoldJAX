@@ -11,15 +11,16 @@
 
 Policy selected on 2026-09-08: prefer each selected model's published inference
 or benchmark schedule over training tables and generic algorithm signatures.
-For AF3, the subsequent explicit decision selects Algorithm 1 instead: four
-total trunk passes. This change concerns recycling only. Diffusion steps, samples, seeds, MSA data,
+For AF3, the subsequent explicit decision selected Algorithm 1 instead: four
+total trunk passes (superseded on 2026-10-09 by the runner's 10, under the
+2026-09-30 rule). This change concerns recycling only. Diffusion steps, samples, seeds, MSA data,
 precision and checkpoints must also match to reproduce a paper's results.
 
 ## Effective common API defaults
 
 | Managed model | Common `num_recycles` | Executed main trunk passes | Evidence and status |
 | --- | --- | --- | --- |
-| AlphaFold 3 | **3** | **4** | Explicitly select SI Algorithm 1, `N_cycle=4`, over the timing schedule. Upstream `run_alphafold.py --num_recycles` defaults to 10 (11 passes). |
+| AlphaFold 3 | 10 | 11 | **Upstream default since 2026-10-09** (`run_alphafold.py --num_recycles`, default 10). From 2026-09-08 to 2026-10-09 it was 3, the SI Algorithm 1 `N_cycle=4`; `--num-recycles 3` still selects it. |
 | Boltz2 | 3 | 4 | **Upstream default since 2026-09-30** (`--recycling_steps 3`, `main.py:856`). From 2026-09-08 to 2026-09-30 it was 5, the paper's Appendix D.1 PDB evaluation count. |
 | Protenix base v1.0.0 | 10 | 10 | Protenix-v1 section 3.1 evaluation fixes inference recycles at 10. |
 | OpenDDE | 10 | 10 | **Publisher inference fallback**, not a verified paper benchmark count. |
@@ -41,9 +42,11 @@ variant-specific policy (mini/tiny: 4).
   `N_cycle`. Section 5.10, printed p. 33, reports timings using 10 trunk recycles.
   Thus the user's reference to 4 was valid; it is not solely another model's
   setting. The released [runner](https://github.com/google-deepmind/alphafold3/blob/main/run_alphafold.py)
-  defaults to 10, while the released model runs `num_recycles + 1`. The common
-  backend now supplies 3 to execute exactly four passes, matching Algorithm 1.
-  Explicit `num_recycles=10` still selects the publisher's 11-pass route.
+  defaults to 10, while the released model runs `num_recycles + 1`. From
+  2026-09-08 to 2026-10-09 the common backend supplied 3 to execute exactly
+  four passes, matching Algorithm 1; under the 2026-09-30 rule an omitted
+  count now runs the runner's 10, and explicit `num_recycles=3` selects the
+  four-pass route.
 - [Boltz-2 paper, author-hosted PDF](https://jeremywohlwend.com/assets/boltz2.pdf):
   Appendix D.1, printed p. 35, specifies 5 recycling rounds, 5 samples and one
   seed for PDB structure evaluation. Appendix B.5.1 uses 5 for affinity too.
@@ -88,8 +91,9 @@ Focused CPU tests: **577 passed** across `test_cache.py`, `test_padding.py`,
 They cover request translation, padded and unpadded paths,
 explicit override precedence, cache separation and backend dispatch. No GPU
 inference, numerical parity, memory or timing measurement was performed.
-OpenDDE and OpenBind benchmark recycle counts remain unverified. AF3 now
-selects the unambiguous four-pass Algorithm 1 rather than the timing setting.
+OpenDDE and OpenBind benchmark recycle counts remain unverified. AF3 then
+selected the unambiguous four-pass Algorithm 1 rather than the timing setting
+(reverted to upstream's 10 on 2026-10-09; see the table above).
 
 AF3 Algorithm 1 follow-up: **519 CPU tests passed** across cache, AF3 session,
 padding, backend and resume-manifest tests. The session test observes the

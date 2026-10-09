@@ -331,11 +331,11 @@ point at: its released `config.json` carries no depth field, and HuggingFace's
 whatever the caller built. The port's 1,024 is its own reading of the released
 per-loop draw (`_subsample_msa`), not a value copied from a config.
 
-AlphaFold 3's 3 is FoldJAX's choice, not upstream's: `apply_sampling` in
-`backends/alphafold3.py` supplies `num_recycles=3` so the carried loop runs
-four trunk passes, the `N_cycle=4` of the SI's Algorithm 1, whereas upstream
-`run_alphafold.py --num_recycles` defaults to 10 (eleven passes). Pass
-`num_recycles=10` for upstream's count; see
+AlphaFold 3's 10 is upstream's: `run_alphafold.py --num_recycles` defaults to
+10 (eleven trunk passes), which `_RELEASED_COMPILE_DEFAULTS` in
+`backends/alphafold3.py` carries and an omitted knob runs. Until 2026-10-09
+the adapter supplied 3 instead (the `N_cycle=4` of the SI's Algorithm 1);
+pass `num_recycles=3` for that schedule; see
 [recycling defaults](recycling-defaults.md).
 
 OpenFold3's three recycles are the neutral spelling. `apply_sampling`

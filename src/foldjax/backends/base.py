@@ -262,8 +262,8 @@ class Backend(ABC):
         readable setting, or a native runner that keeps it internal.
 
         Resolved through `apply_sampling`, the translation a run takes, so a
-        default the adapter supplies there (AlphaFold 3's and ESMFold2's
-        recycle counts) is the value reported.
+        default the adapter supplies there (ESMFold2's recycle count) is the
+        value reported.
         """
         options = self.apply_sampling(request)
         omitted = self._omitted_sampling(request, options)

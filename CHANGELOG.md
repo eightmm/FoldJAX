@@ -404,6 +404,19 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **AlphaFold 3 runs upstream's 10 recycles when `--num-recycles` is
+  omitted.** The adapter used to supply 3 (four trunk passes, the SI's
+  Algorithm 1 `N_cycle=4`) where DeepMind's `run_alphafold.py --num_recycles`
+  defaults to 10 (eleven passes). A port's omitted defaults follow its
+  upstream's released inference path, as Boltz-2's and ESMFold2's recycle
+  counts already do, so the override is gone: an omitted count now reaches
+  the vendored runner's own 10, `foldjax plan`, `capabilities` and the
+  manifest's `sampling` report 10, and an explicit `--num-recycles 10`
+  shares the compile-cache namespace an omitted request uses. **This changes
+  what a recorded AlphaFold 3 command predicts** when it did not spell the
+  recycle count: the same job now runs seven more trunk passes and its
+  coordinates and scores differ. `--num-recycles 3` reproduces the earlier
+  four-pass run (its own namespace, as before).
 - **Protenix's default no longer pairs a searched heteromer, and reads its
   unpaired alignment environmental hits first** -- what a run of upstream's
   ColabFold mode does. That mode submits the `pairgreedy` complex search but

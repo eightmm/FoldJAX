@@ -78,8 +78,8 @@ zero trunk passes regardless of the configured prediction schedule.
 `capabilities(model).sampling_defaults` (`ModelCapabilities.sampling_defaults`)
 maps each `PredictionRequest` sampling knob to the value a request that sets
 none of them runs at, in these `PredictionRequest` units: OpenFold3 reports 3
-recycles, not the 4 trunk passes it stores, and AlphaFold 3 reports the 3 its
-adapter supplies rather than upstream's 10. Values the checkpoint decides are
+recycles, not the 4 trunk passes it stores, and AlphaFold 3 reports upstream
+`run_alphafold.py`'s 10. Values the checkpoint decides are
 the default profile's -- Protenix's released base model (200 steps, 10
 recycles), ESMFold2's released `config.json` (32 samples, 14 steps) -- and
 Boltz-2's depth is its featurizer's 16,384-row cap. A value is `None` only
