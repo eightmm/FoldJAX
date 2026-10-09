@@ -37,7 +37,7 @@ the plan shows.
 | `Job` | Sequences, chemistry, raw MSA and template references |
 | `ModelConfig` | `msa_depth`, total `trunk_passes`, `samples`, `steps`, `msa_search`, `template_search`, `template_max_date` |
 | `ExecutionConfig` | Padding, persistent compile cache location/use, resume |
-| `model.capabilities` | Supported inputs, sampling bindings, `sampling_defaults` and representations |
+| `model.capabilities` | Supported inputs, sampling bindings, `sampling_defaults`, representations, and `foldjax_only_features` (routes FoldJAX adds on every port, such as `pocket_selection`, kept apart from upstream support) |
 | `embed` | Native input representation, zero trunk passes |
 | `encode` | Trunk representations, before structure sampling |
 | `predict` | Structure prediction and optional representations |

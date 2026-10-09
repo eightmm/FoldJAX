@@ -743,12 +743,23 @@ def _constraint_channels(request: PredictionRequest) -> list[str]:
     reading it is the translation's job, which reports it properly.
     """
     from foldjax.input import read_job_document
+    from foldjax.pocket_selection import requested as requested_pocket_sampling
 
     try:
         document = read_job_document(Path(request.input))
     except (OSError, ValueError):
         return []
-    return _document_constraint_channels(document, request.input_format)
+    channels = _document_constraint_channels(document, request.input_format)
+    # Under ``pocket_sampling=select`` the translation keeps a common pocket
+    # out of the native input of a checkpoint without the embedder and scores
+    # it after the run instead (`foldjax.pocket_selection`), so the embedder
+    # never sees it.
+    if (
+        request.input_format == "foldjax"
+        and requested_pocket_sampling(request.options) == "select"
+    ):
+        channels = [channel for channel in channels if channel != "pocket"]
+    return channels
 
 
 def _document_constraint_channels(document: Any, input_format: str) -> list[str]:
@@ -1007,6 +1018,19 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         return _constraint_refusal(
             _document_constraint_channels(document, "foldjax"), model_name
         )
+
+    def pocket_conditioning(self, request: PredictionRequest) -> bool:
+        """Only the constraint checkpoint's embedder reads a pocket.
+
+        A checkpoint known by name without one conditions on nothing; the
+        constraint checkpoint does, and so, as far as this can tell, does a
+        checkpoint it does not know, which is left to the embedder's own
+        refusal as it is today.
+        """
+        model_name = request.options.get("model_name", "auto")
+        if model_name == "auto":
+            model_name = runtime_policy.infer_model_name_from_path(request.weights)
+        return _constraint_refusal(["pocket"], model_name) is None
 
     def validate_request(self, request: PredictionRequest) -> None:
         super().validate_request(request)

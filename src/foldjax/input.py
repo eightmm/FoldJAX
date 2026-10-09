@@ -35,6 +35,7 @@ from foldjax.msa_search import _msa_pipeline as _msa_pipeline
 from foldjax.msa_search import _rna_msa_pipeline as _rna_msa_pipeline
 from foldjax.msa_search import _search_alignments, _warn_single_sequence
 from foldjax.msa_search import msa_search_backend as msa_search_backend
+from foldjax.pocket_selection import FEATURE as POCKET_SELECTION_FEATURE
 from foldjax.portspec import PORTS, provider
 from foldjax.schema import (
     MSA_POLICIES,
@@ -1147,6 +1148,8 @@ def _validate(
     ignored_templates: list[dict[str, Any]] | None = None,
     ignored_constraints: list[dict[str, Any]] | None = None,
     base: Path | None = None,
+    pocket_conditioning: bool | None = None,
+    selection_pockets: list[dict[str, Any]] | None = None,
 ) -> None:
     """Check the common document against what ``model`` can express.
 
@@ -1493,8 +1496,25 @@ def _validate(
                 f"ligand {binder!r}",
             )
     _validate_pocket_constraints(
-        job, model, target, entities, options, ignored_constraints
+        job,
+        model,
+        target,
+        entities,
+        options,
+        ignored_constraints,
+        pocket_conditioning=pocket_conditioning,
+        selection_pockets=selection_pockets,
     )
+
+
+def pocket_conditioned(model: str) -> bool:
+    """Whether ``model``'s native input conditions on a common pocket.
+
+    The translation table's answer; a backend whose checkpoint decides
+    (Protenix) refines it in `Backend.pocket_conditioning`.
+    """
+    target = _TARGETS.get(model)
+    return target is not None and "pocket_constraints" in target.features
 
 
 def _validate_pocket_constraints(
@@ -1504,19 +1524,58 @@ def _validate_pocket_constraints(
     entities: list[dict[str, Any]],
     options: Mapping[str, Any],
     ignored_constraints: list[dict[str, Any]] | None,
+    *,
+    pocket_conditioning: bool | None = None,
+    selection_pockets: list[dict[str, Any]] | None = None,
 ) -> None:
     """Check the job's pocket and contact restraints against what ``model`` reads.
 
     OpenDDE's upstream ignores a constraint, so there the field is removed
     from ``job`` and recorded, as a native OpenDDE constraint is; every other
     backend either carries it or refuses it.
+
+    Under ``pocket_sampling=select`` (`foldjax.pocket_selection`) a pocket the
+    native input cannot condition on -- ``pocket_conditioning`` false; None
+    asks the translation table -- is taken out of the job for the selection
+    alone and appended to ``selection_pockets`` instead of being refused or
+    dropped. Contacts follow the model's own rules either way.
     """
+    from foldjax.pocket_selection import POCKET_SAMPLING, requested
+
     kinds = {chain: entity["type"] for entity in entities for chain in _ids(entity)}
     lengths = _residue_counts(entities)
     pockets = _pocket_constraints(job, kinds, lengths)
     contacts = _contact_constraints(job, kinds, lengths)
     if not pockets and not contacts:
         return
+    if pockets and requested(options) == "select":
+        conditioned = (
+            pocket_conditioned(model)
+            if pocket_conditioning is None
+            else bool(pocket_conditioning)
+        )
+        if not conditioned:
+            for pocket in pockets:
+                if pocket["max_distance"] is None:
+                    _reject(
+                        model,
+                        "a pocket constraint without max_distance",
+                        f"{POCKET_SAMPLING}=select scores its samples against the "
+                        f"pocket and upstream {model} has no pocket distance of "
+                        "its own to fall back on; set max_distance",
+                    )
+            if selection_pockets is not None:
+                selection_pockets.extend(pockets)
+            job["constraints"] = [
+                item
+                for item in job["constraints"]
+                if not (isinstance(item, dict) and "pocket" in item)
+            ]
+            if not job["constraints"]:
+                del job["constraints"]
+            pockets = []
+            if not contacts:
+                return
     if model in _IGNORED_CONSTRAINT_MODELS:
         if not _strict_boolean(
             options.get(IGNORE_CONSTRAINTS, True), name=IGNORE_CONSTRAINTS
@@ -2720,6 +2779,21 @@ def common_schema_features(model: str) -> tuple[str, ...]:
     return tuple(sorted(target.features))
 
 
+#: Routes FoldJAX adds on top of every port and no upstream has, kept apart
+#: from ``common_schema_features`` so a capability record never reads as
+#: upstream support: ``pocket_selection`` is ``pocket_sampling=select``
+#: (`foldjax.pocket_selection`), which scores and ranks samples against a
+#: common pocket after prediction on all six models.
+_FOLDJAX_ONLY_FEATURES = (POCKET_SELECTION_FEATURE,)
+
+
+def foldjax_only_features(model: str) -> tuple[str, ...]:
+    """FoldJAX-only routes available on ``model``; none for an unknown one."""
+    if model not in _TARGETS:
+        return ()
+    return _FOLDJAX_ONLY_FEATURES
+
+
 #: Scientific inputs a model's *native* dialect carries, through FoldJAX's own
 #: port, that the common schema has no field for. Only what the port consumes
 #: is listed; a native field the port refuses (OpenFold3's ``covalent_bonds``,
@@ -3134,12 +3208,15 @@ def _checked_common_job(
     check_files: bool = False,
     msa_pairing: str = "model",
     template_dir: Path | None = None,
+    pocket_conditioning: bool | None = None,
+    selection_pockets: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Read and validate a common job exactly as translation will, writing nothing.
 
     ``check_files`` also requires every alignment and template the job names
     to exist (`preflight` asks; translation leaves a missing one to the
-    backend, which reports it in its own words).
+    backend, which reports it in its own words). ``pocket_conditioning`` and
+    ``selection_pockets`` are `_validate_pocket_constraints`'s.
     """
     from foldjax.msa_search import refuse_msa_pairing
     from foldjax.template_search import refuse_template_search
@@ -3180,6 +3257,8 @@ def _checked_common_job(
         ignored_templates=ignored_templates,
         ignored_constraints=ignored_constraints,
         base=source.parent if check_files else None,
+        pocket_conditioning=pocket_conditioning,
+        selection_pockets=selection_pockets,
     )
     # Before anything is written: the refusal is about the job, not the run.
     _apply_msa_policy(job, model, target, msa, options)
@@ -3195,6 +3274,7 @@ def validate_common_input(
     templates: str = "none",
     msa_pairing: str = "model",
     template_dir: Path | None = None,
+    pocket_conditioning: bool | None = None,
 ) -> None:
     """Raise what `materialize_native_input` would raise about this job.
 
@@ -3203,7 +3283,8 @@ def validate_common_input(
     fetched or written, so `foldjax plan` can refuse exactly what `foldjax
     predict` refuses. What only featurization
     can know -- the MSA rows a model stores, which ``padding.msa`` must not
-    undercut -- is still checked at run time.
+    undercut -- is still checked at run time. ``pocket_conditioning`` is
+    `materialize_native_input`'s.
     """
     _checked_common_job(
         source,
@@ -3214,6 +3295,7 @@ def validate_common_input(
         check_files=True,
         msa_pairing=msa_pairing,
         template_dir=template_dir,
+        pocket_conditioning=pocket_conditioning,
     )
 
 
@@ -3236,6 +3318,7 @@ def materialize_native_input(
     msa_pairing: str = "model",
     template_dir: Path | None = None,
     msa_stats: list[dict[str, Any]] | None = None,
+    pocket_conditioning: bool | None = None,
 ) -> Path:
     """Translate a FoldJAX JSON document to one backend-native input file.
 
@@ -3256,8 +3339,14 @@ def materialize_native_input(
     as upstream drops them (see ``IGNORE_CONSTRAINTS``), and ``constraints``
     one record per pocket and per contact written into the native input, with
     the ``max_distance`` it runs at and whether that came from the job or
-    from the upstream default.
+    from the upstream default. Under ``pocket_sampling=select`` each pocket
+    record also carries ``route``: ``native`` when the native input conditions
+    on it as well, ``selection`` when FoldJAX's selection is the only thing
+    that reads it; ``pocket_conditioning`` (None: the translation table) says
+    which, for a model whose checkpoint decides.
     """
+    from foldjax.pocket_selection import requested
+
     model = capabilities.model
     target = _TARGETS.get(model)
     if target is None:
@@ -3266,6 +3355,7 @@ def materialize_native_input(
     dropped: list[dict[str, Any]] = []
     dropped_templates: list[dict[str, Any]] = []
     dropped_constraints: list[dict[str, Any]] = []
+    selection_pockets: list[dict[str, Any]] = []
     job = _checked_common_job(
         source,
         capabilities,
@@ -3277,7 +3367,11 @@ def materialize_native_input(
         ignored_constraints=dropped_constraints,
         msa_pairing=msa_pairing,
         template_dir=template_dir,
+        pocket_conditioning=pocket_conditioning,
+        selection_pockets=selection_pockets,
     )
+    # Only under ``select``: an ``off`` run's records keep their shape.
+    pocket_route = {} if requested(options) == "off" else {"route": "native"}
     if dropped_constraints:
         import warnings
 
@@ -3307,8 +3401,22 @@ def materialize_native_input(
                 "max_distance_source": (
                     "job" if pocket["max_distance"] is not None else "upstream"
                 ),
+                **pocket_route,
             }
             for pocket in _pocket_constraints(job)
+        )
+        # Validation left these an explicit distance (no upstream default to
+        # inherit), so the value is the job's.
+        constraints.extend(
+            {
+                "kind": "pocket",
+                "binder": pocket["binder"],
+                "contacts": [list(contact) for contact in pocket["contacts"]],
+                "max_distance": float(pocket["max_distance"]),
+                "max_distance_source": "job",
+                "route": "selection",
+            }
+            for pocket in selection_pockets
         )
         constraints.extend(
             {

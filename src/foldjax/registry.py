@@ -72,7 +72,11 @@ def capabilities(name: str) -> ModelCapabilities:
     import dataclasses
 
     from foldjax.confidence_arrays import default_arrays
-    from foldjax.input import common_schema_features, native_only_features
+    from foldjax.input import (
+        common_schema_features,
+        foldjax_only_features,
+        native_only_features,
+    )
 
     backend = get_backend(name)
     described = backend.capabilities()
@@ -80,6 +84,7 @@ def capabilities(name: str) -> ModelCapabilities:
         described,
         common_schema_features=common_schema_features(described.model),
         native_only_features=native_only_features(described.model, described),
+        foldjax_only_features=foldjax_only_features(described.model),
         confidence_arrays=described.confidence_arrays
         or default_arrays(described.model),
         sampling_defaults=described.sampling_defaults or sampling_defaults(backend),

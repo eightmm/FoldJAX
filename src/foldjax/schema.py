@@ -237,6 +237,12 @@ class ModelCapabilities:
     # nothing can be read before a run. Filled in by `foldjax.capabilities`
     # from `Backend.sampling_resolution`, like the fields above.
     sampling_defaults: dict[str, int | None] = field(default_factory=dict)
+    # Routes FoldJAX adds on top of this port that no upstream has, kept apart
+    # from `common_schema_features` so the record never reads as upstream
+    # support: `pocket_selection` is `pocket_sampling=select`
+    # (`foldjax.pocket_selection`). Filled in by `foldjax.capabilities` from
+    # `foldjax.input.foldjax_only_features`, like the fields above.
+    foldjax_only_features: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,6 +308,7 @@ class ModelInfo:
             "padding_axes": list(capabilities.padding_axes),
             "common_schema_features": list(capabilities.common_schema_features),
             "native_only_features": list(capabilities.native_only_features),
+            "foldjax_only_features": list(capabilities.foldjax_only_features),
             "representations": list(capabilities.representations),
             "input_representations": list(capabilities.input_representations),
             "confidence_arrays": list(capabilities.confidence_arrays),

@@ -59,6 +59,32 @@ foldjax predict --model protenix --profile base-constraint-v0.5.0 \
     --input target_atp.yaml --output-dir out
 ```
 
+## Ranking samples by the pocket on every model
+
+The table above is what each *upstream* does with a pocket. FoldJAX adds one
+route of its own that every model takes:
+
+```bash
+foldjax predict --model alphafold3 esmfold2 opendde protenix boltz2 openfold3 \
+    --input target_atp.yaml --output-dir out --option pocket_sampling=select
+```
+
+`pocket_sampling=select` does not change sampling. After prediction every
+sample is scored with Boltz-2's pocket rule -- residue 38 is satisfied when a
+heavy atom of `L` lies within 6.0 Å of one of its heavy atoms, the pocket when
+residues 38, 41 and 45 all are -- and the run's `best` prefers a sample that
+satisfied the pocket, still ordered by the model's own ranking score. When no
+sample did, the model's ranking stands and `best.pocket_satisfied` is
+`false`. Boltz-2, OpenFold3 and the Protenix constraint checkpoint keep their
+native conditioning and gain the selection; AlphaFold 3, ESMFold2, OpenDDE
+and the released Protenix checkpoint, which refuse or drop the pocket today,
+run with the pocket read by the selection alone -- for them `max_distance` is
+required, since none has a default of its own. Each sample's
+`confidence.json` lists the per-residue distances under `pocket_sampling`,
+and `foldjax_run.json` records the route and whether the native input
+conditioned on the pocket as well
+([cli.md](../cli.md#--option-pocket_samplingselect)).
+
 ## Contacts between residues
 
 A **contact** asks for two residues to lie within `max_distance` of each

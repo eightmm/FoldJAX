@@ -81,6 +81,7 @@ One per sample. Schema version `1.0`.
 | `summary` | `plddt`, `ptm`, `iptm` and `ranking` on one name and one scale |
 | `execution` | how the run executed, where the native summary carries it (`num_recycles`) |
 | `score_notes` | a native writer's own note on its scores, verbatim |
+| `pocket_sampling` | only under `--option pocket_sampling=select`: whether this sample satisfied every pocket of the job, with each listed residue's smallest heavy-atom distance to the binder ([cli.md](cli.md#--option-pocket_samplingselect)) |
 
 Each `summary` field is `{value, scale, source, transform, granularity,
 population}`, saying which native number it came from and what was done to it,
@@ -153,8 +154,10 @@ chain-pair ipTM (`native.chain_pair_iptm`).
 The run manifest, schema version `1.0`. Two version fields: `schema` (an
 integer, what makes a run safe to resume) and `schema_version` (this file
 contract, shared with `confidence.json`). `msa_search`, `weights.kind`,
-`weights.stat_signature`, AlphaFold 3's per-sample `metadata.native_sample`
-and its `kernel_tuning` are declared as optional fields, so a manifest written before the schema named
+`weights.stat_signature`, AlphaFold 3's per-sample `metadata.native_sample`,
+its `kernel_tuning`, and the `pocket_sampling=select` fields (`pocket_sampling`,
+`constraints[].route`, `best.pocket_satisfied`, per-sample
+`metadata.pocket_sampling`) are declared as optional fields, so a manifest written before the schema named
 them still validates and still resumes.
 
 | field | what it records |
@@ -173,7 +176,8 @@ them still validates and still resumes.
 | `template_dir` | with `--templates DIR`: the folder's path, file count and a SHA-256 over its files |
 | `preset` | with `--preset`: its name, the sampling it set and the publisher's source |
 | `ignored_msas`, `ignored_templates`, `ignored_constraints` | inputs the job named that the model never read, as its upstream does not |
-| `constraints` | pocket and contact constraints as the native input carries them, with `max_distance_source` |
+| `constraints` | pocket and contact constraints as the native input carries them, with `max_distance_source`; under `pocket_sampling=select` each pocket's `route`, `native` or `selection` |
+| `pocket_sampling` | only under `--option pocket_sampling=select`, FoldJAX's own route: how many samples were scored against the pocket and satisfied it, whether the native input conditioned on the pocket as well, and the pocket records; `best.selection` then says the satisfied samples were ranked first and `best.pocket_satisfied` whether one was found |
 | `sampling`, `options`, `options_verifiable` | the schedule knobs and native options as run |
 | `padding`, `shape_profile` | the padding request and the concrete shapes executed |
 | `kernel_tuning` | AlphaFold 3 only: the `kernel_autotuning` value, whether the persistent Tokamax store was installed, and per source (`store`, `measured`, `tokamax`) how many model calls took their kernel configurations from it -- the option is a cache-miss policy, so it alone does not say which program ran |
