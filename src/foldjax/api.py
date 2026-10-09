@@ -57,6 +57,10 @@ from foldjax.oom import clear_mesh_record
 from foldjax.oom import diagnose as diagnose_oom
 from foldjax.output import normalize as normalize_output
 from foldjax.paths import compile_cache_dir
+from foldjax.pocket_selection import POCKET_SAMPLING, job_chains, pocket_records
+from foldjax.pocket_selection import annotate as annotate_pocket_selection
+from foldjax.pocket_selection import manifest_block as pocket_manifest_block
+from foldjax.pocket_selection import requested as pocket_selection_requested
 from foldjax.registry import get_backend
 from foldjax.result_validation import _sample_index, _validate_result
 from foldjax.schema import (
@@ -375,6 +379,11 @@ def preflight(request: PredictionRequest, *, backend: Backend | None = None) -> 
             templates=request.templates,
             msa_pairing=request.msa_pairing,
             template_dir=request.template_dir,
+            pocket_conditioning=(
+                backend.pocket_conditioning(request)
+                if pocket_selection_requested(request.options) == "select"
+                else None
+            ),
         )
     except (ValueError, FileNotFoundError) as error:
         if request.source is None:
@@ -1533,6 +1542,16 @@ def _predict_once(
     # upstream drops them.
     constraints: list[dict[str, Any]] | None = None
     common_ignored_constraints: list[dict[str, Any]] = []
+    # ``pocket_sampling=select`` (`foldjax.pocket_selection`): whether the
+    # native input also conditions on the job's pocket, decided before the
+    # translation because the translation routes the pocket by it.
+    pocket_selection = (
+        request.input_format == "foldjax"
+        and pocket_selection_requested(request.options) == "select"
+    )
+    pocket_conditioning = (
+        backend.pocket_conditioning(request) if pocket_selection else None
+    )
     if request.input_format == "foldjax":
         ignored_msas = []
         ignored_templates = []
@@ -1562,6 +1581,7 @@ def _predict_once(
                     msa_pairing=request.msa_pairing,
                     template_dir=request.template_dir,
                     msa_stats=msa_stats,
+                    pocket_conditioning=pocket_conditioning,
                 )
             except (ValueError, FileNotFoundError) as error:
                 # The generated document is an implementation detail; the
@@ -1608,7 +1628,12 @@ def _predict_once(
         )
     # Consumed by the translation above; no native runner takes it. `asked`
     # keeps it, so the manifest's options still record the choice.
-    consumed = {IGNORE_NUCLEIC_MSA, IGNORE_TEMPLATES, IGNORE_CONSTRAINTS}
+    consumed = {
+        IGNORE_NUCLEIC_MSA,
+        IGNORE_TEMPLATES,
+        IGNORE_CONSTRAINTS,
+        POCKET_SAMPLING,
+    }
     if consumed & set(request.options):
         request = dataclasses.replace(
             request,
@@ -1674,6 +1699,21 @@ def _predict_once(
             f"{backend.name} accepted padding but did not report the concrete "
             "shape profile it executed"
         )
+    # Scored before the structures move, so each sample's confidence.json
+    # carries its score; the coordinates are not touched.
+    pocket_sampling: dict[str, Any] | None = None
+    if pocket_selection:
+        from foldjax.job import Job
+
+        pockets = pocket_records(constraints)
+        result = annotate_pocket_selection(
+            result,
+            pockets=pockets,
+            job=job_chains(Job.from_document(read_job_document(asked.input))),
+        )
+        pocket_sampling = pocket_manifest_block(
+            result, pockets=pockets, native_conditioning=pocket_conditioning
+        )
     # Six backends wrote six layouts; this puts every structure in the same
     # place under the same name, and leaves everything else where it was.
     with timeline.stage("write"):
@@ -1712,6 +1752,7 @@ def _predict_once(
         constraints=constraints,
         msa_search=msa_search,
         msa_stats=msa_stats,
+        pocket_sampling=pocket_sampling,
     )
     return result
 

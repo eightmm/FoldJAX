@@ -18,6 +18,13 @@ read and under which terms its weights come:
 | [AlphaFold 3](alphafold3.md) | Google DeepMind's terms; you request them yourself | user-defined CCD entries (native input only) | pocket and contact constraints |
 | [ESMFold2](esmfold2.md) | MIT plus Biohub's acceptable-use policy; 26.8 GB, opt-in | folds from its language model; an alignment is optional, not required | templates, paired MSAs, constraints |
 
+The constraint columns are what each upstream reads. One FoldJAX-only route
+sits apart from them: `--option pocket_sampling=select` scores every finished
+sample against a common pocket constraint and ranks a satisfying one first,
+on all six models, so a pocket job also runs on AlphaFold 3, ESMFold2,
+OpenDDE and the released Protenix checkpoint with the pocket read by that
+selection alone ([cli.md](cli.md#--option-pocket_samplingselect)).
+
 `foldjax models --for job.yaml` answers for one job: which models can run it,
 and the reason for each that cannot. It needs no weights, no GPU and no
 network. `foldjax capabilities --model M` lists everything one model accepts.

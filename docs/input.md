@@ -473,6 +473,14 @@ In Python: `Job(..., pockets=[Pocket("L", [("A", 2), ("A", 5)])])`.
 | OpenDDE | dropped as upstream drops a constraint, with a warning and an `ignored_constraints` record; `ignore_constraints=false` refuses | — |
 | AlphaFold 3, ESMFold2 | refused: no such field upstream | — |
 
+`--option pocket_sampling=select` adds a FoldJAX-only route on every model:
+sampling is unchanged, each sample is scored afterwards with Boltz-2's pocket
+rule and `best` prefers a sample that satisfied every pocket. On AlphaFold 3,
+ESMFold2, OpenDDE and the released Protenix checkpoint the job then runs
+with the pocket read by that selection alone (`max_distance` required: none
+of them has a default of its own), and the manifest records the route
+([docs/cli.md](cli.md#--option-pocket_samplingselect)).
+
 ### Contact constraints
 
 ```yaml

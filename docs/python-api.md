@@ -385,7 +385,14 @@ common `constraints` field, `max_distance=None` takes each model's upstream
 default, and the manifest's `constraints` records the value used
 (`docs/input.md`, "Pocket constraints"). On OpenDDE it is dropped and recorded
 under `ignored_constraints` like a native constraint; AlphaFold 3 and ESMFold2
-refuse it. `contact_constraints` is a common feature for Boltz-2 and
+refuse it. `options={"pocket_sampling": "select"}` adds FoldJAX's own route on
+every model (`foldjax.pocket_selection`): sampling is unchanged, each sample
+is scored against the pocket afterwards and `best` prefers a satisfying one;
+on the four that refuse or drop the pocket the job then runs, with
+`max_distance` required. The capability record lists it under
+`foldjax_only_features`, apart from the upstream features
+(`docs/cli.md`, "`--option pocket_sampling=select`").
+`contact_constraints` is a common feature for Boltz-2 and
 Protenix: `Job(..., contacts=[Contact(("A", 2), ("B", 3), max_distance=8.0)])`
 writes a `contact` item into the same `constraints` list, `max_distance=None`
 takes Boltz-2's upstream 6.0 and is refused by Protenix, which has no

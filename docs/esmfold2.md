@@ -109,3 +109,15 @@ resident and reuses it. Staging such a batch would trade the memory saving for
 re-reading the 25.4 GB ESMC checkpoint for every input. Direct calls to
 `foldjax.models.esmfold2.inference.load` likewise still return the complete
 model; staging is confined to FoldJAX's managed request session.
+
+## Pocket constraints
+
+Upstream ESMFold2 has no pocket or restraint input, so a common job's pocket
+constraint is refused. `--option pocket_sampling=select` is the one way it
+counts: FoldJAX's own route, which scores every finished sample against the
+pocket with Boltz-2's rule (heavy atoms of the binder within `max_distance`
+of each listed residue) and ranks a satisfying sample first by this port's
+pLDDT ordering. The sampler and the structures are unchanged; `max_distance`
+is required, since upstream has no default of its own
+([cli.md](cli.md#--option-pocket_samplingselect)). With ESMFold2's sampling
+spread, several samples or seeds give the selection something to choose from.

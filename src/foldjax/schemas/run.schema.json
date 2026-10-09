@@ -89,21 +89,11 @@
       "items": {"$ref": "#/$defs/ignored"}
     },
     "constraints": {
-      "description": "A common job's pocket and contact constraints as the native input carries them: a pocket's binder chain and [chain, residue] contacts, or a contact's token1 and token2 ([chain, residue] each); the max_distance (angstrom) the model runs at, and max_distance_source, 'job' or 'upstream' (the model's own default when the job omitted it). null for native input. Optional: absent from manifests written before it existed.",
+      "description": "A common job's pocket and contact constraints as the native input carries them: a pocket's binder chain and [chain, residue] contacts, or a contact's token1 and token2 ([chain, residue] each); the max_distance (angstrom) the model runs at, and max_distance_source, 'job' or 'upstream' (the model's own default when the job omitted it). null for native input. Under pocket_sampling=select a pocket record also carries route: 'native' when the native input conditions on it as well, 'selection' when only FoldJAX's post-prediction selection reads it (see pocket_sampling). Optional: absent from manifests written before it existed.",
       "type": ["array", "null"],
       "items": {
         "oneOf": [
-          {
-            "type": "object",
-            "required": ["kind", "binder", "contacts", "max_distance", "max_distance_source"],
-            "properties": {
-              "kind": {"const": "pocket"},
-              "binder": {"type": "string"},
-              "contacts": {"description": "[chain_id, residue_index] pairs.", "type": "array", "items": {"type": "array"}},
-              "max_distance": {"type": "number"},
-              "max_distance_source": {"enum": ["job", "upstream"]}
-            }
-          },
+          {"$ref": "#/$defs/pocket_constraint"},
           {
             "type": "object",
             "required": ["kind", "token1", "token2", "max_distance", "max_distance_source"],
@@ -219,9 +209,70 @@
       "oneOf": [{"$ref": "#/$defs/confidence_arrays"}, {"type": "null"}]
     },
     "samples": {"type": "array", "items": {"$ref": "#/$defs/sample"}},
-    "best": {"oneOf": [{"$ref": "#/$defs/best"}, {"type": "null"}]}
+    "best": {"oneOf": [{"$ref": "#/$defs/best"}, {"type": "null"}]},
+    "pocket_sampling": {
+      "description": "Present only under --option pocket_sampling=select, FoldJAX's own route (no upstream model has it): every sample was scored after prediction against the job's pocket constraints and best prefers one that satisfied them; sampling and coordinates are unchanged. native_conditioning says whether the native input conditioned on the pocket as well (Boltz-2, OpenFold3, the Protenix constraint checkpoint) or the pocket reached only this selection; pockets repeats the pocket records with their route. A manifest combining several seeds records the counts alone. Optional: absent from manifests written before it existed and from every run without the option.",
+      "type": "object",
+      "required": ["mode", "route", "samples", "satisfied", "unscored"],
+      "properties": {
+        "mode": {"const": "select"},
+        "route": {"const": "foldjax"},
+        "native_conditioning": {"type": "boolean"},
+        "samples": {"type": "integer", "minimum": 0},
+        "satisfied": {"type": "integer", "minimum": 0},
+        "unscored": {"type": "integer", "minimum": 0},
+        "pockets": {"type": "array", "items": {"$ref": "#/$defs/pocket_constraint"}}
+      }
+    }
   },
   "$defs": {
+    "pocket_constraint": {
+      "type": "object",
+      "required": ["kind", "binder", "contacts", "max_distance", "max_distance_source"],
+      "properties": {
+        "kind": {"const": "pocket"},
+        "binder": {"type": "string"},
+        "contacts": {"description": "[chain_id, residue_index] pairs.", "type": "array", "items": {"type": "array"}},
+        "max_distance": {"type": "number"},
+        "max_distance_source": {"enum": ["job", "upstream"]},
+        "route": {"enum": ["native", "selection"]}
+      }
+    },
+    "pocket_score": {
+      "description": "One sample's score under pocket_sampling=select, Boltz-2's pocket rule: a residue is satisfied when a heavy atom of the binder lies within max_distance of one of its heavy atoms; a pocket when every listed residue is; the sample when every pocket is. satisfied is null, with reason, when the structure could not be put against the job's chains.",
+      "type": "object",
+      "required": ["mode", "satisfied"],
+      "properties": {
+        "mode": {"const": "select"},
+        "satisfied": {"type": ["boolean", "null"]},
+        "reason": {"type": "string", "minLength": 1},
+        "pockets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["binder", "max_distance", "satisfied", "residues"],
+            "properties": {
+              "binder": {"type": "string"},
+              "max_distance": {"type": "number"},
+              "satisfied": {"type": "boolean"},
+              "residues": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["chain", "residue", "min_distance", "satisfied"],
+                  "properties": {
+                    "chain": {"type": "string"},
+                    "residue": {"type": "integer", "minimum": 1},
+                    "min_distance": {"description": "Smallest heavy-atom distance (angstrom) between this residue and the binder chain.", "type": "number"},
+                    "satisfied": {"type": "boolean"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "confidence_arrays": {
       "description": "Where a sample's confidence arrays (PAE, chain-pair matrices, per-token or per-atom pLDDT) are, which are present, and why others are unavailable. Written by foldjax.confidence_arrays.",
       "type": "object",
@@ -260,13 +311,14 @@
             "job": {"type": "string"},
             "native_sample": {"description": "The sample's index in the native writer's own output (AlphaFold 3). Optional.", "type": "integer", "minimum": 0},
             "num_recycles": {"type": "number"},
-            "confidence_arrays": {"$ref": "#/$defs/confidence_arrays"}
+            "confidence_arrays": {"$ref": "#/$defs/confidence_arrays"},
+            "pocket_sampling": {"$ref": "#/$defs/pocket_score"}
           }
         }
       }
     },
     "best": {
-      "description": "This model's top-ranked sample by the score it ranks with, within this run. Not an accuracy claim and never a cross-model pick.",
+      "description": "This model's top-ranked sample by the score it ranks with, within this run. Not an accuracy claim and never a cross-model pick. Under pocket_sampling=select, when at least one sample satisfied every pocket, the same ranking among the satisfied samples (selection says so, pocket_satisfied true); when none did the model's ranking stands and pocket_satisfied is false.",
       "type": "object",
       "required": ["score", "value", "seed", "sample", "structure_path", "selection"],
       "properties": {
@@ -275,7 +327,8 @@
         "seed": {"type": "integer"},
         "sample": {"type": "integer", "minimum": 0},
         "structure_path": {"type": ["string", "null"]},
-        "selection": {"const": "within-model confidence ranking"},
+        "selection": {"enum": ["within-model confidence ranking", "pocket-satisfied samples, within-model confidence ranking"]},
+        "pocket_satisfied": {"type": "boolean"},
         "job": {"type": "string"}
       }
     }

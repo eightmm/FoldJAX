@@ -354,6 +354,8 @@ class Backend(ABC):
             accepts_ignore_templates,
             refuse_ignored_constraints,
         )
+        from foldjax.pocket_selection import POCKET_SAMPLING
+        from foldjax.pocket_selection import requested as requested_pocket_sampling
         from foldjax.template_search import refuse_template_search
 
         # Here as well as at materialization, so `foldjax plan` refuses a
@@ -376,6 +378,22 @@ class Backend(ABC):
                     f"{self.name} untouched"
                 )
             refuse_msa_pairing(self.name, request.msa_pairing)
+
+        # FoldJAX's own route on every backend (`foldjax.pocket_selection`):
+        # read by the translation and the selection after the run, never by
+        # a native runner. A native document is passed through untouched, so
+        # there is no common pocket for it to score.
+        if POCKET_SAMPLING in options:
+            if (
+                requested_pocket_sampling(options) == "select"
+                and request.input_format != "foldjax"
+            ):
+                raise ValueError(
+                    f"{POCKET_SAMPLING}=select scores the samples against a "
+                    "FoldJAX common-schema job's pocket constraint; native "
+                    f"{self.name} input is passed through untouched"
+                )
+            options.pop(POCKET_SAMPLING)
 
         # Governs a native ``constraint`` and a common job's pocket and contact
         # ``constraints`` alike. ``false`` on native input is checked here,
@@ -509,6 +527,19 @@ class Backend(ABC):
         helpers as ``predict`` while keeping planning free of preprocessing,
         checkpoint loading, compilation, downloads, and output writes.
         """
+
+    def pocket_conditioning(self, request: PredictionRequest) -> bool:
+        """Whether this request's native input conditions on a common pocket.
+
+        The translation table's answer for most ports; a backend whose
+        checkpoint decides (Protenix) overrides it. Under
+        ``pocket_sampling=select`` a pocket this says no to reaches only
+        FoldJAX's selection (`foldjax.pocket_selection`).
+        """
+        from foldjax.input import pocket_conditioned
+
+        del request
+        return pocket_conditioned(self.name)
 
     @abstractmethod
     def capabilities(self) -> ModelCapabilities: ...

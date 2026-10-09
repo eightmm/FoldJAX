@@ -64,7 +64,11 @@ default ([cli.md](cli.md#a-bfloat16-trunk---option-trunk_dtypebf16),
   common job's pocket or contact constraints, or a native job's `constraint`,
   are dropped the same way, with a warning and an `ignored_constraints` record;
   `--option ignore_constraints=false` refuses such a job instead. Covalent
-  bonds do reach the model.
+  bonds do reach the model. `--option pocket_sampling=select` is the one way a
+  common pocket counts here: a FoldJAX-only route that scores every sample
+  against the pocket after prediction and ranks a satisfying sample first
+  (`max_distance` required; the model itself still sees no constraint)
+  ([cli.md](cli.md#--option-pocket_samplingselect)).
 - **Native only**: ligands read from a file need a native OpenDDE job.
 
 ## Options worth knowing

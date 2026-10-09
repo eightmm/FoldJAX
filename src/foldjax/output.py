@@ -58,6 +58,7 @@ import numpy as np
 
 from foldjax import confidence_arrays
 from foldjax._fsutil import ordinary_file_mode, safe_job_name
+from foldjax.pocket_selection import METADATA_KEY as POCKET_SELECTION_KEY
 from foldjax.schema import PredictionOutputError, PredictionResult, PredictionSample
 from foldjax.scores import EXECUTION_FIELDS
 from foldjax.summary import (
@@ -579,6 +580,10 @@ def confidence_payload(
     notes = SCORE_NOTES.get(model)
     if notes:
         payload["score_notes"] = dict(notes)
+    # Only a ``pocket_sampling=select`` run scored the sample
+    # (`foldjax.pocket_selection`); an unscored one writes the file it always did.
+    if isinstance(metadata.get(POCKET_SELECTION_KEY), dict):
+        payload[POCKET_SELECTION_KEY] = dict(metadata[POCKET_SELECTION_KEY])
     return payload
 
 
@@ -745,7 +750,15 @@ def best_sample(result: PredictionResult) -> dict[str, object] | None:
     Returns ``None`` when the model reported no such score, rather than falling
     back to another one: a "best" chosen by a different quantity than the model
     ranks by would be a different claim wearing the same word.
+
+    Under ``pocket_sampling=select`` (`foldjax.pocket_selection`) the samples
+    that satisfied every pocket are ranked first, by the same score; when
+    none did, the model's own ranking stands and ``pocket_satisfied`` says
+    so. A run that never scored its samples is ranked exactly as before.
     """
+    from foldjax.pocket_selection import SELECTION as POCKET_SELECTION
+    from foldjax.pocket_selection import satisfied as pocket_satisfied
+
     key = _RANKING_SCORE.get(result.model)
     if key is None or not result.samples:
         return None
@@ -761,6 +774,12 @@ def best_sample(result: PredictionResult) -> dict[str, object] | None:
             return None
         ranked.append((position, sample, value))
 
+    scored = [pocket_satisfied(sample) for _position, sample, _value in ranked]
+    satisfied = [item for item, value in zip(ranked, scored, strict=True) if value]
+    selection = "within-model confidence ranking"
+    if satisfied:
+        ranked = satisfied
+        selection = POCKET_SELECTION
     # ``max`` keeps the first item on a tie, preserving diffusion/sample order.
     position, winner, value = max(ranked, key=lambda item: item[2])
     best: dict[str, object] = {
@@ -771,8 +790,10 @@ def best_sample(result: PredictionResult) -> dict[str, object] | None:
         "structure_path": str(winner.structure_path) if winner.structure_path else None,
         # The top of this model's own confidence ordering within this run: not
         # the most accurate structure, and never a pick across models.
-        "selection": "within-model confidence ranking",
+        "selection": selection,
     }
     if (winner.metadata or {}).get("job"):
         best["job"] = str(winner.metadata["job"])
+    if any(value is not None for value in scored):
+        best["pocket_satisfied"] = bool(satisfied)
     return best

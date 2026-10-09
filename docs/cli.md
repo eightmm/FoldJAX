@@ -2250,6 +2250,38 @@ reproduced each of them bit for bit. Keep one `--cache-dir` (the default
 cache is persistent) to get the same structure again, and use
 `deterministic=on` when two independent compilations must agree.
 
+### `--option pocket_sampling=select`
+
+A FoldJAX-only route, on every model, for a common job's pocket constraint
+(`constraints: [{pocket: ...}]`). It changes nothing about how a model
+samples: after prediction every sample is scored against the pocket with
+Boltz-2's own pocket rule -- a listed residue is satisfied when a heavy atom
+of the binder chain lies within `max_distance` of one of its heavy atoms
+(`featurizerv2.py`, `token_dist < binder_pocket_cutoff`; hydrogens are
+removed first), a pocket when every listed residue is, a sample when every
+pocket is -- and the run's `best` prefers a sample that satisfied them,
+ordered by the model's own ranking score as always. When no sample did, the
+model's ranking stands and `best.pocket_satisfied` says `false`. Each
+sample's `confidence.json` records the per-residue distances under
+`pocket_sampling`; `foldjax_run.json` records the route under
+`pocket_sampling` and each pocket's `route` under `constraints`.
+
+| model | with `select` | omitted `max_distance` |
+|---|---|---|
+| Boltz-2, OpenFold3 | the native conditioning runs as today, and the selection is added on top (`route: native`) | 6.0 / 4.0, the model's own default, for both |
+| Protenix `--profile base-constraint-v0.5.0` | the same | required (none upstream) |
+| AlphaFold 3, ESMFold2, OpenDDE, Protenix released default | the job runs; the pocket reaches only the selection (`route: selection`), where today it is refused (no pocket field upstream, no constraint embedder) or dropped (OpenDDE) | required: upstream has no pocket distance of its own, and no other model's is borrowed |
+
+`off`, the default, leaves every backend exactly as it is: the same
+refusals and drops, the same native input, the same manifests and the same
+compile namespace. `select` is not part of the compile-cache identity either
+-- it never changes the program -- and is refused on native input, which
+carries no common pocket to score. OpenFold3's own rules (one pocket, a
+ligand binder) still apply under `select`, and a contact constraint follows
+each model's existing rule unchanged. The route is listed as
+`foldjax_only_features: ["pocket_selection"]` by `foldjax capabilities`,
+apart from the upstream features.
+
 ### `--msa-seed` (Protenix)
 
 Seeds only the per-cycle MSA row draw, which is the released default as it

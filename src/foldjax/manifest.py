@@ -1475,6 +1475,7 @@ def describe_run(
     constraints: list[dict[str, Any]] | None = None,
     msa_search: list[dict[str, Any]] | None = None,
     msa_stats: list[dict[str, Any]] | None = None,
+    pocket_sampling: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the manifest for one finished prediction.
 
@@ -1504,6 +1505,9 @@ def describe_run(
     came from the job or the upstream default; ``None`` for native input.
     ``msa_stats`` holds each chain's alignment depth and Neff
     (`foldjax.msa_stats`); ``None`` for native input.
+    ``pocket_sampling`` is the ``pocket_sampling=select`` block
+    (`foldjax.pocket_selection.manifest_block`); ``None`` derives it from the
+    samples' own scores, and a run that never scored writes no such key.
     """
     from foldjax import __version__, confidence_arrays
     from foldjax.backends._tokamax_autotune import (
@@ -1671,6 +1675,15 @@ def describe_run(
     }
     if result.shape_profile is not None:
         manifest["shape_profile"] = dict(result.shape_profile)
+    # Only a run that scored its samples against a pocket
+    # (``pocket_sampling=select``) writes the block; ``off`` leaves the
+    # manifest exactly as before the route existed.
+    if pocket_sampling is None:
+        from foldjax.pocket_selection import manifest_block
+
+        pocket_sampling = manifest_block(result)
+    if pocket_sampling is not None:
+        manifest["pocket_sampling"] = dict(pocket_sampling)
     # Where AlphaFold 3's Tokamax kernel configurations came from: the option
     # names a cache-miss policy, so it cannot say which program ran.
     kernel_tuning = recorded_kernel_tuning()
@@ -1693,6 +1706,7 @@ def write(
     constraints: list[dict[str, Any]] | None = None,
     msa_search: list[dict[str, Any]] | None = None,
     msa_stats: list[dict[str, Any]] | None = None,
+    pocket_sampling: dict[str, Any] | None = None,
 ) -> Path | None:
     """Write the manifest; return None if its provenance cannot be described.
 
@@ -1719,6 +1733,7 @@ def write(
                     constraints=constraints,
                     msa_search=msa_search,
                     msa_stats=msa_stats,
+                    pocket_sampling=pocket_sampling,
                 ),
                 indent=2,
                 sort_keys=True,

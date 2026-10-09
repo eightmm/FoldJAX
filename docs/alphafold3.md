@@ -231,3 +231,10 @@ foldjax predict --model alphafold3 --input job.yaml \
   --num-samples 5 --num-recycles 10 \
   --option buckets='[256,512,1024,2048,5120]'
 ```
+
+AlphaFold 3 has no pocket or restraint input, so a common job's pocket
+constraint is refused. `--option pocket_sampling=select` is the one way it
+counts: FoldJAX's own route, which scores every finished sample against the
+pocket with Boltz-2's rule and ranks a satisfying sample first; the model
+itself still sees no pocket, and `max_distance` is required
+([cli.md](cli.md#--option-pocket_samplingselect)).

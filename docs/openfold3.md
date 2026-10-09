@@ -279,6 +279,13 @@ compiled code. Memory admission records a pocket run as `unknown` with
 fitted without the second rollout. Feature archives carry the features, so an
 archived pocket query also folds with them.
 
+`--option pocket_sampling=select` is a different thing from the pocket-guided
+sampling above: FoldJAX's own post-prediction ranking, on every model, which
+scores each finished sample against the pocket with Boltz-2's rule and
+prefers a satisfying one for `best`. Here it runs on top of the guided
+sampling, which is unchanged, and the query's own rules (one pocket, a ligand
+binder) still apply ([cli.md](cli.md#--option-pocket_samplingselect)).
+
 ## Alignments are selected by filename
 
 OpenFold3 identifies an alignment's source from the file's **stem** and ignores

@@ -100,7 +100,11 @@ of a random subset ([cli.md](cli.md#--msa-seed-protenix)).
 - **Constraints.** Pocket and contact constraints need the
   `base-constraint-v0.5.0` profile; every other checkpoint refuses them, because
   it has no constraint embedder to read them
-  ([protein-ligand tutorial](tutorials/protein-ligand.md)). On that profile
+  ([protein-ligand tutorial](tutorials/protein-ligand.md)). With `--option
+  pocket_sampling=select`, FoldJAX's own post-prediction pocket ranking, a
+  pocket runs on every checkpoint: the constraint checkpoint conditions on it
+  as well, the others read it through the selection alone
+  ([cli.md](cli.md#--option-pocket_samplingselect)). On that profile
   every run adds the constraint embedder's substructure term to the initial
   pair representation, constraint or not, as upstream does: upstream attaches
   an all-zero substructure map to every job (it never parses

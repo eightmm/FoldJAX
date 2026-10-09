@@ -12,6 +12,27 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **`--option pocket_sampling=select`: a FoldJAX-only pocket route on all
+  six models.** A common job's pocket constraint could be read by Boltz-2,
+  OpenFold3 and the Protenix constraint checkpoint and was refused by
+  AlphaFold 3 and ESMFold2, dropped by OpenDDE and refused by the released
+  Protenix checkpoint. `select` changes nothing about sampling: after
+  prediction every sample is scored with Boltz-2's own pocket rule (a listed
+  residue is satisfied when a heavy atom of the binder lies within
+  `max_distance` of one of its heavy atoms; hydrogens excluded) and the run's
+  `best` prefers a sample that satisfied every pocket, ordered by the model's
+  own ranking score; when none did, the model's ranking stands. Models whose
+  native input conditions on the pocket keep that conditioning and gain the
+  selection; the four that refuse or drop it now run with the pocket read by
+  the selection alone, with `max_distance` required because none of them
+  has a default of its own. `confidence.json` gains an optional
+  `pocket_sampling` block with the per-residue distances; `foldjax_run.json`
+  an optional `pocket_sampling` block, each pocket's `route` under
+  `constraints`, and `best.pocket_satisfied`; `foldjax capabilities` lists
+  the route under `foldjax_only_features`, apart from the upstream features.
+  Schema stays `1.0`; every new field is optional. `off`, the default, leaves
+  every backend, file and compile namespace as it was, and `select` is not
+  part of the compile-cache identity either.
 - **AlphaFold 3 manifests record where their kernel configurations came
   from (`kernel_tuning`).** `kernel_autotuning` is Tokamax's cache-miss
   policy and every value shares one cache namespace and one persistent

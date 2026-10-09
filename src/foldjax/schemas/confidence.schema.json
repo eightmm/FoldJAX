@@ -96,6 +96,41 @@
       "additionalProperties": {
         "type": "string"
       }
+    },
+    "pocket_sampling": {
+      "description": "Present only under --option pocket_sampling=select, FoldJAX's own route: the sample scored after prediction against the job's pocket constraints with Boltz-2's pocket rule (a residue is satisfied when a heavy atom of the binder lies within max_distance of one of its heavy atoms; a pocket when every listed residue is; the sample when every pocket is). Sampling and coordinates are unchanged. satisfied is null, with reason, when the structure could not be put against the job's chains. Optional: absent from files written before it existed and from every run without the option.",
+      "type": "object",
+      "required": ["mode", "satisfied"],
+      "properties": {
+        "mode": {"const": "select"},
+        "satisfied": {"type": ["boolean", "null"]},
+        "reason": {"type": "string", "minLength": 1},
+        "pockets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["binder", "max_distance", "satisfied", "residues"],
+            "properties": {
+              "binder": {"type": "string"},
+              "max_distance": {"type": "number"},
+              "satisfied": {"type": "boolean"},
+              "residues": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["chain", "residue", "min_distance", "satisfied"],
+                  "properties": {
+                    "chain": {"type": "string"},
+                    "residue": {"type": "integer", "minimum": 1},
+                    "min_distance": {"description": "Smallest heavy-atom distance (angstrom) between this residue and the binder chain.", "type": "number"},
+                    "satisfied": {"type": "boolean"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {

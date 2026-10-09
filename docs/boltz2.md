@@ -63,7 +63,11 @@ upstream v2.2.0 and later zero for every real alignment; the default
   search ([templates tutorial](tutorials/templates.md)).
 - **Pocket constraints** condition the trunk (default `max_distance` 6.0 Å),
   several per job; **contact constraints** likewise, within one chain or across
-  chains ([protein-ligand tutorial](tutorials/protein-ligand.md)).
+  chains ([protein-ligand tutorial](tutorials/protein-ligand.md)). With
+  `--option pocket_sampling=select` FoldJAX also scores every sample with this
+  model's own pocket rule after the run and ranks a satisfying sample first;
+  the conditioning is unchanged
+  ([cli.md](cli.md#--option-pocket_samplingselect)).
 - **Affinity**: `properties: [{affinity: {binder: L}}]`, or
   `--affinity-binder CHAIN` for a generated job. The affinity stage follows
   upstream's two-stage contract (rank the structure samples, crop the
