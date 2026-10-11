@@ -8,6 +8,13 @@ upstream defaults and scientific results are documented beside their model and
 benchmark records: a release never changes what a recorded command predicts
 unless it says so here, in its own paragraph.
 
+## Unreleased
+
+### Fixed
+
+- Protenix and OpenDDE write mmCIF files in linear time per chain
+  (byte-identical output).
+
 ## 0.1.0 (2026-10-10)
 
 ### Added

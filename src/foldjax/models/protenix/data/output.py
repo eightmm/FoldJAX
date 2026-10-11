@@ -649,6 +649,15 @@ def _write_cif(
     for chain_id in chain_order:
         chain = gemmi.Chain(chain_id)
         atom_indices = np.flatnonzero(metadata["chain_id"].astype(str) == chain_id)
+        if "entity_id" in metadata:
+            # Hoisted out of the residue loop: these are per-chain, not
+            # per-residue, so compute them once instead of once per residue.
+            entity_ids = np.unique(metadata["entity_id"][atom_indices])
+            polymer_types = np.unique(metadata["polymer_type"][atom_indices])
+            if len(entity_ids) != 1 or len(polymer_types) != 1:
+                raise ValueError(
+                    f"chain {chain_id!r} has inconsistent entity provenance"
+                )
         current_key: tuple[int, str] | None = None
         residue: gemmi.Residue | None = None
         for atom_index in atom_indices:
@@ -664,12 +673,6 @@ def _write_cif(
                 residue.seqid = gemmi.SeqId(key[0], " ")
                 residue.subchain = chain_id
                 if "entity_id" in metadata:
-                    entity_ids = np.unique(metadata["entity_id"][atom_indices])
-                    polymer_types = np.unique(metadata["polymer_type"][atom_indices])
-                    if len(entity_ids) != 1 or len(polymer_types) != 1:
-                        raise ValueError(
-                            f"chain {chain_id!r} has inconsistent entity provenance"
-                        )
                     residue.entity_id = str(entity_ids[0])
                     if str(polymer_types[0]) == "non-polymer":
                         residue.het_flag = "H"

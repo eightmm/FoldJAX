@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from foldjax.models.protenix.data.featurize_json import featurize_protein_json
-from foldjax.models.protenix.data.output import write_protenix_outputs
+from foldjax.models.protenix.data.output import _write_cif, write_protenix_outputs
 
 
 def _toy_features() -> dict[str, np.ndarray]:
@@ -505,3 +505,216 @@ def test_generated_protein_chains_carry_the_quartet_the_rebuild_needs() -> None:
     for chain in np.unique(chains):
         oxt = np.flatnonzero((names == "OXT") & (chains == chain))
         assert oxt.size == 1 and oxt[0] in moved
+
+
+def _write_cif_reference(
+    path,
+    *,
+    name,
+    coordinates,
+    b_factors,
+    metadata,
+    covalent_bonds,
+) -> None:
+    """Pre-hoist `_write_cif`: recomputes per-chain provenance every residue.
+
+    Kept verbatim (module internals imported below) as the ground truth for
+    byte-identical-output regression tests of the hoisted version.
+    """
+    from foldjax.models.protenix.data.output import (
+        _add_cif_entities,
+        _set_covalent_struct_conn,
+    )
+
+    structure = gemmi.Structure()
+    structure.name = name
+    _add_cif_entities(structure, metadata)
+    model = gemmi.Model("1")
+    chain_order = list(dict.fromkeys(str(x) for x in metadata["chain_id"]))
+    for chain_id in chain_order:
+        chain = gemmi.Chain(chain_id)
+        atom_indices = np.flatnonzero(metadata["chain_id"].astype(str) == chain_id)
+        current_key = None
+        residue = None
+        for atom_index in atom_indices:
+            key = (
+                int(metadata["res_id"][atom_index]),
+                str(metadata["res_name"][atom_index]),
+            )
+            if key != current_key:
+                if residue is not None:
+                    chain.add_residue(residue)
+                residue = gemmi.Residue()
+                residue.name = key[1]
+                residue.seqid = gemmi.SeqId(key[0], " ")
+                residue.subchain = chain_id
+                if "entity_id" in metadata:
+                    entity_ids = np.unique(metadata["entity_id"][atom_indices])
+                    polymer_types = np.unique(metadata["polymer_type"][atom_indices])
+                    if len(entity_ids) != 1 or len(polymer_types) != 1:
+                        raise ValueError(
+                            f"chain {chain_id!r} has inconsistent entity provenance"
+                        )
+                    residue.entity_id = str(entity_ids[0])
+                    if str(polymer_types[0]) == "non-polymer":
+                        residue.het_flag = "H"
+                    else:
+                        residue.het_flag = "A"
+                        residue.label_seq = key[0]
+                current_key = key
+            atom = gemmi.Atom()
+            atom.name = str(metadata["name"][atom_index]) or "X"
+            element = str(metadata["element"][atom_index])
+            atom.element = gemmi.Element(element if element != "X" else "C")
+            atom.pos = gemmi.Position(*map(float, coordinates[atom_index]))
+            atom.occ = 1.0
+            atom.b_iso = round(float(b_factors[atom_index]), 2)
+            assert residue is not None
+            residue.add_atom(atom)
+        if residue is not None:
+            chain.add_residue(residue)
+        model.add_chain(chain)
+    structure.add_model(model)
+    document = structure.make_mmcif_document()
+    _set_covalent_struct_conn(document, metadata, covalent_bonds)
+    document.write_file(str(path))
+
+
+def _synthetic_chain_metadata(num_chains: int, residues_per_chain: int):
+    """A metadata dict matching `_write_cif`'s contract, built without a
+    featurizer (no `restype`/`ref_*` fields needed)."""
+    names_per_residue = ["N", "CA", "C", "O", "CB", "CG", "CD", "CE"]
+    elements_per_residue = ["N", "C", "C", "O", "C", "C", "C", "C"]
+    chain_id, res_id, res_name, name, element, entity_id, polymer_type = (
+        [] for _ in range(7)
+    )
+    for chain_index in range(num_chains):
+        chain = chr(ord("A") + chain_index)
+        for residue in range(residues_per_chain):
+            for atom_name, atom_element in zip(names_per_residue, elements_per_residue):
+                chain_id.append(chain)
+                res_id.append(residue + 1)
+                res_name.append("ALA")
+                name.append(atom_name)
+                element.append(atom_element)
+                entity_id.append("1")
+                polymer_type.append("polypeptide(L)")
+    return {
+        key: np.asarray(value)
+        for key, value in dict(
+            chain_id=chain_id,
+            res_id=res_id,
+            res_name=res_name,
+            name=name,
+            element=element,
+            entity_id=entity_id,
+            polymer_type=polymer_type,
+        ).items()
+    }
+
+
+def test_write_cif_matches_reference_on_mixed_protein_ligand_nucleic_chains(
+    tmp_path,
+) -> None:
+    """Hoisting the per-chain `np.unique` provenance checks out of the residue
+    loop must not change a single byte of output on a realistic multi-entity
+    job: a protein chain, a DNA chain, an RNA chain and a ligand ion."""
+    from foldjax.models.protenix.data.output import _atom_metadata
+
+    features = featurize_protein_json(
+        {
+            "name": "mixed",
+            "sequences": [
+                {"proteinChain": {"sequence": "ACDEFG", "count": 1, "id": ["P"]}},
+                {"dnaSequence": {"sequence": "GATC", "count": 1, "id": ["D"]}},
+                {"rnaSequence": {"sequence": "GAUC", "count": 1, "id": ["R"]}},
+                {"ion": {"ion": "MG", "count": 1, "id": ["M"]}},
+            ],
+        },
+        n_queries=2,
+        n_keys=2,
+    )
+    n_atom = len(features["atom_to_token_idx"])
+    metadata = _atom_metadata(features, n_atom)
+    # Guards against a vacuous pass: without these keys, both implementations
+    # skip the hoisted entity/polymer-type branch entirely.
+    assert "entity_id" in metadata and "polymer_type" in metadata
+    rng = np.random.default_rng(0)
+    coordinates = rng.normal(scale=10.0, size=(n_atom, 3)).astype(np.float32)
+    b_factors = rng.uniform(0.0, 100.0, size=n_atom).astype(np.float32)
+    covalent_bonds = np.empty((0, 2), dtype=np.int64)
+
+    reference_path = tmp_path / "reference.cif"
+    hoisted_path = tmp_path / "hoisted.cif"
+    _write_cif_reference(
+        reference_path,
+        name="mixed",
+        coordinates=coordinates,
+        b_factors=b_factors,
+        metadata=metadata,
+        covalent_bonds=covalent_bonds,
+    )
+    _write_cif(
+        hoisted_path,
+        name="mixed",
+        coordinates=coordinates,
+        b_factors=b_factors,
+        metadata=metadata,
+        covalent_bonds=covalent_bonds,
+    )
+
+    assert hoisted_path.read_bytes() == reference_path.read_bytes()
+
+
+def test_write_cif_matches_reference_on_a_synthetic_long_chain(tmp_path) -> None:
+    """A single long chain exercises the O(residues x chain atoms) blowup the
+    hoist removes; output must still be byte-identical."""
+    metadata = _synthetic_chain_metadata(num_chains=2, residues_per_chain=400)
+    n_atom = len(metadata["chain_id"])
+    rng = np.random.default_rng(1)
+    coordinates = rng.normal(scale=20.0, size=(n_atom, 3)).astype(np.float32)
+    b_factors = np.full(n_atom, 90.0, dtype=np.float32)
+    covalent_bonds = np.empty((0, 2), dtype=np.int64)
+
+    reference_path = tmp_path / "reference.cif"
+    hoisted_path = tmp_path / "hoisted.cif"
+    _write_cif_reference(
+        reference_path,
+        name="long",
+        coordinates=coordinates,
+        b_factors=b_factors,
+        metadata=metadata,
+        covalent_bonds=covalent_bonds,
+    )
+    _write_cif(
+        hoisted_path,
+        name="long",
+        coordinates=coordinates,
+        b_factors=b_factors,
+        metadata=metadata,
+        covalent_bonds=covalent_bonds,
+    )
+
+    assert hoisted_path.read_bytes() == reference_path.read_bytes()
+
+
+def test_write_cif_still_rejects_inconsistent_entity_provenance(tmp_path) -> None:
+    """The provenance error must still fire after hoisting, now once per
+    chain (before any residue is written) instead of at the first residue."""
+    metadata = _synthetic_chain_metadata(num_chains=1, residues_per_chain=2)
+    # Corrupt provenance for one atom in the single chain.
+    metadata["entity_id"][-1] = "2"
+    n_atom = len(metadata["chain_id"])
+    coordinates = np.zeros((n_atom, 3), dtype=np.float32)
+    b_factors = np.zeros(n_atom, dtype=np.float32)
+    covalent_bonds = np.empty((0, 2), dtype=np.int64)
+
+    with pytest.raises(ValueError, match="inconsistent entity provenance"):
+        _write_cif(
+            tmp_path / "broken.cif",
+            name="broken",
+            coordinates=coordinates,
+            b_factors=b_factors,
+            metadata=metadata,
+            covalent_bonds=covalent_bonds,
+        )
