@@ -17,6 +17,7 @@ and `bench/experiments/`.
 | [af3-closure-2026-09-06.md](af3-closure-2026-09-06.md) | AlphaFold 3 native-precision closure (nine-case panel) |
 | [af3-warm-current-2026-09-09.md](af3-warm-current-2026-09-09.md) | AlphaFold 3 current-source warm comparison |
 | [benchmark-followup-2026-09-05.md](benchmark-followup-2026-09-05.md) | Fresh multimodal upstream comparisons |
+| [benchmark-full-report-2026-09-12.md](benchmark-full-report-2026-09-12.md) | The full dated 2026-09-01/09-12 benchmark report (Max-Q card, upstream OpenFold3 0.3.1), superseded by the release benchmark in [benchmark.md](../benchmark.md) and the paper |
 | [boltz2-master-kernel-toggle-2026-09-09.md](boltz2-master-kernel-toggle-2026-09-09.md) | Boltz-2: upstream's own kernel toggle as the scale for the 5SAK residual |
 | [boltz2-msa-error-origin-2026-09-09.md](boltz2-msa-error-origin-2026-09-09.md) | Boltz-2: origin of the MSA-stage error; triangle-bias upcast excluded |
 | [boltz2-upstream-msa-deletion-regression-2026-09-10.md](boltz2-upstream-msa-deletion-regression-2026-09-10.md) | Boltz-2 upstream zeroes every MSA deletion feature (v2.2.0+); the port reproduces it |

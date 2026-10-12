@@ -8,6 +8,27 @@ upstream defaults and scientific results are documented beside their model and
 benchmark records: a release never changes what a recorded command predicts
 unless it says so here, in its own paragraph.
 
+## Unreleased
+
+### Changed
+
+- **The benchmark statements in README.md and docs/benchmark.md now match
+  the measured release results and each other.** README claimed "precision
+  on both sides" and reported 1.08x-4.53x/0.94x-4.85x from a 20-pair sweep,
+  while its own Precision section already listed four ports that run
+  reduced precision relative to upstream — directly contradicting the first
+  claim. docs/benchmark.md described a 300 W Max-Q card and upstream
+  OpenFold3 0.3.1. Both now state the current, paper-sourced numbers: warm
+  speed-up 0.82x-4.16x (median 2.41x) and device-peak-memory ratio
+  1.03x-4.45x (median 2.24x) over 24 jointly completed cells on one RTX PRO
+  6000 Blackwell Server Edition, noting that FoldJAX's default (reduced)
+  precision contributes to the gain, plus a new matched-precision-rerun
+  table. The old docs/benchmark.md content (2026-09-01 to 2026-09-12, Max-Q
+  card, OpenFold3 0.3.1) moved to
+  `docs/archive/benchmark-full-report-2026-09-12.md` as a dated record;
+  `docs/openfold3.md` and `docs/archive/README.md` were updated to point at
+  it instead of describing stale rows as still live.
+
 ## 0.1.0 (2026-10-11)
 
 ### Added

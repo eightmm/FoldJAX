@@ -474,18 +474,18 @@ into the two parameters consumed by the forward pass, and both layouts produce
 the same mapped shapes. `detect_fused_tri_mul` is therefore an inspection aid,
 not an unsupported-checkpoint gate.
 
-The checked-in benchmark table still contains historical OpenFold3 0.3.1/p1
-rows with a 5 / 200 / 10 schedule. They remain real time/memory records rather
-than being relabeled as v0.5. The current harness now drives the v0.5.0 worktree
-and OpenBind file, so new measurements cannot accidentally extend that old
-series. The historical rows have a hardware qualification: 0.3.1's accelerated
-attention paths do not run on this host's sm_120 GPU, so the timing uses plain
-Torch attention. Those historical wall times also include avoidable
-template/CCD initialization, while the retained 3,012-token row explicitly
-disables confidence-head host offload (a measured +2.2 GiB/-60 s harness
-variant). Their confidence has a separate seed caveat: an audited CLI flag
-replaced the requested 101 with a seed generated from 42; the current harness
-is fixed and the old confidence cells are marked until re-measured.
+[docs/benchmark.md](benchmark.md) carries the current release-benchmark
+numbers, measured against the v0.5.0/OpenBind worktree and file. The earlier
+OpenFold3 0.3.1/p1 rows (5 / 200 / 10 schedule) were real time/memory records
+rather than being relabeled as v0.5, but they are now superseded and kept
+only for provenance in
+[docs/archive/benchmark-full-report-2026-09-12.md](archive/benchmark-full-report-2026-09-12.md).
+Those historical rows carried a hardware qualification — 0.3.1's accelerated
+attention paths do not run on this host's `sm_120` GPU, so the timing used
+plain Torch attention — and a seed caveat: an audited CLI flag replaced the
+requested 101 with a seed generated from 42 for OpenFold3's confidence cells
+only. The current harness is fixed to the OpenBind checkpoint and `[101]` and
+does not carry either limitation.
 The exact runner and environment are documented in
 [`bench/README.md`](../bench/README.md) and
 [`bench/upstream-environments.md`](../bench/upstream-environments.md).

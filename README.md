@@ -37,18 +37,18 @@ language model underneath, and *random at inference by design*, so two seeds
 give genuinely different structures. Read [docs/esmfold2.md](https://github.com/eightmm/FoldJAX/blob/main/docs/esmfold2.md)
 before using it.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/eightmm/FoldJAX/main/docs/benchmark-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/eightmm/FoldJAX/main/docs/benchmark-light.png">
-  <img alt="FoldJAX vs upstream: wall time and peak GPU memory at 499, 1,003, 1,354, 2,096, 3,012, 4,100 and 4,926 tokens" src="https://raw.githubusercontent.com/eightmm/FoldJAX/main/docs/benchmark-dark.png">
-</picture>
-
 *Each port against the repository it came from — same job, nominal schedule,
-measurement, and precision on both sides.* Across the 20
-implementation/checkpoint pairs where both sides complete in that sweep,
-FoldJAX holds a **1.08x to 4.53x** lower peak and runs at **0.94x to 4.85x** the
-speed. Numbers, method, and the caveats that belong with them (including the
-one row FoldJAX loses on time) are in [docs/benchmark.md](https://github.com/eightmm/FoldJAX/blob/main/docs/benchmark.md).
+and measurement; FoldJAX runs at its own default precision, which departs
+from upstream's on four of the six models (see "Precision" below), so part
+of the gain below is that choice, not the implementation alone.* Under the
+benchmark's common schedule on one RTX PRO 6000 Blackwell, across the 24
+model/length cells where both sides complete, FoldJAX's warm wall time is
+**0.82x to 4.16x** upstream's (median 2.41x) and its device peak memory is
+**1.03x to 4.45x** lower (median 2.24x). Matched-precision reruns in the
+paper show, for example, Boltz-2 at essentially upstream's own speed once
+both sides use the same arithmetic. Numbers, method, and the caveats that
+belong with them (including the one row FoldJAX loses on time) are in
+[docs/benchmark.md](https://github.com/eightmm/FoldJAX/blob/main/docs/benchmark.md).
 
 ## Installation
 
@@ -337,6 +337,9 @@ this repository measures on, `DEFAULT` and `high` both execute float32
 matmuls as TF32; `--option matmul_precision=highest` asks any model for full
 float32. The measurements behind each row are in
 [docs/engineering-notes.md](https://github.com/eightmm/FoldJAX/blob/main/docs/engineering-notes.md#which-precision-each-model-runs).
+What this costs in the benchmark above — matched-precision reruns against
+the default-precision numbers — is in
+[docs/benchmark.md](https://github.com/eightmm/FoldJAX/blob/main/docs/benchmark.md#matched-precision-reruns).
 
 ## Documentation
 
