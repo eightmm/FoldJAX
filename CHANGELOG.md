@@ -49,6 +49,23 @@ unless it says so here, in its own paragraph.
   the native tape. The replay now follows native's decision only and records
   `port_mc_dropout_keys_displaced`. Seen on E9 8PPX at seed 101.
 
+- **`bench/stage_parity.py` Boltz-2 S5 now compiles the confidence head the
+  way `foldjax predict` does.** The row wrapped the head in a plain `jax.jit`
+  over a closure: without the port's bfloat16 compile policy
+  (`compile_policy.jit`, `xla_allow_excess_precision=False`) the GPU erased
+  the FP32->BF16->FP32 rounding boundaries the head reproduces from native
+  autocast, and with the features folded in as constants the GPU program of
+  the ragged query-chunked pair-bias attention corrupted the single track.
+  On the GPU the row read max |d| pLDDT / PAE / pTM 0.356 / 10.9 A / 0.0118
+  (207 tokens) and 0.489 / 12.1 A / 0.0286 (1,138 tokens); compiled like
+  `predict` it reads 0.0016 / 0.18 A / 5.6e-05 and 0.0015 / 0.16 A /
+  6.4e-05, and the committed 1AAY GPU row's 0.00711 / 2.45 A / 0.00401
+  becomes 0.000402 / 0.106 A / 6.5e-05 (its CPU row: 0.000403 / 0.107 A).
+  Each cause is independent: with the policy alone the closure program
+  still reads pLDDT 0.342 at 207 tokens. The shipped model and CLI are
+  unchanged; the CPU 1AAY row moves at the 1e-4 level (0.000403 / 0.107 ->
+  0.000578 / 0.106).
+
 ## 0.1.0 (2026-10-11)
 
 ### Added

@@ -1603,6 +1603,43 @@ def rigid_group_max_abs(port: Any, native: Any, groups: Any, mask: Any) -> float
     return worst
 
 
+def boltz2_s5_program(
+    forward: Any, options: Mapping[str, Any], chain_ids: tuple[int, ...]
+) -> Any:
+    """Boltz-2 S5's confidence-head program, compiled as `foldjax predict` compiles it.
+
+    Under the port's bfloat16 compile policy
+    (`foldjax.models.boltz2.compile_policy`: `xla_allow_excess_precision=False`)
+    and with every input an argument. Without the policy XLA may erase the
+    FP32->BF16->FP32 rounding boundaries the head reproduces from native
+    autocast (on the GPU this moved S5's PAE by up to 12 A on 207- and
+    1,138-token captures); with the features closed over as constants, the GPU
+    program of the ragged query-chunked pair-bias attention corrupted the
+    single track (pLDDT off by 0.36-0.49). `foldjax predict` does neither.
+    """
+    import jax.numpy as jnp
+
+    from foldjax.models.boltz2 import compile_policy
+
+    def one(head, s_inputs, s, z, feats, disto, x_pred):
+        return forward(
+            head,
+            s_inputs=s_inputs,
+            s=s,
+            z=z,
+            x_pred=x_pred,
+            feats=feats,
+            pred_distogram_logits=disto,
+            multiplicity=1,
+            use_scan=True,
+            return_pair_chains_iptm=True,
+            confidence_chain_ids=chain_ids,
+            **options,
+        )
+
+    return compile_policy.jit(one, compute_dtype=jnp.bfloat16)
+
+
 def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
     import jax
     import jax.numpy as jnp
@@ -1960,29 +1997,25 @@ def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
             )
         }
 
-        def one(x_pred: jnp.ndarray) -> dict[str, jnp.ndarray]:
-            return confidence_module_forward(
-                head_params,
-                s_inputs=s_inputs,
-                s=s,
-                z=z,
-                x_pred=x_pred,
-                feats=features,
-                pred_distogram_logits=native_disto,
-                multiplicity=1,
-                use_scan=True,
-                return_pair_chains_iptm=True,
-                **options,
-            )
-
+        chain_ids = tuple(int(v) for v in np.unique(np.asarray(features["asym_id"])))
+        program = boltz2_s5_program(confidence_module_forward, options, chain_ids)
         started = time.perf_counter()
         with precision_scope("boltz2"):
             port_disto = np.asarray(
                 jax.device_get(distogram_forward(disto_params, z)), np.float64
             )
-            program = jax.jit(one)
             per_sample = [
-                jax.device_get(program(jnp.asarray(coords[i : i + 1])))
+                jax.device_get(
+                    program(
+                        head_params,
+                        s_inputs,
+                        s,
+                        z,
+                        features,
+                        native_disto,
+                        jnp.asarray(coords[i : i + 1]),
+                    )
+                )
                 for i in range(coords.shape[0])
             ]
         runtime = time.perf_counter() - started
@@ -2021,6 +2054,9 @@ def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
                 "sample_atom_coords and pdistogram[...,0] (pred_distogram_logits)",
                 "confidence_schedule": "one sample at a time "
                 "(run_confidence_sequentially=true upstream)",
+                "confidence_compile": "foldjax.models.boltz2.compile_policy.jit "
+                "(bfloat16: xla_allow_excess_precision=false, as foldjax predict); "
+                "inputs passed as arguments",
             },
             headline={
                 "metric": "max |d| pLDDT (0-1) / PAE (A) / pTM",

@@ -510,3 +510,46 @@ def test_direct_capture_refuses_a_capture_missing_a_file(tmp_path, monkeypatch) 
     monkeypatch.setattr(sp, "DIRECT_CAPTURE", capture)
     with pytest.raises(FileNotFoundError, match="direct capture lacks"):
         sp.fixture_case("esmfold2", "protein_1ubq", "B")
+
+
+def test_boltz2_s5_program_compiles_like_predict(monkeypatch) -> None:
+    """S5 compiles the head under the port's bfloat16 compile policy, with the
+    features as traced arguments -- the program `foldjax predict` runs. A plain
+    `jax.jit` over a closure let the GPU erase the head's BF16 roundings and
+    fold the features into the program (PAE off by up to 12 A, pLDDT by 0.49)."""
+    import jax.numpy as jnp
+
+    from foldjax.models.boltz2 import compile_policy
+
+    requested = []
+    real_jit = compile_policy.jit
+
+    def recording_jit(function, *, compute_dtype, deterministic=False):
+        requested.append(
+            compile_policy.compiler_options(compute_dtype, deterministic=deterministic)
+        )
+        return real_jit(
+            function, compute_dtype=compute_dtype, deterministic=deterministic
+        )
+
+    monkeypatch.setattr(compile_policy, "jit", recording_jit)
+    seen = {}
+
+    def forward(head, *, feats, x_pred, confidence_chain_ids, **kwargs):
+        seen.update(kwargs, chain_ids=confidence_chain_ids)
+        return {"plddt": head["w"] * feats["token_pad_mask"] + x_pred.sum()}
+
+    program = sp.boltz2_s5_program(forward, {"chunk_size": 128}, (0, 1))
+    assert requested == [{"xla_allow_excess_precision": False}]
+    args = ({"w": jnp.ones(3)}, jnp.zeros(1), jnp.zeros(1), jnp.zeros(1))
+    x = jnp.zeros((1, 2, 3))
+    ones, twos = np.ones(3, np.float32), np.full(3, 2.0, np.float32)
+    one = program(*args, {"token_pad_mask": ones}, jnp.zeros(1), x)
+    two = program(*args, {"token_pad_mask": twos}, jnp.zeros(1), x)
+    # one executable answers both feature sets: they are arguments, not constants
+    np.testing.assert_array_equal(
+        np.asarray(two["plddt"]), 2 * np.asarray(one["plddt"])
+    )
+    assert program._cache_size() == 1
+    assert seen["chain_ids"] == (0, 1)
+    assert (seen["multiplicity"], seen["chunk_size"]) == (1, 128)
