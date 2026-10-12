@@ -40,6 +40,15 @@ unless it says so here, in its own paragraph.
   `docs/openfold3.md` and `docs/archive/README.md` were updated to point at
   it instead of describing stale rows as still live.
 
+### Fixed
+
+- **`bench/protenix_foldjax_capture.py` replay no longer crashes, or would
+  have applied FoldJAX's own MC dropout, when FoldJAX's dropout coin comes up
+  for an input whose native capture drew none.** The CLI's keys reached the
+  wrapper-options record (a JAX array is not JSON) and the model call beside
+  the native tape. The replay now follows native's decision only and records
+  `port_mc_dropout_keys_displaced`. Seen on E9 8PPX at seed 101.
+
 ## 0.1.0 (2026-10-11)
 
 ### Added

@@ -122,11 +122,12 @@ def test_bf16_output_storage_retains_dtype_and_all_numeric_bits(tmp_path):
     assert metadata["bf"]["dtype"] == "bfloat16"
 
 
+@pytest.mark.parametrize("port_coin", [False, True])
 @pytest.mark.parametrize("materialised", [False, True])
 @pytest.mark.parametrize("graph_jit", [True, False])
 @pytest.mark.parametrize("aggregation_control", [False, True, "mismatch"])
 def test_replay_wires_complete_tape_through_public_prediction(
-    monkeypatch, tmp_path, graph_jit, aggregation_control, materialised
+    monkeypatch, tmp_path, graph_jit, aggregation_control, materialised, port_coin
 ):
     from bench import protenix_closure_report as report
     from bench import protenix_foldjax_capture as capture
@@ -201,6 +202,14 @@ def test_replay_wires_complete_tape_through_public_prediction(
             use_pairformer_scan=False,
             use_confidence_scan=False,
             use_diffusion_scan=False,
+            # The CLI hands over its own MC-dropout keys when FoldJAX's coin
+            # for this input and seed comes up, whatever native drew.
+            **(
+                {"cycle_pair_dropout_keys": jnp.ones((10, 2), jnp.uint32),
+                 "pair_dropout_rate": 0.25}
+                if port_coin
+                else {}
+            ),
         )
 
     monkeypatch.setattr(predict, "protenix_infer_compiled", inference)
@@ -235,6 +244,9 @@ def test_replay_wires_complete_tape_through_public_prediction(
         )
         np.testing.assert_array_equal(np.asarray(index_tape.row_mask[4]), [True, False])
     assert observed["use_diffusion_efficient_fusion"] is True
+    # Native drew no dropout, so the port's own draw is displaced, not replayed
+    # beside the native tape.
+    assert observed.get("cycle_pair_dropout_keys") is None
     assert json.loads((out / "capture-complete.json").read_text())["passed"]
     requested = json.loads((out / "requested-wrapper-options.json").read_text())
     boundary = json.loads((out / "infer-boundary.json").read_text())
@@ -242,6 +254,7 @@ def test_replay_wires_complete_tape_through_public_prediction(
     assert requested["replay_msa_cycle_path"] == (
         "materialised" if materialised else "index_tape"
     )
+    assert requested["port_mc_dropout_keys_displaced"] is port_coin
     for name in ("use_pairformer_scan", "use_confidence_scan", "use_diffusion_scan"):
         assert boundary["options"][name] is graph_jit
         assert observed[name] is graph_jit
