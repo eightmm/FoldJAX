@@ -466,3 +466,47 @@ def test_protenix_confidence_dtype_label_reports_the_realised_policy(
     gpu_label = sp.protenix_confidence_dtype_label(gpu_policy, n_token=76)
     assert gpu_label.startswith("bfloat16 (--amp-policy auto (shipped default),")
     assert "n_token=76" in gpu_label
+
+
+def test_direct_layout_names_every_manifest_fixture_file() -> None:
+    """A direct capture must offer each file the replay helpers ask the
+    manifest route for, under the same name -- the helpers do not know which
+    route resolved them."""
+    from tests.parity._manifest import MANIFEST_DIR
+
+    for port, layout in sp.DIRECT_LAYOUT.items():
+        manifest = json.loads((MANIFEST_DIR / f"{port}.json").read_text())
+        names = {name for entry in manifest["entries"] for name in entry["files"]}
+        assert names <= set(layout), (port, sorted(names - set(layout)))
+
+
+def test_fixture_case_reads_a_direct_capture_in_its_own_layout(
+    tmp_path, monkeypatch
+) -> None:
+    capture = tmp_path / "e9_case" / "native-A"
+    replay = tmp_path / "e9_case" / "port-A"
+    capture.mkdir(parents=True)
+    replay.mkdir()
+    for name, relative in sp.DIRECT_LAYOUT["protenix"].items():
+        (capture / relative).write_text(name)
+    monkeypatch.setattr(sp, "DIRECT_CAPTURE", capture)
+    monkeypatch.setattr(sp, "DIRECT_TRIPWIRES", {})
+
+    case = sp.fixture_case("protenix", "protein_1ubq", "A")
+
+    assert case.path("foldjax-input.npz") == (replay / "foldjax-input.npz").resolve()
+    assert case.path("trunk.npz").read_text() == "trunk.npz"
+    assert case.entry.case == "e9_case"
+    case.assert_tripwire({"schema": "v1"})
+    assert sp.DIRECT_TRIPWIRES == {"protenix": {"schema": "v1"}}
+    with pytest.raises(KeyError, match="no file 'tape.json'"):
+        case.path("tape.json")
+
+
+def test_direct_capture_refuses_a_capture_missing_a_file(tmp_path, monkeypatch) -> None:
+    capture = tmp_path / "case" / "native-A"
+    capture.mkdir(parents=True)
+    (capture / "features.npz").write_text("x")
+    monkeypatch.setattr(sp, "DIRECT_CAPTURE", capture)
+    with pytest.raises(FileNotFoundError, match="direct capture lacks"):
+        sp.fixture_case("esmfold2", "protein_1ubq", "B")

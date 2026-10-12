@@ -10,6 +10,17 @@ unless it says so here, in its own paragraph.
 
 ## Unreleased
 
+### Added
+
+- **`bench/stage_parity.py --direct-capture`** reads the replay helpers'
+  fixture files from the `--capture` directory in its own layout
+  (`DIRECT_LAYOUT`) instead of the parity manifests, which name one case per
+  port, so the stage rows can be measured on any native capture the port's
+  capture tool wrote. The observed tripwires are recorded in the report, not
+  asserted. On the five committed cases the route hands the helpers
+  byte-identical files and reproduces the committed CPU rows. The OpenFold3
+  S5 row reads the query name from the capture instead of assuming 1URN.
+
 ### Changed
 
 - **The benchmark statements in README.md and docs/benchmark.md now match

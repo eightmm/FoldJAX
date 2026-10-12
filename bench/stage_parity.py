@@ -70,6 +70,7 @@ import time
 import traceback
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -666,7 +667,114 @@ def npz(path: Path) -> dict[str, np.ndarray]:
         return {name: archive[name] for name in archive.files}
 
 
+#: Where each parity-fixture file sits in a capture's own layout, relative to
+#: the ``--capture`` directory (``../port-A`` is the Protenix port replay
+#: beside it). Every entry was matched by sha256 against the committed
+#: manifests on the 1UBQ, 1AAY and 1URN captures they were fetched from, so a
+#: case read this way hands the replay helpers the same bytes the manifest
+#: route does.
+DIRECT_LAYOUT: dict[str, dict[str, str]] = {
+    "protenix": {
+        "foldjax-input.npz": "../port-A/foldjax-input.npz",
+        "msa-tape.npz": "msa-tape.npz",
+        "trunk.npz": "trunk.npz",
+        "sampler-tape.npz": "sampler-tape.npz",
+        "prediction.npz": "prediction.npz",
+    },
+    "boltz2": {
+        name: name
+        for name in (
+            "features.npz",
+            "trunk.npz",
+            "tape.json",
+            "effective-model-settings.json",
+            "tape.npz",
+            "coordinate.npz",
+        )
+    },
+    "openfold3": {
+        **{
+            name: name
+            for name in (
+                "input.npz",
+                "tape.npz",
+                "trunk-00.npz",
+                "trace.json",
+                "runner.yml",
+                "effective-model.json",
+                "coordinate.npz",
+            )
+        },
+        "model_config.json": "predictions/model_config.json",
+    },
+    "opendde": {
+        "native-input.npz": "native-input.npz",
+        "native-derived.npz": "native-derived.npz",
+        "tape.npz": "torch/tape.npz",
+        "msa.npz": "torch/msa.npz",
+        "coordinate.npz": "torch/coordinate.npz",
+    },
+    "esmfold2": {
+        name: name
+        for name in (
+            "features.npz",
+            "tape.npz",
+            "upstream_coords.npz",
+            "upstream_lm.npz",
+        )
+    },
+}
+
+#: Set by ``--direct-capture``: resolve the replay helpers' fixture files from
+#: the ``--capture`` directory itself instead of the digest manifests, which
+#: name one case per port. ``None`` keeps the manifest route.
+DIRECT_CAPTURE: Path | None = None
+
+#: What the replay helpers' tripwires reported on a direct case. A capture
+#: read directly has no manifest entry to compare against, so the observed
+#: schema is recorded in the report instead of asserted.
+DIRECT_TRIPWIRES: dict[str, dict[str, str]] = {}
+
+
+class DirectCase:
+    """``tests.parity._fixtures.ResolvedCase`` over a capture's own layout."""
+
+    def __init__(self, port: str, tier: str, capture: Path) -> None:
+        if port not in DIRECT_LAYOUT:
+            raise ValueError(f"no direct-capture layout for {port}")
+        files = {
+            name: (capture / relative).resolve()
+            for name, relative in DIRECT_LAYOUT[port].items()
+        }
+        missing = sorted(str(path) for path in files.values() if not path.is_file())
+        if missing:
+            raise FileNotFoundError(f"direct capture lacks {missing}")
+        self.files = files
+        self.entry = SimpleNamespace(
+            port=port,
+            case=capture.parent.name,
+            tier=f"{tier} (direct capture)",
+            tokens=None,
+            capture_provenance=str(capture),
+            tripwire={},
+        )
+
+    def path(self, name: str) -> Path:
+        try:
+            return self.files[name]
+        except KeyError:
+            raise KeyError(
+                f"{self.entry.port} direct capture has no file {name!r} "
+                f"(layout lists {', '.join(sorted(self.files))})"
+            ) from None
+
+    def assert_tripwire(self, observed: Mapping[str, str]) -> None:
+        DIRECT_TRIPWIRES[self.entry.port] = dict(observed)
+
+
 def fixture_case(port: str, case: str, tier: str):
+    if DIRECT_CAPTURE is not None:
+        return DirectCase(port, tier, DIRECT_CAPTURE)
     from tests.parity._fixtures import FixtureStore, fixtures_root
 
     return FixtureStore(root=fixtures_root()).case(port, case, tier=tier)
@@ -2325,10 +2433,13 @@ def run_openfold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
             }
         # Upstream's own written scores, one JSON per sample (sample_1..5 is
         # the original sample index; rounded by the writer).
-        written = capture / "predictions" / "protein_rna_1urn" / "seed_101"
+        (query_name,) = json.loads(
+            (capture / "predictions" / "inference_query_set.json").read_text()
+        )["queries"]
+        written = capture / "predictions" / query_name / "seed_101"
         native_plddt, native_pae, native_ptm, native_iptm = [], [], [], []
         for index in range(1, 6):
-            stem = written / f"protein_rna_1urn_seed_101_sample_{index}"
+            stem = written / f"{query_name}_seed_101_sample_{index}"
             full = json.loads(Path(f"{stem}_confidences.json").read_text())
             summary = json.loads(
                 Path(f"{stem}_confidences_aggregated.json").read_text()
@@ -4374,6 +4485,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="comma-separated subset, e.g. S1,S3",
     )
     parser.add_argument(
+        "--direct-capture",
+        action="store_true",
+        help="read the replay helpers' fixture files from --capture itself "
+        "(DIRECT_LAYOUT) instead of the parity manifests, which carry one case "
+        "per port; the observed tripwires are recorded, not asserted",
+    )
+    parser.add_argument(
         "--merge",
         action="store_true",
         help="keep stages already in --out that this run does not measure",
@@ -4391,6 +4509,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     unknown = stages - {key for key, _ in STAGES}
     if unknown:
         parser.error(f"unknown stages {sorted(unknown)}")
+    global DIRECT_CAPTURE
+    if args.direct_capture:
+        if args.model not in DIRECT_LAYOUT:
+            parser.error(f"--direct-capture has no layout for {args.model}")
+        DIRECT_CAPTURE = args.capture.resolve()
     report = run_model(
         args.model,
         args.capture.resolve(),
@@ -4398,6 +4521,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         None if args.stage_capture is None else args.stage_capture.resolve(),
         device=args.device,
     )
+    report["fixture_source"] = (
+        "direct capture (DIRECT_LAYOUT)" if args.direct_capture else "parity manifest"
+    )
+    if args.direct_capture:
+        report["direct_tripwires_observed"] = dict(DIRECT_TRIPWIRES)
     if args.merge and args.out.is_file():
         previous = json.loads(args.out.read_text())
         if previous.get("device", "cpu") != args.device:
