@@ -729,6 +729,10 @@ DIRECT_LAYOUT: dict[str, dict[str, str]] = {
 #: the ``--capture`` directory itself instead of the digest manifests, which
 #: name one case per port. ``None`` keeps the manifest route.
 DIRECT_CAPTURE: Path | None = None
+#: E5d overlay (bench-only): the input document a direct capture ran, for the
+#: S1 rows that otherwise name their one committed case's document
+#: (OpenFold3, OpenDDE). Required with --direct-capture for those S1 rows.
+INPUT_DOCUMENT: Path | None = None
 
 #: What the replay helpers' tripwires reported on a direct case. A capture
 #: read directly has no manifest entry to compare against, so the observed
@@ -2109,6 +2113,19 @@ def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
 # --------------------------------------------------------------------------
 
 
+def openfold3_chain_identity(chain: Mapping[str, Any]) -> tuple:
+    """A chain's identity for S1's input-document check: polymer sequence,
+    plus the ligand/ion identity a ccd/smiles chain carries instead (the E5d
+    cases have both). Sequence alone treats every ligand/ion chain as equal."""
+    return (
+        str(chain.get("molecule_type", "")).lower(),
+        tuple(chain.get("chain_ids") or ()),
+        chain.get("sequence"),
+        chain.get("smiles"),
+        tuple(chain.get("ccd_codes") or ()),
+    )
+
+
 def run_openfold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
     import jax
     import jax.numpy as jnp
@@ -2228,13 +2245,20 @@ def run_openfold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
             / "upstream-default-multimodal-n5-20260904/work/protein_rna_1urn/foldjax/"
             "openfold3/inputs/openfold3_input.json"
         )
+        if DIRECT_CAPTURE is not None:
+            if INPUT_DOCUMENT is None:
+                raise RuntimeError("S1 on a direct capture needs --input-document")
+            query = INPUT_DOCUMENT
         rewritten = json.loads(
             (capture / "predictions" / "inference_query_set.json").read_text()
         )
         original = json.loads(query.read_text())
         for name, spec in original["queries"].items():
-            mine = [c["sequence"] for c in spec["chains"]]
-            theirs = [c["sequence"] for c in rewritten["queries"][name]["chains"]]
+            mine = [openfold3_chain_identity(c) for c in spec["chains"]]
+            theirs = [
+                openfold3_chain_identity(c)
+                for c in rewritten["queries"][name]["chains"]
+            ]
             if mine != theirs:
                 raise RuntimeError(f"{query} is not the document the capture ran")
         port = featurize_query(query, seed=101)
@@ -2270,7 +2294,7 @@ def run_openfold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
                 "metric": "min exact-match fraction (categorical) / max |d| (float)",
                 "value": f"{summary['min_exact_match_fraction']} / "
                 f"{summary['max_float_max_abs']:.3g} (ref_pos after per-conformer "
-                f"Kabsch: {rigid:.2g})",
+                f"Kabsch: {rigid if rigid is None else format(rigid, '.2g')})",
             },
             metrics={
                 "summary": summary,
@@ -3233,10 +3257,21 @@ def run_opendde(
             / "upstream-default-multimodal-n5-20260904/work/protein_1ubq/foldjax/"
             "opendde/inputs/opendde_input.json"
         )
+        if DIRECT_CAPTURE is not None:
+            if INPUT_DOCUMENT is None:
+                raise RuntimeError("S1 on a direct capture needs --input-document")
+            document = INPUT_DOCUMENT
         if sha256(document) != provenance["input_sha256"]:
             raise RuntimeError("the input document is not the one the capture ran")
-        stored_port = npz(capture.parent / "fj-highest" / "foldjax-input.npz")
-        use_template = any(k.startswith("template_") for k in stored_port)
+        stored_dir = capture.parent / "fj-highest"
+        if stored_dir.is_dir():
+            stored_port = npz(stored_dir / "foldjax-input.npz")
+            use_template = any(k.startswith("template_") for k in stored_port)
+        else:
+            # A direct capture has no capture-time port run beside it; the
+            # document names no template, so the port runs without one.
+            stored_port = None
+            use_template = "template" in document.read_text().lower()
         (job,) = load_jobs(document)
         port = flat_features(
             featurize_opendde_json(
@@ -3257,7 +3292,11 @@ def run_opendde(
         summary = summarize_features(records)
         from bench.entity_parity import compare_feature_dicts
 
-        drift = compare_feature_dicts(port, stored_port)
+        drift = (
+            compare_feature_dicts(port, stored_port)
+            if stored_port is not None
+            else {"equal": None, "value_mismatches": None}
+        )
         return stage_record(
             "measured",
             condition={
@@ -3282,9 +3321,13 @@ def run_opendde(
                 "only_in_port": sorted(set(port) - set(native)),
                 "only_in_native": sorted(set(native) - set(port)),
                 "arrays": records,
-                "capture_time_input_audit_passed": json.loads(
-                    (capture.parent / "fj-highest" / "input-audit.json").read_text()
-                ).get("gate_passed"),
+                "capture_time_input_audit_passed": (
+                    json.loads((stored_dir / "input-audit.json").read_text()).get(
+                        "gate_passed"
+                    )
+                    if stored_port is not None
+                    else None
+                ),
                 "rerun_vs_capture_time_port_features_equal": drift["equal"],
                 "rerun_vs_capture_time_port_features_value_mismatches": drift[
                     "value_mismatches"
@@ -4535,6 +4578,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--table", type=Path, help="render TABLE.md rows for a directory"
     )
+    parser.add_argument(
+        "--input-document",
+        type=Path,
+        help="with --direct-capture: the input document the capture ran "
+        "(OpenFold3/OpenDDE S1)",
+    )
     args = parser.parse_args(argv)
     if args.table is not None:
         print(render_table(args.table), end="")
@@ -4545,11 +4594,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     unknown = stages - {key for key, _ in STAGES}
     if unknown:
         parser.error(f"unknown stages {sorted(unknown)}")
-    global DIRECT_CAPTURE
+    global DIRECT_CAPTURE, INPUT_DOCUMENT
     if args.direct_capture:
         if args.model not in DIRECT_LAYOUT:
             parser.error(f"--direct-capture has no layout for {args.model}")
         DIRECT_CAPTURE = args.capture.resolve()
+        if args.input_document is not None:
+            INPUT_DOCUMENT = args.input_document.resolve()
     report = run_model(
         args.model,
         args.capture.resolve(),

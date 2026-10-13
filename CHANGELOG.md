@@ -21,6 +21,18 @@ unless it says so here, in its own paragraph.
   byte-identical files and reproduces the committed CPU rows. The OpenFold3
   S5 row reads the query name from the capture instead of assuming 1URN.
 
+- **`bench/stage_parity.py --direct-capture --input-document`** gives
+  OpenFold3's and OpenDDE's S1 rows the document a direct capture actually
+  ran, instead of assuming the one bundled case's own input
+  (`protein_rna_1urn` / `protein_1ubq`); required with `--direct-capture` for
+  those two ports' S1 row. OpenFold3's input check now compares each chain's
+  molecule type, chain ids, sequence, SMILES and CCD codes instead of
+  sequence alone, so a ligand or ion chain's identity is checked too, not
+  just its polymer chains. OpenDDE's S1 tolerates a direct capture with no
+  capture-time port run beside it (no `fj-highest` directory): it skips the
+  stored-port drift comparison and infers `use_template` from the document
+  text instead of the missing capture's own input features.
+
 ### Changed
 
 - **The benchmark statements in README.md and docs/benchmark.md now match

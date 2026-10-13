@@ -512,6 +512,85 @@ def test_direct_capture_refuses_a_capture_missing_a_file(tmp_path, monkeypatch) 
         sp.fixture_case("esmfold2", "protein_1ubq", "B")
 
 
+def test_openfold3_chain_identity_distinguishes_ligand_and_ion_chains() -> None:
+    """S1's input-document check used to compare only `sequence`, which is
+    `None` on every ligand/ion chain -- two documents differing only in which
+    ligand or ion they name would have compared equal. The identity now also
+    carries `smiles`/`ccd_codes`, so it catches that."""
+    polymer_a = {"molecule_type": "protein", "chain_ids": ["A"], "sequence": "AC"}
+    polymer_b = {"molecule_type": "protein", "chain_ids": ["A"], "sequence": "AC"}
+    assert sp.openfold3_chain_identity(polymer_a) == sp.openfold3_chain_identity(
+        polymer_b
+    )
+
+    ligand_zn = {"molecule_type": "ion", "chain_ids": ["B"], "ccd_codes": ["ZN"]}
+    ligand_mg = {"molecule_type": "ion", "chain_ids": ["B"], "ccd_codes": ["MG"]}
+    # Neither names a `sequence`, so a sequence-only comparison (the old
+    # check) would have called these the same chain.
+    assert ligand_zn.get("sequence") is None and ligand_mg.get("sequence") is None
+    assert sp.openfold3_chain_identity(ligand_zn) != sp.openfold3_chain_identity(
+        ligand_mg
+    )
+
+
+def test_main_sets_input_document_only_with_direct_capture(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(sp, "DIRECT_CAPTURE", None)
+    monkeypatch.setattr(sp, "INPUT_DOCUMENT", None)
+    calls = []
+
+    def stub_run_model(model, capture, stages, stage_capture=None, device="cpu"):
+        calls.append((model, capture, stages, stage_capture, device))
+        return {"device": device, "stages": {}}
+
+    monkeypatch.setattr(sp, "run_model", stub_run_model)
+    document = tmp_path / "doc.json"
+    document.write_text("{}")
+    out = tmp_path / "out.json"
+
+    rc = sp.main(
+        [
+            "--model",
+            "openfold3",
+            "--capture",
+            str(tmp_path),
+            "--out",
+            str(out),
+            "--stages",
+            "S1",
+            "--direct-capture",
+            "--input-document",
+            str(document),
+        ]
+    )
+
+    assert rc == 0
+    assert len(calls) == 1
+    assert sp.DIRECT_CAPTURE == tmp_path.resolve()
+    assert sp.INPUT_DOCUMENT == document.resolve()
+
+    # Without --direct-capture, --input-document is accepted but never
+    # applied: the global stays whatever it already was.
+    monkeypatch.setattr(sp, "DIRECT_CAPTURE", None)
+    monkeypatch.setattr(sp, "INPUT_DOCUMENT", None)
+    rc = sp.main(
+        [
+            "--model",
+            "openfold3",
+            "--capture",
+            str(tmp_path),
+            "--out",
+            str(out),
+            "--stages",
+            "S1",
+        ]
+    )
+    assert rc == 0
+    assert sp.DIRECT_CAPTURE is None
+    assert sp.INPUT_DOCUMENT is None
+
+
 def test_boltz2_s5_program_compiles_like_predict(monkeypatch) -> None:
     """S5 compiles the head under the port's bfloat16 compile policy, with the
     features as traced arguments -- the program `foldjax predict` runs. A plain
