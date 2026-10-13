@@ -312,6 +312,9 @@ def _model_device(device: Any):
     """
     import jax
 
+    from foldjax import _pallas_gpu
+
+    _pallas_gpu.install(device)
     return jax.default_device(device)
 
 

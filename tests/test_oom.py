@@ -9,6 +9,7 @@ device, so it was 1.6 GiB short of a ceiling with 24 GiB of the card behind it.
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -57,14 +58,99 @@ def test_a_request_larger_than_the_device_is_not_blamed_on_the_pool(monkeypatch)
 def test_nothing_is_said_when_the_pool_cannot_be_read(monkeypatch):
     """Silence beats a guess. A wrong explanation of a failure costs more."""
     monkeypatch.setattr(oom, "_pool_card_and_used", lambda: (None, None, None))
-    assert (
-        oom.diagnose(RuntimeError("RESOURCE_EXHAUSTED: Out of memory")) is None
-    )
+    assert oom.diagnose(RuntimeError("RESOURCE_EXHAUSTED: Out of memory")) is None
 
 
 def test_other_failures_are_left_alone():
     assert oom.diagnose(ValueError("shape mismatch")) is None
     assert not oom.is_out_of_memory(ValueError("shape mismatch"))
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "RESOURCE_EXHAUSTED: too many open files",
+        "RESOURCE_EXHAUSTED: failed to create a worker thread",
+        "RESOURCE_EXHAUSTED: disk quota exceeded",
+        "RESOURCE_EXHAUSTED",
+    ],
+)
+def test_non_allocator_resource_exhaustion_is_not_gpu_oom(message, monkeypatch):
+    def unexpected_stats():
+        pytest.fail("non-memory resource failures must not read GPU memory statistics")
+
+    monkeypatch.setattr(oom, "_pool_card_and_used", unexpected_stats)
+    assert not oom.is_out_of_memory(RuntimeError(message))
+    assert oom.diagnose(RuntimeError(message)) is None
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["CUDA_ERROR_OUT_OF_MEMORY", "cudaErrorMemoryAllocation", "hipErrorOutOfMemory"],
+)
+def test_driver_allocator_oom_codes_are_recognized(message):
+    assert oom.is_out_of_memory(RuntimeError(message))
+
+
+def test_nested_oom_group_uses_the_leaf_allocation(monkeypatch):
+    monkeypatch.setenv(oom.CURRENT_FRACTION_ENV, "0.75")
+    monkeypatch.setattr(
+        oom, "_pool_card_and_used", lambda: (int(0.75 * CARD), CARD, int(12 * GIB))
+    )
+    error = ExceptionGroup(
+        "kernel failed",
+        [
+            ExceptionGroup(
+                "triton",
+                [
+                    RuntimeError(
+                        "RESOURCE_EXHAUSTED: Out of memory trying to allocate 60.75GiB."
+                    )
+                ],
+            )
+        ],
+    )
+    assert oom.is_out_of_memory(error)
+    explanation = oom.diagnose(error)
+    assert "not the card's" in explanation
+
+
+def test_mixed_kernel_failures_are_not_reported_as_only_gpu_oom():
+    error = ExceptionGroup(
+        "kernel failed",
+        [RuntimeError("Out of memory"), ValueError("unsupported architecture")],
+    )
+    assert not oom.is_out_of_memory(error)
+    assert oom.diagnose(error) is None
+
+
+def test_multiple_oom_attempts_do_not_claim_one_allocation_total(monkeypatch):
+    monkeypatch.setattr(
+        oom, "_pool_card_and_used", lambda: (int(0.75 * CARD), CARD, int(12 * GIB))
+    )
+    error = ExceptionGroup(
+        "kernel failed",
+        [
+            RuntimeError("Out of memory trying to allocate 60.75GiB."),
+            RuntimeError("Out of memory trying to allocate 1.00GiB."),
+        ],
+    )
+    explanation = oom.diagnose(error)
+    assert explanation is not None
+    assert "at that moment" not in explanation
+
+
+def test_memory_budget_reads_the_explicitly_selected_device(monkeypatch):
+    import jax
+
+    device = SimpleNamespace(
+        memory_stats=lambda: {"bytes_limit": 16 * GIB, "bytes_in_use": 4 * GIB}
+    )
+    monkeypatch.setenv(oom.CURRENT_FRACTION_ENV, "0.5")
+    monkeypatch.setenv("XLA_PYTHON_CLIENT_PREALLOCATE", "true")
+    monkeypatch.setattr(jax, "config", SimpleNamespace(jax_default_device=device))
+    monkeypatch.setattr(jax, "devices", lambda: [])
+    assert oom._pool_card_and_used() == (16 * GIB, 32 * GIB, 4 * GIB)
 
 
 @pytest.mark.parametrize(
@@ -404,3 +490,21 @@ def test_a_serial_oom_says_nothing_about_a_mesh(monkeypatch, mesh_record) -> Non
 
     assert message is not None
     assert "context-parallel" not in message
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "RESOURCE_EXHAUSTED: Shared memory size limit exceeded",
+        "RESOURCE_EXHAUSTED: Shared memory requested 110592 exceeds device resources",
+        "RESOURCE_EXHAUSTED: out of resource: shared memory, "
+        "Required: 110592, Hardware limit: 101376",
+    ],
+)
+def test_shared_memory_kernel_resource_failures_are_not_allocator_oom(
+    message, monkeypatch
+):
+    monkeypatch.setattr(oom, "_pool_card_and_used", lambda: (int(0.9 * CARD), CARD, 0))
+    error = RuntimeError(message)
+    assert not oom.is_out_of_memory(error)
+    assert oom.diagnose(error) is None

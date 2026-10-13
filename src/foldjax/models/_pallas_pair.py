@@ -106,7 +106,12 @@ def default_backend(released: str) -> str:
 
 
 def _require_gpu(what: str, instead: str) -> None:
-    if INTERPRET or gpu_process():
+    if INTERPRET:
+        return
+    if gpu_process():
+        from foldjax._gpu import require_fused_cuda
+
+        require_fused_cuda(what)
         return
     msg = (
         f"{what} runs a Pallas-Triton kernel that needs a CUDA GPU, and this "
@@ -121,6 +126,9 @@ def _pallas_call(kernel, *, num_warps: int, **kwargs):
 
     if INTERPRET:
         return pl.pallas_call(kernel, interpret=True, **kwargs)
+    from foldjax import _pallas_gpu
+
+    _pallas_gpu.install()
     return pl.pallas_call(
         kernel,
         compiler_params=plt.CompilerParams(num_warps=num_warps, num_stages=2),

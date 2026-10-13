@@ -90,10 +90,18 @@ def _fused(
     # process never parsed any. A library caller has no argv to give it.
     if not flags.FLAGS.is_parsed():
         flags.FLAGS(["foldjax.models"], known_only=True)
+    from foldjax import _pallas_gpu
+    from foldjax._gpu import default_device, require_fused_cuda
+    from foldjax.backends._tokamax_autotune import glu_heuristics_within_shared_memory
+
+    _pallas_gpu.install()
+    if jax.default_backend() == "gpu":
+        require_fused_cuda("glu_backend='tokamax'")
     try:
-        return tokamax.gated_linear_unit(
-            x=x, weights=weights, activation=activation, implementation="triton"
-        )
+        with glu_heuristics_within_shared_memory(default_device()):
+            return tokamax.gated_linear_unit(
+                x=x, weights=weights, activation=activation, implementation="triton"
+            )
     except (ValueError, ExceptionGroup) as error:
         if jax.default_backend() == "gpu":
             raise

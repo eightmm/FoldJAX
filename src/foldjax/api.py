@@ -1521,6 +1521,9 @@ def _predict_once(
     is not ``output_dir`` itself -- a multi-seed run keeps each seed's native
     files apart but gathers every structure under one root.
     """
+    from foldjax import _pallas_gpu
+
+    _pallas_gpu.install()
     every_seed = request.resolved_seeds
     request = dataclasses.replace(
         request,

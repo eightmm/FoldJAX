@@ -1123,7 +1123,7 @@ def test_executed_program_drops_the_tokamax_payload_that_discovery_reads() -> No
 
 def test_glu_heuristic_tile_is_clamped_to_sm120_shared_memory() -> None:
     tile = pytest.importorskip("tokamax._src.ops.gated_linear_unit.pallas_triton")
-    budget = persistent._SMALL_SHARED_MEMORY_BYTES[12]
+    budget = persistent._SMALL_SHARED_MEMORY_BYTES[(12, 0)]
     # Tokamax's heuristic for AlphaFold 3's f32 transition GLU (m=6144, n=256).
     asked = tile.Config(block_m=128, block_n=64, block_k=32, num_warps=4, num_stages=4)
     assert asked.num_stages * persistent._glu_stage_bytes(asked, 4) > budget
@@ -1143,7 +1143,10 @@ def test_glu_clamp_applies_only_to_small_shared_memory_devices() -> None:
     tile = pytest.importorskip("tokamax._src.ops.gated_linear_unit.pallas_triton")
     op = tile.PallasTritonGatedLinearUnit
     original = op.__dict__["_get_heuristics_config"]
-    for capability, patched in (("12.0", True), ("9.0", False), (None, False)):
+    for capability, patched in (
+        ("8.6", True), ("8.9", True), ("12.0", True), ("12.1", True),
+        ("8.0", False), ("8.7", False), ("9.0", False), (None, False),
+    ):
         device = SimpleNamespace(compute_capability=capability)
         with persistent.glu_heuristics_within_shared_memory(device):
             assert (op.__dict__["_get_heuristics_config"] is not original) is patched

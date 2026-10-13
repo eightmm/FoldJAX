@@ -201,6 +201,9 @@ def pallas_attention_core(
         )
         raise RuntimeError(msg) from cause
 
+    from foldjax import _pallas_gpu
+
+    _pallas_gpu.install()
     # Strip broadcast singletons WITHOUT materializing the i-broadcast:
     # tri_bias [b,1,h,N,N] -> [b,h,N,N]; mask_bias [b,N,1,1,N] -> [b,N,N].
     tri = tri_bias[:, 0]  # [b, h, Nq, Nk]

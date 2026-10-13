@@ -93,6 +93,9 @@ def tokamax_attention_core(
     if not flags.FLAGS.is_parsed():
         flags.FLAGS(["foldjax.models.boltz2"], known_only=True)
 
+    from foldjax import _pallas_gpu
+
+    _pallas_gpu.install()
     # [b, i, h, j, d] -> tokamax layout [b, i, j(T), h(N_heads), d(H)].
     qt = jnp.swapaxes(q, -3, -2)
     kt = jnp.swapaxes(k, -3, -2)

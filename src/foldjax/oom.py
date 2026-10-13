@@ -267,9 +267,36 @@ _REQUESTED = re.compile(r"allocate ([0-9.]+)([KMG]i?B)")
 _UNITS = {"KiB": 2**10, "MiB": 2**20, "GiB": 2**30, "B": 1}
 
 
+def _leaf_errors(error: BaseException) -> tuple[BaseException, ...]:
+    if isinstance(error, BaseExceptionGroup):
+        return tuple(leaf for child in error.exceptions for leaf in _leaf_errors(child))
+    return (error,)
+
+
+def _is_allocator_oom(error: BaseException) -> bool:
+    message = str(error)
+    lowered = message.lower()
+    if "shared memory" in lowered and (
+        "limit exceeded" in lowered
+        or "exceeds" in lowered
+        or "outofresource" in lowered
+        or "out of resource" in lowered
+    ):
+        return False
+    return any(
+        marker in lowered
+        for marker in (
+            "out of memory",
+            "cuda_error_out_of_memory",
+            "cudaerrormemoryallocation",
+            "hiperroroutofmemory",
+        )
+    )
+
+
 def is_out_of_memory(error: BaseException) -> bool:
-    """Whether this is an allocator failure rather than any other runtime error."""
-    return "RESOURCE_EXHAUSTED" in str(error) or "Out of memory" in str(error)
+    """Recognize allocator OOMs; mixed kernel failures retain their original cause."""
+    return all(_is_allocator_oom(leaf) for leaf in _leaf_errors(error))
 
 
 def mem_fraction() -> float:
@@ -317,14 +344,11 @@ def _pool_card_and_used(
     }:
         return None, None, None
     try:
-        import jax
+        from foldjax._gpu import default_device
 
-        devices = jax.devices()
+        stats = default_device().memory_stats() or {}
     except Exception:  # noqa: BLE001 - a broken runtime is not what we are reporting
         return None, None, None
-    if not devices:
-        return None, None, None
-    stats = devices[0].memory_stats() or {}
     limit = stats.get("bytes_limit")
     if limit is None:
         return None, None, None
@@ -369,7 +393,9 @@ def diagnose(error: BaseException) -> str | None:
         f"{mem_fraction():g} of a {card / gib:.1f} GiB device, set by "
         f"{configured_fraction_env() or CURRENT_FRACTION_ENV}."
     ]
-    requested = _requested_bytes(str(error))
+    leaves = _leaf_errors(error)
+    # Distinct kernel attempts need not fail with the same live allocation set.
+    requested = _requested_bytes(str(leaves[0])) if len(leaves) == 1 else None
     # The allocation that failed, on top of what the pool already holds, is the
     # smallest total this run needed. Three outcomes, and they take different
     # actions: past the device, no setting helps; past the pool but inside the
@@ -406,8 +432,8 @@ def diagnose(error: BaseException) -> str | None:
                 "device, so a larger fraction will not help: the allocator "
                 "could not place this block, not find the bytes. The live "
                 "figure above does not say why -- a nearly empty pool can fail "
-                "a half-pool request because the program\'s own co-live set "
-                "leaves no room to lay one out. XLA\'s rematerialization lines "
+                "a half-pool request because the program's own co-live set "
+                "leaves no room to lay one out. XLA's rematerialization lines "
                 "in this log report the total it could not get the program "
                 "under; compare that with the pool."
             )

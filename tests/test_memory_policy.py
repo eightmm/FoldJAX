@@ -12,6 +12,7 @@ import math
 import sys
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -272,6 +273,8 @@ def test_the_device_budget_is_readable_with_preallocation_off(monkeypatch) -> No
 
     fake = type(sys)("jax")
     fake.devices = lambda: [_Device()]
+    fake.local_devices = fake.devices
+    fake.config = SimpleNamespace(jax_default_device=None)
     monkeypatch.setitem(sys.modules, "jax", fake)
     monkeypatch.setenv("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     monkeypatch.setenv("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.9")
@@ -280,7 +283,9 @@ def test_the_device_budget_is_readable_with_preallocation_off(monkeypatch) -> No
     assert card == pytest.approx(91_779_760_128 / 0.9, rel=1e-9)
     # `diagnose` keeps its own rule: with nothing preallocated, `bytes_in_use`
     # no longer says how much of the ceiling the run already held.
-    assert oom.diagnose(RuntimeError("RESOURCE_EXHAUSTED: allocate 1.0GiB")) is None
+    assert oom.diagnose(
+        RuntimeError("RESOURCE_EXHAUSTED: Out of memory trying to allocate 1.0GiB")
+    ) is None
 
 
 # --------------------------------------------------------------------------

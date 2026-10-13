@@ -91,6 +91,9 @@ def tokamax_dot_product_attention(
     if not flags.FLAGS.is_parsed():
         flags.FLAGS(["foldjax.models.boltz2"], known_only=True)
 
+    from foldjax import _pallas_gpu
+
+    _pallas_gpu.install()
     key_mask = mask[:, None, None, :].astype(bool)
     empty = ~jnp.any(key_mask, axis=-1, keepdims=True)
     # Fused kernels are allowed to assume that every batch has at least one
@@ -107,5 +110,4 @@ def tokamax_dot_product_attention(
         implementation=implementation,
     ).astype(v.dtype)
     return jnp.where(empty, jnp.zeros_like(out), out)
-
 

@@ -27,6 +27,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
+from foldjax._gpu import compute_capability
 from foldjax.cache import shared_compile_cache_trusted
 
 try:
@@ -214,10 +215,16 @@ def _discovery_lowering() -> Iterator[None]:
 # check in foldjax-bench/v011-perf-check measures; the default stays autotune.
 # ---------------------------------------------------------------------------
 
-#: Opt-in shared memory per block by compute-capability major, for the GPUs
-#: whose budget is below what Tokamax's heuristics assume. sm_120/121 (consumer
-#: and workstation Blackwell): 99 KiB.
-_SMALL_SHARED_MEMORY_BYTES = {12: 99 * 1024}
+#: Per-block opt-in limits, not per-SM totals. Ampere 8.0/8.7 have larger
+#: budgets than consumer Ampere 8.6; a major-only lookup conflates them.
+_SMALL_SHARED_MEMORY_BYTES = {
+    (8, 6): 99 * 1024,
+    (8, 9): 99 * 1024,
+    (12, 0): 99 * 1024,
+    (12, 1): 99 * 1024,
+}
+_GLU_HEURISTICS_LOCK = threading.RLock()
+_GLU_BUDGET: ContextVar[int | None] = ContextVar("foldjax_glu_budget", default=None)
 
 
 def _glu_stage_bytes(config: Any, itemsize: int) -> int:
@@ -244,42 +251,49 @@ def clamp_glu_config(config: Any, *, itemsize: int, budget_bytes: int) -> Any:
 
 
 def _shared_memory_budget(device: Any) -> int | None:
-    try:
-        major = int(float(str(getattr(device, "compute_capability", ""))))
-    except ValueError:
-        return None
-    return _SMALL_SHARED_MEMORY_BYTES.get(major)
+    return _SMALL_SHARED_MEMORY_BYTES.get(compute_capability(device))
 
 
 @contextmanager
 def glu_heuristics_within_shared_memory(device: Any) -> Iterator[None]:
     """Clamp Tokamax's heuristic GLU tile to ``device``'s shared memory."""
 
-    budget = _shared_memory_budget(device)
-    if budget is None:
-        yield
-        return
+    token = _GLU_BUDGET.set(_shared_memory_budget(device))
     try:
-        from tokamax._src.ops.gated_linear_unit import pallas_triton
-    except ImportError:
-        yield
-        return
-    glu_op = pallas_triton.PallasTritonGatedLinearUnit
-    original = glu_op.__dict__.get("_get_heuristics_config")
-    if original is None:
-        yield
-        return
+        if _GLU_BUDGET.get() is None:
+            yield
+            return
+        try:
+            from tokamax._src.ops.gated_linear_unit import pallas_triton
+        except ImportError:
+            yield
+            return
+        glu_op = pallas_triton.PallasTritonGatedLinearUnit
+        # Serialize temporary class mutations; the context-local budget keeps a
+        # concurrent unclamped device from inheriting another device's limit.
+        with _GLU_HEURISTICS_LOCK:
+            original = glu_op.__dict__.get("_get_heuristics_config")
+            if original is None:
+                yield
+                return
+            base = getattr(original, "_foldjax_original", original)
 
-    def clamped(self: Any, ba: Any) -> Any:
-        config = original(self, ba)
-        itemsize = int(getattr(ba.args[0].dtype, "itemsize", 4))
-        return clamp_glu_config(config, itemsize=itemsize, budget_bytes=budget)
+            def clamped(self: Any, ba: Any) -> Any:
+                config = base(self, ba)
+                budget = _GLU_BUDGET.get()
+                if budget is None:
+                    return config
+                itemsize = int(getattr(ba.args[0].dtype, "itemsize", 4))
+                return clamp_glu_config(config, itemsize=itemsize, budget_bytes=budget)
 
-    glu_op._get_heuristics_config = clamped
-    try:
-        yield
+            clamped._foldjax_original = base
+            glu_op._get_heuristics_config = clamped
+            try:
+                yield
+            finally:
+                glu_op._get_heuristics_config = original
     finally:
-        glu_op._get_heuristics_config = original
+        _GLU_BUDGET.reset(token)
 
 
 def _canonical_json(value: Any) -> str:

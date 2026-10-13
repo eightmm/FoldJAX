@@ -305,16 +305,22 @@ def run_doctor(args: argparse.Namespace) -> int:
     devices: list[str] = []
     backend_name = None
     runtime_identity: dict[str, str] | None = None
+    gpu_notes: list[str] = []
     try:
         import jax
 
         runtime_identity = runtime_profile()
         backend_name = runtime_identity["platform"]
-        devices = [str(device) for device in jax.devices()]
+        from foldjax._gpu import compatibility_notes
+
+        live_devices = jax.devices()
+        devices = [str(device) for device in live_devices]
+        gpu_notes = compatibility_notes(live_devices)
     except Exception as error:  # noqa: BLE001 - a broken runtime is a finding
         report_payload["jax_error"] = str(error)
     report_payload["jax_backend"] = backend_name
     report_payload["devices"] = devices
+    report_payload["gpu_compatibility_notes"] = gpu_notes
     report_payload["jax_version"] = (
         None if runtime_identity is None else runtime_identity["jax"]
     )
@@ -405,6 +411,8 @@ def run_doctor(args: argparse.Namespace) -> int:
         )
         if backend_name == "cpu":
             print("          every model runs on CPU, slowly; check the CUDA extra")
+    for note in gpu_notes:
+        print(f"          {note}")
     print(f"store     {report_payload['home']}  ({_format_bytes(usage.free)} free)")
     print(
         f"cache     {_format_bytes(compile_cache['bytes'])} in "

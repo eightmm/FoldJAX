@@ -97,6 +97,9 @@ def tokamax_attention(
     if not flags.FLAGS.is_parsed():
         flags.FLAGS(["foldjax.models.protenix"], known_only=True)
 
+    from foldjax import _pallas_gpu
+
+    _pallas_gpu.install()
     if q.dtype == jnp.float32:
         _warn_float32_inputs()
 
