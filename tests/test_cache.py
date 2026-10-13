@@ -122,10 +122,11 @@ def test_runtime_profile_reports_a_stable_cpu_topology(monkeypatch) -> None:
         slice_index = 0
         coords = (0, 0, 0)
 
-    monkeypatch.setattr(jax, "devices", lambda: [_CPUDevice()])
+    monkeypatch.setattr(jax, "devices", lambda backend=None: [_CPUDevice()])
+    monkeypatch.setattr(jax, "local_devices", lambda backend=None: [_CPUDevice()])
     monkeypatch.setattr(jax, "default_backend", lambda: "cpu")
     monkeypatch.setattr(jax, "process_count", lambda: 1)
-    monkeypatch.setattr(jax, "local_device_count", lambda: 1)
+    monkeypatch.setattr(jax, "local_device_count", lambda backend=None: 1)
 
     profile = runtime_profile()
     assert profile["jax"]
@@ -284,9 +285,14 @@ def test_esmfold2_records_the_context_parallel_mesh_it_resolves(
 @pytest.fixture
 def af3_on_a_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
     """Plan as a GPU host, where an omitted attention is the released `triton`."""
-    import jax
+    from foldjax.backends import alphafold3
 
-    monkeypatch.setattr(jax, "default_backend", lambda: "gpu")
+    original = alphafold3._default_attention_backend
+    monkeypatch.setattr(
+        alphafold3,
+        "_default_attention_backend",
+        lambda platform: original("gpu" if platform is None else platform),
+    )
 
 
 def test_alphafold3_managed_defaults_share_the_omitted_cache_namespace(

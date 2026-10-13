@@ -326,9 +326,10 @@ def _pool_card_and_used(
     """The allocator's ceiling, the device's capacity and what is held, in bytes.
 
     ``bytes_limit`` is the pool and ``bytes_in_use`` is what it currently holds.
-    JAX exposes no device total, so the card is recovered from the fraction that
-    produced the pool -- exact when preallocation is on, which is the case this
-    diagnosis is about.
+    CUDA capacity is read from the selected JAX stream's device. Dividing a
+    pool by the live environment fraction is not valid after JAX initialization;
+    changing that knob cannot resize an existing allocator. Unknown capacity
+    remains ``None`` rather than becoming a misleading estimate.
 
     ``require_preallocated`` is what separates the two readers. Measured with
     both settings, ``bytes_limit`` is the fraction times the card either way
@@ -346,14 +347,16 @@ def _pool_card_and_used(
     try:
         from foldjax._gpu import default_device
 
-        stats = default_device().memory_stats() or {}
+        device = default_device()
+        stats = device.memory_stats() or {}
     except Exception:  # noqa: BLE001 - a broken runtime is not what we are reporting
         return None, None, None
     limit = stats.get("bytes_limit")
     if limit is None:
         return None, None, None
-    fraction = mem_fraction()
-    card = int(limit / fraction) if fraction > 0 else None
+    from foldjax._cuda_memory import total_device_bytes
+
+    card = total_device_bytes(device)
     used = stats.get("bytes_in_use")
     return int(limit), card, (int(used) if used is not None else None)
 

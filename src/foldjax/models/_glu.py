@@ -95,22 +95,23 @@ def _fused(
     from foldjax.backends._tokamax_autotune import glu_heuristics_within_shared_memory
 
     _pallas_gpu.install()
-    if jax.default_backend() == "gpu":
+    device = default_device()
+    if device.platform == "gpu":
         require_fused_cuda("glu_backend='tokamax'")
     try:
-        with glu_heuristics_within_shared_memory(default_device()):
+        with glu_heuristics_within_shared_memory(device):
             return tokamax.gated_linear_unit(
                 x=x, weights=weights, activation=activation, implementation="triton"
             )
     except (ValueError, ExceptionGroup) as error:
-        if jax.default_backend() == "gpu":
+        if device.platform == "gpu":
             raise
         # tokamax skips its Triton implementation off a GPU and then raises an
         # ExceptionGroup over an empty list, which says nothing; say what the
         # pinned kernel needs and which spelling runs here instead.
         msg = (
             "glu_backend='tokamax' runs a Triton kernel that needs a CUDA GPU, "
-            f"and this process's default JAX backend is {jax.default_backend()!r}; "
+            f"and the selected JAX device uses platform {device.platform!r}; "
             "pass the option glu_backend=xla (CLI: --option glu_backend=xla) "
             "to run the XLA unit here, which rounds low-precision activations "
             "differently from the fused kernel"

@@ -73,14 +73,16 @@ TRANSITION_MAX_WIDTH = 128
 
 
 def gpu_process() -> bool:
-    """Whether this process's default JAX backend is a GPU.
+    """Whether the selected JAX execution device is a GPU.
 
     The one probe both the refusal below and :func:`default_backend` read, so
     a default can never resolve to a kernel the refusal then rejects. Decided
-    from the default backend, as ``_cueq.pads_attention_extents`` decides.
+    from the selected device, as ``_cueq.pads_attention_extents`` decides.
     """
 
-    return jax.default_backend() == "gpu"
+    from foldjax._gpu import default_device
+
+    return default_device().platform == "gpu"
 
 
 def default_backend(released: str) -> str:
@@ -108,14 +110,14 @@ def default_backend(released: str) -> str:
 def _require_gpu(what: str, instead: str) -> None:
     if INTERPRET:
         return
-    if gpu_process():
-        from foldjax._gpu import require_fused_cuda
+    from foldjax._gpu import default_device, require_fused_cuda
 
+    if gpu_process():
         require_fused_cuda(what)
         return
     msg = (
         f"{what} runs a Pallas-Triton kernel that needs a CUDA GPU, and this "
-        f"process's default JAX backend is {jax.default_backend()!r}; {instead}"
+        f"selected JAX device uses platform {default_device().platform!r}; {instead}"
     )
     raise ValueError(msg)
 

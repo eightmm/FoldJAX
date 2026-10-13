@@ -208,14 +208,11 @@ def device_peak_bytes() -> int | None:
     that did unrelated work first.
     """
     try:
-        import jax
+        from foldjax._gpu import default_device
 
-        devices = jax.devices()
+        stats = default_device().memory_stats() or {}
     except Exception:  # noqa: BLE001 - a CPU-only or broken runtime is not an error
         return None
-    if not devices:
-        return None
-    stats = devices[0].memory_stats() or {}
     peak = stats.get("peak_bytes_in_use")
     return int(peak) if peak is not None else None
 

@@ -169,11 +169,21 @@ class _MockRuntime:
             af3_backend, "_tokamax_kernel_fallback", lambda _strategy: nullcontext()
         )
         monkeypatch.setattr(af3_backend, "_model_device", lambda _device: nullcontext())
+        # These metadata-only device doubles cannot be used by JAX dispatch.
+        monkeypatch.setattr(jax, "default_device", lambda _device: nullcontext())
         devices = (
             _Device(id=0, local_hardware_id=0),
             _Device(id=1, local_hardware_id=1),
         )
         monkeypatch.setattr(jax, "local_devices", lambda backend=None: devices)
+        monkeypatch.setattr(
+            jax, "devices", lambda backend=None: jax.local_devices(backend)
+        )
+        monkeypatch.setattr(
+            jax,
+            "local_device_count",
+            lambda backend=None: len(jax.local_devices(backend)),
+        )
 
         folding = ModuleType("alphafold3.common.folding_input")
 

@@ -437,12 +437,12 @@ def _default_attention_backend(platform: str | None) -> str:
     Pallas-Triton flash attention, which exists only on a GPU: on a CPU it
     raises ``NotImplementedError`` at trace time, so off a GPU the omitted
     choice is ``xla``. ``platform`` is the ``platform`` option, or None for
-    JAX's default backend; predict passes the selected device's platform.
+    JAX's selected device; predict passes the selected device's platform.
     """
     if platform is None:
-        import jax
+        from foldjax._gpu import default_device
 
-        platform = jax.default_backend()
+        platform = default_device().platform
     gpu = str(platform).lower() in {"gpu", "cuda", "rocm"}
     return str(_RELEASED_COMPILE_DEFAULTS["attention_backend"]) if gpu else "xla"
 
@@ -1287,13 +1287,12 @@ class AlphaFold3Backend(Backend):
                 # inside `api.predict`'s scope for the same directory, this is
                 # the same setting.
                 cache_scope.enter_context(compilation_cache_scope(request.cache_dir))
-            # Selecting from the default backend keeps a CPU-only host usable
-            # for smoke runs while still resolving the GPU on an accelerator.
-            platform = options.pop("platform", None)
-            devices = (
-                jax.local_devices(backend=platform) if platform else jax.local_devices()
-            )
-            device = devices[int(options.pop("device", 0))]
+            from foldjax._gpu import default_device, require_supported_gpu
+
+            device = default_device(request)
+            require_supported_gpu(device)
+            options.pop("platform", None)
+            options.pop("device", None)
             attention_backend = options.pop("attention_backend", None)
             if attention_backend is None:
                 attention_backend = _default_attention_backend(device.platform)

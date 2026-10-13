@@ -72,7 +72,7 @@ uv sync --group dev
 A CUDA 12 machine and mixed CUDA generations are covered in
 [docs/install.md](https://github.com/eightmm/FoldJAX/blob/main/docs/install.md).
 [GPU kernel compatibility](docs/gpu-compatibility.md) explains unlisted GPU
-names, shared-memory limits, and the explicit XLA path for Turing. Some features want an extra:
+names, shared-memory limits, and the sm_80 GPU minimum. Some features want an extra:
 `--extra alphafold3` (its compiled half and CCD tables build themselves on
 first use), `--extra openfold3-preprocess` (only to featurize raw OpenFold3
 jobs; predicting from a feature `.npz` needs nothing) and `--extra templates`

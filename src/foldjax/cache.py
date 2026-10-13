@@ -200,21 +200,23 @@ def runtime_profile() -> dict[str, str]:
     import jax
     import jaxlib
 
-    devices = tuple(jax.devices())
+    from foldjax._gpu import default_device
+
+    selected = default_device()
+    devices = tuple(jax.devices(backend=selected.platform))
     topology = _topology_identity(
         devices,
         process_count=jax.process_count(),
-        local_device_count=jax.local_device_count(),
+        local_device_count=jax.local_device_count(backend=selected.platform),
     )
-    device_kinds = sorted(
-        {str(device["device_kind"]) for device in topology["devices"]}
-    )
-
     return {
         "jax": jax.__version__,
         "jaxlib": jaxlib.__version__,
-        "platform": jax.default_backend(),
-        "device_kind": ", ".join(device_kinds) if device_kinds else "unknown",
+        "platform": selected.platform,
+        "device_kind": selected.device_kind,
+        "selected_device": json.dumps(
+            device_identity(selected), sort_keys=True, separators=(",", ":")
+        ),
         # Keep the existing ``dict[str, str]`` API while retaining the full
         # identity in canonical JSON for cache hashing and diagnostics.
         "topology": json.dumps(topology, sort_keys=True, separators=(",", ":")),
@@ -267,7 +269,7 @@ def _group_is_only_this_user(gid: int) -> bool:
     return members <= {name}
 
 
-def _untrusted_cache_reason(path: Path) -> str | None:
+def _untrusted_cache_reason(path: Path, *, leaf: bool = True) -> str | None:
     """Why another account could place an executable under ``path``, if it can.
 
     The directory and every ancestor must belong to this user or root, and no
@@ -276,9 +278,11 @@ def _untrusted_cache_reason(path: Path) -> str | None:
     """
     if not hasattr(os, "geteuid"):  # pragma: no cover - POSIX only
         return None
-    leaf = Path(os.path.realpath(path))
-    for directory in (leaf, *leaf.parents):
-        reason = _untrusted_directory_reason(directory, leaf=directory == leaf)
+    resolved = Path(os.path.realpath(path))
+    for directory in (resolved, *resolved.parents):
+        reason = _untrusted_directory_reason(
+            directory, leaf=leaf and directory == resolved
+        )
         if reason is not None:
             return reason
     return None
@@ -331,9 +335,9 @@ def compile_cache_untrusted_reason(
     if shared_compile_cache_trusted():
         return None
     try:
-        return _untrusted_cache_reason(
-            _deepest_existing(Path(directory).expanduser())
-        )
+        path = Path(directory).expanduser()
+        existing = _deepest_existing(path)
+        return _untrusted_cache_reason(existing, leaf=existing == path)
     except OSError as error:
         return f"it cannot be inspected ({error})"
 
@@ -380,7 +384,8 @@ def trusted_compile_cache_dir(directory: str | os.PathLike[str]) -> Path | None:
             )
         return path
     try:
-        reason = _untrusted_cache_reason(_deepest_existing(path))
+        existing = _deepest_existing(path)
+        reason = _untrusted_cache_reason(existing, leaf=existing == path)
         if reason is None:
             _make_cache_directories(path)
             reason = _untrusted_cache_reason(path)

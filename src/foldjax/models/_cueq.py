@@ -279,11 +279,13 @@ def pads_attention_extents() -> bool:
     Only that kernel has the slow unaligned path. On any other backend the
     wheel runs its reference body, where padding buys nothing and a longer key
     reduction would only move the CPU parity replays. Decided at trace time
-    from the default backend -- a ``lax.platform_dependent`` would trace the
+    from the selected device -- a ``lax.platform_dependent`` would trace the
     kernel call twice, doubling what a dispatch census counts.
     """
 
-    return jax.default_backend() == "gpu"
+    from foldjax._gpu import default_device
+
+    return default_device().platform == "gpu"
 
 
 def align_attention_arguments(

@@ -311,9 +311,9 @@ def run_doctor(args: argparse.Namespace) -> int:
 
         runtime_identity = runtime_profile()
         backend_name = runtime_identity["platform"]
-        from foldjax._gpu import compatibility_notes
+        from foldjax._gpu import compatibility_notes, default_device
 
-        live_devices = jax.devices()
+        live_devices = jax.devices(backend=default_device().platform)
         devices = [str(device) for device in live_devices]
         gpu_notes = compatibility_notes(live_devices)
     except Exception as error:  # noqa: BLE001 - a broken runtime is a finding

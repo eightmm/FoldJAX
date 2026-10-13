@@ -51,39 +51,55 @@ device when one is configured, rather than always reading device zero.
 
 ## Turing and older accelerators
 
-Turing (`sm_75`, for example Quadro RTX 8000) can run a JAX GPU backend, but
-FoldJAX's fused Pallas/Tokamax paths require `sm_80+`. They reject the request
-with the architecture and XLA alternative before attempting a kernel launch.
-They are not silently replaced under a fused backend name.
-
-For Boltz-2 and OpenFold3, select their explicit portable path:
-
-```bash
-BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=xla \
-foldjax predict --model boltz2 --input job.yaml \
-  --option triangle_kernel=xla --option glu_backend=xla --option dtype=float32
-```
-
-Boltz-2's multiplication is a separate environment switch: `triangle_kernel`
-selects its triangle attention and does not override the multiplication.
-OpenFold3's `triangle_kernel=xla` selects both operators:
-
-```bash
-foldjax predict --model openfold3 --input job.yaml \
-  --option triangle_kernel=xla --option glu_backend=xla --option dtype=float32
-```
-
-Other models
-have their own kernel/precision options; this command is not a universal
-option set. XLA kernels can use more memory and have different rounding than
-fused kernels. CPU execution remains a separate route. A kernel being able to
-compile does not establish full-model accuracy, performance, or bitwise
-agreement on a new GPU.
+All six FoldJAX models require NVIDIA compute capability `sm_80+` for GPU
+inference. Turing (`sm_75`, for example Quadro RTX 8000) is rejected before
+backend dispatch, with the same reason shown by `foldjax doctor`. Selecting
+XLA kernels or float32 does not bypass this support policy. CPU execution
+remains supported. A kernel being able to compile does not establish full-model
+accuracy, performance, or bitwise agreement on a GPU.
 
 CUDA installation has its own hardware and driver limits. The JAX
 [installation guide](https://docs.jax.dev/en/latest/installation.html) documents
 CUDA 12/13 requirements; a software compatibility shim cannot add an
 architecture omitted from the installed compiler or driver.
+
+## Selected devices, memory and cache warming
+
+An explicit `jax.default_device` context or `jax_default_device` setting governs
+execution, runtime metadata, memory statistics and the compile-cache namespace.
+AlphaFold 3 inherits that device unless its `platform`/`device` options explicitly
+select another. Runtime metadata includes the selected device identity. This
+correction changes cache namespaces; warm the corrected profiles before a
+latency-sensitive run.
+
+Private new cache directories under root-owned sticky `/tmp` are supported.
+An existing ancestor is checked as a parent before creation; the completed
+cache directory is checked as a leaf. `/tmp` itself, another user's directory
+and non-sticky shared writable ancestors remain untrusted without explicit
+shared-cache opt-in.
+
+Allocator limits and peaks come from the selected device's JAX statistics.
+`memory.card_bytes` comes from the CUDA driver using that device's stream,
+rather than dividing the pool by a live environment variable. If the driver
+cannot report capacity (including older drivers without `cuStreamGetDevice`),
+the capacity is unknown. The allocator budget remains usable. `memory.selected`
+is an admitted memory-policy profile name, not a GPU identifier; it is `null`
+when the admission result is unknown, for example below the fitted size range.
+
+AlphaFold 3's first trace can include many Tokamax candidate compilations and
+measurements. Prepare frequently used size buckets and sampling settings with
+the exact prediction profile:
+
+```bash
+foldjax cache warm --model alphafold3 --input job.json --cache-dir /tmp/foldjax-cache
+```
+
+The persisted tuning results are reused on matching profiles. On a device other
+than the process-default backend's first GPU, persisted tuning compiles and
+measures candidates synchronously in the selected device context. Uncontrolled
+inline worker tuning remains refused there. Tokamax 0.0.13 already excludes
+failed candidates, including OOMs, from its fastest successful configuration;
+an operation whose candidates all fail cannot produce a valid tuning result.
 
 ## Verification scope
 

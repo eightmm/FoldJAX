@@ -404,13 +404,13 @@ def _same_device(left: Any, right: Any) -> bool:
 
 
 def _can_tune_on_device(device: Any) -> bool:
-    """Whether Tokamax's worker threads inherit the intended default device.
+    """Whether parallel Tokamax workers use the intended device.
 
     Tokamax 0.0.13 initialises abstract benchmark arguments in worker threads,
     which do not inherit ``jax.default_device``'s thread-local context.  Only
     the process default platform's first local device is therefore safe for a
-    new persisted measurement.  A result already measured on identical
-    hardware can still be read and used on another ordinal.
+    parallel persisted measurement. Other devices use synchronous measurement
+    in the caller's device context. Inline worker fallbacks remain unsafe there.
     """
 
     import jax
@@ -1003,8 +1003,23 @@ def _is_missing_config_error(error: BaseException) -> bool:
     return False
 
 
+def _tune_selected_device(
+    bound_args: Sequence[Any], *, device_kind: str, tokamax: Any
+) -> Any:
+    from tokamax._src.autotuning.autotuner import Autotuner
+
+    tuner = Autotuner(compile_executor_fn=None)
+    # JAX's device context is thread-local. Keep both compilation and candidate
+    # measurement on the selected device; Tokamax still filters failed candidates.
+    data = tuple(
+        (ba, ba.autotune(cache_results=False, autotuner=tuner, timeout=600.0))
+        for ba in bound_args
+    )
+    return tokamax.AutotuningResult(device_kind, data)
+
+
 def _discover_complete_result(
-    lower: Callable[[], Any], *, device_kind: str, tokamax: Any
+    lower: Callable[[], Any], *, device_kind: str, tokamax: Any, parallel: bool = True
 ) -> Any | None:
     """Tune to a fixed point and prove the exact error-policy lowering succeeds.
 
@@ -1038,7 +1053,13 @@ def _discover_complete_result(
             with ExitStack() as stack:
                 if result is not None:
                     stack.enter_context(result)
-                tuned = tokamax.autotune(missing, progress_bar=False)
+                tuned = (
+                    tokamax.autotune(missing, progress_bar=False)
+                    if parallel
+                    else _tune_selected_device(
+                        missing, device_kind=device_kind, tokamax=tokamax
+                    )
+                )
         else:
             tuned = tokamax.AutotuningResult(device_kind, ())
         previous = result
@@ -1240,15 +1261,6 @@ class _PersistentTokamaxStore:
                 self._persisted.add(signature)
                 return self._invoke_with_result(result, invoke, source="store")
 
-            if self._strategy == "autotune" and not self._can_tune:
-                # Tokamax 0.0.13 compiles candidates in worker threads. JAX's
-                # selected/default-device scope is thread-local, so allowing its
-                # ordinary inline fallback here would silently benchmark GPU 0
-                # even when this model is bound to another (possibly different)
-                # GPU. A compatible result warmed on the first local device is
-                # safe to read above; an uncached measurement is not.
-                _raise_nondefault_autotune_miss()
-
             if self._strategy != "autotune":
                 return self._invoke_fallback(invoke)
 
@@ -1266,6 +1278,7 @@ class _PersistentTokamaxStore:
                                     lower,
                                     device_kind=self._device_kind,
                                     tokamax=tokamax,
+                                    parallel=self._can_tune,
                                 )
                             except Exception:  # noqa: BLE001 - preserve inline fallback
                                 self._warn_once("did not obtain complete coverage")

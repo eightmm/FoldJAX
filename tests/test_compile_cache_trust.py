@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import stat
+import uuid
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,25 @@ def _fresh(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
+
+
+def test_a_new_private_cache_below_tmp_is_trusted():
+    target = Path("/tmp") / f"foldjax-cache-test-{uuid.uuid4().hex}"
+    if os.stat(target.parent).st_uid != 0 or not _mode(target.parent) & stat.S_ISVTX:
+        pytest.skip("requires a root-owned sticky /tmp")
+    try:
+        assert cache.compile_cache_untrusted_reason(target) is None
+        assert trusted_compile_cache_dir(target) == target
+        assert not _mode(target) & 0o022
+    finally:
+        if target.exists():
+            target.rmdir()
+
+
+def test_tmp_itself_cannot_be_an_executable_cache():
+    assert cache.compile_cache_untrusted_reason("/tmp") is not None
+    with pytest.warns(RuntimeWarning, match="world-writable"):
+        assert trusted_compile_cache_dir("/tmp") is None
 
 
 def test_a_private_cache_is_created_without_group_write(

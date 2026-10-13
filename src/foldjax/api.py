@@ -1515,6 +1515,35 @@ def _predict_once(
     layout_root: Path | None = None,
     allowed_root: Path | None = None,
 ) -> PredictionResult:
+    """Bind admission, execution and manifest reads to one selected device."""
+    import jax
+
+    from foldjax._gpu import default_device, require_supported_gpu
+
+    device = default_device(request)
+    require_supported_gpu(device)
+    with jax.default_device(device):
+        return _predict_once_on_device(
+            request,
+            seed,
+            output_dir,
+            backend=backend,
+            session_managed=session_managed,
+            layout_root=layout_root,
+            allowed_root=allowed_root,
+        )
+
+
+def _predict_once_on_device(
+    request: PredictionRequest,
+    seed: int,
+    output_dir: Path,
+    *,
+    backend: Backend | None = None,
+    session_managed: bool = False,
+    layout_root: Path | None = None,
+    allowed_root: Path | None = None,
+) -> PredictionResult:
     """Run the job under exactly one seed, writing into ``output_dir``.
 
     ``layout_root`` is where the canonical per-sample directories go when that
@@ -1892,13 +1921,18 @@ def resolve_cache_dir(request: PredictionRequest, backend: Backend) -> Path:
     if request.cache_dir is None:
         raise ValueError("cache_dir is required to resolve a cache namespace")
     label, identity = weight_identity(request.weights)
-    return cache_namespace(
-        request.cache_dir,
-        model=backend.name,
-        weight_id=label,
-        profile={
-            "weights": identity,
-            "runtime": runtime_profile(),
-            "options": backend.cache_profile(request),
-        },
-    )
+    import jax
+
+    from foldjax._gpu import default_device
+
+    with jax.default_device(default_device(request)):
+        return cache_namespace(
+            request.cache_dir,
+            model=backend.name,
+            weight_id=label,
+            profile={
+                "weights": identity,
+                "runtime": runtime_profile(),
+                "options": backend.cache_profile(request),
+            },
+        )

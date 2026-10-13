@@ -280,7 +280,7 @@ def test_the_device_budget_is_readable_with_preallocation_off(monkeypatch) -> No
     monkeypatch.setenv("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.9")
     pool, card = oom.device_budget()
     assert pool == 91_779_760_128
-    assert card == pytest.approx(91_779_760_128 / 0.9, rel=1e-9)
+    assert card is None, "fake/non-CUDA capacity must not be inferred from the pool"
     # `diagnose` keeps its own rule: with nothing preallocated, `bytes_in_use`
     # no longer says how much of the ceiling the run already held.
     assert oom.diagnose(

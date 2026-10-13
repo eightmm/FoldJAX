@@ -47,6 +47,11 @@ class _FakeBoundArguments:
     def autotuning_cache_key(self) -> str:
         return self.key
 
+    def autotune(self, *, cache_results, autotuner, timeout):
+        assert not cache_results
+        assert autotuner.compile_executor_fn is None
+        return _FakeData({f"{self.key}-slow": 2.0, f"{self.key}-fast": 1.0})
+
 
 class _FakeOp:
     pass
@@ -314,7 +319,7 @@ def test_store_activation_requires_managed_gpu_cache_and_snapshot(
     )
 
 
-def test_nondefault_gpu_can_read_but_cannot_publish(
+def test_nondefault_gpu_uses_synchronous_instead_of_parallel_measurements(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(persistent, "_filesystem_supported", lambda: True)
@@ -339,7 +344,7 @@ def test_nondefault_gpu_can_read_but_cannot_publish(
     assert not store._can_tune
 
 
-def test_nondefault_gpu_autotune_miss_never_runs_inline_worker(
+def test_nondefault_gpu_autotune_miss_uses_synchronous_measurements(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tokamax = _FakeTokamax()
@@ -347,14 +352,17 @@ def test_nondefault_gpu_autotune_miss_never_runs_inline_worker(
     store = _store(tmp_path / "cache", strategy="autotune", can_tune=False)
     rng_key, batch = _inputs()
 
-    with pytest.raises(RuntimeError, match="non-default GPU"):
-        store.call(
-            rng_key=rng_key,
-            batch=batch,
-            lower=lambda: pytest.fail("unsafe worker tuning must not lower"),
-            invoke=lambda: pytest.fail("unsafe inline autotune must not run"),
-        )
+    arguments = (_FakeBoundArguments("selected-device-op"),)
 
+    def invoke():
+        assert arguments[0].cached_autotuning_data is not None
+        return "selected-device-result"
+
+    assert (
+        store.call(rng_key=rng_key, batch=batch, lower=lambda: arguments, invoke=invoke)
+        == "selected-device-result"
+    )
+    assert list((tmp_path / "cache" / persistent._CACHE_DIRECTORY).glob("*.json"))
     assert tokamax.tune_calls == 0
 
 

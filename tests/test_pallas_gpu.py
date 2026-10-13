@@ -150,16 +150,17 @@ def test_platform_string_resolves_a_concrete_device_for_registration(monkeypatch
     assert gpu_info.registry[device.device_kind]().compute_capability == 89
 
 
-def test_turing_refusal_names_xla_not_oom(monkeypatch):
+def test_turing_refusal_matches_the_global_gpu_support_policy(monkeypatch):
     device = SimpleNamespace(
         platform="gpu", device_kind="Quadro RTX 8000", compute_capability="7.5"
     )
     monkeypatch.setattr("foldjax._gpu.default_device", lambda: device)
     assert "sm_75" in compatibility_notes([device])[0]
-    with pytest.raises(ValueError, match="triangle_kernel=xla") as caught:
+    with pytest.raises(ValueError, match="FoldJAX.*sm_80") as caught:
         require_fused_cuda("Pallas pair kernel")
     assert "sm_75" in str(caught.value)
-    assert "global-memory exhaustion" in str(caught.value)
+    assert "unsupported" in str(caught.value)
+    assert "triangle_kernel=xla" not in str(caught.value)
 
 
 @pytest.mark.parametrize("warmup", [False, True])

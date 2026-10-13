@@ -150,6 +150,10 @@ def test_memory_budget_reads_the_explicitly_selected_device(monkeypatch):
     monkeypatch.setenv("XLA_PYTHON_CLIENT_PREALLOCATE", "true")
     monkeypatch.setattr(jax, "config", SimpleNamespace(jax_default_device=device))
     monkeypatch.setattr(jax, "devices", lambda: [])
+    monkeypatch.setattr(
+        "foldjax._cuda_memory.total_device_bytes",
+        lambda chosen: 32 * GIB if chosen is device else None,
+    )
     assert oom._pool_card_and_used() == (16 * GIB, 32 * GIB, 4 * GIB)
 
 

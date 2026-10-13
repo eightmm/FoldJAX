@@ -35,7 +35,9 @@ def test_shared_model_glu_clamps_the_real_call(monkeypatch, heuristic):
     import tokamax
 
     op, _, original = heuristic
-    device = SimpleNamespace(compute_capability="8.6", device_kind="RTX A6000")
+    device = SimpleNamespace(
+        platform="gpu", compute_capability="8.6", device_kind="RTX A6000"
+    )
     monkeypatch.setattr("foldjax._gpu.default_device", lambda: device)
     monkeypatch.setattr(jax, "default_backend", lambda: "gpu")
     seen = []

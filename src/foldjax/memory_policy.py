@@ -716,7 +716,7 @@ class MemoryBudget:
 
     #: The allocator's ceiling, or ``None`` when it cannot be read.
     pool_bytes: int | None
-    #: The device's capacity, recovered from the pool fraction.
+    #: The selected CUDA device's measured capacity, or ``None`` if unavailable.
     card_bytes: int | None
     #: A caller's planning budget, or ``None``.
     override_bytes: int | None

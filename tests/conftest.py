@@ -106,13 +106,13 @@ def trust_ancestors_above_tmp_path(
 
     boundary = Path(os.path.realpath(tmp_path))
 
-    def reason(path: Path) -> str | None:
-        leaf = Path(os.path.realpath(path))
-        for directory in (leaf, *leaf.parents):
+    def reason(path: Path, *, leaf: bool = True) -> str | None:
+        resolved = Path(os.path.realpath(path))
+        for directory in (resolved, *resolved.parents):
             if not directory.is_relative_to(boundary):
                 return None
             found = cache._untrusted_directory_reason(
-                directory, leaf=directory == leaf
+                directory, leaf=leaf and directory == resolved
             )
             if found is not None:
                 return found
