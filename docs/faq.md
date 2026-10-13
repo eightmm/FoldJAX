@@ -172,11 +172,13 @@ Usually because they were not the same run:
   server, database label or pairing mode is a different cache entry, and the
   server's own databases change over time. The manifest records what each
   chain read (`msa_search`, `msa_stats`).
-- **A fresh compile.** At the same seed, a run that reuses its compiled
-  program repeats bit for bit. Two fresh compilations can choose different
-  GPU kernels and round differently, and a sensitive target amplifies that;
-  keep one compile cache, or use `--option deterministic=on` when two
-  independent compilations must agree (it costs wall time;
+- **A fresh compile.** On most backends, a run that reuses its compiled
+  program repeats bit for bit at the same seed; two fresh compilations can
+  choose different GPU kernels and round differently, and a sensitive target
+  amplifies that. Protenix is the exception, by measurement: reusing a
+  compiled program there does not make a run repeatable. Keep one compile
+  cache for AlphaFold 3 or ESMFold2, or use `--option deterministic=on` on
+  any backend (required for Protenix; it costs wall time;
   [cli.md](cli.md#--option-deterministicon)).
 
 Different models given the same integer seed never produce the same

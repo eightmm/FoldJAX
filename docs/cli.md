@@ -2247,17 +2247,40 @@ measured on: on a chaotic 3,012-token Protenix case the deterministic port
 landed 5-7 Å from the non-deterministic port and from native, the size of
 native's own basin choices. Read parity residuals with the option off.
 
-Without the option, a run is repeatable whenever it reuses its compiled
-executables. XLA chooses GPU kernels by timing candidates when it compiles,
-so two fresh compilations of the same program can pick different kernels
-(Triton against cuBLAS, different tile configurations) and round differently;
-on a target that amplifies small differences the two runs then land apart.
-In the JCTC benchmark, where every run compiled into an empty cache, two
-ESMFold2 runs of 9B7D at one seed differed in 65 of 578 kernel choices and
-lay 2.6 Å apart; replaying each run's own compilation cache on another card
-reproduced each of them bit for bit. Keep one `--cache-dir` (the default
-cache is persistent) to get the same structure again, and use
-`deterministic=on` when two independent compilations must agree.
+Without the option, whether reusing compiled executables makes a run
+repeatable differs by backend; it is not a property of the option's absence
+alone. XLA chooses GPU kernels by timing candidates when it compiles, so two
+fresh compilations of the same program can pick different kernels (Triton
+against cuBLAS, different tile configurations) and round differently; on a
+target that amplifies small differences the two runs then land apart. In the
+JCTC benchmark, where every run compiled into an empty cache, two ESMFold2
+runs of 9B7D at one seed differed in 65 of 578 kernel choices and lay 2.6 Å
+apart; replaying each run's own compilation cache on another card reproduced
+each of them bit for bit. AlphaFold 3's per-run variation at a fixed seed is
+the same kind of noise -- XLA's own kernel autotuning, which times GEMM and
+fusion candidates independently of Tokamax -- and a copied cache (the same
+executables, loaded rather than re-chosen) reproduces a run atom for atom.
+`--option kernel_autotuning=heuristics` does not remove the variation on a
+fresh cache: it only changes Tokamax's cache-miss policy for the gated
+linear unit, not XLA's GEMM/fusion autotuner, so two independent
+`heuristics` compilations still differed by up to 4.3 Å within the same
+sample basin (8W3E, 522 tokens); separate fresh compilations under either
+`heuristics` or `autotune` can also land in basins roughly 21 Å apart.
+
+Protenix does not fit this picture at all. Two independent fresh
+compilations already diverge at a fixed seed (up to 0.28 Å, 9JU4), and
+reusing a copied cache does not bound it further: two runs started from a
+copy of the same cache -- 22/22 compilation-cache hits, so the identical
+executables ran -- diverged more, by up to 17.2 Å same-index Cα RMSD on 9JU4
+(five samples, 200 steps, 10 recycles). The nondeterminism sits inside the
+executed program's own reduction order, not in which kernel got compiled, so
+neither a fresh compile nor a cache hit fixes it; only `deterministic=on`
+does -- two independently-compiled `deterministic=on` runs were bitwise
+identical.
+
+Keep one `--cache-dir` (the default cache is persistent) to get the same
+AlphaFold 3 or ESMFold2 structure again, and use `deterministic=on` for
+Protenix, or on any backend when two independent compilations must agree.
 
 ### `--option pocket_sampling=select`
 
