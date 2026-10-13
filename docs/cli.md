@@ -2261,22 +2261,23 @@ the same kind of noise -- XLA's own kernel autotuning, which times GEMM and
 fusion candidates independently of Tokamax -- and a copied cache (the same
 executables, loaded rather than re-chosen) reproduces a run atom for atom.
 `--option kernel_autotuning=heuristics` does not remove the variation on a
-fresh cache: it only changes Tokamax's cache-miss policy for the gated
-linear unit, not XLA's GEMM/fusion autotuner, so two independent
+fresh cache: it is Tokamax's own cache-miss policy (every Tokamax kernel, not
+just one), not XLA's separate GEMM/fusion autotuner, so two independent
 `heuristics` compilations still differed by up to 4.3 Å within the same
 sample basin (8W3E, 522 tokens); separate fresh compilations under either
 `heuristics` or `autotune` can also land in basins roughly 21 Å apart.
+Boltz-2, OpenDDE and OpenFold3 are unmeasured on this specific point.
 
 Protenix does not fit this picture at all. Two independent fresh
-compilations already diverge at a fixed seed (up to 0.28 Å, 9JU4), and
-reusing a copied cache does not bound it further: two runs started from a
-copy of the same cache -- 22/22 compilation-cache hits, so the identical
-executables ran -- diverged more, by up to 17.2 Å same-index Cα RMSD on 9JU4
-(five samples, 200 steps, 10 recycles). The nondeterminism sits inside the
-executed program's own reduction order, not in which kernel got compiled, so
-neither a fresh compile nor a cache hit fixes it; only `deterministic=on`
-does -- two independently-compiled `deterministic=on` runs were bitwise
-identical.
+compilations already diverge at a fixed seed (up to 0.28 Å, 9JU4), and a
+reused cache does not change that: two runs started from a copy of the same
+cache -- 22/22 compilation-cache hits, so the identical executables ran --
+also diverged, by up to 17.2 Å same-index Cα RMSD on 9JU4 (five samples, 200
+steps, 10 recycles; both are single-pair draws on a chaotic case, not a
+measured bound). The nondeterminism sits inside the executed program's own
+reduction order, not in which kernel got compiled, so neither a fresh
+compile nor a cache hit fixes it; only `deterministic=on` does -- two
+independently-compiled `deterministic=on` runs were bitwise identical.
 
 Keep one `--cache-dir` (the default cache is persistent) to get the same
 AlphaFold 3 or ESMFold2 structure again, and use `deterministic=on` for

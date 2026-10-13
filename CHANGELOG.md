@@ -60,13 +60,13 @@ unless it says so here, in its own paragraph.
   between two runs started from a copy of the same compilation cache (22/22
   cache hits, so the identical executables ran) at a fixed seed; only
   `deterministic=on` reproduces it bitwise there. AlphaFold 3's own
-  variation is confirmed as Tokamax kernel-autotuning noise -- a copied
-  cache reproduces it atom for atom -- and `--option
-  kernel_autotuning=heuristics` does not remove it on a fresh cache, because
-  it only changes Tokamax's own cache-miss choice and leaves XLA's GEMM/
-  fusion autotuner free to vary. ESMFold2's existing claim (a replayed
-  compilation cache reproduces a run bit for bit) was already accurate and
-  is unchanged.
+  variation is confirmed as XLA kernel-autotuning noise -- a copied cache
+  reproduces it atom for atom -- and `--option kernel_autotuning=heuristics`
+  does not remove it on a fresh cache, because that option is Tokamax's own
+  cache-miss policy and leaves XLA's separate GEMM/fusion autotuner free to
+  vary. ESMFold2's existing claim (a replayed compilation cache reproduces a
+  run bit for bit) was already accurate and is unchanged. Boltz-2, OpenDDE
+  and OpenFold3 are unmeasured on this point.
 
 - **`bench/protenix_foldjax_capture.py` replay no longer crashes, or would
   have applied FoldJAX's own MC dropout, when FoldJAX's dropout coin comes up
