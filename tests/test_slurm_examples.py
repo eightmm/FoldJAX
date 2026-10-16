@@ -152,6 +152,7 @@ def test_auto_prefetch_dependencies_arrays_and_literal_passthrough(shell):
         )
     assert boltz[boltz.index("--fixed-msa") + 1] == "1536"
     assert "--fixed-msa" not in af3
+    assert "--padding" in af3
     for gpu in (boltz, af3):
         assert gpu[gpu.index("--output-dir") + 1] == output
         assert "--batch-output" in gpu
@@ -189,16 +190,20 @@ def test_wrapper_defaults_to_2048_and_only_reaches_supported_models(
             assert row["args"][row["args"].index("--fixed-msa") + 1] == (
                 depth or "2048"
             )
+        assert ("--padding" in row["args"]) == (model in {"esmfold2", "alphafold3"})
     assert not any("--dependency" in arg for arg in rows[-1]["args"])
 
 
 @pytest.mark.parametrize("depth", ["2048", "unselected"])
-def test_exact_and_dry_run_make_no_scheduler_cli_or_filesystem_changes(shell, depth):
+@pytest.mark.parametrize("model", ["boltz2", "alphafold3", "esmfold2"])
+def test_exact_and_dry_run_make_no_scheduler_cli_or_filesystem_changes(
+    shell, depth, model
+):
     run, calls, tmp = shell
     completed = run(
         "foldjax-submit",
         "-m",
-        "boltz2",
+        model,
         "-o",
         str(tmp / "out"),
         "--exact",
@@ -210,6 +215,7 @@ def test_exact_and_dry_run_make_no_scheduler_cli_or_filesystem_changes(shell, de
     )
     assert completed.returncode == 0, completed.stderr
     assert "--fixed-msa" not in completed.stdout
+    assert "--padding" not in completed.stdout
     assert "--resume" in completed.stdout and "--keep-going" in completed.stdout
     assert not calls() and not (tmp / "out").exists()
 
@@ -319,7 +325,7 @@ def test_invalid_wrapper_options_submit_nothing(shell, options):
         (
             "warm.sbatch",
             ("--verify-only", "--", "--model", "boltz2", "--input", "job.json"),
-            ("predict",),
+            ("predict", "--msa", "single"),
         ),
     ],
 )
@@ -331,10 +337,99 @@ def test_batch_scripts_execute_only_the_expected_cli_with_literal_arguments(
         script, *args, extra_env={"SLURM_JOB_ID": "123", "SLURM_SUBMIT_DIR": str(tmp)}
     )
     assert completed.returncode == 0, completed.stderr
-    raw_args = args[2:] if args[:1] == ("--verify-only",) else args
+    if script == "warm.sbatch":
+        raw_args = (
+            ["--model", "boltz2", "--batch-output", "--fixed-msa", "2048",
+             "--input", "job.json"]
+            if args[:1] == ("--verify-only",)
+            else ["--model", "boltz2", "--batch-output", "--fixed-msa", "1024"]
+        )
+    else:
+        raw_args = args
     assert calls() == [
         {"tool": "foldjax", "args": [*prefix, *raw_args], "cwd": str(tmp)}
     ]
+
+
+@pytest.mark.parametrize("verify", [False, True])
+@pytest.mark.parametrize(
+    "options,depth",
+    [((), "2048"), (("--fixed-msa", "1536"), "1536"), (("--exact",), None)],
+)
+def test_warm_and_verify_scope_each_model_preset_and_preserve_literal_arguments(
+    shell, verify, options, depth
+):
+    from foldjax.cli import _parser
+
+    run, calls, tmp = shell
+    source = "job $(touch INJECTED).json"
+    extra = ("--verify-only",) if verify else ()
+    completed = run(
+        "warm.sbatch", *extra, "--model", "boltz2", "af3", "esmfold2",
+        *options, "--", "--input", source, "--output-dir", "out with spaces",
+        extra_env={"SLURM_JOB_ID": "123", "SLURM_SUBMIT_DIR": str(tmp)},
+    )
+    assert completed.returncode == 0, completed.stderr
+    rows = calls()
+    assert len(rows) == 3
+    for model, row in zip(("boltz2", "alphafold3", "esmfold2"), rows, strict=True):
+        argv = row["args"]
+        parsed = _parser().parse_args(argv)
+        assert parsed.model == [model]
+        assert parsed.fixed_msa == (int(depth) if model == "boltz2" and depth else None)
+        assert parsed.padding is (model != "boltz2" and depth is not None)
+        assert parsed.batch_output
+        assert argv[-4:] == ["--input", source, "--output-dir", "out with spaces"]
+        assert argv[:1] == (["predict"] if verify else ["cache"])
+    assert not (tmp / "INJECTED").exists()
+    if not verify:
+        assert "Warming finished" in completed.stderr
+
+
+def test_warm_mixed_models_reject_one_explicit_weights_path_before_running(shell):
+    run, calls, tmp = shell
+    completed = run(
+        "warm.sbatch", "--model", "boltz2", "af3", "--weights", "one-model.jax",
+        extra_env={"SLURM_JOB_ID": "123", "SLURM_SUBMIT_DIR": str(tmp)},
+    )
+    assert completed.returncode == 2
+    assert "cannot be shared" in completed.stderr
+    assert not calls()
+
+
+def test_default_warm_sweep_routes_mixed_model_presets_to_valid_cli_calls(shell):
+    from foldjax.cli import _parser
+
+    run, calls, tmp = shell
+    completed = run(
+        "warm.sbatch", "--model", "boltz2", "af3", "esmfold2",
+        extra_env={"SLURM_JOB_ID": "123", "SLURM_SUBMIT_DIR": str(tmp)},
+    )
+    assert completed.returncode == 0, completed.stderr
+    rows = calls()
+    assert len(rows) == 3
+    for row in rows:
+        parsed = _parser().parse_args(row["args"])
+        assert parsed.token_buckets == "auto" and parsed.msa == "single"
+        assert (parsed.fixed_msa == 2048) is (parsed.model == ["boltz2"])
+        assert parsed.padding is (parsed.model != ["boltz2"])
+
+
+@pytest.mark.parametrize(
+    "args",
+    [(), ("--model", "unknown"), ("--model", "af3", "alphafold3"),
+     ("--model", "boltz2", "--fixed-msa", "0"),
+     ("--model", "boltz2", "--exact", "--fixed-msa", "2048"),
+     ("--model", "boltz2", "--exact")],
+)
+def test_invalid_warm_script_options_run_nothing(shell, args):
+    run, calls, tmp = shell
+    completed = run(
+        "warm.sbatch", *args,
+        extra_env={"SLURM_JOB_ID": "123", "SLURM_SUBMIT_DIR": str(tmp)},
+    )
+    assert completed.returncode == 2, completed.stderr
+    assert not calls()
 
 
 @pytest.mark.parametrize("script", ["msa.sbatch", "predict.sbatch", "warm.sbatch"])

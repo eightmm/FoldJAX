@@ -178,8 +178,15 @@ StableHLO, and is published only after the accumulated overlay can lower the
 exact call under the strict `error` policy. A fresh process can therefore select
 the same kernels before tracing. JAX executable-cache reuse is a separate,
 best-effort layer; the persisted Tokamax result does not claim that every XLA
-executable entry is readable. Two knobs control what happens when that persisted
-result is absent:
+executable entry is readable.
+
+A trusted shared namespace is read first, followed by the request's private
+compilation-cache namespace. A shared hit stays in place. A complete new result
+is published under a per-call lock in the writable shared tier, or in the
+private tier when shared creation, locking, or publication fails. The private
+namespace uses owner-only directories and files, including when shared-cache
+trust is enabled. Missing shared namespaces can therefore use the personal
+tier without modifying the shared installation.
 
 **What the autotuning costs, measured.** With the compile cache warm on both
 sides and only the persisted Tokamax store deleted between them, at seed 101 on
@@ -202,6 +209,8 @@ process that tunes spends three quarters of its life not predicting. That is
 what the persisted store removes, and why AlphaFold 3 rows measured before
 2026-08-31 are several times their current cost.
 
+These options control what happens when a persisted result is absent:
+
 | option | effect |
 |---|---|
 | `--option kernel_autotuning=heuristics` | use a persisted result first; otherwise use upstream's faster guess, which may not fit your device |
@@ -222,6 +231,13 @@ partly retained after an incomplete measurement (`partial`), or left to Tokamax
 is `null` without a store (CPU runs, `--no-cache`, an external source), where
 every call is Tokamax's own. For upstream's heuristic programs whatever the
 store holds, run `heuristics` with its own `--cache-dir`.
+
+When two tiers are active, each recorded call also reports
+`cache_read_tiers` for disk reads and `cache_write_tiers` for successful
+publications, counted by `shared` or `private`. `cache_reuse_tiers` counts
+in-memory reuse with a known storage origin; it does not count another disk
+read. These describe storage separately from the existing
+`store`/`measured`/`partial` kernel-configuration sources.
 
 An omitted attention (or `attention_kernel=auto`) is upstream's `triton` only
 when the selected device is a GPU; on a CPU or TPU it is `xla`, because

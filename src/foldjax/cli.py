@@ -7,6 +7,7 @@ import dataclasses
 import errno
 import json
 import os
+import shlex
 import sys
 import time
 import warnings
@@ -331,7 +332,9 @@ def _add_predict_arguments(
         metavar="N",
         help="fixed MSA preset for Boltz-2, Protenix, OpenFold3 and OpenDDE: "
         "enable padding, cap input rows with --max-msa-depth N, and pin "
-        "--pad-msa N. N is required; there is no measured default",
+        "--pad-msa N. Recommended: 2048. User-reported 1UBQ/2LZM/4HHB "
+        "comparisons of these four models at 1024/2048/4096 rows found lDDT "
+        "within +/-0.01. N is required; this remains opt-in",
     )
     shapes.add_argument(
         "--padding",
@@ -1614,6 +1617,8 @@ def _run_cache(args: argparse.Namespace) -> int:
             if args.json
             else format_bucket_report(result)
         )
+        if any(model["successful_buckets"] for model in result["models"]):
+            _print_warm_prediction_hint(args)
         return (
             3
             if any(
@@ -1660,7 +1665,38 @@ def _run_cache(args: argparse.Namespace) -> int:
         else result.summary()
     )
     print(json.dumps(payload, indent=2, sort_keys=True))
+    _print_warm_prediction_hint(args)
     return 0
+
+
+def _print_warm_prediction_hint(args: argparse.Namespace) -> None:
+    command = ["foldjax", "predict", "--model", *args.model, "--input", "JOB.json"]
+    options = _options(args.option)
+    if "buckets" in options:
+        command.extend(["--option", f"buckets={json.dumps(options['buckets'])}"])
+    elif args.token_buckets is not None or args.padding:
+        command.append("--padding")
+    for attribute, flag in (
+        ("fixed_msa", "--fixed-msa"),
+        ("pad_tokens", "--pad-tokens"),
+        ("pad_atoms", "--pad-atoms"),
+        ("pad_msa", "--pad-msa"),
+        ("pad_templates", "--pad-templates"),
+        ("pad_structural_tokens", "--pad-structural-tokens"),
+        ("pad_language_model_tokens", "--pad-language-model-tokens"),
+    ):
+        value = getattr(args, attribute)
+        if value is not None:
+            command.extend([flag, str(value)])
+    print(
+        f"[cache] Prediction command template: {shlex.join(command)}", file=sys.stderr
+    )
+    print(
+        "[cache] Keep the same weights/profile, device/runtime, MSA cap and "
+        "execution options; use a successfully warmed token target "
+        "(--pad-tokens N for a non-grid target). Choose the prediction's MSA policy.",
+        file=sys.stderr,
+    )
 
 
 def _validate_mem_fraction(requested: float | None) -> None:
@@ -1854,7 +1890,14 @@ def _planned_token_bucket(
     if notes:
         record["tokens_not_counted"] = notes
     try:
-        record["token_bucket"] = resolve_axis(tokens, request.padding, "tokens")
+        buckets = None
+        if normalize_model_name(request.model) == "alphafold3":
+            from foldjax.backends.alphafold3 import _prediction_buckets
+
+            buckets = _prediction_buckets(request, dict(request.options))
+        record["token_bucket"] = resolve_axis(
+            tokens, request.padding, "tokens", buckets=buckets
+        )
     except ValueError as error:
         record["token_bucket"] = None
         record["reason"] = str(error)

@@ -81,12 +81,13 @@ are rejected so independent jobs cannot write one output directory concurrently.
 For Boltz-2, Protenix, OpenFold3, and OpenDDE, the wrapper uses
 `--fixed-msa 2048` in both planning and prediction by default. Override it with
 `--fixed-msa N` or `FIXED_MSA_DEPTH=N`. This deployment choice follows the
-user-reported comparison finding no accuracy difference among 1024/2048/4096
-rows; the underlying measurements are not bundled here. Core `foldjax predict`
+user-reported 1UBQ/2LZM/4HHB comparison on these four models finding lDDT within
+±0.01 across 1024/2048/4096 rows; the underlying measurements are not bundled,
+and this finite panel is not a general accuracy guarantee. Core `foldjax predict`
 and `cache warm` still enable the preset only when explicitly requested.
-AlphaFold 3 and ESMFold2 receive no fixed-MSA flag, including in mixed-model
-submissions. `--exact`
-disables the wrapper's automatic preset; it does not remove explicit padding
+AlphaFold 3 and ESMFold2 receive `--padding` and no fixed-MSA flag, including in
+mixed-model submissions. `--exact` disables all automatic presets, including
+their padding; it does not remove explicit padding
 or depth options supplied after `--`. `--exact` and explicit `--fixed-msa` are
 mutually exclusive. To reproduce the publisher's exact-shape path, omit any
 other padding/depth overrides as well.
@@ -94,20 +95,26 @@ other padding/depth overrides as well.
 ## Warm and verify a shared cache
 
 Submit the following once per GPU type as the account that owns the shared
-cache, after filling the site variables. For the four fixed-MSA models, add
-the same **explicit** `--fixed-msa N` used for prediction (2048 with the wrapper
-default); `warm.sbatch` passes its arguments directly and does not invent or
-infer N from the environment.
+cache, after filling the site variables. `warm.sbatch` and `--verify-only` use
+the same presets as submission: `--fixed-msa 2048` for its four supported models,
+`--padding` for AF3/ESMFold2. `FIXED_MSA_DEPTH` or explicit `--fixed-msa N`
+overrides the depth in every script. Mixed models run as separate CLI calls so
+the fixed-MSA flag reaches only supported models, with one report per model.
+One explicit weights path cannot be shared by mixed models.
+Warm and verification default to `--msa single`; an explicit `--msa` selects the
+real job's search policy for exact-input warming or verification.
 
 ```bash
 mkdir -p warm-logs
 sbatch --partition="$PARTITIONS_GPU" --gres="$GRES" \
   --cpus-per-task="$CPUS_PER_GPU" --output='warm-logs/warm-%j.out' \
-  examples/slurm/warm.sbatch --model boltz2 --fixed-msa "$FIXED_MSA_DEPTH"
+  examples/slurm/warm.sbatch --model boltz2 alphafold3 esmfold2
 ```
 
-Omit `--fixed-msa` for AlphaFold 3/ESMFold2 or when prediction used `--exact`
-without a separate MSA cap. Warming uses `--token-buckets auto --msa single` and stops at the first OOM by
+Use the same `--exact` or explicit depth override as prediction. To warm the
+exact unpadded path, supply `--exact --input representative.json`; a bucket sweep
+always pads and cannot establish exact-shape reuse. With no input, warming uses
+`--token-buckets auto --msa single` and stops at the first OOM by
 default; an explicit `--token-buckets SPEC` or warm policy after the script name
 can override those defaults. It may be expensive: the GPU job must be submitted
 deliberately with the site's resource/time settings. It is never run by
@@ -121,8 +128,8 @@ mkdir -p verification-logs
 sbatch --partition="$PARTITIONS_GPU" --gres="$GRES" \
   --cpus-per-task="$CPUS_PER_GPU" --output='verification-logs/verify-%j.out' \
   examples/slurm/warm.sbatch --verify-only -- \
-  --model boltz2 --input representative.json --padding \
-  --fixed-msa "$FIXED_MSA_DEPTH" --output-dir fresh-verification-output
+  --model boltz2 --input representative.json \
+  --output-dir fresh-verification-output
 ```
 
 After the verification job finishes:
@@ -131,8 +138,10 @@ After the verification job finishes:
 foldjax show fresh-verification-output --format csv
 ```
 
-Use a representative input and matching bucket, MSA cap, weights, static
-options, and GPU type from warming. Choose a fresh output directory and do not
+Verification and explicit-input warming use `--batch-output`, matching the
+submission layout `OUT/model/input-stem`. Use a representative input and matching
+bucket, MSA cap, weights, static options, and GPU type from warming. Choose a
+fresh output directory and do not
 add `--resume`, so verification actually executes. Examine the job log and
 `foldjax doctor --json` for cache access; successful verification should use
 existing entries without attempting to save new shared entries. A Slurm

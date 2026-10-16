@@ -1338,6 +1338,14 @@ def _predict_resolved(
     already uses. ``None`` comes back only when the request's error policy
     absorbed every seed's failure.
     """
+    from foldjax.cache import clear_record as clear_cache_record
+
+    clear_cache_record()
+    # An all-resumed multi-seed request writes its aggregate manifest without
+    # entering the per-seed execution boundary that normally resets telemetry.
+    memory_policy.clear_record()
+    clear_kernel_record()
+    clear_mesh_record()
     failures = [] if failures is None else failures
     skipped = [] if skipped is None else skipped
     # Inside the error policy: a run directory that is a file, or is not
@@ -1523,7 +1531,11 @@ def _predict_once(
 
     device = default_device(request)
     require_supported_gpu(device)
-    with jax.default_device(device), selected_tokamax_device(device):
+    with (
+        jax.default_device(device),
+        selected_tokamax_device(device),
+        memory_policy.selected_device_scope(device),
+    ):
         return _predict_once_on_device(
             request,
             seed,
@@ -1710,7 +1722,19 @@ def _predict_once_on_device(
                 if key not in consumed
             },
         )
+    from foldjax.cache import (
+        clear_record as clear_cache_record,
+    )
+    from foldjax.cache import (
+        private_compile_cache_root,
+    )
+
+    private_cache_dir = None
     if request.cache_dir is not None:
+        private_cache_dir = resolve_cache_dir(
+            dataclasses.replace(request, cache_dir=private_compile_cache_root()),
+            backend,
+        )
         request = dataclasses.replace(
             request, cache_dir=resolve_cache_dir(request, backend)
         )
@@ -1718,6 +1742,7 @@ def _predict_once_on_device(
     # previous seed's. A backend with no fitted law records nothing and the
     # block stays null, which is the honest answer rather than a stale one.
     memory_policy.clear_record()
+    clear_cache_record()
     # The same for the `kernel_tuning` block, which only AlphaFold 3 writes.
     clear_kernel_record()
     # And so an OOM here is attributed to this prediction's mesh, or to no mesh
@@ -1729,7 +1754,9 @@ def _predict_once_on_device(
         with (
             timeline.stage("predict"),
             timeline.recording(),
-            compilation_cache_scope(request.cache_dir),
+            compilation_cache_scope(
+                request.cache_dir, private_directory=private_cache_dir
+            ),
         ):
             result = backend.predict(request)
     except SystemExit as error:

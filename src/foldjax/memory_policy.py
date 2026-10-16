@@ -37,12 +37,30 @@ reads the device, through `foldjax.oom`, which imports JAX only when called.
 from __future__ import annotations
 
 import warnings
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from foldjax import oom
+
+_SELECTED_DEVICE: ContextVar[dict[str, Any] | None] = ContextVar(
+    "foldjax_memory_selected_device", default=None
+)
+
+
+@contextmanager
+def selected_device_scope(device: Any) -> Iterator[None]:
+    """Bind device metadata without changing the admitted-profile verdict."""
+    from foldjax.cache import device_identity
+
+    token = _SELECTED_DEVICE.set(device_identity(device))
+    try:
+        yield
+    finally:
+        _SELECTED_DEVICE.reset(token)
+
 
 _MIB = 2**20
 _GIB = 2**30
@@ -1028,6 +1046,11 @@ def record(
             "msa_rows": None if msa_rows is None else int(msa_rows),
             "state": decision.state,
             "selected": decision.selected,
+            **(
+                {"selected_device": dict(device)}
+                if (device := _SELECTED_DEVICE.get()) is not None
+                else {}
+            ),
             "reason": decision.reason,
             "estimates": [
                 {

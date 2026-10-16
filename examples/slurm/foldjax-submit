@@ -20,7 +20,7 @@ Usage: foldjax-submit -m MODEL [-m MODEL ...] -o OUTDIR [OPTIONS] -- PREDICT_ARG
   --time LIMIT        Slurm wall time (otherwise the site's default)
   --shards N          submit an array and pass --shard auto to predict
   --fixed-msa N       fixed MSA rows for Boltz-2/Protenix/OpenFold3/OpenDDE (default: 2048)
-  --exact             disable the configured FIXED_MSA_DEPTH preset
+  --exact             disable automatic padding and the FIXED_MSA_DEPTH preset
   --dry-run           print commands; run neither FoldJAX nor sbatch
 With auto MSA, PREDICT_ARGS must include --input PATH [PATH ...].
 EOF
@@ -37,6 +37,15 @@ model_name() {
         openfold3|of3|openfold-3|openfold3-jax) printf openfold3 ;;
         protenix|protenix-jax) printf protenix ;;
         *) die "unknown model: $1" ;;
+    esac
+}
+model_preset() {
+    preset=()
+    case "$1" in
+        boltz2|protenix|openfold3|opendde)
+            if [[ -n $FIXED_MSA_DEPTH ]]; then preset=(--fixed-msa "$FIXED_MSA_DEPTH"); fi ;;
+        alphafold3|esmfold2)
+            if ((!exact)); then preset=(--padding); fi ;;
     esac
 }
 
@@ -122,11 +131,7 @@ else
     if [[ -n $MODULE ]]; then module load "$MODULE"; fi
     # Preflight every model before any scheduler job is submitted.
     for model in "${models[@]}"; do
-        preset=()
-        case "$model" in
-            boltz2|protenix|openfold3|opendde)
-                if [[ -n $FIXED_MSA_DEPTH ]]; then preset=(--fixed-msa "$FIXED_MSA_DEPTH"); fi ;;
-        esac
+        model_preset "$model"
         foldjax plan --model "$model" --output-dir "$output" --batch-output --msa "$msa" "${preset[@]}" "${predict_args[@]}"
     done
     mkdir -p -- "$logs"
@@ -148,11 +153,7 @@ if [[ $msa == auto ]]; then
     dependency=("--dependency=afterok:$msa_job_id" --kill-on-invalid-dep=yes)
 fi
 for model in "${models[@]}"; do
-    preset=()
-    case "$model" in
-        boltz2|protenix|openfold3|opendde)
-            if [[ -n $FIXED_MSA_DEPTH ]]; then preset=(--fixed-msa "$FIXED_MSA_DEPTH"); fi ;;
-    esac
+    model_preset "$model"
     command=(sbatch "${gpu_options[@]}" "${dependency[@]}" "--job-name=foldjax-$model"
         "--output=$logs/$model-%A_%a.out" "$script_dir/predict.sbatch"
         --model "$model" --output-dir "$output" --batch-output --msa "$msa"

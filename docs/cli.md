@@ -654,9 +654,11 @@ uv run foldjax predict --model boltz2 --input job.yaml --padding
 
 With no padding flag, the exact historical model path and shapes are unchanged.
 With `--padding`, each backend selects a token bucket and derives a complete
-shape profile from it. The token grid steps by 256 up to 8,192, so a padded
-run never pays more than 256 tokens of extra work over its exact shape, and a
-deployment can bake one profile per bucket ahead of time (matching the profile
+shape profile from it. The shared token grid steps by 128 below 1,024, then
+by 256 through 8,192. AlphaFold 3 uses its native grid beginning at 256 instead;
+`plan` reports the same selection as prediction. Explicit `--pad-tokens` pins
+remain valid below that automatic minimum. A deployment can bake one profile
+per bucket ahead of time (matching the profile
 is necessary for reuse, not sufficient -- see below). Atom storage is
 `24 * tokens`, rounded up to a multiple of 32. The MSA axis is padded up to
 the smallest standard bucket that holds the rows the model reads, never down:
@@ -2283,6 +2285,12 @@ reduction order, not in which kernel got compiled, so neither a fresh
 compile nor a cache hit fixes it; only `deterministic=on` does -- two
 independently-compiled `deterministic=on` runs were bitwise identical.
 
+Those 9JU4 observations predate the fixed-shape MC-dropout key/flag change and
+remain historical measurements. CPU checks cover identical draws, disabled
+dropout values, and one lowered input structure for both flag values. A new
+real-weight GPU comparison against `33acbf58` has not yet completed; the older
+RMSDs do not establish a tolerance for that change.
+
 Keep one `--cache-dir` (the default cache is persistent) to get the same
 AlphaFold 3 or ESMFold2 structure again, and use `deterministic=on` for
 Protenix, or on any backend when two independent compilations must agree.
@@ -2359,15 +2367,28 @@ amount of it, so its coin depends on the seed and the job. That stream cannot
 be reproduced; this port draws the coin and the per-recycle keys from the seed
 and a digest of the job's token types and chain ids instead, so one seed fires
 on about 40% of jobs, a fixed seed and job repeat both, and the log names
-which way the coin fell. `mc_dropout_apply_rate=0` turns it off. Because the
-two coin outcomes are two programs, `--prewarm-only` or `foldjax cache warm`
-at one seed compiles only that job's outcome, and a padded bucket holds one
-executable per outcome rather than one. A padded run draws, for every real pair, the bit the unpadded
+which way the coin fell. `mc_dropout_apply_rate=0` turns it off. Managed calls
+always carry per-recycle keys and a runtime boolean, so both coin outcomes
+reuse one executable for matching shapes, rate and static options. The disabled
+branch draws no dropout masks and skips scaling. Keys follow the active JAX
+PRNG implementation. A padded run draws, for every real pair, the bit the unpadded
 run draws (the prefix-stable draw the diffusion noise uses); where JAX's
 Threefry is not partitionable the run falls back to the host noise tape for
 diffusion, and the dropout mask then follows the padded shape. The dropout
-rate is a compile option; the apply rate is not, since the program run is
-keyed by what the coin selects.
+rate is a compile option; the apply rate changes the runtime coin only.
+
+### `--fixed-msa N`
+
+An opt-in preset for Boltz-2, Protenix, OpenFold3 and OpenDDE, equivalent to
+`--padding --max-msa-depth N --pad-msa N`. `N` remains required in `predict`,
+`plan` and `cache warm`. **Recommended: 2048** for the deployment profile.
+The user-reported comparison of 1UBQ, 2LZM and 4HHB on these four models found
+lDDT within ±0.01 across 1024/2048/4096 rows. Raw measurements are not bundled,
+and that finite panel does not establish accuracy equivalence for other inputs.
+Use the same capacity for warm and prediction; see [fixed-msa.md](fixed-msa.md).
+The Slurm examples apply this preset automatically for these four models and
+`--padding` for AF3/ESMFold2; their `--exact` disables automatic presets. The
+core CLI keeps all of them opt-in.
 
 ### `--max-msa-depth`
 

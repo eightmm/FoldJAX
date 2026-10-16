@@ -8,10 +8,12 @@
 ```
 
 `N` is required and must be a positive integer in the core CLI; padding and
-MSA caps remain opt-in there. The Slurm submission wrapper defaults to **2048**
-for these four models, following the user-reported cluster comparison that
-found no accuracy difference among 1024/2048/4096 rows. The underlying results
-are not included in this repository. This deployment choice does not change
+MSA caps remain opt-in there. **Recommended: 2048** for a deployment profile;
+the Slurm scripts use it by default for these four models. The user-reported
+comparison of 1UBQ, 2LZM and 4HHB found lDDT within ±0.01 across
+1024/2048/4096 rows on these four models. The underlying results are not included
+in this repository, and this finite panel is not a general accuracy guarantee.
+This deployment choice does not change
 native selection limits or establish a timing/memory ranking. Choose the same
 value when warming and predicting:
 
@@ -22,7 +24,10 @@ foldjax predict --model boltz2 --input job.json --msa auto --fixed-msa 2048
 
 `examples/slurm/foldjax-submit` accepts `--fixed-msa N` or the site variable
 `FIXED_MSA_DEPTH` to override 2048; `--exact` disables its automatic preset.
-AlphaFold 3 and ESMFold2 never receive that wrapper flag.
+AlphaFold 3 and ESMFold2 never receive that wrapper flag; the scripts select
+`--padding` for them instead. `warm.sbatch` and its `--verify-only` mode use the
+same model-specific presets, including in mixed-model jobs. Pass the same
+`--exact` or capacity override to every stage.
 
 The preset caps alignment rows through the model's existing input selection,
 then pads the compiled MSA axis to exactly `N`. A shallower alignment gets

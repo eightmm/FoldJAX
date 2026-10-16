@@ -1036,6 +1036,7 @@ def test_the_manifest_records_the_decision_and_survives_a_json_round_trip(
     block = document["memory"]
     assert block["state"] == "fits"
     assert block["selected"] == "released"
+    assert block["selected_device"]["platform"] == "cpu"
     assert block["pool_bytes"] == 90 * _GIB
     assert block["card_bytes"] == 96 * _GIB
     assert block["budget_bytes"] == 40 * _GIB
@@ -1056,6 +1057,44 @@ def test_the_manifest_records_the_decision_and_survives_a_json_round_trip(
     # and discards the whole manifest, so a numpy scalar here would silently
     # cost a run its entire provenance.
     assert json.loads(json.dumps(block, sort_keys=True)) == block
+
+
+def test_unknown_memory_profile_records_the_execution_device_in_the_manifest(
+    tmp_path: Path,
+) -> None:
+    class _UnmeasuredBackend(_AdmittingBackend):
+        def predict(self, request):
+            result = super().predict(request)
+            memory_policy.admit_unmeasured(
+                model="alphafold3",
+                detail="no law was fitted to this model",
+                budget=resolve_budget(
+                    pool_bytes=90 * _GIB, card_bytes=96 * _GIB, override_gib=None
+                ),
+            )
+            return result
+
+    out = tmp_path / "out"
+    weights = tmp_path / "weights.jax"
+    weights.write_bytes(b"not really weights")
+    request = PredictionRequest(
+        model="opendde",
+        input=_job(tmp_path),
+        weights=weights,
+        profile="released",
+        output_dir=out,
+        use_compile_cache=False,
+    )
+    with (
+        backend_override("opendde", _UnmeasuredBackend),
+        pytest.warns(RuntimeWarning, match="no alphafold3 peak law is fitted"),
+    ):
+        foldjax.predict(request)
+
+    block = json.loads((out / MANIFEST_NAME).read_text())["memory"]
+    assert block["state"] == "unknown"
+    assert block["selected"] is None
+    assert block["selected_device"]["platform"] == "cpu"
 
 
 def test_a_run_that_takes_no_decision_records_none_rather_than_the_last_one(

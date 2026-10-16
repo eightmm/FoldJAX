@@ -73,6 +73,7 @@ class CacheWarmResult:
     strategy: str = "execute_once"
     shape_profile: dict[str, object] | None = None
     kernel_tuning: dict[str, object] | None = None
+    compilation_cache: dict[str, object] | None = None
 
     @property
     def new_files(self) -> int:
@@ -84,9 +85,22 @@ class CacheWarmResult:
 
     @property
     def status(self) -> str:
-        if self.new_files or self.new_bytes:
+        cache = self.compilation_cache or {}
+        tuning_calls = (self.kernel_tuning or {}).get("calls", ())
+        published = any(
+            events.get("success", 0) > 0
+            for events in cache.get("writes", {}).values()
+        ) or any(call.get("cache_write_tiers") for call in tuning_calls)
+        if self.new_files or self.new_bytes or published:
             return "populated"
-        if self.before.files:
+        loaded = any(
+            events.get("success", 0) > 0
+            for events in cache.get("loads", {}).values()
+        ) or any(
+            call.get("cache_read_tiers") or call.get("cache_reuse_tiers")
+            for call in tuning_calls
+        )
+        if self.before.files or loaded:
             # Directory snapshots cannot distinguish a true XLA hit from an
             # executable that was ineligible for persistence. Do not claim a
             # hit that JAX did not expose as structured data.
@@ -121,6 +135,8 @@ class CacheWarmResult:
             summary["shape_profile"] = dict(self.shape_profile)
         if self.kernel_tuning is not None:
             summary["kernel_tuning"] = dict(self.kernel_tuning)
+        if self.compilation_cache is not None:
+            summary["compilation_cache"] = dict(self.compilation_cache)
         return summary
 
 
@@ -168,6 +184,9 @@ def _warm_resolved(
     from foldjax.backends._tokamax_autotune import recorded as recorded_kernel_tuning
 
     tuning = recorded_kernel_tuning() if backend.name == "alphafold3" else None
+    from foldjax.cache import recorded as recorded_compilation_cache
+
+    compilation_cache = recorded_compilation_cache()
     assert request.weights is not None
     return CacheWarmResult(
         model=backend.name,
@@ -183,6 +202,7 @@ def _warm_resolved(
         output_dir=retained,
         shape_profile=result.shape_profile,
         kernel_tuning=tuning,
+        compilation_cache=compilation_cache,
     )
 
 

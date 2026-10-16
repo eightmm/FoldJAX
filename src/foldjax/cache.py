@@ -14,12 +14,21 @@ import hashlib
 import json
 import os
 import re
+import sys
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
 from typing import Any
+
+from foldjax._cache_tiers import (
+    CacheLocations,
+    cache_locations,
+    current_cache_locations,
+    open_directory,
+    prepare_private_directory,
+)
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 _CONFIG_LOCK = RLock()
@@ -33,6 +42,30 @@ _CONFIG_LOCK = RLock()
 #: 20 ms together). Loading an entry returns the executable the first
 #: process compiled for the same key, so what runs is what ran.
 PERSISTENT_CACHE_MIN_COMPILE_SECS = 0.0
+
+
+def private_compile_cache_root() -> Path:
+    """A user cache independent of a shared FoldJAX home or source checkout."""
+    explicit = os.environ.get("FOLDJAX_PRIVATE_COMPILE_CACHE")
+    if explicit:
+        return Path(explicit).expanduser()
+    root = os.environ.get("XDG_CACHE_HOME")
+    return (
+        (Path(root).expanduser() if root else Path.home() / ".cache")
+        / "foldjax"
+        / "compile"
+    )
+
+
+def clear_record() -> None:
+    module = sys.modules.get("foldjax._jax_cache_tiers")
+    if module is not None:
+        module.clear_record()
+
+
+def recorded() -> dict[str, Any] | None:
+    module = sys.modules.get("foldjax._jax_cache_tiers")
+    return module.recorded() if module is not None else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -356,8 +389,8 @@ def _warn_readonly_cache(path: Path) -> Path:
         _warn_once(
             path,
             f"the compile cache {path} is not writable by this account: "
-            "existing entries load read-only; new entries and XLA subcaches "
-            "will not be saved. Its owner can repair a shared store with "
+            "existing entries load read-only; new entries require a writable "
+            "cache tier. Its owner can repair a shared store with "
             f"chmod -R g+w {path}.",
         )
     return path
@@ -367,9 +400,9 @@ def trusted_compile_cache_dir(directory: str | os.PathLike[str]) -> Path | None:
     """Prepare ``directory`` and return it when its executables can be trusted.
 
     Returns ``None``, with one warning per directory, when another account can
-    write into the cache or its ancestors; the caller then compiles without a
-    persistent cache. The trust decision is taken on the nearest existing
-    ancestor before anything is created, so a refused cache leaves no empty
+    write into the cache or its ancestors; the caller can use another trusted
+    tier or compile without persistence. The trust decision uses the nearest
+    existing ancestor before creation, so a refused cache leaves no empty
     namespace behind. ``FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1`` skips the check
     for a deliberately shared store, whose new directories then take the
     umask's mode (and a setgid parent's group) like the rest of it.
@@ -382,7 +415,7 @@ def trusted_compile_cache_dir(directory: str | os.PathLike[str]) -> Path | None:
             _warn_once(
                 path,
                 f"not using the compile cache {path}: it cannot be created "
-                f"({error}). Compiling without a persistent cache; make the "
+                f"({error}). Skipping this namespace; make the "
                 "shared store group-writable (chmod -R g+w) to share it.",
             )
             return None
@@ -399,18 +432,45 @@ def trusted_compile_cache_dir(directory: str | os.PathLike[str]) -> Path | None:
         return _warn_readonly_cache(path)
     _warn_once(
         path,
-        f"not using the compile cache {path}: {reason}, so another account "
-        "could plant an executable there. Compiling without a persistent "
-        f"cache; set {TRUST_SHARED_COMPILE_CACHE_ENV}=1 to trust a shared "
+        f"not using the compile cache {path}: {reason}. Its executables could "
+        "not be verified as trusted. Skipping this namespace; "
+        f"set {TRUST_SHARED_COMPILE_CACHE_ENV}=1 to trust a shared "
         "store, or use a cache directory only you can write.",
     )
     return None
+
+
+def _layered_shared_directory(directory: Path) -> Path | None:
+    path = Path(directory).expanduser()
+    reason = compile_cache_untrusted_reason(path)
+    if reason is not None:
+        _warn_once(path, f"not using the shared compile cache {path}: {reason}")
+        return None
+    try:
+        # Create through held descriptors too: checking after Path.mkdir would
+        # already have created namespaces through an unsafe symlink ancestor.
+        with open_directory(
+            path,
+            private=False,
+            create=True,
+            mode=0o777 if shared_compile_cache_trusted() else 0o700,
+        ):
+            pass
+    except OSError as error:
+        _warn_once(
+            path,
+            f"not using the shared compile cache {path}: "
+            f"safe directory access failed ({error})",
+        )
+        return None
+    return _warn_readonly_cache(path)
 
 
 @contextmanager
 def compilation_cache_scope(
     directory: Path | None,
     *,
+    private_directory: Path | None = None,
     min_entry_size_bytes: int | None = None,
 ):
     """Apply one request's JAX cache setting and restore the host's afterwards.
@@ -421,6 +481,12 @@ def compilation_cache_scope(
     Unrelated JAX compilation in another thread cannot be isolated from a
     process-global setting; mixed workloads must use a separate process.
 
+    ``private_directory`` is the same profile under a user-owned cache root.
+    Reads prefer shared entries; writes fall back to private. Equal namespaces
+    share one tier, and nested backend scopes inherit the active private tier.
+    Layered scopes disable XLA's separate native caches because their writes
+    bypass the recoverable CacheInterface path, including quota/mount errors.
+
     ``min_entry_size_bytes`` overrides XLA's size floor for what is worth
     writing. Only OpenFold3 passes it, as ``-1``: that port's slowest graphs to
     compile are small enough that the default floor skips exactly them. Left
@@ -428,6 +494,29 @@ def compilation_cache_scope(
     """
     import jax
     from jax.experimental.compilation_cache import compilation_cache
+
+    active = current_cache_locations()
+    if (
+        directory is not None
+        and active is not None
+        and private_directory is None
+        and active.requested_shared is not None
+        and os.path.abspath(directory) == os.path.abspath(active.requested_shared)
+    ):
+        with _CONFIG_LOCK:
+            previous_floor = jax.config.jax_persistent_cache_min_entry_size_bytes
+            try:
+                if min_entry_size_bytes is not None:
+                    jax.config.update(
+                        "jax_persistent_cache_min_entry_size_bytes",
+                        min_entry_size_bytes,
+                    )
+                yield
+            finally:
+                jax.config.update(
+                    "jax_persistent_cache_min_entry_size_bytes", previous_floor
+                )
+        return
 
     names = (
         "jax_compilation_cache_dir",
@@ -438,6 +527,8 @@ def compilation_cache_scope(
     )
     with _CONFIG_LOCK:
         previous = {name: getattr(jax.config, name) for name in names}
+        requested_shared = Path(directory) if directory is not None else None
+        layered = private_directory is not None
         try:
             # JAX constructs its file-cache object at most once. Updating the
             # config alone after the first compilation leaves that object
@@ -445,12 +536,35 @@ def compilation_cache_scope(
             # request's namespace (or disabling it).
             compilation_cache.reset_cache()
             if directory is not None:
-                directory = trusted_compile_cache_dir(directory)
-            if directory is None:
+                directory = (
+                    _layered_shared_directory(directory)
+                    if layered
+                    else trusted_compile_cache_dir(directory)
+                )
+            private = None
+            if private_directory is not None and (
+                directory is None
+                or os.path.realpath(directory) != os.path.realpath(private_directory)
+            ):
+                try:
+                    private = prepare_private_directory(private_directory)
+                except OSError as error:
+                    _warn_once(
+                        Path(private_directory),
+                        f"not using the private compile cache {private_directory}: "
+                        f"{error}",
+                    )
+            locations = CacheLocations(requested_shared, directory, private)
+            # XLA auxiliary caches bypass CacheInterface and its recoverable
+            # write fallback, including quota/mount failures after access().
+            selected = private or locations.write_directory or directory
+            if layered:
+                jax.config.update("jax_persistent_cache_enable_xla_caches", "none")
+            if selected is None:
                 jax.config.update("jax_compilation_cache_dir", None)
             else:
-                readonly = not os.access(directory, os.W_OK | os.X_OK)
-                jax.config.update("jax_compilation_cache_dir", str(directory))
+                readonly = locations.write_directory is None
+                jax.config.update("jax_compilation_cache_dir", str(selected))
                 jax.config.update(
                     "jax_persistent_cache_min_compile_time_secs",
                     float("inf") if readonly else PERSISTENT_CACHE_MIN_COMPILE_SECS,
@@ -466,7 +580,43 @@ def compilation_cache_scope(
                         "jax_persistent_cache_min_entry_size_bytes",
                         min_entry_size_bytes,
                     )
-            yield
+            with ExitStack() as stack:
+                stack.enter_context(cache_locations(locations))
+                if layered:
+                    from foldjax import _jax_cache_tiers
+
+                    def trusted_file(info: os.stat_result) -> bool:
+                        if shared_compile_cache_trusted():
+                            return True
+                        return info.st_uid in (os.geteuid(), 0) and not (
+                            info.st_mode & 0o002
+                            or info.st_mode & 0o020
+                            and not _group_is_only_this_user(info.st_gid)
+                        )
+
+                    stack.enter_context(
+                        _jax_cache_tiers.installed(
+                            locations,
+                            shared_validator=compile_cache_untrusted_reason,
+                            shared_file_validator=trusted_file,
+                            shared_mode=0o666
+                            if shared_compile_cache_trusted()
+                            else 0o644,
+                        )
+                    )
+                    if requested_shared is not None and directory is None:
+                        _jax_cache_tiers.note("lookups", "shared", "unavailable")
+                    if (
+                        private_directory is not None
+                        and private is None
+                        and (
+                            directory is None
+                            or os.path.realpath(directory)
+                            != os.path.realpath(private_directory)
+                        )
+                    ):
+                        _jax_cache_tiers.note("writes", "private", "unavailable")
+                yield
         finally:
             # Drop the request-scoped file-cache object before restoring the
             # embedding application's config. Its next compilation lazily

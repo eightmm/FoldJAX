@@ -16,9 +16,11 @@ foldjax cache warm --model esmfold2 --token-buckets 256..1536 --json
 foldjax cache warm --model alphafold3 --token-buckets auto
 ```
 
-The core CLI still requires an explicit positive MSA capacity. The example uses
-2048 to match the Slurm wrapper default selected from the user-reported
-1024/2048/4096 accuracy comparison; choose the same cap for warming and prediction.
+The core fixed-MSA preset requires an explicit positive capacity. The example uses
+the recommended 2048 to match the Slurm scripts. The user's 1UBQ/2LZM/4HHB
+comparison on the four supported models found lDDT within ±0.01 across
+1024/2048/4096 rows; this is finite-panel evidence, not a general accuracy
+guarantee. Choose the same cap for warming and prediction.
 The four MSA presets and native selection limits are explained in
 [fixed-msa.md](fixed-msa.md). AlphaFold 3 and ESMFold2 do not accept that preset.
 
@@ -55,13 +57,20 @@ on the second length. A request can restore an existing executable, so this
 count is diagnostic and **is not a persistent-cache miss count**. Cache file
 deltas likewise do not prove an executable hit. Exact-input warming retains its
 existing JSON output and `execute_once` behavior.
+After successful warming, the CLI prints a prediction command template to
+stderr. JSON stdout remains machine-readable. Keep the other execution options
+and weights/profile the same; the template does not infer the real job's MSA
+search policy.
 
 Prediction results are discarded unless `--output-dir` is supplied. Retained
 bucket results go under `OUT/MODEL/BUCKET/REAL_LENGTH`; generated directories
 cannot escape through a child symlink. Synthetic job documents are temporary.
 
 For prediction reuse, select the same model/weights, device, runtime, token and
-other padded capacities, MSA cap, and compile-relevant native options. Ordinary
+other padded capacities, MSA cap, and compile-relevant native options.
+Bucket-warmed AF3/ESMFold2 profiles require `predict --padding`; the four-model
+fixed-MSA profiles require the same `predict --fixed-msa N` (recommended 2048).
+An unpadded exact-length prediction does not match those warmed profiles.
 `--padding` chooses the token bucket; explicit non-grid targets require the same
 `--pad-tokens` value in prediction. Templates, extra modalities, language-model
 providers, context parallelism, or other shape axes can require additional
@@ -70,4 +79,7 @@ that every different job will share every small JIT.
 
 See [shared installation](shared-install.md) for administrator/reader cache
 permissions and [Slurm examples](../examples/slurm/README.md) for submission and
-a separate ordinary-user verification run.
+a separate ordinary-user verification run. Those scripts enable fixed MSA 2048
+for its four supported models and padding for AF3/ESMFold2 in warm, verification,
+plan and prediction. Use matching overrides, or `--exact` with an exact input,
+at every stage. The core CLI does not enable a preset implicitly.

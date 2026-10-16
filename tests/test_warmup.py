@@ -151,6 +151,70 @@ def test_zero_delta_does_not_claim_an_unobservable_cache_hit(tmp_path: Path) -> 
     assert result.status == "no_new_entry_observed"
 
 
+@pytest.mark.parametrize("tier", ["shared", "private"])
+@pytest.mark.parametrize("kind", ["compilation_cache", "kernel_tuning"])
+@pytest.mark.parametrize("activity", ["write", "read"])
+def test_warm_status_includes_observed_private_activity(
+    tmp_path: Path, tier: str, kind: str, activity: str
+) -> None:
+    telemetry = (
+        {"writes" if activity == "write" else "loads": {tier: {"success": 1}}}
+        if kind == "compilation_cache"
+        else {"calls": [{f"cache_{activity}_tiers": {tier: 1}}]}
+    )
+    result = CacheWarmResult(
+        model="alphafold3",
+        input=tmp_path / "job.json",
+        weights=tmp_path / "weights.jax",
+        cache_dir=tmp_path / "shared",
+        seed=0,
+        seconds=1.0,
+        before=CacheSnapshot(),
+        after=CacheSnapshot(),
+        samples=1,
+        **{kind: telemetry},
+    )
+
+    assert result.status == (
+        "populated" if activity == "write" else "no_new_entry_observed"
+    )
+    assert result.summary()[kind] == telemetry
+
+
+def test_warm_recognizes_in_memory_tokamax_configs_with_a_known_store_origin(
+    tmp_path: Path,
+) -> None:
+    result = CacheWarmResult(
+        model="alphafold3",
+        input=tmp_path / "job.json",
+        weights=tmp_path / "weights.jax",
+        cache_dir=tmp_path / "shared",
+        seed=0,
+        seconds=1.0,
+        before=CacheSnapshot(),
+        after=CacheSnapshot(),
+        samples=1,
+        kernel_tuning={"calls": [{"cache_reuse_tiers": {"private": 1}}]},
+    )
+    assert result.status == "no_new_entry_observed"
+
+
+def test_byte_lookup_alone_does_not_claim_a_loaded_executable(tmp_path: Path) -> None:
+    result = CacheWarmResult(
+        model="boltz2",
+        input=tmp_path / "job.json",
+        weights=tmp_path / "weights.jax",
+        cache_dir=tmp_path / "shared",
+        seed=0,
+        seconds=1.0,
+        before=CacheSnapshot(),
+        after=CacheSnapshot(),
+        samples=1,
+        compilation_cache={"lookups": {"private": {"hit": 1}}},
+    )
+    assert result.status == "executed_no_persistent_entry_observed"
+
+
 def test_plural_warm_preserves_the_generated_output_symlink_boundary(
     tmp_path: Path, monkeypatch
 ) -> None:

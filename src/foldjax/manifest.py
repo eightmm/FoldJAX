@@ -1686,6 +1686,11 @@ def describe_run(
     kernel_tuning = recorded_kernel_tuning()
     if kernel_tuning is not None:
         manifest["kernel_tuning"] = kernel_tuning
+    from foldjax.cache import recorded as recorded_compilation_cache
+
+    compilation_cache = recorded_compilation_cache()
+    if compilation_cache is not None:
+        manifest["compilation_cache"] = compilation_cache
     return manifest
 
 

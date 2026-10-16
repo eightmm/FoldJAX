@@ -128,6 +128,45 @@ def test_plan_with_padding_shows_the_token_bucket(
     assert "padding_estimate" not in json.loads(capsys.readouterr().out)
 
 
+@pytest.mark.parametrize(
+    "tokens,padding_args,expected",
+    [(56, ("--padding",), 256), (257, ("--padding",), 512),
+     (56, ("--pad-tokens", "128"), 128)],
+)
+def test_af3_plan_padding_estimate_matches_native_bucket_selection(
+    tmp_path, monkeypatch, capsys, tokens, padding_args, expected
+):
+    from foldjax.backends.alphafold3 import _prediction_buckets
+    from foldjax.cli import _request
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "store"))
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    argv = [
+        "plan", "--model", "alphafold3", "--sequence", "M" * tokens,
+        "--weights", str(weights), "--msa", "single", *padding_args,
+    ]
+    assert main(argv) == 0
+    estimate = json.loads(capsys.readouterr().out)["padding_estimate"]
+    request = _request(_parser().parse_args(argv), jobs_root=tmp_path / "jobs")
+    buckets = _prediction_buckets(request, {})
+    actual = next(bucket for bucket in buckets if bucket >= tokens)
+    assert estimate == {"tokens": tokens, "token_bucket": expected}
+    assert estimate["token_bucket"] == actual
+
+
+def test_fixed_msa_help_recommends_a_scoped_capacity_and_requires_explicit_n(capsys):
+    with pytest.raises(SystemExit):
+        _parser().parse_args(["predict", "--help"])
+    text = " ".join(capsys.readouterr().out.split())
+    assert "Recommended: 2048" in text
+    assert "1UBQ/2LZM/4HHB" in text
+    assert "within +/-0.01" in text
+    assert "N is required; this remains opt-in" in text
+    with pytest.raises(SystemExit):
+        _parser().parse_args(["predict", "--model", "boltz2", "--fixed-msa"])
+
+
 @pytest.mark.parametrize("json_output", [False, True])
 @pytest.mark.parametrize(
     "n_tokens,padding_args,token_bucket",

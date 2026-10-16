@@ -32,6 +32,38 @@ accepts a root-owned cache. Readers of a cache owned by another ordinary account
 need to trust that owner and set `FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1`;
 `foldjax doctor` reports the compilation-cache trust decision.
 
+Predictions read executable entries from that trusted shared namespace first,
+then from the same model/weights/runtime namespace in the user's private cache.
+The private root is `$XDG_CACHE_HOME/foldjax/compile`, or
+`~/.cache/foldjax/compile` when `XDG_CACHE_HOME` is unset. Set
+`FOLDJAX_PRIVATE_COMPILE_CACHE` to put it on another disk, for example when the
+shared home filesystem is full. `--cache-dir` selects the shared candidate;
+it does not hide the private fallback. `--no-cache` disables both tiers.
+
+A shared hit is used in place. New entries are published to shared storage when
+possible, otherwise to the private namespace, including when the requested
+shared namespace does not exist or an actual lock/write fails. Private
+namespaces must be owned by the current uid with mode 0700, and private files
+use 0600. Shared-cache trust never relaxes those checks. Unsafe private paths
+are refused rather than repaired automatically. If neither tier can persist
+an entry, prediction can still compile and run without saving it. AF3's Tokamax
+tuning configurations follow the same read and publication order; only complete,
+validated configurations are persisted. XLA's auxiliary autotuning caches bypass
+the JAX cache interface, so layered scopes disable those auxiliary caches to
+keep native writes out of read-only or full filesystems. JAX executable and
+Tokamax configuration caching remain active.
+
+`foldjax_run.json` records JAX activity in `compilation_cache`: `locations`,
+per-tier byte `lookups`, successfully deserialized executable `loads`, completed
+backend `compiles`, and per-tier `writes`. A byte lookup alone does not prove
+an executable was loaded. JAX in-memory cache hits are reported as unobserved.
+AF3's `kernel_tuning.calls` separately records tuning sources and shared/private
+storage activity. The warm summary includes these records; its older `cache`
+directory snapshots describe the shared namespace only.
+Each seed's manifest records its own execution. A multi-seed aggregate keeps
+the last executed seed's telemetry; an all-resumed request does not attribute
+the previous request's activity to the resumed run.
+
 Hidden temporary directories directly under `runtime/cache-warm/` are excluded
 from inspection and repair. They contain unfinished predictions and stay 0700;
 their count appears as `temporary_directories` in the runtime report. Symlinks

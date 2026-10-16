@@ -784,6 +784,8 @@ def test_cache_warm_cli_reports_execute_once_and_cache_delta(
     assert "native warm progress" not in captured.out
     assert "new_files=2" in captured.err
     assert "peak_device=1.0 GiB" in captured.err
+    assert "Prediction command template: foldjax predict --model boltz2" in captured.err
+    assert "Prediction command template" not in captured.out
     assert seen["request"].use_compile_cache is True
 
 

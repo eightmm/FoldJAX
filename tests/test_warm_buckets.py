@@ -179,7 +179,11 @@ def test_bucket_cli_routes_native_progress_to_stderr_and_formats_output(
     if json_output:
         argv.append("--json")
     assert main(argv) == 0
-    output = capsys.readouterr().out
+    captured = capsys.readouterr()
+    output = captured.out
+    assert "foldjax predict --model boltz2 --input JOB.json --padding" in captured.err
+    assert "--fixed-msa 7" in captured.err
+    assert "Prediction command template" not in output
     if json_output:
         payload = json.loads(output)
         assert payload["strategy"] == "token_buckets"

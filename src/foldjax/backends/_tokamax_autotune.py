@@ -26,10 +26,13 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager, nullcontext
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from foldjax._gpu import compute_capability
 from foldjax.cache import shared_compile_cache_trusted
+
+if TYPE_CHECKING:
+    from foldjax._cache_tiers import CacheLocations
 
 try:
     import fcntl
@@ -77,6 +80,9 @@ _MANIFEST_KEYS = frozenset(
         "result_sha256",
         "result",
     }
+)
+_PRIVATE_CACHE_IO: ContextVar[bool] = ContextVar(
+    "foldjax_private_tokamax_io", default=False
 )
 
 
@@ -581,6 +587,8 @@ def _close_fd(fd: int, *, subject: str) -> None:
 
 
 def _shared_store(fd: int) -> bool:
+    if _PRIVATE_CACHE_IO.get():
+        return False
     return (
         shared_compile_cache_trusted()
         or _fstat(fd, subject="cache directory").st_uid == 0
@@ -595,15 +603,16 @@ def _validate_directory(fd: int, *, private: bool, shared: bool = False) -> None
     info = _fstat(fd, subject="cache directory")
     if not stat.S_ISDIR(info.st_mode):
         raise _UnsafeCachePathError("cache path is not a directory")
+    trusted_shared = shared_compile_cache_trusted() and not _PRIVATE_CACHE_IO.get()
     if (
-        not shared_compile_cache_trusted()
+        not trusted_shared
         and hasattr(os, "geteuid")
         and info.st_uid not in (os.geteuid(), 0)
     ):
         raise _UnsafeCachePathError("cache directory is owned by another user")
     forbidden = (
         0
-        if shared_compile_cache_trusted()
+        if trusted_shared
         else (0o077 if private and not shared else 0o022)
     )
     if stat.S_IMODE(info.st_mode) & forbidden:
@@ -614,25 +623,30 @@ def _validate_regular_file(fd: int, *, shared: bool = False) -> os.stat_result:
     info = _fstat(fd, subject="cache entry")
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         raise _UnsafeCachePathError("cache entry is not a singly linked regular file")
+    trusted_shared = shared_compile_cache_trusted() and not _PRIVATE_CACHE_IO.get()
     if (
-        not shared_compile_cache_trusted()
+        not trusted_shared
         and hasattr(os, "geteuid")
         and info.st_uid not in (os.geteuid(), 0)
     ):
         raise _UnsafeCachePathError("cache entry is owned by another user")
-    forbidden = 0 if shared_compile_cache_trusted() else (0o022 if shared else 0o077)
+    forbidden = 0 if trusted_shared else (0o022 if shared else 0o077)
     if stat.S_IMODE(info.st_mode) & forbidden:
         raise _UnsafeCachePathError("cache entry permissions are unsafe")
     return info
 
 
 @contextmanager
-def _open_cache_directory(cache_dir: Path) -> Iterator[int]:
+def _open_cache_directory(
+    cache_dir: Path, *, root_fd: int | None = None
+) -> Iterator[int]:
     if not _filesystem_supported():
         raise _CacheError("safe file-descriptor cache operations are unavailable")
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     try:
-        root_fd = os.open(cache_dir, directory_flags)
+        root_fd = (
+            os.open(cache_dir, directory_flags) if root_fd is None else os.dup(root_fd)
+        )
     except OSError as error:
         raise _UnsafeCachePathError(
             "cannot safely open the compilation cache"
@@ -650,7 +664,7 @@ def _open_cache_directory(cache_dir: Path) -> Iterator[int]:
         # locked every other member out of the XLA entries beside this one.
         root_info = _fstat(root_fd, subject="compilation cache")
         shared = _shared_store(root_fd)
-        if shared_compile_cache_trusted():
+        if shared_compile_cache_trusted() and not _PRIVATE_CACHE_IO.get():
             if not stat.S_ISDIR(root_info.st_mode):
                 raise _UnsafeCachePathError("cache path is not a directory")
         else:
@@ -1450,6 +1464,13 @@ def _note_source(source: str) -> None:
             call["sources"][source] = call["sources"].get(source, 0) + 1
 
 
+def _note_cache_tier(operation: str, tier: str) -> None:
+    record = _KERNEL_RECORD.get()
+    if record is not None and (call := record.get("_active_call")) is not None:
+        counts = call.setdefault(f"cache_{operation}_tiers", {})
+        counts[tier] = counts.get(tier, 0) + 1
+
+
 def recorded() -> dict[str, Any] | None:
     """This prediction's record, or ``None`` when it ran no AlphaFold 3 model."""
 
@@ -1478,8 +1499,10 @@ class _PersistentTokamaxStore:
         strategy: str,
         device_kind: str,
         can_tune: bool,
+        cache_locations: CacheLocations | None = None,
     ) -> None:
         self._cache_dir = Path(cache_dir)
+        self._cache_locations = cache_locations
         self._identity = json.loads(_canonical_json(identity))
         self._strategy = strategy
         self._device_kind = device_kind
@@ -1490,12 +1513,17 @@ class _PersistentTokamaxStore:
         self._partial_results: dict[str, Any] = {}
         # Signatures whose result is on disk: read from it, or written to it.
         self._persisted: set[str] = set()
+        self._persisted_tiers: dict[str, str] = {}
         self._warned: set[str] = set()
         self._thread_lock = threading.RLock()
         self.compatibility_key = (
             str(self._cache_dir.absolute()),
             _canonical_json(self._identity),
             strategy,
+            (
+                (str(cache_locations.shared), str(cache_locations.private))
+                if cache_locations is not None else None
+            ),
         )
 
     def _warn_once(self, reason: str) -> None:
@@ -1543,6 +1571,146 @@ class _PersistentTokamaxStore:
         with partial if partial is not None else nullcontext():
             return invoke()
 
+    def _tier_directories(self) -> Iterator[tuple[str, Path]]:
+        locations = self._cache_locations
+        if locations.shared is not None:
+            yield "shared", locations.shared
+        if locations.private is not None and locations.private != locations.shared:
+            yield "private", locations.private
+
+    @contextmanager
+    def _open_tier(self, tier: str, directory: Path) -> Iterator[int]:
+        from foldjax._cache_tiers import open_directory
+
+        token = _PRIVATE_CACHE_IO.set(tier == "private")
+        try:
+            try:
+                with open_directory(
+                    directory, private=tier == "private", create=tier == "private"
+                ) as root_fd:
+                    with _open_cache_directory(
+                        directory, root_fd=root_fd
+                    ) as cache_fd:
+                        yield cache_fd
+            except OSError as error:
+                raise _UnsafeCachePathError(f"{tier} cache is unavailable") from error
+        finally:
+            _PRIVATE_CACHE_IO.reset(token)
+
+    def _load_tiers(
+        self, signature: str, call_sha256: str
+    ) -> tuple[Any | None, str | None, bool]:
+        readable = False
+        for tier, directory in self._tier_directories():
+            try:
+                with self._open_tier(tier, directory) as directory_fd:
+                    readable = True
+                    result = self._load_result(directory_fd, signature, call_sha256)
+                if result is not None:
+                    return result, tier, readable
+            except _ReadOnlyStoreUnavailableError:
+                readable = True
+                self._warn_once(f"{tier} cache is read-only and has no store")
+            except _CacheError:
+                self._warn_once(f"{tier} cache is unavailable on this filesystem")
+        return None, None, readable
+
+    def _remember_stored(self, signature: str, result: Any, tier: str) -> None:
+        self._results[signature] = result
+        self._persisted.add(signature)
+        self._persisted_tiers[signature] = tier
+
+    def _call_layered(
+        self,
+        *,
+        signature: str,
+        call_sha256: str,
+        lower: Callable[[], Any],
+        invoke: Callable[[], Any],
+    ) -> Any:
+        result, tier, readable = self._load_tiers(signature, call_sha256)
+        if result is not None:
+            self._remember_stored(signature, result, tier)
+            _note_cache_tier("read", tier)
+            return self._invoke_with_result(result, invoke, source="store")
+        if self._strategy != "autotune":
+            return self._invoke_fallback(invoke)
+
+        coverage_error = None
+        measured = False
+        source = "measured"
+
+        def measure():
+            nonlocal measured, coverage_error
+            measured = True
+            try:
+                return _discover_complete_result(
+                    lower,
+                    device_kind=self._device_kind,
+                    tokamax=_tokamax_api(),
+                    parallel=self._can_tune,
+                )
+            except Exception as error:  # noqa: BLE001 - preserve existing fallback
+                self._warn_once(f"did not obtain complete coverage: {error}")
+                coverage_error = error
+                if (
+                    self._can_tune
+                    and isinstance(error, _IncompleteMeasurementsError)
+                    and error.partial.data
+                ):
+                    self._partial_results[signature] = error.partial
+                return None
+
+        for write_tier, directory in self._tier_directories():
+            try:
+                with self._open_tier(write_tier, directory) as directory_fd:
+                    if not _directory_writable(directory_fd):
+                        continue
+                    with _exclusive_lock(directory_fd, signature):
+                        # A peer may have published in either tier while this
+                        # process waited. Shared hits are never copied locally.
+                        stored, read_tier, _ = self._load_tiers(signature, call_sha256)
+                        if stored is not None:
+                            result = stored
+                            self._remember_stored(signature, stored, read_tier)
+                            _note_cache_tier("read", read_tier)
+                            source = "store"
+                            break
+                        if not measured:
+                            result = measure()
+                        if result is None:
+                            break
+                        payload = _manifest_bytes(
+                            result,
+                            signature=signature,
+                            call_sha256=call_sha256,
+                            identity=self._identity,
+                            expected_count=len(result.data),
+                            device_kind=self._device_kind,
+                        )
+                        _atomic_write(directory_fd, f"{signature}.json", payload)
+                        self._remember_stored(signature, result, write_tier)
+                        _note_cache_tier("write", write_tier)
+                        break
+            except _CacheError:
+                # Reuse a complete measurement if publication failed; fallback
+                # acquires the private key lock before trying the same bytes.
+                self._warn_once(f"could not write its {write_tier} cache entry")
+
+        if result is None and not measured and readable:
+            result = measure()
+        if result is None:
+            if coverage_error is not None and not self._can_tune:
+                raise RuntimeError(
+                    "Tokamax selected-device tuning could not obtain complete "
+                    f"kernel coverage: {coverage_error}"
+                ) from coverage_error
+            return self._invoke_fallback(
+                invoke, partial=self._partial_results.get(signature)
+            )
+        self._results[signature] = result
+        return self._invoke_with_result(result, invoke, source=source)
+
     def call(
         self,
         *,
@@ -1576,6 +1744,8 @@ class _PersistentTokamaxStore:
             )
 
             if (result := self._results.get(signature)) is not None:
+                if (tier := self._persisted_tiers.get(signature)) is not None:
+                    _note_cache_tier("reuse", tier)
                 return self._invoke_with_result(
                     result,
                     invoke,
@@ -1583,6 +1753,12 @@ class _PersistentTokamaxStore:
                 )
             if (partial := self._partial_results.get(signature)) is not None:
                 return self._invoke_fallback(invoke, partial=partial)
+
+            if self._cache_locations is not None:
+                return self._call_layered(
+                    signature=signature, call_sha256=call_sha256,
+                    lower=lower, invoke=invoke,
+                )
 
             store_unavailable = False
             try:
@@ -1752,12 +1928,21 @@ def create_store(
             strategy,
         )
         return None
+    from foldjax._cache_tiers import current_cache_locations
+
+    locations = current_cache_locations()
+    if locations is not None and (
+        locations.requested_shared is None
+        or locations.requested_shared.absolute() != Path(cache_dir).absolute()
+    ):
+        locations = None
     return _PersistentTokamaxStore(
         Path(cache_dir),
         identity=identity,
         strategy=strategy,
         device_kind=str(device.device_kind),
         can_tune=_can_tune_on_device(device),
+        cache_locations=locations,
     )
 
 

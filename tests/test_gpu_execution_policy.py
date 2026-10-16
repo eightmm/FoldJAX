@@ -1,5 +1,6 @@
 """The selected execution device governs admission, cache identity and AF3."""
 
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import jax
@@ -103,3 +104,55 @@ def test_supported_cuda_can_run_with_a_cpu_process_default(monkeypatch):
         ),
     )
     _pallas_pair._require_gpu("pair", "select an XLA backend")
+
+
+def test_memory_record_uses_the_selected_gpu_and_restores_device_scope(
+    monkeypatch, tmp_path
+):
+    from foldjax import memory_policy
+
+    gpu = SimpleNamespace(
+        platform="gpu", device_kind="RTX A6000", id=1, compute_capability="8.6"
+    )
+    monkeypatch.setattr(_gpu, "default_device", lambda request=None: gpu)
+    monkeypatch.setattr(jax, "default_backend", lambda: "cpu")
+    monkeypatch.setattr(jax, "default_device", lambda device: nullcontext())
+    # Exercise the device scope at the real dispatch boundary without launching
+    # kernels or substituting a fake GPU for a real JAX device.
+    seen = {}
+
+    def observe(*args, **kwargs):
+        memory_policy.admit_unmeasured(
+            model="alphafold3",
+            detail="no law was fitted to this model",
+            budget=memory_policy.resolve_budget(
+                pool_bytes=None, card_bytes=None, override_gib=None
+            ),
+        )
+        seen.update(memory_policy.recorded())
+
+    monkeypatch.setattr(api, "_predict_once_on_device", observe)
+    (tmp_path / "input.json").write_text("{}")
+    request = PredictionRequest(model="alphafold3", input=tmp_path / "input.json")
+    memory_policy.reset_warnings()
+    memory_policy.clear_record()
+    try:
+        with pytest.warns(RuntimeWarning, match="no alphafold3 peak law"):
+            api._predict_once(request, 101, tmp_path / "out")
+        assert seen["selected"] is None
+        assert seen["selected_device"] == {
+            "platform": "gpu",
+            "device_kind": "RTX A6000",
+            "id": 1,
+        }
+        memory_policy.admit_unmeasured(
+            model="alphafold3",
+            detail="no law was fitted to this model",
+            budget=memory_policy.resolve_budget(
+                pool_bytes=None, card_bytes=None, override_gib=None
+            ),
+        )
+        assert "selected_device" not in memory_policy.recorded()
+    finally:
+        memory_policy.reset_warnings()
+        memory_policy.clear_record()
