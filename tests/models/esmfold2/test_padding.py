@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from foldjax import confidence_arrays
 from foldjax.backends.esmfold2 import _padding_plan
 from foldjax.models.esmfold2 import inference, output
 from foldjax.models.esmfold2.data import chemistry, features
@@ -578,6 +581,94 @@ def test_public_crop_and_score_drop_masked_suffixes() -> None:
     assert output.sample_scores(prediction, token_mask=padded["token_attention_mask"])[
         0
     ]["plddt"] == pytest.approx(0.8)
+
+
+def test_same_bucket_predict_and_writer_do_not_compile_for_another_real_length(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    settings = structure_model.ModelSettings(trunk_dtype="float32")
+    loaded = inference.LoadedModel(parameters={}, settings=settings)
+    traced: list[tuple[int, ...]] = []
+
+    def tiny_predict(key, built, parameters, **kwargs):
+        del key, parameters, kwargs
+        traced.append(built["token_attention_mask"].shape)
+        token_mask = built["token_attention_mask"].astype(jnp.float32)
+        return {
+            "sample_atom_coords": built["ref_pos"],
+            "plddt": token_mask * 0.8,
+            "plddt_per_atom": built["atom_attention_mask"].astype(jnp.float32) * 0.8,
+            "pae": token_mask[:, :, None] * token_mask[:, None, :],
+        }
+
+    monkeypatch.setattr(structure_model, "predict", tiny_predict)
+    monkeypatch.delenv("ESMFOLD2_ATOM_ATTENTION_BACKEND", raising=False)
+    monkeypatch.delenv("ESMFOLD2_ATOM_ROWS_PER_BLOCK", raising=False)
+    built_inputs = [
+        features.pad_features(
+            features.build_features([(sequence, "A", 0, 0)]),
+            n_token=16,
+            n_atom=128,
+            n_msa=4,
+        )
+        for sequence in ("ACD", "ACDEF")
+    ]
+    key = jax.random.key(0)
+    inference.compiled_predict.cache_clear()
+    caplog.set_level(logging.WARNING)
+    try:
+        with jax.log_compiles(True):
+            for index, built in enumerate(built_inputs):
+                caplog.clear()
+                prediction = inference.predict(
+                    key, built, loaded, preserve_prefix_rng=True, padded=True
+                )
+                written = output.write_prediction_outputs(
+                    prediction, built, tmp_path / str(index), name="same"
+                )
+                assert written["summary"][0]["plddt"] == pytest.approx(0.8)
+                assert len(written["structures"]) == 1
+                with np.load(
+                    confidence_arrays.staged_path(written["structures"][0])
+                ) as archive:
+                    tokens = int(built["token_attention_mask"].sum())
+                    atoms = int(built["atom_attention_mask"].sum())
+                    assert archive["token_plddt"].shape == (tokens,)
+                    assert archive["atom_plddt"].shape == (atoms,)
+                    assert archive["pae"].shape == (tokens, tokens)
+                if index:
+                    compiled = [
+                        record.getMessage()
+                        for record in caplog.records
+                        if "Compiling jit(" in record.getMessage()
+                    ]
+                    assert not compiled, compiled
+        assert traced == [(1, 16)]
+    finally:
+        inference.compiled_predict.cache_clear()
+
+
+def test_writer_leaves_unused_native_arrays_on_the_device(tmp_path) -> None:
+    class UnusedArray:
+        def __array__(self, *args, **kwargs):
+            raise AssertionError("an unused native output was copied to the host")
+
+        def __getitem__(self, key):
+            raise AssertionError("an unused native output was sliced on the device")
+
+    built = _features()
+    atoms = built["atom_attention_mask"].shape[-1]
+    prediction = {
+        "sample_atom_coords": np.zeros((1, atoms, 3), dtype=np.float32),
+        **{
+            name: UnusedArray()
+            for name in ("single", "pair", "pae_logits", "distogram_logits")
+        },
+    }
+
+    written = output.write_prediction_outputs(prediction, built, tmp_path, name="same")
+
+    assert len(written["structures"]) == 1
 
 
 def test_token_profile_is_independent_of_msa_depth_and_lm_chain_overhead() -> None:

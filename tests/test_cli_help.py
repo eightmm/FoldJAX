@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
 from pathlib import Path
 
 import pytest
@@ -125,6 +126,92 @@ def test_plan_with_padding_shows_the_token_bucket(
     }
     assert main(argv[:-1]) == 0
     assert "padding_estimate" not in json.loads(capsys.readouterr().out)
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize(
+    "n_tokens,padding_args,token_bucket",
+    [
+        (767, (), None),
+        (768, (), None),
+        (896, (), None),
+        (700, ("--padding",), 768),
+        (700, ("--pad-tokens", "750"), 750),
+        (700, ("--pad-tokens", "800"), 800),
+        (9000, ("--padding", "--padding-overflow", "exact"), 9000),
+        (9000, ("--padding",), None),
+    ],
+)
+def test_esmfold2_plan_reports_capacity_risk_in_every_output_mode(
+    tmp_path: Path, monkeypatch, capsys, n_tokens: int, json_output: bool,
+    padding_args: tuple[str, ...], token_bucket: int | None,
+) -> None:
+    from foldjax import memory_policy
+
+    def no_device_read(**kwargs):
+        raise AssertionError("planning tried to initialize the GPU")
+
+    monkeypatch.setattr(memory_policy, "device_memory_budget", no_device_read)
+    store = tmp_path / "store"
+    monkeypatch.setenv("FOLDJAX_HOME", str(store))
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    argv = [
+        "plan", "--model", "esmfold2", "--sequence", "M" * n_tokens,
+        "--weights", str(weights), "--option", "no_language_model=true",
+        *padding_args,
+    ]
+    if json_output:
+        argv.append("--json")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert main(argv) == 0
+
+    plan = json.loads(capsys.readouterr().out)
+    expected = memory_policy.capacity_warning(
+        "esmfold2", max(n_tokens, token_bucket or 0)
+    )
+    if padding_args:
+        assert plan["padding_estimate"]["token_bucket"] == token_bucket
+    if json_output:
+        assert plan["slurm"].get("warning") == expected
+        assert plan["slurm"]["tokens_estimate"] == n_tokens
+        if expected is not None:
+            assert plan["slurm"]["reason"].count(expected) == 1
+        assert not caught
+    else:
+        assert "slurm" not in plan
+        assert [str(warning.message) for warning in caught] == (
+            [] if expected is None else [expected]
+        )
+    assert not store.exists()
+
+
+def test_esmfold2_batch_plan_warns_once_for_the_same_capacity_risk(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "store"))
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    inputs = []
+    for n_tokens in (768, 896):
+        source = tmp_path / f"job-{n_tokens}.json"
+        source.write_text(json.dumps({
+            "entities": [{"type": "protein", "id": "A", "sequence": "M" * n_tokens}]
+        }))
+        inputs.append(str(source))
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert main([
+            "plan", "--model", "esmfold2", "--input", *inputs,
+            "--weights", str(weights), "--option", "no_language_model=true",
+        ]) == 0
+
+    assert len(json.loads(capsys.readouterr().out)) == 2
+    assert len(caught) == 1
+    assert "24 GB cards with 22-23.5 GiB" in str(caught[0].message)
 
 
 def _console_scripts() -> dict[str, str]:

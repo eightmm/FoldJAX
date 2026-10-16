@@ -173,3 +173,63 @@ def test_predict_refuses_before_the_language_model(monkeypatch) -> None:
             model,
             memory_budget=_budget(32 * _GIB),
         )
+
+
+@pytest.mark.parametrize("n_token", [768, 896])
+@pytest.mark.parametrize("pool_gib", [22, 23.5])
+def test_small_card_capacity_risk_warns_before_the_language_model(
+    monkeypatch, n_token, pool_gib
+):
+    class _StopError(Exception):
+        pass
+
+    def _stop(*_args, **_kwargs):
+        raise _StopError
+
+    monkeypatch.setattr(inference.atom_model, "_resolve_rows_per_block", _stop)
+    monkeypatch.setattr(inference, "language_model_states", _stop)
+    model = inference.LoadedModel(
+        parameters={}, settings=inference.structure_model.ModelSettings()
+    )
+    with pytest.warns(RuntimeWarning, match="24 GB cards with 22-23.5 GiB"):
+        with pytest.raises(_StopError):
+            inference.predict(
+                None,
+                _features(n_token),
+                model,
+                memory_budget=_budget(int(pool_gib * _GIB)),
+            )
+    record = memory_policy.recorded()
+    assert record["state"] == "unknown"
+    assert "required peak was not measured" in record["reason"]
+
+
+def test_a_smaller_unknown_run_does_not_silence_the_capacity_warning():
+    budget = _budget(22 * _GIB)
+    with pytest.warns(RuntimeWarning, match="outside the fitted range"):
+        _admit(128, budget=budget)
+    with pytest.warns(RuntimeWarning, match="24 GB cards"):
+        _admit(768, budget=budget)
+
+
+def test_predict_records_the_selected_configuration_when_the_peak_fits(monkeypatch):
+    class _StopError(Exception):
+        pass
+
+    def _stop(*_args, **_kwargs):
+        raise _StopError
+
+    monkeypatch.setattr(inference.atom_model, "_resolve_rows_per_block", _stop)
+    model = inference.LoadedModel(
+        parameters={}, settings=inference.structure_model.ModelSettings()
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(_StopError):
+            inference.predict(
+                None, _features(2096), model, memory_budget=_budget(80 * _GIB)
+            )
+    record = memory_policy.recorded()
+    assert record["state"] == "fits"
+    assert record["selected"] == "released"
+    assert "released fits" in record["reason"]

@@ -7,9 +7,10 @@ died 1.6 GiB short with 24 GiB of the card unused. JAX preallocates
 ``XLA_PYTHON_CLIENT_MEM_FRACTION`` of the device -- 0.75 by default -- and that
 fraction, not the card, is what a job runs out of.
 
-The distinction matters because the two failures need opposite responses. A pool
-limit is one flag away. A capacity limit means the model genuinely does not fit,
-and raising the fraction only wastes another hour before failing again.
+The distinction matters because failures need different responses. A pool limit
+can benefit from a larger fraction, while CUDA context and module allocations
+need memory outside that pool and can benefit from a smaller one. Neither the
+pool ceiling nor a post-failure usage snapshot establishes the peak requirement.
 
 An OOM that never arrives cannot be explained at all, which is the second half
 of this module. Under context parallelism one device's allocator can fail while
@@ -299,6 +300,15 @@ def is_out_of_memory(error: BaseException) -> bool:
     return all(_is_allocator_oom(leaf) for leaf in _leaf_errors(error))
 
 
+def is_outside_pool_oom(error: BaseException) -> bool:
+    """Recognize CUDA module OOMs, whose allocations bypass the JAX pool."""
+    return is_out_of_memory(error) and any(
+        marker in str(leaf).lower()
+        for leaf in _leaf_errors(error)
+        for marker in ("cumodulegetfunction", "cumoduleload", "before calling cumodule")
+    )
+
+
 def mem_fraction() -> float:
     """The configured pool fraction, or JAX's default."""
     name = configured_fraction_env()
@@ -386,6 +396,17 @@ def diagnose(error: BaseException) -> str | None:
     """
     if not is_out_of_memory(error):
         return None
+    if is_outside_pool_oom(error):
+        message = (
+            "CUDA context/module memory outside the allocator's pool ran out "
+            "while loading a kernel. Lower "
+            f"{configured_fraction_env() or CURRENT_FRACTION_ENV}, for example "
+            "to 0.85, to leave more device memory for CUDA module loading and "
+            "autotuning; restart the process so the allocator is recreated. "
+            "Increasing the pool fraction leaves less memory for these allocations."
+        )
+        mesh = recorded_mesh()
+        return message if mesh is None else f"{message} {_mesh_sentences(mesh)}"
     pool, card, used = _pool_card_and_used()
     if pool is None or card is None:
         return None
@@ -396,49 +417,30 @@ def diagnose(error: BaseException) -> str | None:
         f"{mem_fraction():g} of a {card / gib:.1f} GiB device, set by "
         f"{configured_fraction_env() or CURRENT_FRACTION_ENV}."
     ]
+    if used is not None:
+        lines.append(
+            f"Pool {pool / gib:.1f} GiB, in use {used / gib:.1f} GiB; "
+            "the failed allocation did not fit."
+        )
     leaves = _leaf_errors(error)
-    # Distinct kernel attempts need not fail with the same live allocation set.
+    # These are post-failure allocator statistics, not a snapshot of the
+    # failing program's co-live set. Adding them to the failed block cannot
+    # establish how much memory that program needed at the failure.
     requested = _requested_bytes(str(leaves[0])) if len(leaves) == 1 else None
-    # The allocation that failed, on top of what the pool already holds, is the
-    # smallest total this run needed. Three outcomes, and they take different
-    # actions: past the device, no setting helps; past the pool but inside the
-    # device, the fraction is the lever; inside both, the total fits and a
-    # contiguous block of it does not, and raising the fraction is wasted work.
-    # Comparing the failed allocation against the device on its own proves
-    # nothing: it is a fraction of the need.
-    if requested is not None and used is not None:
-        need = used + requested
-        if need > card:
+    if requested is not None:
+        lines.append(f"The failed allocation was {requested / gib:.1f} GiB.")
+        if requested > card:
+            lines.append("That allocation alone is past the device itself.")
+        elif requested > pool:
             lines.append(
-                f"With the {used / gib:.1f} GiB already held that is "
-                f"{need / gib:.1f} GiB, past the device itself."
-            )
-        elif need > pool:
-            lines.append(
-                f"It already held {used / gib:.1f} GiB, so it needed "
-                f"{need / gib:.1f} GiB at that moment -- inside the "
-                f"{card / gib:.1f} GiB device but past the pool. This is the "
-                "pool's limit and not the card's."
+                "That allocation alone is past the pool, inside the device. "
+                "This is the pool's limit and not the card's."
             )
         else:
-            # Fits the pool and the device, and still failed. The pool is
-            # assembled piecewise, so it can hold the total and be unable to
-            # serve one contiguous block of it. Saying "past the pool" here --
-            # which this branch used to, because it only compared against the
-            # card -- sends the reader to raise a fraction that cannot help:
-            # measured, a 90.5 GiB need failed inside a 93.1 GiB pool and
-            # failed again at 0.98.
             lines.append(
-                f"It already held {used / gib:.1f} GiB, so it needed "
-                f"{need / gib:.1f} GiB at that moment -- inside both the "
-                f"{pool / gib:.1f} GiB pool and the {card / gib:.1f} GiB "
-                "device, so a larger fraction will not help: the allocator "
-                "could not place this block, not find the bytes. The live "
-                "figure above does not say why -- a nearly empty pool can fail "
-                "a half-pool request because the program's own co-live set "
-                "leaves no room to lay one out. XLA's rematerialization lines "
-                "in this log report the total it could not get the program "
-                "under; compare that with the pool."
+                "The allocation is smaller than the pool, but these statistics "
+                "do not establish the total memory requirement or whether "
+                "fragmentation prevented placement."
             )
     mesh = recorded_mesh()
     if mesh is not None:

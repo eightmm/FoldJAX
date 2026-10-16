@@ -421,6 +421,39 @@ ESMFOLD2_PEAK = PeakLaw(
     calibration_id=f"esmfold2-{_CALIBRATION_ESMFOLD2}",
 )
 
+
+# User-reported 2026-10-16: ESMFold2 starts failing at 768-896 tokens on
+# 24 GB cards with 22-23.5 GiB available. No completed peak or exact execution
+# profile accompanied these censored observations, so they justify an early
+# warning, not a fitted required-memory value or an unconditional refusal.
+ESMFOLD2_SMALL_DEVICE_OOM_TOKENS = 768
+ESMFOLD2_SMALL_DEVICE_AVAILABLE_GIB = 23.5
+
+
+def capacity_warning(
+    model: str, n_token: int, budget_bytes: int | None = None
+) -> str | None:
+    """A measured capacity risk, including below the fitted peak-law domain.
+
+    With no budget, as in a JAX-free plan, name the affected device capacity.
+    """
+    if (
+        model != "esmfold2"
+        or n_token < ESMFOLD2_SMALL_DEVICE_OOM_TOKENS
+        or (
+            budget_bytes is not None
+            and budget_bytes > ESMFOLD2_SMALL_DEVICE_AVAILABLE_GIB * _GIB
+        )
+    ):
+        return None
+    return (
+        "ESMFold2 has reported out-of-memory failures starting at 768-896 "
+        "tokens on 24 GB cards with 22-23.5 GiB available; this run may not "
+        "fit that capacity. The required peak was not measured, so this is "
+        "an advisory capacity warning rather than a fitted refusal."
+    )
+
+
 #: The sample count every law above was fitted at.
 CALIBRATED_NUM_SAMPLES = 5
 
@@ -597,7 +630,14 @@ def resolve_memory_policy(
             selected=None,
             estimates=(),
             threshold=None if budget_bytes is None else _threshold(budget_bytes),
-            reason=f"no {model} peak estimate: {detail}",
+            reason=(
+                f"no {model} peak estimate: {detail}"
+                + (
+                    f". {warning}"
+                    if (warning := capacity_warning(model, n_token, budget_bytes))
+                    else ""
+                )
+            ),
         )
 
     threshold = None if budget_bytes is None else _threshold(budget_bytes)
@@ -919,7 +959,12 @@ def enforce(
     if state == "unknown":
         # Once per model per process. A run with no readable ceiling says so,
         # and a multi-seed request does not say it five times.
-        key = f"exceeds_profile:{model}" if demoted else f"unknown:{model}"
+        if n_token is not None and capacity_warning(
+            model, n_token, budget.budget_bytes
+        ):
+            key = f"capacity_risk:{model}"
+        else:
+            key = f"exceeds_profile:{model}" if demoted else f"unknown:{model}"
         if not _first_time(key):
             return
     elif mode == "refuse" and not off_profile:
@@ -983,6 +1028,7 @@ def record(
             "msa_rows": None if msa_rows is None else int(msa_rows),
             "state": decision.state,
             "selected": decision.selected,
+            "reason": decision.reason,
             "estimates": [
                 {
                     "name": candidate.name,

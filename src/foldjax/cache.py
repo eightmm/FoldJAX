@@ -351,6 +351,18 @@ def _warn_once(path: Path, message: str) -> None:
     warnings.warn(message, RuntimeWarning, stacklevel=3)
 
 
+def _warn_readonly_cache(path: Path) -> Path:
+    if not os.access(path, os.W_OK | os.X_OK):
+        _warn_once(
+            path,
+            f"the compile cache {path} is not writable by this account: "
+            "existing entries load read-only; new entries and XLA subcaches "
+            "will not be saved. Its owner can repair a shared store with "
+            f"chmod -R g+w {path}.",
+        )
+    return path
+
+
 def trusted_compile_cache_dir(directory: str | os.PathLike[str]) -> Path | None:
     """Prepare ``directory`` and return it when its executables can be trusted.
 
@@ -374,15 +386,7 @@ def trusted_compile_cache_dir(directory: str | os.PathLike[str]) -> Path | None:
                 "shared store group-writable (chmod -R g+w) to share it.",
             )
             return None
-        if not os.access(path, os.W_OK | os.X_OK):
-            _warn_once(
-                path,
-                f"the compile cache {path} is not writable by this account: "
-                "entries already there load, but what this run compiles is "
-                "not kept, so it compiles again next time. Its owner can "
-                f"repair a shared store with chmod -R g+w {path}.",
-            )
-        return path
+        return _warn_readonly_cache(path)
     try:
         existing = _deepest_existing(path)
         reason = _untrusted_cache_reason(existing, leaf=existing == path)
@@ -392,7 +396,7 @@ def trusted_compile_cache_dir(directory: str | os.PathLike[str]) -> Path | None:
     except OSError as error:
         reason = f"it cannot be prepared ({error})"
     if reason is None:
-        return path
+        return _warn_readonly_cache(path)
     _warn_once(
         path,
         f"not using the compile cache {path}: {reason}, so another account "
@@ -429,6 +433,8 @@ def compilation_cache_scope(
         "jax_compilation_cache_dir",
         "jax_persistent_cache_min_compile_time_secs",
         "jax_persistent_cache_min_entry_size_bytes",
+        "jax_compilation_cache_max_size",
+        "jax_persistent_cache_enable_xla_caches",
     )
     with _CONFIG_LOCK:
         previous = {name: getattr(jax.config, name) for name in names}
@@ -443,11 +449,18 @@ def compilation_cache_scope(
             if directory is None:
                 jax.config.update("jax_compilation_cache_dir", None)
             else:
+                readonly = not os.access(directory, os.W_OK | os.X_OK)
                 jax.config.update("jax_compilation_cache_dir", str(directory))
                 jax.config.update(
                     "jax_persistent_cache_min_compile_time_secs",
-                    PERSISTENT_CACHE_MIN_COMPILE_SECS,
+                    float("inf") if readonly else PERSISTENT_CACHE_MIN_COMPILE_SECS,
                 )
+                if readonly:
+                    # Bounded JAX caches write access times and acquire a
+                    # writable lock even on hits. XLA's auxiliary caches also
+                    # write directly, outside JAX's recoverable cache errors.
+                    jax.config.update("jax_compilation_cache_max_size", -1)
+                    jax.config.update("jax_persistent_cache_enable_xla_caches", "none")
                 if min_entry_size_bytes is not None:
                     jax.config.update(
                         "jax_persistent_cache_min_entry_size_bytes",

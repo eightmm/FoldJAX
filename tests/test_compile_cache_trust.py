@@ -92,6 +92,7 @@ def test_a_private_group_may_write(
     assert trusted_compile_cache_dir(store / "compile") == store / "compile"
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root is a trusted cache owner")
 def test_a_cache_owned_by_another_user_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -153,6 +154,7 @@ def test_a_shared_store_namespace_takes_the_umask(
         assert _mode(directory) & 0o2070 == 0o2070, directory
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permissions")
 def test_a_shared_store_that_cannot_be_created_compiles_without_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -168,6 +170,7 @@ def test_a_shared_store_that_cannot_be_created_compiles_without_it(
         theirs.chmod(0o755)
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permissions")
 def test_a_shared_namespace_this_account_cannot_write_is_named(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -180,6 +183,82 @@ def test_a_shared_namespace_this_account_cannot_write_is_named(
             assert trusted_compile_cache_dir(namespace) == namespace
     finally:
         namespace.chmod(0o755)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permissions")
+@pytest.mark.parametrize("shared", [False, True])
+def test_readonly_namespace_compiles_and_reads_without_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trust_ancestors_above_tmp_path,
+    shared: bool,
+) -> None:
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+    from jax._src import compilation_cache
+
+    if shared:
+        monkeypatch.setenv(TRUST_SHARED_COMPILE_CACHE_ENV, "1")
+    namespace = tmp_path / "compile"
+    names = (
+        "jax_compilation_cache_max_size",
+        "jax_persistent_cache_enable_xla_caches",
+        "jax_raise_persistent_cache_errors",
+    )
+    previous = {name: getattr(jax.config, name) for name in names}
+    run = jax.jit(lambda x: x * 3 + 1)
+    shape = jax.ShapeDtypeStruct((4,), jnp.float32)
+    try:
+        jax.config.update("jax_raise_persistent_cache_errors", True)
+        with compilation_cache_scope(namespace, min_entry_size_bytes=-1):
+            run.lower(shape).compile()
+        entries = {path.name: path.read_bytes() for path in namespace.iterdir()}
+        assert any(name.endswith("-cache") for name in entries)
+        namespace.chmod(0o555)
+        jax.config.update("jax_compilation_cache_max_size", 1024)
+        jax.config.update(
+            "jax_persistent_cache_enable_xla_caches",
+            "xla_gpu_per_fusion_autotune_cache_dir",
+        )
+        configured = {name: getattr(jax.config, name) for name in names}
+        reads = []
+        original_read = compilation_cache.get_executable_and_time
+
+        def read(*args, **kwargs):
+            result = original_read(*args, **kwargs)
+            reads.append(result[0] is not None)
+            return result
+
+        monkeypatch.setattr(compilation_cache, "get_executable_and_time", read)
+        monkeypatch.setattr(
+            compilation_cache,
+            "put_executable_and_time",
+            lambda *_args, **_kwargs: pytest.fail("read-only cache attempted a write"),
+        )
+        run.clear_cache()
+        with (
+            pytest.warns(RuntimeWarning, match="read-only"),
+            compilation_cache_scope(namespace),
+        ):
+            assert jax.config.jax_persistent_cache_enable_xla_caches == "none"
+            assert jax.config.jax_persistent_cache_min_compile_time_secs == float("inf")
+            assert jax.config.jax_compilation_cache_max_size == -1
+            compiled = run.lower(shape).compile()
+            np.testing.assert_array_equal(
+                compiled(np.arange(4, dtype=np.float32)), [1, 4, 7, 10]
+            )
+            miss = jax.jit(lambda x: x - 17).lower(shape).compile()
+            np.testing.assert_array_equal(
+                miss(np.arange(4, dtype=np.float32)), [-17, -16, -15, -14]
+            )
+        assert any(reads), "existing executable was not reused"
+        assert {path.name: path.read_bytes() for path in namespace.iterdir()} == entries
+        assert {name: getattr(jax.config, name) for name in names} == configured
+    finally:
+        namespace.chmod(0o755)
+        for name, value in previous.items():
+            jax.config.update(name, value)
 
 
 def test_the_trust_verdict_is_read_without_creating_anything(

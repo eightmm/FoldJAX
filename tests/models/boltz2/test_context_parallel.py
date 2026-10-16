@@ -25,6 +25,7 @@ import textwrap
 
 import pytest
 
+from tests.cueq_runtime import skip_missing_cueq_subprocess
 from tests.models.cp_probe_env import inherited_environment
 
 _PREAMBLE = textwrap.dedent(
@@ -278,6 +279,7 @@ def _run_probe(source: str, devices: int = 4) -> str:
         },
         timeout=240,
     )
+    skip_missing_cueq_subprocess(completed)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     return completed.stdout
 

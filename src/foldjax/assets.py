@@ -246,6 +246,19 @@ class ModelAssets:
 # --------------------------------------------------------------------------
 
 
+def _stage_weight_file(source: Path, staged: Path) -> None:
+    """Stage shareable weights without changing a linked source's permissions."""
+    mode = ordinary_file_mode()
+    if source.stat().st_mode & 0o777 == mode:
+        try:
+            os.link(source, staged)
+            return
+        except OSError:
+            pass
+    shutil.copyfile(source, staged)
+    staged.chmod(mode)
+
+
 def _convert_protenix(model: str, source: Path) -> Path:
     from foldjax.models.protenix.bridge.torch_mapping import load_torch_checkpoint
     from foldjax.models.protenix.bridge.weights_io import save_native_weights
@@ -275,6 +288,7 @@ def _convert_protenix(model: str, source: Path) -> Path:
         )
         if not _nonempty_file(staged):
             raise RuntimeError("Protenix conversion produced empty native weights")
+        staged.chmod(ordinary_file_mode())
         os.replace(staged, out)
     return out
 
@@ -335,10 +349,7 @@ def _convert_protenix_variant(
 
         staged_embedding = stage / Path(embedding_target).name
         origin = embedding_item.target(model)
-        try:
-            os.link(origin, staged_embedding)
-        except OSError:
-            shutil.copy2(origin, staged_embedding)
+        _stage_weight_file(origin, staged_embedding)
         if not _same_file_contents(staged_embedding, origin, embedding_item):
             raise RuntimeError(
                 f"Protenix ESM/ISM checkpoint staging was incomplete: {origin}"
@@ -349,6 +360,7 @@ def _convert_protenix_variant(
         # publication is never ready because the manifest is written only after
         # both replacements and binds the stats of both files.
         os.replace(staged_embedding, embedding)
+        staged_native.chmod(ordinary_file_mode())
         os.replace(staged_native, native)
     return native
 
@@ -377,6 +389,7 @@ def _convert_opendde(model: str, source: Path) -> Path:
         )
         if not _nonempty_file(staged):
             raise RuntimeError("OpenDDE conversion produced empty native weights")
+        staged.chmod(ordinary_file_mode())
         os.replace(staged, out)
     return out
 
@@ -616,6 +629,7 @@ def _convert_boltz2(model: str, source: Path) -> Path:
                         "affinity bundles"
                     )
                 for name in _BOLTZ_NATIVE_FILES:
+                    (staged / name).chmod(ordinary_file_mode())
                     os.replace(staged / name, out_dir / name)
         _write_boltz_native_manifest(out_dir)
         _unpack_boltz_mols(
@@ -668,6 +682,10 @@ def _unpack_boltz_mols(
             raise RuntimeError(
                 "Boltz molecule archive did not contain the complete published set"
             )
+        mode = ordinary_file_mode()
+        for molecule in staged.rglob("*"):
+            if molecule.is_file() and not molecule.is_symlink():
+                molecule.chmod(mode)
         _write_boltz_molecule_completion(staged)
         replaced = Path(scratch) / "replaced"
         if destination.exists() or destination.is_symlink():
@@ -994,10 +1012,7 @@ def _stage_esmfold2(
             prefix=".foldjax-stage-", dir=target.parent
         ) as scratch:
             staged = Path(scratch) / target.name
-            try:
-                os.link(origin, staged)
-            except OSError:
-                shutil.copy2(origin, staged)
+            _stage_weight_file(origin, staged)
             if (
                 not _same_file_contents(staged, origin, item)
             ):
@@ -1060,10 +1075,7 @@ def _stage_single_published_file(
         prefix=".foldjax-stage-", dir=target.parent
     ) as scratch:
         staged = Path(scratch) / target.name
-        try:
-            os.link(origin, staged)
-        except OSError:
-            shutil.copy2(origin, staged)
+        _stage_weight_file(origin, staged)
         if not _same_file_contents(staged, origin, item):
             raise RuntimeError(f"{model} asset staging was incomplete: {origin}")
         os.replace(staged, target)
@@ -2297,6 +2309,7 @@ def download(item: Download, model: str, *, on_progress=None) -> Path:
             return path
         has_published_identity = item.sha256 is not None or item.size is not None
         if has_published_identity and _verified(partial, item):
+            partial.chmod(ordinary_file_mode())
             os.replace(partial, path)
             return path
         # With no publisher hash or size, a partial inherited from a killed
@@ -2320,6 +2333,7 @@ def download(item: Download, model: str, *, on_progress=None) -> Path:
                     raise ValueError(
                         f"{item.name} failed verification after download"
                     )
+                partial.chmod(ordinary_file_mode())
                 os.replace(partial, path)
                 break
             except (OSError, ValueError, http.client.IncompleteRead) as error:
@@ -2358,10 +2372,7 @@ def _adopt_legacy_protenix_variant_download(item: Download, model: str) -> bool:
             prefix=f".{item.name}.adopt-", dir=target.parent
         ) as scratch:
             staged = Path(scratch) / item.name
-            try:
-                os.link(legacy, staged)
-            except OSError:
-                shutil.copy2(legacy, staged)
+            _stage_weight_file(legacy, staged)
             if not _same_file_contents(staged, legacy, item):
                 raise RuntimeError(
                     f"Protenix profile adoption was incomplete: {legacy}"
@@ -2425,10 +2436,7 @@ def _adopt_staged_esmfold2_download(item: Download, model: str) -> bool:
             prefix=f".{target.name}.adopt-", dir=target.parent
         ) as scratch:
             adopted = Path(scratch) / target.name
-            try:
-                os.link(staged_source, adopted)
-            except OSError:
-                shutil.copy2(staged_source, adopted)
+            _stage_weight_file(staged_source, adopted)
             if not _same_file_contents(adopted, staged_source, item):
                 raise RuntimeError(
                     f"ESMFold2 staged-file adoption was incomplete: {staged_source}"

@@ -19,7 +19,7 @@ GIB = 2**30
 CARD = 96 * GIB
 
 
-def test_a_shortfall_inside_the_uncovered_device_is_named_as_the_pool(monkeypatch):
+def test_post_failure_usage_does_not_become_a_required_peak(monkeypatch):
     monkeypatch.setenv("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.75")
     monkeypatch.setattr(
         oom, "_pool_card_and_used", lambda: (int(0.75 * CARD), CARD, int(12 * GIB))
@@ -32,7 +32,10 @@ def test_a_shortfall_inside_the_uncovered_device_is_named_as_the_pool(monkeypatc
     assert message is not None
     assert "72.0 GiB" in message, "the pool, not the card"
     assert "96.0 GiB" in message
-    assert "not the card's" in message
+    assert "in use 12.0 GiB" in message
+    assert "failed allocation was 60.8 GiB" in message
+    assert "needed" not in message
+    assert "72.8 GiB" not in message
 
 
 def test_a_request_larger_than_the_device_is_not_blamed_on_the_pool(monkeypatch):
@@ -112,7 +115,8 @@ def test_nested_oom_group_uses_the_leaf_allocation(monkeypatch):
     )
     assert oom.is_out_of_memory(error)
     explanation = oom.diagnose(error)
-    assert "not the card's" in explanation
+    assert "failed allocation was 60.8 GiB" in explanation
+    assert "needed" not in explanation
 
 
 def test_mixed_kernel_failures_are_not_reported_as_only_gpu_oom():
@@ -294,25 +298,14 @@ def test_importing_a_model_keeps_a_chosen_pool_fraction_alone() -> None:
     ("used_gib", "requested_gib", "expected"),
     [
         (2.0, 120.0, "past the device itself"),
-        (2.0, 88.0, "past the pool"),
-        # Fits both, so the answer is placement rather than capacity. Asserted
-        # on what the reader is told to do -- that a bigger fraction is not the
-        # lever -- rather than on the sentence that says it, which has been
-        # reworded once already for being read as classic fragmentation when
-        # the pool was nearly empty.
-        (2.0, 60.0, "a larger fraction will not help"),
+        (2.0, 92.0, "past the pool"),
+        (2.0, 60.0, "do not establish the total memory requirement"),
     ],
 )
-def test_the_explainer_separates_a_pool_limit_from_fragmentation(
+def test_only_the_failed_block_can_prove_a_capacity_limit(
     monkeypatch, used_gib, requested_gib, expected
 ) -> None:
-    """It used to call all three "past the pool" and advise a bigger fraction.
-
-    The branch compared the total against the *card* and then reported the
-    *pool*, so a request that fits both printed "This is the pool's limit" and
-    sent the reader to raise a fraction that cannot help. Measured: a 90.5 GiB
-    need failed inside a 93.1 GiB pool, and failed again at 0.98.
-    """
+    """A post-failure in-use snapshot cannot prove a co-live requirement."""
     gib = 2**30
     monkeypatch.setattr(
         oom,
@@ -512,3 +505,43 @@ def test_shared_memory_kernel_resource_failures_are_not_allocator_oom(
     error = RuntimeError(message)
     assert not oom.is_out_of_memory(error)
     assert oom.diagnose(error) is None
+
+
+@pytest.mark.parametrize(
+    "call",
+    ["cuModuleGetFunction", "cuModuleLoadDataEx", "before calling cuModule"],
+)
+@pytest.mark.parametrize("readable_stats", [False, True])
+def test_cuda_module_oom_leaves_headroom_outside_the_pool(
+    monkeypatch, call, readable_stats
+):
+    monkeypatch.setenv(oom.CURRENT_FRACTION_ENV, "0.9")
+    monkeypatch.setattr(
+        oom,
+        "_pool_card_and_used",
+        lambda: (int(0.9 * CARD), CARD, 0) if readable_stats else (None, None, None),
+    )
+    error = RuntimeError(f"cudaErrorMemoryAllocation: out of memory before {call}")
+    assert oom.is_outside_pool_oom(error)
+    message = oom.diagnose(error)
+    assert "CUDA context/module memory outside" in message
+    assert f"Lower {oom.CURRENT_FRACTION_ENV}" in message
+    assert "0.85" in message and "restart the process" in message
+    assert "=0.95" not in message
+
+
+def test_module_names_without_an_oom_do_not_change_the_classification():
+    assert not oom.is_outside_pool_oom(RuntimeError("cuModuleLoad invalid PTX"))
+    assert not oom.is_outside_pool_oom(RuntimeError("Out of memory allocating array"))
+
+
+def test_pool_size_is_not_reported_as_the_required_memory(monkeypatch):
+    monkeypatch.setattr(
+        oom,
+        "_pool_card_and_used",
+        lambda: (int(21.2 * GIB), int(23.5 * GIB), int(12.9 * GIB)),
+    )
+    message = oom.diagnose(RuntimeError("CUDA_ERROR_OUT_OF_MEMORY"))
+    assert "Pool 21.2 GiB, in use 12.9 GiB" in message
+    assert "the failed allocation did not fit" in message
+    assert "needed" not in message

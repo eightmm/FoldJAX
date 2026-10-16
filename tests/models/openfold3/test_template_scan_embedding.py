@@ -31,6 +31,7 @@ from foldjax.models.openfold3.data.featurize import (
 )
 from foldjax.models.openfold3.models import template_module
 from foldjax.models.openfold3.models.primitives import LinearParams, layer_norm, linear
+from tests.cueq_runtime import skip_missing_cueq_subprocess
 from tests.models.cp_probe_env import inherited_environment
 from tests.models.openfold3.test_template_collapse import (
     DISTOGRAM_BINS,
@@ -577,5 +578,6 @@ def test_the_scanned_embedding_holds_up_on_four_cpu_devices() -> None:
             **inherited_environment(),
         },
     )
+    skip_missing_cueq_subprocess(completed)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "OPENFOLD3_TEMPLATE_SCAN_CP_OK" in completed.stdout

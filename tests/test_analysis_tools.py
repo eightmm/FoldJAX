@@ -617,6 +617,17 @@ def test_plan_resources_from_the_law() -> None:
     assert small["state"] == "unknown" and "does not extrapolate" in small["reason"]
 
 
+@pytest.mark.parametrize("n_token", [768, 896])
+def test_esmfold2_plan_reports_small_card_failures_below_the_fitted_domain(n_token):
+    protein = {"type": "protein", "id": "A", "sequence": "M" * n_token}
+    record = slurm.plan_resources("esmfold2", {"entities": [protein]})
+    assert record["state"] == "unknown"
+    assert record["min_device_memory_gib"] is None
+    assert "24 GB cards with 22-23.5 GiB" in record["warning"]
+    assert record["warning"] in record["reason"]
+    assert "required peak was not measured" in record["warning"]
+
+
 def test_plan_resources_takes_the_sample_range_admission_takes() -> None:
     """ESMFold2's admission measured its law through 32 samples, its released
     count; the plan called that in-range run off profile.

@@ -32,6 +32,7 @@ import textwrap
 
 import pytest
 
+from tests.cueq_runtime import skip_missing_cueq_subprocess
 from tests.models.cp_probe_env import inherited_environment
 
 
@@ -50,6 +51,7 @@ def _run(source: str, *, devices: int, **extra: str) -> str:
         env=env,
         timeout=600,
     )
+    skip_missing_cueq_subprocess(completed)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     return completed.stdout
 

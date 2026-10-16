@@ -35,6 +35,7 @@ from foldjax.models.boltz2.models.diffusion.atom import (
     token_to_rep_atom_index_from_feats,
 )
 from foldjax.schema import PredictionError, PredictionRequest
+from tests.cueq_runtime import skip_missing_cueq_subprocess
 from tests.models.cp_probe_env import inherited_environment
 
 _FORCED_CP_SESSION_PROBE = textwrap.dedent(
@@ -1462,5 +1463,6 @@ def test_session_reuses_one_cp_topology_and_splits_another() -> None:
         },
         timeout=180,
     )
+    skip_missing_cueq_subprocess(completed)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "BOLTZ2_SESSION_CP_OK" in completed.stdout

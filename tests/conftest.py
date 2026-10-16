@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import sys
 from collections.abc import Iterator
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -68,9 +69,51 @@ def pytest_report_header(config: pytest.Config) -> list[str]:
 _JAX_CACHE_CONFIG = (
     "jax_compilation_cache_dir",
     "jax_enable_compilation_cache",
+    "jax_compilation_cache_max_size",
+    "jax_persistent_cache_enable_xla_caches",
     "jax_persistent_cache_min_compile_time_secs",
     "jax_persistent_cache_min_entry_size_bytes",
 )
+
+
+#: These suites mix real cuEq execution with XLA and mocked-kernel coverage.
+_CUEQ_OPTIONAL_TESTS = frozenset({
+    "models/boltz2/test_pair_residual_dtype.py",
+    "models/openfold3/test_dtype_is_realized.py",
+    "models/test_cp_gather_triangle.py",
+    "models/boltz2/test_msa_grid_bridges.py",
+    "models/boltz2/test_context_parallel.py",
+    "test_boltz2_session.py",
+    "models/test_cp_invariance.py",
+    "models/opendde/test_trunk_end_to_end.py",
+    "models/openfold3/test_glu_backend.py",
+    "models/openfold3/test_template_scan_embedding.py",
+    "models/openfold3/test_triangle_attention_chunking.py",
+    "models/protenix/test_triangle.py",
+    "models/protenix/test_triangle_cueq.py",
+})
+
+
+@pytest.fixture(autouse=True)
+def _skip_unavailable_cueq_runtime(request, monkeypatch) -> None:
+    """Skip only when a real kernel import reaches a missing native library.
+
+    Checking the whole module up front would also discard its XLA and mocked
+    tests. The loader preserves FoldJAX's bundled-NVRTC preload, unlike a bare
+    import that can fail even when the production runtime works.
+    """
+    if str(request.path.relative_to(Path(__file__).parent)) not in _CUEQ_OPTIONAL_TESTS:
+        return
+    from foldjax.models import _cueq
+    from tests.cueq_runtime import require_cueq
+
+    original = _cueq.load_cueq
+    guarded = partial(require_cueq, original)
+    monkeypatch.setattr(_cueq, "load_cueq", guarded)
+    # Boltz's native-AMP adapter retains this imported alias across tests.
+    boltz = sys.modules.get("foldjax.models.boltz2.models.triangle.triangle_cueq")
+    if boltz is not None and boltz.load_cueq is original:
+        monkeypatch.setattr(boltz, "load_cueq", guarded)
 
 
 #: pytest's own record of the running phase; it changes on every test.

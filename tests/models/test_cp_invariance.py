@@ -28,6 +28,7 @@ import subprocess
 import sys
 import textwrap
 
+from tests.cueq_runtime import skip_missing_cueq_subprocess
 from tests.models.cp_probe_env import inherited_environment
 
 #: Four devices give a 4-shard 1-D mesh and a 2x2 grid. The probes spell out
@@ -569,6 +570,7 @@ def _run_probe(source: str) -> str:
         },
         timeout=300,
     )
+    skip_missing_cueq_subprocess(completed)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     return completed.stdout
 

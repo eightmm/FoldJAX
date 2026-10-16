@@ -5,6 +5,7 @@ import errno
 import functools
 import json
 import multiprocessing
+import os
 import stat
 import time
 import weakref
@@ -943,12 +944,129 @@ def test_open_cache_directory_keeps_a_trusted_shared_namespace_group_writable(
     root.chmod(0o2775)
     monkeypatch.setenv(TRUST_SHARED_COMPILE_CACHE_ENV, "1")
 
-    with persistent._open_cache_directory(root):
-        pass
+    previous = os.umask(0o002)
+    try:
+        with persistent._open_cache_directory(root) as directory_fd:
+            with persistent._exclusive_lock(directory_fd, "shared"):
+                persistent._atomic_write(directory_fd, "shared.json", b"complete")
+    finally:
+        os.umask(previous)
 
     assert stat.S_IMODE(root.stat().st_mode) == 0o2775
-    private = root / persistent._CACHE_DIRECTORY
-    assert stat.S_IMODE(private.stat().st_mode) & 0o777 == 0o700
+    shared = root / persistent._CACHE_DIRECTORY
+    assert stat.S_IMODE(shared.stat().st_mode) == 0o2775
+    assert stat.S_IMODE((shared / "shared.json").stat().st_mode) == 0o664
+    assert stat.S_IMODE((shared / "shared.lockfile").stat().st_mode) == 0o664
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permissions")
+@pytest.mark.parametrize("owner", ["root", "trusted-peer"])
+def test_readonly_store_from_another_uid_uses_saved_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    owner: str,
+) -> None:
+    from foldjax.cache import TRUST_SHARED_COMPILE_CACHE_ENV
+
+    tokamax = _FakeTokamax()
+    monkeypatch.setattr(persistent, "_tokamax_api", lambda: tokamax)
+    monkeypatch.setenv(TRUST_SHARED_COMPILE_CACHE_ENV, "1")
+    root = tmp_path / "cache"
+    store = _store(root)
+    rng_key, batch = _inputs()
+    arguments = (_FakeBoundArguments("one"),)
+    store.call(
+        rng_key=rng_key,
+        batch=batch,
+        lower=lambda: arguments,
+        invoke=lambda: "measured",
+    )
+    assert tokamax.tune_calls == 1
+    directory = root / persistent._CACHE_DIRECTORY
+    for entry in directory.iterdir():
+        entry.chmod(0o444)
+    directory.chmod(0o555)
+    root.chmod(0o555)
+    original_fstat = persistent._fstat
+
+    def other_owner(fd, *, subject):
+        fields = list(original_fstat(fd, subject=subject))
+        fields[4] = 0 if owner == "root" else os.geteuid() + 1
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(persistent, "_fstat", other_owner)
+    if owner == "root":
+        monkeypatch.delenv(TRUST_SHARED_COMPILE_CACHE_ENV)
+    monkeypatch.setattr(
+        persistent,
+        "_exclusive_lock",
+        lambda *_args: pytest.fail("read-only cache must not create a lock"),
+    )
+    try:
+        fresh = _store(root, can_tune=False)
+        persistent.start_record(strategy="autotune", persistent_installed=True)
+        assert (
+            fresh.call(
+                rng_key=rng_key,
+                batch=batch,
+                lower=lambda: pytest.fail("store hit must not lower or tune"),
+                invoke=lambda: "stored-result",
+            )
+            == "stored-result"
+        )
+        assert persistent.recorded()["sources"] == {"store": 1}
+        assert tokamax.tune_calls == 1
+    finally:
+        persistent.clear_record()
+        root.chmod(0o755)
+        directory.chmod(0o755)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permissions")
+@pytest.mark.parametrize("store_exists", [False, True])
+def test_readonly_store_miss_tunes_selected_device_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    store_exists: bool,
+) -> None:
+    tokamax = _FakeTokamax()
+    monkeypatch.setattr(persistent, "_tokamax_api", lambda: tokamax)
+    root = tmp_path / "cache"
+    store = _store(root, can_tune=False)
+    directory = root / persistent._CACHE_DIRECTORY
+    if store_exists:
+        with persistent._open_cache_directory(root):
+            pass
+        directory.chmod(0o500)
+    root.chmod(0o500)
+    rng_key, batch = _inputs()
+    arguments = (_FakeBoundArguments("selected-device-op"),)
+    monkeypatch.setattr(
+        persistent,
+        "_exclusive_lock",
+        lambda *_args: pytest.fail("read-only cache must not create a lock"),
+    )
+
+    def invoke():
+        assert arguments[0].cached_autotuning_data is not None
+        return "synchronously-tuned"
+
+    try:
+        assert (
+            store.call(
+                rng_key=rng_key,
+                batch=batch,
+                lower=lambda: arguments,
+                invoke=invoke,
+            )
+            == "synchronously-tuned"
+        )
+        assert not directory.exists() or not list(directory.iterdir())
+        assert tokamax.tune_calls == 0
+    finally:
+        root.chmod(0o700)
+        if directory.exists():
+            directory.chmod(0o700)
 
 
 def test_filesystem_fstat_failure_falls_back_without_tuning(
@@ -1147,15 +1265,102 @@ def test_glu_heuristic_tile_is_clamped_to_sm120_shared_memory() -> None:
     assert persistent._glu_stage_bytes(tight, 4) <= 16 * 1024
 
 
-def test_glu_clamp_applies_only_to_small_shared_memory_devices() -> None:
+def test_glu_selected_device_patch_applies_to_every_gpu() -> None:
     tile = pytest.importorskip("tokamax._src.ops.gated_linear_unit.pallas_triton")
     op = tile.PallasTritonGatedLinearUnit
     original = op.__dict__["_get_heuristics_config"]
-    for capability, patched in (
-        ("8.6", True), ("8.9", True), ("12.0", True), ("12.1", True),
-        ("8.0", False), ("8.7", False), ("9.0", False), (None, False),
-    ):
-        device = SimpleNamespace(compute_capability=capability)
+    for capability in ("8.6", "8.9", "12.0", "12.1", "8.0", "8.7", "9.0", None):
+        device = SimpleNamespace(platform="gpu", compute_capability=capability)
         with persistent.glu_heuristics_within_shared_memory(device):
-            assert (op.__dict__["_get_heuristics_config"] is not original) is patched
+            assert op.__dict__["_get_heuristics_config"] is not original
         assert op.__dict__["_get_heuristics_config"] is original
+
+
+@pytest.mark.parametrize("capability", ["9.0", "12.0"])
+@pytest.mark.parametrize("core_count,expected_m", [(1, 128), (16, 32)])
+def test_glu_heuristic_uses_selected_gpu_with_a_cpu_default(
+    monkeypatch: pytest.MonkeyPatch,
+    capability: str,
+    core_count: int,
+    expected_m: int,
+) -> None:
+    tile = pytest.importorskip("tokamax._src.ops.gated_linear_unit.pallas_triton")
+    cpu = SimpleNamespace(platform="cpu")
+    monkeypatch.setattr(jax, "devices", lambda *_args, **_kwargs: [cpu])
+    device = SimpleNamespace(
+        platform="gpu", compute_capability=capability, core_count=core_count
+    )
+    ba = SimpleNamespace(
+        args=(
+            jax.ShapeDtypeStruct((256, 128), np.float32),
+            jax.ShapeDtypeStruct((128, 2, 256), np.float32),
+        )
+    )
+    with persistent.glu_heuristics_within_shared_memory(device):
+        config = tile.PallasTritonGatedLinearUnit()._get_heuristics_config(ba)
+    assert config.block_m == expected_m
+    assert config.block_n == 64 and config.block_k == 32
+    assert config.num_stages == (3 if capability == "12.0" and expected_m == 128 else 4)
+
+
+@pytest.mark.parametrize("m,n", [(256, 256), (6144, 256), (15, 129), (257, 31)])
+@pytest.mark.parametrize("unfused", [False, True])
+def test_selected_glu_tile_preserves_the_pinned_tokamax_rule(
+    monkeypatch, m, n, unfused
+):
+    tile = pytest.importorskip("tokamax._src.ops.gated_linear_unit.pallas_triton")
+    device = SimpleNamespace(core_count=120)
+    monkeypatch.setattr(jax, "devices", lambda: [device])
+    weights = (
+        (jax.ShapeDtypeStruct((128, n), np.float32),) * 2
+        if unfused
+        else jax.ShapeDtypeStruct((128, 2, n), np.float32)
+    )
+    ba = SimpleNamespace(args=(jax.ShapeDtypeStruct((m, 128), np.float32), weights))
+    expected = tile.PallasTritonGatedLinearUnit()._get_heuristics_config(ba)
+    assert (
+        persistent._selected_glu_config(ba, device=device, config_cls=tile.Config)
+        == expected
+    )
+
+
+def test_cpu_default_selected_gpu_autotunes_with_its_glu_heuristic(
+    tmp_path,
+    monkeypatch,
+):
+    tile = pytest.importorskip("tokamax._src.ops.gated_linear_unit.pallas_triton")
+    tokamax = _FakeTokamax()
+    monkeypatch.setattr(persistent, "_tokamax_api", lambda: tokamax)
+    monkeypatch.setattr(jax, "devices", lambda: [SimpleNamespace(platform="cpu")])
+    selected = SimpleNamespace(platform="gpu", compute_capability="12.0", core_count=16)
+    store = _store(tmp_path / "cache", can_tune=False)
+    arguments = (_FakeBoundArguments("selected-device-glu"),)
+    ba = SimpleNamespace(
+        args=(
+            jax.ShapeDtypeStruct((256, 128), np.float32),
+            jax.ShapeDtypeStruct((128, 2, 256), np.float32),
+        )
+    )
+
+    def lower():
+        config = tile.PallasTritonGatedLinearUnit()._get_heuristics_config(ba)
+        assert config.block_m == 32
+        return arguments
+
+    def invoke():
+        assert arguments[0].cached_autotuning_data is not None
+        return "selected-gpu-tuned"
+
+    rng_key, batch = _inputs()
+    with persistent.glu_heuristics_within_shared_memory(selected):
+        assert (
+            store.call(
+                rng_key=rng_key,
+                batch=batch,
+                lower=lower,
+                invoke=invoke,
+            )
+            == "selected-gpu-tuned"
+        )
+    assert tokamax.tune_calls == 0
+    assert list((tmp_path / "cache" / persistent._CACHE_DIRECTORY).glob("*.json"))

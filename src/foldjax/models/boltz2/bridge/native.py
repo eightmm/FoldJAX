@@ -26,6 +26,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax._fsutil import ordinary_file_mode
+
 # Path component encoding ----------------------------------------------------
 # Each pytree path component is encoded as ``<tag>:<value>`` where tag marks the
 # container kind so unflatten can rebuild dict vs list/tuple:
@@ -193,8 +195,11 @@ def save_params(pytree: Any, path: str | Path, dtype: Any = None) -> dict[str, A
         np.savez(weights_path, **arrays)
         meta["backend"] = "npz"
 
+    # safetensors publishes through a 0600 temporary file.
+    weights_path.chmod(ordinary_file_mode())
     sidecar = weights_path.with_suffix(weights_path.suffix + ".json")
     sidecar.write_text(json.dumps(meta))
+    sidecar.chmod(ordinary_file_mode())
     return {
         "backend": meta["backend"],
         "weights_path": str(weights_path),

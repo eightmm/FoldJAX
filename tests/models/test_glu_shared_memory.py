@@ -27,7 +27,12 @@ def heuristic(monkeypatch):
 
 
 def _config(op):
-    argument = SimpleNamespace(args=(SimpleNamespace(dtype=jnp.dtype("float32")),))
+    argument = SimpleNamespace(
+        args=(
+            jax.ShapeDtypeStruct((6144, 128), jnp.float32),
+            jax.ShapeDtypeStruct((128, 2, 256), jnp.float32),
+        )
+    )
     return op._get_heuristics_config(None, argument)
 
 
@@ -36,7 +41,7 @@ def test_shared_model_glu_clamps_the_real_call(monkeypatch, heuristic):
 
     op, _, original = heuristic
     device = SimpleNamespace(
-        platform="gpu", compute_capability="8.6", device_kind="RTX A6000"
+        platform="gpu", compute_capability="8.6", device_kind="RTX A6000", core_count=64
     )
     monkeypatch.setattr("foldjax._gpu.default_device", lambda: device)
     monkeypatch.setattr(jax, "default_backend", lambda: "gpu")
@@ -56,8 +61,8 @@ def test_shared_model_glu_clamps_the_real_call(monkeypatch, heuristic):
 
 def test_nested_larger_device_does_not_inherit_the_small_budget(heuristic):
     op, config, original = heuristic
-    small = SimpleNamespace(compute_capability="8.9")
-    large = SimpleNamespace(compute_capability="8.0")
+    small = SimpleNamespace(platform="gpu", compute_capability="8.9", core_count=64)
+    large = SimpleNamespace(platform="gpu", compute_capability="8.0", core_count=64)
     with policy.glu_heuristics_within_shared_memory(small):
         assert _config(op).num_stages == 3
         with policy.glu_heuristics_within_shared_memory(large):
@@ -72,7 +77,7 @@ def test_another_threads_large_device_keeps_its_schedule(heuristic):
 
     def small():
         with policy.glu_heuristics_within_shared_memory(
-            SimpleNamespace(compute_capability="8.6")
+            SimpleNamespace(platform="gpu", compute_capability="8.6", core_count=64)
         ):
             entered.set()
             assert checked.wait(5)
@@ -82,7 +87,7 @@ def test_another_threads_large_device_keeps_its_schedule(heuristic):
         assert entered.wait(5)
         try:
             with policy.glu_heuristics_within_shared_memory(
-                SimpleNamespace(compute_capability="9.0")
+                SimpleNamespace(platform="gpu", compute_capability="9.0", core_count=64)
             ):
                 assert _config(op) == config
         finally:
@@ -99,7 +104,36 @@ def test_a_failed_call_restores_the_heuristic(heuristic):
     op, _, original = heuristic
     with pytest.raises(RuntimeError, match="failed"):
         with policy.glu_heuristics_within_shared_memory(
-            SimpleNamespace(compute_capability="12.1")
+            SimpleNamespace(platform="gpu", compute_capability="12.1", core_count=64)
         ):
             raise RuntimeError("failed")
+    assert op._get_heuristics_config is original
+
+
+def test_overlapping_calls_restore_only_after_the_last_device_leaves(heuristic):
+    op, config, original = heuristic
+    entered, leave_small, small_left = Event(), Event(), Event()
+
+    def small():
+        with policy.glu_heuristics_within_shared_memory(
+            SimpleNamespace(platform="gpu", compute_capability="8.6", core_count=64)
+        ):
+            entered.set()
+            assert leave_small.wait(5)
+        small_left.set()
+
+    def large():
+        assert entered.wait(5)
+        with policy.glu_heuristics_within_shared_memory(
+            SimpleNamespace(platform="gpu", compute_capability="9.0", core_count=64)
+        ):
+            leave_small.set()
+            assert small_left.wait(5)
+            assert op._get_heuristics_config is not original
+            assert _config(op) == config
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        tasks = [executor.submit(small), executor.submit(large)]
+        for task in tasks:
+            task.result(timeout=10)
     assert op._get_heuristics_config is original

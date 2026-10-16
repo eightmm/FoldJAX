@@ -22,7 +22,7 @@ import stat
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
@@ -67,6 +67,10 @@ class _CacheError(RuntimeError):
 
 class _UnsafeCachePathError(_CacheError):
     """A cache path failed a no-follow, ownership, or mode check."""
+
+
+class _ReadOnlyStoreUnavailableError(_CacheError):
+    """A trusted read-only namespace has no Tokamax store yet."""
 
 
 class _InvalidManifestError(_CacheError):
@@ -224,7 +228,34 @@ _SMALL_SHARED_MEMORY_BYTES = {
     (12, 1): 99 * 1024,
 }
 _GLU_HEURISTICS_LOCK = threading.RLock()
+_GLU_PATCHES: dict[type, tuple[Any, int]] = {}
 _GLU_BUDGET: ContextVar[int | None] = ContextVar("foldjax_glu_budget", default=None)
+_GLU_DEVICE: ContextVar[Any | None] = ContextVar("foldjax_glu_device", default=None)
+
+
+def _selected_glu_config(ba: Any, *, device: Any, config_cls: Any) -> Any:
+    """Tokamax 0.0.13's tile rule, using the runner's GPU SM count."""
+    x, weights = ba.args
+    m = math.prod(x.shape[:-1])
+    n = weights[0].shape[-1] if isinstance(weights, tuple) else weights.shape[2]
+    rows, columns = (m, n) if n >= m else (n, m)
+    block_m = min(max(32, 1 << (max(rows, 1) - 1).bit_length()), 128)
+    block_n = min(max(32, 1 << (max(columns, 1) - 1).bit_length()), 256)
+    block_n = min(block_n, (128 * 128) // block_m)
+    while (
+        math.ceil(rows / block_m) * math.ceil(columns / block_n) < device.core_count
+        and block_m > 32
+    ):
+        block_m //= 2
+    if n < m:
+        block_m, block_n = block_n, block_m
+    return config_cls(
+        block_m=block_m,
+        block_n=block_n // 2,
+        block_k=32,
+        num_warps=4,
+        num_stages=4,
+    )
 
 
 def _glu_stage_bytes(config: Any, itemsize: int) -> int:
@@ -256,11 +287,13 @@ def _shared_memory_budget(device: Any) -> int | None:
 
 @contextmanager
 def glu_heuristics_within_shared_memory(device: Any) -> Iterator[None]:
-    """Clamp Tokamax's heuristic GLU tile to ``device``'s shared memory."""
+    """Size Tokamax's heuristic tile for the selected GPU and its memory."""
 
     token = _GLU_BUDGET.set(_shared_memory_budget(device))
+    selected_gpu = getattr(device, "platform", None) in {"gpu", "cuda"}
+    device_token = _GLU_DEVICE.set(device if selected_gpu else None)
     try:
-        if _GLU_BUDGET.get() is None:
+        if not selected_gpu:
             yield
             return
         try:
@@ -269,30 +302,49 @@ def glu_heuristics_within_shared_memory(device: Any) -> Iterator[None]:
             yield
             return
         glu_op = pallas_triton.PallasTritonGatedLinearUnit
-        # Serialize temporary class mutations; the context-local budget keeps a
-        # concurrent unclamped device from inheriting another device's limit.
+        # Only installation/restoration is global. Device and memory limits
+        # stay context-local while overlapping model calls share the wrapper.
         with _GLU_HEURISTICS_LOCK:
             original = glu_op.__dict__.get("_get_heuristics_config")
             if original is None:
                 yield
                 return
-            base = getattr(original, "_foldjax_original", original)
+            if glu_op in _GLU_PATCHES:
+                original, users = _GLU_PATCHES[glu_op]
+            else:
+                users = 0
 
-            def clamped(self: Any, ba: Any) -> Any:
-                config = base(self, ba)
-                budget = _GLU_BUDGET.get()
-                if budget is None:
-                    return config
-                itemsize = int(getattr(ba.args[0].dtype, "itemsize", 4))
-                return clamp_glu_config(config, itemsize=itemsize, budget_bytes=budget)
+                def clamped(self: Any, ba: Any) -> Any:
+                    selected = _GLU_DEVICE.get()
+                    config = (
+                        original(self, ba)
+                        if selected is None
+                        else _selected_glu_config(
+                            ba, device=selected, config_cls=pallas_triton.Config
+                        )
+                    )
+                    budget = _GLU_BUDGET.get()
+                    if budget is None:
+                        return config
+                    itemsize = int(getattr(ba.args[0].dtype, "itemsize", 4))
+                    return clamp_glu_config(
+                        config, itemsize=itemsize, budget_bytes=budget
+                    )
 
-            clamped._foldjax_original = base
-            glu_op._get_heuristics_config = clamped
-            try:
-                yield
-            finally:
-                glu_op._get_heuristics_config = original
+                glu_op._get_heuristics_config = clamped
+            _GLU_PATCHES[glu_op] = original, users + 1
+        try:
+            yield
+        finally:
+            with _GLU_HEURISTICS_LOCK:
+                original, users = _GLU_PATCHES[glu_op]
+                if users == 1:
+                    glu_op._get_heuristics_config = original
+                    del _GLU_PATCHES[glu_op]
+                else:
+                    _GLU_PATCHES[glu_op] = original, users - 1
     finally:
+        _GLU_DEVICE.reset(device_token)
         _GLU_BUDGET.reset(token)
 
 
@@ -496,24 +548,48 @@ def _close_fd(fd: int, *, subject: str) -> None:
         raise _CacheError(f"cannot close {subject}") from error
 
 
-def _validate_directory(fd: int, *, private: bool) -> None:
+def _shared_store(fd: int) -> bool:
+    return (
+        shared_compile_cache_trusted()
+        or _fstat(fd, subject="cache directory").st_uid == 0
+    )
+
+
+def _directory_writable(fd: int) -> bool:
+    return os.access(".", os.W_OK | os.X_OK, dir_fd=fd)
+
+
+def _validate_directory(fd: int, *, private: bool, shared: bool = False) -> None:
     info = _fstat(fd, subject="cache directory")
     if not stat.S_ISDIR(info.st_mode):
         raise _UnsafeCachePathError("cache path is not a directory")
-    if hasattr(os, "geteuid") and info.st_uid != os.geteuid():
+    if (
+        not shared_compile_cache_trusted()
+        and hasattr(os, "geteuid")
+        and info.st_uid not in (os.geteuid(), 0)
+    ):
         raise _UnsafeCachePathError("cache directory is owned by another user")
-    forbidden = 0o077 if private else 0o022
+    forbidden = (
+        0
+        if shared_compile_cache_trusted()
+        else (0o077 if private and not shared else 0o022)
+    )
     if stat.S_IMODE(info.st_mode) & forbidden:
         raise _UnsafeCachePathError("cache directory permissions are unsafe")
 
 
-def _validate_regular_file(fd: int) -> os.stat_result:
+def _validate_regular_file(fd: int, *, shared: bool = False) -> os.stat_result:
     info = _fstat(fd, subject="cache entry")
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         raise _UnsafeCachePathError("cache entry is not a singly linked regular file")
-    if hasattr(os, "geteuid") and info.st_uid != os.geteuid():
+    if (
+        not shared_compile_cache_trusted()
+        and hasattr(os, "geteuid")
+        and info.st_uid not in (os.geteuid(), 0)
+    ):
         raise _UnsafeCachePathError("cache entry is owned by another user")
-    if stat.S_IMODE(info.st_mode) & 0o077:
+    forbidden = 0 if shared_compile_cache_trusted() else (0o022 if shared else 0o077)
+    if stat.S_IMODE(info.st_mode) & forbidden:
         raise _UnsafeCachePathError("cache entry permissions are unsafe")
     return info
 
@@ -540,8 +616,8 @@ def _open_cache_directory(cache_dir: Path) -> Iterator[int]:
         # A store shared on purpose (FOLDJAX_TRUST_SHARED_COMPILE_CACHE) keeps
         # its namespace as the group made it: stripping group write there
         # locked every other member out of the XLA entries beside this one.
-        # The Tokamax directory below stays private either way.
         root_info = _fstat(root_fd, subject="compilation cache")
+        shared = _shared_store(root_fd)
         if shared_compile_cache_trusted():
             if not stat.S_ISDIR(root_info.st_mode):
                 raise _UnsafeCachePathError("cache path is not a directory")
@@ -559,21 +635,26 @@ def _open_cache_directory(cache_dir: Path) -> Iterator[int]:
                         ) from error
             _validate_directory(root_fd, private=False)
         try:
-            os.mkdir(_CACHE_DIRECTORY, 0o700, dir_fd=root_fd)
-        except FileExistsError:
-            pass
-        except OSError as error:
-            raise _UnsafeCachePathError(
-                "cannot safely create the Tokamax cache"
-            ) from error
-        try:
-            cache_fd = os.open(_CACHE_DIRECTORY, directory_flags, dir_fd=root_fd)
+            try:
+                cache_fd = os.open(_CACHE_DIRECTORY, directory_flags, dir_fd=root_fd)
+            except FileNotFoundError:
+                if not _directory_writable(root_fd):
+                    raise _ReadOnlyStoreUnavailableError(
+                        "read-only namespace has no store"
+                    )
+                try:
+                    os.mkdir(
+                        _CACHE_DIRECTORY, 0o777 if shared else 0o700, dir_fd=root_fd
+                    )
+                except FileExistsError:
+                    pass
+                cache_fd = os.open(_CACHE_DIRECTORY, directory_flags, dir_fd=root_fd)
         except OSError as error:
             raise _UnsafeCachePathError(
                 "cannot safely open the Tokamax cache"
             ) from error
         try:
-            _validate_directory(cache_fd, private=True)
+            _validate_directory(cache_fd, private=True, shared=shared)
             yield cache_fd
         finally:
             _close_fd(cache_fd, subject="Tokamax cache directory")
@@ -592,7 +673,7 @@ def _read_bytes(directory_fd: int, name: str) -> bytes | None:
             "cannot safely open a Tokamax cache entry"
         ) from error
     try:
-        info = _validate_regular_file(fd)
+        info = _validate_regular_file(fd, shared=_shared_store(directory_fd))
         if not 0 < info.st_size <= _MAX_RESULT_BYTES:
             raise _InvalidManifestError("Tokamax cache entry has an invalid size")
         chunks = []
@@ -620,13 +701,14 @@ def _exclusive_lock(directory_fd: int, signature: str) -> Iterator[None]:
     name = f"{signature}.lockfile"
     flags = os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC
     try:
-        fd = os.open(name, flags, 0o600, dir_fd=directory_fd)
+        shared = _shared_store(directory_fd)
+        fd = os.open(name, flags, 0o666 if shared else 0o600, dir_fd=directory_fd)
     except OSError as error:
         raise _UnsafeCachePathError(
             "cannot safely open the Tokamax cache lock"
         ) from error
     try:
-        _validate_regular_file(fd)
+        _validate_regular_file(fd, shared=shared)
         while True:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX)
@@ -654,8 +736,9 @@ def _atomic_write(directory_fd: int, name: str, payload: bytes) -> None:
     fd: int | None = None
     replaced = False
     try:
-        fd = os.open(temporary, flags, 0o600, dir_fd=directory_fd)
-        _validate_regular_file(fd)
+        shared = _shared_store(directory_fd)
+        fd = os.open(temporary, flags, 0o666 if shared else 0o600, dir_fd=directory_fd)
+        _validate_regular_file(fd, shared=shared)
         view = memoryview(payload)
         while view:
             try:
@@ -1250,9 +1333,19 @@ class _PersistentTokamaxStore:
                     source="store" if signature in self._persisted else "measured",
                 )
 
+            store_unavailable = False
             try:
                 with _open_cache_directory(self._cache_dir) as directory_fd:
+                    writable = _directory_writable(directory_fd)
+                    if not writable:
+                        self._warn_once(
+                            "cache is read-only; new results will not be saved"
+                        )
                     result = self._load_result(directory_fd, signature, call_sha256)
+            except _ReadOnlyStoreUnavailableError:
+                self._warn_once("cache is read-only; new results will not be saved")
+                store_unavailable = True
+                result = None
             except _CacheError:
                 self._warn_once("is unavailable on this filesystem")
                 return self._invoke_fallback(invoke)
@@ -1268,9 +1361,24 @@ class _PersistentTokamaxStore:
             result = None
             source = "store"
             try:
-                with _open_cache_directory(self._cache_dir) as directory_fd:
-                    with _exclusive_lock(directory_fd, signature):
-                        result = self._load_result(directory_fd, signature, call_sha256)
+                with (
+                    nullcontext(None)
+                    if store_unavailable
+                    else _open_cache_directory(self._cache_dir)
+                ) as directory_fd:
+                    writable = directory_fd is not None and _directory_writable(
+                        directory_fd
+                    )
+                    with (
+                        _exclusive_lock(directory_fd, signature)
+                        if writable
+                        else nullcontext()
+                    ):
+                        result = (
+                            self._load_result(directory_fd, signature, call_sha256)
+                            if directory_fd is not None
+                            else None
+                        )
                         if result is None:
                             source = "measured"
                             try:
@@ -1283,7 +1391,7 @@ class _PersistentTokamaxStore:
                             except Exception:  # noqa: BLE001 - preserve inline fallback
                                 self._warn_once("did not obtain complete coverage")
                                 result = None
-                            if result is not None:
+                            if result is not None and writable:
                                 try:
                                     payload = _manifest_bytes(
                                         result,

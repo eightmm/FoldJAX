@@ -1916,6 +1916,7 @@ def _run_plan(args: argparse.Namespace) -> int:
             requested, draw_seeds=False, jobs_root=jobs / "split"
         )
         payload = []
+        seen_warnings: set[str] = set()
         for item in resolved:
             preflight(item)
             if item.templates == "auto" and item.template_dir is None:
@@ -1931,13 +1932,17 @@ def _run_plan(args: argparse.Namespace) -> int:
                         stacklevel=2,
                     )
             summary = _plan_summary(item, scratch=jobs)
+            # Read while the scratch document still exists: the shown input
+            # is the store path predict would write, not this one.
+            resources = slurm.plan_slurm(
+                {**summary, "input": str(item.input)},
+                public_options(item.options) or {},
+            )
             if args.json:
-                # Read while the scratch document still exists: the shown
-                # input is the store path predict would write, not this one.
-                summary["slurm"] = slurm.plan_slurm(
-                    {**summary, "input": str(item.input)},
-                    public_options(item.options) or {},
-                )
+                summary["slurm"] = resources
+            elif (warning := resources.get("warning")) and warning not in seen_warnings:
+                seen_warnings.add(warning)
+                warnings.warn(warning, RuntimeWarning, stacklevel=2)
             payload.append(summary)
     print(
         json.dumps(

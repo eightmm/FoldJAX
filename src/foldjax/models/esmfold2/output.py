@@ -320,7 +320,19 @@ def write_prediction_outputs(
     plddt_scale: float = 100.0,
 ) -> dict[str, object]:
     """Write one PDB per sample and one confidence JSON beside them."""
-    cropped = crop_prediction(output, features)
+    # Cropping a device array compiles one slice for every real length, even
+    # when the model reused a padded executable. These writer values already
+    # cross to NumPy below; transfer their bucket shapes before host slicing.
+    # Leave unused native logits/representations on the device.
+    host_output = {
+        field: _numpy(output[field])
+        for field in (
+            "sample_atom_coords", "plddt", "plddt_per_atom", "pae", "pde",
+            "pair_chains_iptm", *SAMPLE_SCORES,
+        )
+        if field in output
+    }
+    cropped = crop_prediction(host_output, features)
     coords = require_finite_coordinates(cropped["sample_atom_coords"], model="ESMFold2")
     if coords.ndim == 2:
         coords = coords[None]

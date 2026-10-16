@@ -24,6 +24,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax._fsutil import ordinary_file_mode
+
 # Native weight files pickle their parameter NamedTuple classes, so each one
 # records the module that defined them. Files exported before these ports were
 # vendored into FoldJAX still carry the standalone top-level package names, and
@@ -115,6 +117,7 @@ def save_native_weights(
     opener = gzip.open if compress else open
     with opener(path, "wb") as fh:
         pickle.dump(numpy_tree, fh, protocol=pickle.HIGHEST_PROTOCOL)
+    path.chmod(ordinary_file_mode())
 
 
 def load_native_weights(path: str | Path, prestack: bool = True) -> Any:

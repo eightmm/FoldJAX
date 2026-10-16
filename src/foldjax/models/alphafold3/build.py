@@ -28,6 +28,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from threading import RLock
 
+from foldjax._fsutil import ordinary_file_mode
+
 _UPSTREAM = Path(__file__).parent / "_upstream"
 _PACKAGE = _UPSTREAM / "alphafold3"
 _PICKLES = (
@@ -362,6 +364,7 @@ def _write_marker(path: Path) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         temporary.write_text(runtime_key() + "\n", encoding="utf-8")
+        temporary.chmod(ordinary_file_mode())
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -633,6 +636,7 @@ def _generate_atomic(target: Path, generate: Callable[[Path], None]) -> None:
         generate(temporary)
         if not _nonempty(temporary):
             raise RuntimeError(f"AlphaFold 3 generator produced an empty {target.name}")
+        temporary.chmod(ordinary_file_mode() | (temporary.stat().st_mode & 0o111))
         os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)

@@ -357,6 +357,9 @@ def plan_resources(
         return record
     tokens, notes = estimate_tokens(document)
     record["tokens_estimate"] = tokens
+    warning = memory_policy.capacity_warning(model, tokens)
+    if warning is not None:
+        record["warning"] = warning
     if notes:
         record["tokens_not_counted"] = notes
     record["law"] = {
@@ -377,6 +380,8 @@ def plan_resources(
             f"{tokens} tokens is outside the law's fitted range {low}-{high}; "
             "it does not extrapolate"
         )
+        if warning is not None:
+            record["reason"] += f". {warning}"
         return record
     upper = law.upper(tokens)
     device = upper / memory_policy.ADMISSION_FRACTION
@@ -447,7 +452,7 @@ def plan_slurm(
     except (TypeError, ValueError):
         cp = 1
     sampling = summary.get("sampling") or {}
-    return plan_resources(
+    record = plan_resources(
         str(summary.get("model")),
         document,
         num_samples=sampling.get("num_samples")
@@ -458,3 +463,17 @@ def plan_slurm(
         # `_plan_summary` adds this block exactly when the request pads.
         padding=summary.get("padding") is not None,
     )
+    # Keep the law on its unpadded input, but apply the capacity advisory to
+    # the serving shape already resolved from explicit pins/overflow policy.
+    padding_estimate = summary.get("padding_estimate")
+    if isinstance(padding_estimate, Mapping):
+        token_bucket = padding_estimate.get("token_bucket")
+        if isinstance(token_bucket, int):
+            warning = memory_policy.capacity_warning(
+                str(summary.get("model")), token_bucket
+            )
+            if warning is not None:
+                record["warning"] = warning
+                if warning not in record["reason"]:
+                    record["reason"] += f". {warning}"
+    return record
