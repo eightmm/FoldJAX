@@ -139,6 +139,7 @@ def protenix_predict_static(
     cycle_msa_index_tape: MSACycleIndexTape | None = None,
     cycle_pair_dropout_keep_masks: jnp.ndarray | None = None,
     cycle_pair_dropout_keys: jnp.ndarray | None = None,
+    pair_dropout_enabled: jnp.ndarray | None = None,
     pair_dropout_rate: float = 0.4,
     guidance_config: Mapping[str, Any] | None = None,
     guidance_features: Mapping[str, Any] | None = None,
@@ -299,6 +300,10 @@ def protenix_predict_static(
             cycle_msa_index_tape=cycle_msa_index_tape,
             cycle_pair_dropout_keep_masks=cycle_pair_dropout_keep_masks,
             cycle_pair_dropout_keys=cycle_pair_dropout_keys,
+            **(
+                {"pair_dropout_enabled": pair_dropout_enabled}
+                if pair_dropout_enabled is not None else {}
+            ),
             pair_dropout_rate=pair_dropout_rate,
             guidance_config=guidance_config,
             guidance_features=guidance_features,

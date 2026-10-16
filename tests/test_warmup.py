@@ -32,18 +32,20 @@ def _request(tmp_path: Path, **updates) -> PredictionRequest:
     return PredictionRequest(**values)
 
 
+@pytest.mark.parametrize("model", ["boltz2", "alphafold3"])
 def test_warm_cache_executes_first_seed_and_removes_scratch_outputs(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, model
 ) -> None:
     from foldjax import warmup
+    from foldjax.backends import _tokamax_autotune as tuning
 
-    request = _request(tmp_path)
+    request = _request(tmp_path, model=model)
     resolved = request
     namespace = tmp_path / "cache" / "boltz2" / "weights" / "digest"
     seen: dict[str, object] = {}
     monkeypatch.setattr(warmup, "resolve_requests", lambda _request: (resolved,))
     monkeypatch.setattr(
-        warmup, "get_backend", lambda _model: SimpleNamespace(name="boltz2")
+        warmup, "get_backend", lambda _model: SimpleNamespace(name=model)
     )
     monkeypatch.setattr(warmup, "resolve_cache_dir", lambda *_args: namespace)
     monkeypatch.setattr(
@@ -53,6 +55,8 @@ def test_warm_cache_executes_first_seed_and_removes_scratch_outputs(
     )
 
     def fake_predict(run, *, output_root=None):
+        if model == "alphafold3":
+            tuning.start_record(strategy="autotune", persistent_installed=True)
         seen["seed"] = run.seed
         seen["seeds"] = run.seeds
         seen["output"] = run.output_dir
@@ -63,7 +67,7 @@ def test_warm_cache_executes_first_seed_and_removes_scratch_outputs(
         namespace.mkdir(parents=True, exist_ok=True)
         (namespace / "xla-entry").write_bytes(b"compiled")
         return PredictionResult(
-            model="boltz2",
+            model=model,
             samples=(PredictionSample(seed=run.seed, structure_path=structure),),
             output_dir=run.output_dir,
         )
@@ -84,6 +88,11 @@ def test_warm_cache_executes_first_seed_and_removes_scratch_outputs(
     assert result.peak_device_bytes == 123456
     assert not Path(seen["output"]).exists()
     assert result.summary()["samples_executed"] == 1
+    if model == "alphafold3":
+        assert result.summary()["kernel_tuning"] == tuning.recorded()
+    else:
+        assert "kernel_tuning" not in result.summary()
+    tuning.clear_record()
 
 
 def test_warm_cache_keeps_an_explicit_output_directory(

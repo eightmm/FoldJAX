@@ -11,13 +11,15 @@ instead of input/sequence arguments:
 
 ```bash
 foldjax cache warm --model boltz2 protenix --token-buckets 256,512,768 \
-  --msa single --fixed-msa "$N"
+  --msa single --fixed-msa 2048
 foldjax cache warm --model esmfold2 --token-buckets 256..1536 --json
 foldjax cache warm --model alphafold3 --token-buckets auto
 ```
 
-`N` is an explicit positive MSA capacity; no default is chosen while measurements
-are pending. The four MSA presets and native selection limits are explained in
+The core CLI still requires an explicit positive MSA capacity. The example uses
+2048 to match the Slurm wrapper default selected from the user-reported
+1024/2048/4096 accuracy comparison; choose the same cap for warming and prediction.
+The four MSA presets and native selection limits are explained in
 [fixed-msa.md](fixed-msa.md). AlphaFold 3 and ESMFold2 do not accept that preset.
 
 A list is sorted and deduplicated. A range includes the model's existing bucket

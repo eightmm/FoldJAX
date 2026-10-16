@@ -38,7 +38,11 @@ elif os.environ.get('FAIL_PLAN') and sys.argv[1:2] == ['plan']:
         target.write_text(stub)
         target.chmod(0o755)
     env = {
-        **os.environ,
+        **{
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("GPU_PARTITION_")
+        },
         "PATH": str(binaries) + os.pathsep + os.environ.get("PATH", ""),
         "STUB_LOG": str(log),
         "PARTITIONS_GPU": "example-gpu",
@@ -46,6 +50,7 @@ elif os.environ.get('FAIL_PLAN') and sys.argv[1:2] == ['plan']:
         "CPUS_PER_GPU": "4",
         "PARTITION_CPU": "example-cpu",
         "MODULE": "",
+        "DEFAULT_MSA": "single",
         "FIXED_MSA_DEPTH": "",
         "FAIL_PLAN": "",
     }
@@ -147,16 +152,18 @@ def test_auto_prefetch_dependencies_arrays_and_literal_passthrough(shell):
         )
     assert boltz[boltz.index("--fixed-msa") + 1] == "1536"
     assert "--fixed-msa" not in af3
-    assert boltz[boltz.index("--output-dir") + 1] == output + "/boltz2"
-    assert af3[af3.index("--output-dir") + 1] == output + "/alphafold3"
+    for gpu in (boltz, af3):
+        assert gpu[gpu.index("--output-dir") + 1] == output
+        assert "--batch-output" in gpu
+    assert all("--batch-output" in row["args"] for row in rows[:2])
     assert not (tmp / "INJECTED").exists()
 
 
 @pytest.mark.parametrize(
     "model", ["boltz2", "protenix", "openfold3", "opendde", "esmfold2", "alphafold3"]
 )
-@pytest.mark.parametrize("depth", ["", "2048"])
-def test_fixed_msa_has_no_hidden_default_and_only_reaches_supported_models(
+@pytest.mark.parametrize("depth", ["", "1536", "2048"])
+def test_wrapper_defaults_to_2048_and_only_reaches_supported_models(
     shell, model, depth
 ):
     run, calls, tmp = shell
@@ -176,8 +183,12 @@ def test_fixed_msa_has_no_hidden_default_and_only_reaches_supported_models(
     assert len(rows) == 2
     for row in rows:
         assert ("--fixed-msa" in row["args"]) == (
-            bool(depth) and model in {"boltz2", "protenix", "openfold3", "opendde"}
+            model in {"boltz2", "protenix", "openfold3", "opendde"}
         )
+        if "--fixed-msa" in row["args"]:
+            assert row["args"][row["args"].index("--fixed-msa") + 1] == (
+                depth or "2048"
+            )
     assert not any("--dependency" in arg for arg in rows[-1]["args"])
 
 
@@ -343,3 +354,177 @@ def test_submission_scripts_have_valid_bash_syntax():
             check=False,
         )
         assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize(
+    "options,environment,expected",
+    [
+        ((), {}, "example-gpu"),
+        (("--gpu", "type_a"), {"GPU_PARTITION_TYPE_A": "mapped-gpu"}, "mapped-gpu"),
+        (("--gpu", "type_a"), {}, "example-gpu"),
+        (
+            ("--gpu", "type_a", "--partition", "chosen-gpu"),
+            {"GPU_PARTITION_TYPE_A": "mapped-gpu"},
+            "chosen-gpu",
+        ),
+        (("--partition", "chosen-gpu"), {"PARTITIONS_GPU": ""}, "chosen-gpu"),
+        (
+            ("--gpu", "type_a"),
+            {"PARTITIONS_GPU": "", "GPU_PARTITION_TYPE_A": "mapped-gpu"},
+            "mapped-gpu",
+        ),
+        (
+            ("--gpu", "type-a+v2"),
+            {"GPU_PARTITION_TYPE_A_V2": "mapped-gpu"},
+            "mapped-gpu",
+        ),
+    ],
+)
+def test_gpu_partition_precedence_is_explicit_then_type_mapping_then_base(
+    shell, options, environment, expected
+):
+    run, calls, tmp = shell
+    completed = run(
+        "foldjax-submit",
+        "-m",
+        "boltz2",
+        "-o",
+        str(tmp / "out"),
+        *options,
+        "--",
+        "--input",
+        "job.json",
+        extra_env=environment,
+    )
+    assert completed.returncode == 0, completed.stderr
+    gpu = calls()[-1]["args"]
+    assert f"--partition={expected}" in gpu
+    assert sum(value.startswith("--partition=") for value in gpu) == 1
+    if "--gpu" in options:
+        assert f"--gres=gpu:{options[options.index('--gpu') + 1]}:1" in gpu
+
+
+@pytest.mark.parametrize("default", ["single", "auto"])
+def test_default_msa_site_setting_controls_prefetch_and_prediction(shell, default):
+    run, calls, tmp = shell
+    completed = run(
+        "foldjax-submit",
+        "-m",
+        "boltz2",
+        "-o",
+        str(tmp / "out"),
+        "--",
+        "--input",
+        "job.json",
+        extra_env={"DEFAULT_MSA": default},
+    )
+    assert completed.returncode == 0, completed.stderr
+    rows = calls()
+    assert len(rows) == (3 if default == "auto" else 2)
+    for row in (rows[0], rows[-1]):
+        assert row["args"][row["args"].index("--msa") + 1] == default
+    if default == "auto":
+        assert "--partition=example-cpu" in rows[1]["args"]
+        assert "--dependency=afterok:701" in rows[-1]["args"]
+
+
+def test_explicit_msa_overrides_a_valid_site_default(shell):
+    run, calls, tmp = shell
+    completed = run(
+        "foldjax-submit",
+        "-m",
+        "boltz2",
+        "-o",
+        str(tmp / "out"),
+        "--msa",
+        "single",
+        "--",
+        "--input",
+        "job.json",
+        extra_env={"DEFAULT_MSA": "auto"},
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert len(calls()) == 2
+    assert "--dependency=afterok:701" not in calls()[-1]["args"]
+
+
+def test_invalid_default_msa_is_rejected_without_calls(shell):
+    run, calls, tmp = shell
+    completed = run(
+        "foldjax-submit",
+        "-m",
+        "boltz2",
+        "-o",
+        str(tmp / "out"),
+        "--",
+        "--input",
+        "job.json",
+        extra_env={"DEFAULT_MSA": "invalid"},
+    )
+    assert completed.returncode == 2
+    assert "DEFAULT_MSA" in completed.stderr
+    assert not calls()
+
+
+@pytest.mark.parametrize("models", [("boltz2",), ("boltz2", "protenix")])
+@pytest.mark.parametrize("input_count", [1, 2])
+def test_model_jobs_delegate_one_output_namespace_to_foldjax(
+    shell, models, input_count
+):
+    from foldjax.api import resolve_requests
+    from foldjax.cli import _parser, _request
+
+    run, calls, tmp = shell
+    files = []
+    for index in range(input_count):
+        path = tmp / f"job-{index}.json"
+        path.write_text('{"entities": []}')
+        files.append(str(path))
+    weights = tmp / "weights"
+    weights.write_bytes(b"fixture weights")
+    output = tmp / "out"
+    model_args = [value for model in models for value in ("-m", model)]
+    completed = run(
+        "foldjax-submit",
+        *model_args,
+        "-o",
+        str(output),
+        "--",
+        "--input",
+        *files,
+        "--weights",
+        str(weights),
+    )
+    assert completed.returncode == 0, completed.stderr
+    plans = [row["args"] for row in calls() if row["tool"] == "foldjax"]
+    gpu_jobs = [row["args"] for row in calls() if row["tool"] == "sbatch"]
+    destinations = []
+    for model, plan, gpu in zip(models, plans, gpu_jobs, strict=True):
+        assert plan[plan.index("--output-dir") + 1] == str(output)
+        assert gpu[gpu.index("--output-dir") + 1] == str(output)
+        assert "--batch-output" in plan and "--batch-output" in gpu
+        args = _parser().parse_args(plan)
+        request = _request(args, jobs_root=tmp / "generated")
+        resolved = resolve_requests(request, draw_seeds=False)
+        expected = [output / model / Path(path).stem for path in files]
+        assert [item.output_dir for item in resolved] == expected
+        destinations.extend(expected)
+    assert len(set(destinations)) == len(models) * input_count
+
+
+def test_wrapper_output_policy_cannot_be_overridden_in_passthrough(shell):
+    run, calls, tmp = shell
+    completed = run(
+        "foldjax-submit",
+        "-m",
+        "boltz2",
+        "-o",
+        str(tmp / "out"),
+        "--",
+        "--batch-output",
+        "--input",
+        "job.json",
+    )
+    assert completed.returncode == 2
+    assert "managed by this wrapper" in completed.stderr
+    assert not calls()

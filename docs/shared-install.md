@@ -32,6 +32,15 @@ accepts a root-owned cache. Readers of a cache owned by another ordinary account
 need to trust that owner and set `FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1`;
 `foldjax doctor` reports the compilation-cache trust decision.
 
+Hidden temporary directories directly under `runtime/cache-warm/` are excluded
+from inspection and repair. They contain unfinished predictions and stay 0700;
+their count appears as `temporary_directories` in the runtime report. Symlinks
+and other hidden files remain subject to the normal safety checks. Warming
+removes its scratch output after completion or an exception. With the default
+SIGTERM policy, it also unwinds and removes that output before exiting with
+status 143; an application's existing signal handler is preserved. SIGKILL or
+a machine crash cannot run cleanup, so excluded remnants may remain private.
+
 The sticky publication roots let every account create its own cache entries
 while preventing it from deleting another account's entries. Published entry
 directories keep their owners and are readable, rather than world writable.

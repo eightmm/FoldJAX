@@ -202,14 +202,10 @@ def test_replay_wires_complete_tape_through_public_prediction(
             use_pairformer_scan=False,
             use_confidence_scan=False,
             use_diffusion_scan=False,
-            # The CLI hands over its own MC-dropout keys when FoldJAX's coin
-            # for this input and seed comes up, whatever native drew.
-            **(
-                {"cycle_pair_dropout_keys": jnp.ones((10, 2), jnp.uint32),
-                 "pair_dropout_rate": 0.25}
-                if port_coin
-                else {}
-            ),
+            # The managed CLI uses the same key tree for either coin outcome.
+            cycle_pair_dropout_keys=jnp.full((10, 2), port_coin, jnp.uint32),
+            pair_dropout_enabled=jnp.asarray(port_coin),
+            pair_dropout_rate=0.25,
         )
 
     monkeypatch.setattr(predict, "protenix_infer_compiled", inference)
@@ -247,6 +243,7 @@ def test_replay_wires_complete_tape_through_public_prediction(
     # Native drew no dropout, so the port's own draw is displaced, not replayed
     # beside the native tape.
     assert observed.get("cycle_pair_dropout_keys") is None
+    assert "pair_dropout_enabled" not in observed
     assert json.loads((out / "capture-complete.json").read_text())["passed"]
     requested = json.loads((out / "requested-wrapper-options.json").read_text())
     boundary = json.loads((out / "infer-boundary.json").read_text())

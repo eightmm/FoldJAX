@@ -358,11 +358,12 @@ def replay(args):
         kwargs["use_diffusion_efficient_fusion"] = native_config[
             "enable_efficient_fusion"
         ]
-        # The CLI hands over its own MC-dropout keys whenever FoldJAX's coin
-        # for this input and seed comes up; that coin is not upstream's, so
+        # The CLI hands over fixed-shape keys and its runtime MC-dropout coin;
+        # that coin is not upstream's, so
         # the replay follows native's decision only: native's keep masks
         # below when it applied dropout, nothing when it did not.
         port_keys = kwargs.pop("cycle_pair_dropout_keys", None)
+        port_enabled = kwargs.pop("pair_dropout_enabled", None)
         options = {
             name: str(value) if name == "trunk_dtype" else value
             for name, value in kwargs.items()
@@ -374,7 +375,9 @@ def replay(args):
         options["replay_msa_cycle_path"] = (
             "materialised" if materialised_msa else "index_tape"
         )
-        options["port_mc_dropout_keys_displaced"] = port_keys is not None
+        options["port_mc_dropout_keys_displaced"] = port_keys is not None and (
+            port_enabled is None or bool(port_enabled)
+        )
         save(args.out / "requested-wrapper-options.json", options)
         kwargs.update(
             {

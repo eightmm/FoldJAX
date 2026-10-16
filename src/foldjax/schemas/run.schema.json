@@ -202,10 +202,17 @@
           "properties": {
             "store": {"type": "integer", "minimum": 0},
             "measured": {"type": "integer", "minimum": 0},
+            "partial": {"description": "Successful configurations retained in process while uncovered operations use inline fallback; never an incomplete persisted result.", "type": "integer", "minimum": 0},
             "tokamax": {"type": "integer", "minimum": 0}
           },
           "additionalProperties": false
-        }
+        },
+        "calls": {
+          "description": "Optional bounded per-call diagnostics: input ABI (tree, paths, shapes, dtypes, weak types), compile configuration, identity digests, repeat counts and kernel sources. No array contents, RNG values, sequences or filesystem paths. At most eight distinct calls are recorded by the writer.",
+          "type": "array",
+          "items": {"type": "object"}
+        },
+        "calls_truncated": {"description": "Additional calls omitted after the diagnostic limit.", "type": "integer", "minimum": 0}
       }
     },
     "confidence_arrays": {

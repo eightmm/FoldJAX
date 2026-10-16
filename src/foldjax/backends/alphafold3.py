@@ -54,7 +54,7 @@ from foldjax.execution import BACKEND_DEFAULT, DETERMINISTIC_API_OPTION
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
 from foldjax.models._compile_policy import compiler_options
-from foldjax.padding import TOKEN_BUCKETS, PaddingPlan
+from foldjax.padding import PaddingPlan
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -69,6 +69,24 @@ from foldjax.scores import scalar_scores
 #: Upstream's runner, carried because its wheel does not install it. See the
 #: NOTICE beside it.
 VENDORED_RUNNER = Path(__file__).with_name("_alphafold3_upstream") / "run_alphafold.py"
+
+# The carried runner's native grid also defines neutral automatic padding and
+# synthetic warming. Explicit targets, including sizes below 256, remain valid.
+AF3_TOKEN_BUCKETS = (
+    256,
+    512,
+    768,
+    1024,
+    1280,
+    1536,
+    2048,
+    2560,
+    3072,
+    3584,
+    4096,
+    4608,
+    5120,
+)
 
 # Upstream's ``select_model_files`` order (`assets.AF3_PARAMETER_PATTERNS`).
 # Reproducing that small selector locally lets a live session stat only the
@@ -541,7 +559,7 @@ def _prediction_buckets(
         )
     if request.padding.tokens is not None:
         return (request.padding.tokens,)
-    return TOKEN_BUCKETS
+    return AF3_TOKEN_BUCKETS
 
 
 def _token_padding_plan(results: Any, buckets: tuple[int, ...]) -> PaddingPlan | None:

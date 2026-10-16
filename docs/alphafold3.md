@@ -104,6 +104,62 @@ entities:
 To use AlphaFold 3's own search pipeline instead, run its `run_alphafold.py`
 directly with `--db_dir` — that path is outside FoldJAX.
 
+## Cache warming and serving padding
+
+AlphaFold 3's automatic `--padding` and synthetic `cache warm --token-buckets`
+use the carried runner's grid: 256, 512, 768, 1024, 1280, 1536, 2048, 2560,
+3072, 3584, 4096, 4608, 5120. This replaces the generic grid previously used
+by neutral AF3 padding, whose first bucket was 128. An explicit
+`--pad-tokens 128` still selects 128, and explicit targets above 5120 are also
+supported. Inputs above the automatic grid require an explicit target or the
+existing exact-overflow policy. Padding remains opt-in.
+
+Single-sequence warming retains the native 16,384-row featurization pool;
+real alignments use that same padded axis. The model retains its native
+per-recycle selection, normally 1024 rows. No alignment is replaced with a
+synthetic alignment for prediction. Use matching weights, device/runtime,
+token target, MSA selection cap, and model options when warming and predicting:
+
+```bash
+foldjax cache warm --model alphafold3 --token-buckets 256 --msa single
+foldjax predict --model alphafold3 --input job.yaml --padding --msa auto
+```
+
+Tokamax keys the actual numeric model input structure, shape, and dtype,
+alongside source, device/runtime, model configuration, and padding mode. The
+host's list of candidate buckets is excluded: a `(256,)` warm and an automatic
+prediction that selects 256 run the same padded model. Older store identities
+included that entire list, separating otherwise identical calls and causing
+fresh tuning. This correction changes their keys, so existing installations
+need one new warm; previous cache files are left in place.
+
+For managed GPU runs with a persistent Tokamax store, `foldjax_run.json` and
+warm JSON reports include bounded `kernel_tuning.calls` diagnostics. Each
+unique call records a repeat count and kernel sources, up to eight calls;
+`calls_truncated` counts additional unrecorded calls. `input_abi` lists at most
+128 array leaves with feature-tree paths, shapes, dtypes, and weak-type flags,
+including RNG metadata. Array contents, sequences, RNG values, and filesystem
+paths are excluded; nonstandard tree metadata is redacted. Without an installed
+persistent store, these call diagnostics are absent.
+
+| Field | What a difference identifies |
+| --- | --- |
+| `model_input_abi_sha256`, `input_abi` | The numeric batch structure, shape, or dtype differs. |
+| `call_sha256` | The batch ABI or RNG shape/dtype differs; RNG values do not affect it. |
+| `compile_config`, `padding` | A whitelisted model option or padding mode differs. |
+| `source_sha256`, `runtime_sha256`, `device_sha256` | Source assets, software versions, or device properties differ. |
+| `store_identity_sha256`, `signature_sha256` | The full store identity or identity-plus-call differs. |
+| `namespace_sha256` | A different cache-directory spelling was selected; its path is not printed. |
+| `sources` | `store` reused saved tuning, `measured` tuned in this prediction, `partial` retained successful operations while missing operations fell back, or `tokamax` used Tokamax's own resolution. |
+
+CPU regression tests run native featurization and the actual runner's numeric
+input conversion for different MSA depths, lengths in the first bucket,
+sequence compositions, a heterodimer, and a populated template. They verify
+identical call descriptors and unchanged real MSA values/masks, and lower the
+native MSA shuffle/selection with one shared abstract signature. These checks
+do not establish GPU latency or guarantee hits for every small JIT; a saved
+Tokamax result and a persistent XLA executable are separate caches.
+
 ## GPU kernels on an unfamiliar device
 
 AlphaFold 3's transition blocks call `tokamax.gated_linear_unit`, which prefers

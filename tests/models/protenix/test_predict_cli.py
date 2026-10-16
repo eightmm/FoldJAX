@@ -756,7 +756,9 @@ def test_mc_dropout_digest_ignores_padding_and_paths_but_not_chemistry() -> None
 
 
 def test_mc_dropout_reaches_the_model_as_seeded_keys(tmp_path, monkeypatch) -> None:
-    """When the coin fires, every recycle gets a key; when not, none do."""
+    """The coin changes a runtime flag, keeping the managed key tree fixed."""
+    import jax
+
     from foldjax.models.protenix.runner import (
         mc_dropout_input_digest,
         mc_dropout_keys,
@@ -768,8 +770,10 @@ def test_mc_dropout_reaches_the_model_as_seeded_keys(tmp_path, monkeypatch) -> N
         7, num_recycles=4, apply_rate=0.4, rate=0.4, input_digest=digest
     )
     if expected is None:
-        assert "cycle_pair_dropout_keys" not in default
+        assert not bool(default["pair_dropout_enabled"])
+        np.testing.assert_array_equal(default["cycle_pair_dropout_keys"], 0)
     else:
+        assert bool(default["pair_dropout_enabled"])
         np.testing.assert_array_equal(
             np.asarray(default["cycle_pair_dropout_keys"]), np.asarray(expected)
         )
@@ -780,6 +784,7 @@ def test_mc_dropout_reaches_the_model_as_seeded_keys(tmp_path, monkeypatch) -> N
     keys = np.asarray(always["cycle_pair_dropout_keys"])
     assert keys.shape == (4, 2) and keys.dtype == np.uint32
     assert always["pair_dropout_rate"] == 0.4
+    assert bool(always["pair_dropout_enabled"])
     assert len({row.tobytes() for row in keys}) == 4
 
     _features, again = _run_inline_msa_job(
@@ -807,8 +812,19 @@ def test_mc_dropout_reaches_the_model_as_seeded_keys(tmp_path, monkeypatch) -> N
     _features, never = _run_inline_msa_job(
         tmp_path, monkeypatch, "--mc-dropout-apply-rate", "0"
     )
-    assert "cycle_pair_dropout_keys" not in never
-    assert "pair_dropout_rate" not in never
+    assert not bool(never["pair_dropout_enabled"])
+    np.testing.assert_array_equal(never["cycle_pair_dropout_keys"], 0)
+    assert never["cycle_pair_dropout_keys"].shape == keys.shape
+    assert never["cycle_pair_dropout_keys"].dtype == keys.dtype
+    assert never["pair_dropout_rate"] == 0.4
+    assert default.keys() == always.keys() == never.keys()
+    _assert_diffusion_seed(never, 7)
+    for left, right in zip(
+        jax.tree.leaves(always["cycle_msa_index_tape"]),
+        jax.tree.leaves(never["cycle_msa_index_tape"]),
+        strict=True,
+    ):
+        np.testing.assert_array_equal(left, right)
 
     with pytest.raises(SystemExit, match="mc-dropout-rate must lie in"):
         _run_inline_msa_job(tmp_path, monkeypatch, "--mc-dropout-rate", "1")

@@ -79,6 +79,7 @@ _JAX_CACHE_CONFIG = (
 #: These suites mix real cuEq execution with XLA and mocked-kernel coverage.
 _CUEQ_OPTIONAL_TESTS = frozenset({
     "models/boltz2/test_pair_residual_dtype.py",
+    "models/boltz2/test_predict_wrapper.py",
     "models/openfold3/test_dtype_is_realized.py",
     "models/test_cp_gather_triangle.py",
     "models/boltz2/test_msa_grid_bridges.py",
@@ -91,6 +92,7 @@ _CUEQ_OPTIONAL_TESTS = frozenset({
     "models/openfold3/test_triangle_attention_chunking.py",
     "models/protenix/test_triangle.py",
     "models/protenix/test_triangle_cueq.py",
+    "models/protenix/test_predict_wrapper.py",
 })
 
 

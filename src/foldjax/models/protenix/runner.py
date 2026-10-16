@@ -1084,7 +1084,7 @@ def _run(
                     seed=seed if config.msa_seed is None else config.msa_seed,
                     **padded_tape,
                 )
-            cycle_pair_dropout_keys = mc_dropout_keys(
+            cycle_pair_dropout_keys, pair_dropout_enabled = _mc_dropout_inputs(
                 seed,
                 num_recycles=num_recycles,
                 apply_rate=config.mc_dropout_apply_rate,
@@ -1095,7 +1095,7 @@ def _run(
                 f"{job['name']}: seed {seed}: MC dropout "
                 + (
                     f"on the recycle pair update (p={config.mc_dropout_rate})"
-                    if cycle_pair_dropout_keys is not None
+                    if bool(pair_dropout_enabled)
                     else "off"
                 )
                 + f" (--mc-dropout-apply-rate {config.mc_dropout_apply_rate})"
@@ -1152,17 +1152,9 @@ def _run(
                 confidence_autocast=amp_policy.confidence_autocast,
                 diffusion_autocast=amp_policy.diffusion_autocast,
                 cycle_msa_index_tape=cycle_msa_index_tape,
-                # The rate is a static argument; handed over only with keys, so
-                # a run whose coin stayed down compiles the no-dropout program
-                # whatever --mc-dropout-rate says.
-                **(
-                    {}
-                    if cycle_pair_dropout_keys is None
-                    else {
-                        "cycle_pair_dropout_keys": cycle_pair_dropout_keys,
-                        "pair_dropout_rate": config.mc_dropout_rate,
-                    }
-                ),
+                cycle_pair_dropout_keys=cycle_pair_dropout_keys,
+                pair_dropout_enabled=pair_dropout_enabled,
+                pair_dropout_rate=config.mc_dropout_rate,
                 gamma0=gamma0,
                 step_scale_eta=eta,
                 preserve_prefix_rng=preserve_prefix_rng,
@@ -1343,9 +1335,9 @@ def mc_dropout_keys(
 ) -> Any:
     """Per-recycle dropout keys when the coin fires, else ``None``.
 
-    ``uint32 [num_recycles, 2]`` raw keys, which is what the trunk validates;
-    each recycle draws a fresh Bernoulli(1 - rate) keep-mask from its key, as
-    upstream's ``F.dropout`` draws a fresh mask in every recycle.
+    Raw uint32 keys follow the ambient JAX PRNG implementation (width 2 for
+    Threefry, 4 for RBG). Each recycle draws a fresh Bernoulli(1 - rate)
+    keep-mask from its key, as upstream's ``F.dropout`` does in every recycle.
     """
 
     if rate <= 0.0 or not mc_dropout_applies(
@@ -1362,6 +1354,31 @@ def mc_dropout_keys(
     if jax.dtypes.issubdtype(keys.dtype, jax.dtypes.prng_key):
         keys = jax.random.key_data(keys)
     return keys
+
+
+def _mc_dropout_inputs(
+    seed: int,
+    *,
+    num_recycles: int,
+    apply_rate: float,
+    rate: float,
+    input_digest: int,
+) -> tuple[Any, Any]:
+    """Keep the managed graph's key/flag tree independent of the input's coin."""
+    import jax
+    import jax.numpy as jnp
+
+    keys = mc_dropout_keys(
+        seed, num_recycles=num_recycles, apply_rate=apply_rate,
+        rate=rate, input_digest=input_digest,
+    )
+    enabled = keys is not None
+    # No random stream is drawn when dropout is off, and both outcomes carry
+    # device arrays of the same shape/dtype/sharding into the executable owner.
+    if keys is None:
+        key_shape = jax.random.key_data(jax.random.key(0)).shape
+        keys = jnp.zeros((num_recycles, *key_shape), dtype=jnp.uint32)
+    return keys, jnp.asarray(enabled, dtype=jnp.bool_)
 
 
 def _prefix_rng_is_supported() -> bool:

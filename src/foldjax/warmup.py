@@ -10,8 +10,12 @@ output directory.
 from __future__ import annotations
 
 import dataclasses
+import signal
 import tempfile
+import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +25,34 @@ from foldjax.manifest import device_peak_bytes
 from foldjax.paths import runtime_dir
 from foldjax.registry import get_backend
 from foldjax.schema import PredictionError, PredictionRequest
+
+
+class _WarmTermination(BaseException):
+    """Unwind native exception adapters without turning a signal into a failure."""
+
+
+@contextmanager
+def _warm_directory(root: Path, *, prefix: str) -> Iterator[Path]:
+    previous = None
+    installed = False
+
+    def terminate(signum, _frame):
+        # Unwind the temporary directory and native session before exiting.
+        raise _WarmTermination(signum)
+
+    try:
+        if threading.current_thread() is threading.main_thread():
+            previous = signal.getsignal(signal.SIGTERM)
+            if previous == signal.SIG_DFL:
+                signal.signal(signal.SIGTERM, terminate)
+                installed = True
+        with tempfile.TemporaryDirectory(prefix=prefix, dir=root) as temporary:
+            yield Path(temporary)
+    except _WarmTermination as error:
+        raise SystemExit(128 + error.args[0]) from None
+    finally:
+        if installed:
+            signal.signal(signal.SIGTERM, previous)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +72,7 @@ class CacheWarmResult:
     output_dir: Path | None = None
     strategy: str = "execute_once"
     shape_profile: dict[str, object] | None = None
+    kernel_tuning: dict[str, object] | None = None
 
     @property
     def new_files(self) -> int:
@@ -86,6 +119,8 @@ class CacheWarmResult:
         }
         if self.shape_profile is not None:
             summary["shape_profile"] = dict(self.shape_profile)
+        if self.kernel_tuning is not None:
+            summary["kernel_tuning"] = dict(self.kernel_tuning)
         return summary
 
 
@@ -121,10 +156,7 @@ def _warm_resolved(
     else:
         scratch_root = runtime_dir("cache-warm")
         scratch_root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(
-            prefix=f".{backend.name}-", dir=scratch_root
-        ) as temporary:
-            scratch = Path(temporary)
+        with _warm_directory(scratch_root, prefix=f".{backend.name}-") as scratch:
             ephemeral = dataclasses.replace(scalar, output_dir=scratch)
             result = _predict_resolved(ephemeral, output_root=scratch)
         retained = None
@@ -133,6 +165,9 @@ def _warm_resolved(
     seconds = time.perf_counter() - started
     peak = device_peak_bytes()
     after = cache_snapshot(namespace)
+    from foldjax.backends._tokamax_autotune import recorded as recorded_kernel_tuning
+
+    tuning = recorded_kernel_tuning() if backend.name == "alphafold3" else None
     assert request.weights is not None
     return CacheWarmResult(
         model=backend.name,
@@ -147,6 +182,7 @@ def _warm_resolved(
         peak_device_bytes=peak,
         output_dir=retained,
         shape_profile=result.shape_profile,
+        kernel_tuning=tuning,
     )
 
 

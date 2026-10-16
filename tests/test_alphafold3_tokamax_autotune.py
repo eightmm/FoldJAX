@@ -716,11 +716,16 @@ def test_kernel_record_names_the_source_each_call_took(
         store.call(
             rng_key=rng_key, batch=batch, lower=lambda: bound_args, invoke=lambda: None
         )
-    assert kernel_record() == {
+    record = kernel_record()
+    calls = record.pop("calls")
+    assert record == {
         "kernel_autotuning": "autotune",
         "persistent_store": True,
         "sources": {"measured": 1, "store": 1},
     }
+    assert len(calls) == 1
+    assert calls[0]["count"] == 2
+    assert calls[0]["sources"] == {"measured": 1, "store": 1}
 
     persistent.start_record(strategy="heuristics", persistent_installed=True)
     heuristics = _store(root, strategy="heuristics")
@@ -775,6 +780,52 @@ def test_kernel_record_without_a_store_says_nothing_was_seen(kernel_record) -> N
         "persistent_store": False,
         "sources": None,
     }
+
+
+def test_pinned_warm_is_loaded_by_a_fresh_store_with_an_automatic_bucket_grid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kernel_record
+) -> None:
+    tokamax = _FakeTokamax()
+    monkeypatch.setattr(persistent, "_tokamax_api", lambda: tokamax)
+    monkeypatch.setattr(persistent, "_platform_version", lambda _platform: "test")
+    device = SimpleNamespace(
+        platform="gpu", device_kind="mock-gpu", compute_capability="9.0", core_count=80
+    )
+
+    def store(buckets):
+        identity = persistent._runtime_identity(
+            device=device,
+            source_snapshot=(("source", "test", "test"),),
+            config_identity=(("max_msa_depth", 1024),),
+            buckets=buckets,
+            padding=True,
+        )
+        return _store(tmp_path / "cache", identity=identity)
+
+    rng_key, batch = _inputs()
+    persistent.start_record(strategy="autotune", persistent_installed=True)
+    warm = store((256,))
+    bound_args = (_FakeBoundArguments("one"),)
+    warm.call(
+        rng_key=rng_key,
+        batch=batch,
+        lower=lambda: bound_args,
+        invoke=lambda: None,
+    )
+
+    def must_not_lower():
+        pytest.fail("automatic prediction must use the pinned warm's stored result")
+
+    predict = store((256, 512, 768))
+    assert predict.call(
+        rng_key=rng_key,
+        batch=batch,
+        lower=must_not_lower,
+        invoke=lambda: bool(_FakeResult.active),
+    )
+    assert tokamax.tune_calls == 1
+    assert kernel_record()["sources"] == {"measured": 1, "store": 1}
+    assert len(kernel_record()["calls"]) == 1
 
 
 @pytest.mark.parametrize(

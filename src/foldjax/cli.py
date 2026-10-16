@@ -169,6 +169,12 @@ def _add_predict_arguments(
             "batches add <model>/<input stem>"
         ),
     )
+    output_group.add_argument(
+        "--batch-output",
+        action="store_true",
+        help="use <output-dir>/<model>/<input stem> even for a single input; "
+        "useful for separate model jobs sharing one output root",
+    )
     source.add_argument(
         "--input-format",
         default="auto",
@@ -1019,7 +1025,9 @@ def _request(
     single_input = len(inputs) + len(unreadable or ()) == 1 and not (
         args.input_format in ("auto", "foldjax") and is_jobs_file(inputs[0])
     )
-    single_input = single_input and not getattr(args, "_plural_inputs", False)
+    single_input = single_input and not (
+        getattr(args, "_plural_inputs", False) or getattr(args, "batch_output", False)
+    )
     if args.seed is not None and args.seeds:
         raise ValueError("--seed and --seeds are mutually exclusive")
     padding_values = {
@@ -2266,6 +2274,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 else len(args.model) > 1
                 or len(unreadable or ()) > 1
                 or getattr(args, "_plural_inputs", False)
+                or getattr(args, "batch_output", False)
             )
             outcome = _run_predictions(
                 request,

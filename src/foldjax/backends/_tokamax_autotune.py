@@ -18,6 +18,7 @@ import logging
 import math
 import operator
 import os
+import re
 import stat
 import threading
 import time
@@ -42,6 +43,24 @@ _FORMAT = "foldjax-tokamax-autotuning"
 _SCHEMA = 2
 _MAX_RESULT_BYTES = 64 << 20
 _MAX_DISCOVERY_ROUNDS = 4
+_MAX_RECORDED_CALLS = 8
+_MAX_RECORDED_LEAVES = 128
+_RECORDED_CONFIG_KEYS = frozenset(
+    {
+        "matmul_precision",
+        "attention_backend",
+        "num_samples",
+        "num_recycles",
+        "return_embeddings",
+        "return_distogram",
+        "num_steps",
+        "max_msa_depth",
+        "representations",
+        "stop_after",
+    }
+)
+_SAFE_FEATURE_PATH = re.compile(r"\[[01]\](?:\['[A-Za-z_][A-Za-z0-9_:]*'\])?\Z")
+_SAFE_CONFIG_VALUE = re.compile(r"[A-Za-z0-9_.+-]+\Z")
 _NONDEFAULT_AUTOTUNE_MESSAGE = (
     "Tokamax autotuning cache miss on a non-default GPU; warm this exact "
     "AlphaFold 3 profile on the process-default first local GPU, or explicitly "
@@ -429,7 +448,9 @@ def _runtime_identity(
         "foldjax": foldjax_version,
         "source_sha256": source_sha256,
         "config": config_identity,
-        "buckets": buckets,
+        # Buckets select CPU featurization shapes, not the model program. The
+        # call descriptor already guards the chosen shape; keying the whole
+        # candidate grid separates a pinned warm from automatic prediction.
         "padding": bool(padding),
         "versions": {
             "tokamax": str(tokamax.__version__),
@@ -510,10 +531,10 @@ def ensure_safe_autotuning_route(
         _raise_nondefault_autotune_miss()
 
 
-def _call_descriptor(rng_key: Any, batch: Any) -> dict[str, Any]:
+def _array_tree_descriptor(value: Any) -> dict[str, Any]:
     import jax
 
-    leaves_with_paths, tree = jax.tree_util.tree_flatten_with_path((rng_key, batch))
+    leaves_with_paths, tree = jax.tree_util.tree_flatten_with_path(value)
     leaves = []
     for path, leaf in leaves_with_paths:
         try:
@@ -532,6 +553,10 @@ def _call_descriptor(rng_key: Any, batch: Any) -> dict[str, Any]:
             }
         )
     return {"tree": str(tree), "leaves": leaves}
+
+
+def _call_descriptor(rng_key: Any, batch: Any) -> dict[str, Any]:
+    return _array_tree_descriptor((rng_key, batch))
 
 
 def _filesystem_supported() -> bool:
@@ -1315,10 +1340,114 @@ def start_record(*, strategy: str, persistent_installed: bool) -> None:
     )
 
 
+def _safe_config_value(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return value
+    if (
+        isinstance(value, str)
+        and len(value) <= 64
+        and _SAFE_CONFIG_VALUE.fullmatch(value)
+    ):
+        return value
+    if isinstance(value, (tuple, list)) and len(value) <= 64:
+        return [_safe_config_value(item) for item in value]
+    return "<redacted>"
+
+
+def _note_call(
+    *,
+    batch: Any,
+    descriptor: dict[str, Any],
+    identity: Mapping[str, Any],
+    cache_dir: Path,
+    call_sha256: str,
+    signature: str,
+) -> None:
+    record = _KERNEL_RECORD.get()
+    if record is None:
+        return
+    calls = record.setdefault("calls", [])
+    namespace_sha256 = _sha256(str(cache_dir.absolute()).encode())
+    for call in calls:
+        if (
+            call["signature_sha256"] == signature
+            and call["namespace_sha256"] == namespace_sha256
+        ):
+            call["count"] += 1
+            record["_active_call"] = call
+            return
+    record["_active_call"] = None
+    if len(calls) >= _MAX_RECORDED_CALLS:
+        record["calls_truncated"] = record.get("calls_truncated", 0) + 1
+        return
+
+    # The managed AF3 ABI is a flat, named feature dictionary. A custom tree
+    # can put arbitrary metadata in PyTreeDef or dictionary keys; retain its
+    # hashes but never print that metadata into a run manifest.
+    named_arrays = isinstance(batch, dict) and all(
+        isinstance(key, str)
+        and len(key) <= 128
+        and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_:]*", key)
+        and hasattr(value, "shape")
+        and hasattr(value, "dtype")
+        for key, value in batch.items()
+    )
+    safe_paths = named_arrays and all(
+        _SAFE_FEATURE_PATH.fullmatch(leaf["path"])
+        for leaf in descriptor["leaves"]
+    )
+    leaves = [
+        {
+            **leaf,
+            "path": leaf["path"] if safe_paths else f"leaf[{index}]",
+        }
+        for index, leaf in enumerate(descriptor["leaves"][:_MAX_RECORDED_LEAVES])
+    ]
+    abi = {
+        "tree": (
+            descriptor["tree"][:8192]
+            if safe_paths
+            else "<nonstandard model input tree>"
+        ),
+        "leaves": leaves,
+        "leaf_count": len(descriptor["leaves"]),
+    }
+    config = identity.get("config", ())
+    compile_config = {
+        str(name): _safe_config_value(value)
+        for name, value in config
+        if name in _RECORDED_CONFIG_KEYS
+    }
+    call = {
+        "call_sha256": call_sha256,
+        "model_input_abi_sha256": _sha256(
+            _canonical_bytes(_array_tree_descriptor(batch))
+        ),
+        "store_identity_sha256": _sha256(_canonical_bytes(identity)),
+        "namespace_sha256": namespace_sha256,
+        "signature_sha256": signature,
+        "source_sha256": _safe_config_value(identity.get("source_sha256")),
+        "runtime_sha256": _sha256(_canonical_bytes(identity.get("versions"))),
+        "device_sha256": _sha256(_canonical_bytes(identity.get("device"))),
+        "compile_config": compile_config,
+        "padding": bool(identity.get("padding", False)),
+        "input_abi": abi,
+        "count": 1,
+        "sources": {},
+    }
+    calls.append(call)
+    record["_active_call"] = call
+
+
 def _note_source(source: str) -> None:
     record = _KERNEL_RECORD.get()
     if record is not None and record["sources"] is not None:
         record["sources"][source] = record["sources"].get(source, 0) + 1
+        call = record.get("_active_call")
+        if call is not None:
+            call["sources"][source] = call["sources"].get(source, 0) + 1
 
 
 def recorded() -> dict[str, Any] | None:
@@ -1327,8 +1456,11 @@ def recorded() -> dict[str, Any] | None:
     record = _KERNEL_RECORD.get()
     if record is None:
         return None
-    sources = record["sources"]
-    return {**record, "sources": dict(sources) if sources is not None else None}
+    return json.loads(
+        _canonical_json(
+            {key: value for key, value in record.items() if key != "_active_call"}
+        )
+    )
 
 
 def clear_record() -> None:
@@ -1422,6 +1554,8 @@ class _PersistentTokamaxStore:
         """Run one model call under a complete persisted Tokamax overlay."""
 
         with self._thread_lock:
+            if (record := _KERNEL_RECORD.get()) is not None:
+                record.pop("_active_call", None)
             try:
                 descriptor = _call_descriptor(rng_key, batch)
                 call_sha256 = _sha256(_canonical_bytes(descriptor))
@@ -1431,6 +1565,15 @@ class _PersistentTokamaxStore:
             except (TypeError, ValueError, _CacheError):
                 self._warn_once("could not identify this model call")
                 return self._invoke_fallback(invoke)
+
+            _note_call(
+                batch=batch,
+                descriptor=descriptor,
+                identity=self._identity,
+                cache_dir=self._cache_dir,
+                call_sha256=call_sha256,
+                signature=signature,
+            )
 
             if (result := self._results.get(signature)) is not None:
                 return self._invoke_with_result(

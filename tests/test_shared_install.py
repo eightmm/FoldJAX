@@ -140,6 +140,54 @@ def test_sticky_roots_do_not_make_existing_content_world_writable(
     assert result.stat().st_uid == owner
 
 
+@pytest.mark.parametrize("apply", [False, True])
+def test_warm_scratch_directories_are_private_and_excluded(tmp_path, apply):
+    home = _home(tmp_path)
+    root = home / "runtime" / "cache-warm"
+    root.mkdir()
+    root.chmod(0o755)
+    scratch = root / ".alphafold3-active"
+    scratch.mkdir(mode=0o700)
+    output = scratch / "partial-output"
+    output.write_bytes(b"unfinished prediction")
+    output.chmod(0o600)
+
+    report = audit_shared_install(home, apply=apply)
+
+    assert report["ok"], report
+    assert _rows(report)["runtime"]["temporary_directories"] == 1
+    assert _mode(scratch) == 0o700
+    assert _mode(output) == 0o600
+    assert not any(str(scratch) in row["path"] for row in report["changes"])
+
+
+def test_warm_scratch_exclusion_does_not_hide_symlinks_or_other_private_files(
+    tmp_path,
+):
+    home = _home(tmp_path)
+    root = home / "runtime" / "cache-warm"
+    root.mkdir()
+    root.chmod(0o755)
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o700)
+    (root / ".symlink").symlink_to(outside, target_is_directory=True)
+    private = root / ".private-file"
+    private.write_bytes(b"private")
+    private.chmod(0o600)
+    unrelated = home / "runtime" / ".private-directory"
+    unrelated.mkdir(mode=0o700)
+
+    report = audit_shared_install(home)
+
+    assert not report["ok"]
+    assert _rows(report)["runtime"]["temporary_directories"] == 0
+    assert any(row["path"] == str(root / ".symlink") for row in report["skipped"])
+    assert {str(private), str(unrelated)} <= {
+        row["path"] for row in report["issues"]
+    }
+    assert _mode(outside) == 0o700
+
+
 def test_group_policy_is_setgid_group_writable_and_advises_compile_trust(
     tmp_path: Path,
 ) -> None:

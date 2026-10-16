@@ -205,23 +205,39 @@ def test_searched_alignment_records_are_declared(tmp_path: Path) -> None:
     assert errors(manifest, schema)
 
 
+@pytest.mark.parametrize("source", ["store", "partial"])
 def test_alphafold3_kernel_sources_reach_the_manifest_and_do_not_leak(
-    tmp_path: Path,
+    tmp_path: Path, source: str,
 ) -> None:
     """The option is a cache-miss policy, so the manifest records what each
     model call actually took; the next prediction must not inherit it."""
+    import numpy as np
+
     from foldjax.backends import _tokamax_autotune
+
+    strategy = "autotune" if source == "partial" else "heuristics"
 
     case = FIXTURES / "alphafold3_e9_8reh"
     replay, fixture = _replay_backend("alphafold3", case)
 
     class Tuned(replay):  # type: ignore[misc, valid-type]
         def predict(self, request: PredictionRequest) -> PredictionResult:
-            # What a `heuristics` run on a cache an `autotune` run filled does.
             _tokamax_autotune.start_record(
-                strategy="heuristics", persistent_installed=True
+                strategy=strategy, persistent_installed=True
             )
-            _tokamax_autotune._note_source("store")
+            batch = {"msa": np.zeros((2, 3), np.int8)}
+            descriptor = _tokamax_autotune._call_descriptor(
+                np.zeros(2, np.uint32), batch
+            )
+            _tokamax_autotune._note_call(
+                batch=batch,
+                descriptor=descriptor,
+                identity={"config": (), "padding": True},
+                cache_dir=request.output_dir,
+                call_sha256="a" * 64,
+                signature="b" * 64,
+            )
+            _tokamax_autotune._note_source(source)
             return super().predict(request)
 
     out = tmp_path / "af3"
@@ -240,10 +256,15 @@ def test_alphafold3_kernel_sources_reach_the_manifest_and_do_not_leak(
             )
         )
     manifest = json.loads((out / MANIFEST_NAME).read_text())
-    assert manifest["kernel_tuning"] == {
-        "kernel_autotuning": "heuristics",
+    tuning = manifest["kernel_tuning"]
+    calls = tuning["calls"]
+    assert len(calls) == 1
+    assert calls[0]["sources"] == {source: 1}
+    assert calls[0]["input_abi"]["leaves"][1]["shape"] == [2, 3]
+    assert {key: value for key, value in tuning.items() if key != "calls"} == {
+        "kernel_autotuning": strategy,
         "persistent_store": True,
-        "sources": {"store": 1},
+        "sources": {source: 1},
     }
     schema = load_schema("run")
     assert errors(manifest, schema) == []

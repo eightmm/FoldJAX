@@ -11,29 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from foldjax import oom
+from foldjax.backends.alphafold3 import AF3_TOKEN_BUCKETS
 from foldjax.job import Job
 from foldjax.padding import TOKEN_BUCKETS
 from foldjax.registry import normalize_model_name
 from foldjax.schema import PaddingConfig, PredictionRequest
 from foldjax.warmup import warm_cache
-
-# Pinned to the vendored run_alphafold.py's _BUCKETS flag, without importing
-# its native runtime or registering absl flags for argument parsing.
-AF3_TOKEN_BUCKETS = (
-    256,
-    512,
-    768,
-    1024,
-    1280,
-    1536,
-    2048,
-    2560,
-    3072,
-    3584,
-    4096,
-    4608,
-    5120,
-)
 
 
 def parse_token_buckets(

@@ -108,15 +108,54 @@ def recycle_embeddings(
     *,
     pair_dropout_keep_mask: jnp.ndarray | None = None,
     pair_dropout_rate: float = 0.4,
+    pair_dropout_key: jnp.ndarray | None = None,
+    pair_dropout_enabled: jnp.ndarray | None = None,
+    pair_dropout_valid_mask: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Apply recycling, optionally replaying the native pair-dropout mask.
 
     Dropout affects only the projected pair update, before the residual add.
     Omitting the mask preserves the no-dropout path shared with OpenDDE.
-    The rate is static; random-mask generation belongs to the caller.
+    The rate is static. Managed calls may supply a key and runtime boolean
+    instead; that branch generates and applies dropout only when enabled.
     """
 
     z_update = linear(layer_norm(z, params.layernorm_z), params.linear_z)
+    if pair_dropout_key is not None:
+        if pair_dropout_keep_mask is not None:
+            raise ValueError("pair dropout mask and key are mutually exclusive")
+        key_shape = jax.random.key_data(jax.random.key(0)).shape
+        if pair_dropout_key.shape != key_shape or pair_dropout_key.dtype != jnp.uint32:
+            raise ValueError(
+                f"pair dropout key must be uint32 {key_shape} for the active PRNG"
+            )
+        pair_dropout_key = jax.random.wrap_key_data(pair_dropout_key)
+        if pair_dropout_enabled is None:
+            raise ValueError("keyed pair dropout requires a runtime boolean flag")
+        enabled = jnp.asarray(pair_dropout_enabled)
+        if enabled.shape != () or enabled.dtype != jnp.bool_:
+            raise ValueError("pair dropout flag must be a scalar boolean")
+        if not 0 <= pair_dropout_rate < 1:
+            raise ValueError("pair dropout rate must be in [0, 1)")
+
+        def apply_dropout(update):
+            if pair_dropout_valid_mask is None:
+                keep = jax.random.bernoulli(
+                    pair_dropout_key, p=1.0 - pair_dropout_rate, shape=update.shape
+                )
+            else:
+                keep = masked_prefix_draw(
+                    lambda key, shape: jax.random.bernoulli(
+                        key, p=1.0 - pair_dropout_rate, shape=shape
+                    ),
+                    pair_dropout_key,
+                    pair_dropout_valid_mask,
+                    trailing_shape=update.shape[-1:],
+                )
+            scaled = update.astype(jnp.float32) * (1.0 / (1.0 - pair_dropout_rate))
+            return jnp.where(keep, scaled, 0).astype(update.dtype)
+
+        z_update = jax.lax.cond(enabled, apply_dropout, lambda update: update, z_update)
     if pair_dropout_keep_mask is not None:
         if pair_dropout_keep_mask.shape != z_update.shape:
             raise ValueError("pair dropout mask must match the projected pair shape")
@@ -160,6 +199,7 @@ def pairformer_output_from_s_inputs(
     cycle_msa_index_tape: MSACycleIndexTape | None = None,
     cycle_pair_dropout_keep_masks: jnp.ndarray | None = None,
     cycle_pair_dropout_keys: jnp.ndarray | None = None,
+    pair_dropout_enabled: jnp.ndarray | None = None,
     pair_dropout_rate: float = 0.4,
     pair_dropout_valid_mask: jnp.ndarray | None = None,
     use_cycle_scan: bool = True,
@@ -229,14 +269,20 @@ def pairformer_output_from_s_inputs(
 
     s = jnp.zeros_like(s_init)
     z = jnp.zeros_like(z_init)
+    if pair_dropout_enabled is not None and cycle_pair_dropout_keys is None:
+        raise ValueError("runtime pair dropout flag requires per-cycle keys")
     if cycle_pair_dropout_keys is not None:
         if cycle_pair_dropout_keep_masks is not None:
             raise ValueError("dropout masks and keys are mutually exclusive")
+        key_shape = jax.random.key_data(jax.random.key(0)).shape
         if (
-            cycle_pair_dropout_keys.shape != (num_recycles, 2)
+            cycle_pair_dropout_keys.shape != (num_recycles, *key_shape)
             or cycle_pair_dropout_keys.dtype != jnp.uint32
         ):
-            raise ValueError("dropout keys must be uint32 [cycle, 2] PRNG keys")
+            raise ValueError(
+                "dropout keys must be uint32 "
+                f"{(num_recycles, *key_shape)} for the active PRNG"
+            )
         if not 0 <= pair_dropout_rate < 1:
             raise ValueError("pair dropout rate must be in [0, 1)")
     if cycle_pair_dropout_keep_masks is not None:
@@ -267,7 +313,7 @@ def pairformer_output_from_s_inputs(
 
     def one_cycle(carry, msa_features, pair_keep_mask=None):
         s, z = carry
-        if cycle_pair_dropout_keys is not None:
+        if cycle_pair_dropout_keys is not None and pair_dropout_enabled is None:
             # Only one cycle's mask is materialized; never retain T*T*C*cycles
             # stochastic inputs for ordinary generation. Tape replay bypasses RNG.
             if pair_dropout_valid_mask is None:
@@ -314,6 +360,13 @@ def pairformer_output_from_s_inputs(
                 "pair_dropout_rate": pair_dropout_rate,
             }
         )
+        if pair_dropout_enabled is not None:
+            dropout_kwargs = {
+                "pair_dropout_key": pair_keep_mask,
+                "pair_dropout_enabled": pair_dropout_enabled,
+                "pair_dropout_rate": pair_dropout_rate,
+                "pair_dropout_valid_mask": pair_dropout_valid_mask,
+            }
         s, z = recycle_embeddings(
             s_init,
             z_init,

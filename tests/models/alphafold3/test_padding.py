@@ -6,6 +6,7 @@ import pytest
 
 from foldjax.backends.alphafold3 import (
     _PREFIX_STABLE_NOISE_FEATURE,
+    AF3_TOKEN_BUCKETS,
     AlphaFold3Backend,
     _featurize_padded_structure,
     _predict_featurized_structure,
@@ -57,8 +58,17 @@ def test_neutral_af3_padding_maps_auto_and_fixed_to_native_buckets(
     automatic = _request(tmp_path, padding=PaddingConfig())
     fixed = _request(tmp_path, padding=PaddingConfig(tokens=1024))
 
-    assert _prediction_buckets(automatic, {}) == TOKEN_BUCKETS
+    assert _prediction_buckets(automatic, {}) == AF3_TOKEN_BUCKETS
     assert _prediction_buckets(fixed, {}) == (1024,)
+
+
+@pytest.mark.parametrize("target", (64, 128, 6144))
+def test_af3_explicit_padding_target_is_independent_of_the_automatic_grid(
+    tmp_path: Path, target: int
+) -> None:
+    request = _request(tmp_path, padding=PaddingConfig(tokens=target))
+
+    assert _prediction_buckets(request, {}) == (target,)
 
 
 def test_neutral_and_legacy_af3_buckets_conflict(tmp_path: Path) -> None:

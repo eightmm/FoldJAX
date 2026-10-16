@@ -73,6 +73,11 @@ Protenix's own randomness has three sources: the seed (diffusion noise),
 native CLI; follows `--seed` when omitted),
 and MC dropout on the recycle pair update, which upstream applies to about 40%
 of predictions (`--option mc_dropout_apply_rate=0` turns it off).
+Managed runs carry fixed-shape per-recycle keys and a runtime dropout flag, so
+either coin outcome reuses the same executable for a fixed shape and rate.
+Raw keys follow the active JAX PRNG implementation, including RBG's key width.
+The disabled branch draws no dropout masks and leaves the pair update unchanged;
+the enabled branch preserves the existing seeded draws and padding prefix.
 `--option full_depth_msa=true` reads every MSA row in every recycle instead
 of a random subset ([cli.md](cli.md#--msa-seed-protenix)).
 

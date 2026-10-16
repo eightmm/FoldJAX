@@ -19,6 +19,10 @@ With one model and one input, the compatible default remains
 default. Batch requests add canonical model namespaces below their output root
 so different models cannot overwrite one another.
 
+`--batch-output` selects `<output-dir>/<model>/<input-stem>` even for one
+model/input pair. Separate model jobs can then share one output root safely;
+the Slurm wrapper uses this option for both planning and prediction.
+
 `--num-samples`, `--num-steps`, `--num-recycles` and `--max-msa-depth` are
 model-neutral, and every port now spells them that way inside as well. Each
 port used to keep whatever its upstream called them, so this table listed six

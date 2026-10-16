@@ -1,8 +1,10 @@
 # Running FoldJAX for a user on Slurm
 
 Apply the repository `PROJECT.md` contract and the site's filled configuration.
-No partition, account, queue limit, MSA depth, or timing measurement is assumed
-by this template. Read the site's own instructions before submitting jobs.
+No partition, account, queue limit, or timing measurement is assumed by this
+template. The submission wrapper selects a 2048-row MSA preset for the four
+supported models; the core CLI keeps this preset opt-in. Read the site's own
+instructions before submitting jobs.
 
 - Never run prediction, cache warming, or a substantial local MSA search on a
   login node. Use the batch scripts and a deliberate resource/time request.
@@ -12,8 +14,16 @@ by this template. Read the site's own instructions before submitting jobs.
   `foldjax-submit` does this for real submissions; `--dry-run` only prints.
 - Use `--resume --keep-going`, consistent output paths, and job-specific logs.
   Array shards split inputs; they do not change prediction parameters.
-- Select fixed MSA depth only from the user's explicit choice or a documented
-  site measurement. No depth is a default until that evidence exists.
+- Preserve the wrapper's 2048-row preset unless the user chooses a different
+  depth or `--exact`. The choice follows the user-reported 1024/2048/4096
+  comparison with no observed accuracy difference; raw measurements are supplied
+  separately. Use the same explicit cap when warming. Do not infer timing or
+  memory results that were not provided.
+- Resolve GPU partition as `--partition`, then `GPU_PARTITION_<TYPE>`, then
+  `PARTITIONS_GPU`. Keep site values unfilled until configured; never send a GPU
+  type to an unrelated partition. `DEFAULT_MSA` must be `single` or `auto`.
+- Keep one output root for every model. The wrapper supplies `--batch-output`
+  so FoldJAX builds `OUT/model/input-stem`, including scalar input jobs.
 - Read completed results with `foldjax show OUTPUT_DIR --format csv`. Wait for
   scheduler completion before treating a missing manifest as a failed model.
 - Verify a warmed shared cache from an ordinary Unix user. Do not change Unix

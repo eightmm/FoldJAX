@@ -129,6 +129,7 @@ class _Audit:
             "files": 0,
             "directories": 0,
             "private_files": 0,
+            "temporary_directories": 0,
         }
         self.result["paths"].append(row)
         return row
@@ -230,6 +231,16 @@ class _Audit:
                 )
                 info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
                 self.detail("changes", path=path, created=True)
+            if (
+                relative.rpartition("/")[0] == "runtime/cache-warm"
+                and name.startswith(".")
+                and stat.S_ISDIR(info.st_mode)
+                and info.st_dev == self.device
+            ):
+                # Active warm outputs are private and short-lived. Neither
+                # inspection nor repair may traverse or publish their contents.
+                row["temporary_directories"] += 1
+                return
             if depth == 0:
                 self.identities[relative] = _identity(info)
                 row.update(

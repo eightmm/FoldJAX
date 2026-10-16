@@ -7,14 +7,22 @@
 --padding --max-msa-depth N --pad-msa N
 ```
 
-`N` is required and must be a positive integer. There is no recommended or
-implicit depth while the 1024/2048/4096 accuracy, time, and memory measurements
-are pending. Choose the same explicit value when warming and predicting:
+`N` is required and must be a positive integer in the core CLI; padding and
+MSA caps remain opt-in there. The Slurm submission wrapper defaults to **2048**
+for these four models, following the user-reported cluster comparison that
+found no accuracy difference among 1024/2048/4096 rows. The underlying results
+are not included in this repository. This deployment choice does not change
+native selection limits or establish a timing/memory ranking. Choose the same
+value when warming and predicting:
 
 ```bash
-foldjax cache warm --model boltz2 --token-buckets 256,512 --msa single --fixed-msa "$N"
-foldjax predict --model boltz2 --input job.json --msa auto --fixed-msa "$N"
+foldjax cache warm --model boltz2 --token-buckets 256,512 --msa single --fixed-msa 2048
+foldjax predict --model boltz2 --input job.json --msa auto --fixed-msa 2048
 ```
+
+`examples/slurm/foldjax-submit` accepts `--fixed-msa N` or the site variable
+`FIXED_MSA_DEPTH` to override 2048; `--exact` disables its automatic preset.
+AlphaFold 3 and ESMFold2 never receive that wrapper flag.
 
 The preset caps alignment rows through the model's existing input selection,
 then pads the compiled MSA axis to exactly `N`. A shallower alignment gets
@@ -53,5 +61,5 @@ as an ordinary prediction.
 CPU regression tests exercise native cap/sampling before padding, zero masks
 for synthetic rows, model-bound input signatures and abstract StableHLO
 lowering for one, three, and seventeen source rows at caps of one and seven,
-and warm/predict namespace identity. They do not claim GPU latency or prediction accuracy equivalence
-between different MSA caps.
+and warm/predict namespace identity. They do not claim GPU latency or independently
+validate the user-reported accuracy comparison between MSA caps.
