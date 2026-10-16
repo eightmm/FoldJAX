@@ -320,6 +320,14 @@ def _add_predict_arguments(
         "peak at 488 tokens. Omit to keep each backend's own default",
     )
     shapes.add_argument(
+        "--fixed-msa",
+        type=int,
+        metavar="N",
+        help="fixed MSA preset for Boltz-2, Protenix, OpenFold3 and OpenDDE: "
+        "enable padding, cap input rows with --max-msa-depth N, and pin "
+        "--pad-msa N. N is required; there is no measured default",
+    )
+    shapes.add_argument(
         "--padding",
         action="store_true",
         help="select a token bucket with derived atom capacity, and pad the MSA "
@@ -644,6 +652,24 @@ def _parser() -> argparse.ArgumentParser:
         "installs every published checkpoint. AlphaFold 3 and Protenix v2 are "
         "still yours to supply: their parameters are licensed, not merely large",
     )
+    setup.add_argument(
+        "--shared",
+        action="store_true",
+        help="inspect shared-store permissions without downloading weights",
+    )
+    setup.add_argument(
+        "--apply",
+        action="store_true",
+        help="with --shared: create directories and repair permissions",
+    )
+    setup.add_argument(
+        "--group", metavar="G", help="with --shared: use a setgid group-writable store"
+    )
+    setup.add_argument(
+        "--json",
+        action="store_true",
+        help="with --shared: print the structured permission report",
+    )
 
     weights = commands.add_parser(
         "weights", help="download released checkpoints and convert them for JAX"
@@ -727,6 +753,30 @@ def _parser() -> argparse.ArgumentParser:
         "and static options.",
     )
     _add_predict_arguments(warm, allow_no_cache=False, cache_warm=True)
+    warm.add_argument(
+        "--token-buckets",
+        metavar="SPEC",
+        help="warm two synthetic lengths per bucket: 256,512,768, LOW..HIGH, or auto",
+    )
+    warm.add_argument(
+        "--json",
+        action="store_true",
+        help="print JSON for a bucket sweep; exact-input warming always returns JSON",
+    )
+    warm_errors = warm.add_mutually_exclusive_group()
+    warm_errors.add_argument(
+        "--stop-on-oom",
+        dest="stop_on_oom",
+        action="store_true",
+        default=True,
+        help="stop a model's ascending bucket sweep at its first OOM (default)",
+    )
+    warm_errors.add_argument(
+        "--keep-going",
+        dest="stop_on_oom",
+        action="store_false",
+        help="continue to later buckets after OOM",
+    )
     tools_cli.register(commands, show=show, compare=compare, run=run, plan=plan)
 
     return parser
@@ -934,6 +984,27 @@ def _request(
 
     ``sources`` and ``unreadable`` are :func:`_resolve_inputs`'s.
     """
+    fixed_msa = getattr(args, "fixed_msa", None)
+    if fixed_msa is not None:
+        if fixed_msa <= 0:
+            raise ValueError("--fixed-msa N requires a positive integer")
+        supported = {"boltz2", "protenix", "openfold3", "opendde"}
+        unsupported = sorted(
+            {normalize_model_name(name) for name in args.model} - supported
+        )
+        if unsupported:
+            raise ValueError(f"--fixed-msa is unsupported for {', '.join(unsupported)}")
+        for name, flag in (
+            ("max_msa_depth", "--max-msa-depth"),
+            ("pad_msa", "--pad-msa"),
+        ):
+            value = getattr(args, name)
+            if value is not None and value != fixed_msa:
+                raise ValueError(
+                    f"--fixed-msa {fixed_msa} conflicts with {flag} {value}"
+                )
+        args.padding = True
+        args.max_msa_depth = args.pad_msa = fixed_msa
     sources = {} if sources is None else sources
     inputs = _resolve_inputs(
         args, jobs_root=jobs_root, sources=sources, unreadable=unreadable
@@ -1145,6 +1216,37 @@ def _template_report() -> list[str]:
 
 def _run_setup(args: argparse.Namespace) -> int:
     """Fetch default assets and say exactly what opt-in/manual models need."""
+    if getattr(args, "shared", False):
+        from foldjax.shared_install import audit_shared_install
+
+        if args.fetch_all or args.download_only:
+            raise ValueError("--shared audits permissions; run asset setup separately")
+        result = audit_shared_install(apply=args.apply, group=args.group)
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print(
+                f"shared store: {result['home']} "
+                f"({'apply' if args.apply else 'inspection only'})"
+            )
+            for row in result["paths"]:
+                print(json.dumps(row, sort_keys=True))
+            for kind in ("issues", "skipped"):
+                for issue in result[kind]:
+                    message = issue.get("message", issue.get("reason", ""))
+                    print(f"{kind}: {issue['path']}: {message}")
+            if result["details_truncated"]:
+                print(f"additional details omitted; counts: {result['counts']}")
+            for message in result["advice"]:
+                print(message)
+            print(f"ok: {result['ok']}; failing features: {result['failing_features']}")
+        return 0 if result["ok"] else 1
+    if (
+        getattr(args, "apply", False)
+        or getattr(args, "group", None)
+        or getattr(args, "json", False)
+    ):
+        raise ValueError("--apply, --group and --json require setup --shared")
     print(f"store: {paths.foldjax_home()}\n")
     print("weights")
     failed = False
@@ -1469,6 +1571,48 @@ def _run_cache(args: argparse.Namespace) -> int:
     """Warm an exact persistent-cache profile and report what changed."""
 
     from foldjax.warmup import warm_cache
+
+    if args.token_buckets is not None:
+        from foldjax.warm_buckets import format_bucket_report, warm_token_buckets
+
+        if (
+            args.input
+            or args.sequence
+            or args.dna
+            or args.rna
+            or args.ligand
+            or args.ligand_smiles
+        ):
+            raise ValueError(
+                "--token-buckets generates its own protein jobs; "
+                "omit input/sequence options"
+            )
+        if args.pad_tokens is not None:
+            raise ValueError("--token-buckets selects token sizes; omit --pad-tokens")
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="foldjax-bucket-request-") as temporary:
+            generated = argparse.Namespace(**vars(args))
+            generated.sequence = ["AA"]
+            generated.input_format = "foldjax"
+            request = _request(generated, jobs_root=Path(temporary))
+            assert request is not None
+            with _stdout_to_stderr():
+                result = warm_token_buckets(
+                    request, args.token_buckets, stop_on_oom=args.stop_on_oom
+                )
+        print(
+            json.dumps(result, indent=2, sort_keys=True)
+            if args.json
+            else format_bucket_report(result)
+        )
+        return (
+            3
+            if any(
+                model["first_failed_bucket"] is not None for model in result["models"]
+            )
+            else 0
+        )
 
     request = _request(args)
     print(

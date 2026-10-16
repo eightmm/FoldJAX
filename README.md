@@ -80,6 +80,12 @@ jobs; predicting from a feature `.npz` needs nothing) and `--extra templates`
 extra it is not given**, so name them all each time:
 `uv sync --extra alphafold3 --extra openfold3-preprocess --extra templates`.
 
+For a multi-user installation, see
+[shared-store setup](https://github.com/eightmm/FoldJAX/blob/main/docs/shared-install.md),
+[bucket cache warming](https://github.com/eightmm/FoldJAX/blob/main/docs/cache-warm.md),
+[fixed MSA rows](https://github.com/eightmm/FoldJAX/blob/main/docs/fixed-msa.md), and
+the [Slurm submission examples](https://github.com/eightmm/FoldJAX/blob/main/examples/slurm/README.md).
+
 Without uv, pip installs the same package with the same extras, resolved from
 the version ranges in `pyproject.toml` rather than from the lockfile:
 

@@ -1519,10 +1519,11 @@ def _predict_once(
     import jax
 
     from foldjax._gpu import default_device, require_supported_gpu
+    from foldjax._tokamax_device import selected_tokamax_device
 
     device = default_device(request)
     require_supported_gpu(device)
-    with jax.default_device(device):
+    with jax.default_device(device), selected_tokamax_device(device):
         return _predict_once_on_device(
             request,
             seed,

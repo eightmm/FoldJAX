@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# Site settings: fill these here or export them before submitting.
+PARTITIONS_GPU="${PARTITIONS_GPU:-}"
+GRES="${GRES:-gpu:1}"
+CPUS_PER_GPU="${CPUS_PER_GPU:-}"
+PARTITION_CPU="${PARTITION_CPU:-}"
+MODULE="${MODULE:-}"
+FIXED_MSA_DEPTH="${FIXED_MSA_DEPTH:-}"
+
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: foldjax-submit -m MODEL [-m MODEL ...] -o OUTDIR [OPTIONS] -- PREDICT_ARGS
+  --msa auto|single    auto first submits CPU MSA prefetch (default: single)
+  --gpu TYPE          request gpu:TYPE:1 instead of the configured GRES
+  --time LIMIT        Slurm wall time (otherwise the site's default)
+  --shards N          submit an array and pass --shard auto to predict
+  --fixed-msa N       fixed MSA rows for Boltz-2/Protenix/OpenFold3/OpenDDE
+  --exact             disable the configured FIXED_MSA_DEPTH preset
+  --dry-run           print commands; run neither FoldJAX nor sbatch
+With auto MSA, PREDICT_ARGS must include --input PATH [PATH ...].
+EOF
+}
+die() { printf 'foldjax-submit: %s\n' "$*" >&2; exit 2; }
+need_value() { [[ $# -ge 2 && -n $2 ]] || die "$1 needs a value"; }
+print_command() { printf '%q ' "$@"; printf '\n'; }
+model_name() {
+    case "$1" in
+        alphafold3|af3|alphafold-3) printf alphafold3 ;;
+        boltz2|boltz|boltz-2|boltz-jax) printf boltz2 ;;
+        esmfold2|esm-fold2|esmfold-2) printf esmfold2 ;;
+        opendde|open-dde|opendde-jax) printf opendde ;;
+        openfold3|of3|openfold-3|openfold3-jax) printf openfold3 ;;
+        protenix|protenix-jax) printf protenix ;;
+        *) die "unknown model: $1" ;;
+    esac
+}
+
+models=() output= msa=single gpu= time_limit= shards=1 dry_run=0 exact=0
+shard_requested=0
+explicit_fixed=0
+while (($#)); do
+    case "$1" in
+        -m|--model)
+            need_value "$@"; model=$(model_name "$2")
+            [[ " ${models[*]} " != *" $model "* ]] || die "duplicate model: $model"
+            models+=("$model"); shift 2 ;;
+        -o|--output-dir) need_value "$@"; output=$2; shift 2 ;;
+        --msa) need_value "$@"; msa=$2; shift 2 ;;
+        --gpu) need_value "$@"; gpu=$2; shift 2 ;;
+        --time) need_value "$@"; time_limit=$2; shift 2 ;;
+        --shards) need_value "$@"; shards=$2; shard_requested=1; shift 2 ;;
+        --fixed-msa)
+            need_value "$@"; FIXED_MSA_DEPTH=$2; explicit_fixed=1; shift 2 ;;
+        --exact) exact=1; shift ;;
+        --dry-run) dry_run=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        --) shift; break ;;
+        *) die "unknown wrapper option $1; put predict options after --" ;;
+    esac
+done
+predict_args=("$@")
+((${#models[@]})) || die 'choose at least one model with -m'
+[[ -n $output ]] || die 'choose an output directory with -o'
+[[ $msa == auto || $msa == single ]] || die '--msa must be auto or single'
+[[ $shards =~ ^[1-9][0-9]*$ && ${#shards} -le 9 ]] || die '--shards must be a positive integer of at most 9 digits'
+[[ -n $PARTITIONS_GPU && $CPUS_PER_GPU =~ ^[1-9][0-9]*$ ]] || die 'configure PARTITIONS_GPU and CPUS_PER_GPU'
+((!exact || !explicit_fixed)) || die '--exact and --fixed-msa cannot be combined'
+if ((exact)); then FIXED_MSA_DEPTH=; fi
+[[ -z $FIXED_MSA_DEPTH || $FIXED_MSA_DEPTH =~ ^[1-9][0-9]*$ ]] || die 'FIXED_MSA_DEPTH/--fixed-msa must be a positive integer'
+if [[ -n $gpu ]]; then
+    [[ $gpu =~ ^[[:alnum:]_+-]+$ ]] || die '--gpu must be a Slurm GPU type name'
+    GRES="gpu:$gpu:1"
+fi
+inputs=() pairing=model
+for ((index=0; index<${#predict_args[@]}; index++)); do
+    value=${predict_args[index]}
+    case "$value" in
+        --model|--model=*|--output-dir|--output-dir=*|--msa|--msa=*|--shard|--shard=*|--fixed-msa|--fixed-msa=*)
+            die "set $value with the wrapper options before --" ;;
+        --input)
+            while ((index+1<${#predict_args[@]})) && [[ ${predict_args[index+1]} != -* ]]; do
+                ((index+=1)); inputs+=("${predict_args[index]}")
+            done ;;
+        --input=*) inputs+=("${value#--input=}") ;;
+        --msa-pairing)
+            ((index+1<${#predict_args[@]})) || die '--msa-pairing needs a value'
+            pairing=${predict_args[index+1]} ;;
+        --msa-pairing=*) pairing=${value#--msa-pairing=} ;;
+    esac
+done
+if [[ $msa == auto ]]; then
+    ((${#inputs[@]})) || die '--msa auto requires --input paths; save a raw sequence as a job/FASTA first'
+    [[ -n $PARTITION_CPU ]] || die 'configure PARTITION_CPU for CPU MSA prefetch'
+    printf '%s\n' 'MSA auto may send sequences to an external server; use your configured local search to keep them on site.' >&2
+fi
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+logs="$output/.slurm"
+export PARTITIONS_GPU GRES CPUS_PER_GPU PARTITION_CPU MODULE
+gpu_options=(--parsable --export=ALL "--partition=$PARTITIONS_GPU" "--gres=$GRES" "--cpus-per-task=$CPUS_PER_GPU")
+if [[ -n $time_limit ]]; then gpu_options+=("--time=$time_limit"); fi
+if ((shard_requested)); then gpu_options+=("--array=0-$((shards-1))"); fi
+if ((dry_run)); then
+    print_command mkdir -p -- "$logs"
+else
+    if [[ -n $MODULE ]]; then module load "$MODULE"; fi
+    # Preflight every model before any scheduler job is submitted.
+    for model in "${models[@]}"; do
+        model_output=$output
+        if ((${#models[@]}>1)); then model_output="$output/$model"; fi
+        preset=()
+        case "$model" in
+            boltz2|protenix|openfold3|opendde)
+                if [[ -n $FIXED_MSA_DEPTH ]]; then preset=(--fixed-msa "$FIXED_MSA_DEPTH"); fi ;;
+        esac
+        foldjax plan --model "$model" --output-dir "$model_output" --msa "$msa" "${preset[@]}" "${predict_args[@]}"
+    done
+    mkdir -p -- "$logs"
+fi
+dependency=()
+if [[ $msa == auto ]]; then
+    cpu_command=(sbatch --parsable --export=ALL "--partition=$PARTITION_CPU" --cpus-per-task=2 --mem=8G
+        "--output=$logs/msa-%j.out")
+    if [[ -n $time_limit ]]; then cpu_command+=("--time=$time_limit"); fi
+    cpu_command+=("$script_dir/msa.sbatch" --model "${models[@]}" --msa-pairing "$pairing" -- "${inputs[@]}")
+    if ((dry_run)); then
+        print_command "${cpu_command[@]}"
+        msa_job_id=MSA_JOB_ID
+    else
+        msa_job_id=$("${cpu_command[@]}")
+        msa_job_id=${msa_job_id%%;*}
+        [[ $msa_job_id =~ ^[0-9]+$ ]] || die "unexpected sbatch job id: $msa_job_id"
+    fi
+    dependency=("--dependency=afterok:$msa_job_id" --kill-on-invalid-dep=yes)
+fi
+for model in "${models[@]}"; do
+    model_output=$output
+    if ((${#models[@]}>1)); then model_output="$output/$model"; fi
+    preset=()
+    case "$model" in
+        boltz2|protenix|openfold3|opendde)
+            if [[ -n $FIXED_MSA_DEPTH ]]; then preset=(--fixed-msa "$FIXED_MSA_DEPTH"); fi ;;
+    esac
+    command=(sbatch "${gpu_options[@]}" "${dependency[@]}" "--job-name=foldjax-$model"
+        "--output=$logs/$model-%A_%a.out" "$script_dir/predict.sbatch"
+        --model "$model" --output-dir "$model_output" --msa "$msa"
+        --resume --keep-going "${preset[@]}")
+    if ((shard_requested)); then command+=(--shard auto); fi
+    command+=("${predict_args[@]}")
+    if ((dry_run)); then print_command "${command[@]}"; else "${command[@]}"; fi
+done

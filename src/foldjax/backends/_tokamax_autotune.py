@@ -81,6 +81,13 @@ class _IncompleteCoverageError(_CacheError):
     """Explicit tuning did not produce one successful config for every op."""
 
 
+class _IncompleteMeasurementsError(_IncompleteCoverageError):
+    def __init__(self, message: str, *, partial: Any, missing: tuple[Any, ...]):
+        super().__init__(message)
+        self.partial = partial
+        self.missing = missing
+
+
 def _tokamax_api():
     import tokamax
 
@@ -908,6 +915,25 @@ def _manifest_bytes(
     return payload
 
 
+def _operation_label(bound_arg: Any) -> str:
+    operation, key = _bound_arg_identity(bound_arg)
+    return f"{operation} key={str(key)[:240]}"
+
+
+def _candidate_failure_summary(data: Any) -> str:
+    if data is None:
+        return "no measurements returned"
+    failures: dict[str, int] = {}
+    for value in data.values():
+        if isinstance(value, BaseException):
+            message = (str(value).splitlines() or [""])[0][:180]
+            detail = f"{type(value).__name__}: {message}"
+            failures[detail] = failures.get(detail, 0) + 1
+    return "; ".join(
+        f"{count} x {detail}" for detail, count in list(failures.items())[:4]
+    ) or "no successful benchmark measurements"
+
+
 def _complete_result(
     bound_args: Sequence[Any],
     tuned: Any,
@@ -919,6 +945,8 @@ def _complete_result(
     if str(tuned.device_kind) != device_kind:
         raise _IncompleteCoverageError("Tokamax tuned the wrong device kind")
     entries = []
+    missing = []
+    reasons = []
     with ExitStack() as stack:
         if base is not None:
             if str(base.device_kind) != device_kind:
@@ -929,22 +957,38 @@ def _complete_result(
         stack.enter_context(tuned)
         for bound_arg in bound_args:
             data = bound_arg.cached_autotuning_data
-            if data is None:
-                raise _IncompleteCoverageError("Tokamax omitted an operation")
             try:
-                pruned = data.prune()
+                if data is None:
+                    raise ValueError("no measurements returned")
+                # Timeouts and compilation errors are failed candidates, not
+                # failed operations when another candidate was measured.
+                successful = (
+                    data.prune_errors()
+                    if callable(getattr(data, "prune_errors", None))
+                    else {
+                        k: v
+                        for k, v in data.items()
+                        if not isinstance(v, BaseException)
+                    }
+                )
+                pruned = type(data)(successful).prune()
                 if len(pruned) != 1:
-                    raise _IncompleteCoverageError(
-                        "Tokamax produced no successful config"
-                    )
+                    raise ValueError("no successful config")
                 pruned.fastest_config
-            except _IncompleteCoverageError:
-                raise
-            except Exception as error:  # noqa: BLE001 - coverage is fail-closed
-                raise _IncompleteCoverageError(
-                    "Tokamax produced no successful config"
-                ) from error
+            except Exception:  # noqa: BLE001 - failed operations cannot be persisted
+                missing.append(bound_arg)
+                reasons.append(
+                    f"{_operation_label(bound_arg)}: {_candidate_failure_summary(data)}"
+                )
+                continue
             entries.append((bound_arg, pruned))
+    if missing:
+        raise _IncompleteMeasurementsError(
+            f"{len(missing)} Tokamax operations have no successful config: "
+            + " | ".join(reasons[:8]),
+            partial=tokamax.AutotuningResult(device_kind, tuple(entries)),
+            missing=tuple(missing),
+        )
     result = tokamax.AutotuningResult(device_kind, tuple(entries))
     _validate_complete_result(
         result,
@@ -1089,16 +1133,47 @@ def _is_missing_config_error(error: BaseException) -> bool:
 def _tune_selected_device(
     bound_args: Sequence[Any], *, device_kind: str, tokamax: Any
 ) -> Any:
+    from tokamax._src.autotuning.autotuner import Autotuner, AutotuningData
+
+    tuner = Autotuner(compile_executor_fn=None)
+    # JAX's device context is thread-local. Keep compilation and measurement
+    # here, and preserve completed operations when another operation raises.
+    entries = []
+    for bound_arg in bound_args:
+        try:
+            data = bound_arg.autotune(
+                cache_results=False, autotuner=tuner, timeout=600.0
+            )
+        except Exception as error:  # noqa: BLE001 - retain per-operation evidence
+            data = AutotuningData({"unmeasured": error})
+        entries.append((bound_arg, data))
+    return tokamax.AutotuningResult(device_kind, tuple(entries))
+
+
+def _retry_missing_heuristics(
+    bound_args: Sequence[Any], *, device_kind: str, tokamax: Any
+) -> Any:
+    """Measure one heuristic candidate per missing op in the caller's context."""
     from tokamax._src.autotuning.autotuner import Autotuner
 
     tuner = Autotuner(compile_executor_fn=None)
-    # JAX's device context is thread-local. Keep both compilation and candidate
-    # measurement on the selected device; Tokamax still filters failed candidates.
-    data = tuple(
-        (ba, ba.autotune(cache_results=False, autotuner=tuner, timeout=600.0))
-        for ba in bound_args
-    )
-    return tokamax.AutotuningResult(device_kind, data)
+    entries = []
+    for bound_arg in bound_args:
+        try:
+            config = bound_arg.heuristics_config
+            data = bound_arg.autotune(
+                configs={config}, cache_results=False, autotuner=tuner, timeout=60.0
+            )
+        except Exception as error:  # noqa: BLE001 - strict coverage still decides
+            _LOGGER.warning(
+                "Tokamax heuristic retry failed for %s: %s: %s",
+                _operation_label(bound_arg),
+                type(error).__name__,
+                str(error)[:240],
+            )
+            continue
+        entries.append((bound_arg, data))
+    return tokamax.AutotuningResult(device_kind, tuple(entries))
 
 
 def _discover_complete_result(
@@ -1116,6 +1191,7 @@ def _discover_complete_result(
 
     discovered: dict[tuple[str, Any], Any] = {}
     previous_results: list[Any] = []
+    retried: set[tuple[str, Any]] = set()
     result = None
     for _round in range(_MAX_DISCOVERY_ROUNDS):
         current = _include_pre_vmap_variants(
@@ -1146,12 +1222,36 @@ def _discover_complete_result(
         else:
             tuned = tokamax.AutotuningResult(device_kind, ())
         previous = result
-        result = _complete_result(
-            tuple(discovered.values()),
-            tuned,
-            device_kind,
-            base=previous,
-        )
+        try:
+            result = _complete_result(
+                tuple(discovered.values()), tuned, device_kind, base=previous
+            )
+        except _IncompleteMeasurementsError as error:
+            retry = tuple(
+                ba for ba in error.missing if _bound_arg_identity(ba) not in retried
+            )
+            if not retry:
+                raise
+            retried.update(_bound_arg_identity(ba) for ba in retry)
+            previous_results.append(error.partial)
+            with error.partial:
+                recovered = _retry_missing_heuristics(
+                    retry, device_kind=device_kind, tokamax=tokamax
+                )
+            try:
+                result = _complete_result(
+                    tuple(discovered.values()),
+                    recovered,
+                    device_kind,
+                    base=error.partial,
+                )
+            except _IncompleteMeasurementsError as retry_error:
+                raise _IncompleteMeasurementsError(
+                    f"{error}; single-heuristic retry remains incomplete: "
+                    f"{retry_error}",
+                    partial=retry_error.partial,
+                    missing=retry_error.missing,
+                ) from retry_error
         if previous is not None:
             # Tokamax includes ``id(result)`` in JAX's tracing context.  Keep
             # every superseded overlay alive until discovery finishes so a
@@ -1253,6 +1353,9 @@ class _PersistentTokamaxStore:
         self._device_kind = device_kind
         self._can_tune = can_tune
         self._results: dict[str, Any] = {}
+        # Partial overlays aid inline fallback but are never complete or
+        # persisted. Retaining their identity also stabilizes JAX's trace key.
+        self._partial_results: dict[str, Any] = {}
         # Signatures whose result is on disk: read from it, or written to it.
         self._persisted: set[str] = set()
         self._warned: set[str] = set()
@@ -1299,11 +1402,14 @@ class _PersistentTokamaxStore:
         with result, tokamax.config.autotuning_cache_miss_fallback("error"):
             return invoke()
 
-    def _invoke_fallback(self, invoke: Callable[[], Any]) -> Any:
+    def _invoke_fallback(
+        self, invoke: Callable[[], Any], *, partial: Any | None = None
+    ) -> Any:
         if self._strategy == "autotune" and not self._can_tune:
             _raise_nondefault_autotune_miss()
-        _note_source("tokamax")
-        return invoke()
+        _note_source("partial" if partial is not None else "tokamax")
+        with partial if partial is not None else nullcontext():
+            return invoke()
 
     def call(
         self,
@@ -1332,6 +1438,8 @@ class _PersistentTokamaxStore:
                     invoke,
                     source="store" if signature in self._persisted else "measured",
                 )
+            if (partial := self._partial_results.get(signature)) is not None:
+                return self._invoke_fallback(invoke, partial=partial)
 
             store_unavailable = False
             try:
@@ -1359,6 +1467,7 @@ class _PersistentTokamaxStore:
 
             tokamax = _tokamax_api()
             result = None
+            coverage_error = None
             source = "store"
             try:
                 with (
@@ -1388,8 +1497,17 @@ class _PersistentTokamaxStore:
                                     tokamax=tokamax,
                                     parallel=self._can_tune,
                                 )
-                            except Exception:  # noqa: BLE001 - preserve inline fallback
-                                self._warn_once("did not obtain complete coverage")
+                            except Exception as error:  # noqa: BLE001 - preserve fallback
+                                self._warn_once(
+                                    f"did not obtain complete coverage: {error}"
+                                )
+                                coverage_error = error
+                                if (
+                                    self._can_tune
+                                    and isinstance(error, _IncompleteMeasurementsError)
+                                    and error.partial.data
+                                ):
+                                    self._partial_results[signature] = error.partial
                                 result = None
                             if result is not None and writable:
                                 try:
@@ -1416,7 +1534,14 @@ class _PersistentTokamaxStore:
                 return self._invoke_fallback(invoke)
 
             if result is None:
-                return self._invoke_fallback(invoke)
+                if coverage_error is not None and not self._can_tune:
+                    raise RuntimeError(
+                        "Tokamax selected-device tuning could not obtain complete "
+                        f"kernel coverage: {coverage_error}"
+                    ) from coverage_error
+                return self._invoke_fallback(
+                    invoke, partial=self._partial_results.get(signature)
+                )
             self._results[signature] = result
             if source == "store":
                 self._persisted.add(signature)

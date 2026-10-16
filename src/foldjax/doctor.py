@@ -268,6 +268,22 @@ def _input_readiness(info: Any) -> dict[str, dict[str, Any]]:
     return rows
 
 
+def _shared_install_report(store: Path) -> dict[str, Any]:
+    from foldjax.shared_install import audit_shared_install
+
+    group = None
+    try:
+        import grp
+        import stat
+
+        info = store.lstat()
+        if stat.S_ISDIR(info.st_mode) and info.st_mode & stat.S_ISGID:
+            group = grp.getgrgid(info.st_gid).gr_name
+    except (ImportError, KeyError, OSError):
+        pass
+    return audit_shared_install(store, group=group)
+
+
 def run_doctor(args: argparse.Namespace) -> int:
     """Everything a first run needs, checked in one command.
 
@@ -342,7 +358,12 @@ def run_doctor(args: argparse.Namespace) -> int:
     report_payload["runtime_versions"] = runtime_versions
 
     store = paths.foldjax_home()
-    usage = _shutil.disk_usage(store if store.exists() else Path.cwd())
+    report_payload["shared_install"] = _shared_install_report(store)
+    try:
+        usage = _shutil.disk_usage(store if store.exists() else Path.cwd())
+    except OSError as error:
+        report_payload["disk_error"] = str(error)
+        usage = _shutil.disk_usage(Path.cwd())
     report_payload["disk_free_bytes"] = usage.free
     compile_cache_path = paths.compile_cache_dir()
     compile_cache = cache_snapshot(compile_cache_path).summary()
@@ -414,6 +435,28 @@ def run_doctor(args: argparse.Namespace) -> int:
     for note in gpu_notes:
         print(f"          {note}")
     print(f"store     {report_payload['home']}  ({_format_bytes(usage.free)} free)")
+    permissions = report_payload["shared_install"]
+    shared = permissions["shared"]
+    if shared is not None:
+        print(
+            f"shared    {'yes' if shared else 'no'} "
+            f"(owner uid {permissions['owner_uid']}, "
+            f"current uid {permissions['current_uid']})"
+        )
+    for row in permissions["paths"]:
+        state = "missing" if not row["exists"] else (
+            f"mode {row['mode']} read={'yes' if row['readable'] else 'no'} "
+            f"write={'yes' if row['writable'] else 'no'} "
+            f"private files={row['private_files']}"
+        )
+        print(f"          {row['relative_path']}: {state}")
+    if permissions["failing_features"]:
+        print(
+            "          permission issues: " + ", ".join(permissions["failing_features"])
+        )
+        print("          inspect: foldjax setup --shared; repair: add --apply as owner")
+    for advice in permissions["advice"]:
+        print(f"          {advice}")
     print(
         f"cache     {_format_bytes(compile_cache['bytes'])} in "
         f"{compile_cache['files']} file(s)  {compile_cache_path}"

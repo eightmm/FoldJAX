@@ -161,7 +161,8 @@ program. Neither reuses the other's executable -- the compilation cache keys
 each by its HLO -- but the option alone does not say which one ran. The run
 manifest's `kernel_tuning` does: per model call, whether the configurations
 came from the store (`store`), were measured by this run (`measured`), or were
-left to Tokamax (`tokamax`: its bundled data, else the cache-miss policy). It
+partly retained after an incomplete measurement (`partial`), or left to Tokamax
+(`tokamax`: its bundled data, else the cache-miss policy). It
 is `null` without a store (CPU runs, `--no-cache`, an external source), where
 every call is Tokamax's own. For upstream's heuristic programs whatever the
 store holds, run `heuristics` with its own `--cache-dir`.
@@ -171,14 +172,22 @@ when the selected device is a GPU; on a CPU or TPU it is `xla`, because
 tokamax's Triton flash attention raises `NotImplementedError` there.
 `attention_backend=triton` still names it explicitly.
 
-Explicit external AlphaFold 3 sources, unverifiable managed assets, CPU runs,
-and `--no-cache` keep Tokamax 0.0.13's process-local behavior on the
-process-default first local GPU. A new persistent measurement is made only on
-that device; an identical GPU selected by another ordinal may read an existing
-result. Regardless of whether persistence is eligible, an autotune miss on a
-non-default GPU fails instead of letting Tokamax's worker threads silently
-benchmark GPU 0 for a model bound to another device. Warm the exact profile
-once on the first local GPU, or explicitly accept the heuristic policy.
+Managed persistent tuning can measure a selected GPU synchronously, including
+when JAX's process-default backend is CPU. During prediction, Tokamax's implicit
+hardware queries use the selected device; explicit backend queries retain their
+usual meaning. Worker-based tuning remains limited to the process-default GPU.
+Explicit external sources, unverifiable assets, CPU runs, and `--no-cache` keep
+Tokamax's process-local policy; an autotune miss outside the default GPU still
+fails when the managed synchronous path is unavailable.
+
+Timeouts and compilation errors exclude individual candidates. Successful
+candidates still compete for the fastest configuration, and uncovered operations
+get one heuristic retry. A complete result is persisted only after strict
+coverage validation. If coverage remains incomplete on the default GPU,
+successful configurations are retained for this process's inline fallback and
+reported as `partial`; no incomplete manifest is published. Missing kernel
+identities and failure reasons appear in the warning. On a selected GPU that
+cannot safely use inline tuning, incomplete coverage raises that diagnostic.
 
 A fresh-process `t0128` gate persisted 22 unique configurations, then completed
 under `kernel_autotuning=error` with zero Tokamax misses: the writer used
