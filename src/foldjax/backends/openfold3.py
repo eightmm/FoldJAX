@@ -1215,7 +1215,12 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         if padding_plan is not None:
             shape_profile = {
                 **padding_plan.summary(),
-                "static": {"chains": 1 if n_chain is None else int(n_chain)},
+                "chain_count": n_chain,
+                "static": {
+                    "chain_capacity": inference.chain_capacity(
+                        1 if n_chain is None else n_chain
+                    )
+                },
                 "msa_execution": "host_streamed_cycles",
                 "host_msa_union_rows": int(features["msa_mask"].shape[1]),
             }

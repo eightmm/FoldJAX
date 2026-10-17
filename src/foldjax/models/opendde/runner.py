@@ -876,10 +876,12 @@ def _run(
                         )
                     profile = padding_plan.summary()
                     if n_chain is not None:
-                        # Confidence reductions unroll one loop per chain, so
-                        # this value is part of the JIT executable identity even
-                        # when every padded tensor axis is otherwise identical.
-                        profile = {**profile, "static": {"chains": n_chain}}
+                        from foldjax.models._chain_profile import chain_capacity
+
+                        profile = {
+                            **profile,
+                            "static": {"chain_capacity": chain_capacity(n_chain)},
+                        }
                     if padding_profiles is not None:
                         padding_profiles.append(profile)
                     print(padding_plan.message("opendde"))

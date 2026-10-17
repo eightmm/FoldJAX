@@ -21,6 +21,7 @@ import textwrap
 import pytest
 
 from foldjax.models._cp import context_parallel
+from tests.cueq_runtime import skip_missing_cueq_subprocess
 from tests.models.cp_probe_env import inherited_environment
 
 
@@ -603,5 +604,6 @@ def test_context_parallel_matches_the_unsharded_program() -> None:
             **inherited_environment(),
         },
     )
+    skip_missing_cueq_subprocess(completed)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "CP_PARITY_OK" in completed.stdout

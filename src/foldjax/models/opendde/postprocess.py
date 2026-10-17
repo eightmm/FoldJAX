@@ -305,6 +305,7 @@ def opendde_confidence_scores(
     *,
     num_recycles: int,
     n_chain: int | None = None,
+    chain_mask: jnp.ndarray | None = None,
     include_shape_complementarity: bool = True,
     return_confidence_details: bool = True,
     deterministic: bool = False,
@@ -317,6 +318,8 @@ def opendde_confidence_scores(
     longer returns.
     """
 
+    if chain_mask is not None:
+        n_chain = chain_mask.shape[0]
     if "summary_ranking_score" in output:
         scores = {
             key: jnp.asarray(value)
@@ -412,6 +415,7 @@ def opendde_confidence_scores(
         token_is_ligand=token_is_ligand,
         num_recycles=num_recycles,
         n_chain=n_chain,
+        chain_mask=chain_mask,
         include_chain_pair_pae=False,
         token_mask=features.get("token_padding_mask"),
         atom_mask=features.get("atom_padding_mask"),
@@ -432,11 +436,17 @@ def opendde_confidence_scores(
         gpde_numerator / gpde_denominator,
         0.0,
     ).astype(jnp.float32)
+    chain_asym_id = token_asym_id
+    if chain_mask is not None:
+        active = chain_mask[jnp.clip(token_asym_id, 0, n_chain - 1)]
+        chain_asym_id = jnp.where(
+            active & (token_asym_id >= 0) & (token_asym_id < n_chain), token_asym_id, -1
+        )
     scores.update(
         calculate_chain_based_gpde(
             token_pair_pde,
             contact_probs,
-            token_asym_id,
+            chain_asym_id,
             n_chain=n_chain,
             token_mask=token_mask,
         )

@@ -49,7 +49,7 @@ from tests.models.openfold3.test_stable_compile import _config, _table
 def _identity(**changes) -> inference._PredictGraphIdentity:
     return inference._PredictGraphIdentity(
         config=_config(msa_depth=8),
-        n_chain=None,
+        chain_capacity=4,
         augment=True,
         use_trunk_pair_embedding=True,
         rng_route="native",

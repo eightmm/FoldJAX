@@ -52,6 +52,22 @@ def test_subprocess_native_import_failures_skip(stderr: str) -> None:
         skip_missing_cueq_subprocess(completed)
 
 
+def test_openfold3_cp_probe_skips_a_missing_native_runtime(monkeypatch) -> None:
+    from tests.models.openfold3 import test_context_parallel
+
+    completed = CompletedProcess(
+        [],
+        1,
+        stdout="",
+        stderr="ModuleNotFoundError: No module named 'cuequivariance_jax'",
+    )
+    monkeypatch.setattr(
+        test_context_parallel.subprocess, "run", lambda *a, **k: completed
+    )
+    with pytest.raises(pytest.skip.Exception, match="runtime is unavailable"):
+        test_context_parallel.test_context_parallel_matches_the_unsharded_program()
+
+
 @pytest.mark.parametrize(
     "stderr",
     [

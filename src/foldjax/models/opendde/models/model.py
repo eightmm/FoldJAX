@@ -12,6 +12,13 @@ import jax.numpy as jnp
 import numpy as np
 
 from foldjax.models import _capture
+from foldjax.models._chain_profile import (
+    chain_mask as make_chain_mask,
+)
+from foldjax.models._chain_profile import (
+    crop_chain_scores,
+    resolve_chain_count,
+)
 from foldjax.models._compile_policy import policy_pools, select
 from foldjax.models._cp import (
     context_parallel,
@@ -826,10 +833,9 @@ def opendde_infer_static(
     #: from the managed non-raw writer profile; direct/raw callers retain them.
     #: Static because it changes the graph result PyTree and executable output.
     return_confidence_details: bool = True,
-    #: Chains in the job, resolved on the host: the per-chain score loops need
-    #: a Python int, and reading it off `asym_id` inside jit is a tracer.
-    #: Same contract as Protenix's `n_chain`.
+    #: Eager chain extent. Compiled callers pass fixed-capacity chain_mask.
     n_chain: int | None = None,
+    chain_mask: jnp.ndarray | None = None,
     triangle_mul_chunk_size: int | None = None,
     triangle_att_q_chunk_size: int | None = None,
     single_att_q_chunk_size: int | None = None,
@@ -1368,6 +1374,7 @@ def opendde_infer_static(
                         input_feature_dict,
                         num_recycles=num_recycles,
                         n_chain=n_chain,
+                        chain_mask=chain_mask,
                         # numpy-based, untraceable; finished on the host by the
                         # postprocess passthrough.
                         include_shape_complementarity=False,
@@ -1423,7 +1430,6 @@ GRAPH_STATIC_ARGNAMES = (
     "cp_layout",
     "cp_shards",
     "run_confidence_scores",
-    "n_chain",
     "return_confidence_logits",
     "return_confidence_details",
     "diffusion_attention_backend",
@@ -1592,6 +1598,16 @@ def opendde_infer_compiled(
         compact_requested and can_compact_confidence_distance_embedding(distance_params)
     )
     param_arrays, treedef, flags = split_static_flags(params)
+    n_chain = kwargs.pop("n_chain", None)
+    score_chains = (
+        kwargs.get("run_confidence", True)
+        and kwargs.get("run_confidence_scores", False)
+        and not kwargs.get("stop_after_inputs", False)
+        and not kwargs.get("stop_after_trunk", False)
+    )
+    if score_chains:
+        n_chain = resolve_chain_count(input_feature_dict, n_chain)
+        kwargs["chain_mask"] = make_chain_mask(n_chain)
     cp = int(kwargs.pop("cp_shards", 1))
     layout = _resolve_cp_layout(str(kwargs.pop("cp_layout", "auto")), cp)
     # The capture set has to be live while the program is *traced*, not
@@ -1609,7 +1625,7 @@ def opendde_infer_compiled(
             input_feature_dict = replicate_tree(input_feature_dict)
             noise_schedule = replicate_tree(noise_schedule)
             kwargs = replicate_tree(kwargs)
-        return _infer_pool(deterministic)(
+        output = _infer_pool(deterministic)(
             traceable_features(input_feature_dict),
             param_arrays,
             noise_schedule,
@@ -1619,3 +1635,4 @@ def opendde_infer_compiled(
             cp_layout=layout,
             **kwargs,
         )
+    return crop_chain_scores(output, n_chain) if score_chains else output

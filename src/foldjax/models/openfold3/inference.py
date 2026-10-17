@@ -32,6 +32,7 @@ from foldjax._openfold3_compile import (
     triangle_backend,
 )
 from foldjax.execution import DIFFUSION_CHUNK_SIZE, auto_diffusion_chunk_size
+from foldjax.models._chain_profile import chain_capacity
 from foldjax.models._compile_policy import compiler_options
 from foldjax.models._cp import (
     context_parallel,
@@ -968,6 +969,76 @@ def _compute_global_iptm(
     )
 
 
+class _PaddedChains(NamedTuple):
+    """Runtime active count with a score capacity fixed by the graph identity."""
+
+    count: jax.Array
+    capacity: int
+
+
+def _padded_chain_metrics(
+    probabilities,
+    undefined_softmax,
+    has_frame,
+    token_mask,
+    asym_id,
+    chains,
+    *,
+    dtype,
+    **kwargs,
+):
+    """Reduce active chains serially, retaining only fixed-size scalar scores."""
+    valid = token_mask.astype(bool)
+    count = jnp.maximum(chains.count, 0)
+
+    def score(mask, *, interface=False):
+        return _reduce_tm_pair_scores(
+            _expected_tm_pair_scores(probabilities, mask, **kwargs),
+            has_frame,
+            mask,
+            considered_dtype=probabilities.dtype,
+            undefined_pairs=undefined_softmax,
+            asym_id=asym_id if interface else None,
+            interface=interface,
+        )
+
+    def one_chain(i, scores):
+        mask = valid & (asym_id == i)
+        value = jnp.where(jnp.any(mask), score(mask), 0.0)
+        return scores.at[..., i].set(value)
+
+    per_chain = jax.lax.fori_loop(
+        0,
+        count,
+        one_chain,
+        jnp.zeros((probabilities.shape[0], chains.capacity), dtype=dtype),
+    )
+
+    def one_row(i, matrix):
+        mask_i = valid & (asym_id == i)
+
+        def one_pair(j, values):
+            mask_j = valid & (asym_id == j)
+            value = jnp.where(
+                jnp.any(mask_i) & jnp.any(mask_j),
+                score(mask_i | mask_j, interface=True),
+                0.0,
+            )
+            return values.at[..., i, j].set(value).at[..., j, i].set(value)
+
+        return jax.lax.fori_loop(i + 1, count, one_pair, matrix)
+
+    pairs = jax.lax.fori_loop(
+        0,
+        count,
+        one_row,
+        jnp.zeros(
+            (probabilities.shape[0], chains.capacity, chains.capacity), dtype=dtype
+        ),
+    )
+    return pairs, per_chain
+
+
 def _expected_tm_pair_scores(
     probabilities: jnp.ndarray,
     mask_i: jnp.ndarray,
@@ -1031,7 +1102,7 @@ def _compact_confidence_metrics_from_pae(
     token_mask: jnp.ndarray,
     asym_id: jnp.ndarray,
     *,
-    n_chain: int | None,
+    n_chain: int | None | _PaddedChains,
     bin_min: float,
     bin_max: float,
     no_bins: int,
@@ -1073,6 +1144,35 @@ def _compact_confidence_metrics_from_pae(
         considered_dtype=probabilities.dtype,
         undefined_pairs=undefined_softmax,
     )
+    if isinstance(n_chain, _PaddedChains):
+        iptm = jax.lax.cond(
+            n_chain.count == 1,
+            lambda: jnp.zeros_like(ptm),
+            lambda: _reduce_tm_pair_scores(
+                global_scores,
+                has_frame,
+                token_mask,
+                considered_dtype=probabilities.dtype,
+                undefined_pairs=undefined_softmax,
+                asym_id=asym_id,
+                interface=True,
+            ),
+        )
+        chain_pair, chain_ptm = _padded_chain_metrics(
+            probabilities,
+            undefined_softmax,
+            has_frame,
+            token_mask,
+            asym_id,
+            n_chain,
+            dtype=global_scores.dtype,
+            **kwargs,
+        )
+        return (
+            (ptm, iptm, chain_pair, chain_ptm)
+            if return_chain_ptm
+            else (ptm, iptm, chain_pair)
+        )
     iptm = (
         jnp.zeros_like(ptm)
         if n_chain == 1
@@ -1194,7 +1294,7 @@ def _bespoke_iptm(
     asym_id: jnp.ndarray,
     is_ligand: jnp.ndarray,
     *,
-    n_chain: int,
+    n_chain: int | _PaddedChains,
 ) -> jnp.ndarray:
     """Upstream v0.5.0's bespoke ipTM, one sample at a time.
 
@@ -1202,6 +1302,36 @@ def _bespoke_iptm(
     (``(chain_mask & has_frame).any(dim=-1)``), so each sample is averaged with
     its own frames rather than with any sample's.
     """
+    if isinstance(n_chain, _PaddedChains):
+        slots = jnp.arange(n_chain.capacity)
+        active = slots < n_chain.count
+        members = token_mask.astype(bool)[None, :] & (
+            asym_id[None, :] == slots[:, None]
+        )
+        frames = jnp.broadcast_to(has_frame, (chain_pair.shape[0], has_frame.shape[-1]))
+        framed = jnp.any(frames[:, None, :].astype(bool) & members[None, :, :], axis=-1)
+        off_diagonal = (
+            ~jnp.eye(n_chain.capacity, dtype=bool) & active[:, None] & active[None, :]
+        )
+        # Empty active IDs retain upstream's averaging semantics; padded
+        # capacity slots must never dilute a framed chain's denominator.
+        row_take = off_diagonal & framed[..., :, None]
+        col_take = off_diagonal & framed[..., None, :]
+        total = jnp.sum(chain_pair * row_take, axis=-1) + jnp.sum(
+            jnp.swapaxes(chain_pair, -1, -2) * col_take, axis=-1
+        )
+        count = jnp.sum(row_take, axis=-1) + jnp.sum(col_take, axis=-1)
+        mean = jnp.where(count > 0, total / jnp.maximum(count, 1), 0.0)
+        ligand = jnp.sum(
+            members & is_ligand.astype(bool)[None, :], axis=-1
+        ) * 2 >= jnp.sum(members, axis=-1)
+        row_mean, col_mean = mean[..., :, None], mean[..., None, :]
+        pairwise = jnp.where(
+            ligand[:, None],
+            row_mean,
+            jnp.where(ligand[None, :], col_mean, 0.5 * (row_mean + col_mean)),
+        )
+        return jnp.where(off_diagonal, pairwise, 0.0)
 
     def one(pair, frames):
         mean = compute_chain_mean_iptm(
@@ -1784,7 +1914,17 @@ def _predict_from_trunk(
             _expand_samples(pair_mask_1, samples),
         )
 
-    if not sink_pae_metrics:
+    if not sink_pae_metrics and isinstance(n_chain, _PaddedChains):
+        ptm, iptm, chain_pair, chain_ptm = _compact_confidence_metrics_from_pae(
+            pae_logits,
+            has_frame,
+            token_mask,
+            asym_id,
+            n_chain=n_chain,
+            return_chain_ptm=True,
+            **ptm_kwargs,
+        )
+    elif not sink_pae_metrics:
         pae_for_ptm = jnp.broadcast_to(
             pae_logits, (config.num_samples, *pae_logits.shape[-3:])
         )
@@ -2159,7 +2299,7 @@ class _PredictGraphIdentity:
     """Hashable identity of every Python choice made while tracing prediction."""
 
     config: InferenceConfig
-    n_chain: int | None
+    chain_capacity: int
     augment: bool
     use_trunk_pair_embedding: bool
     rng_route: str
@@ -2274,6 +2414,7 @@ def _predict_for_identity(
     noise_tape: jnp.ndarray | None,
     noise_mask: jnp.ndarray | None,
     augmentation_tape: AugmentationTape | None = None,
+    chain_count: jax.Array | None = None,
     *,
     identity: _PredictGraphIdentity,
 ) -> Prediction:
@@ -2290,7 +2431,11 @@ def _predict_for_identity(
         params,
         identity.config,
         representative_atoms,
-        n_chain=identity.n_chain,
+        n_chain=(
+            None
+            if chain_count is None
+            else _PaddedChains(chain_count, identity.chain_capacity)
+        ),
         noise_tape=noise_tape if identity.rng_route == "tape" else None,
         noise_mask=noise_mask if identity.rng_route == "mask" else None,
         augment=identity.augment,
@@ -2366,6 +2511,7 @@ class _CompiledPredictPool:
         noise_tape: jnp.ndarray | None,
         noise_mask: jnp.ndarray | None,
         augmentation_tape: AugmentationTape | None = None,
+        chain_count: jax.Array | None = None,
         *,
         identity: _PredictGraphIdentity,
     ) -> Prediction:
@@ -2379,6 +2525,7 @@ class _CompiledPredictPool:
                 noise_tape,
                 noise_mask,
                 augmentation_tape,
+                chain_count,
             )
             self._trim()
             return result
@@ -2392,6 +2539,7 @@ class _CompiledPredictPool:
         noise_tape: jnp.ndarray | None,
         noise_mask: jnp.ndarray | None,
         augmentation_tape: AugmentationTape | None = None,
+        chain_count: jax.Array | None = None,
         *,
         identity: _PredictGraphIdentity,
     ):
@@ -2405,6 +2553,7 @@ class _CompiledPredictPool:
                 noise_tape,
                 noise_mask,
                 augmentation_tape,
+                chain_count,
             )
             self._trim()
             return lowered
@@ -2478,6 +2627,26 @@ def _persistent_cache_is_bounded(scope: str | None) -> bool:
     )
 
 
+def _crop_chain_prediction(value, n_chain):
+    """Crop score axes outside the model graph, retaining JAX array ownership."""
+    if not isinstance(value, Prediction):
+        return value
+    replacements = {}
+    for name in ("chain_ptm", "chain_pair_iptm", "bespoke_iptm"):
+        score = getattr(value, name)
+        if score is None:
+            continue
+        if n_chain is None or (name != "chain_ptm" and n_chain == 1):
+            replacements[name] = None
+        else:
+            replacements[name] = (
+                score[..., :n_chain]
+                if name == "chain_ptm"
+                else score[..., :n_chain, :n_chain]
+            )
+    return value._replace(**replacements)
+
+
 class _BoundCompiledPredict:
     """Public three-argument view over the dynamic-data JAX executable."""
 
@@ -2487,10 +2656,12 @@ class _BoundCompiledPredict:
         *,
         table: RepresentativeAtomTable,
         identity: _PredictGraphIdentity,
+        n_chain: int | None,
     ) -> None:
         self._compiled = compiled
         self._table = table
         self._identity = identity
+        self._n_chain = n_chain
 
     def __call__(
         self,
@@ -2528,7 +2699,7 @@ class _BoundCompiledPredict:
             ) as mesh,
         ):
             _require_same_topology(self._identity, mesh)
-            return self._compiled(
+            value = self._compiled(
                 replicate_tree(key),
                 replicate_tree(batch),
                 replicate_tree(params),
@@ -2536,7 +2707,13 @@ class _BoundCompiledPredict:
                 replicate_tree(noise_tape),
                 replicate_tree(noise_mask),
                 replicate_tree(augmentation_tape),
+                replicate_tree(
+                    np.asarray(
+                        -1 if self._n_chain is None else self._n_chain, dtype=np.int32
+                    )
+                ),
             )
+            return _crop_chain_prediction(value, self._n_chain)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._compiled, name)
@@ -2551,10 +2728,12 @@ class _BoundLoweredPredict:
         *,
         table: RepresentativeAtomTable,
         identity: _PredictGraphIdentity,
+        n_chain: int | None,
     ) -> None:
         self._lowered = lowered
         self._table = table
         self._identity = identity
+        self._n_chain = n_chain
 
     def compile(self, *args, **kwargs) -> _BoundCompiledPredict:
         identity = self._identity
@@ -2583,6 +2762,7 @@ class _BoundLoweredPredict:
             compiled,
             table=self._table,
             identity=identity,
+            n_chain=self._n_chain,
         )
 
     def __getattr__(self, name: str) -> Any:
@@ -2618,8 +2798,11 @@ def compile_predict(
     retained executables rather than growing process memory without a bound.
 
     ``params`` stays a runtime argument, so weights can be swapped -- a different
-    checkpoint, or averaged weights -- without recompiling. Changing ``config``,
-    the batch shapes, or any keyword here does require a new compilation.
+    checkpoint, or averaged weights -- without recompiling. Chain counts are
+    runtime data too: counts up to four share a score capacity, then eight,
+    sixteen and so on. Tiny chain scores are cropped on the host; confidence
+    logits remain within the bounded serial schedule. Changing ``config``, the
+    batch shapes or other graph policies requires a new compilation.
 
     ``noise_fn`` is deliberately not used by production callers: baking a
     Python callback into a compiled function would defeat the scan. A concrete
@@ -2635,6 +2818,8 @@ def compile_predict(
     :mod:`foldjax.models._compile_policy`.
     """
     table = _validated_representative_atoms(representative_atoms)
+    capacity = chain_capacity(1 if n_chain is None else n_chain)
+    runtime_count = np.asarray(-1 if n_chain is None else n_chain, dtype=np.int32)
     layout = "1d" if config.cp_shards <= 1 else resolve_cp_layout(config)
     compiled_config = config._replace(cp_layout=layout)
     scope = None if cache_scope is None else canonical_cache_scope(str(cache_scope))
@@ -2672,7 +2857,7 @@ def compile_predict(
         ):
             identity = _PredictGraphIdentity(
                 config=compiled_config,
-                n_chain=n_chain,
+                chain_capacity=capacity,
                 augment=augment,
                 use_trunk_pair_embedding=use_trunk_pair_embedding,
                 rng_route=route,
@@ -2697,6 +2882,7 @@ def compile_predict(
                 replicate_tree(noise_tape),
                 replicate_tree(noise_mask),
                 replicate_tree(augmentation_tape),
+                replicate_tree(runtime_count),
                 identity=identity,
             )
             observe_cache_scope(
@@ -2725,7 +2911,7 @@ def compile_predict(
             noise_mask=noise_mask,
             augmentation_tape=augmentation_tape,
         )
-        return value
+        return _crop_chain_prediction(value, n_chain)
 
     def lower(
         key,
@@ -2751,6 +2937,7 @@ def compile_predict(
             lowered,
             table=table,
             identity=identity,
+            n_chain=n_chain,
         )
 
     # ``compile_predict`` historically returned JAX's jitted callable. Keep

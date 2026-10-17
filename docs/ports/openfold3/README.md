@@ -431,7 +431,7 @@ no longer retrace the same program. The pool retains at most eight executable
 variants and evicts least-recently-used entries, bounding long-lived unpadded
 batch memory. The identity names the full model configuration, resolved CP
 layout and ordered devices, effective triangle kernel, RNG route, requested
-representations/stop boundary, chain count, and persistent-cache scope. The
+representations/stop boundary, chain capacity, and persistent-cache scope. The
 representative-atom chemistry table remains a validated dynamic pytree: changing
 its values changes the result without changing the graph. `run.lower(...).compile()`
 keeps the same public `(key, batch, params)` call shape and recreates the exact CP

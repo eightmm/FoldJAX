@@ -14,7 +14,12 @@ it guards against is invisible at runtime -- the gate passes either way.
 """
 
 import ast
+import os
 import pathlib
+import subprocess
+import sys
+
+import pytest
 
 import foldjax
 
@@ -71,3 +76,49 @@ def test_the_helper_carries_the_import_path(monkeypatch) -> None:
     monkeypatch.delenv("PYTHONPATH", raising=False)
     assert "PYTHONPATH" not in inherited_environment()
     assert inherited_environment()["PATH"]
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or os.geteuid() == 0,
+    reason="requires POSIX permissions that root does not bypass",
+)
+def test_numba_cache_survives_read_only_source_and_home(tmp_path, monkeypatch) -> None:
+    from tests.models.cp_probe_env import inherited_environment
+
+    source = tmp_path / "source"
+    home = tmp_path / "home"
+    cache = tmp_path / "numba"
+    source.mkdir()
+    home.mkdir()
+    (source / "cached_function.py").write_text(
+        "from numba import njit\n"
+        "@njit(cache=True)\n"
+        "def twice(value):\n"
+        "    return 2 * value\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NUMBA_CACHE_DIR", str(cache))
+    source.chmod(0o555)
+    home.chmod(0o555)
+    try:
+        environment = {
+            **inherited_environment(),
+            "HOME": str(home),
+            "PYTHONPATH": str(source),
+        }
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from cached_function import twice; assert twice(3) == 6",
+            ],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        assert list(cache.rglob("*.nbi")), "Numba did not persist in the explicit cache"
+    finally:
+        source.chmod(0o755)
+        home.chmod(0o755)

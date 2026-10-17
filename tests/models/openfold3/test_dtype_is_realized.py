@@ -1284,7 +1284,7 @@ def test_the_streamed_route_forwards_both_keywords(monkeypatch) -> None:
     graph = streaming._StreamedGraph(
         inference_module._PredictGraphIdentity(
             config=config,
-            n_chain=None,
+            chain_capacity=4,
             augment=False,
             use_trunk_pair_embedding=True,
             rng_route="native",

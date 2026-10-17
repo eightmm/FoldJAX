@@ -42,6 +42,14 @@ installed. This runs real prediction and kernel tuning, can be expensive, and
 should be submitted to a GPU compute node on a cluster. It does not download
 weights or claim that the synthetic structure has scientific value.
 
+Protenix, OpenDDE and OpenFold3 keep the actual chain count out of the compiled
+model's static arguments. Confidence scores use a capacity of four chains, then
+eight, sixteen and so on, with runtime masks/counts and cropped output axes.
+One-, two- and three-chain inputs therefore share the same body executable when
+the other padded shapes and execution options agree. Crossing a chain capacity
+boundary still needs another executable. The per-sample confidence schedule
+remains sequential; chain pairs do not stack full-bin PAE tensors.
+
 The CLI defaults to `--isolation process`. Each model/bucket starts a fresh
 Python interpreter, so model parameters, compiled executables, and the CUDA
 context from an earlier bucket cannot accumulate in the next one. Both lengths

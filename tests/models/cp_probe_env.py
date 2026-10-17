@@ -8,6 +8,10 @@ and the wrong one for `PYTHONPATH`: `foldjax` is installed editable, so a
 child without it imports whatever the install points at rather than the tree
 under test.
 
+Numba's ``cache=True`` decorators also need a writable cache when the checkout
+is read only and the reduced environment has no usable home directory. The
+suite supplies a temporary ``NUMBA_CACHE_DIR`` that each probe must inherit.
+
 Inside a git worktree those are different checkouts. The gate then reports on
 code nobody edited -- verified by breaking `_is_movable_array` in a worktree
 and watching the probe print its success line anyway.
@@ -20,7 +24,7 @@ import os
 #: Absent, these either send the child at a different checkout or stop it
 #: running at all. Everything else stays out, which is the point of the
 #: from-scratch environment.
-_INHERITED = ("PATH", "PYTHONPATH")
+_INHERITED = ("PATH", "PYTHONPATH", "NUMBA_CACHE_DIR")
 
 
 def inherited_environment() -> dict[str, str]:

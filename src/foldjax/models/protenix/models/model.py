@@ -7,9 +7,15 @@ from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 
 from foldjax.models import _capture
+from foldjax.models._chain_profile import (
+    chain_mask as make_chain_mask,
+)
+from foldjax.models._chain_profile import (
+    crop_chain_scores,
+    resolve_chain_count,
+)
 from foldjax.models._compile_policy import policy_pools, select
 from foldjax.models._cp import (
     context_parallel,
@@ -475,6 +481,7 @@ def protenix_infer_static(
     guidance_config: Mapping[str, Any] | None = None,
     guidance_features: Mapping[str, Any] | None = None,
     n_chain: int | None = None,
+    chain_mask: jnp.ndarray | None = None,
     #: Context-parallel shard count; same contract as OpenDDE's. More than one
     #: requires an active `foldjax.models._cp.context_parallel` mesh of the
     #: same size, and the value is a static argument so a mesh change is a
@@ -493,10 +500,9 @@ def protenix_infer_static(
 ) -> dict[str, jnp.ndarray]:
     """Run the currently ported static-feature Protenix inference path.
 
-    ``n_chain`` is the number of chains in the job. The confidence scores need
-    it as a Python integer -- it sizes per-chain loops -- and by default they
-    read it back off ``asym_id``, which is a tracer inside ``jit``. The
-    consolidated graph resolves it on the host and passes it here.
+    Direct eager callers may specify ``n_chain``. The compiled wrapper uses
+    a fixed-capacity ``chain_mask`` instead: actual chain membership is runtime
+    data and only the mask's shape belongs to the executable identity.
     """
 
     if cp_layout != (_active_cp_layout() or "1d"):
@@ -788,6 +794,7 @@ def protenix_infer_static(
                         token_is_ligand=token_ligand,
                         num_recycles=num_recycles,
                         n_chain=n_chain,
+                        chain_mask=chain_mask,
                         token_mask=token_padding_mask,
                         atom_mask=atom_padding_mask,
                         return_confidence_details=return_confidence_details,
@@ -864,7 +871,6 @@ GRAPH_STATIC_ARGNAMES = (
     "triangle_att_q_chunk_size",
     "triangle_mul_chunk_size",
     "trunk_dtype",
-    "n_chain",
     "trunk_single_attention_backend",
     "trunk_triangle_attention_backend",
     "use_confidence_embedding",
@@ -953,15 +959,16 @@ def protenix_infer_compiled(
         token_padding_mask=input_feature_dict.get("token_padding_mask"),
     )
 
-    # The confidence scores size their per-chain loops by the chain count,
-    # which they read off `asym_id`. That is a value, so it is resolved here on
-    # the concrete features and travels as a static argument.
-    # Host NumPy: an integer read, so no device program per token count.
-    asym_id = np.asarray(input_feature_dict["asym_id"])
-    token_padding_mask = input_feature_dict.get("token_padding_mask")
-    if token_padding_mask is not None:
-        asym_id = asym_id[np.asarray(token_padding_mask).astype(bool)]
-    kwargs.setdefault("n_chain", int(np.max(asym_id)) + 1)
+    n_chain = kwargs.pop("n_chain", None)
+    score_chains = (
+        kwargs.get("run_confidence", True)
+        and kwargs.get("run_confidence_scores", True)
+        and not kwargs.get("stop_after_inputs", False)
+        and not kwargs.get("stop_after_trunk", False)
+    )
+    if score_chains:
+        n_chain = resolve_chain_count(input_feature_dict, n_chain)
+        kwargs["chain_mask"] = make_chain_mask(n_chain)
     compact_requested = bool(kwargs.get("compact_confidence_distance_bins", True))
     distance_params = getattr(
         getattr(params, "confidence", None), "distance_embedding", None
@@ -1011,7 +1018,7 @@ def protenix_infer_compiled(
             model_features = replicate_tree(model_features)
             noise_schedule = replicate_tree(noise_schedule)
             kwargs = replicate_tree(kwargs)
-        return _infer_pool(deterministic)(
+        output = _infer_pool(deterministic)(
             model_features,
             param_arrays,
             noise_schedule,
@@ -1021,3 +1028,4 @@ def protenix_infer_compiled(
             cp_layout=layout,
             **kwargs,
         )
+    return crop_chain_scores(output, n_chain) if score_chains else output

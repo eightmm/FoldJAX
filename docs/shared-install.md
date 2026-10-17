@@ -41,6 +41,9 @@ shared home filesystem is full. `--cache-dir` selects the shared candidate;
 it does not hide the private fallback. `--no-cache` disables both tiers.
 For a full or slow home NFS, use node-local storage, for example
 `export FOLDJAX_PRIVATE_COMPILE_CACHE=/tmp/$USER/foldjax-compile`.
+For Numba's preprocessing cache, set a writable private path before starting
+Python, for example `export NUMBA_CACHE_DIR=/tmp/$USER/foldjax-numba`, when both
+the source tree and the user's home cache are unavailable for writing.
 
 A shared hit is used in place. New entries are published to shared storage when
 possible, otherwise to the private namespace, including when the requested

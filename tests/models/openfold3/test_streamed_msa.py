@@ -199,7 +199,9 @@ def test_eager_stream_preserves_the_compiled_cycle_order(stage_probe):
         np.testing.assert_allclose(left, right, rtol=1e-6, atol=1e-6)
 
 
-def test_streamed_owner_partitions_chain_and_cache_scope(stage_probe, tmp_path):
+def test_streamed_owner_shares_chain_counts_and_partitions_cache_scope(
+    stage_probe, tmp_path
+):
     traces, _, _ = stage_probe
     batch = prepare_msa_cycle_features(
         _varied_msa_features(rows=3, tokens=2),
@@ -214,4 +216,4 @@ def test_streamed_owner_partitions_chain_and_cache_scope(stage_probe, tmp_path):
             n_chain=chain,
             cache_scope=str(tmp_path / scope),
         )(jax.random.key(0), batch, TinyParams(jnp.asarray(0.5)))
-    assert len(traces) == 9
+    assert len(traces) == 6

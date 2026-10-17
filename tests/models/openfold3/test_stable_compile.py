@@ -256,7 +256,7 @@ def test_repeated_factories_share_one_trace_and_keep_chemistry_dynamic(
         traces.append(
             (
                 config.cp_layout,
-                n_chain,
+                n_chain.capacity,
                 os.environ[TRIANGLE_BACKEND_ENV],
                 augment,
                 use_trunk_pair_embedding,
@@ -296,8 +296,8 @@ def test_repeated_factories_share_one_trace_and_keep_chemistry_dynamic(
         np.testing.assert_array_equal(second, np.full(4, 4.0, dtype=np.float32))
         np.testing.assert_array_equal(polymer_only, np.full(4, 5.0, dtype=np.float32))
         assert traces == [
-            ("1d", 2, "cueq-full", True, True, True),
-            ("1d", 2, "cueq-full", True, True, False),
+            ("1d", 4, "cueq-full", True, True, True),
+            ("1d", 4, "cueq-full", True, True, False),
         ]
     finally:
         inference._compiled_predict.clear_cache()
@@ -508,7 +508,7 @@ def test_every_python_graph_choice_partitions_the_stable_jit(monkeypatch) -> Non
             taped(*args, noise_tape=jnp.ones((2, 1, 4, 3), dtype=jnp.float32))
         )
 
-        assert len(traces) == 10
+        assert len(traces) == 9
         assert (
             inference._compiled_predict._cache_size()
             == inference._MAX_RETAINED_EXECUTABLES
@@ -518,7 +518,7 @@ def test_every_python_graph_choice_partitions_the_stable_jit(monkeypatch) -> Non
         # later request recompiles it instead of retaining an unbounded list of
         # full-model executables for every shape/profile seen by the process.
         run(cache_scope="a")
-        assert len(traces) == 11
+        assert len(traces) == 10
         assert (
             inference._compiled_predict._cache_size()
             == inference._MAX_RETAINED_EXECUTABLES
@@ -1545,7 +1545,7 @@ _FOUR_DEVICE_STABLE_JIT_PROBE = textwrap.dedent(
         ):
             identity = inference._PredictGraphIdentity(
                 config=subset_config,
-                n_chain=None,
+                chain_capacity=4,
                 augment=True,
                 use_trunk_pair_embedding=True,
                 rng_route="native",

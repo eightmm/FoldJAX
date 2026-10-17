@@ -874,9 +874,11 @@ def _run(
                         bool
                     )
                     valid_asym = np.asarray(features["asym_id"])[valid_tokens]
+                    from foldjax.models._chain_profile import chain_capacity
+
                     on_padding_plan(
                         padding_plan,
-                        {"chains": int(np.max(valid_asym)) + 1},
+                        {"chain_capacity": chain_capacity(int(np.max(valid_asym)) + 1)},
                     )
             # A query with fewer than four template hits is padded up to four,
             # and the embedder runs the whole pairformer stack once per row.

@@ -129,7 +129,9 @@ class _StreamedGraph:
                 dtype=trunk_dtype,
             )
 
-        def finish(key, batch, params, table, output, tape, mask, augmentation):
+        def finish(
+            key, batch, params, table, output, tape, mask, augmentation, chain_count
+        ):
             return inf._predict_from_trunk(
                 key,
                 inf._restore_ref_atom_category_one_hot(batch),
@@ -137,7 +139,7 @@ class _StreamedGraph:
                 config,
                 table,
                 trunk_output=output,
-                n_chain=identity.n_chain,
+                n_chain=inf._PaddedChains(chain_count, identity.chain_capacity),
                 noise_tape=tape,
                 noise_mask=mask,
                 augmentation_tape=augmentation,
@@ -162,7 +164,9 @@ class _StreamedGraph:
         self.finish = wrap(finish)
         self.config = config
 
-    def __call__(self, key, batch, params, table, tape, mask, augmentation=None):
+    def __call__(
+        self, key, batch, params, table, tape, mask, augmentation=None, chain_count=None
+    ):
         if self.config.stop_after_inputs:
             common = {k: v for k, v in batch.items() if k not in _MSA_KEYS}
             return self.inputs(_stage(common), params.trunk)
@@ -186,7 +190,9 @@ class _StreamedGraph:
             jax.block_until_ready(carry)
             current = following
         output = (initial[0], *carry)
-        return self.finish(key, common, params, table, output, tape, mask, augmentation)
+        return self.finish(
+            key, common, params, table, output, tape, mask, augmentation, chain_count
+        )
 
     def _cache_size(self):
         return sum(
@@ -247,6 +253,8 @@ def compile_streamed_predict(
             "drop compiled=False or deterministic"
         )
     table = inf._validated_representative_atoms(representative_atoms)
+    capacity = inf.chain_capacity(1 if n_chain is None else n_chain)
+    runtime_count = np.asarray(-1 if n_chain is None else n_chain, dtype=np.int32)
     layout = "1d" if config.cp_shards <= 1 else inf.resolve_cp_layout(config)
     config = config._replace(cp_layout=layout)
     scope = None if cache_scope is None else inf.canonical_cache_scope(str(cache_scope))
@@ -271,7 +279,7 @@ def compile_streamed_predict(
         ):
             identity = inf._PredictGraphIdentity(
                 config=config,
-                n_chain=n_chain,
+                chain_capacity=capacity,
                 augment=augment,
                 use_trunk_pair_embedding=use_trunk_pair_embedding,
                 rng_route=route,
@@ -294,6 +302,7 @@ def compile_streamed_predict(
                 _stage(noise_tape),
                 _stage(noise_mask),
                 _stage(augmentation),
+                _stage(runtime_count),
             )
             result = (
                 _compiled_streams(*args, identity=identity)
@@ -307,6 +316,6 @@ def compile_streamed_predict(
                     require_payload=inf._persistent_cache_matches(scope),
                     require_atime=bounded,
                 )
-            return result
+            return inf._crop_chain_prediction(result, n_chain)
 
     return run

@@ -7,9 +7,8 @@ to be safe, and none of them needs the 1.4 GB checkpoint to check:
 
 * the parameter tree survives the split into traced arrays and static flags,
 * features the graph cannot consume are dropped rather than coerced, and
-* the chain count reaches the confidence scores as a Python integer, because
-  it sizes their per-chain loops and reading it off ``asym_id`` inside ``jit``
-  raises.
+* exact chain counts remain runtime data in a fixed-capacity mask instead of
+  selecting a new whole-model executable.
 """
 
 from __future__ import annotations
@@ -107,8 +106,9 @@ def test_the_static_argnames_are_real_parameters():
     assert not unknown, f"not parameters of protenix_infer_static: {unknown}"
 
 
-def test_the_chain_count_is_static():
-    assert "n_chain" in GRAPH_STATIC_ARGNAMES
+def test_the_chain_count_and_mask_are_dynamic():
+    assert "n_chain" not in GRAPH_STATIC_ARGNAMES
+    assert "chain_mask" not in GRAPH_STATIC_ARGNAMES
     assert "preserve_prefix_rng" in GRAPH_STATIC_ARGNAMES
 
 

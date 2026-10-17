@@ -290,6 +290,7 @@ def _isolate_foldjax_store(
     os.environ["FOLDJAX_PRIVATE_COMPILE_CACHE"] = str(
         _isolated_foldjax_home / "private-compile"
     )
+    os.environ["NUMBA_CACHE_DIR"] = str(_isolated_foldjax_home / "numba")
 
 
 @pytest.fixture(autouse=True)
