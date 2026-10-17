@@ -2088,7 +2088,7 @@ def _run_plan(args: argparse.Namespace) -> int:
             requested, draw_seeds=False, jobs_root=jobs / "split"
         )
         payload = []
-        seen_warnings: set[str] = set()
+        seen_warnings: set[tuple[str, ...]] = set()
         for item in resolved:
             preflight(item)
             if item.templates == "auto" and item.template_dir is None:
@@ -2112,9 +2112,18 @@ def _run_plan(args: argparse.Namespace) -> int:
             )
             if args.json:
                 summary["slurm"] = resources
-            elif (warning := resources.get("warning")) and warning not in seen_warnings:
-                seen_warnings.add(warning)
-                warnings.warn(warning, RuntimeWarning, stacklevel=2)
+            elif warning := resources.get("warning"):
+                # Sizes vary across a batch; deduplicate the capacity risk,
+                # while still reporting a newly affected larger-card class.
+                assessment = resources.get("observed_capacity") or {}
+                classes = tuple(
+                    row["device_class"]
+                    for row in assessment.get("observations", ()) if row.get("risk")
+                )
+                keys = {(item.model, kind) for kind in classes} or {(warning,)}
+                if not keys <= seen_warnings:
+                    seen_warnings.update(keys)
+                    warnings.warn(warning, RuntimeWarning, stacklevel=2)
             payload.append(summary)
     print(
         json.dumps(
