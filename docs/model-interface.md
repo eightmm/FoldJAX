@@ -55,6 +55,15 @@ retain one loaded checkpoint or reuse results from an earlier stage. Input-only
 execution may still prepare native features and load a whole parameter tree.
 ESMFold2's input-only path skips the language model.
 
+Seeds for one input may share loaded state. Once that input finishes, FoldJAX
+invalidates backend runners and weights, drops loaded model JIT pools and
+inactive Tokamax tuning state, calls `jax.clear_caches()`, and collects and
+trims freed host memory. Returned arrays remain owned by the caller. These
+compiler caches are process-wide; isolate unrelated concurrent workloads in
+separate processes. CUDA's preallocated pool and context can remain until
+process exit, so cache warming defaults to fresh workers at model/bucket
+boundaries in the CLI ([details](cache-warm.md)).
+
 `native_options` is an explicit advanced escape hatch, validated by the backend.
 Ordinary callers do not construct native feature dictionaries. Unsupported
 settings fail instead of silently becoming common settings.

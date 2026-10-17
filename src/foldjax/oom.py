@@ -301,12 +301,41 @@ def is_out_of_memory(error: BaseException) -> bool:
 
 
 def is_outside_pool_oom(error: BaseException) -> bool:
-    """Recognize CUDA module OOMs, whose allocations bypass the JAX pool."""
-    return is_out_of_memory(error) and any(
-        marker in str(leaf).lower()
-        for leaf in _leaf_errors(error)
-        for marker in ("cumodulegetfunction", "cumoduleload", "before calling cumodule")
-    )
+    """Recognize CUDA module/launch failures rather than a JAX buffer failure."""
+    if not is_out_of_memory(error):
+        return False
+    for leaf in _leaf_errors(error):
+        message = str(leaf).lower()
+        if any(
+            marker in message
+            for marker in (
+                "cumodulegetfunction",
+                "cumoduleload",
+                "before calling cumodule",
+            )
+        ):
+            return True
+        cuda_oom = any(
+            marker in message
+            for marker in ("cuda_error_out_of_memory", "cudaerrormemoryallocation")
+        ) or ("cuda" in message and "out of memory" in message)
+        if cuda_oom and any(
+            marker in message
+            for marker in (
+                "kernel launch",
+                "kernel-launch",
+                "kernel_launch",
+                "launch kernel",
+                "launching kernel",
+                "launch gpu kernel",
+                "launch cuda kernel",
+                "culaunchkernel",
+                "culaunchcooperativekernel",
+                "cudalaunchkernel",
+            )
+        ):
+            return True
+    return False
 
 
 def mem_fraction() -> float:
@@ -399,10 +428,12 @@ def diagnose(error: BaseException) -> str | None:
     if is_outside_pool_oom(error):
         message = (
             "CUDA context/module memory outside the allocator's pool ran out "
-            "while loading a kernel. Lower "
+            "while loading or launching a kernel. Lower "
             f"{configured_fraction_env() or CURRENT_FRACTION_ENV}, for example "
-            "to 0.85, to leave more device memory for CUDA module loading and "
-            "autotuning; restart the process so the allocator is recreated. "
+            "from 0.9 to 0.8-0.85 (below the current fraction if already lower), "
+            "to leave more device memory for CUDA modules, launches and "
+            "autotuning; restart the process so the allocator and CUDA context "
+            "are recreated. "
             "Increasing the pool fraction leaves less memory for these allocations."
         )
         mesh = recorded_mesh()

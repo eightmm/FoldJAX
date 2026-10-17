@@ -2287,9 +2287,11 @@ independently-compiled `deterministic=on` runs were bitwise identical.
 
 Those 9JU4 observations predate the fixed-shape MC-dropout key/flag change and
 remain historical measurements. CPU checks cover identical draws, disabled
-dropout values, and one lowered input structure for both flag values. A new
-real-weight GPU comparison against `33acbf58` has not yet completed; the older
-RMSDs do not establish a tolerance for that change.
+dropout values, and one lowered input structure for both flag values. The user's
+2026-10-17 cluster report found that the real-weight GPU change stayed within
+the repeated-run spread. The underlying comparison arrays are not included
+here; neither that finite check nor the older RMSDs establish a universal
+tolerance for the change.
 
 Keep one `--cache-dir` (the default cache is persistent) to get the same
 AlphaFold 3 or ESMFold2 structure again, and use `deterministic=on` for
@@ -2877,19 +2879,14 @@ namespace, and options that only affect output formatting never fragment one.
 An eligible, readable entry may be reused across processes; a missing, invalid,
 or runtime-rejected entry recompiles normally.
 
-A cache entry is an executable that JAX runs as found, so FoldJAX uses a cache
-directory only when no other account can write into it or any directory above
-it: each must belong to you (or root) and be writable by neither the world nor
-a group with another member (a root-owned sticky directory such as `/tmp` is
-fine as an ancestor). The check runs before anything is created, and the
-directories it then creates are `0755` whatever the umask, so a private cache
-stays private. Otherwise the run warns once, names the directory and the
-reason, creates nothing, and compiles without a persistent cache. A store
-shared on purpose -- a lab's group-writable, setgid cache -- is opted in with
-`FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1`, which trusts every account that can
-write to it; its new directories then follow the umask. Every member needs it
-from their first run
-([Sharing a store with a group](configuration.md#sharing-a-store-with-a-group)).
+A cache entry is executable code, so FoldJAX checks ownership, write permissions,
+and ancestors before reading it. A shared store must be trusted under the
+[shared-install rules](shared-install.md); opting into
+`FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1` trusts every account that can write there.
+Reads try shared storage before the user-owned `0700` private cache. Missing
+entries go to the writable shared namespace or otherwise to the private one,
+even when the shared namespace does not exist. Unsafe or unavailable tiers
+warn and are skipped independently. `--no-cache` disables both tiers.
 
 Warm the exact request before a production run on its deployment GPU:
 
@@ -2913,6 +2910,11 @@ with the same options on the machine that will run them. One small input cannot
 prewarm arbitrary larger shapes. A padded warm reports the one concrete full
 shape profile it selected; it does not claim that every bucket or every
 token/atom/MSA combination was compiled.
+
+The cache-warm CLI defaults to `--isolation process`, using a fresh interpreter
+for each model/bucket. Use `--isolation in-process` for ambient Python/JAX
+settings; see [cache warming](cache-warm.md) for the Python API defaults,
+worker reports, and cancellation behavior.
 
 A zero cache delta is reported neutrally as `no_new_entry_observed`: directory
 contents alone cannot prove an XLA cache hit, and FoldJAX does not pretend that

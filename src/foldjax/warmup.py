@@ -16,6 +16,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +30,20 @@ from foldjax.schema import PredictionError, PredictionRequest
 
 class _WarmTermination(BaseException):
     """Unwind native exception adapters without turning a signal into a failure."""
+
+
+_PROCESS_SCRATCH: ContextVar[Path | None] = ContextVar(
+    "warm_process_scratch", default=None
+)
+
+
+@contextmanager
+def _scratch_root(root: Path) -> Iterator[None]:
+    token = _PROCESS_SCRATCH.set(root)
+    try:
+        yield
+    finally:
+        _PROCESS_SCRATCH.reset(token)
 
 
 @contextmanager
@@ -74,6 +89,7 @@ class CacheWarmResult:
     shape_profile: dict[str, object] | None = None
     kernel_tuning: dict[str, object] | None = None
     compilation_cache: dict[str, object] | None = None
+    process: dict[str, int] | None = None
 
     @property
     def new_files(self) -> int:
@@ -88,14 +104,12 @@ class CacheWarmResult:
         cache = self.compilation_cache or {}
         tuning_calls = (self.kernel_tuning or {}).get("calls", ())
         published = any(
-            events.get("success", 0) > 0
-            for events in cache.get("writes", {}).values()
+            events.get("success", 0) > 0 for events in cache.get("writes", {}).values()
         ) or any(call.get("cache_write_tiers") for call in tuning_calls)
         if self.new_files or self.new_bytes or published:
             return "populated"
         loaded = any(
-            events.get("success", 0) > 0
-            for events in cache.get("loads", {}).values()
+            events.get("success", 0) > 0 for events in cache.get("loads", {}).values()
         ) or any(
             call.get("cache_read_tiers") or call.get("cache_reuse_tiers")
             for call in tuning_calls
@@ -137,6 +151,8 @@ class CacheWarmResult:
             summary["kernel_tuning"] = dict(self.kernel_tuning)
         if self.compilation_cache is not None:
             summary["compilation_cache"] = dict(self.compilation_cache)
+        if self.process is not None:
+            summary["process"] = dict(self.process)
         return summary
 
 
@@ -170,7 +186,7 @@ def _warm_resolved(
         result = _predict_resolved(scalar, output_root=output_root)
         retained = scalar.output_dir
     else:
-        scratch_root = runtime_dir("cache-warm")
+        scratch_root = _PROCESS_SCRATCH.get() or runtime_dir("cache-warm")
         scratch_root.mkdir(parents=True, exist_ok=True)
         with _warm_directory(scratch_root, prefix=f".{backend.name}-") as scratch:
             ephemeral = dataclasses.replace(scalar, output_dir=scratch)
@@ -208,6 +224,8 @@ def _warm_resolved(
 
 def warm_cache(
     request: PredictionRequest,
+    *,
+    isolation: str = "in-process",
 ) -> CacheWarmResult | tuple[CacheWarmResult, ...]:
     """Execute each representative job once and populate its JAX cache.
 
@@ -220,14 +238,28 @@ def warm_cache(
     This is deliberately named *warm*, not compile-only: model execution and
     GPU kernel autotuning occur once.  When ``output_dir`` is omitted all native
     prediction files live in a temporary runtime directory and are removed.
+
+    ``isolation='process'`` runs each model in a fresh interpreter, inheriting
+    the environment and JSON-compatible request options. Ambient JAX contexts,
+    runtime config changes and custom backend registrations are not inherited;
+    pass device/platform options explicitly or use the default in-process mode.
     """
 
     if not request.use_compile_cache:
         raise ValueError("cache warm cannot be used with use_compile_cache=False")
+    if isolation not in {"process", "in-process"}:
+        raise ValueError("isolation must be 'process' or 'in-process'")
+    if isolation == "process":
+        return _warm_processes(request)
     plural = request.models is not None or request.inputs is not None
     keep_output = request.output_dir is not None
     output_root = Path(request.output_dir) if plural and keep_output else None
-    resolved = resolve_requests(request)
+    scratch = _PROCESS_SCRATCH.get()
+    resolved = (
+        resolve_requests(request, jobs_root=scratch.parent / "jobs")
+        if scratch is not None and not keep_output
+        else resolve_requests(request)
+    )
     results = tuple(
         _warm_resolved(
             item,
@@ -237,6 +269,57 @@ def warm_cache(
         for item in resolved
     )
     return results if plural else results[0]
+
+
+def _warm_processes(request: PredictionRequest):
+    from foldjax._warm_process import request_packet, run_worker
+    from foldjax.registry import normalize_model_name
+
+    # Resolve weights, input expansion, device and cache profiles inside the
+    # child: even a preflight cache profile may initialize the CUDA runtime.
+    models = tuple(normalize_model_name(model) for model in request.resolved_models)
+    if len(set(models)) != len(models):
+        raise ValueError(
+            "models resolve to the same backend more than once; "
+            "remove aliases or duplicate model names"
+        )
+    if len(models) > 1 and request.weights is not None:
+        raise ValueError("one explicit weights path cannot be shared by several models")
+    plural = request.models is not None or request.inputs is not None
+    results = []
+    for model in models:
+        scalar = dataclasses.replace(
+            request,
+            model=None if request.models is not None else model,
+            models=(model,) if request.models is not None else None,
+        )
+        summaries, process = run_worker(
+            {"kind": "exact", "request": request_packet(scalar)}
+        )
+        for summary in summaries:
+            results.append(
+                CacheWarmResult(
+                    model=summary["model"],
+                    input=Path(summary["input"]),
+                    weights=Path(summary["weights"]),
+                    cache_dir=Path(summary["cache_dir"]),
+                    seed=summary["seed"],
+                    seconds=summary["seconds"],
+                    before=CacheSnapshot(**summary["cache"]["before"]),
+                    after=CacheSnapshot(**summary["cache"]["after"]),
+                    samples=summary["samples_executed"],
+                    peak_device_bytes=summary["peak_device_bytes"],
+                    output_dir=None
+                    if summary["prediction_output"] is None
+                    else Path(summary["prediction_output"]),
+                    strategy=summary["strategy"],
+                    shape_profile=summary.get("shape_profile"),
+                    kernel_tuning=summary.get("kernel_tuning"),
+                    compilation_cache=summary.get("compilation_cache"),
+                    process=process,
+                )
+            )
+    return tuple(results) if plural else results[0]
 
 
 __all__ = ["CacheWarmResult", "warm_cache"]

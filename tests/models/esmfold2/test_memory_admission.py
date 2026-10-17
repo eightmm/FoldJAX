@@ -197,7 +197,11 @@ def test_small_card_capacity_risk_warns_before_the_language_model(
                 None,
                 _features(n_token),
                 model,
-                memory_budget=_budget(int(pool_gib * _GIB)),
+                memory_budget=memory_policy.resolve_budget(
+                    pool_bytes=int(pool_gib * _GIB),
+                    card_bytes=int(23.5 * _GIB),
+                    override_gib=None,
+                ),
             )
     record = memory_policy.recorded()
     assert record["state"] == "unknown"
@@ -205,7 +209,9 @@ def test_small_card_capacity_risk_warns_before_the_language_model(
 
 
 def test_a_smaller_unknown_run_does_not_silence_the_capacity_warning():
-    budget = _budget(22 * _GIB)
+    budget = memory_policy.resolve_budget(
+        pool_bytes=22 * _GIB, card_bytes=int(23.5 * _GIB), override_gib=None
+    )
     with pytest.warns(RuntimeWarning, match="outside the fitted range"):
         _admit(128, budget=budget)
     with pytest.warns(RuntimeWarning, match="24 GB cards"):

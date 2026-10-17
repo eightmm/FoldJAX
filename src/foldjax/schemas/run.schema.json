@@ -210,6 +210,7 @@
             "store": {"type": "integer", "minimum": 0},
             "measured": {"type": "integer", "minimum": 0},
             "partial": {"description": "Successful configurations retained in process while uncovered operations use inline fallback; never an incomplete persisted result.", "type": "integer", "minimum": 0},
+            "heuristic": {"description": "Resource-only GLU misses execute a shared-memory-clamped heuristic while retaining any measured partial overlay. Never persisted as a measured result.", "type": "integer", "minimum": 0},
             "tokamax": {"type": "integer", "minimum": 0}
           },
           "additionalProperties": false

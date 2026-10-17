@@ -193,6 +193,8 @@ def _restore_process_state() -> Iterator[None]:
     progress_state = (progress._enabled, progress._stream)
     warned = set(memory_policy._WARNED)
     recorded = memory_policy._RECORDED.get()
+    observed_capacity = memory_policy._OBSERVED_CAPACITY.get()
+    observed_device = memory_policy._OBSERVED_DEVICE.get()
     jax_config = _jax_cache_config()
     progress.disable()
     memory_policy.reset_warnings()
@@ -213,6 +215,8 @@ def _restore_process_state() -> Iterator[None]:
         memory_policy._WARNED.clear()
         memory_policy._WARNED.update(warned)
         memory_policy._RECORDED.set(recorded)
+        memory_policy._OBSERVED_CAPACITY.set(observed_capacity)
+        memory_policy._OBSERVED_DEVICE.set(observed_device)
         if jax_config is not None and _jax_cache_config() != jax_config:
             import jax
             from jax.experimental.compilation_cache import compilation_cache
@@ -283,11 +287,14 @@ def _isolate_foldjax_store(
     os.environ["FOLDJAX_HOME"] = str(_isolated_foldjax_home)
     for name in _STORE_VARIABLES:
         os.environ.pop(name, None)
+    os.environ["FOLDJAX_PRIVATE_COMPILE_CACHE"] = str(
+        _isolated_foldjax_home / "private-compile"
+    )
 
 
 @pytest.fixture(autouse=True)
 def _restore_release_reclaim() -> Iterator[None]:
-    """`foldjax predict` turns the reclaim off for its process; undo that here."""
+    """Restore the embedding host's reclaim policy after CLI tests."""
     from foldjax.models import _managed_memory
 
     saved = _managed_memory._RECLAIM_AT_RELEASE

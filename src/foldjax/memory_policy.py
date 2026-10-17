@@ -37,7 +37,7 @@ reads the device, through `foldjax.oom`, which imports JAX only when called.
 from __future__ import annotations
 
 import warnings
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -357,9 +357,7 @@ _CALIBRATION_ESMFOLD2 = "2026-09-23"
 #: answer is ``unknown``.
 OPENDDE_BF16_PEAK = PeakLaw(
     model="opendde",
-    profile=(
-        "bf16 trunk, 5 samples, released schedule, structural tokens"
-    ),
+    profile=("bf16 trunk, 5 samples, released schedule, structural tokens"),
     coeffs=(("bf16 trunk", (("1", 4015.90712), ("n2", 0.0048308474))),),
     domain_tokens=(1902, 7876),
     allowance_bytes=1171 * _MIB,
@@ -394,9 +392,7 @@ OPENDDE_BF16_PEAK = PeakLaw(
 #: is why the bf16 trunk is the lever this law's refusal names.
 OPENDDE_FP32_PEAK = PeakLaw(
     model="opendde",
-    profile=(
-        "fp32 trunk, 5 samples, released schedule, structural tokens"
-    ),
+    profile=("fp32 trunk, 5 samples, released schedule, structural tokens"),
     coeffs=(("fp32 trunk", (("n2", 0.0118007941),)),),
     domain_tokens=(1902, 7876),
     allowance_bytes=1199 * _MIB,
@@ -440,36 +436,194 @@ ESMFOLD2_PEAK = PeakLaw(
 )
 
 
-# User-reported 2026-10-16: ESMFold2 starts failing at 768-896 tokens on
-# 24 GB cards with 22-23.5 GiB available. No completed peak or exact execution
-# profile accompanied these censored observations, so they justify an early
-# warning, not a fitted required-memory value or an unconditional refusal.
-ESMFOLD2_SMALL_DEVICE_OOM_TOKENS = 768
+# Censored user reports, not peak measurements. Counts are public/model token
+# buckets, NOT OpenDDE's expanded structural-token axis. The 48 GB Boltz-2
+# limit conflicts with some 24 GB successes; cause/profile were not controlled.
+_REPORTED_SUCCESS_TOKENS = {
+    "esmfold2": {24: (640, 768), 48: (1024, 1024)},
+    "boltz2": {24: (1280, 1536), 48: (1280, 1280)},
+    "protenix": {24: (2048, 2048), 48: (2048, 2048)},
+    "openfold3": {24: (2048, 2048), 48: (2048, 2048)},
+    "opendde": {24: (896, 896), 48: (1280, 1280)},
+    "alphafold3": {24: (1536, 1536), 48: (2048, 2048)},
+}
+_MODEL_LABELS = {
+    "esmfold2": "ESMFold2",
+    "boltz2": "Boltz-2",
+    "protenix": "Protenix",
+    "openfold3": "OpenFold3",
+    "opendde": "OpenDDE",
+    "alphafold3": "AlphaFold 3",
+}
+ESMFOLD2_SMALL_DEVICE_OOM_TOKENS = 640
 ESMFOLD2_SMALL_DEVICE_AVAILABLE_GIB = 23.5
+_OBSERVED_CAPACITY: ContextVar[dict[str, Any] | None] = ContextVar(
+    "foldjax_observed_capacity", default=None
+)
+_OBSERVED_DEVICE: ContextVar[dict[str, Any] | None] = ContextVar(
+    "foldjax_observed_capacity_device", default=None
+)
+
+
+def _capacity_shape(value: Any, depth: int = 0) -> Any:
+    """Retain small shape metadata, never concrete feature arrays."""
+    if depth > 4:
+        return None
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, Mapping):
+        return {
+            str(key): _capacity_shape(item, depth + 1)
+            for key, item in list(value.items())[:32]
+        }
+    if isinstance(value, (tuple, list)):
+        return [_capacity_shape(item, depth + 1) for item in value[:32]]
+    return None
+
+
+def observed_capacity(
+    model: str,
+    n_token: int,
+    budget_bytes: int | None = None,
+    *,
+    card_bytes: int | None = None,
+    device_kind: str | None = None,
+    msa_rows: int | None = None,
+    shape_profile: Mapping[str, Any] | None = None,
+    num_samples: int | None = None,
+) -> dict[str, Any]:
+    """Compare public token counts with finite, profile-incomplete reports.
+
+    A caller with OpenDDE structural tokens must instead supply its public
+    token count. This advisory never produces a peak estimate or a refusal.
+    An unreadable card yields conditional reports, not an inferred card size.
+    """
+    reported = _REPORTED_SUCCESS_TOKENS.get(model, {})
+    if card_bytes is not None:
+        capacity_gib = card_bytes / _GIB
+        classes = (
+            [24]
+            if 20 <= capacity_gib <= 24.5
+            else ([48] if 40 <= capacity_gib <= 48.5 else [])
+        )
+        basis = "measured_card"
+    elif budget_bytes is not None:
+        capacity_gib = budget_bytes / _GIB
+        classes = (
+            [24] if capacity_gib <= 24.5 else ([48] if capacity_gib <= 48.5 else [])
+        )
+        basis = "conditional_budget"
+    else:
+        classes, basis = [24, 48], "card_unknown"
+    reduced_headroom = (
+        card_bytes is not None and 24 in classes and card_bytes <= 22.5 * _GIB
+    )
+    observations = []
+    risks = []
+    for nominal in classes:
+        if nominal not in reported:
+            continue
+        low, high = reported[nominal]
+        uncertain_band = model == "esmfold2" and nominal == 24
+        conflicting = model == "boltz2"
+        risky = (
+            n_token >= low
+            if uncertain_band or (nominal == 24 and (conflicting or reduced_headroom))
+            else (n_token > high)
+        )
+        row = {
+            "device_class": "24 GB" if nominal == 24 else "A6000 48 GB",
+            "reported_success_tokens": [low, high],
+            "profile_conditions": (
+                "MSA depth, samples, padding and process history unknown"
+            ),
+            "risk": bool(risky),
+        }
+        if model == "esmfold2" and nominal == 24:
+            row["reported_failure_tokens"] = [640, 768]
+        elif model == "opendde" and nominal == 24:
+            row["reported_failure_tokens"] = [1024]
+        elif model == "boltz2":
+            row["reported_failure_tokens"] = [1435] if nominal == 24 else [1536]
+            row["conflicting_reports"] = True
+        observations.append(row)
+        if risky:
+            span = str(high) if low == high else f"{low}-{high}"
+            risks.append(
+                f"{row['device_class']} reported successful limits {span} tokens"
+            )
+    warning = None
+    if risks:
+        prefix = (
+            "ESMFold2 has reported out-of-memory failures around 640-768 tokens "
+            "on 24 GB cards with 22-23.5 GiB available. "
+            if model == "esmfold2" and 24 in classes
+            else ""
+        )
+        warning = (
+            prefix + f"{_MODEL_LABELS.get(model, model)} at {n_token} tokens is near "
+            "or beyond reported capacity: " + "; ".join(risks) + ". "
+            "The required peak was not measured; MSA, samples, padding and process "
+            "history were not controlled, so this is an advisory capacity warning "
+            "rather than a fitted refusal or a guarantee for a larger card. "
+            "ECC-enabled cards exposing about 22 GiB have less headroom than their "
+            "nominal 24 GB class. Retry in a fresh process; consider a larger card "
+            "if the failure persists. A6000 success is not guaranteed."
+        )
+        if reduced_headroom:
+            warning += (
+                " This card exposes about 22 GiB, so caution starts at the reported "
+                "successful boundary. A lower bucket may be needed; no new failure "
+                "threshold has been measured."
+            )
+        if model == "boltz2":
+            warning += (
+                " Boltz-2's 24 GB and A6000 results conflict; cumulative allocations "
+                "or outside-pool memory are possible causes, not established diagnoses."
+            )
+    return {
+        "model": model,
+        "n_token": int(n_token),
+        "token_axis": "public/model tokens",
+        "card_bytes": card_bytes,
+        "budget_bytes": budget_bytes,
+        "device_kind": device_kind,
+        "comparison_basis": basis,
+        "reduced_headroom": reduced_headroom,
+        "msa_rows": msa_rows,
+        "num_samples": num_samples,
+        "shape_profile": _capacity_shape(shape_profile),
+        "observations": observations,
+        "warning": warning,
+        "basis": (
+            "user-reported 2026-10-17; censored capacity observations, no peak fit"
+        ),
+    }
+
+
+def capacity_preflight(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Record the same assessment as planning and warn once without refusing."""
+    assessment = observed_capacity(*args, **kwargs)
+    _OBSERVED_CAPACITY.set(assessment)
+    # Aggregate manifests can be written after the selected-device scope exits.
+    device = _SELECTED_DEVICE.get()
+    _OBSERVED_DEVICE.set(None if device is None else dict(device))
+    if assessment["warning"] and _first_time(f"capacity_risk:{assessment['model']}"):
+        warnings.warn(assessment["warning"], RuntimeWarning, stacklevel=2)
+    return assessment
 
 
 def capacity_warning(
-    model: str, n_token: int, budget_bytes: int | None = None
+    model: str,
+    n_token: int,
+    budget_bytes: int | None = None,
+    *,
+    card_bytes: int | None = None,
 ) -> str | None:
-    """A measured capacity risk, including below the fitted peak-law domain.
-
-    With no budget, as in a JAX-free plan, name the affected device capacity.
-    """
-    if (
-        model != "esmfold2"
-        or n_token < ESMFOLD2_SMALL_DEVICE_OOM_TOKENS
-        or (
-            budget_bytes is not None
-            and budget_bytes > ESMFOLD2_SMALL_DEVICE_AVAILABLE_GIB * _GIB
-        )
-    ):
-        return None
-    return (
-        "ESMFold2 has reported out-of-memory failures starting at 768-896 "
-        "tokens on 24 GB cards with 22-23.5 GiB available; this run may not "
-        "fit that capacity. The required peak was not measured, so this is "
-        "an advisory capacity warning rather than a fitted refusal."
-    )
+    """Compatibility text wrapper for planning callers without device metadata."""
+    return observed_capacity(model, n_token, budget_bytes, card_bytes=card_bytes)[
+        "warning"
+    ]
 
 
 #: The sample count every law above was fitted at.
@@ -603,6 +757,7 @@ def resolve_memory_policy(
     msa_rows: int | None,
     budget_bytes: int | None,
     candidates: Sequence[tuple[str, PeakLaw]],
+    card_bytes: int | None = None,
 ) -> MemoryDecision:
     """Say whether a configuration's upper estimate fits the budget.
 
@@ -637,8 +792,7 @@ def resolve_memory_policy(
         detail = (
             f"{n_token} tokens is outside the fitted range of "
             + ", ".join(
-                f"{name} ({_token_span(laws[name], admitted=True)})"
-                for name in outside
+                f"{name} ({_token_span(laws[name], admitted=True)})" for name in outside
             )
             if outside
             else f"no processed MSA row count for {', '.join(missing)}"
@@ -652,7 +806,12 @@ def resolve_memory_policy(
                 f"no {model} peak estimate: {detail}"
                 + (
                     f". {warning}"
-                    if (warning := capacity_warning(model, n_token, budget_bytes))
+                    if model != "opendde"
+                    and (
+                        warning := capacity_warning(
+                            model, n_token, budget_bytes, card_bytes=card_bytes
+                        )
+                    )
                     else ""
                 )
             ),
@@ -977,8 +1136,12 @@ def enforce(
     if state == "unknown":
         # Once per model per process. A run with no readable ceiling says so,
         # and a multi-seed request does not say it five times.
-        if n_token is not None and capacity_warning(
-            model, n_token, budget.budget_bytes
+        if (
+            n_token is not None
+            and token_label == "tokens"
+            and capacity_warning(
+                model, n_token, budget.budget_bytes, card_bytes=budget.card_bytes
+            )
         ):
             key = f"capacity_risk:{model}"
         else:
@@ -1077,12 +1240,33 @@ def record(
 
 def recorded() -> dict[str, Any] | None:
     """The decision this prediction took, or ``None`` if none was taken."""
-    return _RECORDED.get()
+    decision = _RECORDED.get()
+    observed = _OBSERVED_CAPACITY.get()
+    if observed is None:
+        return decision
+    if decision is None:
+        decision = {
+            "model": observed["model"],
+            "n_token": observed["n_token"],
+            "msa_rows": observed["msa_rows"],
+            "state": "unknown",
+            "selected": None,
+            "selected_device": (
+                dict(device) if (device := _OBSERVED_DEVICE.get()) is not None else None
+            ),
+            "estimates": [],
+            "reason": (
+                "no fitted peak decision was recorded; capacity observations only"
+            ),
+        }
+    return {**decision, "observed_capacity": observed}
 
 
 def clear_record() -> None:
     """Forget the last decision, so the next run reports only its own."""
     _RECORDED.set(None)
+    _OBSERVED_CAPACITY.set(None)
+    _OBSERVED_DEVICE.set(None)
 
 
 def admit(
@@ -1111,6 +1295,7 @@ def admit(
         msa_rows=msa_rows,
         budget_bytes=budget.budget_bytes,
         candidates=candidates,
+        card_bytes=budget.card_bytes,
     )
     selected = dict(candidates).get(decision.selected or "")
     record(
@@ -1170,9 +1355,7 @@ def admit_unmeasured(
         selected=None,
         estimates=(),
         threshold=(
-            None
-            if budget.budget_bytes is None
-            else _threshold(budget.budget_bytes)
+            None if budget.budget_bytes is None else _threshold(budget.budget_bytes)
         ),
         reason=f"no {model} peak law is fitted, so nothing was compared: {detail}",
     )

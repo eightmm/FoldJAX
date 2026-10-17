@@ -169,6 +169,8 @@ def test_bucket_cli_routes_native_progress_to_stderr_and_formats_output(
     argv = [
         "cache",
         "warm",
+        "--isolation",
+        "in-process",
         "--model",
         "boltz2",
         "--token-buckets",

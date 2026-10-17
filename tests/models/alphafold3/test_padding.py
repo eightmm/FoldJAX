@@ -1,3 +1,4 @@
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -152,7 +153,7 @@ def test_af3_exact_overflow_reports_the_unpadded_native_shape() -> None:
     }
 
 
-def test_af3_preflights_every_neutral_job_before_returning_work(
+def test_af3_featurizes_one_neutral_job_at_a_time(
     tmp_path: Path, monkeypatch
 ) -> None:
     calls = []
@@ -174,10 +175,40 @@ def test_af3_preflights_every_neutral_job_before_returning_work(
         ("late-overflow", "late", tmp_path / "late"),
     )
 
+    prepared = _prepare_padded_jobs(jobs, buckets=(256,), overflow="error")
+    assert calls == []
+    assert next(prepared)[:3] == jobs[0]
+    assert calls == ["first"]
     with pytest.raises(ValueError, match="late overflow"):
-        _prepare_padded_jobs(jobs, buckets=(256,), overflow="error")
+        next(prepared)
 
     assert calls == ["first", "late-overflow"]
+
+
+def test_af3_releases_yielded_features_before_preparing_the_next_job(
+    tmp_path: Path, monkeypatch
+) -> None:
+    features = []
+
+    def featurize(*args, **kwargs):
+        array = np.ones((64, 64))
+        features.append(weakref.ref(array))
+        return ({"array": array},), SimpleNamespace()
+
+    monkeypatch.setattr(
+        "foldjax.backends.alphafold3._featurize_padded_structure", featurize
+    )
+    prepared = _prepare_padded_jobs(
+        (("first", "first", tmp_path), ("second", "second", tmp_path)),
+        buckets=(256,), overflow="error",
+    )
+    current = next(prepared)
+    assert features[0]() is not None
+    del current
+    assert features[0]() is None
+    assert len(features) == 1
+    next(prepared)
+    assert len(features) == 2
 
 
 def test_padded_runner_selects_prefix_noise_without_changing_extraction_batch() -> None:

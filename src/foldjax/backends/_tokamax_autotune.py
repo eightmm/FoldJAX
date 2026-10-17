@@ -107,10 +107,18 @@ class _IncompleteCoverageError(_CacheError):
 
 
 class _IncompleteMeasurementsError(_IncompleteCoverageError):
-    def __init__(self, message: str, *, partial: Any, missing: tuple[Any, ...]):
+    def __init__(
+        self, message: str, *, partial: Any, missing: tuple[Any, ...],
+        heuristic_ops: tuple[Any, ...] = (),
+    ):
         super().__init__(message)
         self.partial = partial
         self.missing = missing
+        self.heuristic_ops = heuristic_ops
+
+
+class _UnexpectedTuningError(RuntimeError):
+    """A programming/device failure must not become a heuristic success."""
 
 
 def _tokamax_api():
@@ -260,7 +268,7 @@ _SMALL_SHARED_MEMORY_BYTES = {
     (12, 1): 99 * 1024,
 }
 _GLU_HEURISTICS_LOCK = threading.RLock()
-_GLU_PATCHES: dict[type, tuple[Any, int]] = {}
+_GLU_PATCHES: dict[type, tuple[Any, Any, int]] = {}
 _GLU_BUDGET: ContextVar[int | None] = ContextVar("foldjax_glu_budget", default=None)
 _GLU_DEVICE: ContextVar[Any | None] = ContextVar("foldjax_glu_device", default=None)
 
@@ -290,20 +298,37 @@ def _selected_glu_config(ba: Any, *, device: Any, config_cls: Any) -> Any:
     )
 
 
-def _glu_stage_bytes(config: Any, itemsize: int) -> int:
+def _glu_stage_bytes(
+    config: Any, itemsize: int, *, weight_itemsize: int | None = None
+) -> int:
     x_tile = config.block_m * config.block_k
     weight_tiles = 2 * config.block_k * config.block_n
-    return (x_tile + weight_tiles) * itemsize
+    return x_tile * itemsize + weight_tiles * (
+        itemsize if weight_itemsize is None else weight_itemsize
+    )
 
 
-def clamp_glu_config(config: Any, *, itemsize: int, budget_bytes: int) -> Any:
+def _glu_itemsizes(ba: Any) -> tuple[int, int]:
+    x, weights = ba.args
+    itemsize = int(x.dtype.itemsize)
+    weights = weights if isinstance(weights, tuple) else (weights,)
+    return itemsize, max(int(weight.dtype.itemsize) for weight in weights)
+
+
+def clamp_glu_config(
+    config: Any, *, itemsize: int, budget_bytes: int,
+    weight_itemsize: int | None = None,
+) -> Any:
     """Fewest changes to ``config`` that fit ``num_stages`` tiles in the budget."""
 
     stages = config.num_stages
-    while stages > 1 and stages * _glu_stage_bytes(config, itemsize) > budget_bytes:
+    def stage_bytes(candidate):
+        return _glu_stage_bytes(candidate, itemsize, weight_itemsize=weight_itemsize)
+
+    while stages > 1 and stages * stage_bytes(config) > budget_bytes:
         stages -= 1
     config = dataclasses.replace(config, num_stages=stages)
-    while config.num_stages * _glu_stage_bytes(config, itemsize) > budget_bytes:
+    while config.num_stages * stage_bytes(config) > budget_bytes:
         if config.block_n > 32:
             config = dataclasses.replace(config, block_n=config.block_n // 2)
         elif config.block_m > 32:
@@ -319,7 +344,7 @@ def _shared_memory_budget(device: Any) -> int | None:
 
 @contextmanager
 def glu_heuristics_within_shared_memory(device: Any) -> Iterator[None]:
-    """Size Tokamax's heuristic tile for the selected GPU and its memory."""
+    """Bound GLU heuristics and tuning candidates for the selected GPU's memory."""
 
     token = _GLU_BUDGET.set(_shared_memory_budget(device))
     selected_gpu = getattr(device, "platform", None) in {"gpu", "cuda"}
@@ -338,11 +363,12 @@ def glu_heuristics_within_shared_memory(device: Any) -> Iterator[None]:
         # stay context-local while overlapping model calls share the wrapper.
         with _GLU_HEURISTICS_LOCK:
             original = glu_op.__dict__.get("_get_heuristics_config")
+            original_configs = glu_op.__dict__.get("_get_autotuning_configs")
             if original is None:
                 yield
                 return
             if glu_op in _GLU_PATCHES:
-                original, users = _GLU_PATCHES[glu_op]
+                original, original_configs, users = _GLU_PATCHES[glu_op]
             else:
                 users = 0
 
@@ -358,23 +384,41 @@ def glu_heuristics_within_shared_memory(device: Any) -> Iterator[None]:
                     budget = _GLU_BUDGET.get()
                     if budget is None:
                         return config
-                    itemsize = int(getattr(ba.args[0].dtype, "itemsize", 4))
+                    itemsize, weight_itemsize = _glu_itemsizes(ba)
                     return clamp_glu_config(
-                        config, itemsize=itemsize, budget_bytes=budget
+                        config, itemsize=itemsize, weight_itemsize=weight_itemsize,
+                        budget_bytes=budget,
                     )
 
                 glu_op._get_heuristics_config = clamped
-            _GLU_PATCHES[glu_op] = original, users + 1
+                if original_configs is not None:
+                    def filtered(self: Any, ba: Any) -> set[Any]:
+                        configs = original_configs(self, ba)
+                        budget = _GLU_BUDGET.get()
+                        if budget is None:
+                            return configs
+                        itemsize, weight_itemsize = _glu_itemsizes(ba)
+                        return {
+                            cfg for cfg in configs
+                            if cfg.num_stages * _glu_stage_bytes(
+                                cfg, itemsize, weight_itemsize=weight_itemsize
+                            ) <= budget
+                        }
+
+                    glu_op._get_autotuning_configs = filtered
+            _GLU_PATCHES[glu_op] = original, original_configs, users + 1
         try:
             yield
         finally:
             with _GLU_HEURISTICS_LOCK:
-                original, users = _GLU_PATCHES[glu_op]
+                original, original_configs, users = _GLU_PATCHES[glu_op]
                 if users == 1:
                     glu_op._get_heuristics_config = original
+                    if original_configs is not None:
+                        glu_op._get_autotuning_configs = original_configs
                     del _GLU_PATCHES[glu_op]
                 else:
-                    _GLU_PATCHES[glu_op] = original, users - 1
+                    _GLU_PATCHES[glu_op] = original, original_configs, users - 1
     finally:
         _GLU_DEVICE.reset(device_token)
         _GLU_BUDGET.reset(token)
@@ -973,6 +1017,48 @@ def _candidate_failure_summary(data: Any) -> str:
     ) or "no successful benchmark measurements"
 
 
+def _is_glu_bound_arg(bound_arg: Any) -> bool:
+    if type(bound_arg.op).__module__ != (
+        "tokamax._src.ops.gated_linear_unit.pallas_triton"
+    ):
+        return False
+    from tokamax._src.ops.gated_linear_unit.pallas_triton import (
+        PallasTritonGatedLinearUnit,
+    )
+
+    return isinstance(bound_arg.op, PallasTritonGatedLinearUnit)
+
+
+def _is_resource_failure(
+    error: BaseException, *, seen: frozenset[int] = frozenset()
+) -> bool:
+    if id(error) in seen or isinstance(error, NotImplementedError):
+        return False
+    seen = seen | {id(error)}
+    if isinstance(error, BaseExceptionGroup):
+        return bool(error.exceptions) and all(
+            _is_resource_failure(child, seen=seen) for child in error.exceptions
+        )
+    if isinstance(error, MemoryError):
+        return True
+    error_type = type(error)
+    runtime_error = isinstance(error, (RuntimeError, OSError)) or (
+        error_type.__module__.startswith(("triton.", "jax.", "jaxlib."))
+    )
+    if not runtime_error:
+        return False
+    message = str(error).lower()
+    if any(marker in message for marker in (
+        "out of memory", "cudaerrormemoryallocation", "cuda_error_out_of_memory",
+        "resource_exhausted", "out of resource: shared memory",
+        "shared memory size limit exceeded: requested",
+    )):
+        return True
+    return error.__cause__ is not None and _is_resource_failure(
+        error.__cause__, seen=seen
+    )
+
+
 def _complete_result(
     bound_args: Sequence[Any],
     tuned: Any,
@@ -982,14 +1068,15 @@ def _complete_result(
 ) -> Any:
     tokamax = _tokamax_api()
     if str(tuned.device_kind) != device_kind:
-        raise _IncompleteCoverageError("Tokamax tuned the wrong device kind")
+        raise _UnexpectedTuningError("Tokamax tuned the wrong device kind")
     entries = []
     missing = []
     reasons = []
+    heuristic_ops = []
     with ExitStack() as stack:
         if base is not None:
             if str(base.device_kind) != device_kind:
-                raise _IncompleteCoverageError(
+                raise _UnexpectedTuningError(
                     "Tokamax base result has the wrong device kind"
                 )
             stack.enter_context(base)
@@ -1015,6 +1102,20 @@ def _complete_result(
                     raise ValueError("no successful config")
                 pruned.fastest_config
             except Exception:  # noqa: BLE001 - failed operations cannot be persisted
+                if _is_glu_bound_arg(bound_arg) and data:
+                    failures = tuple(data.values())
+                    unexpected = [
+                        failure for failure in failures
+                        if not isinstance(failure, BaseException)
+                        or not _is_resource_failure(failure)
+                    ]
+                    if unexpected:
+                        failure = unexpected[0]
+                        cause = failure if isinstance(failure, BaseException) else None
+                        raise _UnexpectedTuningError(
+                            f"GLU autotuning failed unexpectedly: {failure}"
+                        ) from cause
+                    heuristic_ops.append(bound_arg)
                 missing.append(bound_arg)
                 reasons.append(
                     f"{_operation_label(bound_arg)}: {_candidate_failure_summary(data)}"
@@ -1027,6 +1128,7 @@ def _complete_result(
             + " | ".join(reasons[:8]),
             partial=tokamax.AutotuningResult(device_kind, tuple(entries)),
             missing=tuple(missing),
+            heuristic_ops=tuple(heuristic_ops),
         )
     result = tokamax.AutotuningResult(device_kind, tuple(entries))
     _validate_complete_result(
@@ -1189,11 +1291,43 @@ def _tune_selected_device(
     return tokamax.AutotuningResult(device_kind, tuple(entries))
 
 
+def _tune_missing(
+    bound_args: Sequence[Any], *, device_kind: str, tokamax: Any, parallel: bool
+) -> Any:
+    if not parallel:
+        return _tune_selected_device(
+            bound_args, device_kind=device_kind, tokamax=tokamax
+        )
+    glus = tuple(ba for ba in bound_args if _is_glu_bound_arg(ba))
+    if not glus:
+        return tokamax.autotune(bound_args, progress_bar=False)
+    from tokamax._src.autotuning.autotuner import Autotuner, AutotuningData
+
+    # Tokamax's public batch API logs and drops a whole-op exception. Retain
+    # GLU exception trees so resource failures cannot hide programming errors.
+    entries = []
+    others = tuple(ba for ba in bound_args if not _is_glu_bound_arg(ba))
+    if others:
+        other_result = tokamax.autotune(others, progress_bar=False)
+        if str(other_result.device_kind) != device_kind:
+            raise _UnexpectedTuningError("Tokamax tuned the wrong device kind")
+        entries.extend(other_result.data)
+    for bound_arg in glus:
+        try:
+            data = bound_arg.autotune(
+                cache_results=False, autotuner=Autotuner(), timeout=600.0
+            )
+        except Exception as error:  # noqa: BLE001 - preserve the candidate cause tree
+            data = AutotuningData({"unmeasured": error})
+        entries.append((bound_arg, data))
+    return tokamax.AutotuningResult(device_kind, tuple(entries))
+
+
 def _retry_missing_heuristics(
     bound_args: Sequence[Any], *, device_kind: str, tokamax: Any
 ) -> Any:
     """Measure one heuristic candidate per missing op in the caller's context."""
-    from tokamax._src.autotuning.autotuner import Autotuner
+    from tokamax._src.autotuning.autotuner import Autotuner, AutotuningData
 
     tuner = Autotuner(compile_executor_fn=None)
     entries = []
@@ -1210,6 +1344,8 @@ def _retry_missing_heuristics(
                 type(error).__name__,
                 str(error)[:240],
             )
+            if _is_glu_bound_arg(bound_arg):
+                entries.append((bound_arg, AutotuningData({"unmeasured": error})))
             continue
         entries.append((bound_arg, data))
     return tokamax.AutotuningResult(device_kind, tuple(entries))
@@ -1251,12 +1387,8 @@ def _discover_complete_result(
             with ExitStack() as stack:
                 if result is not None:
                     stack.enter_context(result)
-                tuned = (
-                    tokamax.autotune(missing, progress_bar=False)
-                    if parallel
-                    else _tune_selected_device(
-                        missing, device_kind=device_kind, tokamax=tokamax
-                    )
+                tuned = _tune_missing(
+                    missing, device_kind=device_kind, tokamax=tokamax, parallel=parallel
                 )
         else:
             tuned = tokamax.AutotuningResult(device_kind, ())
@@ -1290,6 +1422,7 @@ def _discover_complete_result(
                     f"{retry_error}",
                     partial=retry_error.partial,
                     missing=retry_error.missing,
+                    heuristic_ops=retry_error.heuristic_ops,
                 ) from retry_error
         if previous is not None:
             # Tokamax includes ``id(result)`` in JAX's tracing context.  Keep
@@ -1323,6 +1456,38 @@ def _discover_complete_result(
     raise _IncompleteCoverageError(
         "Tokamax operation discovery did not reach complete strict coverage"
     )
+
+
+def _resource_heuristic_result(
+    error: BaseException, *, lower: Callable[[], Any], device_kind: str
+) -> Any | None:
+    if not isinstance(error, _IncompleteMeasurementsError) or not error.missing:
+        return None
+    allowed = {_bound_arg_identity(ba) for ba in error.heuristic_ops}
+    if allowed != {_bound_arg_identity(ba) for ba in error.missing}:
+        return None
+    device, budget = _GLU_DEVICE.get(), _GLU_BUDGET.get()
+    if device is None or budget is None:
+        return None
+    if getattr(device, "device_kind", device_kind) != device_kind:
+        raise _UnexpectedTuningError("GLU heuristic fallback selected the wrong device")
+    for bound_arg in error.missing:
+        config = bound_arg.heuristics_config
+        itemsize, weight_itemsize = _glu_itemsizes(bound_arg)
+        if config.num_stages * _glu_stage_bytes(
+            config, itemsize, weight_itemsize=weight_itemsize
+        ) > budget:
+            raise _UnexpectedTuningError("GLU heuristic does not fit shared memory")
+
+    # Heuristics may expose another operation set. Keep measured configs and
+    # reject any newly uncovered op before this exact call can execute.
+    verified = _include_pre_vmap_variants(_capture_bound_args(
+        lower, result=error.partial, fallback="heuristics", tokamax=_tokamax_api()
+    ))
+    uncovered = _missing_bound_args(verified, error.partial)
+    if any(_bound_arg_identity(ba) not in allowed for ba in uncovered):
+        raise _UnexpectedTuningError("GLU heuristic fallback left uncovered operations")
+    return error.partial
 
 
 # Where each model call's Tokamax configurations came from, for the run
@@ -1511,6 +1676,9 @@ class _PersistentTokamaxStore:
         # Partial overlays aid inline fallback but are never complete or
         # persisted. Retaining their identity also stabilizes JAX's trace key.
         self._partial_results: dict[str, Any] = {}
+        # Resource-only GLU misses use a verified heuristic with this measured
+        # partial overlay. They never enter the complete/persisted result sets.
+        self._heuristic_results: dict[str, Any] = {}
         # Signatures whose result is on disk: read from it, or written to it.
         self._persisted: set[str] = set()
         self._persisted_tiers: dict[str, str] = {}
@@ -1569,6 +1737,41 @@ class _PersistentTokamaxStore:
             _raise_nondefault_autotune_miss()
         _note_source("partial" if partial is not None else "tokamax")
         with partial if partial is not None else nullcontext():
+            return invoke()
+
+    def _retain_incomplete(
+        self, signature: str, error: BaseException, lower: Callable[[], Any]
+    ) -> None:
+        heuristic = _resource_heuristic_result(
+            error, lower=lower, device_kind=self._device_kind
+        )
+        if heuristic is not None:
+            self._heuristic_results[signature] = heuristic
+            _LOGGER.warning(
+                "Tokamax GLU candidates exhausted device resources; executing "
+                "the clamped heuristic (source=heuristic, not persisted)"
+            )
+        elif (
+            self._can_tune and isinstance(error, _IncompleteMeasurementsError)
+            and error.partial.data
+        ):
+            self._partial_results[signature] = error.partial
+
+    def _invoke_heuristic(self, signature: str, invoke: Callable[[], Any]) -> Any:
+        device = _GLU_DEVICE.get()
+        if device is None or _GLU_BUDGET.get() is None:
+            raise _UnexpectedTuningError(
+                "GLU heuristic fallback requires its selected-device memory guard"
+            )
+        if getattr(device, "device_kind", self._device_kind) != self._device_kind:
+            raise _UnexpectedTuningError(
+                "GLU heuristic fallback selected the wrong device"
+            )
+        _note_source("heuristic")
+        with (
+            self._heuristic_results[signature],
+            _tokamax_api().config.autotuning_cache_miss_fallback("heuristics"),
+        ):
             return invoke()
 
     def _tier_directories(self) -> Iterator[tuple[str, Path]]:
@@ -1650,15 +1853,12 @@ class _PersistentTokamaxStore:
                     tokamax=_tokamax_api(),
                     parallel=self._can_tune,
                 )
+            except _UnexpectedTuningError:
+                raise
             except Exception as error:  # noqa: BLE001 - preserve existing fallback
                 self._warn_once(f"did not obtain complete coverage: {error}")
                 coverage_error = error
-                if (
-                    self._can_tune
-                    and isinstance(error, _IncompleteMeasurementsError)
-                    and error.partial.data
-                ):
-                    self._partial_results[signature] = error.partial
+                self._retain_incomplete(signature, error, lower)
                 return None
 
         for write_tier, directory in self._tier_directories():
@@ -1700,6 +1900,8 @@ class _PersistentTokamaxStore:
         if result is None and not measured and readable:
             result = measure()
         if result is None:
+            if signature in self._heuristic_results:
+                return self._invoke_heuristic(signature, invoke)
             if coverage_error is not None and not self._can_tune:
                 raise RuntimeError(
                     "Tokamax selected-device tuning could not obtain complete "
@@ -1751,6 +1953,8 @@ class _PersistentTokamaxStore:
                     invoke,
                     source="store" if signature in self._persisted else "measured",
                 )
+            if signature in self._heuristic_results:
+                return self._invoke_heuristic(signature, invoke)
             if (partial := self._partial_results.get(signature)) is not None:
                 return self._invoke_fallback(invoke, partial=partial)
 
@@ -1816,17 +2020,14 @@ class _PersistentTokamaxStore:
                                     tokamax=tokamax,
                                     parallel=self._can_tune,
                                 )
+                            except _UnexpectedTuningError:
+                                raise
                             except Exception as error:  # noqa: BLE001 - preserve fallback
                                 self._warn_once(
                                     f"did not obtain complete coverage: {error}"
                                 )
                                 coverage_error = error
-                                if (
-                                    self._can_tune
-                                    and isinstance(error, _IncompleteMeasurementsError)
-                                    and error.partial.data
-                                ):
-                                    self._partial_results[signature] = error.partial
+                                self._retain_incomplete(signature, error, lower)
                                 result = None
                             if result is not None and writable:
                                 try:
@@ -1853,6 +2054,8 @@ class _PersistentTokamaxStore:
                 return self._invoke_fallback(invoke)
 
             if result is None:
+                if signature in self._heuristic_results:
+                    return self._invoke_heuristic(signature, invoke)
                 if coverage_error is not None and not self._can_tune:
                     raise RuntimeError(
                         "Tokamax selected-device tuning could not obtain complete "

@@ -734,7 +734,8 @@ def test_cache_warm_cli_reports_execute_once_and_cache_delta(
         )
         return (resolved,)
 
-    def fake_warm(request):
+    def fake_warm(request, *, isolation):
+        assert isolation == "in-process"
         seen["request"] = request
         print("native warm progress")
         return CacheWarmResult(
@@ -758,6 +759,8 @@ def test_cache_warm_cli_reports_execute_once_and_cache_delta(
             [
                 "cache",
                 "warm",
+                "--isolation",
+                "in-process",
                 "--model",
                 "boltz2",
                 "--input",
@@ -1415,16 +1418,16 @@ def test_discovery_commands_leave_the_collector_alone(capsys, gc_threshold) -> N
     assert gc_threshold.get_threshold() == (700, 10, 10)
 
 
-def test_only_predict_skips_the_release_reclaim(
+def test_predict_reclaims_pages_and_discovery_preserves_the_host_policy(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     from foldjax.models import _managed_memory
 
-    monkeypatch.setattr(_managed_memory, "_RECLAIM_AT_RELEASE", True)
+    monkeypatch.setattr(_managed_memory, "_RECLAIM_AT_RELEASE", False)
     assert main(["models"]) == 0
     capsys.readouterr()
-    assert _managed_memory._RECLAIM_AT_RELEASE is True
+    assert _managed_memory._RECLAIM_AT_RELEASE is False
 
     _reached_predict(tmp_path, monkeypatch)
     capsys.readouterr()
-    assert _managed_memory._RECLAIM_AT_RELEASE is False
+    assert _managed_memory._RECLAIM_AT_RELEASE is True

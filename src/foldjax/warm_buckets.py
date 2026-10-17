@@ -128,23 +128,144 @@ def _padded_targets(profile: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _bucket_row(bucket: int, previous: int) -> dict[str, Any]:
+    return {
+        "bucket": bucket,
+        "lengths": list(representative_lengths(bucket, previous=previous)),
+        "runs": [],
+        "status": "success",
+        "error": None,
+        "oom": False,
+    }
+
+
+def _failed_row(row: dict[str, Any], error: Exception) -> None:
+    row.update(
+        status="failed",
+        error=str(error) or type(error).__name__,
+        oom=isinstance(error, MemoryError)
+        or getattr(error, "warm_oom", False)
+        or oom.is_out_of_memory(error),
+    )
+    if getattr(error, "warm_process", None) is not None:
+        row["process"] = error.warm_process
+
+
+def _warm_bucket(
+    request: PredictionRequest,
+    *,
+    model: str,
+    bucket: int,
+    previous: int,
+    jobs: Path,
+) -> dict[str, Any]:
+    """Keep both real lengths together, including their device and reuse probe."""
+    import jax
+
+    row = _bucket_row(bucket, previous)
+    lengths = row["lengths"]
+    native_buckets = model == "alphafold3" and "buckets" in request.options
+    device = device_summary(dataclasses.replace(request, model=model, models=None))
+    jobs.mkdir(parents=True, exist_ok=True)
+    started = time.perf_counter()
+    try:
+        for index, length in enumerate(lengths):
+            source = Job.from_sequences(
+                ("A" * length,), name=f"warm-{bucket}-{index}"
+            ).write(jobs / f"{model}-{bucket}-{index}.json")
+            padding = (
+                None
+                if native_buckets
+                else dataclasses.replace(
+                    request.padding or PaddingConfig(), tokens=bucket
+                )
+            )
+            options = dict(request.options)
+            output = (
+                None
+                if request.output_dir is None
+                else Path(request.output_dir) / model / str(bucket) / str(length)
+            )
+            scalar = dataclasses.replace(
+                request,
+                model=model,
+                models=None,
+                input=source,
+                inputs=None,
+                input_format="foldjax",
+                source=None,
+                padding=padding,
+                options=options,
+                output_dir=output,
+                msa="single",
+                resume=False,
+                on_error="stop",
+            )
+            if output is not None:
+                from foldjax.api import _prepare_output_directory
+
+                _prepare_output_directory(output, boundary=Path(request.output_dir))
+            observed = _CompileRequests()
+            logger = logging.getLogger("jax")
+            logger.addHandler(observed)
+            try:
+                with jax.log_compiles(True):
+                    result = warm_cache(scalar)
+            finally:
+                logger.removeHandler(observed)
+            row["runs"].append(
+                {
+                    **result.summary(),
+                    "real_tokens": length,
+                    "compile_requests": len(observed.messages),
+                    "compile_request_names": observed.messages,
+                }
+            )
+        profiles = [run.get("shape_profile") for run in row["runs"]]
+        targets = [_padded_targets(profile) for profile in profiles]
+        matching_targets = targets[0] == targets[1] if all(targets) else None
+        matching_namespace = row["runs"][0]["cache_dir"] == row["runs"][1]["cache_dir"]
+        row["verification"] = {
+            "second_length_compile_requests": row["runs"][1]["compile_requests"],
+            "shape_profiles": profiles,
+            "padded_targets_match": matching_targets,
+            "cache_namespace_match": matching_namespace,
+            "note": "compile requests may restore persistent entries; "
+            "not a cache-miss count",
+        }
+        if matching_targets is False or not matching_namespace:
+            raise RuntimeError(
+                "two lengths selected different padded targets or cache namespaces"
+            )
+    except Exception as error:  # noqa: BLE001 - each bucket has a failure row
+        _failed_row(row, error)
+    finally:
+        row["seconds"] = round(time.perf_counter() - started, 3)
+    return {"row": row, "device": device}
+
+
 def warm_token_buckets(
     request: PredictionRequest,
     spec: str,
     *,
     stop_on_oom: bool = True,
+    isolation: str = "in-process",
 ) -> dict[str, Any]:
-    """Run two synthetic single-chain jobs per bucket, stopping a model on OOM.
+    """Warm two lengths per bucket, optionally using a fresh process per bucket.
 
-    Compilation log requests on the second length are diagnostic: a request
-    can restore a persistent executable, so these are not claimed as misses.
-    Concrete shape profiles are reported for both lengths to expose mismatches.
+    Compilation requests can restore persistent executables and are not miss
+    counts. Process isolation inherits environment and JSON request options;
+    ambient JAX contexts/config and custom backends require in-process mode.
     """
-    import jax
-
-    models = tuple(
-        normalize_model_name(name) for name in (request.models or (request.model,))
-    )
+    if isolation not in {"process", "in-process"}:
+        raise ValueError("isolation must be 'process' or 'in-process'")
+    if not request.use_compile_cache:
+        raise ValueError("cache warm cannot be used with use_compile_cache=False")
+    models = tuple(normalize_model_name(name) for name in request.resolved_models)
+    if len(set(models)) != len(models):
+        raise ValueError("models resolve to the same backend more than once")
+    if len(models) > 1 and request.weights is not None:
+        raise ValueError("one explicit weights path cannot be shared by several models")
     selections = {
         model: parse_token_buckets(spec, model=model, options=dict(request.options))
         for model in models
@@ -154,22 +275,32 @@ def warm_token_buckets(
             "synthetic bucket warming uses --msa single; "
             "use an input job to warm searched MSAs"
         )
-    device = device_summary(dataclasses.replace(request, model=models[0], models=None))
+    if (
+        "alphafold3" in models
+        and "buckets" in request.options
+        and request.padding is not None
+    ):
+        raise ValueError("native AF3 buckets and neutral padding cannot both be set")
+    if isolation == "process":
+        from foldjax._warm_process import request_packet, run_worker
+
+        packet = request_packet(request)
     report: dict[str, Any] = {
         "strategy": "token_buckets",
-        "device": device,
+        "isolation": isolation,
+        "device": {
+            "platform": "unknown",
+            "device_kind": "unavailable",
+            "card_bytes": None,
+            "pool_bytes": None,
+        },
         "stop_on_oom": stop_on_oom,
         "models": [],
     }
     with tempfile.TemporaryDirectory(prefix="foldjax-bucket-jobs-") as temporary:
-        jobs = Path(temporary)
         for model in models:
             grid = selections[model]
             native_buckets = model == "alphafold3" and "buckets" in request.options
-            if native_buckets and request.padding is not None:
-                raise ValueError(
-                    "native AF3 buckets and neutral padding cannot both be set"
-                )
             model_report: dict[str, Any] = {
                 "model": model,
                 "requested_buckets": list(grid),
@@ -191,111 +322,41 @@ def warm_token_buckets(
                 previous = max(
                     (size for size in default_grid if size < bucket), default=0
                 )
-                lengths = representative_lengths(bucket, previous=previous)
-                row: dict[str, Any] = {
-                    "bucket": bucket,
-                    "lengths": list(lengths),
-                    "runs": [],
-                    "status": "success",
-                    "error": None,
-                    "oom": False,
-                }
-                model_report["buckets"].append(row)
                 started = time.perf_counter()
                 try:
-                    for index, length in enumerate(lengths):
-                        source = Job.from_sequences(
-                            ("A" * length,), name=f"warm-{bucket}-{index}"
-                        ).write(jobs / f"{model}-{bucket}-{index}.json")
-                        padding = (
-                            None
-                            if native_buckets
-                            else dataclasses.replace(
-                                request.padding or PaddingConfig(), tokens=bucket
-                            )
-                        )
-                        options = dict(request.options)
-                        output = (
-                            None
-                            if request.output_dir is None
-                            else Path(request.output_dir)
-                            / model
-                            / str(bucket)
-                            / str(length)
-                        )
-                        scalar = dataclasses.replace(
-                            request,
-                            model=model,
-                            models=None,
-                            input=source,
-                            inputs=None,
-                            input_format="foldjax",
-                            source=None,
-                            padding=padding,
-                            options=options,
-                            output_dir=output,
-                            msa="single",
-                            resume=False,
-                            on_error="stop",
-                        )
-                        if output is not None:
-                            from foldjax.api import _prepare_output_directory
-
-                            _prepare_output_directory(
-                                output, boundary=Path(request.output_dir)
-                            )
-                        observed = _CompileRequests()
-                        logger = logging.getLogger("jax")
-                        logger.addHandler(observed)
-                        try:
-                            with jax.log_compiles(True):
-                                result = warm_cache(scalar)
-                        finally:
-                            logger.removeHandler(observed)
-                        row["runs"].append(
+                    if isolation == "process":
+                        result, process = run_worker(
                             {
-                                **result.summary(),
-                                "real_tokens": length,
-                                "compile_requests": len(observed.messages),
-                                "compile_request_names": observed.messages,
+                                "kind": "bucket",
+                                "request": packet,
+                                "model": model,
+                                "bucket": bucket,
+                                "previous": previous,
                             }
                         )
-                    profiles = [run.get("shape_profile") for run in row["runs"]]
-                    targets = [_padded_targets(profile) for profile in profiles]
-                    matching_targets = (
-                        targets[0] == targets[1] if all(targets) else None
-                    )
-                    matching_namespace = (
-                        row["runs"][0]["cache_dir"] == row["runs"][1]["cache_dir"]
-                    )
-                    row["verification"] = {
-                        "second_length_compile_requests": row["runs"][1][
-                            "compile_requests"
-                        ],
-                        "shape_profiles": profiles,
-                        "padded_targets_match": matching_targets,
-                        "cache_namespace_match": matching_namespace,
-                        "note": "compile requests may restore persistent entries; "
-                        "not a cache-miss count",
-                    }
-                    if matching_targets is False or not matching_namespace:
-                        raise RuntimeError(
-                            "two lengths selected different padded targets "
-                            "or cache namespaces"
+                        result["row"]["process"] = process
+                    else:
+                        result = _warm_bucket(
+                            request,
+                            model=model,
+                            bucket=bucket,
+                            previous=previous,
+                            jobs=Path(temporary),
                         )
-                    model_report["successful_buckets"].append(bucket)
-                except Exception as error:  # noqa: BLE001 - each bucket has a failure row
-                    row.update(
-                        status="failed",
-                        error=str(error) or type(error).__name__,
-                        oom=isinstance(error, MemoryError)
-                        or oom.is_out_of_memory(error),
-                    )
-                    if model_report["first_failed_bucket"] is None:
-                        model_report["first_failed_bucket"] = bucket
-                        model_report["failure_reason"] = row["error"]
-                finally:
+                    row = result["row"]
+                    row["device"] = result["device"]
+                    if report["device"]["platform"] == "unknown":
+                        report["device"] = result["device"]
+                except Exception as error:  # noqa: BLE001 - worker failures are bucket failures
+                    row = _bucket_row(bucket, previous)
+                    _failed_row(row, error)
                     row["seconds"] = round(time.perf_counter() - started, 3)
+                model_report["buckets"].append(row)
+                if row["status"] == "success":
+                    model_report["successful_buckets"].append(bucket)
+                elif model_report["first_failed_bucket"] is None:
+                    model_report["first_failed_bucket"] = bucket
+                    model_report["failure_reason"] = row["error"]
                 if row["oom"] and stop_on_oom:
                     model_report["stopped_on_oom"] = True
                     break

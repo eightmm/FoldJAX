@@ -1373,6 +1373,20 @@ def _predict_resolved(
         )
     finally:
         lock.release()
+        # Retain the session's immutable asset anchors across a batch, but
+        # release its runners and weights before a different input can run.
+        from foldjax._execution_memory import (
+            release_execution_memory,
+            warn_release_failure,
+        )
+
+        try:
+            if backend is not None:
+                backend.invalidate_session()
+        except Exception as error:  # noqa: BLE001 - preserve prediction outcome
+            warn_release_failure(f"{request.model} input state", error)
+        finally:
+            release_execution_memory()
 
 
 def _predict_seeds(
@@ -1750,6 +1764,7 @@ def _predict_once_on_device(
     # is what makes it readable below; that is also what would let the previous
     # prediction's topology describe this one's failure.
     clear_mesh_record()
+    _preflight_observed_capacity(asked, backend)
     try:
         with (
             timeline.stage("predict"),
@@ -1849,6 +1864,36 @@ def _predict_once_on_device(
         pocket_sampling=pocket_sampling,
     )
     return result
+
+
+def _preflight_observed_capacity(request: PredictionRequest, backend: Backend) -> None:
+    from foldjax._gpu import default_device
+    from foldjax._request_capacity import estimate_request_tokens
+
+    device = default_device(request)
+    if getattr(device, "platform", None) not in {"gpu", "cuda"}:
+        return
+    estimate = estimate_request_tokens(request)
+    if estimate is None or not isinstance(estimate.get("token_bucket"), int):
+        return
+    options = backend.apply_sampling(request)
+    budget = memory_policy.device_memory_budget(
+        override_gib=memory_policy.parse_budget_gib(options.get("memory_budget_gib"))
+    )
+    sampling = backend.sampling_resolution(request)
+    memory_policy.capacity_preflight(
+        backend.name,
+        estimate["token_bucket"],
+        budget.budget_bytes,
+        card_bytes=budget.card_bytes,
+        device_kind=getattr(device, "device_kind", None),
+        num_samples=sampling.get("num_samples", (None, "checkpoint"))[0],
+        shape_profile={
+            "estimate": estimate,
+            "requested_padding": request.padding.summary() if request.padding else None,
+            "requested_msa_cap": sampling.get("max_msa_depth", (None, "checkpoint"))[0],
+        },
+    )
 
 
 def _write_session_manifest(

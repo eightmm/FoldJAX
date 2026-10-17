@@ -42,6 +42,24 @@ installed. This runs real prediction and kernel tuning, can be expensive, and
 should be submitted to a GPU compute node on a cluster. It does not download
 weights or claim that the synthetic structure has scientific value.
 
+The CLI defaults to `--isolation process`. Each model/bucket starts a fresh
+Python interpreter, so model parameters, compiled executables, and the CUDA
+context from an earlier bucket cannot accumulate in the next one. Both lengths
+of one bucket run together in that child to check reuse. Exact-input warming
+uses a fresh child per model; multiple inputs for that model stay together.
+Device/budget queries and request resolution also happen in the child. Children
+inherit the current interpreter, FoldJAX source, environment, and request
+options; no scheduler job or second GPU allocation is created.
+
+Use `--isolation in-process` to retain the previous single-process behavior.
+Python `warm_cache(request)` and `warm_token_buckets(request, spec)` retain that
+default for compatibility; pass `isolation="process"` explicitly to isolate
+them. Process mode accepts JSON-compatible native options. Ambient
+`jax.default_device` contexts, changes made through `jax.config.update`, custom
+backend registrations, callbacks and device objects do not cross an exec
+boundary. Express device/platform selection with request options and the
+environment, or use in-process mode for those Python-only settings.
+
 Buckets run in ascending order for each model. By default a CUDA allocation
 failure or proactive memory-admission refusal stops that model's larger buckets;
 the next model can still run. `--keep-going` attempts later buckets too.
@@ -57,6 +75,11 @@ on the second length. A request can restore an existing executable, so this
 count is diagnostic and **is not a persistent-cache miss count**. Cache file
 deltas likewise do not prove an executable hit. Exact-input warming retains its
 existing JSON output and `execute_once` behavior.
+Isolated reports include the worker PID and exit code for each bucket or exact
+result. Native worker progress goes to stderr. A worker terminated without a
+report is a failure, with its signal/exit status; an unexplained `SIGKILL` is
+not automatically classified as OOM. Normal exceptions preserve the bucket
+failure/stop-on-OOM policy. `SystemExit` and keyboard cancellation stop the warm.
 After successful warming, the CLI prints a prediction command template to
 stderr. JSON stdout remains machine-readable. Keep the other execution options
 and weights/profile the same; the template does not infer the real job's MSA
@@ -65,6 +88,11 @@ search policy.
 Prediction results are discarded unless `--output-dir` is supplied. Retained
 bucket results go under `OUT/MODEL/BUCKET/REAL_LENGTH`; generated directories
 cannot escape through a child symlink. Synthetic job documents are temporary.
+The parent owns each worker's discarded-output directory and removes it even
+when the worker dies. On keyboard cancellation it terminates and reaps its own
+active worker before cleaning that directory. Main-thread warming also handles
+an ordinary SIGTERM this way. Existing custom SIGTERM handlers retain their
+application-defined behavior; SIGKILL of the parent cannot run cleanup.
 
 For prediction reuse, select the same model/weights, device, runtime, token and
 other padded capacities, MSA cap, and compile-relevant native options.

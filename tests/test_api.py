@@ -751,6 +751,7 @@ def test_predict_batch_reuses_one_backend_session_across_seeds(tmp_path: Path) -
         ("predict", "job.yaml", 7),
         ("predict", "job.yaml", 8),
         ("predict", "job.yaml", 9),
+        "invalidate",
         "close",
     ]
 
@@ -901,6 +902,7 @@ def test_continued_failure_invalidates_reusable_backend_state(tmp_path: Path) ->
         ("predict", "job.yaml", 0),
         "invalidate",
         ("predict", "job.yaml", 1),
+        "invalidate",
         "close",
     ]
 
@@ -937,6 +939,7 @@ def test_resume_anchors_session_before_manifest_validation(
         "validate",
         "manifest",
         "observe",
+        "invalidate",
         "close",
     ]
 

@@ -119,6 +119,10 @@ default; an explicit `--token-buckets SPEC` or warm policy after the script name
 can override those defaults. It may be expensive: the GPU job must be submitted
 deliberately with the site's resource/time settings. It is never run by
 `foldjax-submit` implicitly.
+The cache-warm CLI defaults to a fresh process for each model/bucket, keeping
+that bucket's two lengths together and releasing its CUDA context before the
+next bucket. `--isolation in-process` restores one-process warming when needed;
+pass it only to a warm call, not to `--verify-only` prediction.
 
 After that job completes, have an ordinary **Unix user** with read-only access
 to the warmed compile namespace submit one fresh verification prediction:

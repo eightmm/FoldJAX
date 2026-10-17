@@ -763,6 +763,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     _add_predict_arguments(warm, allow_no_cache=False, cache_warm=True)
     warm.add_argument(
+        "--isolation",
+        choices=("process", "in-process"),
+        default="process",
+        help="fresh process per model/bucket (default); in-process keeps "
+        "ambient Python/JAX context",
+    )
+    warm.add_argument(
         "--token-buckets",
         metavar="SPEC",
         help="warm two synthetic lengths per bucket: 256,512,768, LOW..HIGH, or auto",
@@ -1610,7 +1617,10 @@ def _run_cache(args: argparse.Namespace) -> int:
             assert request is not None
             with _stdout_to_stderr():
                 result = warm_token_buckets(
-                    request, args.token_buckets, stop_on_oom=args.stop_on_oom
+                    request,
+                    args.token_buckets,
+                    stop_on_oom=args.stop_on_oom,
+                    isolation=args.isolation,
                 )
         print(
             json.dumps(result, indent=2, sort_keys=True)
@@ -1633,7 +1643,9 @@ def _run_cache(args: argparse.Namespace) -> int:
         "prediction files are discarded unless --output-dir is supplied.",
         file=sys.stderr,
     )
-    started = resolve_requests(request)
+    # Resolution can query the selected device while building cache profiles.
+    # Leave it in the worker when isolation is requested.
+    started = resolve_requests(request) if args.isolation == "in-process" else ()
     for item in started:
         backend = model_info(item.model).model
         print(
@@ -1645,7 +1657,7 @@ def _run_cache(args: argparse.Namespace) -> int:
     # output path, for example). Keep that useful text visible, but never let
     # it corrupt the machine-readable cache report on stdout.
     with _stdout_to_stderr():
-        result = warm_cache(request)
+        result = warm_cache(request, isolation=args.isolation)
     results = result if isinstance(result, tuple) else (result,)
     for item in results:
         peak = (
@@ -1743,19 +1755,11 @@ def _apply_gc_threshold() -> None:
     gc.set_threshold(*PREDICT_GC_THRESHOLD)
 
 
-def _skip_release_reclaim() -> None:
-    """Drop chemistry caches at a session end without the collect and trim.
-
-    The library follows each release of a loaded cache with a full
-    ``gc.collect()`` and ``malloc_trim``, handing the pages back to the
-    operating system. A prediction process exits after its batch, or reuses
-    that freed memory for the next model in it, so the pass is pure cost here:
-    0.33 s of full collection in a warm 254-token ESMFold2 process (fixed-cost
-    job 2391). Same restriction as `_apply_gc_threshold`.
-    """
+def _enable_release_reclaim() -> None:
+    """Return released model pages even when this CLI executes a long batch."""
     from foldjax.models import _managed_memory
 
-    _managed_memory.set_reclaim_at_release(False)
+    _managed_memory.set_reclaim_at_release(True)
 
 
 def _requested_cp_devices(args: argparse.Namespace) -> int:
@@ -1872,36 +1876,9 @@ def _planned_token_bucket(
     ligand it cannot count is named. None for a native input, which carries no
     common job to count.
     """
-    from foldjax.padding import resolve_axis
-    from foldjax.slurm import estimate_tokens
+    from foldjax._request_capacity import estimate_request_tokens
 
-    document = generated
-    if document is None and request.input_format == "foldjax":
-        from foldjax.input import read_job_document
-
-        try:
-            document = read_job_document(Path(request.input))
-        except (OSError, ValueError):
-            return None
-    if not isinstance(document, Mapping):
-        return None
-    tokens, notes = estimate_tokens(document)
-    record: dict[str, Any] = {"tokens": tokens}
-    if notes:
-        record["tokens_not_counted"] = notes
-    try:
-        buckets = None
-        if normalize_model_name(request.model) == "alphafold3":
-            from foldjax.backends.alphafold3 import _prediction_buckets
-
-            buckets = _prediction_buckets(request, dict(request.options))
-        record["token_bucket"] = resolve_axis(
-            tokens, request.padding, "tokens", buckets=buckets
-        )
-    except ValueError as error:
-        record["token_bucket"] = None
-        record["reason"] = str(error)
-    return record
+    return estimate_request_tokens(request, generated)
 
 
 def _effective_sampling(request: PredictionRequest) -> dict[str, Any]:
@@ -2162,7 +2139,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _apply_mem_fraction(args.mem_fraction)
         _apply_rendezvous_timeout(args)
         _apply_gc_threshold()
-        _skip_release_reclaim()
+        _enable_release_reclaim()
     elif args.command == "plan":
         _validate_mem_fraction(args.mem_fraction)
         return _run_plan(args)

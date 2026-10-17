@@ -315,6 +315,27 @@ def _exceeding_profile(
     return reasons
 
 
+def _capacity_assessment(
+    model: str,
+    tokens: int,
+    options: Mapping[str, Any],
+    *,
+    num_samples: int | None,
+    shape_profile: Mapping[str, Any],
+) -> dict[str, Any]:
+    override = memory_policy.parse_budget_gib(options.get("memory_budget_gib"))
+    return memory_policy.observed_capacity(
+        model,
+        tokens,
+        None if override is None else int(override * _GIB),
+        num_samples=num_samples,
+        shape_profile={
+            **shape_profile,
+            "requested_msa_cap": options.get("max_msa_depth"),
+        },
+    )
+
+
 def plan_resources(
     model: str,
     document: Mapping[str, Any] | None,
@@ -345,8 +366,25 @@ def plan_resources(
     exceeding = _exceeding_profile(model, document, options or {}, padding=padding)
     if exceeding:
         record["exceeds_profile"] = exceeding
+    warning = None
+    if document is not None:
+        tokens, notes = estimate_tokens(document)
+        record["tokens_estimate"] = tokens
+        assessment = _capacity_assessment(
+            model,
+            tokens,
+            options or {},
+            num_samples=num_samples,
+            shape_profile={"padding": padding, "tokens_estimate": tokens},
+        )
+        record["observed_capacity"] = assessment
+        warning = assessment["warning"]
+        if warning is not None:
+            record["warning"] = warning
+        if notes:
+            record["tokens_not_counted"] = notes
     if model in _NO_LAW:
-        record["reason"] = _NO_LAW[model]
+        record["reason"] = _NO_LAW[model] + (f". {warning}" if warning else "")
         return record
     law = _DEFAULT_LAW.get(model)
     if law is None:
@@ -355,13 +393,6 @@ def plan_resources(
     if document is None:
         record["reason"] = "the input is not a common job, so its tokens are unknown"
         return record
-    tokens, notes = estimate_tokens(document)
-    record["tokens_estimate"] = tokens
-    warning = memory_policy.capacity_warning(model, tokens)
-    if warning is not None:
-        record["warning"] = warning
-    if notes:
-        record["tokens_not_counted"] = notes
     record["law"] = {
         "model": law.model,
         "profile": law.profile,
@@ -372,7 +403,7 @@ def plan_resources(
         record["reason"] = (
             f"the {model} law needs the processed MSA row count, which only "
             "the featurizer knows"
-        )
+        ) + (f". {warning}" if warning else "")
         return record
     if not law.covers(tokens):
         low, high = law.domain_tokens
@@ -424,6 +455,8 @@ def plan_resources(
         )
         if reasons:
             record["off_profile"] = list(reasons)
+    if warning is not None:
+        record["reason"] += f". {warning}"
     return record
 
 
@@ -469,9 +502,17 @@ def plan_slurm(
     if isinstance(padding_estimate, Mapping):
         token_bucket = padding_estimate.get("token_bucket")
         if isinstance(token_bucket, int):
-            warning = memory_policy.capacity_warning(
-                str(summary.get("model")), token_bucket
+            assessment = _capacity_assessment(
+                str(summary.get("model")),
+                token_bucket,
+                options,
+                num_samples=sampling.get("num_samples")
+                if isinstance(sampling, Mapping)
+                else None,
+                shape_profile=padding_estimate,
             )
+            record["observed_capacity"] = assessment
+            warning = assessment["warning"]
             if warning is not None:
                 record["warning"] = warning
                 if warning not in record["reason"]:

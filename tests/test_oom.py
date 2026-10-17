@@ -535,6 +535,59 @@ def test_module_names_without_an_oom_do_not_change_the_classification():
     assert not oom.is_outside_pool_oom(RuntimeError("Out of memory allocating array"))
 
 
+@pytest.mark.parametrize(
+    "launch",
+    (
+        "Kernel launch failed",
+        "kernel-launch failed",
+        "kernel_launch failed",
+        "failed to launch kernel",
+        "Failed to launch GPU kernel",
+        "Failed to launch CUDA kernel",
+        "cuLaunchKernel",
+        "cudaLaunchKernel",
+    ),
+)
+@pytest.mark.parametrize(
+    "code", ("CUDA_ERROR_OUT_OF_MEMORY", "cudaErrorMemoryAllocation")
+)
+def test_cuda_launch_oom_is_outside_the_pool_even_when_pool_usage_is_low(
+    monkeypatch, launch, code
+):
+    monkeypatch.setenv(oom.CURRENT_FRACTION_ENV, "0.9")
+    monkeypatch.setattr(
+        oom,
+        "_pool_card_and_used",
+        lambda: (int(21.2 * GIB), int(23.5 * GIB), 2 * GIB),
+    )
+    error = RuntimeError(f"{launch}: {code}")
+    assert oom.is_outside_pool_oom(error)
+    message = oom.diagnose(error)
+    assert "outside the allocator's pool" in message
+    assert "loading or launching" in message
+    assert "0.8-0.85" in message and "restart the process" in message
+    assert "=0.95" not in message and "Raise" not in message
+
+
+def test_launch_words_without_cuda_oom_do_not_steal_allocator_failures(monkeypatch):
+    assert not oom.is_outside_pool_oom(RuntimeError("kernel launch invalid argument"))
+    assert not oom.is_outside_pool_oom(
+        RuntimeError("Out of memory allocating kernel launch buffer")
+    )
+    mixed = ExceptionGroup(
+        "failures",
+        [
+            RuntimeError("kernel launch: CUDA_ERROR_OUT_OF_MEMORY"),
+            ValueError("invalid kernel signature"),
+        ],
+    )
+    assert not oom.is_outside_pool_oom(mixed)
+    monkeypatch.setattr(
+        oom, "_pool_card_and_used", lambda: (21 * GIB, 24 * GIB, 2 * GIB)
+    )
+    assert "Raise it" in oom.diagnose(RuntimeError("CUDA_ERROR_OUT_OF_MEMORY"))
+
+
 def test_pool_size_is_not_reported_as_the_required_memory(monkeypatch):
     monkeypatch.setattr(
         oom,

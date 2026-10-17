@@ -150,7 +150,7 @@ persistent store, these call diagnostics are absent.
 | `source_sha256`, `runtime_sha256`, `device_sha256` | Source assets, software versions, or device properties differ. |
 | `store_identity_sha256`, `signature_sha256` | The full store identity or identity-plus-call differs. |
 | `namespace_sha256` | A different cache-directory spelling was selected; its path is not printed. |
-| `sources` | `store` reused saved tuning, `measured` tuned in this prediction, `partial` retained successful operations while missing operations fell back, or `tokamax` used Tokamax's own resolution. |
+| `sources` | `store` reused saved tuning, `measured` tuned in this prediction, `partial` retained successful operations while missing operations fell back, `heuristic` used a clamped GLU after resource failures, or `tokamax` used Tokamax's own resolution. |
 
 CPU regression tests run native featurization and the actual runner's numeric
 input conversion for different MSA depths, lengths in the first bucket,
@@ -248,6 +248,10 @@ Managed persistent tuning can measure a selected GPU synchronously, including
 when JAX's process-default backend is CPU. During prediction, Tokamax's implicit
 hardware queries use the selected device; explicit backend queries retain their
 usual meaning. Worker-based tuning remains limited to the process-default GPU.
+For GPUs with a known small shared-memory budget, GLU candidates whose staged
+input and weight tiles exceed that budget are removed before compilation and
+measurement. The estimate accounts for both weight tiles and their dtype; it
+does not replace the compiler's final shared-memory check.
 Explicit external sources, unverifiable assets, CPU runs, and `--no-cache` keep
 Tokamax's process-local policy; an autotune miss outside the default GPU still
 fails when the managed synchronous path is unavailable.
@@ -260,6 +264,14 @@ successful configurations are retained for this process's inline fallback and
 reported as `partial`; no incomplete manifest is published. Missing kernel
 identities and failure reasons appear in the warning. On a selected GPU that
 cannot safely use inline tuning, incomplete coverage raises that diagnostic.
+
+If the remaining failures are exclusively known resource errors in GLU,
+including an all-failed exception group, the managed store may run the clamped
+heuristic after its measurement retry also fails. It retains successful measured
+operations and checks the exact lowering for newly uncovered operations first.
+This path records `source=heuristic`, stays in process memory, and is never
+published as a measured tuning result. Programming errors, unsupported devices,
+wrong-device results, and unknown shared-memory budgets do not enter this path.
 
 A fresh-process `t0128` gate persisted 22 unique configurations, then completed
 under `kernel_autotuning=error` with zero Tokamax misses: the writer used

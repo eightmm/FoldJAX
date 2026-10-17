@@ -682,22 +682,22 @@ def _prepare_padded_jobs(
     msa_crop_size: int | None = None,
     ref_max_modified_date: datetime.date = _REF_MAX_MODIFIED_DATE,
     featurisation_options: Mapping[str, Any] | None = None,
-) -> tuple[tuple[Any, str, Path, Any, PaddingPlan], ...]:
-    """Resolve every neutral job before the first model invocation."""
+) -> Iterator[tuple[Any, str, Path, Any, PaddingPlan]]:
+    """Materialize only the current native job's padded feature arrays."""
 
-    prepared = []
     for fold_input, job_name, job_dir in jobs:
-        examples, plan = _featurize_padded_structure(
-            fold_input,
-            buckets=buckets,
-            overflow=overflow,
-            fixed_target=fixed_target,
-            msa_crop_size=msa_crop_size,
-            ref_max_modified_date=ref_max_modified_date,
-            featurisation_options=featurisation_options,
+        yield (
+            fold_input, job_name, job_dir,
+            *_featurize_padded_structure(
+                fold_input,
+                buckets=buckets,
+                overflow=overflow,
+                fixed_target=fixed_target,
+                msa_crop_size=msa_crop_size,
+                ref_max_modified_date=ref_max_modified_date,
+                featurisation_options=featurisation_options,
+            ),
         )
-        prepared.append((fold_input, job_name, job_dir, examples, plan))
-    return tuple(prepared)
 
 
 def _predict_featurized_structure(
@@ -706,7 +706,7 @@ def _predict_featurized_structure(
     model_runner: Any,
     runner: Any,
 ) -> tuple[Any, ...]:
-    """Run inference over examples retained by the neutral padding preflight."""
+    """Run inference over the current job's padded feature arrays."""
 
     import jax
 
@@ -1569,6 +1569,13 @@ class AlphaFold3Backend(Backend):
                         assert resolved_plan is not None
                         padding_plans.append(resolved_plan.summary())
                     samples.extend(_samples(results, job_dir, job_name))
+                    # Native multi-job files bypass the API's input loop. Do
+                    # not retain one executable/feature tree per native job.
+                    del examples, results
+                    if len(jobs) > 1:
+                        from foldjax._execution_memory import release_execution_memory
+
+                        release_execution_memory()
             shape_profile = _public_shape_profile(request, padding_plans)
             native_raw = tuple(all_results)
             result = PredictionResult(

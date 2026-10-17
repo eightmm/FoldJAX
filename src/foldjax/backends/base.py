@@ -553,7 +553,9 @@ class Backend(ABC):
 
         Only backends with ``session_reuse = True`` are dispatched through
         this single-threaded context. Large built-ins may override it to load
-        one checkpoint for several inputs or seeds. The context boundary is
+        one checkpoint for related seeds. At each completed-input boundary,
+        the dispatcher invalidates heavyweight state while retaining immutable
+        resource identities for provenance checks. The context boundary is
         deliberate: FoldJAX must not turn multi-gigabyte model state into a
         process-global cache, retain two models while switching backends, or
         leak a failed run into the next request. Implementations must defer
@@ -565,7 +567,7 @@ class Backend(ABC):
         yield self
 
     def invalidate_session(self) -> None:
-        """Discard reusable state after an absorbed prediction failure.
+        """Discard runners and weights after an input or absorbed failure.
 
         A backend that implements :meth:`session` may override this hook.  The
         no-op keeps third-party backends source-compatible while allowing the
