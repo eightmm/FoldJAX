@@ -2154,6 +2154,7 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
 def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
     tmp_path: Path, monkeypatch
 ) -> None:
+    from foldjax.models._chain_profile import chain_capacity
     from foldjax.models.openfold3.data import has_atomized_tokens
 
     features = {
@@ -2191,6 +2192,7 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
         }
 
     def fake_compile(config, table, *, n_chain=None, **compile_options):
+        seen["n_chain"] = n_chain
         seen["compile_options"] = compile_options
 
         def compiled(key, batch, params, *, noise_mask=None):
@@ -2221,6 +2223,7 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
             normalize_asym_ids=lambda batch: (batch, 1),
         ),
         "foldjax.models.openfold3.inference": SimpleNamespace(
+            chain_capacity=chain_capacity,
             resolve_dtypes=lambda config: (None, None),
             cast_narrow_params=lambda params, dtype, confidence: params,
             released_config=lambda **kwargs: SimpleNamespace(
@@ -2263,6 +2266,7 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
 
     result = OpenFold3Backend().predict(request)
 
+    assert seen["n_chain"] == 1
     assert seen["targets"] == (4, 4, None, 2)
     assert seen["compact_shape"] == (1, 4)
     assert seen["compile_options"] == {
@@ -2281,6 +2285,8 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
         "msa": 2,
         "templates": 2,
     }
+    assert result.shape_profile["chain_count"] == 1
+    assert result.shape_profile["static"] == {"chain_capacity": 4}
 
 
 def test_openfold3_featurization_names_the_extra_it_needs(monkeypatch) -> None:

@@ -330,9 +330,14 @@ def test_compiled_boundary_strips_stale_private_keys_before_jit(monkeypatch) -> 
 
     class CaptureGraph:
         def __call__(
-            self, key, batch, params, table, tape, mask, augmentation_tape, *, identity
+            self, key, batch, params, table, tape, mask, augmentation_tape,
+            chain_count, *, identity
         ):
             assert augmentation_tape is None
+            assert chain_count.shape == ()
+            assert chain_count.dtype == np.int32
+            assert int(chain_count) == -1
+            assert identity.chain_capacity == 4
             seen["features"] = batch
             return np.asarray(7, np.int32)
 
