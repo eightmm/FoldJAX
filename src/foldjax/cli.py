@@ -804,6 +804,8 @@ def _parser() -> argparse.ArgumentParser:
         help="lower a real prediction input and inspect its exact executable keys",
         description="Read and preprocess a real input, then lower supported "
         "ESMFold2/Boltz-2 prediction graphs without compiling or running them. "
+        "With --msa auto/required, reuse validated MSA cache entries only; "
+        "missing or damaged entries fail without searching or repairing. "
         "Report matching "
         "trusted shared/private cache files. This may read checkpoints; it does "
         "not validate cached executable contents, LM-stage coverage or tuning.",

@@ -477,11 +477,56 @@ def test_tokamax_identity_uses_effective_matmul_precision(
         )
 
     identities = [dict(call["config_identity"]) for call in captured]
+    source = af3_backend._managed_content_snapshot(weights)
+    assert source is not None
+    assert source != af3_backend._managed_asset_snapshot(weights)
+    assert all(call["source_snapshot"] == source for call in captured)
     assert [identity["matmul_precision"] for identity in identities] == [
         "default",
         "high",
         "highest",
     ]
+
+
+def test_session_generation_change_before_portable_hash_poisons_before_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_runtime: _MockRuntime,
+) -> None:
+    weights = _weights(tmp_path)
+    request = _request(
+        tmp_path,
+        weights=weights,
+        output="changed-before-store",
+        num_seeds=2,
+        cache_dir=tmp_path / "cache",
+    )
+    original = af3_backend._managed_content_snapshot
+    observed = []
+
+    def replacement_snapshot(path: Path):
+        # The session has anchored generation A. An external replacement just
+        # before hashing can still produce a coherent content identity for B.
+        (weights / "af3.bin").write_bytes(b"replacement parameter generation")
+        observed.append(original(path))
+        return observed[-1]
+
+    monkeypatch.setattr(af3_backend, "_managed_content_snapshot", replacement_snapshot)
+    monkeypatch.setattr(
+        af3_backend,
+        "_create_tokamax_store",
+        lambda **_kwargs: pytest.fail("a changed generation must not select a store"),
+    )
+    backend = AlphaFold3Backend()
+    with backend.session((request,)):
+        with pytest.raises(PredictionError, match="changed while"):
+            backend.predict(request)
+        with pytest.raises(PredictionError, match="changed while"):
+            backend.validate_session(request)
+
+    assert observed and observed[0] is not None
+    assert mock_runtime.counts["model_runners"] == 0
+    assert mock_runtime.counts["inferences"] == 0
 
 
 def test_managed_default_aliases_reuse_one_managed_model_runner(

@@ -163,7 +163,11 @@ def _signature_record(signature: tuple[Any, ...]) -> dict[str, Any]:
 
 
 def path_stat_identity(path: Path) -> dict[str, Any] | None:
-    """Cheap persisted identity without reading a potentially huge payload."""
+    """Stat generation for session anchors and strict run-resume guards.
+
+    Device/inode/timestamps are local filesystem observations. Compilation and
+    shared tuning identities must use content instead of this snapshot.
+    """
     signature = _weight_stat_signature(path)
     if signature is None:
         return None

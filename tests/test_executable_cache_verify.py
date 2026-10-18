@@ -4,6 +4,7 @@ import dataclasses
 import json
 import os
 from contextlib import contextmanager
+from pathlib import Path
 
 import jax
 import numpy as np
@@ -278,20 +279,192 @@ def test_cli_verify_returns_status_for_the_actual_key(
     assert "execute_once" not in output.err
 
 
-def test_verify_never_searches_an_alignment(resolved_request):
-    request = dataclasses.replace(resolved_request, msa="auto")
-    with pytest.raises(ValueError, match="does not search MSA"):
+def test_verify_refuses_native_search_before_backend_preparation(resolved_request):
+    request = dataclasses.replace(
+        resolved_request, msa="auto", options={"use_msa_server": True}
+    )
+    with pytest.raises(ValueError, match="does not run a native MSA server search"):
         verify.verify_prediction_cache(request)
 
 
+class _CachedMsaBackend:
+    name, version = "verification-fixture", "1"
+
+    def search(self, sequence):
+        from foldjax.search.msa import MsaPayload
+
+        return MsaPayload(
+            paired=f">query\n{sequence}\n>paired\n{sequence}\n",
+            unpaired=f">query\n{sequence}\n>unpaired\n{sequence}\n",
+        )
+
+    def search_complex(self, sequences):
+        from foldjax.search.msa import ComplexPairPayload
+
+        return ComplexPairPayload(
+            tuple(
+                f">query\n{sequence}\n>paired\n{sequence}\n" for sequence in sequences
+            )
+        )
+
+
+def _common_msa_request(request, model, sequences, policy):
+    request.input.write_text(
+        json.dumps(
+            {
+                "name": "cached-probe",
+                "entities": [
+                    {"type": "protein", "id": chr(65 + index), "sequence": sequence}
+                    for index, sequence in enumerate(sequences)
+                ],
+            }
+        )
+    )
+    return dataclasses.replace(request, model=model, input_format="foldjax", msa=policy)
+
+
 @pytest.mark.parametrize("model", ["boltz2", "esmfold2"])
-@pytest.mark.parametrize("local_msa", [False, True])
+@pytest.mark.parametrize("policy", ["auto", "required"])
+@pytest.mark.parametrize("sequences", [("ACD",), ("ACD", "EFG")])
+def test_cached_auto_msa_materializes_the_same_input_and_key_as_prediction(
+    resolved_request, monkeypatch, model, policy, sequences
+):
+    import yaml
+
+    from foldjax import msa_search
+    from foldjax.input import materialize_native_input
+    from foldjax.search import msa
+
+    request = _common_msa_request(resolved_request, model, sequences, policy)
+    backend = get_backend(model)
+    provider = _CachedMsaBackend()
+    pipeline = msa.MsaSearchPipeline(request.input.parent / "alignments", provider)
+    monkeypatch.setattr(msa_search, "_msa_pipeline", lambda: pipeline)
+    # Normal prediction materialization both fills the fixture store and gives
+    # the independent native-input reference the lowering adapter must receive.
+    normal_path = materialize_native_input(
+        request.input,
+        backend.capabilities(),
+        request.input.parent / "prediction-input",
+        seed=request.seed,
+        msa=request.msa,
+        options=backend.apply_sampling(request),
+        msa_pairing=request.msa_pairing,
+    )
+
+    def signature(path):
+        document = yaml.safe_load(path.read_text())
+        proteins = (
+            [entry["protein"] for entry in document["sequences"]]
+            if model == "boltz2"
+            else document["entities"]
+        )
+        msa_key = "msa" if model == "boltz2" else "unpaired_msa"
+        return tuple(
+            (protein["sequence"], Path(protein[msa_key]).read_text())
+            for protein in proteins
+        )
+
+    expected = signature(normal_path)
+    shape = (
+        sum(len(sequence) for sequence, _ in expected),
+        sum(len(text) for _, text in expected),
+    )
+
+    def lowered():
+        return jax.jit(_tiny_model).lower(jax.ShapeDtypeStruct(shape, np.float32))
+
+    def lower(_self, scalar):
+        assert scalar.msa == policy
+        assert signature(scalar.input) == expected
+        return [("primary", lowered())]
+
+    def forbid(*_args, **_kwargs):
+        pytest.fail("verification searched or mutated the existing MSA cache")
+
+    monkeypatch.setattr(provider, "search", forbid)
+    monkeypatch.setattr(provider, "search_complex", forbid)
+    for name in ("cache_key_lock", "quarantine_entry", "staging_directory"):
+        monkeypatch.setattr(msa, name, forbid)
+    monkeypatch.setattr(type(backend), "lower_cache_graphs", lower)
+    snapshot = {
+        path: path.read_bytes()
+        for path in pipeline.cache_dir.rglob("*")
+        if path.is_file()
+    }
+    _forbid_compilation(monkeypatch)
+    with jax.default_device(jax.devices("cpu")[0]):
+        key = verify.lowered_cache_key(lowered())
+        normal_request = dataclasses.replace(
+            request,
+            input=normal_path,
+            input_format="native"
+            if "native" in backend.capabilities().input_formats
+            else "foldjax",
+        )
+        _store(resolve_cache_dir(normal_request, backend), key)
+        result = verify.verify_prediction_cache(request)
+    assert result["status"] == "key_present"
+    assert result["results"][0]["graphs"][0]["cache_key"] == key
+    assert snapshot == {
+        path: path.read_bytes()
+        for path in pipeline.cache_dir.rglob("*")
+        if path.is_file()
+    }
+
+
+@pytest.mark.parametrize("policy", ["auto", "required"])
+@pytest.mark.parametrize("state", ["missing", "corrupt", "missing_complex"])
+def test_auto_msa_cache_miss_refuses_without_fallback_search_or_repair(
+    resolved_request, monkeypatch, policy, state
+):
+    from foldjax import msa_search
+    from foldjax.search import msa
+
+    sequences = ("ACD", "EFG") if state == "missing_complex" else ("ACD",)
+    request = _common_msa_request(resolved_request, "boltz2", sequences, policy)
+    provider = _CachedMsaBackend()
+    pipeline = msa.MsaSearchPipeline(request.input.parent / "alignments", provider)
+    if state != "missing":
+        entries = pipeline.search(sequences)
+        if state == "corrupt":
+            Path(entries[0]["unpairedMsaPath"]).write_text("corrupt alignment")
+    monkeypatch.setattr(msa_search, "_msa_pipeline", lambda: pipeline)
+
+    def forbid(*_args, **_kwargs):
+        pytest.fail(
+            "cache-missing verification searched, repaired, or lowered a fallback"
+        )
+
+    monkeypatch.setattr(provider, "search", forbid)
+    monkeypatch.setattr(provider, "search_complex", forbid)
+    for name in ("cache_key_lock", "quarantine_entry", "staging_directory"):
+        monkeypatch.setattr(msa, name, forbid)
+    monkeypatch.setattr(type(get_backend("boltz2")), "lower_cache_graphs", forbid)
+    snapshot = {
+        path: path.read_bytes()
+        for path in pipeline.cache_dir.rglob("*")
+        if path.is_file()
+    }
+    with pytest.raises(ValueError, match="requires existing valid MSA cache entries"):
+        verify.verify_prediction_cache(request)
+    assert snapshot == {
+        path: path.read_bytes()
+        for path in pipeline.cache_dir.rglob("*")
+        if path.is_file()
+    }
+    assert pipeline.cache_dir.exists() == (state != "missing")
+
+
+@pytest.mark.parametrize("model", ["boltz2", "esmfold2"])
+@pytest.mark.parametrize("msa_policy", ["single", "none", "auto", "required"])
 def test_common_job_uses_prediction_materialization_and_temporary_outputs(
-    resolved_request, monkeypatch, model, local_msa
+    resolved_request, monkeypatch, model, msa_policy
 ):
     import yaml
 
     request = resolved_request
+    local_msa = msa_policy != "single"
     entity = {"type": "protein", "id": ["A"], "sequence": "ACD"}
     alignment = request.input.parent / "local.a3m"
     if local_msa:
@@ -306,7 +479,7 @@ def test_common_job_uses_prediction_materialization_and_temporary_outputs(
         model=model,
         input_format="foldjax",
         output_dir=output,
-        msa="none" if local_msa else "single",
+        msa=msa_policy,
         options={"pocket_sampling": "off"},
     )
     seen = []
@@ -335,6 +508,10 @@ def test_common_job_uses_prediction_materialization_and_temporary_outputs(
         ]
 
     monkeypatch.setattr(type(get_backend(model)), "lower_cache_graphs", lower)
+    monkeypatch.setattr(
+        "foldjax.msa_search._msa_pipeline",
+        lambda: pytest.fail("supplied alignments must not query the search cache"),
+    )
     _forbid_compilation(monkeypatch)
     with jax.default_device(jax.devices("cpu")[0]):
         result = verify.verify_prediction_cache(request)

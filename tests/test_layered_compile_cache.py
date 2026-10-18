@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import textwrap
+import warnings
 from pathlib import Path
 
 import jax
@@ -43,6 +44,51 @@ def test_private_root_does_not_follow_shared_home_or_checkout(tmp_path, monkeypa
     assert cache.private_compile_cache_root() == tmp_path / "xdg/foldjax/compile"
     monkeypatch.setenv("FOLDJAX_PRIVATE_COMPILE_CACHE", str(tmp_path / "override"))
     assert cache.private_compile_cache_root() == tmp_path / "override"
+
+
+@pytest.mark.parametrize("mask", [0o022, 0o002])
+def test_layered_shared_namespaces_are_readable_without_group_write(
+    tmp_path, monkeypatch, trust_ancestors_above_tmp_path, mask
+):
+    monkeypatch.delenv(cache.TRUST_SHARED_COMPILE_CACHE_ENV, raising=False)
+    shared = tmp_path / "compile" / "protenix" / "weights" / "digest"
+    private = tmp_path / "private"
+    previous = os.umask(mask)
+    try:
+        with cache.compilation_cache_scope(shared, private_directory=private):
+            _adapter().put("key", b"compiled")
+    finally:
+        os.umask(previous)
+    for directory in (shared, *list(shared.parents)[:3]):
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o755
+    assert stat.S_IMODE((shared / "key-cache").stat().st_mode) == 0o644
+    assert stat.S_IMODE(private.stat().st_mode) == 0o700
+
+
+@pytest.mark.parametrize("mask", [0o002, 0o007])
+def test_layered_trusted_group_namespaces_keep_umask_and_setgid(
+    tmp_path, monkeypatch, mask
+):
+    store = tmp_path / "compile"
+    store.mkdir()
+    store.chmod(0o2775)
+    monkeypatch.setenv(cache.TRUST_SHARED_COMPILE_CACHE_ENV, "1")
+    shared = store / "boltz2" / "weights" / "digest"
+    previous = os.umask(mask)
+    try:
+        with cache.compilation_cache_scope(
+            shared, private_directory=tmp_path / "private"
+        ):
+            _adapter().put("key", b"compiled")
+    finally:
+        os.umask(previous)
+    for directory in (shared, shared.parent, shared.parent.parent):
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o2777 & ~mask
+    assert stat.S_IMODE((shared / "key-cache").stat().st_mode) == 0o666 & ~mask
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        cache.cache_snapshot(shared, warn_unshareable=True)
+    assert not caught
 
 
 def test_shared_first_no_copy_and_private_write_on_readonly_shared(

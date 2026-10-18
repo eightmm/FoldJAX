@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -128,6 +129,79 @@ def test_warm_cache_keeps_an_explicit_output_directory(
     assert isinstance(result, CacheWarmResult)
     assert result.output_dir == output
     assert (output / "sample.cif").is_file()
+
+
+@pytest.mark.parametrize("tier", ["shared", "private"])
+@pytest.mark.parametrize("private_path", ["directory", "entry", "neither"])
+@pytest.mark.parametrize("trusted_group", [False, True])
+def test_warm_warns_about_unreadable_shared_publication_only(
+    tmp_path, monkeypatch, tier, private_path, trusted_group
+):
+    from foldjax import cache, warmup
+
+    request = _request(tmp_path, seeds=None, seed=0)
+    namespace = tmp_path / "cache" / "namespace"
+    private = tmp_path / "private"
+    monkeypatch.setenv(cache.TRUST_SHARED_COMPILE_CACHE_ENV, str(int(trusted_group)))
+    if tier == "private":
+        namespace.mkdir(parents=True, mode=0o700)
+        namespace.chmod(0o700)
+        old_entry = namespace / "old-cache"
+        old_entry.write_bytes(b"existing shared entry")
+        old_entry.chmod(0o600)
+    monkeypatch.setattr(warmup, "resolve_requests", lambda _request: (request,))
+    monkeypatch.setattr(
+        warmup, "get_backend", lambda _model: SimpleNamespace(name="boltz2")
+    )
+    monkeypatch.setattr(warmup, "resolve_cache_dir", lambda *_args: namespace)
+    monkeypatch.setattr(warmup, "runtime_dir", lambda *_args: tmp_path / "runtime")
+    monkeypatch.setattr(
+        cache,
+        "recorded",
+        lambda: {
+            "locations": {
+                "shared": str(namespace) if tier == "shared" else None,
+                "private": str(private),
+            },
+            "writes": {tier: {"success": 1}},
+        },
+    )
+
+    def predict(run, *, output_root=None):
+        destination = namespace if tier == "shared" else private
+        destination.mkdir(parents=True, mode=0o755)
+        directory_mode = 0o2770 if trusted_group else 0o755
+        entry_mode = 0o660 if trusted_group else 0o644
+        if tier == "private" or private_path == "directory":
+            directory_mode = 0o700
+        if tier == "private" or private_path == "entry":
+            entry_mode = 0o600
+        destination.chmod(directory_mode)
+        entry = destination / "key-cache"
+        entry.write_bytes(b"compiled")
+        entry.chmod(entry_mode)
+        return PredictionResult(
+            model="boltz2",
+            samples=(PredictionSample(seed=run.seed, coordinates=[[0, 0, 0]]),),
+            output_dir=run.output_dir,
+        )
+
+    monkeypatch.setattr(warmup, "_predict_resolved", predict)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = warm_cache(request)
+    notices = [
+        item for item in caught if "warmed shared compile cache" in str(item.message)
+    ]
+    assert len(notices) == (1 if tier == "shared" and private_path != "neither" else 0)
+    if notices:
+        message = str(notices[0].message)
+        if trusted_group:
+            assert "g+rx" in message and "g+r" in message
+            assert "0755" not in message and "0644" not in message
+        else:
+            assert "0755" in message and "0644" in message
+    assert result.compilation_cache["writes"][tier]["success"] == 1
 
 
 def test_warm_cache_rejects_disabled_persistent_cache(tmp_path: Path) -> None:

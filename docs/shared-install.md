@@ -32,6 +32,13 @@ accepts a root-owned cache. Readers of a cache owned by another ordinary account
 need to trust that owner and set `FOLDJAX_TRUST_SHARED_COMPILE_CACHE=1`;
 `foldjax doctor` reports the compilation-cache trust decision.
 
+New ordinary shared compilation namespaces are created as 0755 under umask
+022 (also under 002, without granting group write). The private fallback stays
+0700; explicitly trusted group stores retain their umask and setgid policy.
+After warming, a warning identifies a shared directory or entry whose mode
+prevents general read access. Existing permissions are preserved until their
+owner or administrator repairs them with `setup --shared --apply`.
+
 Predictions read executable entries from that trusted shared namespace first,
 then from the same model/weights/runtime namespace in the user's private cache.
 The private root is `$XDG_CACHE_HOME/foldjax/compile`, or

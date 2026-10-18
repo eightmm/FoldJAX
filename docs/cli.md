@@ -816,10 +816,14 @@ no sample axis in it: at 2,096 tokens it is 46,041.8 MiB at 5 samples and
 and its allowance carries the difference -- without which a refusal would
 never fire on a default run. A count below 5 is still outside the profile,
 and so is context parallelism, an inputs-only graph, and the fused GLU. The
-domain is 1,003 to 2,096 tokens, the two sizes this port has completed; 3,012
-is where it runs out of memory, the law reads 87.3 GiB there against the 86
-GiB its allocator asked for, and that agreement is a check rather than a fit,
-so the answer above 2,096 is `unknown`.
+current historical fit uses the rolled program measured on 2026-09-23:
+35,023.9 MiB at 2,096 tokens and 69,350.8 MiB at 3,012. Its measured token
+range is therefore 2,096–3,012. These are memory-calibration sizes; ordinary
+smaller inputs remain supported and run with an `unknown` peak estimate.
+For example, the warning at 256 tokens names the calibration date and range
+rather than presenting them as a serving-length limit. The compact-LM managed
+path needs new GPU peak measurements before expanding that fitted domain;
+cluster bucket success/failure observations remain advisory.
 
 AlphaFold 3 accepts both flags and answers `unknown`, once, naming itself:
 the peaks recorded for that port are the harness's own XLA-client high-water

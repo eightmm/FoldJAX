@@ -340,11 +340,7 @@ def test_predict_exception_rebinds_every_caller_owner(
     traceback = caught.value.__traceback__
     backend_locals = None
     while traceback is not None:
-        if (
-            traceback.tb_frame.f_code.co_name == "predict"
-            and traceback.tb_frame.f_globals.get("__name__")
-            == "foldjax.backends.esmfold2"
-        ):
+        if traceback.tb_frame.f_code is ESMFold2Backend._predict.__code__:
             backend_locals = dict(traceback.tb_frame.f_locals)
             break
         traceback = traceback.tb_next

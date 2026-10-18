@@ -93,16 +93,37 @@ class CacheSnapshot:
         return {"files": self.files, "bytes": self.bytes}
 
 
-def cache_snapshot(directory: Path) -> CacheSnapshot:
-    """Count regular cache files without following user-controlled symlinks."""
+def cache_snapshot(directory: Path, *, warn_unshareable: bool = False) -> CacheSnapshot:
+    """Count regular files, optionally checking shared publication modes.
+
+    Private cache snapshots leave the optional sharing check disabled. Like
+    the size count, it skips symlinks and never repairs existing permissions.
+    """
 
     directory = Path(directory)
     if not directory.is_dir() or directory.is_symlink():
         return CacheSnapshot()
     files = 0
     bytes_ = 0
+    unshareable: tuple[Path, int] | None = None
+    trusted_group = warn_unshareable and shared_compile_cache_trusted()
+
+    def inspect_mode(path: Path, info: os.stat_result, required: int) -> None:
+        nonlocal unshareable
+        if (
+            warn_unshareable
+            and unshareable is None
+            and info.st_mode & required != required
+        ):
+            unshareable = path, info.st_mode & 0o7777
+
     for root, directories, names in os.walk(directory, followlinks=False):
         parent = Path(root)
+        if warn_unshareable:
+            try:
+                inspect_mode(parent, parent.stat(), 0o050 if trusted_group else 0o005)
+            except OSError:
+                pass
         directories[:] = [
             name for name in directories if not (parent / name).is_symlink()
         ]
@@ -111,7 +132,7 @@ def cache_snapshot(directory: Path) -> CacheSnapshot:
             try:
                 if path.is_symlink() or not path.is_file():
                     continue
-                size = path.stat().st_size
+                info = path.stat()
             except OSError:
                 # JAX may atomically replace a cache entry while it is counted.
                 # A snapshot is telemetry, not a readiness gate, so skip the
@@ -119,7 +140,32 @@ def cache_snapshot(directory: Path) -> CacheSnapshot:
                 # unrelated filesystem race.
                 continue
             files += 1
-            bytes_ += size
+            bytes_ += info.st_size
+            inspect_mode(path, info, 0o040 if trusted_group else 0o004)
+    if unshareable is not None:
+        import warnings
+
+        path, mode = unshareable
+        if trusted_group:
+            audience = "members of the trusted shared group"
+            repair = (
+                "Give that group directory read/search permissions (g+rx) "
+                "and entry read permissions (g+r)."
+            )
+        else:
+            audience = "other accounts"
+            repair = (
+                "Make shared directories readable/searchable (0755) and "
+                "entries readable (0644), or run foldjax setup --shared "
+                "--apply for a managed installation."
+            )
+        warnings.warn(
+            f"the warmed shared compile cache {directory} contains {path} "
+            f"with mode {mode:04o}; {audience} may not be able to read "
+            f"its entries. {repair}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     return CacheSnapshot(files=files, bytes=bytes_)
 
 
@@ -465,11 +511,13 @@ def _layered_shared_directory(directory: Path) -> Path | None:
     try:
         # Create through held descriptors too: checking after Path.mkdir would
         # already have created namespaces through an unsafe symlink ancestor.
+        # Shared reads need traversal without granting other accounts write
+        # access; the separately prepared private tier keeps mode 0700.
         with open_directory(
             path,
             private=False,
             create=True,
-            mode=0o777 if shared_compile_cache_trusted() else 0o700,
+            mode=0o777 if shared_compile_cache_trusted() else 0o755,
         ):
             pass
     except OSError as error:

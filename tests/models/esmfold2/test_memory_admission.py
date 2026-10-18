@@ -1,9 +1,8 @@
 """ESMFold2's peak is one arena, and this is where its law meets a run.
 
-The two fitted rows are 14,733.3 MiB at 1,003 tokens and 46,041.8 at 2,096,
-both at 5 samples; the released count is 32 and the same 2,096-token peak
-reads 46,284.8 there, which is why the sample axis is not in the law and why
-32 samples is inside its profile rather than off it.
+The rolled-program fit uses 35,023.9 MiB at 2,096 tokens and 69,350.8 at
+3,012. The earlier released program established the small spread between
+5 and 32 samples; its spread is retained in the allowance.
 
 `inference.predict` takes the budget as an argument and does nothing with
 `None`, so every direct caller here -- and every parity run and tape replay --
@@ -105,12 +104,24 @@ def test_warn_proceeds_and_refuse_does_not() -> None:
 
 @pytest.mark.parametrize("n_token", [2095, 3013])
 def test_outside_the_domain_is_unknown(n_token: int) -> None:
-    """3,012 tokens is censored, not fitted: the law reads 87.3 GiB there and
-    the run's allocator asked 86 GiB before failing, but no completed run
-    measured it, so the answer above 2,096 is `unknown`."""
+    """The historical fit does not establish a peak beyond its measured band."""
     with pytest.warns(RuntimeWarning, match="outside the fitted range"):
         decision = _admit(n_token, budget=_budget(32 * _GIB))
     assert decision.state == "unknown"
+
+
+def test_small_input_warning_identifies_the_memory_calibration_not_an_input_limit():
+    with pytest.warns(RuntimeWarning) as caught:
+        decision = _admit(256, budget=_budget(1 * _GIB))
+    assert decision.state == "unknown"
+    assert decision.estimates == ()
+    message = str(caught[0].message)
+    assert "no measured ESMFold2 peak estimate for 256 tokens" in message
+    assert "historical peak calibration covers 2,096-3,012 tokens" in message
+    assert "esmfold2-2026-09-23" in message
+    assert "unknown peak memory" in message
+    assert "The run proceeds without the check" in message
+    assert "released (2,096-3,012 tokens)" not in message
 
 
 def test_no_budget_is_no_check() -> None:

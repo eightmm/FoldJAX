@@ -26,6 +26,7 @@ from typing import Any
 import numpy as np
 
 from foldjax import memory_policy
+from foldjax._fsutil import sha256_file
 from foldjax.assets import AF3_PARAMETER_PATTERNS
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._tokamax_autotune import create_store as _create_tokamax_store
@@ -149,6 +150,72 @@ def _managed_asset_snapshot(
                 json.dumps(identity, sort_keys=True, separators=(",", ":")),
             )
         )
+    return tuple(records)
+
+
+@functools.lru_cache(maxsize=64)
+def _asset_content_records(
+    role: str,
+    resolved: str,
+    stat_snapshot: str,
+) -> tuple[tuple[str, int, str], ...] | None:
+    """Hash unchanged assets once per process; never persist the stat key."""
+
+    path = Path(resolved)
+    try:
+        if role == "source":
+            files = sorted(
+                (
+                    child
+                    for child in path.rglob("*")
+                    if child.is_file()
+                    and "__pycache__" not in child.relative_to(path).parts
+                    and child.suffix not in {".pyc", ".pyo"}
+                ),
+                key=lambda child: child.relative_to(path).as_posix(),
+            )
+        else:
+            files = [path]
+        records = tuple(
+            (
+                child.relative_to(path).as_posix() if role == "source" else ".",
+                child.stat().st_size,
+                sha256_file(child),
+            )
+            for child in files
+        )
+        after = path_stat_identity(path)
+        if (
+            after is None
+            or json.dumps(after, sort_keys=True, separators=(",", ":")) != stat_snapshot
+        ):
+            return None
+        return records
+    except (OSError, RuntimeError):
+        return None
+
+
+def _managed_content_snapshot(weights: Path) -> tuple[Any, ...] | None:
+    """Portable tuning identity of parameters, runner and recursive source.
+
+    Absolute paths and filesystem metadata belong to session anchors only.
+    A fresh recursive stat snapshot invalidates the process-local hash memo
+    when any asset changes, including a nested source edit, without rereading
+    the multi-gigabyte parameter bundle on every seed.
+    """
+
+    snapshot = _managed_asset_snapshot(weights)
+    if snapshot is None:
+        return None
+    records = []
+    for role, resolved, stat_snapshot in snapshot:
+        content = _asset_content_records(role, resolved, stat_snapshot)
+        if content is None:
+            return None
+        records.append((role, content))
+    # Hashing a later role must not hide a change to an earlier one.
+    if _managed_asset_snapshot(weights) != snapshot:
+        return None
     return tuple(records)
 
 
@@ -1453,11 +1520,15 @@ class AlphaFold3Backend(Backend):
                     ("stop_after", request.stop_after),
                 )
             source_snapshot = None
-            if managed_route and request.cache_dir is not None:
-                if anchor is not None:
-                    source_snapshot = anchor[1]
-                elif request.weights is not None:
-                    source_snapshot = _managed_asset_snapshot(Path(request.weights))
+            if (
+                managed_route
+                and request.cache_dir is not None
+                and request.weights is not None
+            ):
+                source_snapshot = _managed_content_snapshot(Path(request.weights))
+            # A coherent new digest must not label an older retained runner.
+            if managed_weights is not None:
+                self._anchor_assets(managed_weights)
             tokamax_store = _create_tokamax_store(
                 managed=managed_route,
                 cache_dir=request.cache_dir,

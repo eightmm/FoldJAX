@@ -797,13 +797,25 @@ def resolve_memory_policy(
             if outside
             else f"no processed MSA row count for {', '.join(missing)}"
         )
+        reason = f"no {model} peak estimate: {detail}"
+        if model == "esmfold2" and outside:
+            calibration = ", ".join(
+                f"{_token_span(laws[name], admitted=False)} "
+                f"({laws[name].calibration_id})"
+                for name in outside
+            )
+            reason = (
+                f"no measured ESMFold2 peak estimate for {n_token} tokens; "
+                f"historical peak calibration covers {calibration}. "
+                "Inputs outside the fitted range run with unknown peak memory"
+            )
         return MemoryDecision(
             state="unknown",
             selected=None,
             estimates=(),
             threshold=None if budget_bytes is None else _threshold(budget_bytes),
             reason=(
-                f"no {model} peak estimate: {detail}"
+                reason
                 + (
                     f". {warning}"
                     if model != "opendde"

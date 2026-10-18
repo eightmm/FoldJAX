@@ -140,14 +140,21 @@ To check a real input's executable key rather than just its namespace, use:
 
 ```bash
 foldjax cache verify --model esmfold2 --input job.yaml --padding --msa single
-foldjax cache verify --model boltz2 --input job.yaml --fixed-msa 2048 --msa none
+foldjax cache verify --model boltz2 --input job.yaml --fixed-msa 2048 --msa auto
 ```
 
-The second example expects local alignments in the input. Verification never
-searches an MSA or template service: choose `--msa single`, or preserve supplied
-local alignments with `--msa none`. Use the same input, weights, device and
-execution options as prediction. This can read checkpoints and preprocess the
-input, but it lowers the model graph without compiling or executing it. JAX's
+With `--msa auto` or `--msa required`, verification reads only existing valid
+MSA cache entries for the current search provenance, including complex pairing
+and RNA alignments. It applies prediction's query and file-hash checks. A missing
+or corrupt entry exits with status 2: no search, download, repair, lock, or
+single-sequence fallback is attempted. Populate the MSA cache with ordinary
+prediction or MSA prefetch first. Supplied local alignments remain usable;
+`--msa single` and `--msa none` retain their ordinary meanings. Direct native
+`use_msa_server=true` and public template searches remain refused.
+
+Use the same input, weights, device and execution options as prediction. This
+can read checkpoints and preprocess the input, but it lowers the model graph
+without compiling or executing it. JAX's
 own HLO/options/device key calculation is used to inspect trusted shared entries
 first, then private entries. No executable is deserialized and no cache entry is
 written.

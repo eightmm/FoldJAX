@@ -41,6 +41,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -50,6 +51,46 @@ from foldjax.redaction import redact
 
 class SearchError(RuntimeError):
     """An MSA provider returned an unusable or incomplete result."""
+
+
+class CachedMsaUnavailableError(RuntimeError):
+    """A read-only lookup cannot supply the alignment prediction would use.
+
+    Kept outside ``SearchError`` so ``msa='auto'`` cannot turn verification's
+    cache miss into a different, single-sequence graph.
+    """
+
+
+_CACHE_ONLY: ContextVar[bool] = ContextVar("foldjax_msa_cache_only", default=False)
+
+
+@contextmanager
+def cached_msa_only() -> Iterator[None]:
+    """Reuse validated entries without searching, locking, or repairing them."""
+    token = _CACHE_ONLY.set(True)
+    try:
+        yield
+    finally:
+        _CACHE_ONLY.reset(token)
+
+
+def _require_cached(load: Callable[[], Any], directory: Path) -> Any:
+    try:
+        cached = load()
+    except (
+        SearchError,
+        OSError,
+        UnicodeDecodeError,
+        ValueError,
+        TypeError,
+        AttributeError,
+    ) as error:
+        raise CachedMsaUnavailableError(
+            f"MSA cache entry is unusable: {directory}: {error}"
+        ) from error
+    if cached is None:
+        raise CachedMsaUnavailableError(f"MSA cache entry is missing: {directory}")
+    return cached
 
 
 class _UnsplittableTicketError(SearchError):
@@ -496,6 +537,15 @@ class MsaSearchPipeline:
         identities = {
             sequence: self._identity(sequence) for sequence in dict.fromkeys(normalized)
         }
+        if _CACHE_ONLY.get():
+            cached = {
+                sequence: _require_cached(
+                    lambda: self._cached(self.cache_dir / key, sequence, key),
+                    self.cache_dir / key,
+                )
+                for sequence, (key, _) in identities.items()
+            }
+            return [cached[sequence] for sequence in normalized]
         outcomes: dict[str, dict[str, str] | Exception] = {}
         missing: list[str] = []
         for sequence, (cache_key, _) in identities.items():
@@ -647,6 +697,12 @@ class MsaSearchPipeline:
         canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
         cache_key = _sha256(canonical.encode())
         directory = self.cache_dir / cache_key
+        if _CACHE_ONLY.get():
+            paths = _require_cached(
+                lambda: self._complex_cached(directory, unique, cache_key), directory
+            )
+            by_sequence = dict(zip(unique, paths, strict=True))
+            return [by_sequence[sequence] for sequence in normalized]
         with cache_key_lock(self.cache_dir, cache_key):
             try:
                 paths = self._complex_cached(directory, unique, cache_key)
@@ -931,6 +987,11 @@ class RnaMsaSearchPipeline:
         for sequence in dict.fromkeys(normalized):
             cache_key, identity = self._identity(sequence)
             directory = self.cache_dir / cache_key
+            if _CACHE_ONLY.get():
+                resolved[sequence] = _require_cached(
+                    lambda: self._cached(directory, sequence, cache_key), directory
+                )
+                continue
             with cache_key_lock(self.cache_dir, cache_key):
                 try:
                     cached = self._cached(directory, sequence, cache_key)

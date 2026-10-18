@@ -211,13 +211,17 @@ def _warm_resolved(
         raise PredictionError(f"{backend.name} cache warm produced no prediction")
     seconds = time.perf_counter() - started
     peak = device_peak_bytes()
-    after = cache_snapshot(namespace)
     from foldjax.backends._tokamax_autotune import recorded as recorded_kernel_tuning
 
     tuning = recorded_kernel_tuning() if backend.name == "alphafold3" else None
     from foldjax.cache import recorded as recorded_compilation_cache
 
     compilation_cache = recorded_compilation_cache()
+    shared = (compilation_cache or {}).get("locations", {}).get("shared")
+    after = cache_snapshot(
+        namespace,
+        warn_unshareable=compilation_cache is None or shared is not None,
+    )
     assert request.weights is not None
     return CacheWarmResult(
         model=backend.name,

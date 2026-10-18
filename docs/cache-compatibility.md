@@ -1,5 +1,37 @@
 # Compilation cache compatibility
 
+## 2026-10-18: portable AF3 tuning identity and shared permissions
+
+**AF3 rewarm required after upgrading from 596369b2.** Tokamax's source identity
+now binds parameter bytes, runner bytes, and sorted relative source-file names
+with their sizes and SHA-256 digests. Mount device numbers, inodes, timestamps,
+permissions and absolute install paths no longer enter that identity. The same
+assets therefore produce the same source digest across NFS clients. Device,
+driver/runtime, call shape and configuration still have to match.
+
+The JAX namespace revisions are unchanged for all six models. Existing JAX
+executables remain candidates for reuse, but old AF3 tuning records use the old
+source identity and are not migrated. Warm the serving buckets again to publish
+the content-based tuning records:
+
+```bash
+foldjax cache warm --model alphafold3 --token-buckets auto
+```
+
+Each process hashes unchanged assets once and uses stat generations only to
+invalidate that in-memory hash memo and the loaded-weight/session anchors.
+Generated Python bytecode is excluded from the source digest. The audit found
+ESMFold2, Boltz-2 and `_weight_session` snapshots used for process-local ownership.
+Manifest stat records remain strict validation of an existing output generation
+for `--resume`; they do not enter JAX namespaces or Tokamax's shared lookup keys.
+
+New ordinary shared namespaces use 0755; private namespaces retain 0700.
+Explicitly trusted group installations retain their umask/setgid policy.
+Warming warns about shared entries or directories whose modes prevent general
+read access. Existing 0700/0600 paths are not changed by prediction: an owner or
+administrator can repair the managed installation with
+`foldjax setup --shared --apply`.
+
 ## 2026-10-18: ESMFold2 managed LM path
 
 **Warm ESMFold2 again after upgrading from 568ee5c1.** Its graph revision is

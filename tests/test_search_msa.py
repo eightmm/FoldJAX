@@ -216,6 +216,81 @@ class _ComplexBackend(_Backend):
         )
 
 
+@pytest.mark.parametrize("kind", ["protein", "complex", "rna"])
+@pytest.mark.parametrize("state", ["present", "missing", "corrupt"])
+def test_cached_only_reuses_normal_validation_without_search_or_mutation(
+    tmp_path, monkeypatch, kind, state
+):
+    from foldjax.search import msa
+
+    class RnaBackend:
+        name, version = "fake-rna", "1"
+
+        def search(self, sequence):
+            return msa.RnaMsaPayload(f">query\n{sequence}\n>hit\n{sequence}\n")
+
+    if kind == "rna":
+        backend = RnaBackend()
+        pipeline = msa.RnaMsaSearchPipeline(tmp_path / "cache", backend)
+
+        def search():
+            return pipeline.search(["ACGUAC"])
+
+    else:
+        backend = _ComplexBackend()
+        pipeline = msa.MsaSearchPipeline(tmp_path / "cache", backend)
+
+        def search():
+            if kind == "complex":
+                return pipeline.search_complex([SEQUENCE, OTHER, SEQUENCE])
+            return pipeline.search_each([SEQUENCE, SEQUENCE])
+    if state != "missing":
+        expected = search()
+        if state == "corrupt":
+            Path(expected[0]["provenancePath"]).write_text("not valid JSON")
+
+    def snapshot():
+        return {
+            str(path.relative_to(tmp_path)): (path.stat().st_mode, path.read_bytes())
+            for path in tmp_path.rglob("*")
+            if path.is_file()
+        }
+
+    before = snapshot()
+
+    def forbid(*_args, **_kwargs):
+        pytest.fail("cache-only lookup searched, locked, published or quarantined")
+
+    monkeypatch.setattr(backend, "search", forbid)
+    if kind == "complex":
+        monkeypatch.setattr(backend, "search_complex", forbid)
+    for name in ("cache_key_lock", "quarantine_entry", "staging_directory"):
+        monkeypatch.setattr(msa, name, forbid)
+    with msa.cached_msa_only():
+        if state == "present":
+            assert search() == expected
+        else:
+            with pytest.raises(
+                msa.CachedMsaUnavailableError,
+                match=state.replace("corrupt", "unusable"),
+            ):
+                search()
+    assert snapshot() == before
+    assert pipeline.cache_dir.exists() == (state != "missing")
+
+
+def test_cached_only_scope_does_not_change_subsequent_prediction(tmp_path):
+    from foldjax.search.msa import CachedMsaUnavailableError, cached_msa_only
+
+    backend = _Backend()
+    pipeline = MsaSearchPipeline(tmp_path, backend)
+    with pytest.raises(CachedMsaUnavailableError), cached_msa_only():
+        pipeline.search([SEQUENCE])
+    assert backend.calls == []
+    assert pipeline.search([SEQUENCE])
+    assert backend.calls == [SEQUENCE]
+
+
 def test_colabfold_pair_a3m_splits_on_the_nul_separator_only() -> None:
     """Upstream's gather loop: only the header after a NUL (or the first) is a query."""
     from foldjax.search.msa import _split_colabfold_a3m

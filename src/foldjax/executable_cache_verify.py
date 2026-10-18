@@ -192,6 +192,7 @@ def _verify_resolved(request: PredictionRequest, *, scratch: Path) -> dict[str, 
 
     from foldjax._gpu import default_device, require_supported_gpu
     from foldjax._tokamax_device import selected_tokamax_device
+    from foldjax.search.msa import CachedMsaUnavailableError, cached_msa_only
 
     clear_chunking_record()
     backend = get_backend(request.model)
@@ -215,6 +216,7 @@ def _verify_resolved(request: PredictionRequest, *, scratch: Path) -> dict[str, 
             # Keep option preparation identical without creating cache paths or
             # initializing/deserializing JAX's persistent CacheInterface.
             config.persistent_cache_enable_xla_caches("none"),
+            cached_msa_only(),
             backend.session((request,)) as active_backend,
         ):
             prepared = _prepare_lowering_request(request, active_backend, scratch)
@@ -257,6 +259,12 @@ def _verify_resolved(request: PredictionRequest, *, scratch: Path) -> dict[str, 
                 row["resolved_chunking"] = chunking
     except UnsupportedCacheVerificationError as error:
         return {**row, "status": "unsupported", "reason": str(error), "graphs": graphs}
+    except CachedMsaUnavailableError as error:
+        raise ValueError(
+            "lowering-only verification requires existing valid MSA cache entries; "
+            f"it never searches or repairs alignments: {error}. Run predict or "
+            "MSA prefetch first, or supply local alignments"
+        ) from error
     return {
         **row,
         "status": (
@@ -272,10 +280,11 @@ def verify_prediction_cache(request: PredictionRequest) -> dict[str, Any]:
     """Lower supported prediction graphs for a real input and inspect exact keys."""
     if not request.use_compile_cache:
         raise ValueError("cache verification requires an enabled persistent cache")
-    if request.msa in {"auto", "required"}:
+    if request.options.get("use_msa_server") is True:
         raise ValueError(
-            "lowering-only verification does not search MSA; supply an input "
-            "with alignments and use --msa none, or choose --msa single"
+            "lowering-only verification does not run a native MSA server search; "
+            "use --msa auto with existing cached alignments, or supply local "
+            "alignments and omit use_msa_server"
         )
     if request.templates in {"auto", "required"} and request.template_dir is None:
         raise ValueError(
