@@ -18,7 +18,7 @@ from foldjax import cache
         ("openfold3", True),
         ("alphafold3", False),
         ("boltz2", False),
-        ("esmfold2", False),
+        ("esmfold2", True),
     ],
 )
 def test_graph_revision_only_invalidates_the_changed_models(

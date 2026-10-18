@@ -43,9 +43,10 @@ _CONFIG_LOCK = RLock()
 #: process compiled for the same key, so what runs is what ran.
 PERSISTENT_CACHE_MIN_COMPILE_SECS = 0.0
 
-# These models changed their confidence graph and must be warmed again.
+# These models changed their graph ABI and must be warmed again.
 # Keep other model namespaces stable; revision changes are model-specific.
 _GRAPH_REVISIONS = {
+    "esmfold2": "2026-10-18-compact-lm-chain64",
     "protenix": "2026-10-18-chain64",
     "opendde": "2026-10-18-chain64",
     "openfold3": "2026-10-18-chain64",

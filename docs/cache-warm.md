@@ -42,13 +42,20 @@ installed. This runs real prediction and kernel tuning, can be expensive, and
 should be submitted to a GPU compute node on a cluster. It does not download
 weights or claim that the synthetic structure has scientific value.
 
-Protenix, OpenDDE and OpenFold3 keep the actual chain count out of the compiled
-model's static arguments. Confidence scores reserve 64 chain slots with runtime
-masks/counts and cropped output axes. Inputs with up to 64 chains therefore share
+Protenix, OpenDDE, OpenFold3 and ESMFold2 keep the actual chain count out of the
+compiled model's static arguments. Confidence scores reserve 64 chain slots with
+runtime masks/counts and cropped output axes. Inputs with up to 64 chains therefore share
 the same body executable when the other padded shapes and execution options
 agree. More chains grow the capacity to the next power of two and emit a warning;
 that overflow needs another executable. The per-sample confidence schedule
 remains sequential; chain pairs do not stack full-bin PAE tensors.
+
+Warming opens the same backend session as managed prediction, including its
+weight/feature staging. ESMFold2 warms the compact language-model embedding
+route used by prediction, rather than the older all-layer-state route. Earlier
+warm memory limits may therefore be conservative; measure the updated path
+before choosing larger serving buckets. See [cache compatibility](cache-compatibility.md)
+for the ESMFold2 revision that requires warming again.
 
 The CLI defaults to `--isolation process`. Each model/bucket starts a fresh
 Python interpreter, so model parameters, compiled executables, and the CUDA
@@ -128,6 +135,41 @@ or Tokamax tuning result is available. Announced graph-ABI changes use a new
 revision, so this check can flag the resulting missing namespace. See
 [cache compatibility notes](cache-compatibility.md) for models that need warming
 again after an update.
+
+To check a real input's executable key rather than just its namespace, use:
+
+```bash
+foldjax cache verify --model esmfold2 --input job.yaml --padding --msa single
+foldjax cache verify --model boltz2 --input job.yaml --fixed-msa 2048 --msa none
+```
+
+The second example expects local alignments in the input. Verification never
+searches an MSA or template service: choose `--msa single`, or preserve supplied
+local alignments with `--msa none`. Use the same input, weights, device and
+execution options as prediction. This can read checkpoints and preprocess the
+input, but it lowers the model graph without compiling or executing it. JAX's
+own HLO/options/device key calculation is used to inspect trusted shared entries
+first, then private entries. No executable is deserialized and no cache entry is
+written.
+
+The JSON report includes each graph's `cache_key`, `key_present` or `missing`,
+and its shared/private source. Exit status is 0 when every checked key is present,
+and 3 for missing keys or unsupported paths. Presence does not validate the
+entry's contents or guarantee successful execution. Current adapters cover the
+managed ESMFold2 structure graph and the Boltz-2 primary graph on one device;
+they do not check LM staging graphs, auxiliary JITs, or kernel tuning. Boltz-2
+affinity, eager steering, context parallelism, PGLE and other model adapters
+are reported as unsupported, as is an ESMFold2 installation that cannot establish
+the managed compact-LM route. A matching namespace containing only another
+shape's executable is reported as missing by this check.
+
+Boltz-2 also records the resolved trunk, diffusion and confidence chunk widths
+in `foldjax_run.json` under `resolved_chunking`, including calls that reuse a
+compiled runner. Its automatic widths follow token-size rungs, independently
+of the card's memory budget. A 22/24 GiB budget alone therefore does not explain
+the reported ECC/non-ECC 4090 mismatch; compare these values and the executable
+keys on the actual cards before attributing it to chunk selection. JAX's device
+topology and runtime settings also participate in its executable key.
 
 For prediction reuse, select the same model/weights, device, runtime, token and
 other padded capacities, MSA cap, and compile-relevant native options.

@@ -1,11 +1,34 @@
 # Compilation cache compatibility
 
+## 2026-10-18: ESMFold2 managed LM path
+
+**Warm ESMFold2 again after upgrading from 568ee5c1.** Its graph revision is
+`2026-10-18-compact-lm-chain64`. This update preserves the other five model
+namespaces, including the three `chain64` revisions announced below.
+
+Warming now opens the same backend session as managed prediction. ESMFold2
+therefore stages the language model and passes its compact embedding into the
+structure graph, as single-input, batch and multi-seed prediction do. The old
+warm route passed all language-model layer states and could populate the same
+namespace with a different executable. Its larger live tensors also mean the
+previous card-specific warm limits, such as 640 tokens on a 4090, must be
+measured again on the compact route. No higher capacity is guaranteed by this
+change, and memory-admission limits have not been raised without measurements.
+
+The structure graph reserves 64 chain-score slots and crops them to the real
+chain extent. Ordinary chain counts share an executable when other shapes and
+settings agree; an extent above 64 grows the capacity with a warning.
+
+```bash
+foldjax cache warm --model esmfold2 --token-buckets 128..1024 --msa single
+```
+
 ## 2026-10-18: chain score capacity
 
 **Warm Protenix, OpenDDE and OpenFold3 again after upgrading from 799ca578.**
 Their declared graph revision is `2026-10-18-chain64`, and their namespace
 changes so that an older warm cannot be mistaken for the current graph.
-This update preserves the AlphaFold 3, Boltz-2 and ESMFold2 namespaces.
+That revision preserved the AlphaFold 3, Boltz-2 and ESMFold2 namespaces.
 
 Chain confidence arrays now have 64 slots by default. Within the same other
 tensor shapes and execution settings, chain counts 1, 5 and 12 share the model

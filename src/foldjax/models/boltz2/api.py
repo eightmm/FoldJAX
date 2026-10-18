@@ -34,7 +34,11 @@ import numpy as np
 
 from foldjax import memory_policy, progress
 from foldjax.cache import compilation_cache_scope, device_key
-from foldjax.execution import auto_diffusion_chunk_size, resolved_matmul_precision
+from foldjax.execution import (
+    auto_diffusion_chunk_size,
+    record_resolved_chunking,
+    resolved_matmul_precision,
+)
 from foldjax.models import _capture, _representations
 from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models._output_validation import require_finite_coordinates
@@ -287,7 +291,7 @@ def _scoped_compile_cache(function):
     @functools.wraps(function)
     def wrapper(*args, **kwargs):
         directory = kwargs.get("compile_cache")
-        if directory is None:
+        if directory is None or kwargs.get("_lower_only", False):
             return function(*args, **kwargs)
         with compilation_cache_scope(Path(directory).expanduser().resolve()):
             return function(*args, **kwargs)
@@ -588,6 +592,70 @@ def _runner_identity(
     )
 
 
+def _record_prediction_chunking(
+    feats: Mapping[str, Any], predict_kwargs: Mapping[str, Any]
+) -> None:
+    """Resolve the graph's token rungs on every call, including retained JITs.
+
+    These are the same shape-based resolvers used inside the trunk, sampler
+    and confidence head. Admission's card/allocator budget never selects them.
+    Keep this outside tracing so a later seed's record survives JIT reuse.
+    """
+    from foldjax.models.boltz2.models.triangle.triangle_attention import (
+        resolve_triangle_attention_chunk,
+        resolve_triangle_attention_q_chunk,
+    )
+    from foldjax.models.boltz2.models.trunk_blocks.trunk import (
+        resolve_long_sequence_chunks,
+    )
+
+    n_token = int(feats["token_pad_mask"].shape[-1])
+    chunk_size = int(predict_kwargs.get("chunk_size", 128))
+    triangle_chunk = predict_kwargs.get("triangle_attention_chunk")
+    triangle_q_chunk = predict_kwargs.get("triangle_attention_q_chunk")
+    chunks = resolve_long_sequence_chunks(
+        n_token,
+        chunk_size=chunk_size,
+        triangle_attention_chunk=triangle_chunk,
+        triangle_attention_q_chunk=triangle_q_chunk,
+        token_attention_chunk=predict_kwargs.get("token_attention_chunk"),
+    )
+    full_prediction = not (
+        predict_kwargs.get("stop_after_trunk", False)
+        or predict_kwargs.get("stop_after_inputs", False)
+    )
+    if full_prediction:
+        multiplicity = int(predict_kwargs["multiplicity"])
+        diffusion_chunk = predict_kwargs.get("diffusion_chunk_size")
+        chunks["diffusion_chunk_size"] = (
+            multiplicity
+            if diffusion_chunk is None
+            else min(multiplicity, int(diffusion_chunk))
+        )
+        if predict_kwargs.get("run_confidence", False):
+            # The confidence Pairformer resolves the original width itself;
+            # it does not inherit the sampler's >2048-token narrowing.
+            chunks.update(
+                confidence_sample_chunk_size=(
+                    1
+                    if predict_kwargs.get("confidence_sequentially", False)
+                    else multiplicity
+                ),
+                confidence_chunk_size=chunk_size,
+                confidence_triangle_attention_chunk=resolve_triangle_attention_chunk(
+                    n_token, chunk_size, triangle_chunk
+                ),
+                confidence_triangle_attention_q_chunk=(
+                    resolve_triangle_attention_q_chunk(n_token, triangle_q_chunk)
+                ),
+            )
+    else:
+        chunks.pop("token_attention_chunk")
+    record_resolved_chunking(
+        model="boltz2", n_token=n_token, chunks=chunks, policy="token_rungs"
+    )
+
+
 #: Upstream's `BoltzSteeringParams()` as `boltz predict` passes it without
 #: `--use_potentials` (`boltz/main.py:148-157,1309-1311`): only contact
 #: guidance is on.
@@ -858,7 +926,8 @@ def predict(
     #: reports, when that is smaller.
     memory_budget_gib: float | None = None,
     _runtime: Any | None = None,
-) -> dict[str, Any]:
+    _lower_only: bool = False,
+) -> Any:
     """Run end-to-end Boltz-2 inference.
 
     Pass either ``input`` (a job YAML) or bare ``seq``/``dna``/``rna``/
@@ -890,6 +959,13 @@ def predict(
         raise ValueError("num_samples must be positive")
     if cp_devices < 1:
         raise ValueError("cp_devices must be positive")
+    if _lower_only and cp_devices > 1:
+        from foldjax.executable_cache_verify import UnsupportedCacheVerificationError
+
+        raise UnsupportedCacheVerificationError(
+            "Boltz-2 cache verification currently supports cp_devices=1; "
+            "context-parallel placement requires device execution"
+        )
     method = validate_upstream_run_options(
         step_scale=step_scale,
         subsample_msa=subsample_msa,
@@ -1093,6 +1169,13 @@ def predict(
     affinity_requested = stop_after == "full" and bool(
         np.any(feats_np["affinity_token_mask"])
     )
+    if _lower_only and affinity_requested:
+        from foldjax.executable_cache_verify import UnsupportedCacheVerificationError
+
+        raise UnsupportedCacheVerificationError(
+            "Boltz-2 cache verification cannot lower an affinity stage without "
+            "executing the primary prediction that supplies its coordinates"
+        )
     if _runtime is not None:
         _runtime.prepare(affinity_requested=affinity_requested)
     with progress.part("weight load"):
@@ -1290,7 +1373,19 @@ def predict(
     # Only the eager steering path and the context-parallel path need the
     # features placed; the compiled path lets `jax.jit` prune the ones the
     # graph never reads before anything is transferred (see `_graph_features`).
+    if _lower_only and steering_active:
+        from foldjax.executable_cache_verify import UnsupportedCacheVerificationError
+
+        raise UnsupportedCacheVerificationError(
+            "Boltz-2 cache verification requires an outer JIT graph; "
+            "this job uses eager steering"
+        )
     feats = _graph_features(feats_np, place=steering_active or cp_devices > 1)
+    model_key = (
+        jax.eval_shape(jax.random.PRNGKey, seed)
+        if _lower_only
+        else jax.random.PRNGKey(seed)
+    )
     padding_noise_mode = "none"
     padding_noise_arg = None
     if (
@@ -1306,8 +1401,8 @@ def predict(
             )
         else:
             padding_noise_mode = "tape"
-            padding_noise_arg = _prefix_stable_noise_tape(
-                jax.random.PRNGKey(seed),
+            noise_tape = functools.partial(
+                _prefix_stable_noise_tape,
                 multiplicity=num_samples
                 * (
                     int(steering_args["num_particles"])
@@ -1318,6 +1413,11 @@ def predict(
                 storage_atoms=padding_plan.storage["atoms"],
                 target_atoms=padding_plan.target["atoms"],
                 steps=num_steps,
+            )
+            padding_noise_arg = (
+                jax.eval_shape(noise_tape, model_key)
+                if _lower_only
+                else noise_tape(model_key)
             )
     wanted_representations = _representations.resolve(
         representations,
@@ -1418,6 +1518,7 @@ def predict(
         "use_template": predict_kwargs["use_template"],
         "recompute_nonpolymer_frames": predict_kwargs["recompute_nonpolymer_frames"],
     }
+    _record_prediction_chunking(feats_np, predict_kwargs)
     if padding_noise_mode == "tape":
 
         def run_model(model_params, model_feats, model_key, init_noise, step_noises):
@@ -1433,7 +1534,7 @@ def predict(
         model_args = (
             params,
             feats,
-            jax.random.PRNGKey(seed),
+            model_key,
             *padding_noise_arg,
         )
     elif padding_noise_mode == "storage_prefix":
@@ -1450,7 +1551,7 @@ def predict(
         model_args = (
             params,
             feats,
-            jax.random.PRNGKey(seed),
+            model_key,
             padding_noise_arg,
         )
     else:
@@ -1460,7 +1561,7 @@ def predict(
                 model_params, model_feats, model_key, **predict_kwargs
             )
 
-        model_args = (params, feats, jax.random.PRNGKey(seed))
+        model_args = (params, feats, model_key)
 
     from foldjax.models._cp import context_parallel, replicate_tree
     from foldjax.models._cp_atom import place_atoms
@@ -1535,6 +1636,8 @@ def predict(
                     placed_args[3], shard_pair_features=False
                 )
             model_args = tuple(placed_args)
+        if _lower_only:
+            return (("primary", runner.lower(*model_args)),)
         out = runner(*model_args)
     if stop_after in {"inputs", "trunk"}:
         # The trunk-only graph intentionally has no sampler or confidence
@@ -1680,6 +1783,7 @@ def predict(
                 "recompute_nonpolymer_frames"
             ],
         }
+        _record_prediction_chunking(affinity_feats_np, affinity_kwargs)
         if padding is not None and affinity_padding_plan is not None:
             if _prefix_rng_is_supported():
                 affinity_noise_mode = "storage_prefix"

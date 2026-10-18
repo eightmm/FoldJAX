@@ -57,6 +57,7 @@ from foldjax.backends.base import (
 from foldjax.execution import DETERMINISTIC_API_OPTION
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
+from foldjax.models._chain_profile import chain_capacity
 from foldjax.models._managed_memory import lease as managed_memory_lease
 from foldjax.padding import (
     PaddingPlan,
@@ -1215,6 +1216,40 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         )
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
+        return self._predict(request)
+
+    def lower_cache_graphs(
+        self, request: PredictionRequest,
+    ) -> tuple[tuple[str, Any], ...]:
+        """Lower the real structure entry point without executing either model."""
+        from foldjax.executable_cache_verify import UnsupportedCacheVerificationError
+
+        if self.apply_sampling(request).get("cp_devices", 1) != 1:
+            raise UnsupportedCacheVerificationError(
+                "ESMFold2 executable verification currently requires cp_devices=1"
+            )
+        options = self.apply_sampling(request)
+        uses_lm = not _strict_boolean(
+            options.get("no_language_model", False), name="no_language_model"
+        ) and request.stop_after != "inputs"
+        inference = import_module("foldjax.models.esmfold2.inference")
+        if not bool(getattr(inference, "MANAGED_CACHE_LOWERING_API", False)):
+            raise UnsupportedCacheVerificationError(
+                "ESMFold2 wrapper does not provide lowering-only prediction"
+            )
+        if uses_lm and not self._session_active and not (
+            self._can_stage_language_model(inference)
+            and _model_asset_snapshot(
+                request.weights, esmc=options.get("esmc_weights"), language_model=True
+            ) is not None
+        ):
+            raise UnsupportedCacheVerificationError(
+                "ESMFold2 singleton prediction cannot verify a compact LM stage; "
+                "the raw-state fallback graph is unsupported"
+            )
+        return (("jit(_run)", self._predict(request, _lower_only=True)),)
+
+    def _predict(self, request: PredictionRequest, *, _lower_only: bool = False) -> Any:
         options = self.apply_sampling(request)
         # Out before the leftover-option check: carried by the scope.
         matmul_precision = self.matmul_precision(options)
@@ -1363,11 +1398,15 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         if options:
             raise ValueError(f"unsupported ESMFold2 options: {', '.join(options)}")
 
-        model = self._load_model(
-            inference,
-            request.weights,
-            esmc=esmc,
-            language_model=not without_lm and request.stop_after != "inputs",
+        model = (
+            inference.load(request.weights, esmc=esmc, language_model=False)
+            if _lower_only
+            else self._load_model(
+                inference,
+                request.weights,
+                esmc=esmc,
+                language_model=not without_lm and request.stop_after != "inputs",
+            )
         )
         padding_plan = None
         lm_target = None
@@ -1385,9 +1424,18 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             and bool(getattr(inference, "COMPACT_LANGUAGE_MODEL_API", False))
             and hasattr(inference, "language_model_embedding")
         )
+        if _lower_only and not compact_lm_api:
+            from foldjax.executable_cache_verify import (
+                UnsupportedCacheVerificationError,
+            )
+
+            raise UnsupportedCacheVerificationError(
+                "ESMFold2 wrapper cannot lower compact LM input"
+            )
         staged_lm_api = compact_lm_api and self._can_stage_language_model(inference)
         managed_compact_lm = (
-            self._session_active
+            _lower_only
+            or self._session_active
             or self._loaded_model_staged
             or (self._stage_single_input and self._lm_embedding is not None)
         )
@@ -1448,7 +1496,10 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                 # the all-atom builder's second alias through normalization,
                 # LM inference, and structure inference.
                 prebuilt_features = None
-                prediction_key = inference.seed_key(request.seed)
+                prediction_key = (
+                    inference.jax.eval_shape(inference.seed_key, request.seed)
+                    if _lower_only else inference.seed_key(request.seed)
+                )
                 lm_tokens = (
                     inference.language_model_length(model_features)
                     if language_model_enabled and request.padding is not None
@@ -1468,7 +1519,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                             "mask_key": inference.lm_mask_key(prediction_key),
                         }
                     }
-                    if lm_mask_pct > 0.0
+                    if lm_mask_pct > 0.0 and not _lower_only
                     else {}
                 )
                 active_msa_depth = (
@@ -1517,6 +1568,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                             )
                             + 1,
                         ),
+                        **({"_shape_only": True} if _lower_only else {}),
                     )
                     model_features = inference.pad_features(
                         model_features,
@@ -1527,6 +1579,15 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                     lm_target = padding_plan.target.get("language_model_tokens")
                 if request.stop_after == "inputs":
                     lm_input = {}
+                elif _lower_only:
+                    lm_input = {
+                        "precomputed_lm_embedding": (
+                            inference.abstract_language_model_embedding(
+                                model_features, model
+                            )
+                            if language_model_enabled else None
+                        )
+                    }
                 elif managed_compact_lm and compact_lm_api:
                     with matmul_precision():
                         embedding = self._language_model_embedding(
@@ -1599,7 +1660,10 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                         **managed_output_kwargs,
                         **lm_input,
                         **overrides,
+                        **({"_lower_only": True} if _lower_only else {}),
                     )
+                if _lower_only:
+                    return prediction
                 output_features = (
                     model_features
                     if project_output_features is None
@@ -1620,7 +1684,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             shape_profile = {
                 **padding_plan.summary(),
                 "static": {
-                    "chains": int(np.asarray(output_features["asym_id"]).max()) + 1
+                    "chain_capacity": chain_capacity(
+                        int(np.asarray(output_features["asym_id"]).max()) + 1
+                    )
                 },
             }
         _representations.save(

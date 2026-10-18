@@ -799,6 +799,16 @@ def _parser() -> argparse.ArgumentParser:
         action="store_false",
         help="continue to later buckets after OOM",
     )
+    verify = cache_commands.add_parser(
+        "verify",
+        help="lower a real prediction input and inspect its exact executable keys",
+        description="Read and preprocess a real input, then lower supported "
+        "ESMFold2/Boltz-2 prediction graphs without compiling or running them. "
+        "Report matching "
+        "trusted shared/private cache files. This may read checkpoints; it does "
+        "not validate cached executable contents, LM-stage coverage or tuning.",
+    )
+    _add_predict_arguments(verify, allow_no_cache=False)
     tools_cli.register(commands, show=show, compare=compare, run=run, plan=plan)
 
     return parser
@@ -1724,6 +1734,21 @@ def _verify_cache(args: argparse.Namespace) -> int:
     return 0 if result["status"] == "entries_present" else 3
 
 
+def _verify_prediction_cache(args: argparse.Namespace) -> int:
+    import tempfile
+
+    from foldjax.executable_cache_verify import verify_prediction_cache
+
+    with tempfile.TemporaryDirectory(prefix="foldjax-verify-request-") as temporary:
+        request = _request(args, jobs_root=Path(temporary))
+        assert request is not None
+        with _stdout_to_stderr():
+            result = verify_prediction_cache(request)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    print(f"[cache] {result['limitation']}", file=sys.stderr)
+    return 0 if result["status"] == "key_present" else 3
+
+
 def _print_warm_prediction_hint(args: argparse.Namespace) -> None:
     command = ["foldjax", "predict", "--model", *args.model, "--input", "JOB.json"]
     options = _options(args.option)
@@ -2240,6 +2265,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "cache":
         if args.cache_command == "gc":
             return cache_gc.run_cache_gc(args)
+        if args.cache_command == "verify":
+            return _verify_prediction_cache(args)
         return _run_cache(args)
     if args.command == "compare":
         from foldjax.compare import compare_directory

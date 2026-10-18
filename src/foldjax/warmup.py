@@ -21,11 +21,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from foldjax.api import _predict_resolved, resolve_cache_dir, resolve_requests
+from foldjax.backends.base import Backend
 from foldjax.cache import CacheSnapshot, cache_snapshot
 from foldjax.manifest import device_peak_bytes
 from foldjax.paths import runtime_dir
 from foldjax.registry import get_backend
-from foldjax.schema import PredictionError, PredictionRequest
+from foldjax.schema import PredictionError, PredictionRequest, PredictionResult
 
 
 class _WarmTermination(BaseException):
@@ -156,6 +157,20 @@ class CacheWarmResult:
         return summary
 
 
+def _warm_prediction(
+    request: PredictionRequest,
+    backend: Backend,
+    *,
+    output_root: Path | None,
+) -> PredictionResult | None:
+    # A session also selects staging and compact input routes. Warming must
+    # follow those routes even when only one seed will be executed.
+    if getattr(backend, "session_reuse", False):
+        with backend.session((request,)) as active:
+            return _predict_resolved(request, backend=active, output_root=output_root)
+    return _predict_resolved(request, output_root=output_root)
+
+
 def _warm_resolved(
     request: PredictionRequest,
     *,
@@ -183,14 +198,14 @@ def _warm_resolved(
     # reused manifest would report a cache delta for work that did not happen.
     scalar = dataclasses.replace(scalar, resume=False, on_error="stop")
     if keep_output:
-        result = _predict_resolved(scalar, output_root=output_root)
+        result = _warm_prediction(scalar, backend, output_root=output_root)
         retained = scalar.output_dir
     else:
         scratch_root = _PROCESS_SCRATCH.get() or runtime_dir("cache-warm")
         scratch_root.mkdir(parents=True, exist_ok=True)
         with _warm_directory(scratch_root, prefix=f".{backend.name}-") as scratch:
             ephemeral = dataclasses.replace(scalar, output_dir=scratch)
-            result = _predict_resolved(ephemeral, output_root=scratch)
+            result = _warm_prediction(ephemeral, backend, output_root=scratch)
         retained = None
     if result is None:
         raise PredictionError(f"{backend.name} cache warm produced no prediction")

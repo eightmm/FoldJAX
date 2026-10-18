@@ -111,6 +111,9 @@ class _BoundedJitRunner:
         if callable(clear):
             clear()
 
+    def lower(self, *args: Any, **kwargs: Any) -> Any:
+        return self._runner.lower(*args, **kwargs)
+
 
 def _ring_tile_kernel_scope(kernel: object):
     """Enter the 2-D ring's tile-kernel scope for one prediction.
@@ -1633,7 +1636,16 @@ class Boltz2Backend(Backend):
                 raise ValueError(steering_conflict_message(blocked))
         super().validate_request(request)
 
+    def lower_cache_graphs(
+        self, request: PredictionRequest
+    ) -> Sequence[tuple[str, Any]]:
+        """Lower the production single-device graph without running a prediction."""
+        return self._predict(request, lower_only=True)
+
     def predict(self, request: PredictionRequest) -> PredictionResult:
+        return self._predict(request, lower_only=False)
+
+    def _predict(self, request: PredictionRequest, *, lower_only: bool) -> Any:
         self._asset_anchors.raise_if_poisoned()
         if self._session_active:
             self.validate_session(request)
@@ -1733,6 +1745,8 @@ class Boltz2Backend(Backend):
         )
         if self._session_active:
             native_options["_runtime"] = self
+        if lower_only:
+            native_options["_lower_only"] = True
         with (
             matmul_precision(),
             _ring_tile_kernel_scope(ring_tile_kernel),
@@ -1740,6 +1754,8 @@ class Boltz2Backend(Backend):
             _cp_fused_attention_scope(fused_attention),
         ):
             output = native.predict(**native_options)
+        if lower_only:
+            return output
         if request.stop_after in {"inputs", "trunk"}:
             # Nothing was folded, so there are no samples to describe.
             representations = _representations_result(

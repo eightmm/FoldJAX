@@ -25,6 +25,7 @@ import numpy as np
 
 from foldjax import memory_policy, progress
 from foldjax.models import _capture
+from foldjax.models._chain_profile import chain_capacity
 from foldjax.models._compile_policy import (
     compiler_options as _compiler_options,
 )
@@ -85,6 +86,9 @@ MANAGED_ESMC_STAGE_API = True
 # result. Wrappers without this marker keep receiving the historical keyword
 # set and the native output mapping.
 MANAGED_AUXILIARY_OUTPUT_API = True
+
+# Compatibility wrappers must explicitly preserve the no-dispatch branch.
+MANAGED_CACHE_LOWERING_API = True
 
 
 @dataclass(frozen=True)
@@ -419,6 +423,26 @@ def language_model_embedding(
     )
 
 
+def abstract_language_model_embedding(
+    features: Mapping[str, np.ndarray], model: LoadedModel,
+) -> jax.ShapeDtypeStruct:
+    """Trace the compact projection's signature without running ESMC."""
+    parameters = _language_model_embedding_parameters(model.parameters)
+    hidden = jax.ShapeDtypeStruct(
+        (*features["input_ids"].shape,
+         parameters["language_model.base_z_combine"].shape[0],
+         parameters["language_model.base_z_linear.0.weight"].shape[0]),
+        jnp.float32,
+    )
+    return jax.eval_shape(
+        lambda states, params: structure_model.language_model_embedding(
+            states, params, compute_dtype=jnp.dtype(model.settings.trunk_dtype)
+        ),
+        hidden,
+        parameters,
+    )
+
+
 def language_model_length(features: Mapping[str, np.ndarray]) -> int:
     """Natural packed ESMC axis for a built structure feature dictionary."""
 
@@ -657,7 +681,8 @@ def predict(
     #: the law was fitted unpadded, so for a padded run its estimate is a
     #: lower bound and a "fits" is recorded as unknown.
     padded: bool = False,
-) -> dict[str, jnp.ndarray]:
+    _lower_only: bool = False,
+) -> Any:
     """One forward over already-built features.
 
     Compiled by default. Eager JAX dispatches this model an operation at a
@@ -669,6 +694,10 @@ def predict(
     graph and, when ESMC runs, its blocks -- for reduction orders that repeat
     across runs. It is carried by those executables, so the eager path is
     refused rather than silently run without it.
+
+    Confidence matrices use a shared chain capacity in the graph and are
+    cropped to the actual chain extent afterwards. Private ``_lower_only``
+    keeps this preparation but returns the structure graph's lowering.
     """
     if deterministic and not compile_it:
         # The eager path has no outer executable to carry the option: it
@@ -792,13 +821,27 @@ def predict(
     )
     # `device_put` for host arrays: the same bits and dtype canonicalisation
     # as `jnp.asarray`, without one staging program per feature shape.
-    arrays = {
-        name: jax.device_put(value)
-        if isinstance(value, np.ndarray)
-        else jnp.asarray(value)
-        for name, value in model_features.items()
-        if name not in all_atom_featurisation.OUTPUT_METADATA_FEATURES
-    }
+    if _lower_only:
+        if not compile_it or cp_shards != 1:
+            raise ValueError(
+                "lowering-only ESMFold2 verification requires cp_devices=1"
+            )
+        arrays = {
+            name: jax.ShapeDtypeStruct(
+                np.asarray(value).shape,
+                jax.dtypes.canonicalize_dtype(np.asarray(value).dtype),
+            )
+            for name, value in model_features.items()
+            if name not in all_atom_featurisation.OUTPUT_METADATA_FEATURES
+        }
+    else:
+        arrays = {
+            name: jax.device_put(value)
+            if isinstance(value, np.ndarray)
+            else jnp.asarray(value)
+            for name, value in model_features.items()
+            if name not in all_atom_featurisation.OUTPUT_METADATA_FEATURES
+        }
     if precomputed_lm_states is not None and precomputed_lm_embedding is not None:
         raise ValueError(
             "pass precomputed_lm_states or precomputed_lm_embedding, not both"
@@ -809,7 +852,7 @@ def predict(
         if compact_lm_input
         else precomputed_lm_states
     )
-    if hidden is None and not stop_after_inputs:
+    if hidden is None and not stop_after_inputs and not _lower_only:
         resolved_lm_mask_pct = LM_MASK_PCT if lm_mask_pct is None else lm_mask_pct
         hidden = language_model_states(
             features,
@@ -819,9 +862,10 @@ def predict(
             lm_mask_pct=resolved_lm_mask_pct,
             mask_key=lm_mask_key(key) if resolved_lm_mask_pct > 0.0 else None,
         )
-    # Read on the host: it sizes the confidence head's per-chain matrix, and a
-    # traced maximum cannot size anything.
+    # Only the score capacity enters the graph; the exact extent is used to
+    # crop the public result after dispatch, as in the other multichain ports.
     n_chains = int(np.asarray(features["asym_id"]).max()) + 1
+    score_capacity = chain_capacity(n_chains)
     contiguous_atom_groups = (
         False
         if stop_after_trunk or stop_after_inputs
@@ -848,7 +892,7 @@ def predict(
     )
     runner = (
         compiled_predict(
-            settings, n_chains, preserve_prefix_rng, cp_shards,
+            settings, score_capacity, preserve_prefix_rng, cp_shards,
             return_representations, stop_after_trunk, contiguous_atom_groups,
             compact_token_bond_encoding, return_distogram_logits,
             compact_lm_input, atom_rows_per_block,
@@ -875,13 +919,14 @@ def predict(
             arrays = replicate_tree(arrays)
             parameters = replicate_tree(parameters)
             hidden = replicate_tree(hidden)
-        return runner(
+        dispatch = runner.lower if _lower_only else runner
+        output = dispatch(
             key,
             arrays,
             parameters,
             hidden,
             settings,
-            n_chains,
+            score_capacity,
             preserve_prefix_rng,
             cp_shards,
             return_representations,
@@ -894,6 +939,14 @@ def predict(
             **layout_kwargs,
             **auxiliary_output_kwargs,
         )
+    if _lower_only:
+        return output
+    if "pair_chains_iptm" in output:
+        output = dict(output)
+        output["pair_chains_iptm"] = output["pair_chains_iptm"][
+            ..., :n_chains, :n_chains
+        ]
+    return output
 
 
 def _run(
@@ -1064,10 +1117,11 @@ def compiled_predict(
     stop_after_inputs: bool = False,
     deterministic: bool = False,
 ) -> Callable[..., dict[str, jnp.ndarray]]:
-    """`predict` as one jitted program, cached per settings, chains and RNG mode.
+    """`predict` as one jitted program, cached per settings, slots and RNG mode.
 
     Those values are static: the settings decide how many layers get traced,
-    `n_chains` sizes an output, the RNG mode selects either the historical
+    `n_chains` sizes an output (the shared capacity on the managed path), the
+    RNG mode selects either the historical
     exact-shape calls or masked serving draws, and `cp_shards` decides whether
     the trace carries sharding constraints -- a mesh change must be a retrace,
     never a stale cache hit. The real token and atom counts remain data in the
@@ -1195,6 +1249,7 @@ def normalize_msa_features(
     n_msa: int,
     max_msa_depth: int | None,
     total_steps: int,
+    _shape_only: bool = False,
 ) -> dict[str, np.ndarray]:
     """Build the exact released per-loop row-selection tape on the host."""
 
@@ -1209,12 +1264,19 @@ def normalize_msa_features(
         raise ValueError(
             "ESMFold2 MSA normalization requires a valid query in row 0"
         )
-    compact_indices = msa_loop_row_indices(
-        key,
-        depth=int(active_rows.size),
-        max_msa_depth=max_msa_depth,
-        total_steps=total_steps,
-    )
+    if _shape_only:
+        # Row identity is dynamic input data. Preserve the exact tape shape
+        # without dispatching the RNG primitives used by real prediction.
+        depth = int(active_rows.size)
+        selected = depth if max_msa_depth is None else min(depth, max_msa_depth)
+        compact_indices = np.broadcast_to(np.arange(selected), (total_steps, selected))
+    else:
+        compact_indices = msa_loop_row_indices(
+            key,
+            depth=int(active_rows.size),
+            max_msa_depth=max_msa_depth,
+            total_steps=total_steps,
+        )
     # The released selection is defined over real MSA rows. Storage padding is
     # an archive/layout concern, so map compact selections back only after the
     # exact key split and permutation have been reproduced.

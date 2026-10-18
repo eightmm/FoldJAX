@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -132,6 +133,67 @@ def test_warm_cache_keeps_an_explicit_output_directory(
 def test_warm_cache_rejects_disabled_persistent_cache(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="use_compile_cache=False"):
         warm_cache(_request(tmp_path, use_compile_cache=False))
+
+
+@pytest.mark.parametrize("keep_output", [False, True])
+@pytest.mark.parametrize("fail", [False, True])
+def test_warm_uses_the_prediction_session_and_always_closes_it(
+    tmp_path, monkeypatch, keep_output, fail
+):
+    from foldjax import warmup
+
+    request = _request(
+        tmp_path,
+        model="esmfold2",
+        output_dir=tmp_path / "kept" if keep_output else None,
+    )
+    events, outputs = [], []
+    active = object()
+
+    @contextmanager
+    def session(requests):
+        assert len(requests) == 1
+        assert requests[0].seed == 7
+        assert requests[0].seeds is None
+        assert requests[0].resume is False
+        events.append("enter")
+        try:
+            yield active
+        finally:
+            events.append("close")
+
+    backend = SimpleNamespace(name="esmfold2", session_reuse=True, session=session)
+    monkeypatch.setattr(warmup, "resolve_requests", lambda _request: (request,))
+    monkeypatch.setattr(warmup, "get_backend", lambda _model: backend)
+    monkeypatch.setattr(warmup, "resolve_cache_dir", lambda *_args: tmp_path / "cache")
+    monkeypatch.setattr(warmup, "runtime_dir", lambda *_args: tmp_path / "runtime")
+
+    def predict(run, *, backend, output_root=None):
+        assert backend is active
+        assert events == ["enter"]
+        events.append("predict")
+        outputs.append(run.output_dir)
+        if fail:
+            raise RuntimeError("fixture failure")
+        run.output_dir.mkdir(parents=True, exist_ok=True)
+        structure = run.output_dir / "sample.cif"
+        structure.write_text("data_fixture\n")
+        return PredictionResult(
+            model="esmfold2",
+            samples=(PredictionSample(seed=run.seed, structure_path=structure),),
+            output_dir=run.output_dir,
+        )
+
+    monkeypatch.setattr(warmup, "_predict_resolved", predict)
+    if fail:
+        with pytest.raises(RuntimeError, match="fixture failure"):
+            warm_cache(request)
+    else:
+        result = warm_cache(request)
+        assert result.samples == 1
+    assert events == ["enter", "predict", "close"]
+    if not keep_output:
+        assert not outputs[0].exists()
 
 
 def test_zero_delta_does_not_claim_an_unobservable_cache_hit(tmp_path: Path) -> None:
