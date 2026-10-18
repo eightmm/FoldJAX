@@ -1900,6 +1900,7 @@ def with_overrides(
     max_msa_depth: int | None = None,
     structure_sample_sequential: bool | None = None,
     glu_backend: str | None = None,
+    rigid_align_backend: str | None = None,
     confidence_dtype: str | None = None,
     msa_column_mask_rate: float | None = None,
     full_depth_msa: bool | None = None,
@@ -1945,6 +1946,10 @@ def with_overrides(
         diffusion_updates["num_steps"] = num_steps
     if glu_backend is not None:
         diffusion_updates["glu_backend"] = glu_backend
+    if rigid_align_backend is not None:
+        if rigid_align_backend not in ("svd", "jacobi"):
+            raise ValueError("rigid_align_backend must be one of svd, jacobi")
+        diffusion_updates["rigid_align_backend"] = rigid_align_backend
     if diffusion_updates:
         updates["diffusion"] = replace(settings.diffusion, **diffusion_updates)  # type: ignore[arg-type]
     return replace(settings, **updates)  # type: ignore[arg-type]

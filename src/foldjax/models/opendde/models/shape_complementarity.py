@@ -452,15 +452,15 @@ def _compute_shape_complementarity_resolved(
 
 
 def _graph_features(resolved: ShapeCompTokenFeatures) -> ShapeCompGraphFeatures:
-    """Move only numerical leaves across the JIT boundary."""
+    """Transfer host numerical leaves without per-shape staging executables."""
 
     return ShapeCompGraphFeatures(
-        atom_to_token_idx=jnp.asarray(resolved.atom_to_token_idx),
-        rep_atom_indices=jnp.asarray(resolved.rep_atom_indices),
-        rep_atom_valid=jnp.asarray(resolved.rep_atom_valid),
-        token_asym_id=jnp.asarray(resolved.token_asym_id),
-        token_role_id=jnp.asarray(resolved.token_role_id),
-        is_protein_token=jnp.asarray(resolved.is_protein_token),
+        atom_to_token_idx=jax.device_put(resolved.atom_to_token_idx),
+        rep_atom_indices=jax.device_put(resolved.rep_atom_indices),
+        rep_atom_valid=jax.device_put(resolved.rep_atom_valid),
+        token_asym_id=jax.device_put(resolved.token_asym_id),
+        token_role_id=jax.device_put(resolved.token_role_id),
+        is_protein_token=jax.device_put(resolved.is_protein_token),
     )
 
 

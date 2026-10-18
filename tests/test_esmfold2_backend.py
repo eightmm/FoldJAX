@@ -316,6 +316,94 @@ def test_an_unasked_glu_backend_is_absent_rather_than_defaulted(
     assert "glu_backend" not in result.raw["overrides"]
 
 
+@pytest.mark.parametrize("backend", ("svd", "jacobi"))
+def test_rigid_alignment_option_reaches_the_structure_settings(
+    tmp_path, monkeypatch, backend
+):
+    seen, result = _stub_prediction(
+        tmp_path, monkeypatch, {"rigid_align_backend": backend}
+    )
+    assert seen["rigid_align_backend"] == backend
+    assert result.raw["overrides"]["rigid_align_backend"] == backend
+
+
+def test_default_alignment_keeps_its_existing_compile_profile(tmp_path, monkeypatch):
+    seen, result = _stub_prediction(tmp_path, monkeypatch, {})
+    assert "rigid_align_backend" not in seen
+    assert "rigid_align_backend" not in result.raw["overrides"]
+    backend = ESMFold2Backend()
+    request = PredictionRequest(model="esmfold2", input=tmp_path / "job.json")
+    previous = backend.cache_profile(request)
+    assert (
+        backend.cache_profile(
+            dataclasses.replace(request, options={"rigid_align_backend": "svd"})
+        )
+        == previous
+    )
+    candidate = backend.cache_profile(
+        dataclasses.replace(request, options={"rigid_align_backend": "jacobi"})
+    )
+    assert candidate == {**previous, "rigid_align_backend": "jacobi"}
+
+
+@pytest.mark.parametrize("value", ("power", None, True, 3, ["svd"]))
+def test_invalid_alignment_is_rejected_before_loading_any_weights(value):
+    with pytest.raises(ValueError, match="rigid_align_backend"):
+        ESMFold2Backend().validate_native_options({"rigid_align_backend": value})
+
+
+@pytest.mark.parametrize("backend", (None, "svd", "jacobi"))
+def test_alignment_choice_reaches_the_compiled_model_identity(monkeypatch, backend):
+    import jax
+    import jax.numpy as jnp
+
+    from foldjax import memory_policy
+    from foldjax.models.esmfold2 import inference
+    from foldjax.models.esmfold2.data.features import build_features, pad_features
+    from foldjax.models.esmfold2.models import model as structure_model
+
+    features = pad_features(
+        build_features([("AG", "A", 0, 0)]), n_token=8, n_atom=64, n_msa=4
+    )
+    settings = structure_model.with_overrides(
+        structure_model.ModelSettings(), num_steps=7, rigid_align_backend=backend
+    )
+    assert settings.diffusion.num_steps == 7
+    assert settings.diffusion.rigid_align_backend == (backend or "svd")
+    settings = structure_model.ModelSettings()
+    model = SimpleNamespace(
+        settings=settings,
+        parameters={"token_bonds.weight": jnp.ones((settings.d_pair, 1), jnp.bfloat16)},
+        esmc_parameters=None,
+        esmc_settings=None,
+    )
+    seen = []
+    admission = []
+
+    def compiled(*identity, **kwargs):
+        seen.append(identity[0].diffusion.rigid_align_backend)
+        return lambda *args, **kwargs: {}
+
+    monkeypatch.setattr(inference, "compiled_predict", compiled)
+    monkeypatch.setattr(
+        memory_policy, "admit", lambda **kwargs: admission.append(kwargs)
+    )
+    inference.predict(
+        jax.random.key(0),
+        features,
+        model,
+        rigid_align_backend=backend,
+        memory_budget=memory_policy.resolve_budget(
+            pool_bytes=None, card_bytes=None, override_gib=None
+        ),
+    )
+    assert seen == [backend or "svd"]
+    assert any(
+        "solver-free rigid alignment" in reason
+        for reason in admission[0]["off_profile"]
+    ) == (backend == "jacobi")
+
+
 def test_the_glu_backend_option_refuses_an_unknown_value(tmp_path, monkeypatch) -> None:
     with pytest.raises(ValueError, match="tokamax"):
         _stub_prediction(tmp_path, monkeypatch, {"glu_backend": "triton"})

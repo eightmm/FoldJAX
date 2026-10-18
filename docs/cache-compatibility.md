@@ -1,5 +1,18 @@
 # Compilation cache compatibility
 
+## 2026-10-19: candidate cache exclusion and experimental ESMFold2 alignment
+
+AF3 benchmark candidates no longer read or write the persistent JAX cache.
+The guard applies inside Tokamax's compiler workers; the real model executable
+and persistent tuning records retain their existing cache paths. Existing
+`jit_forward-*` files are not automatically deleted. No AF3 rewarm or namespace
+revision is required for this change.
+
+ESMFold2's default `svd` alignment and namespace are preserved. The experimental
+`rigid_align_backend=jacobi` option selects a separate compilation profile and
+must be passed to both `cache warm` and `predict` when used. It does not replace
+the measured default or establish a new memory limit.
+
 ## 2026-10-18: portable AF3 tuning identity and shared permissions
 
 **AF3 rewarm required after upgrading from 596369b2.** Tokamax's source identity

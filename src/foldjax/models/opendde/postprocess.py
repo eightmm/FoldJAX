@@ -333,7 +333,7 @@ def opendde_confidence_scores(
             _shape_complementarity_scores(
                 output,
                 features,
-                n_token=int(jnp.asarray(features["asym_id"]).shape[0]),
+                n_token=int(np.shape(features["asym_id"])[0]),
                 deterministic=deterministic,
             )
         )

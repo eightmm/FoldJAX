@@ -379,6 +379,7 @@ Model pages: [Boltz-2](https://github.com/eightmm/FoldJAX/blob/main/docs/boltz2.
 | [Benchmark](https://github.com/eightmm/FoldJAX/blob/main/docs/benchmark.md) | the numbers above, their method, and what each one does not say |
 | [Version and validation ledger](https://github.com/eightmm/FoldJAX/blob/main/docs/model-versions.md) | exact upstream targets and the parity evidence for each port |
 | [Engineering notes](https://github.com/eightmm/FoldJAX/blob/main/docs/engineering-notes.md) | how the ports reached their current memory, speed and precision defaults |
+| [Performance diagnostics](https://github.com/eightmm/FoldJAX/blob/main/docs/performance-diagnostics.md) | phase memory, executable loading, host staging and experimental alignment |
 
 Per-model notes: [AlphaFold 3](https://github.com/eightmm/FoldJAX/blob/main/docs/alphafold3.md) ·
 [OpenFold3](https://github.com/eightmm/FoldJAX/blob/main/docs/openfold3.md) · [ESMFold2](https://github.com/eightmm/FoldJAX/blob/main/docs/esmfold2.md) ·

@@ -169,8 +169,8 @@ _STEERING_FEATURES = frozenset(
 # Every array read by the vendored non-steering forward graph.  This is narrower
 # than ``_FEATURE_AXES``: the latter also describes archive/writer fields such as
 # ``r_set_to_rep_atom`` that ``pad_feats`` must still pad when a caller hands it
-# one, but that must not enter the jitted prediction pytree.  Keeping this explicit prevents those
-# host-only dimensions from fragmenting the executable cache.
+# one, but that must not enter the jitted prediction pytree. Keeping this
+# explicit prevents host-only dimensions from fragmenting the executable cache.
 _MODEL_FEATURES = frozenset(
     {
         "affinity_mw",
@@ -520,18 +520,22 @@ _TOKEN_OUTPUT_AXES: dict[str, tuple[int, ...]] = {
 def crop_prediction_outputs(
     outputs: Mapping[str, object], original_tokens: int, original_atoms: int
 ) -> dict[str, object]:
-    """Remove padding-only columns from public model outputs."""
+    """Transfer recognized export arrays to the host and remove padding columns."""
     cropped: dict[str, object] = {}
     for key, value in outputs.items():
         if key == "sample_atom_coords":
-            cropped[key] = value[..., :original_atoms, :]
+            value = np.asarray(value)
+            real = value[..., :original_atoms, :]
+            cropped[key] = real.copy() if real.shape != value.shape else real
             continue
         axes = _TOKEN_OUTPUT_AXES.get(key)
         if not axes:
             cropped[key] = value
             continue
+        value = np.asarray(value)
         index = [slice(None)] * value.ndim
         for axis in axes:
             index[axis] = slice(0, original_tokens)
-        cropped[key] = value[tuple(index)]
+        real = value[tuple(index)]
+        cropped[key] = real.copy() if real.shape != value.shape else real
     return cropped

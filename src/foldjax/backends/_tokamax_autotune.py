@@ -127,6 +127,73 @@ def _tokamax_api():
     return tokamax
 
 
+_CANDIDATE_CACHE_LOCK = threading.RLock()
+_CANDIDATE_CACHE_PATCH: tuple[Any, Any, int] | None = None
+_CANDIDATE_COMPILATION: ContextVar[bool] = ContextVar(
+    "foldjax_tokamax_candidate_compilation", default=False
+)
+
+
+@contextmanager
+def without_candidate_compilation_cache() -> Iterator[None]:
+    """Keep Tokamax benchmark executables out of the persistent JAX cache."""
+
+    from jax._src import compiler, config
+
+    try:
+        from tokamax._src import benchmarking
+    except ImportError:
+        yield
+        return
+
+    global _CANDIDATE_CACHE_PATCH
+    with _CANDIDATE_CACHE_LOCK:
+        if _CANDIDATE_CACHE_PATCH is None:
+            original_benchmark = benchmarking.compile_benchmark
+            original_cache_key = compiler._get_cache_key
+
+            @functools.wraps(original_benchmark)
+            def compile_candidate(*args: Any, **kwargs: Any) -> Any:
+                # Parallel Tokamax tuners create fresh threads, so enter the
+                # JAX state in the compiler worker, not just its caller.
+                token = _CANDIDATE_COMPILATION.set(True)
+                try:
+                    with config.enable_compilation_cache(False):
+                        return original_benchmark(*args, **kwargs)
+                finally:
+                    _CANDIDATE_COMPILATION.reset(token)
+
+            @functools.wraps(original_cache_key)
+            def candidate_cache_key(*args: Any, **kwargs: Any) -> Any:
+                # JAX 0.11.1 latches is_cache_used() process-wide: changing
+                # enable_compilation_cache alone cannot disable an already
+                # initialized cache. A missing key skips both reads and writes,
+                # without resetting global cache state used by model calls.
+                if _CANDIDATE_COMPILATION.get():
+                    return None
+                return original_cache_key(*args, **kwargs)
+
+            benchmarking.compile_benchmark = compile_candidate
+            compiler._get_cache_key = candidate_cache_key
+            users = 0
+        else:
+            original_benchmark, original_cache_key, users = _CANDIDATE_CACHE_PATCH
+        _CANDIDATE_CACHE_PATCH = original_benchmark, original_cache_key, users + 1
+    try:
+        yield
+    finally:
+        with _CANDIDATE_CACHE_LOCK:
+            original_benchmark, original_cache_key, users = _CANDIDATE_CACHE_PATCH
+            if users == 1:
+                benchmarking.compile_benchmark = original_benchmark
+                compiler._get_cache_key = original_cache_key
+                _CANDIDATE_CACHE_PATCH = None
+            else:
+                _CANDIDATE_CACHE_PATCH = (
+                    original_benchmark, original_cache_key, users - 1
+                )
+
+
 # ---------------------------------------------------------------------------
 # Tokamax's HLO payload, and why the executed AlphaFold 3 program drops it.
 #
@@ -1271,6 +1338,7 @@ def _is_missing_config_error(error: BaseException) -> bool:
     return False
 
 
+@without_candidate_compilation_cache()
 def _tune_selected_device(
     bound_args: Sequence[Any], *, device_kind: str, tokamax: Any
 ) -> Any:
@@ -1291,6 +1359,7 @@ def _tune_selected_device(
     return tokamax.AutotuningResult(device_kind, tuple(entries))
 
 
+@without_candidate_compilation_cache()
 def _tune_missing(
     bound_args: Sequence[Any], *, device_kind: str, tokamax: Any, parallel: bool
 ) -> Any:
@@ -1323,6 +1392,7 @@ def _tune_missing(
     return tokamax.AutotuningResult(device_kind, tuple(entries))
 
 
+@without_candidate_compilation_cache()
 def _retry_missing_heuristics(
     bound_args: Sequence[Any], *, device_kind: str, tokamax: Any
 ) -> Any:

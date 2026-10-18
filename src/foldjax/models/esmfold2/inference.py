@@ -628,6 +628,9 @@ def predict(
     #: Which implementation the diffusion token transformer's packed SwiGLU
     #: takes. `None` leaves the checkpoint's value, which is `"xla"`.
     glu_backend: str | None = None,
+    #: Experimental solver-free alignment. SVD remains the default until
+    #: real-weight, tape-fixed accuracy and memory measurements admit Jacobi.
+    rigid_align_backend: str | None = None,
     #: The confidence head's re-embedding width. `None` leaves the
     #: checkpoint's value, which is `"float32"` -- upstream's own width;
     #: `"bfloat16"` opens AlphaFold 3's narrowed re-embedding. Scores only
@@ -712,6 +715,8 @@ def predict(
     if glu_backend is not None and glu_backend not in GLU_BACKENDS:
         msg = f"glu backend must be one of {GLU_BACKENDS}; got {glu_backend!r}"
         raise ValueError(msg)
+    if rigid_align_backend is not None and rigid_align_backend not in ("svd", "jacobi"):
+        raise ValueError("rigid_align_backend must be one of svd, jacobi")
     # This port has no triangle attention -- its 2-D ring is Cannon's, for the
     # triangle multiplication -- so a gather scope around it describes nothing
     # that runs, and is refused rather than reported.
@@ -743,6 +748,7 @@ def predict(
         max_msa_depth=max_msa_depth,
         structure_sample_sequential=structure_sample_sequential,
         glu_backend=glu_backend,
+        rigid_align_backend=rigid_align_backend,
         confidence_dtype=confidence_dtype,
         msa_column_mask_rate=msa_column_mask_rate,
         full_depth_msa=full_depth_msa,
@@ -796,6 +802,10 @@ def predict(
                         (
                             "a fused GLU",
                             settings.diffusion.glu_backend != "xla",
+                        ),
+                        (
+                            "solver-free rigid alignment (unmeasured memory)",
+                            settings.diffusion.rigid_align_backend != "svd",
                         ),
                     )
                     if active

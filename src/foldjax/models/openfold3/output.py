@@ -586,12 +586,20 @@ _PAIR_LOGIT_NAMES = ("pae_logits", "pde_logits", "distogram_logits")
 _PAIR_ERROR_NAMES = ("pae", "pde")
 
 
+def _crop_host_export(value: Any, index: tuple[Any, ...]) -> np.ndarray:
+    host = np.asarray(value)
+    cropped = host[index]
+    # A narrowed export must not keep its full padded host buffer alive.
+    return cropped.copy() if cropped.shape != host.shape else cropped
+
+
 def crop_prediction(prediction: Any, features: Mapping[str, Any]) -> Any:
     """Crop masked token/atom suffixes from the portable prediction arrays.
 
     The compiled program deliberately returns its bucket shape. Structures and
     scores already apply the masks, but a raw ``.npz`` should describe the
-    molecule rather than expose serving-only filler rows.
+    molecule rather than expose serving-only filler rows. Recognized export
+    arrays are transferred to the host before cropping; other fields pass through.
     """
 
     token_mask = _first(features["token_mask"], 1).astype(bool)
@@ -607,22 +615,24 @@ def crop_prediction(prediction: Any, features: Mapping[str, Any]) -> Any:
     for name in _PAIR_LOGIT_NAMES:
         value = values.get(name)
         if value is not None:
-            values[name] = value[..., :n_token, :n_token, :]
+            values[name] = _crop_host_export(value, np.s_[..., :n_token, :n_token, :])
     for name in _PAIR_ERROR_NAMES:
         value = values.get(name)
         if value is not None:
-            values[name] = value[..., :n_token, :n_token]
+            values[name] = _crop_host_export(value, np.s_[..., :n_token, :n_token])
     for name in (
         "coordinates", "plddt", "plddt_logits", "experimentally_resolved_logits"
     ):
         value = values.get(name)
         if value is None:
             continue
-        values[name] = (
-            value[..., :n_atom, :]
+        value = np.asarray(value)
+        index = (
+            np.s_[..., :n_atom, :]
             if name == "coordinates" or value.ndim >= 3
-            else value[..., :n_atom]
+            else np.s_[..., :n_atom]
         )
+        values[name] = _crop_host_export(value, index)
     return type(prediction)(**values)
 
 

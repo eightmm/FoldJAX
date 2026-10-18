@@ -101,6 +101,9 @@ class DiffusionSettings:
     #: configuration, so no key in `config.json` reaches it. See
     #: `conditioned_transition_block` for what `"tokamax"` changes.
     glu_backend: str = "xla"
+    #: ``jacobi`` removes cuSolver's workspace from the rigid alignment. It
+    #: remains opt-in pending real-weight, paired accuracy and memory evidence.
+    rigid_align_backend: str = "svd"
 
 
 @dataclass(frozen=True)
@@ -873,8 +876,95 @@ def _atom_normal(
     return drawn * semantic_mask[..., None].astype(drawn.dtype)
 
 
+def _rotation_from_correlation(correlation: jnp.ndarray) -> jnp.ndarray:
+    """Proper 3-D polar factor without a vendor linear-algebra workspace.
+
+    The largest eigenvector of the quaternion correlation matrix maximizes
+    the same proper-rotation objective as reflection-corrected Kabsch. Cyclic
+    Jacobi rotations diagonalize its four dimensions with scalar arithmetic;
+    unlike ``eigh``/``svd`` this cannot lower to a cuSolver custom call.
+    """
+    scale = jnp.max(jnp.abs(correlation), axis=(-2, -1), keepdims=True)
+    matrix = correlation / jnp.where(scale > 0, scale, 1.0)
+    xx, xy, xz = matrix[:, 0, 0], matrix[:, 0, 1], matrix[:, 0, 2]
+    yx, yy, yz = matrix[:, 1, 0], matrix[:, 1, 1], matrix[:, 1, 2]
+    zx, zy, zz = matrix[:, 2, 0], matrix[:, 2, 1], matrix[:, 2, 2]
+    symmetric = jnp.stack(
+        (
+            xx + yy + zz,
+            yz - zy,
+            zx - xz,
+            xy - yx,
+            yz - zy,
+            xx - yy - zz,
+            xy + yx,
+            xz + zx,
+            zx - xz,
+            xy + yx,
+            yy - xx - zz,
+            yz + zy,
+            xy - yx,
+            xz + zx,
+            yz + zy,
+            zz - xx - yy,
+        ),
+        axis=-1,
+    ).reshape((-1, 4, 4))
+    vectors = jnp.broadcast_to(jnp.eye(4, dtype=matrix.dtype), symmetric.shape)
+
+    def sweep(_, state):
+        diagonal, vectors = state
+        for p, q in ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)):
+            off = diagonal[:, p, q]
+            delta = 0.5 * (diagonal[:, q, q] - diagonal[:, p, p])
+            # The bounded tangent avoids division by a tiny off-diagonal and
+            # overflow in the usual tau**2 formula. Inputs are scaled to O(1).
+            denominator = jnp.abs(delta) + jnp.sqrt(delta * delta + off * off)
+            tangent = (
+                jnp.where(delta < 0, -1.0, 1.0)
+                * off
+                / jnp.where(denominator > 0, denominator, 1.0)
+            )
+            cosine = jax.lax.rsqrt(1.0 + tangent * tangent)
+            sine = tangent * cosine
+            col_p, col_q = diagonal[:, :, p], diagonal[:, :, q]
+            next_p = cosine[:, None] * col_p - sine[:, None] * col_q
+            next_q = sine[:, None] * col_p + cosine[:, None] * col_q
+            next_diagonal = diagonal.at[:, :, p].set(next_p)
+            next_diagonal = next_diagonal.at[:, p, :].set(next_p)
+            next_diagonal = next_diagonal.at[:, :, q].set(next_q)
+            next_diagonal = next_diagonal.at[:, q, :].set(next_q)
+            next_diagonal = next_diagonal.at[:, p, p].set(
+                diagonal[:, p, p] - tangent * off
+            )
+            next_diagonal = next_diagonal.at[:, q, q].set(
+                diagonal[:, q, q] + tangent * off
+            )
+            next_diagonal = next_diagonal.at[:, p, q].set(0.0)
+            diagonal = next_diagonal.at[:, q, p].set(0.0)
+            vec_p, vec_q = vectors[:, :, p], vectors[:, :, q]
+            vectors = vectors.at[:, :, p].set(
+                cosine[:, None] * vec_p - sine[:, None] * vec_q
+            )
+            vectors = vectors.at[:, :, q].set(
+                sine[:, None] * vec_p + cosine[:, None] * vec_q
+            )
+        return diagonal, vectors
+
+    diagonal, vectors = jax.lax.fori_loop(0, 10, sweep, (symmetric, vectors))
+    largest = jnp.argmax(jnp.diagonal(diagonal, axis1=-2, axis2=-1), axis=-1)
+    quaternion = jnp.take_along_axis(vectors, largest[:, None, None], axis=-1)[:, :, 0]
+    # correlation is target.T @ source, opposite the quaternion convention.
+    return jnp.swapaxes(quaternion_to_rotation(quaternion), -1, -2)
+
+
 def weighted_rigid_align(
-    x: jnp.ndarray, x_gt: jnp.ndarray, weights: jnp.ndarray, mask: jnp.ndarray
+    x: jnp.ndarray,
+    x_gt: jnp.ndarray,
+    weights: jnp.ndarray,
+    mask: jnp.ndarray,
+    *,
+    backend: str = "svd",
 ) -> jnp.ndarray:
     """Kabsch: the rigid motion taking `x` onto `x_gt`, in float32.
 
@@ -883,6 +973,8 @@ def weighted_rigid_align(
     `det(U V^T)` -- and it matters here because a reflected "alignment" would
     still reduce the residual and would still look like a structure.
     """
+    if backend not in ("svd", "jacobi"):
+        raise ValueError("rigid alignment backend must be 'svd' or 'jacobi'")
     w = (mask * weights).astype(jnp.float32)[..., None]
     x = x.astype(jnp.float32)
     x_gt = x_gt.astype(jnp.float32)
@@ -896,11 +988,14 @@ def weighted_rigid_align(
     correlation = jnp.einsum(
         "bni,bnj->bij", w * gt_centred, x_centred, precision=precision
     )
-    u, _, vh = jnp.linalg.svd(correlation)
-    determinant = jnp.linalg.det(jnp.matmul(u, vh, precision=precision))
-    ones = jnp.ones_like(determinant)
-    flip = jnp.stack([ones, ones, determinant], axis=-1)
-    rotation = jnp.matmul(u, flip[..., None] * vh, precision=precision)
+    if backend == "jacobi":
+        rotation = _rotation_from_correlation(correlation)
+    else:
+        u, _, vh = jnp.linalg.svd(correlation)
+        determinant = jnp.linalg.det(jnp.matmul(u, vh, precision=precision))
+        ones = jnp.ones_like(determinant)
+        flip = jnp.stack([ones, ones, determinant], axis=-1)
+        rotation = jnp.matmul(u, flip[..., None] * vh, precision=precision)
     return (
         jnp.matmul(x_centred, jnp.swapaxes(rotation, -1, -2), precision=precision)
         + mu_gt
@@ -962,9 +1057,13 @@ def _step(
         x_noisy, jnp.broadcast_to(jnp.asarray(t_hat, jnp.float32), (x.shape[0],))
     )
 
-    x_noisy = weighted_rigid_align(x_noisy, x_denoised, atom_mask, atom_mask).astype(
-        x_denoised.dtype
-    )
+    x_noisy = weighted_rigid_align(
+        x_noisy,
+        x_denoised,
+        atom_mask,
+        atom_mask,
+        backend=settings.rigid_align_backend,
+    ).astype(x_denoised.dtype)
     slope = (x_noisy - x_denoised) / t_hat
     x = x_noisy + settings.step_scale * (sigma_to - t_hat) * slope
     return (x, x_denoised, key, token_repr), None
@@ -1201,7 +1300,13 @@ def sample(
         carry, _ = run(carry, step)
         x_denoised, token_repr = carry[1], carry[3]
         if index >= 1:
-            aligned = weighted_rigid_align(previous, x_denoised, atom_mask, atom_mask)
+            aligned = weighted_rigid_align(
+                previous,
+                x_denoised,
+                atom_mask,
+                atom_mask,
+                backend=settings.rigid_align_backend,
+            )
             difference = (x_denoised - aligned) * atom_mask[..., None]
             rmsd = jnp.sqrt(
                 jnp.sum(difference**2, axis=(-1, -2))

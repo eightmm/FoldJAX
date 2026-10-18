@@ -313,8 +313,9 @@ def crop_opendde_outputs(
     for name in {"structural_s_inputs", "structural_s_trunk"} & cropped.keys():
         cropped[name] = _slice_axis(cropped[name], -2, n_structural)
     if "structural_z_trunk" in cropped:
-        value = _slice_axis(cropped["structural_z_trunk"], -2, n_structural)
-        cropped["structural_z_trunk"] = _slice_axis(value, -3, n_structural)
+        cropped["structural_z_trunk"] = _slice_axis(
+            cropped["structural_z_trunk"], (-2, -3), n_structural
+        )
     return cropped
 
 
@@ -366,10 +367,15 @@ def _pad_array(value: np.ndarray, target: int) -> np.ndarray:
     return np.pad(value, (0, target - int(value.shape[0])))
 
 
-def _slice_axis(value: Any, axis: int, size: int) -> Any:
+def _slice_axis(value: Any, axis: int | tuple[int, ...], size: int) -> Any:
+    # These representations are final exports. Transfer before narrowing so
+    # each real structural-token count does not create a device slice program.
+    value = np.asarray(value)
     index = [slice(None)] * value.ndim
-    index[axis] = slice(0, size)
-    return value[tuple(index)]
+    for item in (axis,) if isinstance(axis, int) else axis:
+        index[item] = slice(0, size)
+    cropped = value[tuple(index)]
+    return cropped.copy() if cropped.shape != value.shape else cropped
 
 
 __all__ = [

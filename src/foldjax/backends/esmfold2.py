@@ -145,6 +145,7 @@ _FIXED_COMPILE_DEFAULTS = {
     # The unfused transition is what every released number describes, and the
     # value is independent of the checkpoint: no `config.json` key reaches it.
     "glu_backend": "xla",
+    "rigid_align_backend": "svd",
     # A float32 confidence re-embedding is what every released number
     # describes, it is upstream's own width, and no `config.json` key reaches
     # it either.
@@ -178,6 +179,15 @@ def _checked_rate(name: str, value: object) -> float:
         interval = "[0, 1]" if upper_inclusive else "[0, 1)"
         raise ValueError(f"{name} must lie in {interval}; got {rate}")
     return rate
+
+
+def _checked_rigid_align_backend(value: object) -> str:
+    if not isinstance(value, str) or value not in ("svd", "jacobi"):
+        raise ValueError(
+            f"rigid_align_backend must be one of svd, jacobi; got {value!r}"
+        )
+    return value
+
 
 #: The layouts `cp_layout` accepts, and the resolution of an omitted one.
 #: `foldjax.models._cp.resolve_cp_layout` is the authority for both, but it
@@ -574,6 +584,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             # rather than a neutral knob: no other port spells a GLU choice
             # the neutral vocabulary could rename, and Boltz-2's is native too.
             "glu_backend",
+            "rigid_align_backend",
             # Opt-in bfloat16 confidence re-embedding. Native for the same
             # reason `trunk_dtype` is: it names a region of this port's own
             # arrangement, and the neutral vocabulary has no word for it.
@@ -650,6 +661,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # traced against, so a fused run must not be answered out of the
         # default executable's cache entry.
         "glu_backend",
+        "rigid_align_backend",
         # Traced into the confidence head's re-embedding, so a narrowed run
         # must not be answered out of the float32 executable's cache entry.
         "confidence_dtype",
@@ -1158,6 +1170,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             devices=options.get("cp_devices", 1),
         )
         glu_backend = _checked_glu_backend(options.get("glu_backend", "xla"))
+        _checked_rigid_align_backend(options.get("rigid_align_backend", "svd"))
         # Refused here as well as in the port: this runs before the 939 MB
         # structure checkpoint is opened, and the reason is the same one
         # Boltz-2 gives -- the pair state is placed by a sharding constraint
@@ -1310,6 +1323,10 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # nobody requested into the recorded overrides.
         if "glu_backend" in options:
             overrides["glu_backend"] = _checked_glu_backend(options.pop("glu_backend"))
+        if "rigid_align_backend" in options:
+            overrides["rigid_align_backend"] = _checked_rigid_align_backend(
+                options.pop("rigid_align_backend")
+            )
         # Absent means unasked, for the same reason: the port's own default is
         # already `float32`.
         if "confidence_dtype" in options:

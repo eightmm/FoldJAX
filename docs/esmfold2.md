@@ -94,6 +94,20 @@ separate compiled program with its own cache namespace; an omitted option and
 `true` share the released one. See
 [`docs/cli.md`](cli.md#--option-return_expected_errorsfalse-esmfold2-openfold3).
 
+## Solver-free rigid alignment (experimental)
+
+`--option rigid_align_backend=jacobi` replaces the denoiser's 3-by-3 SVD and
+determinant with a fixed-size quaternion Jacobi solver. It uses scalar JAX
+arithmetic, keeps float32 centering and coordinate products, and returns a
+proper rotation, including reflection correction, without a cuSolver call.
+
+The default remains `svd`. Component tests compare against the previous FP32
+implementation and an FP64 SVD oracle, but do not establish full-model accuracy
+or a higher token limit. Degenerate inputs can have multiple optimal rotations.
+Real-weight, tape-fixed comparisons at two sizes and GPU memory measurements
+are required before selecting a new default. Use the same explicit option for
+warming and prediction; Jacobi has its own compilation profile.
+
 ## Managed memory staging
 
 For one semantic input, including a multi-seed sweep of that input, FoldJAX's

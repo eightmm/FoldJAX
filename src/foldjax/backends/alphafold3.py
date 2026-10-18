@@ -41,6 +41,9 @@ from foldjax.backends._tokamax_autotune import (
     start_record as _start_tokamax_record,
 )
 from foldjax.backends._tokamax_autotune import (
+    without_candidate_compilation_cache as _without_candidate_compilation_cache,
+)
+from foldjax.backends._tokamax_autotune import (
     without_tokamax_hlo_payload as _without_tokamax_hlo_payload,
 )
 from foldjax.backends._weight_session import WeightAnchors
@@ -1576,6 +1579,7 @@ class AlphaFold3Backend(Backend):
                 _tokamax_kernel_fallback(kernel_fallback),
                 _model_device(device),
                 _without_tokamax_hlo_payload(),
+                _without_candidate_compilation_cache(),
                 # Only reached under `kernel_autotuning=heuristics` (or a
                 # store miss falling back to it): a tile that fits the card.
                 _glu_heuristics_within_shared_memory(device),

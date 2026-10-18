@@ -520,6 +520,63 @@ def test_full_opendde_padding_masks_every_axis_and_crops_outputs() -> None:
     assert cropped["structural_z_trunk"].shape == (3, 3, 8)
 
 
+def test_structural_export_crops_transfer_once_before_indexing() -> None:
+    from foldjax.padding import PaddingPlan
+
+    class DeviceExport:
+        def __init__(self, value):
+            self.value = value
+            self.transfers = 0
+
+        def __array__(self, dtype=None, copy=None):
+            self.transfers += 1
+            return np.asarray(self.value, dtype=dtype)
+
+        def __getitem__(self, key):
+            raise AssertionError("an export crop must not dispatch a device slice")
+
+    single = DeviceExport(np.arange(6 * 8).reshape(6, 8))
+    pair = DeviceExport(np.arange(6 * 6 * 8).reshape(6, 6, 8))
+    untouched = object()
+    cropped = crop_opendde_outputs(
+        {
+            "structural_s_trunk": single,
+            "structural_z_trunk": pair,
+            "unrequested_tensor": untouched,
+        },
+        PaddingPlan(
+            actual={"tokens": 3, "atoms": 3, "structural_tokens": 3},
+            target={"tokens": 4, "atoms": 5, "structural_tokens": 6},
+        ),
+    )
+
+    np.testing.assert_array_equal(cropped["structural_s_trunk"], single.value[:3])
+    np.testing.assert_array_equal(cropped["structural_z_trunk"], pair.value[:3, :3])
+    assert single.transfers == pair.transfers == 1
+    assert cropped["unrequested_tensor"] is untouched
+    assert cropped["structural_s_trunk"].base is None
+    assert cropped["structural_z_trunk"].base is None
+    assert not np.shares_memory(cropped["structural_s_trunk"], single.value)
+    assert not np.shares_memory(cropped["structural_z_trunk"], pair.value)
+
+
+def test_unpadded_structural_export_keeps_its_host_storage() -> None:
+    from foldjax.padding import PaddingPlan
+
+    single = np.arange(6 * 8).reshape(6, 8)
+    pair = np.arange(6 * 6 * 8).reshape(6, 6, 8)
+    cropped = crop_opendde_outputs(
+        {"structural_s_trunk": single, "structural_z_trunk": pair},
+        PaddingPlan(
+            actual={"tokens": 3, "atoms": 3, "structural_tokens": 6},
+            target={"tokens": 3, "atoms": 3, "structural_tokens": 6},
+        ),
+    )
+
+    assert np.shares_memory(cropped["structural_s_trunk"], single)
+    assert np.shares_memory(cropped["structural_z_trunk"], pair)
+
+
 def test_opendde_padding_and_model_filter_preserve_compact_relp() -> None:
     features = _opendde_features(msa_depth=2)
     del features["relp"]

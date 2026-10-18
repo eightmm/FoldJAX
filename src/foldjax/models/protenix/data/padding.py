@@ -377,7 +377,7 @@ def crop_protenix_outputs(
     output: Mapping[str, Any],
     plan: PaddingPlan,
 ) -> dict[str, Any]:
-    """Crop every public/raw Protenix output back to real cardinalities."""
+    """Transfer recognized export arrays to the host and crop real cardinalities."""
 
     n_token = plan.actual["tokens"]
     n_atom = plan.actual["atoms"]
@@ -397,19 +397,13 @@ def crop_protenix_outputs(
     for name in atom_last & cropped.keys():
         cropped[name] = _slice_axis(cropped[name], -1, n_atom)
     for name in token_pair_last & cropped.keys():
-        cropped[name] = _slice_axis(
-            _slice_axis(cropped[name], -1, n_token), -2, n_token
-        )
+        cropped[name] = _slice_axis(cropped[name], (-1, -2), n_token)
     for name in token_pair_with_channels & cropped.keys():
-        cropped[name] = _slice_axis(
-            _slice_axis(cropped[name], -2, n_token), -3, n_token
-        )
+        cropped[name] = _slice_axis(cropped[name], (-2, -3), n_token)
     for name in token_single & cropped.keys():
         cropped[name] = _slice_axis(cropped[name], -2, n_token)
     for name in token_pair_repr & cropped.keys():
-        cropped[name] = _slice_axis(
-            _slice_axis(cropped[name], -2, n_token), -3, n_token
-        )
+        cropped[name] = _slice_axis(cropped[name], (-2, -3), n_token)
     return cropped
 
 
@@ -545,10 +539,16 @@ def _pad_array(
     return np.pad(value, widths, mode="constant", constant_values=constant)
 
 
-def _slice_axis(value: Any, axis: int, size: int) -> Any:
+def _slice_axis(value: Any, axis: int | tuple[int, ...], size: int) -> Any:
+    # Final exports are consumed on the host. Narrow there so real molecule
+    # lengths do not introduce separate device slice executables.
+    value = np.asarray(value)
     index = [slice(None)] * value.ndim
-    index[axis] = slice(0, size)
-    return value[tuple(index)]
+    for item in (axis,) if isinstance(axis, int) else axis:
+        index[item] = slice(0, size)
+    cropped = value[tuple(index)]
+    # A NumPy view would retain the full padded host allocation until export.
+    return cropped.copy() if cropped.shape != value.shape else cropped
 
 
 __all__ = [
