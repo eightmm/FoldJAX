@@ -2286,7 +2286,7 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
         "templates": 2,
     }
     assert result.shape_profile["chain_count"] == 1
-    assert result.shape_profile["static"] == {"chain_capacity": 4}
+    assert result.shape_profile["static"] == {"chain_capacity": 64}
 
 
 def test_openfold3_featurization_names_the_extra_it_needs(monkeypatch) -> None:

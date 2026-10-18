@@ -1598,7 +1598,7 @@ def test_predict_pads_mini_esm_language_model_and_reports_profile(
     assert kwargs["step_noises"] is None
     plan, static = profiles[0]
     assert plan.target["language_model_tokens"] == 16
-    assert static == {"chain_capacity": 4}
+    assert static == {"chain_capacity": 64}
 
     fallback_init = object()
     fallback_steps = object()

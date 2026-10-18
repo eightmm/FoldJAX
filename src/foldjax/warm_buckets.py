@@ -151,6 +151,48 @@ def _failed_row(row: dict[str, Any], error: Exception) -> None:
         row["process"] = error.warm_process
 
 
+def bucket_request(
+    request: PredictionRequest,
+    *,
+    model: str,
+    bucket: int,
+    length: int,
+    index: int,
+    jobs: Path,
+) -> PredictionRequest:
+    """Build the representative request shared by warming and presence checks."""
+    jobs.mkdir(parents=True, exist_ok=True)
+    source = Job.from_sequences(
+        ("A" * length,), name=f"warm-{bucket}-{index}"
+    ).write(jobs / f"{model}-{bucket}-{index}.json")
+    native_buckets = model == "alphafold3" and "buckets" in request.options
+    padding = (
+        None
+        if native_buckets
+        else dataclasses.replace(request.padding or PaddingConfig(), tokens=bucket)
+    )
+    output = (
+        None
+        if request.output_dir is None
+        else Path(request.output_dir) / model / str(bucket) / str(length)
+    )
+    return dataclasses.replace(
+        request,
+        model=model,
+        models=None,
+        input=source,
+        inputs=None,
+        input_format="foldjax",
+        source=None,
+        padding=padding,
+        options=dict(request.options),
+        output_dir=output,
+        msa="single",
+        resume=False,
+        on_error="stop",
+    )
+
+
 def _warm_bucket(
     request: PredictionRequest,
     *,
@@ -164,43 +206,20 @@ def _warm_bucket(
 
     row = _bucket_row(bucket, previous)
     lengths = row["lengths"]
-    native_buckets = model == "alphafold3" and "buckets" in request.options
     device = device_summary(dataclasses.replace(request, model=model, models=None))
     jobs.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
     try:
         for index, length in enumerate(lengths):
-            source = Job.from_sequences(
-                ("A" * length,), name=f"warm-{bucket}-{index}"
-            ).write(jobs / f"{model}-{bucket}-{index}.json")
-            padding = (
-                None
-                if native_buckets
-                else dataclasses.replace(
-                    request.padding or PaddingConfig(), tokens=bucket
-                )
-            )
-            options = dict(request.options)
-            output = (
-                None
-                if request.output_dir is None
-                else Path(request.output_dir) / model / str(bucket) / str(length)
-            )
-            scalar = dataclasses.replace(
+            scalar = bucket_request(
                 request,
                 model=model,
-                models=None,
-                input=source,
-                inputs=None,
-                input_format="foldjax",
-                source=None,
-                padding=padding,
-                options=options,
-                output_dir=output,
-                msa="single",
-                resume=False,
-                on_error="stop",
+                bucket=bucket,
+                length=length,
+                index=index,
+                jobs=jobs,
             )
+            output = scalar.output_dir
             if output is not None:
                 from foldjax.api import _prepare_output_directory
 

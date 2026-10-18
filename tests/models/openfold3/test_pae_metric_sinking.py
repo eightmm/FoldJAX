@@ -535,8 +535,10 @@ def test_compact_metrics_keep_both_cpu_context_parallel_layouts() -> None:
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
-def _install_tiny_predict(monkeypatch) -> tuple[dict[str, jax.Array], object]:
-    n_token = n_atom = 4
+def _install_tiny_predict(
+    monkeypatch, *, n_token=4
+) -> tuple[dict[str, jax.Array], object]:
+    n_atom = n_token
 
     def fake_trunk(batch, params, **kwargs):
         del batch, params, kwargs
@@ -579,8 +581,9 @@ def _install_tiny_predict(monkeypatch) -> tuple[dict[str, jax.Array], object]:
         bins = jnp.arange(c_out, dtype=single.dtype)
         return single[..., :n_atom, :1] + bins / max(c_out, 1)
 
-    frame_mask = jnp.asarray(
-        [[True, True, False, True], [True, False, True, True], [False] * n_token]
+    token_pattern = jnp.arange(n_token) % 4
+    frame_mask = jnp.stack(
+        (token_pattern != 2, token_pattern != 1, jnp.zeros(n_token, bool))
     )
 
     monkeypatch.setattr(inference, "trunk", fake_trunk)
@@ -615,8 +618,8 @@ def _install_tiny_predict(monkeypatch) -> tuple[dict[str, jax.Array], object]:
 
     batch = {
         "msa_mask": jnp.ones((1, 1, n_token), dtype=jnp.float32),
-        "token_mask": jnp.asarray([[1, 1, 0, 1]], dtype=jnp.float32),
-        "asym_id": jnp.asarray([[0, 0, 1, 2]], dtype=jnp.int32),
+        "token_mask": (token_pattern != 2)[None].astype(jnp.float32),
+        "asym_id": jnp.asarray([0, 0, 1, 2], jnp.int32)[token_pattern][None],
         "atom_mask": jnp.ones((1, n_atom), dtype=jnp.float32),
         "max_atom_per_token_mask": jnp.arange(n_atom)[None],
     }

@@ -337,7 +337,7 @@ def test_compiled_boundary_strips_stale_private_keys_before_jit(monkeypatch) -> 
             assert chain_count.shape == ()
             assert chain_count.dtype == np.int32
             assert int(chain_count) == -1
-            assert identity.chain_capacity == 4
+            assert identity.chain_capacity == 64
             seen["features"] = batch
             return np.asarray(7, np.int32)
 

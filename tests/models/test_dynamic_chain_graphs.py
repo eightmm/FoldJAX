@@ -23,51 +23,59 @@ from foldjax.models.protenix.models.heads.confidence import (
 
 
 def _features(chain_ids):
-    valid = jnp.asarray([True] * 6 + [False] * 2)
-    indices = jnp.arange(8, dtype=jnp.int32)
+    n_valid = len(chain_ids)
+    n_token = n_valid + 2
+    valid = jnp.asarray([True] * n_valid + [False] * 2)
+    indices = jnp.arange(n_token, dtype=jnp.int32)
     features = {
-        "restype": jnp.zeros((8, 32), dtype=jnp.float32),
-        "ref_pos": jnp.zeros((8, 3), dtype=jnp.float32),
-        "ref_element": jnp.zeros((8, 128), dtype=jnp.float32),
-        "ref_atom_name_chars": jnp.zeros((8, 4, 64), dtype=jnp.float32),
+        "restype": jnp.zeros((n_token, 32), dtype=jnp.float32),
+        "ref_pos": jnp.zeros((n_token, 3), dtype=jnp.float32),
+        "ref_element": jnp.zeros((n_token, 128), dtype=jnp.float32),
+        "ref_atom_name_chars": jnp.zeros((n_token, 4, 64), dtype=jnp.float32),
         "asym_id": jnp.asarray([*chain_ids, 99, 99], dtype=jnp.int32),
         "token_index": indices,
         "residue_index": indices,
-        "entity_id": jnp.zeros((8,), dtype=jnp.int32),
-        "sym_id": jnp.zeros((8,), dtype=jnp.int32),
-        "relp": jnp.zeros((8, 8, 2), dtype=jnp.float32),
+        "entity_id": jnp.zeros((n_token,), dtype=jnp.int32),
+        "sym_id": jnp.zeros((n_token,), dtype=jnp.int32),
+        "relp": jnp.zeros((n_token, n_token, 2), dtype=jnp.float32),
         "atom_to_token_idx": indices,
-        "atom_to_tokatom_idx": jnp.zeros((8,), dtype=jnp.int32),
+        "atom_to_tokatom_idx": jnp.zeros((n_token,), dtype=jnp.int32),
         "has_frame": valid,
-        "frame_atom_index": jnp.zeros((8, 3), dtype=jnp.int32),
+        "frame_atom_index": jnp.zeros((n_token, 3), dtype=jnp.int32),
         "pae_rep_atom_mask": valid,
         "distogram_rep_atom_mask": valid,
         "token_padding_mask": valid,
         "atom_padding_mask": valid,
-        "token_is_ligand": jnp.asarray([False] * 5 + [True, False, False]),
-        "is_protein": jnp.asarray([True] * 5 + [False] * 3),
+        "token_is_ligand": jnp.asarray([False] * (n_valid - 1) + [True, False, False]),
+        "is_protein": jnp.asarray([True] * (n_valid - 1) + [False] * 3),
         "parent_residue_idx": indices,
-        "subtoken_role_id": jnp.ones((8,), dtype=jnp.int32),
+        "subtoken_role_id": jnp.ones((n_token,), dtype=jnp.int32),
         "structural_token_index": indices,
         "atom_to_structural_token_idx": indices,
-        "atom_to_structural_tokatom_idx": jnp.zeros((8,), dtype=jnp.int32),
+        "atom_to_structural_tokatom_idx": jnp.zeros((n_token,), dtype=jnp.int32),
         "structural_distogram_rep_atom_mask": valid,
         "structural_pae_rep_atom_mask": valid,
         "structural_has_frame": valid,
-        "structural_frame_atom_index": jnp.zeros((8, 3), dtype=jnp.int32),
+        "structural_frame_atom_index": jnp.zeros((n_token, 3), dtype=jnp.int32),
         "structural_token_padding_mask": valid,
     }
     return features
 
 
-def _raw_output():
+def _raw_output(n_token=8):
     rng = np.random.default_rng(17)
     return {
-        "coordinate": jnp.asarray(rng.normal(size=(2, 8, 3)), dtype=jnp.float32),
-        "plddt": jnp.asarray(rng.normal(size=(2, 8, 50)), dtype=jnp.float32),
-        "pae": jnp.asarray(rng.normal(size=(2, 8, 8, 64)), dtype=jnp.float32),
-        "pde": jnp.asarray(rng.normal(size=(2, 8, 8, 64)), dtype=jnp.float32),
-        "distogram_logits": jnp.asarray(rng.normal(size=(8, 8, 96)), dtype=jnp.float32),
+        "coordinate": jnp.asarray(rng.normal(size=(2, n_token, 3)), dtype=jnp.float32),
+        "plddt": jnp.asarray(rng.normal(size=(2, n_token, 50)), dtype=jnp.float32),
+        "pae": jnp.asarray(
+            rng.normal(size=(2, n_token, n_token, 64)), dtype=jnp.float32
+        ),
+        "pde": jnp.asarray(
+            rng.normal(size=(2, n_token, n_token, 64)), dtype=jnp.float32
+        ),
+        "distogram_logits": jnp.asarray(
+            rng.normal(size=(n_token, n_token, 96)), dtype=jnp.float32
+        ),
     }
 
 
@@ -117,7 +125,7 @@ def test_compiled_model_reuses_one_program_and_crops_chain_scores(monkeypatch, m
     else:
         from foldjax.models.opendde.models import model as implementation
 
-    raw = _raw_output()
+    raw = _raw_output(14)
     traces = []
 
     def score_only(features, params, schedule, **kwargs):
@@ -142,11 +150,12 @@ def test_compiled_model_reuses_one_program_and_crops_chain_scores(monkeypatch, m
     infer = getattr(implementation, f"{model}_infer_compiled")
     schedule = jnp.asarray([1.0, 0.0], dtype=jnp.float32)
     cases = (
-        ([0, 0, 0, 0, 0, 0], None, 1),
-        ([0, 0, 0, 1, 1, 1], None, 2),
-        ([0, 0, 1, 1, 2, 2], None, 3),
-        ([0, 0, 0, 2, 2, 2], None, 3),
-        ([0, 0, 1, 1, 2, 2], 1, 1),
+        ([0] * 12, None, 1),
+        ([0] * 4 + [1] * 4 + [2] * 4, None, 3),
+        ([0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 4], None, 5),
+        (list(range(12)), None, 12),
+        ([0] * 6 + [2] * 6, None, 3),
+        (list(range(12)), 1, 1),
     )
     try:
         for ids, explicit, count in cases:
@@ -179,14 +188,14 @@ def test_compiled_model_reuses_one_program_and_crops_chain_scores(monkeypatch, m
         lowerings = []
         for (args, kwargs), (_, _, count) in zip(pool.calls, cases, strict=True):
             assert "n_chain" not in kwargs
-            np.testing.assert_array_equal(kwargs["chain_mask"], np.arange(4) < count)
+            np.testing.assert_array_equal(kwargs["chain_mask"], np.arange(64) < count)
             lowerings.append(pool.lower(*args, **kwargs).as_text())
         assert all(program == lowerings[0] for program in lowerings[1:])
     finally:
         pool.clear_cache()
 
 
-@pytest.mark.parametrize("count,capacity", [(1, 4), (2, 4), (3, 4), (4, 4), (5, 8)])
+@pytest.mark.parametrize("count,capacity", [(1, 64), (5, 64), (12, 64), (64, 64)])
 def test_chain_capacity_and_host_crop_keep_only_actual_slots(count, capacity):
     assert chain_capacity(count) == capacity
     np.testing.assert_array_equal(chain_mask(count), np.arange(capacity) < count)
@@ -202,12 +211,41 @@ def test_chain_capacity_and_host_crop_keep_only_actual_slots(count, capacity):
     assert output["chain_ptm"].shape == (2, capacity)
 
 
+@pytest.mark.parametrize("count,capacity", [(65, 128), (129, 256)])
+def test_chain_capacity_overflow_warns_before_separating_the_program(count, capacity):
+    with pytest.warns(RuntimeWarning, match=f"using {capacity} slots"):
+        assert chain_capacity(count) == capacity
+
+
 def test_chain_extent_ignores_padded_ids_and_preserves_sparse_or_explicit_extent():
     features = _features([0, 0, 0, 2, 2, 2])
     assert resolve_chain_count(features) == 3
     assert resolve_chain_count(features, 1) == 1
     features["token_padding_mask"] = jnp.zeros((8,), dtype=bool)
     assert resolve_chain_count(features) == 0
+
+
+@pytest.mark.parametrize("count", [5, 12])
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16])
+def test_many_chain_score_capacity_keeps_the_legacy_arithmetic(count, dtype):
+    features = _features([index % count for index in range(12)])
+    raw = {
+        key: value if key == "coordinate" else value.astype(dtype)
+        for key, value in _raw_output(14).items()
+    }
+    expected = _score("protenix", features, raw, n_chain=count)
+    actual = crop_chain_scores(
+        _score("protenix", features, raw, chain_mask=chain_mask(count)), count
+    )
+    for key in expected:
+        np.testing.assert_allclose(
+            actual[key],
+            expected[key],
+            rtol=2e-6,
+            atol=1e-7,
+            equal_nan=True,
+            err_msg=key,
+        )
 
 
 def test_tiny_native_protenix_uses_one_body_for_one_two_and_three_chains(monkeypatch):

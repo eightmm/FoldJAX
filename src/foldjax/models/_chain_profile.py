@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping
 from numbers import Integral
 from typing import Any
@@ -10,16 +11,30 @@ import numpy as np
 
 
 def chain_capacity(n_chain: int) -> int:
-    """Share a four-slot graph for monomers and small complexes."""
+    """Keep ordinary chain counts out of the model's compilation profile."""
     if isinstance(n_chain, bool) or not isinstance(n_chain, Integral) or n_chain < 0:
         raise ValueError("n_chain must be a non-negative integer")
-    return max(4, 1 << (max(1, int(n_chain)) - 1).bit_length())
+    if n_chain <= 64:
+        return 64
+    capacity = 1 << (int(n_chain) - 1).bit_length()
+    warnings.warn(
+        f"{n_chain} chains exceed the shared 64-chain score capacity; "
+        f"using {capacity} slots requires a separate compiled executable.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    return capacity
 
 
 def resolve_chain_count(features: Mapping[str, Any], n_chain: int | None = None) -> int:
     """Preserve the native max-id-plus-one convention, including empty ids."""
     if n_chain is not None:
-        chain_capacity(n_chain)
+        if (
+            isinstance(n_chain, bool)
+            or not isinstance(n_chain, Integral)
+            or n_chain < 0
+        ):
+            raise ValueError("n_chain must be a non-negative integer")
         return int(n_chain)
     asym_id = np.asarray(features["asym_id"])
     valid = features.get("token_padding_mask")

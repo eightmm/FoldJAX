@@ -449,6 +449,7 @@ def opendde_confidence_scores(
             chain_asym_id,
             n_chain=n_chain,
             token_mask=token_mask,
+            chain_mask=chain_mask,
         )
     )
     if include_shape_complementarity:

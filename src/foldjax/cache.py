@@ -43,6 +43,19 @@ _CONFIG_LOCK = RLock()
 #: process compiled for the same key, so what runs is what ran.
 PERSISTENT_CACHE_MIN_COMPILE_SECS = 0.0
 
+# These models changed their confidence graph and must be warmed again.
+# Keep other model namespaces stable; revision changes are model-specific.
+_GRAPH_REVISIONS = {
+    "protenix": "2026-10-18-chain64",
+    "opendde": "2026-10-18-chain64",
+    "openfold3": "2026-10-18-chain64",
+}
+
+
+def cache_revision(model: str) -> str | None:
+    """The declared graph ABI that an operator must warm for this model."""
+    return _GRAPH_REVISIONS.get(model)
+
 
 def private_compile_cache_root() -> Path:
     """A user cache independent of a shared FoldJAX home or source checkout."""
@@ -134,9 +147,11 @@ def cache_namespace(
 ) -> Path:
     """Return ``root/model/weight_id/digest`` for one compile-relevant profile."""
     safe_weight = _UNSAFE.sub("_", weight_id).strip("_") or "weights"
-    payload = json.dumps(
-        _profile_value(dict(profile)), sort_keys=True, separators=(",", ":")
-    )
+    identity = _profile_value(dict(profile))
+    revision = cache_revision(model)
+    if revision is not None:
+        identity = {"graph_revision": revision, "profile": identity}
+    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
     return Path(root) / model / safe_weight / digest
 

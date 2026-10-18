@@ -91,7 +91,7 @@ def test_capacity_scores_match_the_exact_count_program(case, dtype):
     count, kwargs = _score_inputs(case, dtype)
     # The no-mask implementation retains the pre-capacity Python-loop program.
     expected = confidence_scores_from_logits(**kwargs, n_chain=count)
-    actual = confidence_scores_from_logits(**kwargs, chain_mask=jnp.arange(4) < count)
+    actual = confidence_scores_from_logits(**kwargs, chain_mask=jnp.arange(64) < count)
     assert actual.keys() == expected.keys()
     for key in expected:
         cropped = _crop(key, actual[key], count)
@@ -159,6 +159,17 @@ def test_chain_count_changes_reuse_one_capacity_executable():
         jax.block_until_ready(compiled(*args))
     assert lowered[0] == lowered[1] == lowered[2]
     assert compiled._cache_size() == 1
+
+
+def test_score_capacity_does_not_expand_the_compiled_confidence_body_quadratically():
+    _, kwargs = _score_inputs("trimer")
+    compiled = jax.jit(
+        lambda mask: confidence_scores_from_logits(**kwargs, chain_mask=mask)
+    )
+    small = compiled.lower(jnp.arange(4) < 3).as_text()
+    shared = compiled.lower(jnp.arange(64) < 3).as_text()
+    assert len(shared) < 2 * len(small)
+    assert "tensor<64x64x8x8" not in shared
 
 
 def test_runtime_monomer_skips_quadratic_clash_scans(monkeypatch):

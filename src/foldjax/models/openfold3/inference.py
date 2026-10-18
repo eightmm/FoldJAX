@@ -2799,10 +2799,10 @@ def compile_predict(
 
     ``params`` stays a runtime argument, so weights can be swapped -- a different
     checkpoint, or averaged weights -- without recompiling. Chain counts are
-    runtime data too: counts up to four share a score capacity, then eight,
-    sixteen and so on. Tiny chain scores are cropped on the host; confidence
-    logits remain within the bounded serial schedule. Changing ``config``, the
-    batch shapes or other graph policies requires a new compilation.
+    runtime data too: counts up to 64 share a score capacity. Larger counts
+    use the next power of two and emit a warning. Chain scores are cropped on the
+    host; confidence logits remain within the bounded serial schedule. Changing
+    ``config``, the batch shapes or other graph policies requires a new compilation.
 
     ``noise_fn`` is deliberately not used by production callers: baking a
     Python callback into a compiled function would defeat the scan. A concrete

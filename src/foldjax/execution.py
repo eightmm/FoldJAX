@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import contextvars
 import warnings
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
 
@@ -363,3 +363,62 @@ def resolved_matmul_precision(default: str) -> str:
     it was before.
     """
     return _REQUESTED_MATMUL_PRECISION.get() or default
+
+
+_CHUNKING_LIMIT = 8
+_RESOLVED_CHUNKING: contextvars.ContextVar[tuple[dict[str, Any], ...]] = (
+    contextvars.ContextVar("foldjax_resolved_chunking", default=())
+)
+_OMITTED_CHUNKING: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "foldjax_omitted_chunking", default=0
+)
+
+
+def record_resolved_chunking(
+    *,
+    model: str,
+    n_token: int,
+    chunks: Mapping[str, int | None],
+    policy: str,
+) -> None:
+    """Record realized static widths without adding them to compile identity.
+
+    Native runners resolve these below the backend/manifest boundary. Keep
+    distinct profiles, rather than seeds or samples, with a bounded per-run
+    record containing no input data, device budget or filesystem paths.
+    """
+    profile = {
+        "model": model,
+        "n_token": int(n_token),
+        "policy": policy,
+        "chunks": {
+            name: None if width is None else int(width)
+            for name, width in sorted(chunks.items())
+        },
+    }
+    profiles = _RESOLVED_CHUNKING.get()
+    if profile in profiles:
+        return
+    if len(profiles) < _CHUNKING_LIMIT:
+        _RESOLVED_CHUNKING.set((*profiles, profile))
+    else:
+        _OMITTED_CHUNKING.set(_OMITTED_CHUNKING.get() + 1)
+
+
+def recorded_chunking() -> dict[str, Any] | None:
+    """JSON-native realized widths for this prediction, absent if unresolved."""
+    profiles = _RESOLVED_CHUNKING.get()
+    if not profiles:
+        return None
+    return {
+        "profiles": [
+            {**profile, "chunks": dict(profile["chunks"])} for profile in profiles
+        ],
+        "profiles_truncated": _OMITTED_CHUNKING.get(),
+    }
+
+
+def clear_chunking_record() -> None:
+    """Prevent a finished or resumed run inheriting another run's widths."""
+    _RESOLVED_CHUNKING.set(())
+    _OMITTED_CHUNKING.set(0)

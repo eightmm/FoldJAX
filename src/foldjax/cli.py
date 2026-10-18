@@ -763,6 +763,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     _add_predict_arguments(warm, allow_no_cache=False, cache_warm=True)
     warm.add_argument(
+        "--verify-only",
+        action="store_true",
+        help="inspect expected shared/private namespaces for JAX entries without "
+        "compiling or predicting; does not prove HLO compatibility or coverage",
+    )
+    warm.add_argument(
         "--isolation",
         choices=("process", "in-process"),
         default="process",
@@ -1588,6 +1594,9 @@ def _run_weights(args: argparse.Namespace) -> int:
 def _run_cache(args: argparse.Namespace) -> int:
     """Warm an exact persistent-cache profile and report what changed."""
 
+    if args.verify_only:
+        return _verify_cache(args)
+
     from foldjax.warmup import warm_cache
 
     if args.token_buckets is not None:
@@ -1679,6 +1688,40 @@ def _run_cache(args: argparse.Namespace) -> int:
     print(json.dumps(payload, indent=2, sort_keys=True))
     _print_warm_prediction_hint(args)
     return 0
+
+
+def _verify_cache(args: argparse.Namespace) -> int:
+    from foldjax.cache_verify import verify_cache
+
+    if args.token_buckets is not None:
+        if (
+            args.input
+            or args.sequence
+            or args.dna
+            or args.rna
+            or args.ligand
+            or args.ligand_smiles
+        ):
+            raise ValueError(
+                "--token-buckets generates its own protein jobs; "
+                "omit input/sequence options"
+            )
+        if args.pad_tokens is not None:
+            raise ValueError("--token-buckets selects token sizes; omit --pad-tokens")
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="foldjax-verify-request-") as temporary:
+        generated = argparse.Namespace(**vars(args))
+        if args.token_buckets is not None:
+            generated.sequence = ["AA"]
+            generated.input_format = "foldjax"
+        request = _request(generated, jobs_root=Path(temporary))
+        assert request is not None
+        with _stdout_to_stderr():
+            result = verify_cache(request, token_buckets=args.token_buckets)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    print(f"[cache] {result['limitation']}", file=sys.stderr)
+    return 0 if result["status"] == "entries_present" else 3
 
 
 def _print_warm_prediction_hint(args: argparse.Namespace) -> None:

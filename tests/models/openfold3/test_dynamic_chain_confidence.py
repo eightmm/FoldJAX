@@ -108,17 +108,21 @@ def test_padded_scores_match_independent_legacy_loops(dtype, count, ids):
 def test_real_predict_boundary_reuses_one_lowering_and_crops_scores(
     monkeypatch, returned, cutoff
 ):
-    batch, _ = _install_tiny_predict(monkeypatch)
-    batch["token_mask"] = jnp.ones((1, 4))
-    batch["is_ligand"] = jnp.asarray([[0, 0, 1, 0]])
+    batch, _ = _install_tiny_predict(monkeypatch, n_token=12)
+    batch["token_mask"] = jnp.ones((1, 12))
+    batch["is_ligand"] = jnp.asarray([[0, 0, 1, 0] * 3])
     params = inference.InferenceParams(*([None] * 8))
     config = _tiny_inference_config(
         per_sample_token_cutoff=cutoff, returned_pair_logits=returned
-    )
+    )._replace(n_token=12, n_atom=12)
     lowered = []
     inference._compiled_predict.clear_cache()
     try:
-        for count, ids in ((1, [0, 0, 0, 0]), (2, [0, 0, 1, 1]), (3, [0, 1, 2, 2])):
+        for count, ids in (
+            (1, [0] * 12),
+            (5, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 4]),
+            (12, list(range(12))),
+        ):
             current = {**batch, "asym_id": jnp.asarray([ids])}
             run = inference.compile_predict(
                 config, _table(), n_chain=count, triangle_kernel="xla"
@@ -146,34 +150,34 @@ def test_real_predict_boundary_reuses_one_lowering_and_crops_scores(
                     np.testing.assert_allclose(
                         left, right, rtol=0, atol=2e-6, err_msg=name
                     )
-            if count == 3:
+            if count == 12:
                 compiled = lowered[-1].compile()(*args)
                 assert isinstance(compiled.chain_ptm, jax.Array)
-                assert compiled.chain_ptm.shape == (3, 3)
+                assert compiled.chain_ptm.shape == (3, 12)
                 np.testing.assert_allclose(
                     compiled.chain_pair_iptm, actual.chain_pair_iptm, atol=2e-6
                 )
         assert len({item.as_text() for item in lowered}) == 1
         assert inference._compiled_predict._cache_size() == 1
         if not returned and cutoff == 0:
-            assert "tensor<3x4x4x64xf32>" not in lowered[0].as_text()
+            assert "tensor<3x12x12x64xf32>" not in lowered[0].as_text()
     finally:
         inference._compiled_predict.clear_cache()
 
 
 def test_streamed_real_confidence_tail_reuses_chain_counts(monkeypatch):
-    batch, _ = _install_tiny_predict(monkeypatch)
-    batch["token_mask"] = jnp.ones((1, 4))
-    batch["is_ligand"] = jnp.asarray([[0, 0, 1, 0]])
+    batch, _ = _install_tiny_predict(monkeypatch, n_token=12)
+    batch["token_mask"] = jnp.ones((1, 12))
+    batch["is_ligand"] = jnp.asarray([[0, 0, 1, 0] * 3])
     for name in ("msa", "has_deletion", "deletion_value"):
-        batch[name] = np.zeros((1, 1, 4))
+        batch[name] = np.zeros((1, 1, 12))
     batch = prepare_msa_cycle_features(
         batch, 1, num_recycles=1, rng=np.random.default_rng(1)
     )
     params = inference.InferenceParams(*([None] * 8))
     config = _tiny_inference_config(
         per_sample_token_cutoff=0, returned_pair_logits=()
-    )._replace(msa_depth=1)
+    )._replace(msa_depth=1, n_token=12, n_atom=12)
     traces = []
     trunk = inference.trunk
 
@@ -189,7 +193,11 @@ def test_streamed_real_confidence_tail_reuses_chain_counts(monkeypatch):
     monkeypatch.setattr(streaming, "trunk_cycle", cycle)
     streaming._compiled_streams.clear_cache()
     try:
-        for count, ids in ((1, [0, 0, 0, 0]), (2, [0, 0, 1, 1]), (3, [0, 1, 2, 2])):
+        for count, ids in (
+            (1, [0] * 12),
+            (5, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 4]),
+            (12, list(range(12))),
+        ):
             current = {**batch, "asym_id": np.asarray([ids], np.int32)}
             value = streaming.compile_streamed_predict(
                 config, _table(), n_chain=count, triangle_kernel="xla"

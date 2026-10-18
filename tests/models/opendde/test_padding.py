@@ -372,7 +372,7 @@ def test_native_cli_pads_after_sampling_and_reports_profile(
                 "structural_tokens": 256,
             },
             "changed": True,
-            "static": {"chain_capacity": 4},
+            "static": {"chain_capacity": 64},
         }
     ]
 

@@ -43,11 +43,11 @@ should be submitted to a GPU compute node on a cluster. It does not download
 weights or claim that the synthetic structure has scientific value.
 
 Protenix, OpenDDE and OpenFold3 keep the actual chain count out of the compiled
-model's static arguments. Confidence scores use a capacity of four chains, then
-eight, sixteen and so on, with runtime masks/counts and cropped output axes.
-One-, two- and three-chain inputs therefore share the same body executable when
-the other padded shapes and execution options agree. Crossing a chain capacity
-boundary still needs another executable. The per-sample confidence schedule
+model's static arguments. Confidence scores reserve 64 chain slots with runtime
+masks/counts and cropped output axes. Inputs with up to 64 chains therefore share
+the same body executable when the other padded shapes and execution options
+agree. More chains grow the capacity to the next power of two and emit a warning;
+that overflow needs another executable. The per-sample confidence schedule
 remains sequential; chain pairs do not stack full-bin PAE tensors.
 
 The CLI defaults to `--isolation process`. Each model/bucket starts a fresh
@@ -101,6 +101,33 @@ when the worker dies. On keyboard cancellation it terminates and reaps its own
 active worker before cleaning that directory. Main-thread warming also handles
 an ordinary SIGTERM this way. Existing custom SIGTERM handlers retain their
 application-defined behavior; SIGKILL of the parent cannot run cleanup.
+
+To inspect the current expected namespaces without compiling, predicting,
+loading model parameters, or searching for MSAs, add `--verify-only`:
+
+```bash
+foldjax cache warm --verify-only --model protenix --token-buckets 128..1024 \
+  --fixed-msa 2048 --msa single
+foldjax cache warm --verify-only --model esmfold2 --input job.json --padding
+```
+
+This always prints JSON with the expected namespace and graph revision, each
+trusted shared/private tier's entry count, and `entries_present` or `missing`.
+Exit status is 0 when every requested namespace contains a non-empty regular
+JAX executable entry and 3 when any does not. It creates no cache directories or
+entries, ignores tuning-only files and symlinks, and applies prediction's cache
+trust rules. Installed weight locations and the selected device/runtime are
+still queried to derive the same namespaces as prediction. Bucket checks use
+the same two synthetic lengths and padding/options as warming.
+
+This is a **namespace inventory**, not a cache-hit or complete-coverage check.
+Entries are not deserialized and their individual HLO keys are not computed.
+Code or concrete input changes can require compilation within an existing
+namespace, and the presence of one entry does not prove that every executable
+or Tokamax tuning result is available. Announced graph-ABI changes use a new
+revision, so this check can flag the resulting missing namespace. See
+[cache compatibility notes](cache-compatibility.md) for models that need warming
+again after an update.
 
 For prediction reuse, select the same model/weights, device, runtime, token and
 other padded capacities, MSA cap, and compile-relevant native options.

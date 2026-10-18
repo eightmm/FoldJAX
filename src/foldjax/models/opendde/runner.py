@@ -16,11 +16,13 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from foldjax import memory_policy, progress
 from foldjax.cache import compilation_cache_scope
+from foldjax.execution import record_resolved_chunking
 from foldjax.models import _representations
 from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models.opendde.data.compact_categories import (
@@ -411,6 +413,17 @@ def _predict(
         thresholds=PROTENIX_CHUNK_SIZE_THRESHOLDS,
         extreme=PROTENIX_EXTREME_CHUNK_SIZE,
         **{k: v for k, v in (chunk_overrides or {}).items() if v is not None},
+    )
+    record_resolved_chunking(
+        model="opendde",
+        n_token=n_residue,
+        # OpenDDE does not expose the shared resolver's outer-product width.
+        chunks={
+            name: value
+            for name, value in asdict(chunks).items()
+            if name != "opm_chunk_size"
+        },
+        policy=chunk_policy,
     )
     return infer(
         model_features,

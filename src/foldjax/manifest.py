@@ -1511,6 +1511,7 @@ def describe_run(
         recorded as recorded_kernel_tuning,
     )
     from foldjax.cache import runtime_profile, weight_identity
+    from foldjax.execution import recorded_chunking
     from foldjax.msa_stats import NEFF_DEFINITION
     from foldjax.output import best_sample
     from foldjax.presets import preset_record
@@ -1672,6 +1673,8 @@ def describe_run(
     }
     if result.shape_profile is not None:
         manifest["shape_profile"] = dict(result.shape_profile)
+    if (chunking := recorded_chunking()) is not None:
+        manifest["resolved_chunking"] = chunking
     # Only a run that scored its samples against a pocket
     # (``pocket_sampling=select``) writes the block; ``off`` leaves the
     # manifest exactly as before the route existed.

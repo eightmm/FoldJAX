@@ -193,6 +193,32 @@
       "description": "Admission evidence: selected is the admitted cost-model profile, null for an unknown verdict; selected_device identifies the execution device independently."
     },
     "shape_profile": {"type": "object"},
+    "resolved_chunking": {
+      "description": "Optional realized static chunk widths from the native model configuration. Admission budgets do not choose these widths. Up to eight distinct profiles are recorded per prediction; a multi-seed aggregate carries its last prediction's record.",
+      "type": "object",
+      "required": ["profiles", "profiles_truncated"],
+      "properties": {
+        "profiles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["model", "n_token", "policy", "chunks"],
+            "properties": {
+              "model": {"type": "string"},
+              "n_token": {"type": "integer", "minimum": 1},
+              "policy": {"type": "string"},
+              "chunks": {
+                "type": "object",
+                "additionalProperties": {"type": ["integer", "null"]}
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "profiles_truncated": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
     "compilation_cache": {
       "description": "Per-prediction persistent compilation cache activity, shared/private read and write tiers and failures. Byte lookups and successful executable loads are distinct; missing observations do not establish new compilation or an in-memory hit.",
       "type": "object"

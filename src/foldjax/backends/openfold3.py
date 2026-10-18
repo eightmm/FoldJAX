@@ -45,6 +45,7 @@ from foldjax.execution import (
     BACKEND_DEFAULT,
     DETERMINISTIC_API_OPTION,
     auto_diffusion_chunk_size,
+    record_resolved_chunking,
 )
 from foldjax.models import _representations
 from foldjax.padding import (
@@ -1051,6 +1052,18 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
                 padded=True,
                 **{**overrides, "msa_depth": padding_plan.target["msa"]},
             )
+        record_resolved_chunking(
+            model="openfold3",
+            n_token=n_token,
+            chunks={
+                "pair_chunk_size": getattr(config, "pair_chunk_size", None),
+                "diffusion_chunk_size": getattr(config, "diffusion_chunk_size", None),
+                "per_sample_token_cutoff": getattr(
+                    config, "per_sample_token_cutoff", None
+                ),
+            },
+            policy="auto" if chunk is None else "manual",
+        )
         features, n_chain = data.normalize_asym_ids(features)
         # Empty-template geometry is exact +0.  Compact it only after serving
         # padding has established the final template/token shapes; the helper's

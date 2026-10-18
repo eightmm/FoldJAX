@@ -31,6 +31,7 @@ from foldjax.cache import (
     runtime_profile,
     weight_identity,
 )
+from foldjax.execution import clear_chunking_record
 from foldjax.input import (
     IGNORE_CONSTRAINTS,
     IGNORE_NUCLEIC_MSA,
@@ -1344,6 +1345,7 @@ def _predict_resolved(
     # An all-resumed multi-seed request writes its aggregate manifest without
     # entering the per-seed execution boundary that normally resets telemetry.
     memory_policy.clear_record()
+    clear_chunking_record()
     clear_kernel_record()
     clear_mesh_record()
     failures = [] if failures is None else failures
@@ -1756,6 +1758,7 @@ def _predict_once_on_device(
     # previous seed's. A backend with no fitted law records nothing and the
     # block stays null, which is the honest answer rather than a stale one.
     memory_policy.clear_record()
+    clear_chunking_record()
     clear_cache_record()
     # The same for the `kernel_tuning` block, which only AlphaFold 3 writes.
     clear_kernel_record()

@@ -509,6 +509,63 @@ def _confidence_chain_mask(chain_mask: jnp.ndarray) -> jnp.ndarray:
     return mask
 
 
+def _active_chain_extent(chain_mask: jnp.ndarray) -> jnp.ndarray:
+    # Unlike sum(mask), this retains the supported sparse-mask/id convention.
+    return jnp.max(jnp.where(chain_mask, jnp.arange(chain_mask.shape[0]) + 1, 0))
+
+
+def _capacity_chain_values(chain_mask, sample_shape, score):
+    def body(index, values):
+        value = jax.lax.cond(
+            chain_mask[index],
+            lambda: score(index).astype(jnp.float32),
+            lambda: jnp.zeros(sample_shape, dtype=jnp.float32),
+        )
+        return values.at[..., index].set(value)
+
+    return jax.lax.fori_loop(
+        0,
+        _active_chain_extent(chain_mask),
+        body,
+        jnp.zeros((*sample_shape, chain_mask.shape[0]), dtype=jnp.float32),
+    )
+
+
+def _capacity_pair_values(
+    chain_mask,
+    sample_shape,
+    score,
+    *,
+    symmetric=False,
+    include_diagonal=False,
+    fill=0.0,
+):
+    capacity = chain_mask.shape[0]
+    extent = _active_chain_extent(chain_mask)
+
+    def row(first, matrix):
+        def pair(second, values):
+            active = chain_mask[first] & chain_mask[second]
+            if not include_diagonal:
+                active = active & (first != second)
+            value = jax.lax.cond(
+                active,
+                lambda: score(first, second).astype(jnp.float32),
+                lambda: jnp.full(sample_shape, fill, dtype=jnp.float32),
+            )
+            values = values.at[..., first, second].set(value)
+            return values.at[..., second, first].set(value) if symmetric else values
+
+        return jax.lax.fori_loop(first + 1 if symmetric else 0, extent, pair, matrix)
+
+    return jax.lax.fori_loop(
+        0,
+        extent,
+        row,
+        jnp.full((*sample_shape, capacity, capacity), fill, dtype=jnp.float32),
+    )
+
+
 def _capacity_chain_based_ptm(
     pae_prob: jnp.ndarray,
     has_frame: jnp.ndarray,
@@ -523,7 +580,7 @@ def _capacity_chain_based_ptm(
 ) -> dict[str, jnp.ndarray]:
     """Reduce a capacity profile without stacking chain-pair PAE tensors.
 
-    The mapped body retains the original pTM/ipTM arithmetic and only returns
+    The loop body retains the original pTM/ipTM arithmetic and only returns
     scalar scores. Its bin-sized intermediate is live for one chain or pair,
     within the model's existing sequential map over confidence samples.
     """
@@ -540,8 +597,10 @@ def _capacity_chain_based_ptm(
     zero = jnp.zeros(sample_shape, dtype=jnp.float32)
     score_kwargs = {"min_bin": min_bin, "max_bin": max_bin, "no_bins": no_bins}
 
-    def chain_score(index):
-        return jax.lax.cond(
+    extent = _active_chain_extent(chain_mask)
+
+    def chain_score(index, values):
+        value = jax.lax.cond(
             chain_mask[index],
             lambda: calculate_ptm(
                 pae_prob,
@@ -551,28 +610,43 @@ def _capacity_chain_based_ptm(
             ),
             lambda: zero,
         )
+        return values.at[..., index].set(value)
 
-    chain_ptm = jnp.moveaxis(jax.lax.map(chain_score, jnp.arange(n_chain)), 0, -1)
-    first, second = jnp.triu_indices(n_chain, 1)
+    chain_ptm = jax.lax.fori_loop(
+        0,
+        extent,
+        chain_score,
+        jnp.zeros((*sample_shape, n_chain), dtype=jnp.float32),
+    )
 
-    def pair_score(indices):
-        first, second = indices
-        return jax.lax.cond(
-            chain_mask[first] & chain_mask[second],
-            lambda: calculate_iptm(
-                pae_prob,
-                has_frame,
-                asym_id,
-                token_mask=chain_tokens[first] | chain_tokens[second],
-                **score_kwargs,
-            ),
-            lambda: zero,
-        )
+    def pair_row(first, matrix):
+        def pair_score(second, values):
+            value = jax.lax.cond(
+                chain_mask[first] & chain_mask[second],
+                lambda: calculate_iptm(
+                    pae_prob,
+                    has_frame,
+                    asym_id,
+                    token_mask=chain_tokens[first] | chain_tokens[second],
+                    **score_kwargs,
+                ),
+                lambda: zero,
+            )
+            return (
+                values.at[..., first, second]
+                .set(value)
+                .at[..., second, first]
+                .set(value)
+            )
 
-    pair_scores = jnp.moveaxis(jax.lax.map(pair_score, (first, second)), 0, -1)
-    chain_pair_iptm = jnp.zeros((*sample_shape, n_chain, n_chain), dtype=jnp.float32)
-    chain_pair_iptm = chain_pair_iptm.at[..., first, second].set(pair_scores)
-    chain_pair_iptm = chain_pair_iptm.at[..., second, first].set(pair_scores)
+        return jax.lax.fori_loop(first + 1, extent, pair_score, matrix)
+
+    chain_pair_iptm = jax.lax.fori_loop(
+        0,
+        extent,
+        pair_row,
+        jnp.zeros((*sample_shape, n_chain, n_chain), dtype=jnp.float32),
+    )
 
     chain_has_frame = jnp.any(chain_tokens & has_frame.astype(bool)[None, :], axis=-1)
     active_pairs = (
@@ -614,10 +688,14 @@ def calculate_chain_based_plddt(
     *,
     n_chain: int | None = None,
     atom_mask: jnp.ndarray | None = None,
+    chain_mask: jnp.ndarray | None = None,
 ) -> dict[str, jnp.ndarray]:
     """Compute Protenix chain pLDDT summaries."""
 
-    if n_chain is None:
+    if chain_mask is not None:
+        chain_mask = _confidence_chain_mask(chain_mask)
+        n_chain = chain_mask.shape[0]
+    elif n_chain is None:
         n_chain = int(jnp.max(asym_id)) + 1
     atom_chain_id = asym_id.astype(jnp.int32)[atom_to_token_idx]
     if atom_mask is not None:
@@ -625,6 +703,27 @@ def calculate_chain_based_plddt(
         if atom_mask.shape != atom_chain_id.shape:
             raise ValueError("atom_mask must match the pLDDT atom axis")
         atom_chain_id = jnp.where(atom_mask, atom_chain_id, -1)
+
+    if chain_mask is not None:
+
+        def mean(mask):
+            mask = mask.astype(atom_plddt.dtype)
+            return jnp.sum(atom_plddt * mask, axis=-1) / jnp.maximum(jnp.sum(mask), 1.0)
+
+        sample_shape = atom_plddt.shape[:-1]
+        return {
+            "chain_plddt": _capacity_chain_values(
+                chain_mask, sample_shape, lambda aid: mean(atom_chain_id == aid)
+            ),
+            "chain_pair_plddt": _capacity_pair_values(
+                chain_mask,
+                sample_shape,
+                lambda first, second: mean(
+                    (atom_chain_id == first) | (atom_chain_id == second)
+                ),
+                symmetric=True,
+            ),
+        }
 
     chain_vals = []
     for aid in range(n_chain):
@@ -661,6 +760,7 @@ def calculate_chain_based_gpde(
     n_chain: int | None = None,
     eps: float = 1e-8,
     token_mask: jnp.ndarray | None = None,
+    chain_mask: jnp.ndarray | None = None,
 ) -> dict[str, jnp.ndarray]:
     """Compute Protenix chain and chain-pair gPDE summaries."""
 
@@ -668,7 +768,10 @@ def calculate_chain_based_gpde(
         token_mask = jnp.asarray(token_mask).astype(bool)
         if token_mask.shape != asym_id.shape:
             raise ValueError("token_mask must match the chain gPDE token axis")
-    if n_chain is None:
+    if chain_mask is not None:
+        chain_mask = _confidence_chain_mask(chain_mask)
+        n_chain = chain_mask.shape[0]
+    elif n_chain is None:
         chain_ids = (
             asym_id if token_mask is None else jnp.where(token_mask, asym_id, -1)
         )
@@ -685,6 +788,24 @@ def calculate_chain_based_gpde(
         return jnp.sum(token_pair_pde * weights, axis=(-1, -2)) / (
             jnp.sum(weights, axis=(-1, -2)) + eps
         )
+
+    if chain_mask is not None:
+        sample_shape = token_pair_pde.shape[:-2]
+        return {
+            "chain_gpde": _capacity_chain_values(
+                chain_mask,
+                sample_shape,
+                lambda aid: _weighted_mean(asym_id == aid, asym_id == aid),
+            ),
+            "chain_pair_gpde": _capacity_pair_values(
+                chain_mask,
+                sample_shape,
+                lambda first, second: _weighted_mean(
+                    asym_id == first, asym_id == second
+                ),
+                symmetric=True,
+            ),
+        }
 
     chain_vals = []
     for aid in range(n_chain):
@@ -721,6 +842,7 @@ def calculate_chain_pair_pae(
     n_chain: int | None = None,
     eps: float = 1e-8,
     token_mask: jnp.ndarray | None = None,
+    chain_mask: jnp.ndarray | None = None,
 ) -> dict[str, jnp.ndarray]:
     """Compute Protenix chain-pair PAE mean and minimum summaries."""
 
@@ -728,7 +850,10 @@ def calculate_chain_pair_pae(
         token_mask = jnp.asarray(token_mask).astype(bool)
         if token_mask.shape != asym_id.shape:
             raise ValueError("token_mask must match the chain PAE token axis")
-    if n_chain is None:
+    if chain_mask is not None:
+        chain_mask = _confidence_chain_mask(chain_mask)
+        n_chain = chain_mask.shape[0]
+    elif n_chain is None:
         chain_ids = (
             asym_id if token_mask is None else jnp.where(token_mask, asym_id, -1)
         )
@@ -743,6 +868,34 @@ def calculate_chain_pair_pae(
     frame_mask = token_has_frame[:, None] & token_has_frame[None, :]
     if token_mask is not None:
         frame_mask = frame_mask & token_mask[:, None] & token_mask[None, :]
+
+    if chain_mask is not None:
+
+        def pair_score(first, second):
+            pair_mask = (
+                (asym_id[:, None] == first) & (asym_id[None, :] == second) & frame_mask
+            )
+            weights = contact_probs * pair_mask.astype(token_pair_pae.dtype)
+            weight_sum = jnp.sum(weights, axis=(-1, -2))
+            mean = jnp.where(
+                weight_sum > 0,
+                jnp.sum(token_pair_pae * weights, axis=(-1, -2)) / (weight_sum + eps),
+                jnp.nan,
+            )
+            minimum = jnp.min(
+                jnp.where(pair_mask, token_pair_pae, jnp.inf), axis=(-1, -2)
+            )
+            return jnp.stack((mean, jnp.where(jnp.isfinite(minimum), minimum, jnp.nan)))
+
+        values = _capacity_pair_values(
+            chain_mask,
+            (2, *token_pair_pae.shape[:-2]),
+            pair_score,
+            include_diagonal=True,
+            fill=jnp.nan,
+        )
+        return {"chain_pair_pae_mean": values[0], "chain_pair_pae_min": values[1]}
+
     mean_rows = []
     min_rows = []
     for aid_1 in range(n_chain):
@@ -826,6 +979,67 @@ def _row_blocks(
     )
 
 
+def _capacity_clash_counts(
+    atom_coordinate,
+    atom_chain_id,
+    chain_mask,
+    *,
+    threshold,
+    row_chunk_size,
+    radii=None,
+):
+    """Share each bounded distance block across runtime-active chain pairs."""
+    capacity = chain_mask.shape[0]
+    rows_all, chain_all, blocks = _row_blocks(
+        atom_coordinate, atom_chain_id, row_chunk_size
+    )
+    if radii is not None:
+        radii_all = jnp.pad(radii, (0, rows_all.shape[-2] - radii.shape[0]))
+    sample_shape = atom_coordinate.shape[:-2]
+
+    def body(index, totals):
+        start = index * row_chunk_size
+        rows = jax.lax.dynamic_slice_in_dim(rows_all, start, row_chunk_size, axis=-2)
+        row_chain = jax.lax.dynamic_slice_in_dim(chain_all, start, row_chunk_size)
+        diff = rows[..., :, None, :] - atom_coordinate[..., None, :, :]
+        distance = jnp.sum(jnp.square(diff), axis=-1)
+        if radii is None:
+            close = distance < threshold * threshold
+        else:
+            row_radii = jax.lax.dynamic_slice_in_dim(radii_all, start, row_chunk_size)
+            limit = threshold * jnp.maximum(row_radii[:, None] + radii[None, :], 1e-8)
+            close = distance < jnp.square(limit)
+        counts = _capacity_pair_values(
+            chain_mask,
+            sample_shape,
+            lambda first, second: jnp.sum(
+                (
+                    close
+                    & (row_chain[:, None] == first)
+                    & (atom_chain_id[None, :] == second)
+                ).astype(jnp.float32),
+                axis=(-1, -2),
+            ),
+            symmetric=True,
+        )
+        return totals + counts
+
+    return jax.lax.fori_loop(
+        0,
+        blocks,
+        body,
+        jnp.zeros((*sample_shape, capacity, capacity), dtype=jnp.float32),
+    )
+
+
+def _capacity_atom_chain_ids(atom_chain_id, chain_mask):
+    capacity = chain_mask.shape[0]
+    active = chain_mask[jnp.clip(atom_chain_id, 0, capacity - 1)]
+    return jnp.where(
+        active & (atom_chain_id >= 0) & (atom_chain_id < capacity), atom_chain_id, -1
+    )
+
+
 def calculate_clash(
     atom_coordinate: jnp.ndarray,
     asym_id: jnp.ndarray,
@@ -836,6 +1050,7 @@ def calculate_clash(
     n_chain: int | None = None,
     row_chunk_size: int = CLASH_ROW_CHUNK,
     atom_mask: jnp.ndarray | None = None,
+    chain_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Compute a Protenix AF3-style inter-chain clash flag per sample.
 
@@ -846,7 +1061,10 @@ def calculate_clash(
     a sum, so partitioning the rows gives the same total.
     """
 
-    if n_chain is None:
+    if chain_mask is not None:
+        chain_mask = _confidence_chain_mask(chain_mask)
+        n_chain = chain_mask.shape[0]
+    elif n_chain is None:
         n_chain = int(jnp.max(asym_id)) + 1
     atom_chain_id = asym_id.astype(jnp.int32)[atom_to_token_idx]
     if atom_mask is not None:
@@ -854,6 +1072,28 @@ def calculate_clash(
         if atom_mask.shape != atom_chain_id.shape:
             raise ValueError("atom_mask must match the clash atom axis")
         atom_chain_id = jnp.where(atom_mask, atom_chain_id, -1)
+    if chain_mask is not None:
+        atom_chain_id = _capacity_atom_chain_ids(atom_chain_id, chain_mask)
+        members = atom_chain_id[None, :] == jnp.arange(n_chain)[:, None]
+        if atom_is_polymer is None:
+            chain_is_polymer = jnp.ones((n_chain,), dtype=bool)
+        else:
+            atom_is_polymer = jnp.asarray(atom_is_polymer, dtype=bool)
+            if atom_is_polymer.shape != atom_chain_id.shape:
+                raise ValueError("atom_is_polymer must match the atom axis")
+            chain_is_polymer = jnp.any(members & atom_is_polymer[None, :], axis=-1)
+        sizes = jnp.sum(members.astype(jnp.float32), axis=-1)
+        totals = _capacity_clash_counts(
+            atom_coordinate,
+            atom_chain_id,
+            chain_mask,
+            threshold=threshold,
+            row_chunk_size=row_chunk_size,
+        )
+        minimum = jnp.maximum(jnp.minimum(sizes[:, None], sizes[None, :]), 1.0)
+        pairs = jnp.triu(chain_is_polymer[:, None] & chain_is_polymer[None, :], 1)
+        flags = pairs & ((totals > 100.0) | (totals / minimum > 0.5))
+        return jnp.any(flags, axis=(-1, -2))
     if atom_is_polymer is None:
         chain_is_polymer = jnp.ones((n_chain,), dtype=bool)
     else:
@@ -874,10 +1114,7 @@ def calculate_clash(
         return jnp.zeros(atom_coordinate.shape[:-2], dtype=bool)
 
     sizes = jnp.stack(
-        [
-            jnp.sum((atom_chain_id == aid).astype(jnp.float32))
-            for aid in range(n_chain)
-        ]
+        [jnp.sum((atom_chain_id == aid).astype(jnp.float32)) for aid in range(n_chain)]
     )
     rows_all, chain_all, blocks = _row_blocks(
         atom_coordinate, atom_chain_id, row_chunk_size
@@ -942,6 +1179,7 @@ def calculate_vdw_clash(
     n_chain: int | None = None,
     row_chunk_size: int = CLASH_ROW_CHUNK,
     atom_mask: jnp.ndarray | None = None,
+    chain_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Compute inter-chain VDW clash flags using Protenix/RDKit radii.
 
@@ -949,7 +1187,10 @@ def calculate_vdw_clash(
     associative over the row partition, so the flags are unchanged.
     """
 
-    if n_chain is None:
+    if chain_mask is not None:
+        chain_mask = _confidence_chain_mask(chain_mask)
+        n_chain = chain_mask.shape[0]
+    elif n_chain is None:
         n_chain = int(jnp.max(asym_id)) + 1
     atom_chain_id = asym_id.astype(jnp.int32)[atom_to_token_idx]
     if atom_mask is not None:
@@ -959,6 +1200,33 @@ def calculate_vdw_clash(
         atom_chain_id = jnp.where(atom_mask, atom_chain_id, -1)
     element_order = jnp.argmax(elements_one_hot, axis=-1)
     radii = RDKIT_VDWS[element_order]
+    if chain_mask is not None:
+        atom_chain_id = _capacity_atom_chain_ids(atom_chain_id, chain_mask)
+        totals = _capacity_clash_counts(
+            atom_coordinate,
+            atom_chain_id,
+            chain_mask,
+            threshold=threshold,
+            row_chunk_size=row_chunk_size,
+            radii=radii,
+        )
+        pairs = jnp.triu(jnp.ones((n_chain, n_chain), dtype=bool), 1)
+        if mol_id is not None:
+            slots = jnp.arange(n_chain)
+            mol_first = jnp.max(
+                jnp.where(
+                    atom_chain_id[None, :] == slots[:, None], mol_id[None, :], -1
+                ),
+                axis=-1,
+            )
+            mol_second = jnp.max(
+                jnp.where(
+                    atom_chain_id[None, :] == slots[:, None], mol_id[None, :], -2
+                ),
+                axis=-1,
+            )
+            pairs = pairs & (mol_first[:, None] != mol_second[None, :])
+        return jnp.any(pairs & (totals > 0), axis=(-1, -2))
     pairs = _chain_pairs(n_chain)
     if not pairs:
         return jnp.zeros(atom_coordinate.shape[:-2], dtype=bool)
@@ -1181,6 +1449,7 @@ def confidence_scores_from_logits(
         )
         ranking_score = 0.8 * summary_iptm + 0.2 * summary_ptm
         if atom_to_token_idx is not None and atom_coordinate is not None:
+
             def active_chain_clash(compute):
                 if chain_mask is None:
                     return compute()
@@ -1201,6 +1470,7 @@ def confidence_scores_from_logits(
                     threshold=clash_threshold,
                     n_chain=n_chain,
                     atom_mask=atom_mask,
+                    chain_mask=chain_mask,
                 )
             )
             ranking_score = ranking_score - 100.0 * has_clash.astype(
@@ -1218,6 +1488,7 @@ def confidence_scores_from_logits(
                         threshold=vdw_clash_threshold,
                         n_chain=n_chain,
                         atom_mask=atom_mask,
+                        chain_mask=chain_mask,
                     )
                 )
                 scores["has_vdw_clash"] = has_vdw_clash
@@ -1256,6 +1527,7 @@ def confidence_scores_from_logits(
                 chain_asym_id,
                 n_chain=n_chain,
                 token_mask=token_mask,
+                chain_mask=chain_mask,
             )
         )
         if include_chain_pair_pae:
@@ -1267,6 +1539,7 @@ def confidence_scores_from_logits(
                     contact_probs,
                     n_chain=n_chain,
                     token_mask=token_mask,
+                    chain_mask=chain_mask,
                 )
             )
         if atom_to_token_idx is not None:
@@ -1277,6 +1550,7 @@ def confidence_scores_from_logits(
                     atom_to_token_idx,
                     n_chain=n_chain,
                     atom_mask=atom_mask,
+                    chain_mask=chain_mask,
                 )
             )
         scores["disorder"] = jnp.zeros_like(summary_ptm, dtype=jnp.float32)

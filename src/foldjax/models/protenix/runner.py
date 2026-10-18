@@ -21,6 +21,7 @@ import os
 import shlex
 from collections.abc import Callable
 from contextlib import ExitStack
+from dataclasses import asdict
 from functools import partial
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -28,6 +29,7 @@ from typing import Any, NamedTuple
 import numpy as np
 
 from foldjax import memory_policy, progress
+from foldjax.execution import record_resolved_chunking
 from foldjax.models import _representations
 from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models.protenix.amp_policy import (
@@ -1047,6 +1049,12 @@ def _run(
             token_q_chunk_size=config.token_q_chunk_size,
             opm_chunk_size=config.opm_chunk_size,
             diffusion_chunk_size=config.diffusion_chunk_size,
+        )
+        record_resolved_chunking(
+            model="protenix",
+            n_token=n_token,
+            chunks=asdict(chunk_config),
+            policy=config.chunk_policy,
         )
         for seed in seeds:
             init_noise = None
