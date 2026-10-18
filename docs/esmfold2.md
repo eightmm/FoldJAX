@@ -104,9 +104,10 @@ proper rotation, including reflection correction, without a cuSolver call.
 The default remains `svd`. Component tests compare against the previous FP32
 implementation and an FP64 SVD oracle, but do not establish full-model accuracy
 or a higher token limit. Degenerate inputs can have multiple optimal rotations.
-Real-weight, tape-fixed comparisons at two sizes and GPU memory measurements
-are required before selecting a new default. Use the same explicit option for
-warming and prediction; Jacobi has its own compilation profile.
+The [paired GPU measurements](performance-diagnostics.md#esmfold2-solver-scope)
+at two sizes did not support changing the default; external CUDA workspace and
+24 GB capacity still need measurement. Use the same explicit option for warming
+and prediction; Jacobi has its own compilation profile.
 
 ## Managed memory staging
 

@@ -159,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     if model_index >= len(prediction) or prediction[model_index] != "opendde":
         parser.error("this diagnostic supports only --model opendde")
 
-    from foldjax.cli import main as predict_main
+    from foldjax import cli
 
     report: dict[str, Any] = {
         "schema": 1,
@@ -172,9 +172,18 @@ def main(argv: list[str] | None = None) -> int:
             "use a fresh process per size and a normal benchmark for latency",
         ],
     }
-    try:
+    original_predictions = cli._run_predictions
+
+    @wraps(original_predictions)
+    def observed_predictions(*args, **kwargs):
+        # Runner imports can initialize CUDA. Let the native CLI configure its
+        # allocator and runtime flags before the profiler imports the model.
         with profile_prediction(report):
-            code = predict_main(prediction)
+            return original_predictions(*args, **kwargs)
+
+    try:
+        with patch.object(cli, "_run_predictions", observed_predictions):
+            code = cli.main(prediction)
         report["exit_code"] = code
         return code
     except BaseException as error:

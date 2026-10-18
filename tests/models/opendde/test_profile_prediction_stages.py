@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+from contextlib import contextmanager
+from types import SimpleNamespace
+
 import jax
 import numpy as np
 import pytest
@@ -7,6 +11,72 @@ from jax._src import compiler
 
 from bench import opendde_profile
 from foldjax.models.opendde import runner
+
+
+@pytest.mark.parametrize(
+    ("environment", "option", "expected"),
+    [
+        (None, [], 0.9),
+        ("0.85", [], 0.85),
+        (None, ["--mem-fraction", "0.8"], 0.8),
+        ("0.85", ["--mem-fraction=0.8"], 0.8),
+    ],
+)
+@pytest.mark.parametrize("failure", [False, True])
+def test_cli_configures_allocator_before_the_profiler_can_import_the_model(
+    tmp_path, monkeypatch, environment, option, expected, failure
+):
+    from foldjax import cli, oom
+    from foldjax.schema import BatchReport
+
+    monkeypatch.delenv(oom.CURRENT_FRACTION_ENV, raising=False)
+    monkeypatch.delenv(oom.FRACTION_ENV, raising=False)
+    if environment is not None:
+        monkeypatch.setenv(oom.FRACTION_ENV, environment)
+    monkeypatch.setattr(cli, "_apply_gc_threshold", lambda: None)
+    monkeypatch.setattr(cli, "_enable_release_reclaim", lambda: None)
+    monkeypatch.setattr(
+        cli, "_request", lambda *a, **kw: SimpleNamespace(models=None, inputs=None)
+    )
+    observed = []
+
+    @contextmanager
+    def profile(report):
+        assert oom.mem_fraction() == expected
+        observed.append("enter")
+        try:
+            yield
+        finally:
+            observed.append("exit")
+
+    def predict(*args, **kwargs):
+        assert observed == ["enter"]
+        if failure:
+            raise RuntimeError("prediction failed")
+        return BatchReport()
+
+    monkeypatch.setattr(opendde_profile, "profile_prediction", profile)
+    monkeypatch.setattr(cli, "_run_predictions", predict)
+    output = tmp_path / "profile.json"
+    command = [
+        "--profile-out",
+        str(output),
+        "--",
+        "predict",
+        "--model",
+        "opendde",
+        "--quiet",
+        *option,
+    ]
+    if failure:
+        with pytest.raises(RuntimeError, match="prediction failed"):
+            opendde_profile.main(command)
+        assert json.loads(output.read_text())["error_type"] == "RuntimeError"
+    else:
+        assert opendde_profile.main(command) == 0
+        assert json.loads(output.read_text())["exit_code"] == 0
+    assert observed == ["enter", "exit"]
+    assert cli._run_predictions is predict
 
 
 def test_diagnostic_observes_real_executable_without_changing_outputs_or_owners(
