@@ -342,10 +342,11 @@ _OPENDDE_FLAG_ORDER: tuple[str, ...] = (
     "--components-cif", "--ccd-rdkit-cache",
     "--template-mmcif-dir", "--template-release-dates",
     "--template-obsolete-map", "--kalign-binary",
-    # Admission, last, spelled exactly as Protenix spells it: one vocabulary
+    # Shared admission spellings match Protenix: one vocabulary
     # across the ports rather than two, so a deployment does not have to learn
     # which of them calls it what.
     "--memory-check", "--memory-budget-gib",
+    "--structural-triangle-att-row-chunk-size",
 )
 
 #: The fused gated linear unit is Protenix's alone. OpenDDE reaches the very
