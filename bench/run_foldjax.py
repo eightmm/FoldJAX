@@ -55,7 +55,7 @@ from bench.provenance import (
 # either way.
 
 # And the same pool fraction `foldjax predict` gives itself. This harness calls
-# the Python API, and `PREDICT_MEM_FRACTION` is applied by `foldjax/cli.py`
+# the Python API, and the startup allocator policy is applied by `foldjax/cli.py`
 # alone -- deliberately, since a library must not resize a host application's
 # pool on import. The consequence for a benchmark is that it was measuring the
 # port at JAX's 0.75 default while the shipped command runs at 0.9: a quarter of
@@ -63,10 +63,11 @@ from bench.provenance import (
 # `jit_run_model`'s 73.5 GiB fitting and missing a 71.2 GiB pool by 0.6, and it
 # was reported as OOM in a table next to an upstream that had the whole card.
 # `oom.py` had already recorded this exact case; the benchmark had not.
+# Use the same adaptive policy as prediction, including its 48 GB headroom.
 _oom = __import__("foldjax.oom", fromlist=["oom"])
 # Never as a second spelling beside one the caller chose: jaxlib rejects the
 # pair and falls back to the CPU, and its message blames a missing CUDA jaxlib.
-_oom.set_mem_fraction(_oom.PREDICT_MEM_FRACTION)
+_oom.set_predict_mem_fraction()
 
 
 def _artifact_input_arguments(path: Path, input_format: str) -> dict[str, Path]:

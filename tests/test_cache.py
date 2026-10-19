@@ -94,6 +94,20 @@ def test_cache_namespace_falls_back_to_a_usable_directory_name(tmp_path: Path) -
     assert path.parent.name == "weights"
 
 
+def test_allocator_fraction_does_not_split_the_boltz2_namespace(tmp_path, monkeypatch):
+    from foldjax import oom
+
+    request = _request(tmp_path)
+    backend = Boltz2Backend()
+    namespaces, profiles = [], []
+    for fraction in ("0.9", "0.85"):
+        monkeypatch.setenv(oom.CURRENT_FRACTION_ENV, fraction)
+        namespaces.append(resolve_cache_dir(request, backend))
+        profiles.append(backend.cache_profile(request))
+    assert namespaces[0] == namespaces[1]
+    assert profiles[0] == profiles[1]
+
+
 def test_weight_identity_separates_same_named_checkpoints(tmp_path: Path) -> None:
     first = tmp_path / "a" / "model.pt"
     second = tmp_path / "b" / "model.pt"

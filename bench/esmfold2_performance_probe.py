@@ -167,7 +167,7 @@ def _host_arrays(values):
 def _benchmark_runtime():
     from foldjax import oom
 
-    oom.set_mem_fraction(oom.PREDICT_MEM_FRACTION)
+    oom.set_predict_mem_fraction()
     import jax
 
     gpus = [device for device in jax.local_devices() if device.platform == "gpu"]

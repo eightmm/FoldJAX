@@ -393,11 +393,11 @@ def _add_predict_arguments(
     execution.add_argument(
         "--mem-fraction",
         type=float,
-        help="fraction of the device JAX may preallocate. Defaults to "
-        f"{oom.PREDICT_MEM_FRACTION} rather than JAX's {oom.DEFAULT_MEM_FRACTION}, "
-        "because one prediction owns the process and a quarter of the card held "
-        "in reserve is what stops jobs that would otherwise fit. Lower it to "
-        "share the device with another process",
+        help="fraction of the device JAX may preallocate. Defaults to 0.85 when "
+        "all visible CUDA devices are 48 GB class, otherwise 0.9; allocator "
+        "environment settings take precedence over the automatic default. An explicit "
+        "value overrides the environment. Lower it to leave more CUDA "
+        "context/module memory or share the device",
     )
     execution.add_argument(
         "--memory-check",
@@ -1792,14 +1792,14 @@ def _apply_mem_fraction(requested: float | None) -> None:
 
     Only here, and only for the CLI: this is a process-wide setting, and a
     library that changed it on import would be deciding for a host application
-    that may be sharing the device. An explicit environment variable always wins
-    -- someone who set it has a reason.
+    that may be sharing the device. A caller's environment overrides the
+    automatic default; an explicit CLI value overrides both.
     """
     _validate_mem_fraction(requested)
     if requested is not None:
         oom.set_mem_fraction(requested, override=True)
     else:
-        oom.set_mem_fraction(oom.PREDICT_MEM_FRACTION)
+        oom.set_predict_mem_fraction()
 
 
 #: Collector thresholds for a process that owns one prediction run.

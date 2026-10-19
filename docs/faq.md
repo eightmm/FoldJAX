@@ -52,10 +52,13 @@ what to try:
 1. **Read the refusal.** It names the levers that apply to that model and
    size. `--memory-check warn` runs anyway and lets the allocator answer;
    `--memory-budget-gib N` asks whether a job would fit a smaller card.
-2. **Give the run the card.** `--mem-fraction` (default 0.9) is how much of
-   the device JAX preallocates; another process on the same GPU, or a run
-   started right after a large one, leaves less than the estimate assumed.
-   Run one prediction per GPU at a time.
+2. **Check allocator headroom.** An explicit `--mem-fraction` overrides the
+   existing allocator environment; otherwise the environment wins over the
+   automatic default. That default is 0.85 when every visible GPU has
+   44–52 GiB of memory (52 excluded), and 0.9 otherwise. This leaves CUDA
+   headroom on the 48 GB class, including ECC-reduced capacities; mixed or
+   unknown capacity classes keep 0.9. Run one prediction per GPU at a time.
+   See the [allocator policy](configuration.md#allocator-policy).
 3. **Change how it runs, not what it predicts.** On OpenDDE a float32 trunk
    costs about twice the bfloat16 default's peak. Context parallelism
    (`--option cp_devices=4` on Boltz-2, Protenix, OpenDDE, OpenFold3 and
@@ -69,6 +72,12 @@ what to try:
 narrowed automatically to make a job fit. The measurements behind each law
 and lever are in [cli.md](cli.md#memory) and
 [engineering-notes.md](engineering-notes.md#memory).
+
+A generic CUDA kernel-launch OOM does not establish whether the allocator pool
+or memory outside it ran out. Restart in a fresh process and retain the full
+error and memory record. Explicit CUDA module-loading OOMs need outside-pool
+headroom, so lowering the fraction can help. Post-failure pool usage cannot
+prove the peak requirement or justify always increasing the fraction.
 
 ## Can I run on a CPU only?
 

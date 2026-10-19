@@ -31,7 +31,7 @@ from typing import Any
 #: JAX's own default when the variable is unset.
 DEFAULT_MEM_FRACTION = 0.75
 
-#: What `foldjax predict` asks for instead, when the caller has not said.
+#: The prediction fallback; confirmed 48 GB devices use 0.85 instead.
 #:
 #: JAX's 0.75 suits a process that shares a card. `foldjax predict` does not: it
 #: owns the process for one prediction, and on a 95.6 GiB device 0.75 caps it at
@@ -44,6 +44,7 @@ DEFAULT_MEM_FRACTION = 0.75
 #: chosen to just fit the pool moves the failure there instead. This leaves
 #: 9.6 GiB on that device against a measured need of 73.33.
 PREDICT_MEM_FRACTION = 0.9
+_PREDICT_48GB_MEM_FRACTION = 0.85
 
 #: jaxlib renamed this knob. Both spellings still work *alone*, and setting
 #: both together is a hard error inside the CUDA plugin's initialize(): it
@@ -76,6 +77,29 @@ def set_mem_fraction(value: float, *, override: bool = False) -> None:
         os.environ[CURRENT_FRACTION_ENV] = str(value)
     elif override:
         os.environ[existing] = str(value)
+
+
+def set_predict_mem_fraction() -> None:
+    """Choose the CLI's pool before JAX initializes, preserving caller choices.
+
+    Reported A6000 runs failed at 0.9 and completed through 2048 tokens at
+    0.85. Keep the measured 24 GB and larger-card policies intact. A process
+    has one fraction, so heterogeneous or unknown devices use the fallback.
+    CUDA's device enumeration handles visibility and ordering; no NVML ordinal
+    is treated as a CUDA ordinal, and no JAX backend is initialized here.
+    """
+    if configured_fraction_env() is not None:
+        return
+    fraction = PREDICT_MEM_FRACTION
+    if gpu_is_possible():
+        from foldjax._cuda_memory import visible_device_bytes
+
+        capacities = visible_device_bytes()
+        # Include the usable-capacity variation of 48 GB cards (e.g. ECC),
+        # without changing the existing pool on 24/32/64/80/96 GB devices.
+        if capacities and all(44 * 2**30 <= size < 52 * 2**30 for size in capacities):
+            fraction = _PREDICT_48GB_MEM_FRACTION
+    set_mem_fraction(fraction)
 
 
 # ---------------------------------------------------------------------------
@@ -300,42 +324,40 @@ def is_out_of_memory(error: BaseException) -> bool:
     return all(_is_allocator_oom(leaf) for leaf in _leaf_errors(error))
 
 
+def _module_failure(message: str) -> bool:
+    return any(
+        marker in message
+        for marker in ("cumodulegetfunction", "cumoduleload", "before calling cumodule")
+    )
+
+
+def _cuda_launch_oom(message: str) -> bool:
+    cuda_oom = any(
+        marker in message
+        for marker in ("cuda_error_out_of_memory", "cudaerrormemoryallocation")
+    ) or ("cuda" in message and "out of memory" in message)
+    return cuda_oom and any(
+        marker in message
+        for marker in (
+            "kernel launch",
+            "kernel-launch",
+            "kernel_launch",
+            "launch kernel",
+            "launching kernel",
+            "launch gpu kernel",
+            "launch cuda kernel",
+            "culaunchkernel",
+            "culaunchcooperativekernel",
+            "cudalaunchkernel",
+        )
+    )
+
+
 def is_outside_pool_oom(error: BaseException) -> bool:
-    """Recognize CUDA module/launch failures rather than a JAX buffer failure."""
-    if not is_out_of_memory(error):
-        return False
-    for leaf in _leaf_errors(error):
-        message = str(leaf).lower()
-        if any(
-            marker in message
-            for marker in (
-                "cumodulegetfunction",
-                "cumoduleload",
-                "before calling cumodule",
-            )
-        ):
-            return True
-        cuda_oom = any(
-            marker in message
-            for marker in ("cuda_error_out_of_memory", "cudaerrormemoryallocation")
-        ) or ("cuda" in message and "out of memory" in message)
-        if cuda_oom and any(
-            marker in message
-            for marker in (
-                "kernel launch",
-                "kernel-launch",
-                "kernel_launch",
-                "launch kernel",
-                "launching kernel",
-                "launch gpu kernel",
-                "launch cuda kernel",
-                "culaunchkernel",
-                "culaunchcooperativekernel",
-                "cudalaunchkernel",
-            )
-        ):
-            return True
-    return False
+    """Recognize module-only OOMs; a launch can report an earlier async error."""
+    return is_out_of_memory(error) and all(
+        _module_failure(str(leaf).lower()) for leaf in _leaf_errors(error)
+    )
 
 
 def mem_fraction() -> float:
@@ -428,7 +450,7 @@ def diagnose(error: BaseException) -> str | None:
     if is_outside_pool_oom(error):
         message = (
             "CUDA context/module memory outside the allocator's pool ran out "
-            "while loading or launching a kernel. Lower "
+            "while loading a CUDA module or looking up a kernel. Lower "
             f"{configured_fraction_env() or CURRENT_FRACTION_ENV}, for example "
             "from 0.9 to 0.8-0.85 (below the current fraction if already lower), "
             "to leave more device memory for CUDA modules, launches and "
@@ -436,6 +458,34 @@ def diagnose(error: BaseException) -> str | None:
             "are recreated. "
             "Increasing the pool fraction leaves less memory for these allocations."
         )
+        mesh = recorded_mesh()
+        return message if mesh is None else f"{message} {_mesh_sentences(mesh)}"
+    leaves = _leaf_errors(error)
+    if any(
+        _module_failure(str(leaf).lower()) or _cuda_launch_oom(str(leaf).lower())
+        for leaf in leaves
+    ):
+        message = (
+            "CUDA reported an OOM during a kernel launch or alongside a module "
+            "failure. The error location does not establish whether the JAX "
+            "buffer pool or memory outside the allocator's pool ran out; a "
+            "launch can also report an earlier asynchronous CUDA failure. "
+            "Restart the process and inspect the original allocation errors. "
+            "Lowering the pool fraction (for example 0.9 to 0.85) can leave "
+            "more room for CUDA, but cannot fix a buffer allocation that needs "
+            "a larger pool. Do not infer the required peak from post-failure usage."
+        )
+        pool, card, used = _pool_card_and_used()
+        if pool is not None:
+            message += f" Reported pool {pool / 2**30:.1f} GiB"
+            if used is not None:
+                message += f", in use {used / 2**30:.1f} GiB after failure"
+            message += "."
+        for leaf in leaves:
+            if (requested := _requested_bytes(str(leaf))) is not None:
+                message += (
+                    f" A reported failed allocation was {requested / 2**30:.1f} GiB."
+                )
         mesh = recorded_mesh()
         return message if mesh is None else f"{message} {_mesh_sentences(mesh)}"
     pool, card, used = _pool_card_and_used()
@@ -453,7 +503,6 @@ def diagnose(error: BaseException) -> str | None:
             f"Pool {pool / gib:.1f} GiB, in use {used / gib:.1f} GiB; "
             "the failed allocation did not fit."
         )
-    leaves = _leaf_errors(error)
     # These are post-failure allocator statistics, not a snapshot of the
     # failing program's co-live set. Adding them to the failed block cannot
     # establish how much memory that program needed at the failure.

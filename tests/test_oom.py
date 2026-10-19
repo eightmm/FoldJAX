@@ -551,7 +551,7 @@ def test_module_names_without_an_oom_do_not_change_the_classification():
 @pytest.mark.parametrize(
     "code", ("CUDA_ERROR_OUT_OF_MEMORY", "cudaErrorMemoryAllocation")
 )
-def test_cuda_launch_oom_is_outside_the_pool_even_when_pool_usage_is_low(
+def test_cuda_launch_oom_does_not_establish_which_pool_failed(
     monkeypatch, launch, code
 ):
     monkeypatch.setenv(oom.CURRENT_FRACTION_ENV, "0.9")
@@ -561,12 +561,39 @@ def test_cuda_launch_oom_is_outside_the_pool_even_when_pool_usage_is_low(
         lambda: (int(21.2 * GIB), int(23.5 * GIB), 2 * GIB),
     )
     error = RuntimeError(f"{launch}: {code}")
-    assert oom.is_outside_pool_oom(error)
+    assert not oom.is_outside_pool_oom(error)
     message = oom.diagnose(error)
-    assert "outside the allocator's pool" in message
-    assert "loading or launching" in message
-    assert "0.8-0.85" in message and "restart the process" in message
+    assert "does not establish" in message and "asynchronous" in message
+    assert "pool 21.2 GiB, in use 2.0 GiB after failure" in message
+    assert "0.85" in message and "Restart the process" in message
     assert "=0.95" not in message and "Raise" not in message
+
+
+@pytest.mark.parametrize("used", [None, 0, 21 * GIB])
+def test_launch_diagnosis_is_not_inferred_from_post_failure_usage(monkeypatch, used):
+    monkeypatch.setattr(
+        oom,
+        "_pool_card_and_used",
+        lambda: (None, None, None) if used is None else (21 * GIB, 24 * GIB, used),
+    )
+    message = oom.diagnose(RuntimeError(
+        "Failed to launch CUDA kernel input_reduce_fusion_43: CUDA_ERROR_OUT_OF_MEMORY"
+    ))
+    assert "does not establish" in message
+    assert "=0.95" not in message
+
+
+def test_mixed_module_and_buffer_failures_keep_both_evidence(monkeypatch):
+    monkeypatch.setattr(oom, "_pool_card_and_used", lambda: (21 * GIB, 24 * GIB, 0))
+    error = ExceptionGroup("attempts", [
+        RuntimeError("cuModuleLoadDataEx: CUDA_ERROR_OUT_OF_MEMORY"),
+        RuntimeError("RESOURCE_EXHAUSTED: Out of memory trying to allocate 30.00GiB"),
+    ])
+    assert not oom.is_outside_pool_oom(error)
+    message = oom.diagnose(error)
+    assert "does not establish" in message
+    assert "failed allocation was 30.0 GiB" in message
+    assert "=0.95" not in message
 
 
 def test_launch_words_without_cuda_oom_do_not_steal_allocator_failures(monkeypatch):

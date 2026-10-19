@@ -95,7 +95,7 @@ into a failure.
 
 | variable | what FoldJAX does with it |
 |---|---|
-| `XLA_CLIENT_MEM_FRACTION`, `XLA_PYTHON_CLIENT_MEM_FRACTION` | `foldjax predict` sets `XLA_CLIENT_MEM_FRACTION=0.9` when neither is set; an explicit `--mem-fraction` replaces whichever spelling is present. Setting both is an error inside the CUDA plugin, which then falls back to the CPU, so FoldJAX never adds its spelling next to yours |
+| `XLA_CLIENT_MEM_FRACTION`, `XLA_PYTHON_CLIENT_MEM_FRACTION` | `foldjax predict` uses the [allocator policy](#allocator-policy) when neither is set; an explicit `--mem-fraction` replaces whichever spelling is present. FoldJAX never adds a second spelling beside yours |
 | `XLA_FLAGS` | under context parallelism FoldJAX adds the collective timeout (`xla_gpu_nccl_termination_timeout_seconds`) unless it is already there |
 | `JAX_PLATFORMS` | `cpu` keeps every model on the CPU (slow, but complete) |
 | `SLURM_ARRAY_TASK_ID`, `SLURM_ARRAY_TASK_MIN`, `SLURM_ARRAY_TASK_COUNT` | read by `--shard auto` ([batches and Slurm](tutorials/batch-slurm.md)) |
@@ -106,6 +106,25 @@ A few ports read their own variables to name a kernel explicitly
 `PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND`, `OPENFOLD3_TRIANGLE_BACKEND`, ...);
 those are described where the kernel is, in [cli.md](cli.md), and are not
 needed for ordinary use.
+
+### Allocator policy
+
+The order is explicit `--mem-fraction`, then an existing
+`XLA_CLIENT_MEM_FRACTION` or `XLA_PYTHON_CLIENT_MEM_FRACTION`, then the automatic
+default. Set only one spelling: setting both prevents CUDA plugin
+initialization and can leave JAX running on the CPU.
+
+Without either environment variable, FoldJAX checks visible CUDA device
+capacities before JAX initializes its backend. If every visible GPU has at
+least 44 GiB and less than 52 GiB, the automatic fraction is `0.85`: the 48 GB
+class, including reduced capacities with ECC. Otherwise it is `0.9`, including
+24/32/40/64/80/96 GB cards, mixed capacity classes and unknown capacities. This
+check uses total capacity, not currently free memory or a fitted model estimate.
+
+The lower 48 GB default leaves more space for CUDA allocations outside the JAX
+pool. It follows [reported A6000 runs](memory-capacity.md#reports-from-2026-10-19),
+not a guarantee of a model's token limit. Pool fraction changes do not change
+the compile-cache namespace or a model's static execution profile.
 
 ## The compile cache
 

@@ -768,10 +768,17 @@ peak and cost no time.
 [Details](engineering-notes.md#the-chunk-width-above-2560-tokens-costs-memory-rather-than-saving-it).
 
 `--mem-fraction` is the one memory flag that is not about the model. It sets
-how much of the device JAX preallocates, and FoldJAX defaults it to 0.9 rather
-than JAX's own 0.75: one prediction owns the process, and a quarter of the card
-held in reserve is what stops jobs that would otherwise fit. Lower it to share
-the device with another process.
+the fraction of device memory available to JAX's allocator; with preallocation
+enabled, that pool is reserved up front. An explicit flag overrides an existing
+`XLA_CLIENT_MEM_FRACTION` or `XLA_PYTHON_CLIENT_MEM_FRACTION`. With neither set,
+the automatic default is `0.85` when every visible CUDA GPU has at least 44 GiB
+and less than 52 GiB total memory, otherwise `0.9`. The 48 GB class includes
+ECC-reduced capacities; 24/32/40/64/80/96 GB, mixed capacity classes and unknown
+capacities keep `0.9`. Capacity is checked before JAX backend initialization,
+without using current free memory. This leaves more CUDA headroom on the 48 GB
+class without changing model shapes or compile-cache keys. See the
+[allocator policy](configuration.md#allocator-policy) and
+[reported capacity conditions](memory-capacity.md).
 
 Five models carry a fitted peak law, so they can answer *before* the run
 whether it fits: Boltz-2, OpenFold3, Protenix, OpenDDE and ESMFold2. Each law
