@@ -55,6 +55,7 @@ def pairformer_block(
     *,
     triangle_mul_chunk_size: int | None = None,
     triangle_att_q_chunk_size: int | None = None,
+    triangle_att_fused_row_chunk_size: int | None = None,
     single_att_q_chunk_size: int | None = None,
     single_attention_backend: str = "xla",
     triangle_attention_backend: str | None = None,
@@ -124,6 +125,7 @@ def pairformer_block(
         num_heads=tri_heads,
         q_chunk_size=triangle_att_q_chunk_size,
         attention_backend=triangle_attention_backend,
+        fused_row_chunk_size=triangle_att_fused_row_chunk_size,
     )
     if pair_gate is not None:
         z = z * pair_gate
@@ -140,6 +142,7 @@ def pairformer_block(
         num_heads=tri_heads,
         q_chunk_size=triangle_att_q_chunk_size,
         attention_backend=triangle_attention_backend,
+        fused_row_chunk_size=triangle_att_fused_row_chunk_size,
     )
     z = jnp.swapaxes(z_t, -2, -3)
     z = shard_pair_rows(z)

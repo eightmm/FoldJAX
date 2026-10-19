@@ -26,6 +26,7 @@ def structural_refiner_block(
     *,
     triangle_mul_chunk_size: int | None = None,
     triangle_att_q_chunk_size: int | None = None,
+    triangle_att_fused_row_chunk_size: int | None = None,
     single_att_q_chunk_size: int | None = None,
     single_attention_backend: str = "xla",
     triangle_attention_backend: str | None = None,
@@ -66,6 +67,7 @@ def structural_refiner_block(
         pair_only_params,
         triangle_mul_chunk_size=triangle_mul_chunk_size,
         triangle_att_q_chunk_size=triangle_att_q_chunk_size,
+        triangle_att_fused_row_chunk_size=triangle_att_fused_row_chunk_size,
         triangle_attention_backend=triangle_attention_backend,
         # At 4,040 structural tokens this branch's blocked multiplication held
         # a padded copy of the normalised pair tensor and a merged zero
@@ -108,6 +110,7 @@ def structural_refiner_stack(
     use_scan: bool = True,
     triangle_mul_chunk_size: int | None = None,
     triangle_att_q_chunk_size: int | None = None,
+    triangle_att_fused_row_chunk_size: int | None = None,
     single_att_q_chunk_size: int | None = None,
     single_attention_backend: str = "xla",
     triangle_attention_backend: str | None = None,
@@ -128,6 +131,7 @@ def structural_refiner_stack(
             block_params,
             triangle_mul_chunk_size=triangle_mul_chunk_size,
             triangle_att_q_chunk_size=triangle_att_q_chunk_size,
+            triangle_att_fused_row_chunk_size=triangle_att_fused_row_chunk_size,
             single_att_q_chunk_size=single_att_q_chunk_size,
             single_attention_backend=single_attention_backend,
             triangle_attention_backend=triangle_attention_backend,

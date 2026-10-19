@@ -205,6 +205,7 @@ def test_full_inference_mapper_composes_open_dde_specific_modules(
 
 
 @pytest.mark.parametrize("return_representations", [True, False])
+@pytest.mark.parametrize("projection_rows", [None, 2])
 @pytest.mark.parametrize(
     ("num_samples", "diffusion_chunk_size", "packed_noise"),
     [(1, None, False), (5, None, False), (5, 5, False), (5, 2, False), (5, 2, True)],
@@ -212,6 +213,7 @@ def test_full_inference_mapper_composes_open_dde_specific_modules(
 def test_static_inference_routes_residue_heads_and_structural_diffusion(
     monkeypatch,
     return_representations: bool,
+    projection_rows: int | None,
     num_samples: int,
     diffusion_chunk_size: int | None,
     packed_noise: bool,
@@ -300,6 +302,7 @@ def test_static_inference_routes_residue_heads_and_structural_diffusion(
 
     def fake_pairformer(*args, **kwargs):
         assert kwargs["pair_mask"] is residue_pair_mask
+        assert "triangle_att_fused_row_chunk_size" not in kwargs
         # Both fused, which is what upstream runs: `auto` resolves to
         # cuequivariance in config/model_base.py:31-32 and OpenDDE's
         # c_hidden == c_z == 384 clears the kernel's guard. These were pinned to
@@ -337,6 +340,7 @@ def test_static_inference_routes_residue_heads_and_structural_diffusion(
         assert z is structural_z
         assert pair_mask is None
         assert extra_attn_bias is pair_bias
+        assert kwargs["triangle_att_fused_row_chunk_size"] == projection_rows
         return refined_s, refined_z
 
     monkeypatch.setattr(model_impl, "structural_refiner_stack", fake_refiner)
@@ -457,6 +461,7 @@ def test_static_inference_routes_residue_heads_and_structural_diffusion(
         num_samples=num_samples,
         diffusion_chunk_size=diffusion_chunk_size,
         pair_mask=residue_pair_mask,
+        structural_triangle_att_row_chunk_size=projection_rows,
         return_representations=return_representations,
         **forwarded_tapes,
     )

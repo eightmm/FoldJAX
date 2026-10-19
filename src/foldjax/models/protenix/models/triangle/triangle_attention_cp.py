@@ -49,6 +49,7 @@ def triangle_attention(
     inf: float = 1e9,
     q_chunk_size: int | None = None,
     attention_backend: str | None = None,
+    fused_row_chunk_size: int | None = None,
 ) -> jnp.ndarray:
     """Use the exact 2-D Fold-CP ring when a square mesh is active.
 
@@ -90,7 +91,10 @@ def triangle_attention(
             inf=inf,
             q_chunk_size=q_chunk_size,
             attention_backend=attention_backend,
+            fused_row_chunk_size=fused_row_chunk_size,
         )
+    if fused_row_chunk_size is not None:
+        raise ValueError("fused row chunking is not validated with context parallelism")
     backend = (
         "xla"
         if attention_backend is None

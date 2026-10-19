@@ -811,6 +811,7 @@ def opendde_infer_static(
     trunk_triangle_attention_backend: str | None = None,
     structural_single_attention_backend: str = "xla_jit",
     structural_triangle_attention_backend: str | None = None,
+    structural_triangle_att_row_chunk_size: int | None = None,
     # `None`, like the trunk and structural branches above, so all three resolve
     # through the one shared rule. It read "xla_jit" and so was the one place an
     # env-var or default change could not reach -- on a stack that runs per
@@ -903,6 +904,18 @@ def opendde_infer_static(
     model function.
     """
 
+    if structural_triangle_att_row_chunk_size is not None:
+        if (
+            not isinstance(structural_triangle_att_row_chunk_size, int)
+            or isinstance(structural_triangle_att_row_chunk_size, bool)
+            or structural_triangle_att_row_chunk_size <= 0
+        ):
+            raise ValueError("structural_triangle_att_row_chunk_size must be positive")
+        if cp_shards != 1:
+            raise ValueError(
+                "structural triangle row chunking is not validated with "
+                "context parallelism"
+            )
     if diffusion_autocast and cp_shards != 1:
         raise ValueError(
             "diffusion_autocast is not supported under context parallelism "
@@ -1092,6 +1105,7 @@ def opendde_infer_static(
         use_scan=use_structural_refiner_scan,
         triangle_mul_chunk_size=triangle_mul_chunk_size,
         triangle_att_q_chunk_size=triangle_att_q_chunk_size,
+        triangle_att_fused_row_chunk_size=structural_triangle_att_row_chunk_size,
         single_att_q_chunk_size=single_att_q_chunk_size,
         single_attention_backend=structural_single_attention_backend,
         triangle_attention_backend=structural_triangle_attention_backend,
@@ -1456,6 +1470,7 @@ GRAPH_STATIC_ARGNAMES = (
     "step_scale_eta",
     "structural_single_attention_backend",
     "structural_triangle_attention_backend",
+    "structural_triangle_att_row_chunk_size",
     "token_heads",
     "token_q_chunk_size",
     "trunk_dtype",

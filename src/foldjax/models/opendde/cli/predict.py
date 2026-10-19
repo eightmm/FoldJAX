@@ -259,6 +259,12 @@ def main(
         help="plan against this much device memory instead of what the "
         "allocator reports; the smaller of the two is used",
     )
+    parser.add_argument(
+        "--structural-triangle-att-row-chunk-size",
+        type=int,
+        help="experimental: project structural cuEq/Tokamax triangle attention "
+        "in blocks of N outer rows; accuracy and GPU performance require validation",
+    )
     args = parser.parse_args(argv)
     args.max_msa_depth = _resolve_msa_depth(args.max_msa_depth)
     return run_prediction(

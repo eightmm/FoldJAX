@@ -95,6 +95,7 @@ class PredictionConfig(NamedTuple):
     kalign_binary: Path | None
     memory_check: str
     memory_budget_gib: float | None
+    structural_triangle_att_row_chunk_size: int | None = None
 
 
 #: The featurizer's own candidate-row cap (`data/featurize_json.py`), resolved
@@ -248,6 +249,7 @@ def _predict(
     diffusion_attention_backend: str,
     trunk_single_attention_backend: str,
     structural_single_attention_backend: str,
+    structural_triangle_att_row_chunk_size: int | None = None,
     chunk_policy: ChunkPolicyName = "auto",
     chunk_overrides: Mapping[str, int | None] | None = None,
     graph_jit: bool = True,
@@ -414,14 +416,22 @@ def _predict(
         extreme=PROTENIX_EXTREME_CHUNK_SIZE,
         **{k: v for k, v in (chunk_overrides or {}).items() if v is not None},
     )
+    projection_chunks = {}
+    if structural_triangle_att_row_chunk_size is not None:
+        projection_chunks["structural_triangle_att_row_chunk_size"] = (
+            structural_triangle_att_row_chunk_size
+        )
     record_resolved_chunking(
         model="opendde",
         n_token=n_residue,
         # OpenDDE does not expose the shared resolver's outer-product width.
         chunks={
-            name: value
-            for name, value in asdict(chunks).items()
-            if name != "opm_chunk_size"
+            **{
+                name: value
+                for name, value in asdict(chunks).items()
+                if name != "opm_chunk_size"
+            },
+            **projection_chunks,
         },
         policy=chunk_policy,
     )
@@ -437,6 +447,7 @@ def _predict(
         diffusion_attention_backend=diffusion_attention_backend,
         trunk_single_attention_backend=trunk_single_attention_backend,
         structural_single_attention_backend=structural_single_attention_backend,
+        **projection_chunks,
         triangle_mul_chunk_size=chunks.triangle_mul_chunk_size,
         triangle_att_q_chunk_size=chunks.triangle_att_q_chunk_size,
         single_att_q_chunk_size=chunks.single_att_q_chunk_size,
@@ -613,6 +624,19 @@ def _run(
         raise SystemExit("n-sample, n-step, and n-cycle must be positive")
     if config.cp_devices < 1:
         raise SystemExit("cp-devices must be positive")
+    row_chunk = config.structural_triangle_att_row_chunk_size
+    if row_chunk is not None:
+        if (
+            not isinstance(row_chunk, int)
+            or isinstance(row_chunk, bool)
+            or row_chunk <= 0
+        ):
+            raise SystemExit("structural-triangle-att-row-chunk-size must be positive")
+        if config.cp_devices > 1:
+            raise SystemExit(
+                "structural triangle row chunking is not validated with "
+                "context parallelism"
+            )
     guidance_config = None
     if config.use_tfg_guidance:
         # Upstream sets `sample_diffusion.guidance.enable` on its default
@@ -715,6 +739,10 @@ def _run(
                 # grid completed at 32,068 MiB per device where serial died.
                 ("context parallelism", config.cp_devices > 1),
                 ("an inputs-only graph", config.stop_after == "inputs"),
+                (
+                    "experimental structural triangle projection row chunking",
+                    config.structural_triangle_att_row_chunk_size is not None,
+                ),
                 # The laws were fitted at the automatic policy. A pinned width
                 # narrower than it needs less memory than the law says.
                 (
@@ -977,6 +1005,11 @@ def _run(
                     ),
                     structural_single_attention_backend=(
                         config.structural_single_attention_backend
+                    ),
+                    **(
+                        {"structural_triangle_att_row_chunk_size": row_chunk}
+                        if row_chunk is not None
+                        else {}
                     ),
                     trunk_dtype=trunk_dtype,
                     confidence_dtype=confidence_dtype,

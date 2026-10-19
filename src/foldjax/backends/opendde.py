@@ -72,6 +72,7 @@ _CLI_OPTIONS = {
     "num_samples",
     "num_steps",
     "structural_single_attention_backend",
+    "structural_triangle_att_row_chunk_size",
     "template_mmcif_dir",
     "template_obsolete_map",
     "template_release_dates",
@@ -181,6 +182,7 @@ _PARSER_DEFAULTS: dict[str, object] = {
     "kalign_binary": None,
     "memory_check": "refuse",
     "memory_budget_gib": None,
+    "structural_triangle_att_row_chunk_size": None,
 }
 
 
@@ -263,6 +265,7 @@ _OPTION_SPECS: dict[
         _text_option,
         ("xla", "xla_jit", "xla_sdpa"),
     ),
+    "structural_triangle_att_row_chunk_size": (_integer_option, None),
     "template_mmcif_dir": (_path_option, None),
     "template_obsolete_map": (_path_option, None),
     "template_release_dates": (_path_option, None),
@@ -378,6 +381,20 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
         # Here rather than at the parser, and here rather than at the admission
         # check: `foldjax plan` runs this and never reaches one.
         validate_memory_policy_options(options)
+        row_chunk = options.get("structural_triangle_att_row_chunk_size")
+        if row_chunk is not None:
+            if (
+                _integer_option("structural_triangle_att_row_chunk_size", row_chunk)
+                <= 0
+            ):
+                raise ValueError(
+                    "structural_triangle_att_row_chunk_size must be positive"
+                )
+            if int(options.get("cp_devices", 1)) > 1:
+                raise ValueError(
+                    "structural triangle row chunking is not validated with "
+                    "context parallelism"
+                )
         _strict_boolean(options.get("include_raw", False), name="include_raw")
         _strict_boolean(options.get("use_template", False), name="use_template")
         _strict_boolean(options.get("use_rna_msa", False), name="use_rna_msa")

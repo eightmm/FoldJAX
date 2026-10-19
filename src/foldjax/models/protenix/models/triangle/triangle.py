@@ -714,6 +714,7 @@ def triangle_attention(
     inf: float = 1e9,
     q_chunk_size: int | None = None,
     attention_backend: str | None = None,
+    fused_row_chunk_size: int | None = None,
 ) -> jnp.ndarray:
     """Apply Protenix triangle attention in the dense XLA path."""
 
@@ -722,6 +723,19 @@ def triangle_attention(
         if attention_backend is None
         else attention_backend
     )
+    if fused_row_chunk_size is not None:
+        if (
+            not isinstance(fused_row_chunk_size, int)
+            or isinstance(fused_row_chunk_size, bool)
+            or fused_row_chunk_size <= 0
+        ):
+            raise ValueError("fused_row_chunk_size must be a positive integer")
+        if backend.removesuffix("_jit") not in {"cueq", "tokamax"}:
+            raise ValueError("fused row chunking requires cueq or tokamax attention")
+        if cp_mesh() is not None:
+            raise ValueError(
+                "fused row chunking is not validated with context parallelism"
+            )
     if cp_mesh() is not None:
         # The SPMD partitioner cannot split an FFI call -- but triangle
         # attention is a batch of independent per-row attentions, and inside
@@ -756,6 +770,11 @@ def triangle_attention(
             inf=inf,
             q_chunk_size=q_chunk_size,
             attention_backend=backend.removesuffix("_jit"),
+            **(
+                {"fused_row_chunk_size": fused_row_chunk_size}
+                if fused_row_chunk_size is not None
+                else {}
+            ),
         )
     if backend not in {"xla", "tokamax", "cueq"}:
         raise ValueError(f"unsupported triangle attention backend: {backend!r}")
@@ -780,6 +799,7 @@ def triangle_attention(
         triangle_bias,
         q_chunk_size,
         backend,
+        fused_row_chunk_size,
     )
     if not starting:
         out = jnp.swapaxes(out, -2, -3)
@@ -794,6 +814,7 @@ _compiled_triangle_attention = jax.jit(
         "inf",
         "q_chunk_size",
         "attention_backend",
+        "fused_row_chunk_size",
     ),
 )
 
@@ -1034,7 +1055,18 @@ def _triangle_attention_dense(
     triangle_bias: jnp.ndarray,
     q_chunk_size: int | None,
     attention_backend: str,
+    fused_row_chunk_size: int | None = None,
 ) -> jnp.ndarray:
+    if fused_row_chunk_size is not None and fused_row_chunk_size < x.shape[-3]:
+        return _triangle_attention_projection_rows(
+            x,
+            params,
+            num_heads,
+            mask_bias,
+            triangle_bias,
+            fused_row_chunk_size,
+            attention_backend,
+        )
     # Triangle attention is a batch of independent attentions, one per row of
     # the pair representation: `q`, `k` and `v` are [N_row, heads, N_col, d] and
     # nothing in the softmax crosses a row. Blocking that row axis therefore
@@ -1142,6 +1174,50 @@ def _triangle_attention_dense(
         out = out * gate
     out = out.reshape(out.shape[:-2] + (-1,))
     return linear(out, params.attention.linear_o)
+
+
+def _triangle_attention_projection_rows(
+    x: jnp.ndarray,
+    params: TriangleAttentionParams,
+    num_heads: int,
+    mask_bias: jnp.ndarray,
+    triangle_bias: jnp.ndarray,
+    chunk_size: int,
+    attention_backend: str,
+) -> jnp.ndarray:
+    """Bound fused attention's projections, without splitting any softmax."""
+
+    def block(start, size):
+        return _triangle_attention_dense(
+            jax.lax.dynamic_slice_in_dim(x, start, size, axis=-3),
+            params,
+            num_heads,
+            jax.lax.dynamic_slice_in_dim(mask_bias, start, size, axis=-4),
+            triangle_bias,
+            None,
+            attention_backend,
+        )
+
+    # Reusing the original body preserves backend-specific scaling, gates and
+    # output projection, including autocast variants' actual output dtype.
+    first = block(0, chunk_size)
+    out = jnp.zeros(x.shape[:-3] + (x.shape[-3], *first.shape[-2:]), first.dtype)
+    out = jax.lax.dynamic_update_slice_in_dim(out, first, 0, axis=-3)
+
+    def body(index, destination):
+        start = index * chunk_size
+        return jax.lax.dynamic_update_slice_in_dim(
+            destination, block(start, chunk_size), start, axis=-3
+        )
+
+    rows = x.shape[-3]
+    out = jax.lax.fori_loop(1, rows // chunk_size, body, out)
+    if tail := rows % chunk_size:
+        start = rows - tail
+        out = jax.lax.dynamic_update_slice_in_dim(
+            out, block(start, tail), start, axis=-3
+        )
+    return out
 
 
 def _triangle_attention_block(

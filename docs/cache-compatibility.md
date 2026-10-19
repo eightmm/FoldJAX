@@ -1,5 +1,19 @@
 # Compilation cache compatibility
 
+## 2026-10-19: experimental OpenDDE structural projection row chunks
+
+**OpenDDE rewarm required only for the new opt-in profile.**
+`--option structural_triangle_att_row_chunk_size=N` uses a separate namespace;
+pass the same width when warming and predicting. The default omits this option
+from the profile and retains the existing graph and namespace. No default
+rewarm is requested for any model, including AF3/3090. Pure host staging
+changes preserve model input values/dtypes and the AF3 portable tuning identity.
+
+The experimental width bounds structural-refiner fused-attention projections.
+It has CPU contract coverage but has not passed real fused GPU accuracy,
+latency or capacity admission. See the [cluster measurement handoff](cluster-memory-handoff.md).
+This is not a new published memory limit or a new numerical default.
+
 ## 2026-10-19: candidate cache exclusion and experimental ESMFold2 alignment
 
 AF3 benchmark candidates no longer read or write the persistent JAX cache.

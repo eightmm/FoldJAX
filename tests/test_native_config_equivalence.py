@@ -192,6 +192,7 @@ _OPENDDE_OPTION_VALUES: dict[str, Any] = {
     "num_steps": 7,
     "single_att_q_chunk_size": 32,
     "structural_single_attention_backend": "xla_sdpa",
+    "structural_triangle_att_row_chunk_size": 32,
     "template_mmcif_dir": Path("/tmp/mmcif"),
     "template_obsolete_map": Path("/tmp/obsolete_to_successor.json"),
     "template_release_dates": Path("/tmp/release_date_cache.json"),
@@ -282,7 +283,13 @@ _PROTENIX_REQUESTS: dict[str, dict[str, Any]] = {
 
 _OPENDDE_REQUESTS: dict[str, dict[str, Any]] = {
     "bare": {},
-    "every-option": {"options": dict(_OPENDDE_OPTION_VALUES)},
+    "every-option": {
+        "options": {
+            name: value
+            for name, value in _OPENDDE_OPTION_VALUES.items()
+            if name != "structural_triangle_att_row_chunk_size"
+        }
+    },
     "switches-off": {
         "options": {
             "cp_atom_windows": True,
