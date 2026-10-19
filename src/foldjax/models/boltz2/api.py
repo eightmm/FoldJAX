@@ -326,10 +326,19 @@ def _graph_features(
     boundary.
     """
 
+    if not place:
+        return {name: np.asarray(value) for name, value in feats.items()}
+    import jax
     import jax.numpy as jnp
 
-    convert = jnp.asarray if place else np.asarray
-    return {name: convert(value) for name, value in feats.items()}
+    return {
+        name: (
+            jax.device_put(value)
+            if isinstance(value, np.ndarray) and value.dtype.kind in "biufc"
+            else jnp.asarray(value)
+        )
+        for name, value in feats.items()
+    }
 
 
 def featurize(

@@ -770,6 +770,23 @@ def _prepare_padded_jobs(
         )
 
 
+def _stage_model_features(
+    example: Mapping[str, Any], *, device: Any = None
+) -> dict[str, Any]:
+    """Place native host arrays without per-shape identity executables."""
+    import jax
+
+    native_dtypes = (np.float32, np.float64, np.int8, np.int32, np.int64, np.bool_)
+    return {
+        name: (
+            jax.device_put(value, device)
+            if isinstance(value, np.ndarray) and value.dtype in native_dtypes
+            else value
+        )
+        for name, value in example.items()
+    }
+
+
 def _predict_featurized_structure(
     fold_input: Any,
     examples: Any,
@@ -788,7 +805,12 @@ def _predict_featurized_structure(
         # fields, so the ordinary runner signature and the public feature ABI
         # remain unchanged.  The unpadded path never adds it.
         model_example[_PREFIX_STABLE_NOISE_FEATURE] = np.asarray(True)
-        result = model_runner.run_inference(model_example, jax.random.PRNGKey(seed))
+        result = model_runner.run_inference(
+            _stage_model_features(
+                model_example, device=getattr(model_runner, "_device", None)
+            ),
+            jax.random.PRNGKey(seed),
+        )
         inference_results = model_runner.extract_inference_results(
             batch=example,
             result=result,
@@ -863,7 +885,12 @@ def _predict_common_representations(
     model_example = dict(example)
     if request.padding is not None:
         model_example[_PREFIX_STABLE_NOISE_FEATURE] = np.asarray(True)
-    result = model_runner.run_inference(model_example, jax.random.PRNGKey(seed))
+    result = model_runner.run_inference(
+        _stage_model_features(
+            model_example, device=getattr(model_runner, "_device", None)
+        ),
+        jax.random.PRNGKey(seed),
+    )
     native = result.get("representations", {})
     num_tokens = int(np.asarray(example["seq_length"]).item())
     arrays = {}

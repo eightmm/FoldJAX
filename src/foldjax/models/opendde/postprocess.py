@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 import numpy as np
@@ -322,7 +323,11 @@ def opendde_confidence_scores(
         n_chain = chain_mask.shape[0]
     if "summary_ranking_score" in output:
         scores = {
-            key: jnp.asarray(value)
+            key: (
+                jax.device_put(value)
+                if isinstance(value, np.ndarray) and value.dtype.kind in "biufc"
+                else jnp.asarray(value)
+            )
             for key, value in output.items()
             if key in _OPENDDE_SCORE_KEYS
         }
