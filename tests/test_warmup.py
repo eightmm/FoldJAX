@@ -34,6 +34,252 @@ def _request(tmp_path: Path, **updates) -> PredictionRequest:
     return PredictionRequest(**values)
 
 
+@pytest.mark.parametrize("publication", ["written", "loaded", "discarded", "threshold"])
+def test_af3_compile_checkpoint_requires_persistence_and_never_executes_model(
+    tmp_path, monkeypatch, trust_ancestors_above_tmp_path, publication
+):
+    import jax
+    import numpy as np
+    from jax._src import compiler
+
+    from foldjax import cache, warmup
+    from foldjax._jax_cache_tiers import LayeredCache
+    from foldjax.backends import _tokamax_autotune as tuning
+
+    request = _request(tmp_path, model="alphafold3")
+    namespace = tmp_path / "namespace"
+    monkeypatch.setattr(warmup, "resolve_requests", lambda _r: (request,))
+    monkeypatch.setattr(
+        warmup, "get_backend", lambda _m: SimpleNamespace(name="alphafold3")
+    )
+    monkeypatch.setattr(warmup, "resolve_cache_dir", lambda *_a: namespace)
+    monkeypatch.setattr(warmup, "runtime_dir", lambda *_a: tmp_path / "runtime")
+    monkeypatch.setattr(warmup, "device_peak_bytes", lambda: None)
+    executions = []
+
+    @jax.jit
+    def apply_fn(value):
+        return value @ value + 3
+
+    def predict(run, backend, *, output_root):
+        tuning.start_record(strategy="autotune", persistent_installed=True)
+        tuning._note_source("store" if publication == "loaded" else "measured")
+        with cache.compilation_cache_scope(
+            namespace, private_directory=tmp_path / "private"
+        ):
+            if publication == "threshold":
+                jax.config.update("jax_persistent_cache_min_compile_time_secs", 1e9)
+            apply_fn(np.arange(16, dtype=np.float32).reshape(4, 4)).block_until_ready()
+            executions.append("model executed")
+        raise AssertionError("preparation reached model execution")
+
+    monkeypatch.setattr(warmup, "_warm_prediction", predict)
+    if publication == "loaded":
+        with cache.compilation_cache_scope(
+            namespace, private_directory=tmp_path / "private"
+        ):
+            apply_fn(np.arange(16, dtype=np.float32).reshape(4, 4)).block_until_ready()
+        jax.clear_caches()
+    if publication == "discarded":
+        monkeypatch.setattr(LayeredCache, "put", lambda *_a: None)
+    owners = [
+        (compiler, "compile_or_get_cached"),
+        (compiler, "_cache_read"),
+        (LayeredCache, "put"),
+    ]
+    originals = [getattr(owner, name) for owner, name in owners]
+    if publication in {"discarded", "threshold"}:
+        with pytest.raises(
+            warmup.PredictionError, match="did not confirm a persistent"
+        ):
+            with warmup._prepare_af3_model():
+                warm_cache(request)
+    else:
+        with warmup._prepare_af3_model():
+            result = warm_cache(request)
+        assert result.status == "prepared"
+        assert result.strategy == "compile_only" and result.samples == 0
+        assert result.preparation["source"] == publication
+        assert result.preparation["module"] == "jit_apply_fn"
+        assert list(namespace.glob("jit_apply_fn-*-cache"))
+    assert not executions
+    assert [getattr(owner, name) for owner, name in owners] == originals
+    assert not warmup._AF3_PREPARATION.get()
+    assert not list((tmp_path / "runtime").iterdir())
+    apply_fn.clear_cache()
+
+
+def test_af3_checkpoint_does_not_interrupt_sequential_candidate_compilation(
+    tmp_path, trust_ancestors_above_tmp_path
+):
+    import jax
+    import numpy as np
+
+    from foldjax import cache, warmup
+    from foldjax.backends import _tokamax_autotune as tuning
+
+    @jax.jit
+    def apply_fn(value):
+        return value + 7
+
+    tuning.start_record(strategy="autotune", persistent_installed=True)
+    with (
+        warmup._prepare_af3_model(),
+        cache.compilation_cache_scope(
+            tmp_path / "cache", private_directory=tmp_path / "private"
+        ),
+    ):
+        # A serial tuner runs on the model thread too; the benchmark's own
+        # candidate guard, rather than thread identity/name, excludes it.
+        token = tuning._CANDIDATE_COMPILATION.set(True)
+        try:
+            actual = apply_fn(np.arange(3, dtype=np.float32))
+            np.testing.assert_array_equal(actual, np.arange(3) + 7)
+        finally:
+            tuning._CANDIDATE_COMPILATION.reset(token)
+    apply_fn.clear_cache()
+
+
+@pytest.mark.parametrize("tier", ["shared", "private"])
+@pytest.mark.parametrize(
+    "outcome", ["hit", "missing", "different_key", "disabled", "deserialize_oom"]
+)
+def test_af3_fresh_verification_only_loads_the_exact_prepared_model(
+    tmp_path, monkeypatch, trust_ancestors_above_tmp_path, tier, outcome
+):
+    import jax
+    import numpy as np
+    from jax._src import compiler
+
+    from foldjax import cache, warmup
+    from foldjax._jax_cache_tiers import LayeredCache
+
+    namespace, private = tmp_path / "shared", tmp_path / "private"
+    if tier == "private":
+        original_put = LayeredCache._put
+
+        def put(adapter, selected, *args):
+            if selected == "shared":
+                raise PermissionError("read-only shared store")
+            return original_put(adapter, selected, *args)
+
+        monkeypatch.setattr(LayeredCache, "_put", put)
+
+    @jax.jit
+    def apply_fn(value):
+        return value @ value + 5
+
+    value = np.arange(16, dtype=np.float32).reshape(4, 4)
+    with cache.compilation_cache_scope(namespace, private_directory=private):
+        apply_fn(value).block_until_ready()
+    (artifact,) = (namespace if tier == "shared" else private).glob(
+        "jit_apply_fn-*-cache"
+    )
+    key = artifact.name.removesuffix("-cache")
+    if outcome == "missing":
+        artifact.unlink()
+    elif outcome == "different_key":
+        key = "unprepared-key"
+    elif outcome == "disabled":
+        monkeypatch.setattr(compiler, "_get_cache_key", lambda *_a, **_k: None)
+    elif outcome == "deserialize_oom":
+        from jax._src import compilation_cache
+
+        def fail_load(*args, **kwargs):
+            raise MemoryError("mock CUDA module allocation failed")
+
+        monkeypatch.setattr(compilation_cache, "get_executable_and_time", fail_load)
+    jax.clear_caches()
+    compile_calls = []
+    original_compile = compiler.backend_compile_and_load
+
+    def compile_model(backend, computation, *args, **kwargs):
+        compile_calls.append(str(computation.operation.attributes["sym_name"]))
+        return original_compile(backend, computation, *args, **kwargs)
+
+    monkeypatch.setattr(compiler, "backend_compile_and_load", compile_model)
+    owners = (
+        "_cache_read",
+        "backend_compile_and_load",
+    )
+    originals = [getattr(compiler, name) for name in owners]
+    from jax._src import compilation_cache
+
+    original_load = compilation_cache.get_executable_and_time
+    with (
+        warmup._verify_af3_artifacts((key,)),
+        cache.compilation_cache_scope(namespace, private_directory=private),
+    ):
+        if outcome == "hit":
+            actual = apply_fn(value)
+            np.testing.assert_array_equal(actual, value @ value + 5)
+            assert warmup._AF3_VERIFICATION.get() == [
+                {"cache_key": key, "source": "loaded"}
+            ]
+        elif outcome == "deserialize_oom":
+            with pytest.raises(MemoryError, match="mock CUDA module"):
+                apply_fn(value)
+        else:
+            with pytest.raises(warmup.PredictionError, match="prepared|compilation"):
+                apply_fn(value)
+    assert not compile_calls
+    assert [getattr(compiler, name) for name in owners] == originals
+    assert compilation_cache.get_executable_and_time is original_load
+    assert warmup._AF3_VERIFICATION.get() is None
+    apply_fn.clear_cache()
+
+
+@pytest.mark.parametrize("private_hit", [False, True])
+def test_af3_verification_keeps_shared_deserialization_oom_private_fallback(
+    tmp_path, monkeypatch, trust_ancestors_above_tmp_path, private_hit
+):
+    import jax
+    import numpy as np
+    from jax._src import compilation_cache
+
+    from foldjax import cache, warmup
+
+    namespace, private = tmp_path / "shared", tmp_path / "private"
+
+    @jax.jit
+    def apply_fn(value):
+        return value + 19
+
+    value = np.arange(3, dtype=np.float32)
+    with cache.compilation_cache_scope(namespace, private_directory=private):
+        apply_fn(value).block_until_ready()
+    (artifact,) = namespace.glob("jit_apply_fn-*-cache")
+    if private_hit:
+        copy = private / artifact.name
+        copy.write_bytes(artifact.read_bytes())
+        copy.chmod(0o600)
+    original = compilation_cache.decompress_executable
+    attempts = []
+
+    def first_fails(payload):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise MemoryError("shared cache module allocation failed")
+        return original(payload)
+
+    monkeypatch.setattr(compilation_cache, "decompress_executable", first_fails)
+    jax.clear_caches()
+    cache.clear_record()
+    with (
+        warmup._verify_af3_artifacts((artifact.name.removesuffix("-cache"),)),
+        cache.compilation_cache_scope(namespace, private_directory=private),
+    ):
+        if private_hit:
+            np.testing.assert_array_equal(apply_fn(value), value + 19)
+            assert len(attempts) == 2
+            assert cache.recorded()["loads"]["private"]["success"] == 1
+        else:
+            with pytest.raises(MemoryError, match="shared cache module"):
+                apply_fn(value)
+            assert len(attempts) == 1
+    apply_fn.clear_cache()
+
+
 @pytest.mark.parametrize("model", ["boltz2", "alphafold3"])
 def test_warm_cache_executes_first_seed_and_removes_scratch_outputs(
     tmp_path: Path, monkeypatch, model

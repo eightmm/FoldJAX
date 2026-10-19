@@ -22,7 +22,19 @@ def _install_worker_stubs():
     import jax
     import jax.numpy as jnp
 
+    from foldjax import _gpu
     from foldjax.cache import CacheSnapshot
+
+    original_device = _gpu.default_device
+
+    def device(request=None):
+        if request is not None and request.options.get("_test_split_af3"):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(platform="gpu")
+        return original_device(request)
+
+    _gpu.default_device = device
 
     tiny = jax.jit(lambda value: value + 1)
 
@@ -50,6 +62,7 @@ def _install_worker_stubs():
         )
 
     def run(request, *, keep_output, output_root):
+        preparing = warmup._AF3_PREPARATION.get()
         bucket = (request.padding.tokens or 8) if request.padding else 8
         scratch = warmup._PROCESS_SCRATCH.get()
         scratch.mkdir(parents=True, exist_ok=True)
@@ -60,11 +73,14 @@ def _install_worker_stubs():
             "bucket": bucket,
             "scratch": str(scratch),
             "output": str(request.output_dir),
+            "preparing": preparing,
         }
         if request.options.get("events"):
             with Path(request.options["events"]).open("a") as handle:
                 handle.write(json.dumps(event) + "\n")
-        if request.options.get("block"):
+        if request.options.get("block") and (
+            not request.options.get("_test_block_verify") or not preparing
+        ):
             while True:
                 signal.pause()
         if request.options.get("kill_bucket") == bucket:
@@ -72,6 +88,7 @@ def _install_worker_stubs():
         if (
             request.options.get("fail_bucket") == bucket
             and request.options.get("fail_model", request.model) == request.model
+            and (not request.options.get("_test_fail_verify") or not preparing)
         ):
             kind = request.options.get("fail_kind", "oom")
             if kind == "oom":
@@ -104,12 +121,29 @@ def _install_worker_stubs():
             after = cache.cache_snapshot(namespace)
             kernel_tuning = None
         else:
-            tiny(jnp.zeros((bucket,))).block_until_ready()
+            if not preparing:
+                tiny(jnp.zeros((bucket,))).block_until_ready()
             compilation_cache = {
                 "loads": {"shared": {"success": 1}},
                 "writes": {"private": {"success": 1}},
             }
             kernel_tuning = {"calls": [{"cache_read_tiers": {"private": 1}}]}
+        if request.options.get("_test_split_af3"):
+            source = (
+                "measured"
+                if preparing or request.options.get("_test_remeasure")
+                else "store"
+            )
+            kernel_tuning.update(sources={source: 1})
+            kernel_tuning["kernel_autotuning"] = request.options.get(
+                "kernel_autotuning", "autotune"
+            )
+            kernel_tuning["calls"][0].update(
+                store_identity_sha256="mock_store", model_input_abi_sha256="mock_abi"
+            )
+        verification = warmup._AF3_VERIFICATION.get()
+        if verification is not None:
+            verification.append({"cache_key": "fake", "source": "loaded"})
         print("python worker progress", flush=True)
         os.write(1, b"native worker progress\n")
         return warmup.CacheWarmResult(
@@ -121,7 +155,7 @@ def _install_worker_stubs():
             seconds=0.01,
             before=before,
             after=after,
-            samples=1,
+            samples=0 if preparing else 1,
             output_dir=request.output_dir if keep_output else None,
             shape_profile={
                 "target": {"tokens": bucket},
@@ -130,6 +164,20 @@ def _install_worker_stubs():
             },
             compilation_cache=compilation_cache,
             kernel_tuning=kernel_tuning,
+            strategy="compile_only" if preparing else "execute_once",
+            preparation={
+                "module": "jit_apply_fn",
+                "cache_key": "fake",
+                "source": "written",
+            }
+            if preparing
+            else None,
+            verification={
+                "main_cache_reads": list(verification),
+                "kernel_miss_policy": request.options.get("kernel_autotuning"),
+            }
+            if verification is not None
+            else None,
         )
 
     warmup.resolve_requests = resolve
@@ -223,6 +271,222 @@ def test_two_buckets_use_fresh_processes_and_keep_both_lengths_together(
     assert captured.out == ""
     assert "native worker progress" in captured.err
     assert "python worker progress" in captured.err
+
+
+@pytest.mark.parametrize("retuned", [False, True])
+def test_af3_preparation_exits_before_fresh_two_length_execution(
+    process_request, retuned
+):
+    request = dataclasses.replace(
+        process_request,
+        model="alphafold3",
+        weights=process_request.input,
+        options={
+            **process_request.options,
+            "_test_split_af3": True,
+            "_test_remeasure": retuned,
+        },
+    )
+    report = warm_buckets.warm_token_buckets(request, "8", isolation="process")
+    (row,) = report["models"][0]["buckets"]
+    assert row["status"] == ("failed" if retuned else "success")
+    if retuned:
+        assert "incomplete persistent Tokamax coverage" in row["error"]
+        assert report["models"][0]["successful_buckets"] == []
+        assert row["runs"][0]["samples_executed"] == 1
+        return
+    preparation = row["preparation"]
+    assert preparation["process"]["pid"] != row["process"]["pid"]
+    assert [event["preparing"] for event in _events(request)] == [
+        True,
+        True,
+        False,
+        False,
+    ]
+    assert {event["pid"] for event in _events(request)[:2]} == {
+        preparation["process"]["pid"]
+    }
+    assert {event["pid"] for event in _events(request)[2:]} == {row["process"]["pid"]}
+    for pre, run in zip(preparation["runs"], row["runs"], strict=True):
+        assert pre["samples_executed"] == 0 and pre["status"] == "prepared"
+        assert run["samples_executed"] == 1
+        assert run["preparation"]["complete_store_reused"] is not retuned
+        assert run["preparation"]["verification_retuned"] is retuned
+        assert run["verification"]["kernel_miss_policy"] == "error"
+    assert row["verification"]["fresh_process"] == row["process"]
+    assert all(not Path(event["scratch"]).parent.exists() for event in _events(request))
+
+
+def test_af3_failed_preparation_does_not_start_verification(process_request):
+    request = dataclasses.replace(
+        process_request,
+        model="alphafold3",
+        weights=process_request.input,
+        options={**process_request.options, "_test_split_af3": True, "fail_bucket": 8},
+    )
+    report = warm_buckets.warm_token_buckets(request, "8,16", isolation="process")
+    (model,) = report["models"]
+    assert model["successful_buckets"] == [] and model["stopped_on_oom"]
+    (row,) = model["buckets"]
+    assert row["status"] == "failed" and row["oom"]
+    assert row["preparation"]["process"] == row["process"]
+    assert [event["preparing"] for event in _events(request)] == [True]
+
+
+def test_af3_only_verification_receives_the_retained_output(process_request, tmp_path):
+    output = tmp_path / "kept"
+    request = dataclasses.replace(
+        process_request,
+        model="alphafold3",
+        weights=process_request.input,
+        output_dir=output,
+        options={**process_request.options, "_test_split_af3": True},
+    )
+    result = warmup.warm_cache(request, isolation="process")
+    assert result.strategy == "compile_then_execute_fresh"
+    assert result.samples == 1 and result.output_dir == output
+    assert result.preparation["run"]["samples_executed"] == 0
+    assert result.verification["kernel_miss_policy"] == "error"
+    assert "kernel_autotuning" not in request.options
+    assert [event["output"] for event in _events(request)] == ["None", str(output)]
+    assert result.process["pid"] != result.preparation["process"]["pid"]
+
+
+def test_external_af3_runtime_keeps_ordinary_process_warming(process_request):
+    request = dataclasses.replace(
+        process_request,
+        model="alphafold3",
+        weights=process_request.input,
+        options={
+            **process_request.options,
+            "_test_split_af3": True,
+            "source": "/external/checkout",
+        },
+    )
+    result = warmup.warm_cache(request, isolation="process")
+    assert result.strategy == "execute_once" and result.samples == 1
+    assert result.preparation is None and result.verification is None
+    assert [event["preparing"] for event in _events(request)] == [False]
+    assert result.kernel_tuning["kernel_autotuning"] == "autotune"
+    assert "kernel_autotuning" not in request.options
+
+
+def _write_native_af3_jobs(source):
+    source.write_text(
+        json.dumps(
+            [
+                {
+                    "name": name,
+                    "modelSeeds": [7],
+                    "sequences": [{"proteinChain": {"sequence": sequence, "count": 1}}],
+                }
+                for name, sequence in (("short", "ACDE"), ("long", "ACDEFGHI"))
+            ]
+        )
+    )
+    return source
+
+
+def test_af3_native_multijob_fixture_is_accepted_by_existing_loader(
+    tmp_path, alphafold3_runtime
+):
+    pytest.importorskip("zstandard")
+    from foldjax.models.alphafold3 import build
+
+    build.register_runtime()
+    from alphafold3.common import folding_input
+
+    source = _write_native_af3_jobs(tmp_path / "jobs.json")
+    jobs = tuple(folding_input.load_fold_inputs_from_path(source))
+    assert [job.name for job in jobs] == ["short", "long"]
+
+
+@pytest.mark.parametrize("input_format", ["auto", "native"])
+def test_native_af3_job_list_keeps_ordinary_warming(process_request, input_format):
+    source = _write_native_af3_jobs(process_request.input)
+    request = dataclasses.replace(
+        process_request,
+        model="alphafold3",
+        weights=source,
+        input_format=input_format,
+        options={**process_request.options, "_test_split_af3": True},
+    )
+    result = warmup.warm_cache(request, isolation="process")
+    assert result.strategy == "execute_once" and result.samples == 1
+    assert result.preparation is None and result.verification is None
+    assert [event["preparing"] for event in _events(request)] == [False]
+    assert result.kernel_tuning["kernel_autotuning"] == "autotune"
+    assert "kernel_autotuning" not in request.options
+
+
+def test_neutral_plural_inputs_keep_split_af3_warming(process_request, tmp_path):
+    second = tmp_path / "second.json"
+    second.write_text('{"entities": []}')
+    request = dataclasses.replace(
+        process_request,
+        model="alphafold3",
+        weights=process_request.input,
+        input=None,
+        inputs=(process_request.input, second),
+        options={**process_request.options, "_test_split_af3": True},
+    )
+    results = warmup.warm_cache(request, isolation="process")
+    assert len(results) == 2
+    assert all(result.strategy == "compile_then_execute_fresh" for result in results)
+    assert [event["preparing"] for event in _events(request)] == [
+        True,
+        True,
+        False,
+        False,
+    ]
+
+
+@pytest.mark.parametrize("changed", ["namespace", "identity"])
+def test_af3_preparation_cannot_verify_another_profile(changed):
+    prepared = {
+        "model": "alphafold3",
+        "cache_dir": "original",
+        "weights": "weights",
+        "strategy": "compile_only",
+        "preparation": {"cache_key": "key"},
+        "kernel_tuning": {
+            "calls": [
+                {"store_identity_sha256": "store", "model_input_abi_sha256": "abi"}
+            ]
+        },
+    }
+    verified = json.loads(json.dumps(prepared))
+    if changed == "namespace":
+        verified["cache_dir"] = "different"
+    else:
+        verified["kernel_tuning"]["calls"][0]["store_identity_sha256"] = "different"
+    with pytest.raises(
+        warmup.PredictionError, match="different profiles|changed model input ABI"
+    ):
+        _warm_process._prepared_summary(verified, prepared, {"pid": 1}, {"pid": 2})
+
+
+def test_af3_failed_fresh_execution_is_not_a_successful_warm(process_request):
+    request = dataclasses.replace(
+        process_request,
+        model="alphafold3",
+        weights=process_request.input,
+        options={
+            **process_request.options,
+            "_test_split_af3": True,
+            "_test_fail_verify": True,
+            "fail_bucket": 8,
+        },
+    )
+    report = warm_buckets.warm_token_buckets(request, "8,16", isolation="process")
+    (model,) = report["models"]
+    assert model["successful_buckets"] == []
+    assert model["stopped_on_oom"]
+    (row,) = model["buckets"]
+    assert row["status"] == "failed" and row["oom"]
+    assert row["preparation"]["process"]["pid"] != row["process"]["pid"]
+    assert [event["preparing"] for event in _events(request)] == [True, True, False]
+    assert all(not Path(event["scratch"]).parent.exists() for event in _events(request))
 
 
 @pytest.mark.parametrize(
@@ -624,7 +888,8 @@ def test_cli_defaults_to_process_without_resolving_in_the_parent(
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX cancellation and child reaping")
-def test_parent_sigterm_reaps_its_worker_and_removes_scratch(tmp_path):
+@pytest.mark.parametrize("model", ["boltz2", "alphafold3"])
+def test_parent_sigterm_reaps_its_worker_and_removes_scratch(tmp_path, model):
     marker = tmp_path / "events.jsonl"
     source = tmp_path / "input.json"
     source.write_text("{}")
@@ -636,9 +901,10 @@ from foldjax.schema import PredictionRequest
 namespace=runpy.run_path(sys.argv[1])
 _warm_process._worker_command_original=_warm_process._worker_command
 _warm_process._worker_command=namespace['_stub_command']
-request=PredictionRequest(model='boltz2', input=Path(sys.argv[2]),
+request=PredictionRequest(model=sys.argv[5], input=Path(sys.argv[2]),
  cache_dir=Path(sys.argv[3]), msa='single',
- options={'events':sys.argv[4], 'block':True})
+ options={'events':sys.argv[4], 'block':True, '_test_block_verify':True,
+ '_test_split_af3':sys.argv[5]=='alphafold3'})
 warm_buckets.warm_token_buckets(request,'8',isolation='process')
 """
     driver = subprocess.Popen(
@@ -650,6 +916,7 @@ warm_buckets.warm_token_buckets(request,'8',isolation='process')
             str(source),
             str(tmp_path / "cache"),
             str(marker),
+            model,
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -661,8 +928,11 @@ warm_buckets.warm_token_buckets(request,'8',isolation='process')
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             if marker.exists() and marker.read_text().strip():
-                event = json.loads(marker.read_text().splitlines()[0])
-                break
+                events = [json.loads(line) for line in marker.read_text().splitlines()]
+                active = [item for item in events if not item["preparing"]]
+                if active:
+                    event = active[0]
+                    break
             if driver.poll() is not None:
                 pytest.fail(driver.communicate()[1])
             time.sleep(0.05)

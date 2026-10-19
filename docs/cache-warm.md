@@ -75,6 +75,31 @@ backend registrations, callbacks and device objects do not cross an exec
 boundary. Express device/platform selection with request options and the
 environment, or use in-process mode for those Python-only settings.
 
+Managed AF3 on a GPU additionally separates preparation and execution. A
+preparation child tunes and persists the main executable, then exits before the first
+model dispatch. A second child must load those exact main cache keys and
+execute the representative input(s). Default `autotune` preparation uses the
+`error` cache-miss policy during verification so a missing tuning store is a
+verification failure, rather than silently measuring candidates again.
+An explicitly selected heuristic policy stays heuristic but still requires
+the prepared main executable to load. No successful prediction manifest is
+created by preparation alone.
+
+Successful reports use `strategy=compile_then_execute_fresh` and retain both
+process identities and preparation/verification evidence. A missing persistent
+artifact, changed namespace/ABI, cache miss or failed actual execution remains
+a failed warm. This separates first model dispatch from tuning/compilation
+memory; preparation itself still compiles and loads the CUDA module and can
+fail there. The reported 4090 2048-token boundary case needs GPU confirmation
+of this lifecycle. In-process calls, external AF3 runtimes, native Server JSON
+files containing multiple fold jobs, and other models keep their existing
+execution behavior. Separate native jobs into individual inputs to use split
+preparation for each job. No default model cache revision changes.
+Kept verification outputs record the actual `error` cache-miss policy. A later
+`predict --resume` with a different policy can rerun that output; preparation
+does not relabel a prediction or rewrite a finished manifest to imply another
+policy ran.
+
 Buckets run in ascending order for each model. By default a CUDA allocation
 failure or proactive memory-admission refusal stops that model's larger buckets;
 the next model can still run. `--keep-going` attempts later buckets too.
@@ -89,7 +114,8 @@ when the backend reports them. The report also counts JAX compilation requests
 on the second length. A request can restore an existing executable, so this
 count is diagnostic and **is not a persistent-cache miss count**. Cache file
 deltas likewise do not prove an executable hit. Exact-input warming retains its
-existing JSON output and `execute_once` behavior.
+JSON result shape; AF3 GPU process results record the fresh-execution strategy
+described above, while other exact warms retain `execute_once`.
 Isolated reports include the worker PID and exit code for each bucket or exact
 result. Native worker progress goes to stderr. A worker terminated without a
 report is a failure, with its signal/exit status; an unexplained `SIGKILL` is

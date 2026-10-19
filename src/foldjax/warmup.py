@@ -15,10 +15,11 @@ import tempfile
 import threading
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 from foldjax.api import _predict_resolved, resolve_cache_dir, resolve_requests
 from foldjax.backends.base import Backend
@@ -36,6 +37,175 @@ class _WarmTermination(BaseException):
 _PROCESS_SCRATCH: ContextVar[Path | None] = ContextVar(
     "warm_process_scratch", default=None
 )
+_AF3_PREPARATION: ContextVar[bool] = ContextVar("af3_warm_preparation", default=False)
+_AF3_VERIFICATION: ContextVar[list[dict[str, object]] | None] = ContextVar(
+    "af3_warm_verification", default=None
+)
+
+
+class _AF3PreparedError(Exception):
+    def __init__(self, artifact: dict[str, object]):
+        super().__init__("AF3 model compilation prepared without model execution")
+        self.artifact = artifact
+
+
+@contextmanager
+def _prepare_af3_model() -> Iterator[None]:
+    """Stop after the managed model is persisted, before its first dispatch.
+
+    Pinned JAX returns a loaded executable here only after its cache write.
+    Tokamax benchmark compilations retain their normal execution; a model
+    checkpoint requires both the candidate guard and a completed store policy.
+    """
+    from jax._src import compiler
+
+    from foldjax._jax_cache_tiers import LayeredCache
+    from foldjax.backends import _tokamax_autotune as tuning
+
+    owner = threading.current_thread()
+    active: ContextVar[dict | None] = ContextVar("af3_preparing_graph", default=None)
+    original_compile, original_read = (
+        compiler.compile_or_get_cached,
+        compiler._cache_read,
+    )
+    original_put = LayeredCache.put
+
+    def read(module_name, key, *args, **kwargs):
+        result = original_read(module_name, key, *args, **kwargs)
+        if (state := active.get()) is not None and module_name == "jit_apply_fn":
+            state.update(key=key, loaded=result[0] is not None)
+        return result
+
+    def put(adapter, key, value):
+        original_put(adapter, key, value)
+        if (state := active.get()) is not None and state.get("key") == key:
+            # put() deliberately swallows filesystem failures. Confirm the exact
+            # serialized bytes through the same trusted shared/private adapter.
+            state["written"] = adapter.get(key) == value
+
+    def compile_or_checkpoint(backend, computation, *args, **kwargs):
+        name = str(computation.operation.attributes["sym_name"]).strip('"')
+        if (
+            name != "jit_apply_fn"
+            or threading.current_thread() is not owner
+            or tuning._CANDIDATE_COMPILATION.get()
+        ):
+            return original_compile(backend, computation, *args, **kwargs)
+        record = tuning.recorded() or {}
+        if not record.get("persistent_store") or not record.get("sources"):
+            raise PredictionError(
+                "AF3 warm preparation reached a model without a completed "
+                "persistent Tokamax policy; model execution was not attempted"
+            )
+        state: dict[str, object] = {}
+        token = active.set(state)
+        try:
+            original_compile(backend, computation, *args, **kwargs)
+        finally:
+            active.reset(token)
+        if not state.get("loaded") and not state.get("written"):
+            raise PredictionError(
+                "AF3 warm preparation did not confirm a persistent model "
+                "executable; check cache write permissions and cache size limits. "
+                "Model execution was not attempted"
+            )
+        raise _AF3PreparedError(
+            {
+                "module": name,
+                "cache_key": state["key"],
+                "source": "loaded" if state.get("loaded") else "written",
+            }
+        )
+
+    token = _AF3_PREPARATION.set(True)
+    try:
+        with ExitStack() as stack:
+            for target, name, replacement in (
+                (compiler, "compile_or_get_cached", compile_or_checkpoint),
+                (compiler, "_cache_read", read),
+                (LayeredCache, "put", put),
+            ):
+                stack.enter_context(patch.object(target, name, replacement))
+            yield
+    finally:
+        _AF3_PREPARATION.reset(token)
+
+
+@contextmanager
+def _verify_af3_artifacts(keys: tuple[str, ...]) -> Iterator[None]:
+    """Permit the prepared model's persistent reads, never a new compilation."""
+    from jax._src import compilation_cache, compiler
+
+    from foldjax import oom
+    from foldjax.backends import _tokamax_autotune as tuning
+
+    if not keys or not all(isinstance(key, str) and key for key in keys):
+        raise PredictionError("AF3 preparation did not report persistent model keys")
+    original_read = compiler._cache_read
+    original_compile = compiler.backend_compile_and_load
+    original_load = compilation_cache.get_executable_and_time
+    reads: list[dict[str, object]] = []
+    load_oom: ContextVar[BaseException | None] = ContextVar(
+        "af3_cache_load_oom", default=None
+    )
+
+    def load(*args, **kwargs):
+        try:
+            return original_load(*args, **kwargs)
+        except Exception as error:
+            if isinstance(error, MemoryError) or oom.is_out_of_memory(error):
+                load_oom.set(error)
+            raise
+
+    def read(module_name, key, *args, **kwargs):
+        if module_name != "jit_apply_fn" or tuning._CANDIDATE_COMPILATION.get():
+            return original_read(module_name, key, *args, **kwargs)
+        if key not in keys:
+            raise PredictionError(
+                "AF3 verification selected an unprepared model cache key"
+            )
+        token = load_oom.set(None)
+        try:
+            result = original_read(module_name, key, *args, **kwargs)
+            error = load_oom.get()
+        finally:
+            load_oom.reset(token)
+        if result[0] is None:
+            if error is not None:
+                raise error
+            raise PredictionError(
+                "AF3 verification could not load its prepared model executable; "
+                "new model compilation was not attempted"
+            )
+        reads.append({"cache_key": key, "source": "loaded"})
+        return result
+
+    def compile_model(backend, computation, *args, **kwargs):
+        name = str(computation.operation.attributes["sym_name"]).strip('"')
+        if name == "jit_apply_fn" and not tuning._CANDIDATE_COMPILATION.get():
+            raise PredictionError("AF3 verification refuses new model compilation")
+        return original_compile(backend, computation, *args, **kwargs)
+
+    token = _AF3_VERIFICATION.set(reads)
+    try:
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(compiler, "_cache_read", read))
+            stack.enter_context(
+                patch.object(compiler, "backend_compile_and_load", compile_model)
+            )
+            # Enter before the prediction installs its layered getter. A
+            # shared OOM followed by an absent private entry returns no error;
+            # retain it only when neither tier produced an executable.
+            stack.enter_context(
+                patch.object(
+                    compilation_cache,
+                    "get_executable_and_time",
+                    load,
+                )
+            )
+            yield
+    finally:
+        _AF3_VERIFICATION.reset(token)
 
 
 @contextmanager
@@ -91,6 +261,8 @@ class CacheWarmResult:
     kernel_tuning: dict[str, object] | None = None
     compilation_cache: dict[str, object] | None = None
     process: dict[str, int] | None = None
+    preparation: dict[str, object] | None = None
+    verification: dict[str, object] | None = None
 
     @property
     def new_files(self) -> int:
@@ -102,12 +274,19 @@ class CacheWarmResult:
 
     @property
     def status(self) -> str:
+        if self.strategy == "compile_only":
+            return "prepared"
         cache = self.compilation_cache or {}
         tuning_calls = (self.kernel_tuning or {}).get("calls", ())
         published = any(
             events.get("success", 0) > 0 for events in cache.get("writes", {}).values()
         ) or any(call.get("cache_write_tiers") for call in tuning_calls)
-        if self.new_files or self.new_bytes or published:
+        if (
+            self.new_files
+            or self.new_bytes
+            or published
+            or (self.preparation or {}).get("published")
+        ):
             return "populated"
         loaded = any(
             events.get("success", 0) > 0 for events in cache.get("loads", {}).values()
@@ -154,6 +333,10 @@ class CacheWarmResult:
             summary["compilation_cache"] = dict(self.compilation_cache)
         if self.process is not None:
             summary["process"] = dict(self.process)
+        if self.preparation is not None:
+            summary["preparation"] = dict(self.preparation)
+        if self.verification is not None:
+            summary["verification"] = dict(self.verification)
         return summary
 
 
@@ -193,22 +376,36 @@ def _warm_resolved(
     )
 
     started = time.perf_counter()
+    prepared = None
     # A warm has one seed and no batch to survive, so neither policy applies: a
     # failure here is the answer to "does this profile compile and run", and a
     # reused manifest would report a cache delta for work that did not happen.
     scalar = dataclasses.replace(scalar, resume=False, on_error="stop")
-    if keep_output:
-        result = _warm_prediction(scalar, backend, output_root=output_root)
-        retained = scalar.output_dir
-    else:
-        scratch_root = _PROCESS_SCRATCH.get() or runtime_dir("cache-warm")
-        scratch_root.mkdir(parents=True, exist_ok=True)
-        with _warm_directory(scratch_root, prefix=f".{backend.name}-") as scratch:
-            ephemeral = dataclasses.replace(scalar, output_dir=scratch)
-            result = _warm_prediction(ephemeral, backend, output_root=scratch)
-        retained = None
-    if result is None:
+    try:
+        if keep_output:
+            result = _warm_prediction(scalar, backend, output_root=output_root)
+            retained = scalar.output_dir
+        else:
+            scratch_root = _PROCESS_SCRATCH.get() or runtime_dir("cache-warm")
+            scratch_root.mkdir(parents=True, exist_ok=True)
+            with _warm_directory(scratch_root, prefix=f".{backend.name}-") as scratch:
+                ephemeral = dataclasses.replace(scalar, output_dir=scratch)
+                result = _warm_prediction(ephemeral, backend, output_root=scratch)
+            retained = None
+    except _AF3PreparedError as checkpoint:
+        prepared = checkpoint.artifact
+        result, retained = None, None
+    if _AF3_PREPARATION.get() and prepared is None:
+        raise PredictionError(
+            "AF3 warm preparation did not observe its model checkpoint"
+        )
+    if result is None and prepared is None:
         raise PredictionError(f"{backend.name} cache warm produced no prediction")
+    verification = _AF3_VERIFICATION.get()
+    if verification is not None and not verification:
+        raise PredictionError(
+            "AF3 verification did not observe a persistent model read"
+        )
     seconds = time.perf_counter() - started
     peak = device_peak_bytes()
     from foldjax.backends._tokamax_autotune import recorded as recorded_kernel_tuning
@@ -232,12 +429,20 @@ def _warm_resolved(
         seconds=round(seconds, 3),
         before=before,
         after=after,
-        samples=len(result.samples),
+        samples=len(result.samples) if result is not None else 0,
         peak_device_bytes=peak,
         output_dir=retained,
-        shape_profile=result.shape_profile,
+        strategy="compile_only" if prepared is not None else "execute_once",
+        shape_profile=result.shape_profile if result is not None else None,
         kernel_tuning=tuning,
         compilation_cache=compilation_cache,
+        preparation=prepared,
+        verification={
+            "main_cache_reads": list(verification),
+            "kernel_miss_policy": request.options.get("kernel_autotuning", "autotune"),
+        }
+        if verification is not None
+        else None,
     )
 
 
@@ -336,6 +541,8 @@ def _warm_processes(request: PredictionRequest):
                     kernel_tuning=summary.get("kernel_tuning"),
                     compilation_cache=summary.get("compilation_cache"),
                     process=process,
+                    preparation=summary.get("preparation"),
+                    verification=summary.get("verification"),
                 )
             )
     return tuple(results) if plural else results[0]

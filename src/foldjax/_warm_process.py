@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
@@ -102,7 +103,7 @@ def _validate_report(packet: dict[str, Any], kind: str) -> None:
     if packet["ok"]:
         if "result" not in packet:
             raise ValueError("successful report has no result")
-        expected = {"exact": list, "bucket": dict}.get(kind)
+        expected = {"exact": list, "bucket": dict, "prepare": dict}.get(kind)
         if expected is not None and not isinstance(packet["result"], expected):
             raise ValueError(f"{kind} result must be a {expected.__name__}")
     else:
@@ -207,7 +208,7 @@ def _worker_error(
     return error
 
 
-def run_worker(payload: dict[str, Any]) -> tuple[Any, dict[str, int]]:
+def _run_worker_once(payload: dict[str, Any]) -> tuple[Any, dict[str, int]]:
     """Run only our child; cancellation also removes its discarded outputs."""
     from foldjax.warmup import _warm_directory
 
@@ -272,22 +273,207 @@ def run_worker(payload: dict[str, Any]) -> tuple[Any, dict[str, int]]:
         )
 
 
+def _prepared_summary(summary, prepared, preparation_process, verification_process):
+    if prepared.get("strategy") != "compile_only" or not prepared.get("preparation"):
+        raise PredictionError("AF3 preparation did not confirm a model artifact")
+    if any(
+        summary.get(name) != prepared.get(name)
+        for name in ("model", "cache_dir", "weights")
+    ):
+        raise PredictionError(
+            "AF3 preparation and verification selected different profiles"
+        )
+
+    def identities(run):
+        return {
+            (call.get("store_identity_sha256"), call.get("model_input_abi_sha256"))
+            for call in (run.get("kernel_tuning") or {}).get("calls", ())
+        }
+
+    prepared_identities = identities(prepared)
+    if not prepared_identities or any(None in item for item in prepared_identities):
+        raise PredictionError("AF3 preparation has no verifiable Tokamax call identity")
+    if not prepared_identities <= identities(summary):
+        raise PredictionError(
+            "AF3 preparation and verification changed model input ABI"
+        )
+    tuning = summary.get("kernel_tuning") or {}
+    sources = tuning.get("sources") or {}
+    reads = (summary.get("verification") or {}).get("main_cache_reads", ())
+    if prepared["preparation"].get("cache_key") not in {
+        read.get("cache_key") for read in reads if read.get("source") == "loaded"
+    }:
+        raise PredictionError(
+            "AF3 verification did not load its exact prepared main key"
+        )
+    policy = (prepared.get("kernel_tuning") or {}).get("kernel_autotuning", "autotune")
+    if policy == "autotune" and set(sources) != {"store"}:
+        raise PredictionError(
+            "AF3 verification found incomplete persistent Tokamax coverage; "
+            "fresh tuning cannot verify the prepared cache"
+        )
+    cache = prepared.get("compilation_cache") or {}
+    published = any(
+        events.get("success", 0) for events in cache.get("writes", {}).values()
+    )
+    published |= any(
+        call.get("cache_write_tiers")
+        for call in (prepared.get("kernel_tuning") or {}).get("calls", ())
+    )
+    summary.update(
+        strategy="compile_then_execute_fresh",
+        seconds=round(summary["seconds"] + prepared["seconds"], 3),
+        preparation={
+            "process": preparation_process,
+            "run": prepared,
+            "published": bool(published),
+            "verification_process": verification_process,
+            "verification_retuned": bool(sources.get("measured")),
+            "verification_sources": sources,
+            "complete_store_reused": bool(sources) and set(sources) == {"store"},
+        },
+    )
+    summary["cache"]["before"] = prepared["cache"]["before"]
+    for name in ("files", "bytes"):
+        summary["cache"][f"new_{name}"] = max(
+            0, summary["cache"]["after"][name] - prepared["cache"]["before"][name]
+        )
+    if published:
+        summary["status"] = "populated"
+
+
+def run_worker(payload: dict[str, Any]) -> tuple[Any, dict[str, int]]:
+    """Release AF3 preparation's CUDA context before verified model execution."""
+    request = payload.get("request", {})
+    models = request.get("models") or [request.get("model")]
+    model = payload.get("model") or (models[0] if len(models) == 1 else None)
+    if payload.get("kind") not in {"exact", "bucket"} or model != "alphafold3":
+        return _run_worker_once(payload)
+    started = time.perf_counter()
+    prepared, preparation_process = _run_worker_once(
+        {
+            **payload,
+            "kind": "prepare",
+            "operation": payload["kind"],
+            "request": {**request, "output_dir": None},
+        }
+    )
+    if prepared.get("enabled") and payload["kind"] == "bucket":
+        result = prepared["result"]
+        if result["row"]["status"] != "success":
+            result["row"]["preparation"] = {
+                "process": preparation_process,
+                "runs": result["row"]["runs"],
+            }
+            return result, preparation_process
+    verification_payload = payload
+    if prepared.get("enabled"):
+        preparation = prepared["result"]
+        runs = preparation if payload["kind"] == "exact" else preparation["row"]["runs"]
+        options = dict(request.get("options", {}))
+        if options.get("kernel_autotuning", "autotune") == "autotune":
+            options["kernel_autotuning"] = "error"
+        verification_payload = {
+            **payload,
+            "request": {**request, "options": options},
+            "verify_keys": [run["preparation"]["cache_key"] for run in runs],
+        }
+    try:
+        verified, verification_process = _run_worker_once(verification_payload)
+    except Exception as error:
+        error.warm_preparation = {"process": preparation_process, **prepared}
+        if payload["kind"] == "exact" or not prepared.get("enabled"):
+            raise
+        from foldjax.warm_buckets import _bucket_row, _failed_row
+
+        row = _bucket_row(payload["bucket"], payload["previous"])
+        _failed_row(row, error)
+        row["preparation"] = error.warm_preparation
+        row["seconds"] = round(time.perf_counter() - started, 3)
+        return {
+            "row": row,
+            "device": prepared.get("result", {}).get("device", {}),
+        }, error.warm_process
+    if not prepared.get("enabled"):
+        return verified, verification_process
+    preparation = prepared["result"]
+    try:
+        if payload["kind"] == "exact":
+            if len(verified) != len(preparation):
+                raise PredictionError(
+                    "AF3 preparation and verification resolved different jobs"
+                )
+            for summary, before in zip(verified, preparation, strict=True):
+                _prepared_summary(
+                    summary, before, preparation_process, verification_process
+                )
+        else:
+            row, before = verified["row"], preparation["row"]
+            row["preparation"] = {
+                "process": preparation_process,
+                "runs": before["runs"],
+            }
+            if row["status"] == "success":
+                if len(row["runs"]) != len(before["runs"]):
+                    raise PredictionError(
+                        "AF3 preparation and verification resolved different lengths"
+                    )
+                for summary, pre in zip(row["runs"], before["runs"], strict=True):
+                    _prepared_summary(
+                        summary, pre, preparation_process, verification_process
+                    )
+                row["verification"]["fresh_process"] = verification_process
+            row["seconds"] = round(time.perf_counter() - started, 3)
+    except Exception as error:
+        error.warm_preparation = {"process": preparation_process, **prepared}
+        error.warm_process = verification_process
+        if payload["kind"] == "exact":
+            raise
+        from foldjax.warm_buckets import _failed_row
+
+        _failed_row(verified["row"], error)
+    return verified, verification_process
+
+
+def _has_native_job_list(request: PredictionRequest) -> bool:
+    if request.input_format == "foldjax":
+        return False
+    from foldjax.input import read_job_document
+
+    # The native AF3 loader yields one Server fold job per top-level list
+    # element. Leave its validation authoritative; inspect only the container.
+    for path in request.resolved_inputs:
+        try:
+            document = read_job_document(path)
+        except (OSError, ValueError):
+            continue
+        if isinstance(document, list) and len(document) > 1:
+            return True
+    return False
+
+
 def _worker_main(request_file: str, result_file: str) -> int:
     from foldjax import oom
     from foldjax.cli import _apply_gc_threshold
-    from foldjax.warmup import _scratch_root, warm_cache
+    from foldjax.warmup import (
+        _prepare_af3_model,
+        _scratch_root,
+        _verify_af3_artifacts,
+        warm_cache,
+    )
 
     _apply_gc_threshold()
     code = 0
     try:
         packet = _read_packet(Path(request_file))
         request = _request_from_packet(packet["request"])
-        with _scratch_root(Path(packet["scratch_root"])):
-            if packet["kind"] == "exact":
+
+        def execute(operation):
+            if operation == "exact":
                 warmed = warm_cache(request)
                 results = warmed if isinstance(warmed, tuple) else (warmed,)
-                result = [item.summary() for item in results]
-            elif packet["kind"] == "bucket":
+                return [item.summary() for item in results]
+            elif operation == "bucket":
                 from foldjax.warm_buckets import _warm_bucket
 
                 result = _warm_bucket(
@@ -297,8 +483,40 @@ def _worker_main(request_file: str, result_file: str) -> int:
                     previous=packet["previous"],
                     jobs=Path(packet["jobs_root"]),
                 )
+                if result["row"]["status"] != "success":
+                    from foldjax.backends._tokamax_autotune import (
+                        recorded as tuning_record,
+                    )
+                    from foldjax.cache import recorded as cache_record
+
+                    result["row"]["failed_execution"] = {
+                        "compilation_cache": cache_record(),
+                        "kernel_tuning": tuning_record(),
+                    }
+                return result
             else:
                 raise ValueError("unknown cache-warm worker operation")
+
+        with _scratch_root(Path(packet["scratch_root"])):
+            if packet["kind"] == "prepare":
+                from foldjax._gpu import default_device
+
+                selected = dataclasses.replace(request, model="alphafold3", models=None)
+                if request.options.get("source") is not None:
+                    result = {"enabled": False, "reason": "external runtime"}
+                elif packet["operation"] == "exact" and _has_native_job_list(request):
+                    result = {"enabled": False, "reason": "native multi-job input"}
+                elif default_device(selected).platform != "gpu":
+                    result = {"enabled": False, "reason": "non-GPU execution"}
+                else:
+                    with _prepare_af3_model():
+                        prepared = execute(packet["operation"])
+                    result = {"enabled": True, "result": prepared}
+            elif "verify_keys" in packet:
+                with _verify_af3_artifacts(tuple(packet["verify_keys"])):
+                    result = execute(packet["kind"])
+            else:
+                result = execute(packet["kind"])
         response = {"ok": True, "result": result}
     except BaseException as error:
         code = 130 if isinstance(error, KeyboardInterrupt) else 1
