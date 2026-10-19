@@ -116,3 +116,26 @@ def test_diagnostic_observes_real_executable_without_changing_outputs_or_owners(
     assert executable["compile_or_load_seconds"] >= 0
     assert executable["memory"]["argument_size_in_bytes"] == value.nbytes
     assert executable["memory"]["output_size_in_bytes"] == value.nbytes
+
+
+def test_device_observer_failure_cannot_replace_phase_error(monkeypatch):
+    original = ValueError("original inference failure")
+
+    def fail_predict(*args):
+        raise original
+
+    def fail_memory():
+        raise RuntimeError("device memory is unavailable")
+
+    monkeypatch.setattr(runner, "_predict", fail_predict)
+    monkeypatch.setattr(opendde_profile, "_device_memory", fail_memory)
+    report = {}
+    with pytest.raises(ValueError) as caught:
+        with opendde_profile.profile_prediction(report):
+            runner._predict()
+    assert caught.value is original
+    phase, = report["phases"]
+    assert phase["status"] == "error"
+    assert phase["device_before"] == phase["device_after"] == {
+        "unavailable": "RuntimeError"
+    }

@@ -58,6 +58,8 @@ detail matters.
 | [Licences](licences.md) | parameter terms per model |
 | [Benchmark](benchmark.md) | FoldJAX against each upstream: time and memory |
 | [Engineering notes](engineering-notes.md) | how the memory, speed and precision defaults were reached |
+| [Performance diagnostics](performance-diagnostics.md) | executable/cache timing, XLA buffer attribution and experimental solver scope |
+| [Cluster memory panel](cluster-memory-handoff.md) | reproducible 4090 failure, OpenDDE chunking and ESMFold2 capacity comparisons |
 | [CPU parity subset](parity-cpu.md) | what the stored-capture replay certifies |
 | [Recycling defaults](recycling-defaults.md) | the superseded paper-schedule record |
 

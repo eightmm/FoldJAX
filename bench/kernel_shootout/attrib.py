@@ -24,6 +24,7 @@ this script:
 # ruff: noqa: E501
 
 import argparse
+import json
 import re
 from collections import Counter
 from pathlib import Path
@@ -47,6 +48,35 @@ def temp_size(path: Path) -> int:
         if m:
             best = max(best, int(m.group(1)))
     return best
+
+
+def allocation_rows(path: Path, min_bytes: int):
+    """Keep arena sizes separate from their constituent, possibly reused values."""
+    allocations = []
+    current = None
+    with path.open(errors="replace") as stream:
+        for line in stream:
+            header = re.match(r"allocation (\d+): size (\d+)(.*)", line.strip())
+            if header:
+                current = {
+                    "index": int(header[1]), "size_bytes": int(header[2]),
+                    "description": header[3].lstrip(", "), "value_count": 0,
+                    "large_values": [],
+                }
+                if current["size_bytes"] >= min_bytes:
+                    allocations.append(current)
+                continue
+            value = re.match(
+                r"\s*value: <\d+ (\S+) @\d+> \(size=(\d+),offset=(\d+)\): (\S+)", line
+            )
+            if value and current is not None:
+                current["value_count"] += 1
+                if int(value[2]) >= min_bytes:
+                    current["large_values"].append({
+                        "name": value[1], "size_bytes": int(value[2]),
+                        "offset_bytes": int(value[3]), "shape": value[4],
+                    })
+    return sorted(allocations, key=lambda item: -item["size_bytes"])
 
 
 def value_shapes(path: Path) -> dict[str, str]:
@@ -132,7 +162,10 @@ def large_instructions(path: Path, min_bytes: int) -> Counter:
 
 
 def analyse(run: Path, min_bytes: int):
-    dump = run / "dump"
+    return analyse_dump(run / "dump", min_bytes)
+
+
+def analyse_dump(dump: Path, min_bytes: int):
     best = None
     for ba in dump.glob("*buffer-assignment.txt"):
         size = temp_size(ba)
@@ -149,26 +182,42 @@ def analyse(run: Path, min_bytes: int):
     index = hlo_index(hlo) if hlo.exists() else {}
     step, at, entries = peak_entries(live) if live.exists() else (None, None, [])
     rows = [(b, n, idx, shapes.get(n, "?"), index.get(n, "parameter?")) for n, idx, b in entries]
-    return {"stem": stem, "temp": size, "step": step, "at": at, "rows": rows, "report": report, "hlo": hlo}
+    allocations = allocation_rows(ba, min_bytes)
+    for allocation in allocations:
+        for value in allocation["large_values"]:
+            value["producer"] = index.get(value["name"], "unknown")
+    live_peak_bytes = sum(row[0] for row in rows) if step is not None else None
+    return {"stem": stem, "temp": size, "step": step, "at": at, "rows": rows, "live_peak_bytes": live_peak_bytes, "report": report, "hlo": hlo, "allocations": allocations}
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("runs")
+    ap.add_argument("runs", nargs="?")
+    ap.add_argument("--dump", type=Path, help="analyse one XLA dump directory directly")
+    ap.add_argument("--json-out", type=Path)
     ap.add_argument("--diff", default=None)
     ap.add_argument("--min-mib", type=float, default=32.0)
     args = ap.parse_args()
+    if (args.runs is None) == (args.dump is None):
+        ap.error("pass a runs directory or --dump DIRECTORY")
     min_bytes = int(args.min_mib * 2**20)
     results = {}
-    for run in sorted(p for p in Path(args.runs).iterdir() if (p / "dump").is_dir()):
-        r = analyse(run, min_bytes)
+    runs = (
+        [(args.dump.name, args.dump)] if args.dump is not None else
+        [(p.name, p / "dump") for p in sorted(Path(args.runs).iterdir()) if (p / "dump").is_dir()]
+    )
+    for name, dump in runs:
+        r = analyse_dump(dump, min_bytes)
         if r is None:
-            print(f"== {run.name}: no buffer-assignment dump")
+            print(f"== {name}: no buffer-assignment dump (cache hits need not emit one)")
             continue
-        results[run.name] = r
-        total = sum(b for b, *_ in r["rows"])
-        print(f"\n== {run.name}: {r['stem']}")
-        print(f"   preallocated temp {r['temp'] / 2**20:.1f} MiB; peak step {r['step']} at {r['at']} ({index_of(r)}); live at peak {total / 2**20:.1f} MiB")
+        results[name] = r
+        peak = "unavailable" if r["live_peak_bytes"] is None else f"{r['live_peak_bytes'] / 2**20:.1f} MiB"
+        print(f"\n== {name}: {r['stem']}")
+        print(f"   preallocated temp {r['temp'] / 2**20:.1f} MiB; peak step {r['step']} at {r['at']} ({index_of(r)}); live at peak {peak}")
+        print("   temp is an arena; its values can reuse offsets and are not additive live memory")
+        for allocation in r["allocations"][:5]:
+            print(f"   allocation {allocation['index']}: {allocation['size_bytes'] / 2**20:.1f} MiB, {allocation['value_count']} assigned values; {allocation['description']}")
         for b, name, idx, shape, what in sorted(r["rows"], reverse=True):
             if b >= min_bytes:
                 print(f"   {b / 2**20:9.1f}  {name + idx:44s} {shape:32s} {what}")
@@ -180,13 +229,16 @@ def main():
             print(f"   -- instructions >= {args.min_mib:g} MiB by opcode --")
             for (op, shape), n in sorted(large_instructions(r["hlo"], min_bytes).items()):
                 print(f"   {n:4d} x {op:24s} {shape}")
-    if args.diff and args.diff in results:
+    if args.json_out:
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.json_out.write_text(json.dumps(results, default=str, indent=2, sort_keys=True) + "\n")
+    if args.diff and args.diff in results and results[args.diff]["live_peak_bytes"] is not None:
         family = args.diff.split("-", 1)[1]
         base = Counter()
         for b, name, idx, shape, what in results[args.diff]["rows"]:
             base[(shape, producer_class(what))] += b
         for name, r in results.items():
-            if name == args.diff or not name.endswith(family):
+            if name == args.diff or not name.endswith(family) or r["live_peak_bytes"] is None:
                 continue
             mine = Counter()
             for b, n, idx, shape, what in r["rows"]:

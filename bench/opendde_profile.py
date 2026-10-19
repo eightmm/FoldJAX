@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import resource
 import time
 from collections.abc import Iterator
@@ -25,73 +24,30 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-
-def _device_memory() -> dict[str, int]:
-    from foldjax._gpu import default_device
-
-    stats = default_device().memory_stats() or {}
-    return {
-        name: int(stats[name])
-        for name in ("bytes_in_use", "peak_bytes_in_use", "bytes_limit")
-        if name in stats
-    }
+from bench.compilation_profile import device_memory as _device_memory
+from bench.compilation_profile import observe_compilation, write_report
 
 
-def _executable_memory(executable: Any) -> dict[str, int] | None:
-    method = getattr(executable, "get_compiled_memory_stats", None)
-    if method is None:
-        return None
+def _memory_snapshot():
     try:
-        stats = method()
-    except (NotImplementedError, RuntimeError):
-        return None
-    return {
-        name: int(getattr(stats, name))
-        for name in (
-            "argument_size_in_bytes",
-            "output_size_in_bytes",
-            "alias_size_in_bytes",
-            "temp_size_in_bytes",
-            "generated_code_size_in_bytes",
-        )
-        if hasattr(stats, name)
-    }
+        return _device_memory()
+    except Exception as error:
+        return {"unavailable": type(error).__name__}
 
 
 @contextmanager
 def profile_prediction(report: dict[str, Any]) -> Iterator[None]:
     """Observe actual dispatch and loaded executables in one diagnostic run."""
     import jax
-    from jax._src import compiler
 
     from foldjax.models.opendde import runner
 
     phases: list[dict[str, Any]] = report.setdefault("phases", [])
-    executables: list[dict[str, Any]] = report.setdefault("executables", [])
-    original_compile = compiler.compile_or_get_cached
-
-    @wraps(original_compile)
-    def observed_compile(backend, computation, *args, **kwargs):
-        entry = {
-            "module": str(computation.operation.attributes["sym_name"]).strip('"'),
-        }
-        started = time.perf_counter()
-        try:
-            executable = original_compile(backend, computation, *args, **kwargs)
-            entry["memory"] = _executable_memory(executable)
-            entry["status"] = "ok"
-            return executable
-        except BaseException:
-            entry["status"] = "error"
-            raise
-        finally:
-            entry["compile_or_load_seconds"] = time.perf_counter() - started
-            executables.append(entry)
 
     def phase(name, function):
         @wraps(function)
         def measured(*args, **kwargs):
-            entry = {"phase": name, "device_before": _device_memory()}
+            entry = {"phase": name, "device_before": _memory_snapshot()}
             started = time.perf_counter()
             try:
                 result = function(*args, **kwargs)
@@ -103,7 +59,7 @@ def profile_prediction(report: dict[str, Any]) -> Iterator[None]:
                 raise
             finally:
                 entry["seconds"] = time.perf_counter() - started
-                entry["device_after"] = _device_memory()
+                entry["device_after"] = _memory_snapshot()
                 # Linux ru_maxrss is a lifetime high-water mark, not a reset
                 # per-phase peak or the current resident set.
                 entry["process_peak_rss_kib"] = resource.getrusage(
@@ -114,9 +70,7 @@ def profile_prediction(report: dict[str, Any]) -> Iterator[None]:
         return measured
 
     with ExitStack() as stack:
-        stack.enter_context(
-            patch.object(compiler, "compile_or_get_cached", observed_compile)
-        )
+        stack.enter_context(observe_compilation(report))
         for name in (
             "_featurize",
             "_load_prepared_params",
@@ -134,6 +88,7 @@ def _sources() -> dict[str, str]:
     root = Path(__file__).resolve().parents[1]
     relative_paths = (
         "bench/opendde_profile.py",
+        "bench/compilation_profile.py",
         "src/foldjax/models/opendde/runner.py",
         "src/foldjax/models/opendde/models/model.py",
         "src/foldjax/models/opendde/models/structural_refiner.py",
@@ -169,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
             "phase times include compilation/cache loading and synchronization",
             "device peak and process RSS are process-lifetime high-water marks",
             "executable memory is XLA accounting, not total GPU/context memory",
+            "load residual includes deserialization/module loading and bookkeeping",
             "use a fresh process per size and a normal benchmark for latency",
         ],
     }
@@ -190,8 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         report["error_type"] = type(error).__name__
         raise
     finally:
-        args.profile_out.parent.mkdir(parents=True, exist_ok=True)
-        args.profile_out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        write_report(args.profile_out, report)
 
 
 if __name__ == "__main__":

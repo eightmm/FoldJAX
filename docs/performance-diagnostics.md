@@ -5,6 +5,11 @@ sampling settings, precision, padding and kernel choices in each measurement.
 Compare ordinary warmed prediction latency separately from synchronized
 diagnostics, which add overhead.
 
+The current [cluster measurement handoff](cluster-memory-handoff.md) covers
+4090 failures, OpenDDE's opt-in projection-row chunks, ESMFold2 solver accuracy
+and the remaining host staging. It names inputs/targets, controls and artifacts
+without submitting work or claiming unmeasured capacity improvements.
+
 ## Tokamax candidate cache scope
 
 Candidate benchmarking bypasses persistent compilation caching while model
@@ -27,6 +32,8 @@ This development tool runs the actual CLI prediction and records feature
 preparation, parameter loading, inference, scoring and writing separately. The
 report includes boundary device usage, process-lifetime device/RSS high-water
 marks, and each executable's compile-or-load time and XLA memory accounting.
+Cache reads separately record layered filesystem/trust time, decompression and
+a residual including deserialization/module loading and adapter bookkeeping.
 The native CLI applies allocator/runtime settings before profiling imports the
 model, so `--mem-fraction` and caller allocator environment values still apply.
 It writes the partial report if prediction fails. These are not per-phase
