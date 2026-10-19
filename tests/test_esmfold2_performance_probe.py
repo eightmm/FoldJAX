@@ -17,11 +17,33 @@ def test_experiments_change_only_their_own_variable(experiment):
     assert probe.arm_options(experiment, "baseline_repeat") == baseline
     candidate = probe.arm_options(experiment, "candidate")
     changed = {key for key in baseline if baseline[key] != candidate[key]}
-    expected = (
-        "rigid_align_backend" if experiment == "alignment" else "compile_esmc_blocks"
-    )
+    expected = {
+        "alignment": "rigid_align_backend",
+        "esmc": "compile_esmc_blocks",
+        "lm-storage": "lm_state_storage",
+    }[experiment]
     assert changed == {expected}
-    assert baseline == {"rigid_align_backend": "svd", "compile_esmc_blocks": False}
+    assert baseline == {
+        "rigid_align_backend": "svd",
+        "compile_esmc_blocks": False,
+        **({"lm_state_storage": "stack"} if experiment == "lm-storage" else {}),
+    }
+
+
+@pytest.mark.parametrize("arm", probe.ARMS)
+def test_storage_experiment_alone_names_the_native_storage_keyword(arm):
+    for experiment in probe.DEFAULT_EXPERIMENTS:
+        options = probe.arm_options(experiment, arm)
+        assert set(options) == {"rigid_align_backend", "compile_esmc_blocks"}
+        assert probe._language_model_keywords(options) == {}
+    options = probe.arm_options("lm-storage", arm)
+    expected = "buffer" if arm == "candidate" else "stack"
+    assert options == {
+        "rigid_align_backend": "svd",
+        "compile_esmc_blocks": False,
+        "lm_state_storage": expected,
+    }
+    assert probe._language_model_keywords(options) == {"state_storage": expected}
 
 
 def test_released_schedule_changes_only_sample_count_and_explicit_alignment():
@@ -132,8 +154,9 @@ def test_binding_rejects_changed_weights_and_sources(tmp_path):
         probe._verify_binding(binding, weights, source)
 
 
+@pytest.mark.parametrize("experiment", ["alignment", "lm-storage", "both"])
 def test_coordinator_prepares_tape_in_its_own_process_before_every_arm(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, experiment
 ):
     weights = tmp_path / "weights"
     (weights / "esmc").mkdir(parents=True)
@@ -168,17 +191,32 @@ def test_coordinator_prepares_tape_in_its_own_process_before_every_arm(
         input=jobs,
         case=None,
         output=tmp_path / "evidence",
-        experiment="alignment",
+        experiment=experiment,
         seed=101,
         smoke=False,
     )
     probe._coordinator(args)
-    assert len(calls) == 8
-    for offset in (0, 4):
+    experiments = probe.DEFAULT_EXPERIMENTS if experiment == "both" else (experiment,)
+    per_case = 1 + 3 * len(experiments)
+    assert len(calls) == 2 * per_case
+    for offset in (0, per_case):
         assert "--prepare-tape" in calls[offset][0]
         assert "--worker" not in calls[offset][0]
-        for command, kwargs in calls[offset + 1 : offset + 4]:
+        workers = calls[offset + 1 : offset + per_case]
+        assert [
+            (
+                command[command.index("--experiment") + 1],
+                command[command.index("--arm") + 1],
+            )
+            for command, _kwargs in workers
+        ] == [(selected, arm) for selected in experiments for arm in probe.ARMS]
+        for command, kwargs in workers:
             assert "--worker" in command and "--prepare-tape" not in command
             assert kwargs["check"] is True
     result = probe.json.loads((args.output / "report.json").read_text())
     assert result["full_model_admission"] is None
+    plan = probe.json.loads((args.output / "plan.json").read_text())
+    assert plan["experiments"] == list(experiments)
+    assert plan["samples"] == 5 and plan["smoke_only"] is False
+    if experiment == "both":
+        assert list(experiments) == ["alignment", "esmc"]

@@ -413,3 +413,24 @@ def test_lowering_refuses_legacy_prediction_wrapper(tmp_path, monkeypatch):
         ),
     ):
         backend.lower_cache_graphs(request)
+
+
+def test_lm_state_storage_preserves_native_structure_lowering_and_cache_key(
+    native_graph,
+):
+    model, _, _, _ = native_graph
+    features = build_features([("AGG", "A", 0, 0)])
+    embedding = jnp.ones((1, 3, 4), jnp.float32)
+    lowerings = [
+        inference.predict(
+            jax.random.key(7),
+            features,
+            model,
+            precomputed_lm_embedding=embedding,
+            lm_state_storage=storage,
+            _lower_only=True,
+        )
+        for storage in ("stack", "buffer")
+    ]
+    assert lowerings[0].as_text() == lowerings[1].as_text()
+    assert lowered_cache_key(lowerings[0]) == lowered_cache_key(lowerings[1])

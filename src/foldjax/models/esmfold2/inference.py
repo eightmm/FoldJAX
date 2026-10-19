@@ -75,6 +75,7 @@ LANGUAGE_MODEL_FEATURES = (
 # Explicit capability marker for backend wrappers. Merely having a helper with
 # a similar name is not enough to authorize the new predict keyword.
 COMPACT_LANGUAGE_MODEL_API = True
+LANGUAGE_MODEL_STATE_STORAGE_API = True
 
 # Managed callers may stage ESMC with only the structure checkpoint leaves
 # needed to make the compact embedding, release it, and then load the structure
@@ -204,8 +205,11 @@ def language_model_states(
     deterministic: bool = False,
     lm_mask_pct: float = LM_MASK_PCT,
     mask_key: jnp.ndarray | None = None,
+    state_storage: str = "stack",
 ) -> jnp.ndarray | None:
     """ESMC's stacked hidden states for these tokens, or `None` without it."""
+    if not isinstance(state_storage, str) or state_storage not in ("stack", "buffer"):
+        raise ValueError("state_storage must be 'stack' or 'buffer'")
     if model.esmc_parameters is None or model.esmc_settings is None:
         return None
     values = [np.asarray(features[name]) for name in LANGUAGE_MODEL_FEATURES]
@@ -224,6 +228,7 @@ def language_model_states(
             packed_length=packed_length,
             deterministic=deterministic,
             **masking,
+            **({"state_storage": state_storage} if state_storage != "stack" else {}),
         )
 
 
@@ -401,6 +406,7 @@ def language_model_embedding(
     deterministic: bool = False,
     lm_mask_pct: float = LM_MASK_PCT,
     mask_key: jnp.ndarray | None = None,
+    state_storage: str = "stack",
 ) -> jnp.ndarray | None:
     """Return the compact ESMC embedding for one input.
 
@@ -415,6 +421,7 @@ def language_model_embedding(
         deterministic=deterministic,
         lm_mask_pct=lm_mask_pct,
         mask_key=mask_key,
+        **({"state_storage": state_storage} if state_storage != "stack" else {}),
     )
     if hidden_states is None:
         return None
@@ -648,6 +655,7 @@ def predict(
     #: program. `None` leaves the settings' value, which is on.
     return_expected_errors: bool | None = None,
     language_model_tokens: int | None = None,
+    lm_state_storage: str = "stack",
     precomputed_lm_states: jnp.ndarray | None = None,
     precomputed_lm_embedding: jnp.ndarray | None = None,
     compile_it: bool = True,
@@ -702,6 +710,11 @@ def predict(
     cropped to the actual chain extent afterwards. Private ``_lower_only``
     keeps this preparation but returns the structure graph's lowering.
     """
+    if not isinstance(lm_state_storage, str) or lm_state_storage not in (
+        "stack",
+        "buffer",
+    ):
+        raise ValueError("lm_state_storage must be 'stack' or 'buffer'")
     if deterministic and not compile_it:
         # The eager path has no outer executable to carry the option: it
         # dispatches module-level jitted primitives that every run in the
@@ -793,6 +806,10 @@ def predict(
                         # returns after it, so the estimate still describes
                         # the program's maximum.
                         ("an inputs-only graph", stop_after_inputs),
+                        (
+                            "buffered language-model states (unmeasured memory)",
+                            lm_state_storage != "stack",
+                        ),
                         # The fused kernel replaces the packed SwiGLU, one of
                         # the arena's named tenants, and its effect on the
                         # peak is unmeasured in either direction. Read off
@@ -871,6 +888,11 @@ def predict(
             deterministic=deterministic,
             lm_mask_pct=resolved_lm_mask_pct,
             mask_key=lm_mask_key(key) if resolved_lm_mask_pct > 0.0 else None,
+            **(
+                {"state_storage": lm_state_storage}
+                if lm_state_storage != "stack"
+                else {}
+            ),
         )
     # Only the score capacity enters the graph; the exact extent is used to
     # crop the public result after dispatch, as in the other multichain ports.

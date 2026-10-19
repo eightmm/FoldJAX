@@ -189,6 +189,12 @@ def _checked_rigid_align_backend(value: object) -> str:
     return value
 
 
+def _checked_lm_state_storage(value: object) -> str:
+    if not isinstance(value, str) or value not in ("stack", "buffer"):
+        raise ValueError(f"lm_state_storage must be stack or buffer; got {value!r}")
+    return value
+
+
 #: The layouts `cp_layout` accepts, and the resolution of an omitted one.
 #: `foldjax.models._cp.resolve_cp_layout` is the authority for both, but it
 #: imports JAX, and this module keeps option planning free of the model
@@ -585,6 +591,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             # the neutral vocabulary could rename, and Boltz-2's is native too.
             "glu_backend",
             "rigid_align_backend",
+            # Changes only host-orchestrated ESMC state storage, preserving
+            # the structure graph's input ABI and layer-combination arithmetic.
+            "lm_state_storage",
             # Opt-in bfloat16 confidence re-embedding. Native for the same
             # reason `trunk_dtype` is: it names a region of this port's own
             # arrangement, and the neutral vocabulary has no word for it.
@@ -710,7 +719,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         self._lm_embedding: Any | None = None
         #: `(deterministic, content digest)`: the policy is part of the
         #: identity because it is part of how the value was computed.
-        self._lm_embedding_key: tuple[bool, str] | None = None
+        self._lm_embedding_key: tuple[Any, ...] | None = None
         self._managed_memory: ExitStack | None = None
         self._ccd_memory_leased = False
 
@@ -989,6 +998,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         packed_length: int | None,
         deterministic: bool = False,
         masking: Mapping[str, Any] | None = None,
+        state_storage: str = "stack",
     ) -> Any | None:
         """Return raw ESMC states for a legacy split inference wrapper."""
 
@@ -1008,6 +1018,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             packed_length=packed_length,
             **_reduction_policy(deterministic),
             **dict(masking or {}),
+            **({"state_storage": state_storage} if state_storage != "stack" else {}),
         )
 
     def _language_model_embedding(
@@ -1019,6 +1030,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         packed_length: int | None,
         deterministic: bool = False,
         masking: Mapping[str, Any] | None = None,
+        state_storage: str = "stack",
     ) -> Any | None:
         """Return one compact ESMC embedding, retaining at most one input.
 
@@ -1050,6 +1062,8 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                     inference.LANGUAGE_MODEL_FEATURES,
                 ),
             )
+            if state_storage != "stack":
+                key += (("state_storage", state_storage),)
             if masking:
                 import jax
 
@@ -1070,6 +1084,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                 packed_length=packed_length,
                 **_reduction_policy(deterministic),
                 **masking,
+                **(
+                    {"state_storage": state_storage} if state_storage != "stack" else {}
+                ),
             )
         # Drop the prior compact result before ESMC and the projection allocate
         # the next input. The transient raw stack is owned only by the helper;
@@ -1082,6 +1099,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             packed_length=packed_length,
             **_reduction_policy(deterministic),
             **masking,
+            **({"state_storage": state_storage} if state_storage != "stack" else {}),
         )
         self._lm_embedding = embedding
         self._lm_embedding_key = key
@@ -1171,6 +1189,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         )
         glu_backend = _checked_glu_backend(options.get("glu_backend", "xla"))
         _checked_rigid_align_backend(options.get("rigid_align_backend", "svd"))
+        _checked_lm_state_storage(options.get("lm_state_storage", "stack"))
         # Refused here as well as in the port: this runs before the 939 MB
         # structure checkpoint is opened, and the reason is the same one
         # Boltz-2 gives -- the pair state is placed by a sharding constraint
@@ -1270,6 +1289,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # importing JAX. This keeps configuration errors deterministic even
         # when the job path is also unavailable.
         managed_asset_profile(options)
+        lm_state_storage = _checked_lm_state_storage(
+            options.pop("lm_state_storage", "stack")
+        )
         without_lm = _strict_boolean(
             options.get("no_language_model", False), name="no_language_model"
         )
@@ -1290,6 +1312,12 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # import cost.
         inference = import_module("foldjax.models.esmfold2.inference")
         output_module = import_module("foldjax.models.esmfold2.output")
+        if lm_state_storage != "stack" and not getattr(
+            inference, "LANGUAGE_MODEL_STATE_STORAGE_API", False
+        ):
+            raise NotImplementedError(
+                "ESMFold2 wrapper does not support buffered language-model states"
+            )
         managed_output_kwargs = (
             {"return_auxiliary_outputs": False}
             if bool(getattr(inference, "MANAGED_AUXILIARY_OUTPUT_API", False))
@@ -1305,6 +1333,8 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         }
         if sequential_samples is not None:
             overrides["structure_sample_sequential"] = sequential_samples
+        if lm_state_storage != "stack":
+            overrides["lm_state_storage"] = lm_state_storage
         # The device is read here and not in the port, so a direct
         # `inference.predict` caller -- a tape replay, a parity run, a unit
         # test -- neither initializes a backend to be told nothing nor hears
@@ -1613,6 +1643,11 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                             model,
                             packed_length=lm_target,
                             deterministic=deterministic,
+                            **(
+                                {"state_storage": lm_state_storage}
+                                if lm_state_storage != "stack"
+                                else {}
+                            ),
                             **masking,
                         )
                     if (
@@ -1643,6 +1678,11 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                                 model,
                                 packed_length=lm_target,
                                 deterministic=deterministic,
+                                **(
+                                    {"state_storage": lm_state_storage}
+                                    if lm_state_storage != "stack"
+                                    else {}
+                                ),
                                 **masking,
                             )
                     if self._loaded_model_staged:
@@ -1662,6 +1702,11 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                             model,
                             packed_length=lm_target,
                             deterministic=deterministic,
+                            **(
+                                {"state_storage": lm_state_storage}
+                                if lm_state_storage != "stack"
+                                else {}
+                            ),
                             **masking,
                         )
                     }

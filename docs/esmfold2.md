@@ -38,6 +38,33 @@ An explicit `esmc_weights=/path/to/esmc` also selects the 1.36 GB managed
 profile: the released language-model branch still runs, but its weights come
 from that path rather than a redundant managed ESMC copy.
 
+## Buffered language-model states (experimental)
+
+`--option lm_state_storage=buffer` stores each ESMC layer directly into one
+donated buffer in structure-token layout. It avoids retaining the full layer
+list and then allocating a full stack, transpose and token gather. Every layer,
+the original dtype promotion, block arithmetic and final softmax-weighted layer
+combination remain unchanged. It does not enable compiled ESMC blocks or change
+SVD alignment. The default remains `stack` pending full-model GPU comparison.
+
+```bash
+foldjax predict --model esmfold2 --input job.yaml --padding \
+  --option lm_state_storage=buffer
+```
+
+In the reported 4090 GFP complex experiment, both SVD and Jacobi failed before
+alignment, while allocating the stacked language-model states. This explains
+why changing the solver did not raise that experiment's capacity. It does not
+identify the peak of every input or of the buffered candidate. CPU component
+tests preserve layer and compact-embedding bits; actual GPU peak, full-model
+accuracy and 1280/1536/2048-token success remain unmeasured.
+
+Storage is outside the structure JIT's ABI, so the option retains its existing
+compilation namespace and model executable key. The buffer-update helper has
+its own JAX key. Default executions, including buckets up to 1024, retain the
+old stack path. See the [measurement follow-up](cluster-memory-followup.md)
+for capacity tests and the separate five-sample `lm-storage` paired experiment.
+
 ## Denoising the samples one at a time
 
 `--option structure_sample_sequential=true` runs the diffusion denoiser once

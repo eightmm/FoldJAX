@@ -12,6 +12,8 @@ Examples::
         --experiment alignment --output /scratch/esm-alignment
     python -m bench.esmfold2_performance_probe --case L250_3dha L500_4rek \
         --experiment esmc --output /scratch/esm-esmc
+    python -m bench.esmfold2_performance_probe --input small.json large.yaml \
+        --experiment lm-storage --output /scratch/esm-lm-storage
 
 ``--smoke`` explicitly reduces recycles/steps and is excluded from admission.
 This measures the common feature/compact-LM/model-core boundary, not writers or
@@ -42,18 +44,32 @@ from bench.esmfold2_tape import _model_features, _npz, _save_npz, _save_outputs,
 
 SAMPLES = 5
 ARMS = ("baseline", "candidate", "baseline_repeat")
-EXPERIMENTS = ("alignment", "esmc")
+DEFAULT_EXPERIMENTS = ("alignment", "esmc")
+EXPERIMENTS = (*DEFAULT_EXPERIMENTS, "lm-storage")
 
 
 def arm_options(experiment: str, arm: str) -> dict[str, object]:
     if experiment not in EXPERIMENTS or arm not in ARMS:
         raise ValueError("unknown experiment or arm")
-    return {
+    options = {
         "rigid_align_backend": "jacobi"
         if experiment == "alignment" and arm == "candidate"
         else "svd",
         "compile_esmc_blocks": experiment == "esmc" and arm == "candidate",
     }
+    if experiment == "lm-storage":
+        options["lm_state_storage"] = "buffer" if arm == "candidate" else "stack"
+    return options
+
+
+def _language_model_keywords(options):
+    # Keep the historical call form for both original experiments. Storage is
+    # a separate experiment; it never toggles compiled blocks or alignment.
+    return (
+        {"state_storage": options["lm_state_storage"]}
+        if "lm_state_storage" in options
+        else {}
+    )
 
 
 def diffusion_tape(key, atom_mask, settings):
@@ -282,6 +298,12 @@ def _worker(args) -> None:
             "structure_model.predict; managed output projection"
         ),
     }
+    if args.experiment == "lm-storage":
+        report["lm_state_storage_scope"] = (
+            "all native layers and stack dtype promotion; unchanged block "
+            "arithmetic and original final LM projection/layer reduction; "
+            "storage implementation bound by esmc.py and inference.py source hashes"
+        )
 
     def phase(name):
         _write_json(destination / "phase.json", {"phase": name, "report": report})
@@ -305,13 +327,28 @@ def _worker(args) -> None:
         phase("language_model_cold_and_warm")
         with patch.object(esmc, "encode", selected_encode):
             first, report["lm_cold_seconds"] = _timed(
-                partial(inference.language_model_embedding, features, staged)
+                partial(
+                    inference.language_model_embedding,
+                    features,
+                    staged,
+                    **_language_model_keywords(options),
+                )
             )
             embedding, report["lm_warm_seconds"] = _timed(
-                partial(inference.language_model_embedding, features, staged)
+                partial(
+                    inference.language_model_embedding,
+                    features,
+                    staged,
+                    **_language_model_keywords(options),
+                )
             )
         if embedding is None:
             raise RuntimeError("a real ESM-C compact embedding is required")
+        if args.experiment == "lm-storage":
+            report["lm_embedding_signature"] = {
+                "shape": list(embedding.shape),
+                "dtype": str(embedding.dtype),
+            }
         report["lm_cold_warm_max_abs_error"] = float(
             np.max(
                 np.abs(
@@ -508,7 +545,9 @@ def _coordinator(args) -> None:
         raise ValueError("two distinct input sizes are required")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    experiments = EXPERIMENTS if args.experiment == "both" else (args.experiment,)
+    experiments = (
+        DEFAULT_EXPERIMENTS if args.experiment == "both" else (args.experiment,)
+    )
     esmc_root = inference.esmc_directory(weights)
     checkpoint_paths = [
         weights / "config.json",
@@ -659,7 +698,12 @@ def main():
     selection.add_argument("--case", nargs=2)
     parser.add_argument("--weights", type=Path)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--experiment", choices=(*EXPERIMENTS, "both"), default="both")
+    parser.add_argument(
+        "--experiment",
+        choices=(*EXPERIMENTS, "both"),
+        default="both",
+        help="both runs alignment and esmc; request lm-storage separately",
+    )
     parser.add_argument("--seed", type=int, default=101)
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)

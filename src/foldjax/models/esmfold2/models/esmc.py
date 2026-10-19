@@ -23,9 +23,10 @@ Four details are not the defaults a reader would assume:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import functools
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import jax
 import jax.numpy as jnp
@@ -310,7 +311,8 @@ def encode(
     settings: ESMCSettings,
     compile_blocks: bool | None = None,
     deterministic: bool = False,
-) -> jnp.ndarray:
+    state_sink: Callable[[int, jnp.ndarray], None] | None = None,
+) -> jnp.ndarray | None:
     """Every hidden state, stacked `[n_layers + 1, B, L, d_model]`.
 
     Entry `i < n_layers` is the *input* to block `i` -- so entry 0 is the token
@@ -324,6 +326,10 @@ def encode(
     that can carry them. Compiled and eager are not bitwise-equal here -- on
     XLA CPU a lone `layer_norm` already moves by 3e-8 between the two -- so
     which one runs is a property worth being explicit about.
+
+    A host-side `state_sink` consumes the same states in layer order instead
+    of retaining and stacking them. It must copy each state before returning
+    if it needs it later. This changes storage only, not block dispatch.
     """
     if compile_blocks is None:
         compile_blocks = deterministic
@@ -340,7 +346,9 @@ def encode(
     scale = settings.residual_scale
 
     run_block = _block_pool(deterministic) if compile_blocks else block
-    collected = [x]
+    collected = [x] if state_sink is None else None
+    if state_sink is not None:
+        state_sink(0, x)
     for index in range(settings.n_layers):
         name = f"{dot}transformer.blocks.{index}"
         x = run_block(
@@ -354,15 +362,98 @@ def encode(
             autocast_bfloat16=settings.autocast_bfloat16,
         )
         if index + 1 < settings.n_layers:
-            collected.append(x)
-    collected.append(
-        _norm(
-            x,
-            params[f"{dot}transformer.norm.weight"],
-            autocast_bfloat16=settings.autocast_bfloat16,
-        )
+            if state_sink is None:
+                collected.append(x)
+            else:
+                state_sink(index + 1, x)
+    final = _norm(
+        x,
+        params[f"{dot}transformer.norm.weight"],
+        autocast_bfloat16=settings.autocast_bfloat16,
     )
+    if state_sink is not None:
+        state_sink(max(1, settings.n_layers), final)
+        return None
+    collected.append(final)
     return jnp.stack(collected, axis=0)
+
+
+@functools.partial(jax.jit, donate_argnums=(0,))
+def _store_token_state(
+    destination: jnp.ndarray,
+    state: jnp.ndarray,
+    gather: jnp.ndarray,
+    keep: jnp.ndarray,
+    layer_index: jnp.ndarray,
+) -> jnp.ndarray:
+    rows = jnp.take_along_axis(state, gather[..., None], axis=1)
+    rows = jnp.where(keep[..., None], rows, 0.0)
+    return jax.lax.dynamic_update_slice(
+        destination,
+        rows.astype(destination.dtype)[:, :, None, :],
+        (0, 0, layer_index, 0),
+    )
+
+
+def _hidden_state_storage_dtype(
+    input_ids: jnp.ndarray,
+    sequence_id: jnp.ndarray,
+    params: Params,
+    prefix: str,
+    settings: ESMCSettings,
+) -> jnp.dtype:
+    """The stack's promotion, including its FP32 native-autocast final norm."""
+    dot = f"{prefix}." if prefix else ""
+    embedding_dtype = params[f"{dot}embed.weight"].dtype
+    if settings.autocast_bfloat16:
+        return jnp.result_type(embedding_dtype, jnp.float32)
+    dtypes = {value.dtype for value in params.values()}
+    if len(dtypes) == 1:
+        return jnp.dtype(embedding_dtype)
+
+    # Mixed checkpoints are unusual, but guessing from embedding storage can
+    # silently narrow a later state. Abstract evaluation follows the same
+    # operators without allocating or stacking any language-model states.
+    state_dtypes = []
+
+    def abstract_encode(ids, sequences, parameters):
+        return encode(
+            ids,
+            sequences,
+            parameters,
+            prefix,
+            settings=settings,
+            state_sink=lambda _index, state: state_dtypes.append(state.dtype),
+        )
+
+    jax.eval_shape(abstract_encode, input_ids, sequence_id, params)
+    return jnp.result_type(*state_dtypes)
+
+
+class _TokenStateStorage:
+    """Own one donated token-layout destination, never a list of LM layers."""
+
+    def __init__(self, expand_map, n_layers, dtype):
+        self.gather = jnp.asarray(np.maximum(expand_map, 0))
+        self.keep = jnp.asarray(expand_map >= 0)
+        self.shape = (*expand_map.shape, max(2, n_layers + 1))
+        self.dtype = dtype
+        self.destination = None
+
+    def __call__(self, index, state):
+        if self.destination is None:
+            self.destination = jnp.zeros(
+                (*self.shape, state.shape[-1]),
+                self.dtype,
+                device=state.sharding,
+            )
+        self.destination = _store_token_state(
+            self.destination,
+            state,
+            self.gather,
+            self.keep,
+            jnp.asarray(index, jnp.int32),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -504,6 +595,7 @@ def lm_hidden_states(
     deterministic: bool = False,
     lm_mask_pct: float = 0.0,
     mask_key: jnp.ndarray | None = None,
+    state_storage: Literal["stack", "buffer"] = "stack",
 ) -> jnp.ndarray:
     """`compute_lm_hidden_states`: pack, run ESMC, scatter back.
 
@@ -512,7 +604,14 @@ def lm_hidden_states(
     (`modeling_esmfold2_common.py:2316-2323`). Upstream draws from torch's
     global RNG; here the draw comes off ``mask_key``, over the natural packed
     length only, so serving padding of the LM axis cannot move it.
+
+    `state_storage="buffer"` gathers each layer into a donated token-layout
+    buffer. The default retains the historical stack/transpose/gather path.
+    Both retain every hidden state and its original stack promotion; neither
+    changes the downstream layer combination or enables compiled blocks.
     """
+    if state_storage not in {"stack", "buffer"}:
+        raise ValueError("state_storage must be 'stack' or 'buffer'")
     lm_input_ids, sequence_id, expand_map = pack_lm_inputs(
         input_ids,
         asym_id,
@@ -532,6 +631,20 @@ def lm_hidden_states(
         lm_input_ids = np.where(
             (draw < lm_mask_pct) & ~special, MASK_TOKEN_ID, lm_input_ids
         ).astype(lm_input_ids.dtype)
+    if state_storage == "buffer":
+        ids, sequences = jnp.asarray(lm_input_ids), jnp.asarray(sequence_id)
+        dtype = _hidden_state_storage_dtype(ids, sequences, params, prefix, settings)
+        storage = _TokenStateStorage(expand_map, settings.n_layers, dtype)
+        encode(
+            ids,
+            sequences,
+            params,
+            prefix,
+            settings=settings,
+            deterministic=deterministic,
+            state_sink=storage,
+        )
+        return storage.destination
     hidden = encode(
         jnp.asarray(lm_input_ids),
         jnp.asarray(sequence_id),
