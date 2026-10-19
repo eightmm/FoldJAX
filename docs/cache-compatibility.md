@@ -1,5 +1,22 @@
 # Compilation cache compatibility
 
+## 2026-10-19: buffered ESMFold2 states and fresh AF3 warm verification
+
+No default model namespace revision changes. The experimental ESMFold2
+`lm_state_storage=buffer` option changes host-orchestrated state storage while
+retaining every layer, dtype and the original layer combination. Both storage
+choices feed the same structure JIT signature/key; buffer-update helpers have
+their own executable keys. Omitted/default requests retain the original stack
+path, including already warmed buckets up to 1024. GPU capacity and full-model
+accuracy admission for the candidate remain pending.
+
+AF3 process-isolated warming separates preparation from execution verification
+without editing the carried runner or source hashed by its tuning store. The
+prepared model executable and Tokamax store retain their existing identities.
+No rewarm of working default caches is requested for this lifecycle change.
+See [cache warming](cache-warm.md) and the
+[GPU measurement follow-up](cluster-memory-followup.md).
+
 ## 2026-10-19: experimental OpenDDE structural projection row chunks
 
 **OpenDDE rewarm required only for the new opt-in profile.**

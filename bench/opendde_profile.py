@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import resource
+import sys
 import time
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
@@ -26,6 +28,7 @@ from unittest.mock import patch
 
 from bench.compilation_profile import device_memory as _device_memory
 from bench.compilation_profile import observe_compilation, write_report
+from bench.prediction_profile import _device, _memory
 
 
 def _memory_snapshot():
@@ -89,6 +92,7 @@ def _sources() -> dict[str, str]:
     relative_paths = (
         "bench/opendde_profile.py",
         "bench/compilation_profile.py",
+        "bench/prediction_profile.py",
         "src/foldjax/models/opendde/runner.py",
         "src/foldjax/models/opendde/models/model.py",
         "src/foldjax/models/opendde/models/structural_refiner.py",
@@ -119,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     report: dict[str, Any] = {
         "schema": 1,
         "measurement_kind": "synchronized_diagnostic",
+        "prediction_arguments": prediction,
         "source_files_sha256": _sources(),
         "notes": [
             "phase times include compilation/cache loading and synchronization",
@@ -135,7 +140,38 @@ def main(argv: list[str] | None = None) -> int:
         # Runner imports can initialize CUDA. Let the native CLI configure its
         # allocator and runtime flags before the profiler imports the model.
         with profile_prediction(report):
-            return original_predictions(*args, **kwargs)
+            from foldjax import oom
+
+            request = args[0] if args else kwargs.get("request")
+            report["device"] = _device(request)
+            report["effective_mem_fraction"] = oom.mem_fraction()
+            report["environment"] = {
+                name: os.environ.get(name)
+                for name in (
+                    "CUDA_LAUNCH_BLOCKING",
+                    "CUDA_VISIBLE_DEVICES",
+                    "JAX_PLATFORMS",
+                    "JAX_ENABLE_COMPILATION_CACHE",
+                    "XLA_CLIENT_MEM_FRACTION",
+                    "XLA_PYTHON_CLIENT_MEM_FRACTION",
+                    "XLA_FLAGS",
+                    "FOLDJAX_PRIVATE_COMPILE_CACHE",
+                )
+            }
+            report["device_before"] = _memory(request)
+            try:
+                return original_predictions(*args, **kwargs)
+            finally:
+                report["device_after"] = _memory(request)
+                for name, module_name in (
+                    ("compilation_cache", "foldjax.cache"),
+                    ("kernel_tuning", "foldjax.backends._tokamax_autotune"),
+                ):
+                    module = sys.modules.get(module_name)
+                    try:
+                        report[name] = module.recorded() if module is not None else None
+                    except Exception as error:
+                        report[name] = {"unavailable": type(error).__name__}
 
     try:
         with patch.object(cli, "_run_predictions", observed_predictions):

@@ -10,6 +10,14 @@ The current [cluster measurement handoff](cluster-memory-handoff.md) covers
 and the remaining host staging. It names inputs/targets, controls and artifacts
 without submitting work or claiming unmeasured capacity improvements.
 
+The [measurement follow-up](cluster-memory-followup.md) incorporates the
+reported e29548cf cluster results. OpenDDE row chunks changed the reported
+768-token temporary arena by only about 2.5%, without a latency benefit, and
+remain experimental. Its 1024-token failure was the entire 19.42 GiB arena,
+not the earlier nonfatal 6.02 GiB compiler warning. For the measured padded
+ESMFold2 case, both solvers failed in LM state stacking before alignment; the
+new buffered-storage candidate targets that copy rather than changing SVD.
+
 ## Tokamax candidate cache scope
 
 Candidate benchmarking bypasses persistent compilation caching while model
