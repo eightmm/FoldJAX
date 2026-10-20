@@ -13,6 +13,7 @@ resolved for you. See ``foldjax.assets`` for the weight store and
 ``foldjax.paths`` for where everything lives.
 """
 
+from foldjax import _jax_source_paths as _jax_source_paths
 from foldjax import assets, paths, progress
 from foldjax.alignment import (
     AlignmentReport,

@@ -16,6 +16,25 @@ Run `--apply` as the owner or administrator. The parent of `FOLDJAX_HOME` must
 already exist. The command visits only managed paths; it does not download
 weights, build a runtime, compile kernels, or modify unrelated files in the home.
 
+Prepare AlphaFold 3's generated runtime as the administrator, using the same
+Python installation that users will run, before making the store read-only:
+
+```bash
+export FOLDJAX_HOME=/path/to/shared/foldjax
+/path/to/release/.venv/bin/python -m foldjax runtime prepare --model alphafold3
+foldjax setup --shared --apply
+```
+
+This explicit command may compile the ABI-specific extension and download its
+build dependencies and chemistry data; it does not download model parameters.
+The runtime identity depends on the carried source, Python/platform ABI, and
+NumPy version. Equivalent editable and wheel installations select the same
+runtime. Both the runtime directory and `.build.lock` must be writable during
+preparation; NFSv4 requires a writable handle for its exclusive build lock.
+A complete runtime needs only read access during prediction. If it is missing
+and the account cannot prepare it, the error names the required runtime path
+and the administrator command for that Python installation.
+
 | Managed path | Directories | Files |
 | --- | --- | --- |
 | Home, `weights/`, `runtime/`, `assets/`, `downloads/`, `compile/` | 0755 | 0644 |
@@ -38,6 +57,22 @@ New ordinary shared compilation namespaces are created as 0755 under umask
 After warming, a warning identifies a shared directory or entry whose mode
 prevents general read access. Existing permissions are preserved until their
 owner or administrator repairs them with `setup --shared --apply`.
+
+Editable checkouts and fixed wheel installations use the same default source
+path canonicalization, exactly `.*/(site-packages|dist-packages|src)/`, before
+JAX lowering. This also normalizes paths embedded inside Pallas-Triton kernel
+IR. Keep the same value when warming and predicting:
+
+```bash
+export JAX_HLO_SOURCE_FILE_CANONICALIZATION_REGEX='.*/(site-packages|dist-packages|src)/'
+```
+
+Setting this variable is optional with current FoldJAX. Explicit environment
+values and existing non-`None` `jax.config` values take precedence, including
+an empty string to disable rewriting. `None` is treated as JAX's unset default.
+Old noncanonicalized executables may need warming again; see
+[cache compatibility](cache-compatibility.md). Matching package contents,
+weight location, concrete shapes, device/runtime and options remain necessary.
 
 Predictions read executable entries from that trusted shared namespace first,
 then from the same model/weights/runtime namespace in the user's private cache.

@@ -98,6 +98,7 @@ into a failure.
 | `XLA_CLIENT_MEM_FRACTION`, `XLA_PYTHON_CLIENT_MEM_FRACTION` | `foldjax predict` uses the [allocator policy](#allocator-policy) when neither is set; an explicit `--mem-fraction` replaces whichever spelling is present. FoldJAX never adds a second spelling beside yours |
 | `XLA_FLAGS` | under context parallelism FoldJAX adds the collective timeout (`xla_gpu_nccl_termination_timeout_seconds`) unless it is already there |
 | `JAX_PLATFORMS` | `cpu` keeps every model on the CPU (slow, but complete) |
+| `JAX_HLO_SOURCE_FILE_CANONICALIZATION_REGEX` | defaults to the exact [shared source-path regex](shared-install.md) before lowering, so editable and wheel prefixes inside Pallas-Triton kernels match. Explicit environment or non-`None` config values win; an empty string disables rewriting |
 | `SLURM_ARRAY_TASK_ID`, `SLURM_ARRAY_TASK_MIN`, `SLURM_ARRAY_TASK_COUNT` | read by `--shard auto` ([batches and Slurm](tutorials/batch-slurm.md)) |
 | `UV_NO_DEFAULT_GROUPS` | not FoldJAX's, but `1` is how a CPU-only machine keeps `uv run` from re-installing the CUDA group ([install.md](install.md)) |
 

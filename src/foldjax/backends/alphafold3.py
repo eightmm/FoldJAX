@@ -173,7 +173,9 @@ def _asset_content_records(
                     for child in path.rglob("*")
                     if child.is_file()
                     and "__pycache__" not in child.relative_to(path).parts
-                    and child.suffix not in {".pyc", ".pyo"}
+                    # Legacy in-tree cpp extensions and generated CCD pickles
+                    # are not build inputs and are absent from clean wheels.
+                    and child.suffix not in {".pyc", ".pyo", ".pickle", ".so"}
                 ),
                 key=lambda child: child.relative_to(path).as_posix(),
             )

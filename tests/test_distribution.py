@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import errno
+import hashlib
 import os
 import shutil
 import subprocess
@@ -372,7 +374,9 @@ def _extract_wheel_safely(archive: zipfile.ZipFile, destination: Path) -> None:
             shutil.copyfileobj(source, output)
 
 
-def test_wheel_carries_alphafold3_first_use_build_inputs(tmp_path: Path) -> None:
+def test_wheel_carries_alphafold3_first_use_build_inputs(
+    tmp_path: Path, monkeypatch
+) -> None:
     """A clean wheel must be able to run ``build.ensure_extensions``.
 
     The checkout may already contain an ignored ``cpp*.so`` and generated CCD
@@ -415,7 +419,7 @@ def test_wheel_carries_alphafold3_first_use_build_inputs(tmp_path: Path) -> None
         _wheel_path(path)
         for path in inputs
         if path.is_relative_to(AF3_UPSTREAM)
-        and path.suffix in {".cc", ".h", ".py", ".pyi"}
+        and path.suffix in {".cc", ".h", ".py", ".pyi", ".sh"}
     )
     required.add("foldjax/redaction.py")
     # The published output contract is package data, not a source file.
@@ -462,6 +466,38 @@ def test_wheel_carries_alphafold3_first_use_build_inputs(tmp_path: Path) -> None
     installed = tmp_path / "installed"
     with zipfile.ZipFile(wheels[0]) as archive:
         _extract_wheel_safely(archive, installed)
+    from foldjax.backends import alphafold3 as backend
+    from foldjax.models.alphafold3 import build
+
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    (weights / "af3.bin").write_bytes(b"same tiny parameter payload")
+
+    def runtime_identity(upstream: Path) -> tuple[list[tuple[str, str]], str, object]:
+        with monkeypatch.context() as context:
+            context.setattr(build, "_UPSTREAM", upstream)
+            context.setattr(build, "_PACKAGE", upstream / "alphafold3")
+            context.setattr(
+                backend,
+                "VENDORED_RUNNER",
+                upstream.parents[2] / "backends/_alphafold3_upstream/run_alphafold.py",
+            )
+            contents = []
+            for path in build._fingerprint_files():
+                with path.open("rb") as handle:
+                    digest = hashlib.file_digest(handle, "sha256").hexdigest()
+                contents.append((path.relative_to(upstream).as_posix(), digest))
+            tuning_source = backend._managed_content_snapshot(weights)
+            assert tuning_source is not None
+            return contents, build.runtime_key(), tuning_source
+
+    source_identity = runtime_identity(source_tree / AF3_UPSTREAM)
+    installed_identity = runtime_identity(
+        installed / "foldjax/models/alphafold3/_upstream"
+    )
+    assert source_identity == installed_identity, (
+        "editable and wheel installs must select identical runtime and tuning sources"
+    )
     assert _forbidden_python_imports(installed / "foldjax") == []
     probe = subprocess.run(
         [
@@ -855,7 +891,7 @@ def test_alphafold3_another_accounts_abandoned_build_is_skipped(
     assert build.compiled_module() is not None
 
 
-def test_alphafold3_build_lock_another_account_made_still_serializes(
+def test_alphafold3_build_lock_uses_a_writable_handle_and_serializes(
     tmp_path: Path, monkeypatch
 ) -> None:
     import fcntl
@@ -866,7 +902,36 @@ def test_alphafold3_build_lock_another_account_made_still_serializes(
     lock = build.runtime_base() / ".build.lock"
     lock.parent.mkdir(parents=True)
     lock.write_bytes(b"")
-    lock.chmod(0o444)
+    lock.chmod(0o644)
+    original_open = os.open
+    modes = []
+
+    def record_open(path, flags, *args, **kwargs):
+        if Path(path) == lock:
+            modes.append(flags & os.O_ACCMODE)
+        return original_open(path, flags, *args, **kwargs)
+
+    def child_probe(state):
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import fcntl,sys\n"
+                "with open(sys.argv[1], 'r+b') as handle:\n"
+                " try: fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+                " except BlockingIOError:\n"
+                "  sys.exit(0 if sys.argv[2] == 'held' else 1)\n"
+                " sys.exit(0 if sys.argv[2] == 'free' else 1)\n",
+                str(lock),
+                state,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+
+    monkeypatch.setattr(os, "open", record_open)
 
     with build._runtime_lock():
         fd = os.open(lock, os.O_RDONLY)
@@ -875,6 +940,93 @@ def test_alphafold3_build_lock_another_account_made_still_serializes(
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         finally:
             os.close(fd)
+        child_probe("held")
+    assert modes == [os.O_RDWR, os.O_RDONLY]
+    child_probe("free")
+
+
+def test_alphafold3_unprepared_read_only_base_reports_admin_command_before_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from foldjax import _fsutil
+    from foldjax.models.alphafold3 import build
+
+    _fake_alphafold3_source(tmp_path, monkeypatch)
+    monkeypatch.setattr(build, "runtime_blocker", lambda: None)
+    base = build.runtime_base()
+    base.mkdir(parents=True)
+    original_access = os.access
+    monkeypatch.setattr(
+        os,
+        "access",
+        lambda path, mode: (
+            False
+            if Path(path) == base and mode & os.W_OK
+            else original_access(path, mode)
+        ),
+    )
+    monkeypatch.setattr(
+        _fsutil,
+        "exclusive_file_lock",
+        lambda *_args, **_kwargs: pytest.fail("read-only store reached flock"),
+    )
+    with pytest.raises(
+        RuntimeError, match="administrator.*runtime.*prepare"
+    ) as failure:
+        build.ensure_ready()
+    assert str(build.runtime_root()) in str(failure.value)
+    assert "FOLDJAX_HOME=" in str(failure.value)
+    assert sys.executable in str(failure.value)
+    assert not (base / ".build.lock").exists()
+
+
+@pytest.mark.parametrize("error_number", [errno.EBADF, errno.EACCES, errno.EROFS])
+def test_alphafold3_build_lock_failure_reports_admin_command(
+    tmp_path: Path, monkeypatch, error_number
+) -> None:
+    from contextlib import contextmanager
+
+    from foldjax import _fsutil
+    from foldjax.models.alphafold3 import build
+
+    _fake_alphafold3_source(tmp_path, monkeypatch)
+    monkeypatch.setattr(build, "runtime_blocker", lambda: None)
+
+    @contextmanager
+    def refused_lock(path, *, writable=False):
+        assert path == build.runtime_base() / ".build.lock"
+        assert writable
+        raise OSError(error_number, "shared runtime lock refused")
+        yield  # pragma: no cover - contextmanager protocol
+
+    monkeypatch.setattr(_fsutil, "exclusive_file_lock", refused_lock)
+    with pytest.raises(
+        RuntimeError, match="administrator.*runtime.*prepare"
+    ) as failure:
+        build.ensure_ready()
+    assert str(build.runtime_root()) in str(failure.value)
+    assert isinstance(failure.value.__cause__, OSError)
+    assert failure.value.__cause__.errno == error_number
+
+
+def test_alphafold3_prepared_runtime_never_needs_a_build_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from foldjax.models.alphafold3 import build
+
+    _fake_alphafold3_source(tmp_path, monkeypatch)
+    extension = build.runtime_package() / f"cpp{build._extension_suffix()}"
+    monkeypatch.setattr(build, "runtime_blocker", lambda: None)
+    monkeypatch.setattr(build, "_runtime_is_complete", lambda: True)
+    monkeypatch.setattr(build, "_runtime_extensions_complete", lambda: True)
+    monkeypatch.setattr(build, "_extension", lambda _package: extension)
+    monkeypatch.setattr(
+        build,
+        "_runtime_lock",
+        lambda: pytest.fail("prepared read-only runtime took a build lock"),
+    )
+    build.ensure_ready()
+    assert build.ensure_extensions() == extension
 
 
 def test_alphafold3_interrupted_ccd_generation_repairs_on_retry(

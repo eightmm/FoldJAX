@@ -15,6 +15,9 @@ def install(device: Any | None = None) -> int:
     import jax
     from jax._src.pallas.triton import gpu_info
 
+    from foldjax import _jax_cache_diagnostics
+
+    _jax_cache_diagnostics.install()
     devices = list(jax.local_devices())
     chosen = device if device is not None else jax.config.jax_default_device
     if isinstance(chosen, str):

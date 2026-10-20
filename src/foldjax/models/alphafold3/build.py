@@ -14,17 +14,19 @@ repaired rather than mistaken for a usable installation.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
 import sysconfig
 import tempfile
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from threading import RLock
 
@@ -335,9 +337,58 @@ def _runtime_lock() -> Iterator[None]:
         from foldjax._fsutil import exclusive_file_lock
 
         base = runtime_base()
-        base.mkdir(parents=True, exist_ok=True)
-        with exclusive_file_lock(base / ".build.lock"):
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            if not os.access(base, os.W_OK | os.X_OK):
+                raise PermissionError(f"runtime directory is not writable: {base}")
+        except OSError as error:
+            if error.errno in (None, errno.EACCES, errno.EPERM, errno.EROFS):
+                raise _preparation_unavailable(error) from error
+            raise
+        with ExitStack() as stack:
+            try:
+                stack.enter_context(
+                    exclusive_file_lock(base / ".build.lock", writable=True)
+                )
+            except OSError as error:
+                # NFSv4 may reject an exclusive flock on a read-only handle
+                # with EBADF, unlike local Linux filesystems. Never proceed
+                # with an unlocked build or mistake this for a model failure.
+                if error.errno in (
+                    errno.EACCES,
+                    errno.EPERM,
+                    errno.EROFS,
+                    errno.EBADF,
+                ):
+                    raise _preparation_unavailable(error) from error
+                raise
             yield
+
+
+def _preparation_unavailable(error: OSError) -> RuntimeError:
+    from foldjax.paths import foldjax_home
+
+    command = shlex.join(
+        [sys.executable, "-m", "foldjax", "runtime", "prepare", "--model", "alphafold3"]
+    )
+    return RuntimeError(
+        f"the AlphaFold 3 runtime for this installation is not prepared at "
+        f"{runtime_root()}. This account cannot prepare it ({error}). "
+        f"Ask the store administrator to run `FOLDJAX_HOME="
+        f"{shlex.quote(str(foldjax_home()))} {command}` using this installation "
+        "with write access to the runtime directory and .build.lock. "
+        "A fully prepared runtime can be used read-only."
+    )
+
+
+@contextmanager
+def _preparation_permissions() -> Iterator[None]:
+    try:
+        yield
+    except OSError as error:
+        if error.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
+            raise _preparation_unavailable(error) from error
+        raise
 
 
 def _copy_source_tree(destination: Path) -> Path:
@@ -625,7 +676,11 @@ def runtime_artifact_paths() -> dict[str, Path]:
 
 def ensure_extensions() -> Path:
     """Build and atomically publish ``alphafold3.cpp`` and libcifpp data."""
-    with _runtime_lock():
+    if _runtime_extensions_complete():
+        extension = _extension(runtime_package())
+        assert extension is not None
+        return extension
+    with _preparation_permissions(), _runtime_lock():
         return _ensure_extensions_locked()
 
 
@@ -684,7 +739,7 @@ def ensure_ready() -> None:
         raise RuntimeError(blocker)
     if is_ready():
         return
-    with _runtime_lock():
+    with _preparation_permissions(), _runtime_lock():
         blocker = runtime_blocker()
         if blocker is not None:
             raise RuntimeError(blocker)

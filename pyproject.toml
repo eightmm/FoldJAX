@@ -235,6 +235,9 @@ where = ["src"]
     "alphafold3/**/*.cc",
     "alphafold3/**/*.h",
     "alphafold3/**/*.pyi",
+    # These carried scripts also contribute to the source/runtime identity.
+    # Omitting them gives editable and wheel installs different cache keys.
+    "alphafold3/scripts/*.sh",
 ]
 # The vendored upstream data pipeline reads its own reference chemistry from
 # disk: per-residue SDF conformers, the canonical protein/RNA tables, and the

@@ -94,16 +94,19 @@ def _current_umask() -> int:
 
 
 @contextmanager
-def exclusive_file_lock(path: Path) -> Iterator[bool]:
+def exclusive_file_lock(path: Path, *, writable: bool = False) -> Iterator[bool]:
     """Hold an exclusive ``flock`` on ``path``; yields whether one was taken.
 
-    The file is created with the umask's mode and opened read-only: ``flock``
-    needs no write access, so a lock another member of a shared store's group
-    created (``0644`` under a 0022 umask) still serializes this process with
-    theirs, where opening it for writing failed with ``EACCES``. ``False``
-    only where the platform has no ``flock``.
+    By default the file is created with the umask's mode and opened read-only:
+    local ``flock`` needs no write access, so a lock another group member
+    created (``0644`` under a 0022 umask) still serializes this process where
+    opening it for writing would fail with ``EACCES``. ``False``
+    only where the platform has no ``flock``. Runtime builders pass
+    ``writable=True`` because NFSv4 requires a writable handle for an exclusive
+    lock; readers retain the local-filesystem-compatible read-only handle.
     """
-    fd = os.open(path, os.O_RDONLY | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o666)
+    access = os.O_RDWR if writable else os.O_RDONLY
+    fd = os.open(path, access | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o666)
     try:
         try:
             import fcntl

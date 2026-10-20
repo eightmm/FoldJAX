@@ -1,5 +1,34 @@
 # Compilation cache compatibility
 
+## 2026-10-20: editable and fixed-install source paths
+
+FoldJAX defaults `jax_hlo_source_file_canonicalization_regex` to exactly
+`.*/(site-packages|dist-packages|src)/` before lowering. This removes installation
+prefixes inside serialized Pallas-Triton kernels, where ordinary HLO metadata
+stripping does not reach. An explicit environment value or non-`None` config
+value, including the empty string, takes precedence. Model namespace revisions
+are unchanged; the embedded kernel bytes determine the executable key.
+
+**Rewarm affected Pallas-Triton executables that were built without this
+canonicalization**, including the reported AF3, Boltz-2, Protenix, OpenFold3
+and ESMFold2 paths. Entries already built with this exact regex remain eligible
+for reuse; do not delete working caches just because the installation moved.
+Matching source, weights, shapes, compiler options and GPU/runtime are still
+required. This does not promise cache compatibility across arbitrary edits.
+
+Wheels now include the two carried AF3 shell scripts, preserving the editable
+runtime key and making its source set identical to a clean wheel. Portable
+Tokamax source identities exclude legacy generated extensions and CCD pickles,
+as runtime build identities already do. **AF3 rewarm required only if the old
+tuning source digest included these generated files.** Clean-source tuning
+identities remain unchanged; session stat anchors still detect local mutation.
+Weight paths in compilation namespaces retain their existing contract: moving
+the installed package does not require moving the shared weight store.
+
+JAX 0.11.1's Pallas keyword-form trace-key explanations also receive a narrow
+diagnostic compatibility adapter. It preserves requested miss/debug logs and
+does not change actual trace keys, persistent keys or model computations.
+
 ## 2026-10-20: OpenDDE automatic capacities and Boltz-2 RTX 4090 allocator
 
 **OpenDDE automatic padding rewarm required when resolved axes change.** Atom

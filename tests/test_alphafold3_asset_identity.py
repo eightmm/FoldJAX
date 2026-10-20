@@ -44,6 +44,14 @@ def _source_key(weights: Path) -> str:
     ).hexdigest()
 
 
+def test_clean_source_identity_remains_compatible_with_released_key(
+    assets: dict[str, Path],
+) -> None:
+    assert _source_key(assets["weights"]) == (
+        "4563fca841a7d652fc954272f801182ded4603d18e12c8c398c7e2fdae479ee2"
+    )
+
+
 @pytest.mark.parametrize("field", ("device", "inode", "ctime", "mode", "mtime"))
 def test_persistent_identity_ignores_node_local_stat_fields(
     assets: dict[str, Path], monkeypatch: pytest.MonkeyPatch, field: str
@@ -79,6 +87,25 @@ def test_persistent_identity_survives_a_different_install_path(
     monkeypatch.setattr(build, "source_package", lambda: relocated / "source")
 
     assert _source_key(relocated / "weights") == before
+
+
+def test_clean_installed_source_matches_checkout_with_generated_assets(
+    assets: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installed = tmp_path / "site-packages" / "alphafold3"
+    shutil.copytree(assets["source"], installed)
+    converters = assets["source"] / "constants" / "converters"
+    converters.mkdir(parents=True)
+    (converters / "ccd.pickle").write_bytes(b"generated chemistry")
+    (converters / "chemical_component_sets.pickle").write_bytes(b"generated sets")
+    (assets["source"] / "cpp.cpython-313-x86_64-linux-gnu.so").write_bytes(
+        b"generated extension"
+    )
+    checkout_key = _source_key(assets["weights"])
+
+    monkeypatch.setattr(build, "source_package", lambda: installed)
+
+    assert _source_key(assets["weights"]) == checkout_key
 
 
 def test_tokamax_runtime_identity_uses_the_portable_source_digest(
@@ -132,17 +159,37 @@ def test_source_identity_binds_relative_file_names(assets: dict[str, Path]) -> N
     assert _source_key(assets["weights"]) != before
 
 
-def test_generated_bytecode_does_not_change_source_identity(
-    assets: dict[str, Path],
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "__pycache__/model.cpython-313.pyc",
+        "nested/legacy.pyc",
+        "nested/legacy.pyo",
+        "constants/converters/ccd.pickle",
+        "constants/converters/chemical_component_sets.pickle",
+        "cpp.cpython-313-x86_64-linux-gnu.so",
+    ),
+)
+def test_generated_artifacts_change_anchors_but_not_persistent_source_identity(
+    assets: dict[str, Path], relative: str
 ) -> None:
-    before = _source_key(assets["weights"])
-    source = assets["source"]
-    (source / "__pycache__").mkdir()
-    (source / "__pycache__" / "model.cpython-313.pyc").write_bytes(b"cache")
-    (source / "nested" / "legacy.pyc").write_bytes(b"cache")
-    (source / "nested" / "legacy.pyo").write_bytes(b"cache")
+    weights = assets["weights"]
+    before = _source_key(weights)
+    original_anchor = backend._managed_asset_snapshot(weights)
+    generated = assets["source"] / relative
+    generated.parent.mkdir(parents=True, exist_ok=True)
+    generated.write_bytes(b"generated payload")
 
-    assert _source_key(assets["weights"]) == before
+    added_anchor = backend._managed_asset_snapshot(weights)
+    assert added_anchor != original_anchor
+    assert _source_key(weights) == before
+
+    replacement = generated.with_name(generated.name + ".replacement")
+    replacement.write_bytes(b"updated generated payload")
+    replacement.replace(generated)
+
+    assert backend._managed_asset_snapshot(weights) != added_anchor
+    assert _source_key(weights) == before
 
 
 def test_parameter_hash_is_reused_while_other_assets_change(
