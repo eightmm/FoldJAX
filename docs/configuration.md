@@ -121,6 +121,17 @@ class, including reduced capacities with ECC. Otherwise it is `0.9`, including
 24/32/40/64/80/96 GB cards, mixed capacity classes and unknown capacities. This
 check uses total capacity, not currently free memory or a fitted model estimate.
 
+A single-model Boltz-2 command has a measured exception: a confirmed RTX 4090
+uses `0.8`, following the 1536-token fraction comparison. Other models and
+24 GB card types keep their previous policy. Unknown mixed GPU types and
+multi-model commands retain the general default; they do not infer a 4090
+from capacity alone. The query uses CUDA-visible device names/handles before
+JAX initialization and honors a known selected device. Caller environment and
+explicit fractions still take precedence. This is an allocator policy, not a
+new kernel, precision or cache profile.
+As before, this startup policy cannot resize an allocator that JAX already
+initialized in a long-running process.
+
 The lower 48 GB default leaves more space for CUDA allocations outside the JAX
 pool. It follows [reported A6000 runs](memory-capacity.md#reports-from-2026-10-19),
 not a guarantee of a model's token limit. Pool fraction changes do not change

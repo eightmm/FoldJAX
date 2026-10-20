@@ -25,6 +25,10 @@ def _visible_device_driver():
         ctypes.c_int,
     ]
     library.cuDeviceTotalMem_v2.restype = ctypes.c_int
+    get_name = getattr(library, "cuDeviceGetName", None)
+    if get_name is not None:
+        get_name.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
+        get_name.restype = ctypes.c_int
     return library
 
 
@@ -34,6 +38,16 @@ def visible_device_bytes() -> tuple[int, ...] | None:
     CUDA resolves visibility masks, UUIDs and device ordering. Incomplete or
     implausible inventory is unknown rather than a partially usable result.
     """
+    inventory = _visible_devices(names=False)
+    return None if inventory is None else tuple(size for _, size in inventory)
+
+
+def visible_device_info() -> tuple[tuple[str, int], ...] | None:
+    """Names and capacities of the same CUDA-visible logical devices."""
+    return _visible_devices(names=True)
+
+
+def _visible_devices(*, names: bool) -> tuple[tuple[str, int], ...] | None:
     try:
         driver = _visible_device_driver()
         if driver.cuInit(0):
@@ -43,7 +57,7 @@ def visible_device_bytes() -> tuple[int, ...] | None:
             return None
         if not 0 < count.value <= 1024:
             return None
-        capacities = []
+        inventory = []
         for ordinal in range(count.value):
             device = ctypes.c_int()
             if driver.cuDeviceGet(ctypes.byref(device), ordinal):
@@ -54,8 +68,16 @@ def visible_device_bytes() -> tuple[int, ...] | None:
             # Reject wrapped negative values and corrupted native results.
             if not 0 < total.value <= 2**50:
                 return None
-            capacities.append(total.value)
-        return tuple(capacities)
+            name = ""
+            if names:
+                buffer = ctypes.create_string_buffer(256)
+                if driver.cuDeviceGetName(buffer, len(buffer), device):
+                    return None
+                name = buffer.value.decode("utf-8").strip()
+                if not name or not name.isprintable():
+                    return None
+            inventory.append((name, total.value))
+        return tuple(inventory)
     except (
         AttributeError,
         OSError,

@@ -393,8 +393,9 @@ def _add_predict_arguments(
     execution.add_argument(
         "--mem-fraction",
         type=float,
-        help="fraction of the device JAX may preallocate. Defaults to 0.85 when "
-        "all visible CUDA devices are 48 GB class, otherwise 0.9; allocator "
+        help="fraction of the device JAX may preallocate. Defaults to 0.8 for "
+        "Boltz-2 on RTX 4090, 0.85 when all visible CUDA devices are 48 GB "
+        "class, otherwise 0.9; allocator "
         "environment settings take precedence over the automatic default. An explicit "
         "value overrides the environment. Lower it to leave more CUDA "
         "context/module memory or share the device",
@@ -1787,7 +1788,9 @@ def _validate_mem_fraction(requested: float | None) -> None:
         raise ValueError(f"--mem-fraction must be in (0, 1]; got {requested}")
 
 
-def _apply_mem_fraction(requested: float | None) -> None:
+def _apply_mem_fraction(
+    requested: float | None, *, models: Sequence[str] = (), cp_devices: int = 1
+) -> None:
     """Validate and set the pool fraction before anything imports JAX.
 
     Only here, and only for the CLI: this is a process-wide setting, and a
@@ -1799,7 +1802,7 @@ def _apply_mem_fraction(requested: float | None) -> None:
     if requested is not None:
         oom.set_mem_fraction(requested, override=True)
     else:
-        oom.set_predict_mem_fraction()
+        oom.set_predict_mem_fraction(models=models, cp_devices=cp_devices)
 
 
 #: Collector thresholds for a process that owns one prediction run.
@@ -2215,7 +2218,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "predict" or (
         args.command == "cache" and args.cache_command == "warm"
     ):
-        _apply_mem_fraction(args.mem_fraction)
+        _apply_mem_fraction(
+            args.mem_fraction, models=args.model, cp_devices=_requested_cp_devices(args)
+        )
         _apply_rendezvous_timeout(args)
         _apply_gc_threshold()
         _enable_release_reclaim()

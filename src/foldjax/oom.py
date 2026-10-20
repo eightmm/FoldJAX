@@ -24,14 +24,15 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Mapping
+import sys
+from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
 from typing import Any
 
 #: JAX's own default when the variable is unset.
 DEFAULT_MEM_FRACTION = 0.75
 
-#: The prediction fallback; confirmed 48 GB devices use 0.85 instead.
+#: The prediction fallback; measured model/card exceptions are selected below.
 #:
 #: JAX's 0.75 suits a process that shares a card. `foldjax predict` does not: it
 #: owns the process for one prediction, and on a 95.6 GiB device 0.75 caps it at
@@ -45,6 +46,7 @@ DEFAULT_MEM_FRACTION = 0.75
 #: 9.6 GiB on that device against a measured need of 73.33.
 PREDICT_MEM_FRACTION = 0.9
 _PREDICT_48GB_MEM_FRACTION = 0.85
+_BOLTZ2_4090_MEM_FRACTION = 0.8
 
 #: jaxlib renamed this knob. Both spellings still work *alone*, and setting
 #: both together is a hard error inside the CUDA plugin's initialize(): it
@@ -79,12 +81,49 @@ def set_mem_fraction(value: float, *, override: bool = False) -> None:
         os.environ[existing] = str(value)
 
 
-def set_predict_mem_fraction() -> None:
+def _prediction_device_hint() -> tuple[str | None, str | None]:
+    """Read a chosen device without importing JAX or initializing its backends."""
+    jax = sys.modules.get("jax")
+    selected = getattr(getattr(jax, "config", None), "jax_default_device", None)
+    if selected is None:
+        selected = os.environ.get("JAX_DEFAULT_DEVICE")
+    if isinstance(selected, str) and selected:
+        return selected.strip().lower(), None
+    if selected is not None:
+        return (
+            getattr(selected, "platform", None),
+            getattr(selected, "device_kind", None),
+        )
+    for name in _PLATFORM_ENVS:
+        platforms = [
+            item.strip().lower()
+            for item in os.environ.get(name, "").split(",")
+            if item.strip()
+        ]
+        if platforms:
+            return platforms[0], None
+    return None, None
+
+
+def _is_rtx4090(name: str) -> bool:
+    return (
+        isinstance(name, str)
+        and re.fullmatch(
+            r"(?:NVIDIA\s+)?(?:GeForce\s+)?RTX\s*4090", name.strip(), re.IGNORECASE
+        )
+        is not None
+    )
+
+
+def set_predict_mem_fraction(
+    *, models: Sequence[str] = (), cp_devices: int = 1
+) -> None:
     """Choose the CLI's pool before JAX initializes, preserving caller choices.
 
     Reported A6000 runs failed at 0.9 and completed through 2048 tokens at
-    0.85. Keep the measured 24 GB and larger-card policies intact. A process
-    has one fraction, so heterogeneous or unknown devices use the fallback.
+    0.85. Boltz-2 on RTX 4090 completed its padded 1536-token profile at 0.8
+    after 0.9 and 0.85 failed outside the pool. A process has one fraction:
+    mixed models and unidentified mixed cards retain the existing policy.
     CUDA's device enumeration handles visibility and ordering; no NVML ordinal
     is treated as a CUDA ordinal, and no JAX backend is initialized here.
     """
@@ -99,6 +138,23 @@ def set_predict_mem_fraction() -> None:
         # without changing the existing pool on 24/32/64/80/96 GB devices.
         if capacities and all(44 * 2**30 <= size < 52 * 2**30 for size in capacities):
             fraction = _PREDICT_48GB_MEM_FRACTION
+        if models:
+            from foldjax.registry import normalize_model_name
+
+            boltz_only = {normalize_model_name(model) for model in models} == {"boltz2"}
+            platform, selected_kind = _prediction_device_hint()
+            if boltz_only and platform in {None, "gpu", "cuda"}:
+                if selected_kind is not None and cp_devices == 1:
+                    target = _is_rtx4090(selected_kind)
+                else:
+                    from foldjax._cuda_memory import visible_device_info
+
+                    inventory = visible_device_info()
+                    target = bool(inventory) and all(
+                        _is_rtx4090(name) for name, _ in inventory
+                    )
+                if target:
+                    fraction = _BOLTZ2_4090_MEM_FRACTION
     set_mem_fraction(fraction)
 
 

@@ -100,12 +100,12 @@ def test_allocator_fraction_does_not_split_the_boltz2_namespace(tmp_path, monkey
     request = _request(tmp_path)
     backend = Boltz2Backend()
     namespaces, profiles = [], []
-    for fraction in ("0.9", "0.85"):
+    for fraction in ("0.9", "0.85", "0.8"):
         monkeypatch.setenv(oom.CURRENT_FRACTION_ENV, fraction)
         namespaces.append(resolve_cache_dir(request, backend))
         profiles.append(backend.cache_profile(request))
-    assert namespaces[0] == namespaces[1]
-    assert profiles[0] == profiles[1]
+    assert namespaces[0] == namespaces[1] == namespaces[2]
+    assert profiles[0] == profiles[1] == profiles[2]
 
 
 def test_weight_identity_separates_same_named_checkpoints(tmp_path: Path) -> None:

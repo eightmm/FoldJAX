@@ -12,7 +12,13 @@ import pytest
 from foldjax import _cuda_memory, _gpu, oom
 
 
-def _visible_driver(*, capacities=(48 * 2**30, 24 * 2**30), count=None, fail_at=None):
+def _visible_driver(
+    *,
+    capacities=(48 * 2**30, 24 * 2**30),
+    count=None,
+    fail_at=None,
+    names=(b"NVIDIA RTX A6000", b"NVIDIA GeForce RTX 4090"),
+):
     handles = (17, 42)
     calls = []
 
@@ -38,11 +44,18 @@ def _visible_driver(*, capacities=(48 * 2**30, 24 * 2**30), count=None, fail_at=
         ctypes.cast(pointer, ctypes.POINTER(ctypes.c_size_t))[0] = capacities[ordinal]
         return int(fail_at == f"total-{ordinal}")
 
+    def name(buffer, size, device):
+        calls.append(("name", device.value))
+        ordinal = handles.index(device.value)
+        ctypes.memmove(buffer, names[ordinal] + b"\0", len(names[ordinal]) + 1)
+        return int(fail_at == f"name-{ordinal}")
+
     return SimpleNamespace(
         cuInit=init,
         cuDeviceGetCount=get_count,
         cuDeviceGet=get_device,
         cuDeviceTotalMem_v2=total,
+        cuDeviceGetName=name,
     ), calls
 
 
@@ -77,6 +90,7 @@ def test_visible_capacity_loader_needs_no_stream_or_context_api(monkeypatch):
         cuDeviceGetCount=lambda: None,
         cuDeviceGet=lambda: None,
         cuDeviceTotalMem_v2=lambda: None,
+        cuDeviceGetName=lambda: None,
     )
     loaded = []
 
@@ -100,11 +114,54 @@ def test_visible_capacity_loader_needs_no_stream_or_context_api(monkeypatch):
             ctypes.POINTER(ctypes.c_size_t),
             ctypes.c_int,
         ]
+        assert library.cuDeviceGetName.argtypes == [
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_int,
+        ]
         assert all(
             function.restype is ctypes.c_int for function in vars(library).values()
         )
     finally:
         _cuda_memory._visible_device_driver.cache_clear()
+
+
+@pytest.mark.parametrize("visibility", ["3,0", "GPU-bbbb,GPU-aaaa"])
+def test_visible_names_and_capacities_follow_the_same_driver_handles(
+    monkeypatch, visibility
+):
+    driver, calls = _visible_driver()
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visibility)
+    monkeypatch.setattr(_cuda_memory, "_visible_device_driver", lambda: driver)
+    assert _cuda_memory.visible_device_info() == (
+        ("NVIDIA RTX A6000", 48 * 2**30),
+        ("NVIDIA GeForce RTX 4090", 24 * 2**30),
+    )
+    assert calls == [
+        ("init", 0),
+        ("count",),
+        ("device", 0),
+        ("total", 17),
+        ("name", 17),
+        ("device", 1),
+        ("total", 42),
+        ("name", 42),
+    ]
+
+
+@pytest.mark.parametrize("fail_at", ["name-0", "name-1"])
+def test_visible_names_discard_incomplete_inventory(monkeypatch, fail_at):
+    driver, _ = _visible_driver(fail_at=fail_at)
+    monkeypatch.setattr(_cuda_memory, "_visible_device_driver", lambda: driver)
+    assert _cuda_memory.visible_device_info() is None
+    assert _cuda_memory.visible_device_bytes() == (48 * 2**30, 24 * 2**30)
+
+
+@pytest.mark.parametrize("name", [b"", b"\xff", b"RTX\n4090"])
+def test_visible_names_reject_invalid_native_names(monkeypatch, name):
+    driver, _ = _visible_driver(names=(name, b"NVIDIA GeForce RTX 4090"))
+    monkeypatch.setattr(_cuda_memory, "_visible_device_driver", lambda: driver)
+    assert _cuda_memory.visible_device_info() is None
 
 
 @pytest.mark.parametrize(
