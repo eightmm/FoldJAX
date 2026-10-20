@@ -15,8 +15,9 @@ from foldjax import cache
 from foldjax._jax_cache_tiers import LayeredCache
 
 
+@pytest.mark.parametrize("fingerprints", [False, True])
 def test_observer_loads_real_layered_cache_and_preserves_keys_and_outputs(
-    tmp_path, trust_ancestors_above_tmp_path
+    tmp_path, trust_ancestors_above_tmp_path, fingerprints
 ):
     @jax.jit
     def observed_graph(value):
@@ -28,7 +29,9 @@ def test_observer_loads_real_layered_cache_and_preserves_keys_and_outputs(
     for report in reports:
         jax.clear_caches()
         with (
-            compilation_profile.observe_compilation(report),
+            compilation_profile.observe_compilation(
+                report, fingerprint_hlo=fingerprints
+            ),
             cache.compilation_cache_scope(
                 tmp_path / "shared", private_directory=tmp_path / "private"
             ),
@@ -51,9 +54,23 @@ def test_observer_loads_real_layered_cache_and_preserves_keys_and_outputs(
     assert "backend_compile_and_load_seconds" in entries[0]
     assert "backend_compile_and_load_seconds" not in entries[1]
     assert entries[0]["memory"] == entries[1]["memory"]
+    if fingerprints:
+        assert entries[0]["hlo_fingerprints"] == entries[1]["hlo_fingerprints"]
+        hashes = entries[0]["hlo_fingerprints"]
+        assert len(hashes["pre_compile_mlir_sha256"]) == 64
+        assert len(hashes["compile_options_sha256"]) == 64
+        assert len(hashes["optimized_hlo_sha256"]) == 1
+        assert len(hashes["optimized_hlo_sha256"][0]) == 64
+        assert "device_before_compile_or_load" in entries[0]
+        assert "device_after_compile_or_load" in entries[1]
+    else:
+        assert all("hlo_fingerprints" not in entry for entry in entries)
 
 
-def test_observer_restores_every_hook_and_retains_failed_compilation(monkeypatch):
+@pytest.mark.parametrize("fingerprints", [False, True])
+def test_observer_restores_every_hook_and_retains_failed_compilation(
+    monkeypatch, fingerprints
+):
     def fail(*args, **kwargs):
         raise RuntimeError("compile failed")
 
@@ -69,7 +86,9 @@ def test_observer_restores_every_hook_and_retains_failed_compilation(monkeypatch
     report = {}
     module = SimpleNamespace(operation=SimpleNamespace(attributes={"sym_name": "x"}))
     with pytest.raises(RuntimeError, match="compile failed"):
-        with compilation_profile.observe_compilation(report):
+        with compilation_profile.observe_compilation(
+            report, fingerprint_hlo=fingerprints
+        ):
             compiler.compile_or_get_cached(None, module)
     assert [getattr(owner, name) for owner, name in owners] == originals
     assert report["executables"][0]["status"] == "error"
@@ -77,8 +96,9 @@ def test_observer_restores_every_hook_and_retains_failed_compilation(monkeypatch
 
 
 @pytest.mark.parametrize("failure", [False, True])
+@pytest.mark.parametrize("fingerprints", [False, True])
 def test_native_profile_enters_after_cli_allocator_policy_and_flushes_on_error(
-    tmp_path, monkeypatch, failure
+    tmp_path, monkeypatch, failure, fingerprints
 ):
     from foldjax import cli, oom
     from foldjax.schema import BatchReport
@@ -95,7 +115,8 @@ def test_native_profile_enters_after_cli_allocator_policy_and_flushes_on_error(
     events = []
 
     @contextmanager
-    def observe(report):
+    def observe(report, **options):
+        assert options == ({"fingerprint_hlo": True} if fingerprints else {})
         assert oom.mem_fraction() == 0.8
         events.append("enter")
         try:
@@ -123,6 +144,8 @@ def test_native_profile_enters_after_cli_allocator_policy_and_flushes_on_error(
         "--mem-fraction",
         "0.8",
     ]
+    if fingerprints:
+        command.insert(2, "--hlo-fingerprints")
     if failure:
         with pytest.raises(RuntimeError, match="prediction failed"):
             prediction_profile.main(command)

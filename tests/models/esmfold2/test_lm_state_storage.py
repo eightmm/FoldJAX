@@ -221,6 +221,38 @@ def test_mixed_dtype_preflight_neither_dispatches_nor_retains_weights(monkeypatc
     assert all(reference() is None for reference in references)
 
 
+@pytest.mark.parametrize("donate", [False, True])
+@pytest.mark.parametrize("barrier", [False, True])
+@pytest.mark.parametrize("native_autocast", [False, True])
+def test_identical_81_layer_inputs_isolate_storage_from_encoder_variation(
+    monkeypatch, donate, barrier, native_autocast
+):
+    """Replay finite captured values without asking the encoder to reproduce them.
+
+    GPU execution of this same contract is needed to diagnose the reported
+    discrepancy. CPU agreement cannot establish GPU kernel repeatability or
+    reproduce an upstream layer difference.
+    """
+    if not donate:
+        monkeypatch.setattr(
+            esmc, "_store_token_state", jax.jit(esmc._store_token_state.__wrapped__)
+        )
+    features = _features()
+    _, _, expand_map = esmc.pack_lm_inputs(*features, packed_length=24)
+    rng = np.random.default_rng(732)
+    captured = []
+    for index in range(81):
+        dtype = jnp.bfloat16 if native_autocast and index < 80 else jnp.float32
+        captured.append(jnp.asarray(rng.normal(size=(2, 24, 65)) + index / 17, dtype))
+    expected = esmc.hidden_states_for_tokens(jnp.stack(captured), expand_map, 9)
+    storage = esmc._TokenStateStorage(expand_map, 80, expected.dtype)
+    for index, state in enumerate(captured):
+        storage(index, state)
+        if barrier:
+            storage.destination.block_until_ready()
+    _same_bits(storage.destination, expected)
+
+
 @pytest.mark.parametrize("storage", [None, "stream", False])
 def test_storage_validation_precedes_any_encoding(storage):
     with pytest.raises(ValueError, match="state_storage"):

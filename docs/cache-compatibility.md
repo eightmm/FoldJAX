@@ -1,5 +1,25 @@
 # Compilation cache compatibility
 
+## 2026-10-20: OpenDDE automatic capacities and Boltz-2 RTX 4090 allocator
+
+**OpenDDE automatic padding rewarm required when resolved axes change.** Atom
+capacity now follows stored atoms on the existing grid; structural capacity
+rounds stored structural tokens to 64 / context-parallel alignment. For the
+reported 1024-token job, atoms 24576→8192 and structural tokens 2048→1856
+select a different JAX shape key. Warm real jobs or matching explicit pins;
+synthetic token warming covers its reported concrete shapes only.
+
+The OpenDDE model graph and namespace revision are unchanged. Existing exact
+or explicit requests with the same concrete shapes, masks and options remain
+valid. The other five model namespaces are unchanged. Boltz-2's confirmed
+RTX 4090 default pool fraction changes to 0.8 without changing its keys;
+working caches need not be rebuilt for that allocator choice alone.
+
+ESMFold2 keeps `stack` and its existing graph as defaults. Cross-process LM
+variation is being diagnosed separately from the storage experiment; no new
+numerical default or capacity claim is admitted. See the
+[measurement plan](cluster-memory-2026-10-20.md).
+
 ## 2026-10-19: buffered ESMFold2 states and fresh AF3 warm verification
 
 No default model namespace revision changes. The experimental ESMFold2

@@ -67,6 +67,13 @@ coefficients, precision, RNG or sampling settings.
 
 ## Using reports in planning
 
+The [2026-10-20 follow-up](cluster-memory-2026-10-20.md) reports RTX 4090
+Boltz-2 at 1536 tokens succeeding at fraction 0.8 or below, and OpenDDE at
+1024 tokens succeeding with structural capacity 1856. These are conditional
+observations, not replacements for the historical fitted laws. ESMFold2's
+A6000 1792-token success was single-chain warming; the reported multichain
+failure does not establish that single-chain limit and is being checked.
+
 Planning and execution use the same `observed_capacity` assessment. It records
 the model, token axis/count, actual card and allocator/planning budget when
 known, device kind, MSA rows when actually known, sample count, and shape
@@ -91,6 +98,8 @@ device capacities before JAX backend initialization. All visible GPUs must have
 at least 44 GiB and less than 52 GiB for the automatic fraction to be 0.85.
 Other capacity classes, mixed classes and unknown capacities use 0.9. This
 policy does not change compile-cache keys or model static execution profiles.
+A single-model Boltz-2 command on a confirmed RTX 4090 now uses 0.8 instead;
+unknown mixed GPU types and multi-model commands keep the general policy.
 See [configuration](configuration.md#allocator-policy).
 
 An explicit CUDA module-loading OOM receives outside-pool guidance: leave more

@@ -1,5 +1,10 @@
 # GPU memory follow-up after e29548cf
 
+The [2026-10-20 follow-up](cluster-memory-2026-10-20.md) supersedes the pending
+Boltz-2 fraction control and adds the OpenDDE padding results and corrected
+interpretation of ESMFold2's cross-process LM differences. Earlier conditions
+below are retained as the history of those measurements.
+
 The next useful artifact is one cold dump of the original failing 1024-token
 profile. Do this before another row-chunk sweep or a precision change. No GPU
 jobs were submitted for this follow-up, and no new kernel or dtype default is

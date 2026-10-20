@@ -10,6 +10,10 @@ The current [cluster measurement handoff](cluster-memory-handoff.md) covers
 and the remaining host staging. It names inputs/targets, controls and artifacts
 without submitting work or claiming unmeasured capacity improvements.
 
+The [2026-10-20 plan](cluster-memory-2026-10-20.md) adds process-repeated LM
+diagnostics, the corrected interpretation of stack/buffer differences, finer
+OpenDDE capacities and the confirmed RTX 4090 fraction control.
+
 The [measurement follow-up](cluster-memory-followup.md) incorporates the
 reported e29548cf cluster results. OpenDDE row chunks changed the reported
 768-token temporary arena by only about 2.5%, without a latency benefit, and
@@ -52,10 +56,11 @@ with `XLA_FLAGS="--xla_dump_to=/tmp/opendde-hlo --xla_dump_hlo_as_text"`.
 The current graph already uses BF16 trunk/confidence and scanned stacks/sampling.
 The XLA attention path blocks outer rows; the fused cuEquivariance path still
 projects full structural Q/K/V arrays before its attention call. Its structural
-axis reserves twice the token bucket, and its pair width is 384 rather than
-Protenix's 128. Therefore one BF16 structural pair tensor has 12 times the
-storage of Protenix's pair
-tensor at the same token bucket. At a 768-token bucket, it is 1.6875 GiB;
+pair width is 384 rather than Protenix's 128. Its previous automatic profile
+reserved twice the token bucket; the new profile rounds the actual structural
+storage to 64 / CP alignment. At the old S=2T capacity, one BF16 structural pair
+tensor had 12 times the storage of Protenix's pair tensor. At T=768/S=1536 it
+is 1.6875 GiB;
 the default FP32 diffusion-boundary counterpart is 3.375 GiB. These are tensor
 size calculations, not measured peak memory or evidence for changing dtype.
 

@@ -56,6 +56,11 @@ def _device(request=None):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile-out", required=True, type=Path)
+    parser.add_argument(
+        "--hlo-fingerprints",
+        action="store_true",
+        help="hash precompile MLIR/options and optimized HLO; adds diagnostic overhead",
+    )
     parser.add_argument("prediction", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     prediction = args.prediction
@@ -70,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     report = {
         "schema": 1,
         "measurement_kind": "native_prediction_diagnostic",
+        "hlo_fingerprints_enabled": args.hlo_fingerprints,
         "prediction_arguments": prediction,
         "source_files_sha256": {
             relative: hashlib.sha256((root / relative).read_bytes()).hexdigest()
@@ -95,6 +101,8 @@ def main(argv: list[str] | None = None) -> int:
             "layered_get includes trust validation and filesystem reading",
             "load_residual includes deserialization/module loading and bookkeeping",
             "unobserved in-memory hits do not appear as compiler invocations",
+            "optional HLO hashes retain layout/backend config and exclude debug "
+            "metadata; they are diagnostic comparisons, not JAX cache keys",
         ],
     }
     original_predictions = cli._run_predictions
@@ -105,7 +113,10 @@ def main(argv: list[str] | None = None) -> int:
         from foldjax import oom
 
         request = args[0] if args else kwargs.get("request")
-        with observe_compilation(report):
+        with observe_compilation(
+            report,
+            **({"fingerprint_hlo": True} if report["hlo_fingerprints_enabled"] else {}),
+        ):
             report["device"] = _device(request)
             report["effective_mem_fraction"] = oom.mem_fraction()
             report["device_before"] = _memory(request)

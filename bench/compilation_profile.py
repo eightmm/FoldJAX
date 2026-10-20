@@ -8,6 +8,7 @@ and must not be presented as a measured CUDA-only interval.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import time
@@ -70,8 +71,48 @@ def executable_memory(executable: Any) -> dict[str, int] | None:
     }
 
 
+def _digest(value: str | bytes) -> str:
+    return hashlib.sha256(
+        value.encode() if isinstance(value, str) else value
+    ).hexdigest()
+
+
+def _input_fingerprints(computation, args, kwargs):
+    fingerprints = {}
+    try:
+        fingerprints["pre_compile_mlir_sha256"] = _digest(
+            computation.operation.get_asm(enable_debug_info=False)
+        )
+        options = kwargs.get("compile_options", args[1] if len(args) > 1 else None)
+        fingerprints["compile_options_sha256"] = _digest(options.SerializeAsString())
+        fingerprints["compile_options_scope"] = (
+            "raw JAX CompileOptions, including debug/dump settings"
+        )
+    except Exception as error:
+        fingerprints["input_unavailable"] = type(error).__name__
+    return fingerprints
+
+
+def _optimized_fingerprints(executable):
+    from jaxlib import _hlo
+
+    options = _hlo.HloPrintOptions.canonical()
+    options.print_metadata = False
+    options.print_backend_config = True
+    options.print_large_constants = True
+    options.include_layout_in_shapes = True
+    return [_digest(module.to_string(options)) for module in executable.hlo_modules()]
+
+
+def _memory_observation():
+    try:
+        return device_memory()
+    except Exception as error:
+        return {"unavailable": type(error).__name__}
+
+
 @contextmanager
-def observe_compilation(report: dict[str, Any]):
+def observe_compilation(report: dict[str, Any], *, fingerprint_hlo: bool = False):
     """Observe cache reads and compilation without changing keys or backends."""
     from jax._src import compilation_cache, compiler
 
@@ -156,11 +197,23 @@ def observe_compilation(report: dict[str, Any]):
         entry = {
             "module": str(computation.operation.attributes["sym_name"]).strip('"'),
         }
+        if fingerprint_hlo:
+            entry["hlo_fingerprints"] = _input_fingerprints(computation, args, kwargs)
+            entry["device_before_compile_or_load"] = _memory_observation()
         token = current.set(entry)
         started = time.perf_counter()
         try:
             executable = original_compile(backend, computation, *args, **kwargs)
             entry.update(memory=executable_memory(executable), status="ok")
+            if fingerprint_hlo:
+                try:
+                    entry["hlo_fingerprints"]["optimized_hlo_sha256"] = (
+                        _optimized_fingerprints(executable)
+                    )
+                except Exception as error:
+                    entry["hlo_fingerprints"]["optimized_unavailable"] = type(
+                        error
+                    ).__name__
             return executable
         except BaseException as error:
             entry.update(status="error", error_type=type(error).__name__)
@@ -168,6 +221,8 @@ def observe_compilation(report: dict[str, Any]):
         finally:
             current.reset(token)
             entry["compile_or_load_seconds"] = time.perf_counter() - started
+            if fingerprint_hlo:
+                entry["device_after_compile_or_load"] = _memory_observation()
             executables.append(entry)
 
     with ExitStack() as stack:
