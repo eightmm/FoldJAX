@@ -1,6 +1,6 @@
 # Token-derived padding profiles
 
-With `--padding`, the token bucket determines automatic storage capacities.
+With `--padding`, the token bucket determines most automatic storage capacities.
 Padding remains opt-in, and explicit axis targets take precedence. This policy
 reduces shape variants without changing model weights or model inputs: the MSA
 axis is padded *up* to a bucket, and no padded run reads fewer alignment rows
@@ -11,7 +11,7 @@ than the same job run unpadded.
 | AlphaFold 3 | native 24T, 32-aligned | native 16384-row pool / released trunk crop | native templates |
 | Boltz2 | 24T, 32-aligned | bucket >= stored rows, floor 1024 | existing supported axes |
 | Protenix | 24T, 32-aligned | bucket >= stored rows, floor 1024 | templates 4; LM min(T, provider limit) |
-| OpenDDE | 24T, 32-aligned | bucket >= the released 1280-row cycle sample | structural tokens 2T |
+| OpenDDE | smallest atom bucket >= stored atoms | bucket >= the released 1280-row cycle sample | stored structural tokens rounded up to 64 / CP alignment |
 | OpenFold3 | 24T, 32-aligned | 1024 per streamed cycle | templates 4 |
 | ESMFold2 | 24T, 32-aligned | 1024 | LM 3T for per-chain BOS/EOS |
 
@@ -30,6 +30,15 @@ masked. `max_msa_depth` is the one option that selects fewer rows;
 `padding.msa` / `--pad-msa` is a capacity for the axis and a target below the
 stored rows is refused, naming `--max-msa-depth` as the option that changes the
 input.
+
+OpenDDE resolves its atom and structural axes independently of T. The reported
+952-token input at T=1024, with 7584 atoms and 1816 structural tokens, now uses
+8192 atoms and 1856 structural tokens instead of 24576 and 2048. Existing
+storage is a lower bound even when some suffix slots are masked. Explicit pins
+remain exact and context-parallel alignment still applies. Synthetic all-alanine
+token warming does not cover every chemistry-dependent combination: warm the
+real input or supply the same sufficient axis pins to warming and prediction.
+See [the current measurement plan](cluster-memory-2026-10-20.md).
 
 Native MSA selection/cropping still precedes padding where applicable: OpenDDE
 takes its released 1,280-row valid-first cycle sample -- the same call the
@@ -76,7 +85,8 @@ Protenix's terminal nucleotide table reaches 24. Nonstandard components are
 atom-tokenized. Native input therefore satisfies atoms <=24T. Materialized
 feature archives still receive explicit storage-capacity checks and are never
 silently shortened. OpenDDE emits at most backbone plus sidechain/base per
-token, giving its structural bound 2T. ESMFold2 may have T one-residue protein
+token, giving its structural bound 2T; this bound is no longer its automatic
+storage target. ESMFold2 may have T one-residue protein
 chains, each with BOS/EOS, giving packed LM bound 3T. Protenix embeds chains
 separately, so its native provider length cap can bound the automatic LM target.
 
@@ -93,8 +103,8 @@ of padding: a 2,096-token Protenix job landed on 3,072 and measured +97% wall
 and +44% peak against its exact shape (376 s / 30.6 GiB versus 191 s / 21.2
 GiB), with the deposited structure unchanged. It now lands on 2,304. The price
 is 36 executables per model to bake rather than 11, which `cache warm`
-amortizes: a bucket is baked once and then hit by every job in its band, which
-is what lets a deployment pre-bake per bucket and run padded by default.
+amortizes for matching concrete shapes. OpenDDE's independent atom/structural
+axes can select additional executables within one token band.
 
 The grid ends at 8,192 rather than at what one card folds on purpose: context
 parallelism exists to run the targets that do not fit one card, so a grid

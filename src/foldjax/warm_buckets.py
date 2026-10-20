@@ -162,9 +162,9 @@ def bucket_request(
 ) -> PredictionRequest:
     """Build the representative request shared by warming and presence checks."""
     jobs.mkdir(parents=True, exist_ok=True)
-    source = Job.from_sequences(
-        ("A" * length,), name=f"warm-{bucket}-{index}"
-    ).write(jobs / f"{model}-{bucket}-{index}.json")
+    source = Job.from_sequences(("A" * length,), name=f"warm-{bucket}-{index}").write(
+        jobs / f"{model}-{bucket}-{index}.json"
+    )
     native_buckets = model == "alphafold3" and "buckets" in request.options
     padding = (
         None
@@ -329,6 +329,22 @@ def warm_token_buckets(
                 "buckets": [],
                 "stopped_on_oom": False,
             }
+            if model == "opendde":
+                padding = request.padding or PaddingConfig()
+                automatic = [
+                    name
+                    for name in ("atoms", "structural_tokens")
+                    if getattr(padding, name) is None
+                ]
+                if automatic:
+                    model_report["shape_coverage"] = {
+                        "kind": "representative_concrete_shapes",
+                        "automatic_axes": automatic,
+                        "note": "OpenDDE atom/structural capacities depend on actual "
+                        "stored features. These synthetic lengths do not cover every "
+                        "shape in the token bucket; warm real input jobs or use the "
+                        "same explicit axis pins for warming and prediction.",
+                    }
             report["models"].append(model_report)
             default_grid = (
                 tuple(request.options["buckets"])
@@ -405,4 +421,6 @@ def format_bucket_report(report: dict[str, Any]) -> str:
             f"  successful: {model['successful_buckets']}; "
             f"first failed: {model['first_failed_bucket']}"
         )
+        if coverage := model.get("shape_coverage"):
+            lines.append(f"  coverage: {coverage['note']}")
     return "\n".join(lines)

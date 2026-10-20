@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import json
 import logging
 from pathlib import Path
@@ -132,6 +133,27 @@ def test_two_real_lengths_execute_ascending_buckets_and_report_device(sweep):
     assert row["buckets"][0]["verification"]["second_length_compile_requests"] == 1
     assert jax.config.jax_log_compiles == before
     assert "mock GPU (24.0 GiB)" in warm_buckets.format_bucket_report(result)
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_opendde_warm_reports_partial_shape_coverage_for_automatic_axes(sweep, pinned):
+    request, _, _ = sweep
+    padding = dataclasses.replace(
+        request.padding,
+        atoms=1024 if pinned else None,
+        structural_tokens=256 if pinned else None,
+    )
+    request = dataclasses.replace(request, model="opendde", padding=padding)
+    report = warm_buckets.warm_token_buckets(request, "128")
+    model = report["models"][0]
+    assert model["successful_buckets"] == [128]
+    if pinned:
+        assert "shape_coverage" not in model
+    else:
+        coverage = model["shape_coverage"]
+        assert coverage["automatic_axes"] == ["atoms", "structural_tokens"]
+        assert "do not cover every shape" in coverage["note"]
+        assert coverage["note"] in warm_buckets.format_bucket_report(report)
 
 
 @pytest.mark.parametrize(

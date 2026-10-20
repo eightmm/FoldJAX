@@ -42,6 +42,20 @@ installed. This runs real prediction and kernel tuning, can be expensive, and
 should be submitted to a GPU compute node on a cluster. It does not download
 weights or claim that the synthetic structure has scientific value.
 
+OpenDDE's automatic atom/structural targets now follow actual stored features,
+so its bucket report explicitly limits coverage to the representative concrete
+shapes. Token bucket and fixed MSA depth alone do not guarantee a hit for every
+chemistry in that band. Warm an actual input to populate its profile:
+
+```bash
+foldjax cache warm --model opendde --input job.yaml --msa auto \
+  --fixed-msa 2048 --pad-tokens 1024
+```
+
+Alternatively, use the same sufficient `--pad-atoms` and
+`--pad-structural-tokens` pins in warming and prediction. Existing dimensions
+are never truncated to make a pin fit. See [current measurements and controls](cluster-memory-2026-10-20.md).
+
 Protenix, OpenDDE, OpenFold3 and ESMFold2 keep the actual chain count out of the
 compiled model's static arguments. Confidence scores reserve 64 chain slots with
 runtime masks/counts and cropped output axes. Inputs with up to 64 chains therefore share

@@ -20,6 +20,7 @@ from foldjax.models.opendde.data.compact_categories import (
     compact_ref_atom_category_storage,
 )
 from foldjax.models.opendde.data.padding import (
+    _resolve_auxiliary_targets,
     crop_opendde_outputs,
     pad_opendde_features,
     select_opendde_model_features,
@@ -367,9 +368,9 @@ def test_native_cli_pads_after_sampling_and_reports_profile(
             },
             "target": {
                 "tokens": 128,
-                "atoms": 3072,
+                "atoms": 256,
                 "msa": 64,
-                "structural_tokens": 256,
+                "structural_tokens": 64,
             },
             "changed": True,
             "static": {"chain_capacity": 64},
@@ -468,7 +469,7 @@ def test_native_cli_falls_back_to_materialized_tapes_for_other_prngs(
         "num_samples": 1,
         "num_steps": 1,
         "actual_atom": 3,
-        "target_atom": 3072,
+        "target_atom": 256,
     }
 
 
@@ -979,7 +980,7 @@ def test_the_multiplication_backend_default_is_keyed_on_the_trunk_dtype(
     assert seen == ["cueq"], seen
 
 
-def test_automatic_token_profile_uses_native_structural_bound_and_fixed_msa():
+def test_automatic_profile_resolves_atom_and_structural_storage_independently():
     features = _opendde_features(msa_depth=5)
     sampled = sample_opendde_msa_cycle_features(features, num_recycles=2, seed=7)
     padded, cycles, plan = pad_opendde_features(
@@ -987,12 +988,109 @@ def test_automatic_token_profile_uses_native_structural_bound_and_fixed_msa():
     )
     assert plan.target == {
         "tokens": 4,
-        "atoms": 96,
+        "atoms": 256,
         "msa": 1280,
-        "structural_tokens": 8,
+        "structural_tokens": 64,
     }
     np.testing.assert_array_equal(padded["structural_token_padding_mask"][3:], 0)
     np.testing.assert_array_equal(padded["atom_padding_mask"][3:], 0)
     for before, after in zip(sampled, cycles, strict=True):
         np.testing.assert_array_equal(after["msa"][:5, :3], before["msa"])
         np.testing.assert_array_equal(after["msa_mask"][5:], 0)
+    for name in ("ref_pos", "parent_residue_idx", "atom_to_structural_token_idx"):
+        np.testing.assert_array_equal(padded[name][:3], features[name])
+
+
+@pytest.mark.parametrize(
+    "atoms,structural,expected",
+    [
+        (7584, 1816, (8192, 1856)),
+        (8192, 1856, (8192, 1856)),
+        (8193, 1857, (12288, 1920)),
+    ],
+)
+def test_automatic_auxiliary_targets_follow_real_need_not_token_bucket(
+    atoms, structural, expected
+):
+    for tokens in (1024, 1280):
+        assert (
+            _resolve_auxiliary_targets(
+                PaddingConfig(tokens=tokens),
+                atom_storage=atoms,
+                structural_storage=structural,
+            )
+            == expected
+        )
+
+
+@pytest.mark.parametrize(
+    "devices,layout,expected",
+    [(4, "2d", (8192, 1856)), (4, "1d", (8192, 1856)), (3, "1d", (8256, 1920))],
+)
+def test_automatic_auxiliary_targets_retain_mesh_divisibility(
+    devices, layout, expected
+):
+    from foldjax.padding import cp_aligned_padding, cp_rows
+
+    config = cp_aligned_padding(
+        PaddingConfig(tokens=1024), cp_devices=devices, cp_layout=layout
+    )
+    atoms, structural = _resolve_auxiliary_targets(
+        config, atom_storage=7584, structural_storage=1816
+    )
+    assert (atoms, structural) == expected
+    assert atoms % (32 * cp_rows(config)) == 0
+    assert structural % 64 == structural % cp_rows(config) == 0
+
+    pinned = cp_aligned_padding(
+        PaddingConfig(atoms=7585, structural_tokens=1817),
+        cp_devices=devices,
+        cp_layout=layout,
+    )
+    assert _resolve_auxiliary_targets(
+        pinned, atom_storage=7584, structural_storage=1816
+    ) == (7585, 1817)
+
+
+@pytest.mark.parametrize("axis", ["atoms", "structural_tokens"])
+def test_auxiliary_axis_targets_never_truncate_or_silently_exceed_the_grid(axis):
+    sizes = {"atom_storage": 7584, "structural_storage": 1816}
+    pin = 7583 if axis == "atoms" else 1815
+    with pytest.raises(ValueError, match="smaller than the input size"):
+        _resolve_auxiliary_targets(PaddingConfig(**{axis: pin}), **sizes)
+
+    oversized = {
+        "atom_storage": 196609 if axis == "atoms" else 7584,
+        "structural_storage": 16385 if axis == "structural_tokens" else 1816,
+    }
+    with pytest.raises(ValueError, match="exceeds the largest standard bucket"):
+        _resolve_auxiliary_targets(PaddingConfig(), **oversized)
+    atoms, structural = _resolve_auxiliary_targets(
+        PaddingConfig(overflow="exact"), **oversized
+    )
+    assert atoms >= oversized["atom_storage"] and atoms % 32 == 0
+    assert structural >= oversized["structural_storage"] and structural % 64 == 0
+
+
+def test_repeated_automatic_padding_retains_existing_storage_and_real_masks():
+    features = _opendde_features(msa_depth=5)
+    sampled = sample_opendde_msa_cycle_features(features, num_recycles=1, seed=7)
+    first, cycles, _ = pad_opendde_features(
+        features,
+        sampled,
+        PaddingConfig(tokens=3, atoms=300, structural_tokens=70, msa=8),
+        n_queries=2,
+        n_keys=4,
+    )
+    first.update({name: cycles[0][name] for name in _msa_features(1)})
+    padded, _, plan = pad_opendde_features(
+        first, cycles, PaddingConfig(tokens=3, msa=8), n_queries=2, n_keys=4
+    )
+    assert plan.actual["atoms"] == plan.actual["structural_tokens"] == 3
+    assert plan.storage["atoms"] == 300 and plan.storage["structural_tokens"] == 70
+    assert plan.target["atoms"] == 512 and plan.target["structural_tokens"] == 128
+    for name in ("ref_pos", "parent_residue_idx", "atom_to_structural_token_idx"):
+        np.testing.assert_array_equal(padded[name][: len(first[name])], first[name])
+    for name in ("atom_padding_mask", "structural_token_padding_mask"):
+        np.testing.assert_array_equal(padded[name][:3], 1)
+        np.testing.assert_array_equal(padded[name][3:], 0)

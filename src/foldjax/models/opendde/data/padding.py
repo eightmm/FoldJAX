@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
+from math import lcm
 from typing import Any
 
 import numpy as np
@@ -16,7 +17,12 @@ from foldjax.models.protenix.data.padding import (
     pad_protenix_features,
 )
 from foldjax.models.protenix.relative_position import COMPACT_RELP_FIELDS
-from foldjax.padding import PaddingPlan, resolve_token_axis
+from foldjax.padding import (
+    STRUCTURAL_TOKEN_BUCKETS,
+    PaddingPlan,
+    cp_rows,
+    resolve_axis,
+)
 from foldjax.schema import PaddingConfig
 
 _OPENDDE_TOKEN_FIELDS = {
@@ -104,6 +110,35 @@ _MODEL_FEATURES = {
 } | set(COMPACT_RELP_FIELDS)
 
 
+_STRUCTURAL_BUCKETS = tuple(range(64, STRUCTURAL_TOKEN_BUCKETS[-1] + 1, 64))
+
+
+def _resolve_auxiliary_targets(
+    config: PaddingConfig,
+    *,
+    atom_storage: int,
+    structural_storage: int,
+) -> tuple[int, int]:
+    """Keep independent axes near their stored size, without shrinking them.
+
+    The expanded structural track, rather than the residue token bucket, sets
+    OpenDDE's diffusion memory. Atom buckets reuse the shared serving grid;
+    structural buckets retain 64-token granularity and the mesh's divisibility.
+    Explicit pins keep their exact shape and existing CP fallback semantics.
+    """
+    atoms = resolve_axis(atom_storage, config, "atoms")
+    structural = resolve_axis(
+        structural_storage,
+        config,
+        "structural_tokens",
+        buckets=_STRUCTURAL_BUCKETS,
+    )
+    if config.structural_tokens is None:
+        unit = lcm(64, cp_rows(config))
+        structural = ((structural + unit - 1) // unit) * unit
+    return atoms, structural
+
+
 def pad_opendde_features(
     features: Mapping[str, Any],
     cycle_msa_features: tuple[dict[str, np.ndarray], ...],
@@ -120,13 +155,11 @@ def pad_opendde_features(
     """
 
     unsupported = sorted(
-        set(config.explicit_axes)
-        - {"tokens", "atoms", "msa", "structural_tokens"}
+        set(config.explicit_axes) - {"tokens", "atoms", "msa", "structural_tokens"}
     )
     if unsupported:
         raise ValueError(
-            "OpenDDE does not support explicit padding axes: "
-            + ", ".join(unsupported)
+            "OpenDDE does not support explicit padding axes: " + ", ".join(unsupported)
         )
 
     required = {
@@ -171,9 +204,12 @@ def pad_opendde_features(
     )
     actual_structural = int(np.count_nonzero(structural_mask))
     if actual_structural < 1:
-        raise ValueError(
-            "structural_token_padding_mask must retain at least one token"
-        )
+        raise ValueError("structural_token_padding_mask must retain at least one token")
+    target_atom, target_structural = _resolve_auxiliary_targets(
+        config,
+        atom_storage=storage_atom,
+        structural_storage=storage_structural,
+    )
 
     # The raw MSA is not a graph input once sampled cycles are supplied.  Do
     # not duplicate a potentially 16k-row alignment across the padded token
@@ -198,7 +234,7 @@ def pad_opendde_features(
     # profile rather than built fresh: a fresh one drops whatever policy the
     # profile carries beyond these axes -- today the context-parallel mesh
     # width the atom target has to divide -- and would do so silently.
-    common_config = replace(config, msa=1, templates=4)
+    common_config = replace(config, atoms=target_atom, msa=1, templates=4)
     padded, common_plan = pad_protenix_features(
         common_source,
         common_config,
@@ -208,16 +244,6 @@ def pad_opendde_features(
     for name in ("msa", "has_deletion", "deletion_value", "msa_mask"):
         padded.pop(name, None)
     target_token = common_plan.target["tokens"]
-    # Native tokenization emits at most backbone plus sidechain/base per token.
-    target_structural = resolve_token_axis(
-        actual_structural,
-        config,
-        "structural_tokens",
-        token_target=target_token,
-        minimum=storage_structural,
-        fixed_size=2 * target_token,
-    )
-    target_atom = common_plan.target["atoms"]
 
     _pad_named_axis(
         padded,
