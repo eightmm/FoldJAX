@@ -101,6 +101,12 @@ the same presets as submission: `--fixed-msa 2048` for its four supported models
 overrides the depth in every script. Mixed models run as separate CLI calls so
 the fixed-MSA flag reaches only supported models, with one report per model.
 One explicit weights path cannot be shared by mixed models.
+The optional `--opendde-padding-profile compact` wrapper flag, or
+`OPENDDE_PADDING_PROFILE=compact`, selects OpenDDE's
+[bounded auxiliary capacities](../../docs/opendde-compact-profile.md) in both
+warm and predict; it is disabled by default. It reaches only OpenDDE in mixed
+submissions. Use the same setting in both scripts. `--exact` clears an
+environment preset and conflicts with an explicitly supplied profile flag.
 Warm and verification default to `--msa single`; an explicit `--msa` selects the
 real job's search policy for exact-input warming or verification.
 

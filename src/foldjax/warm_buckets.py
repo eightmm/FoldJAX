@@ -24,9 +24,15 @@ def parse_token_buckets(
     *,
     model: str,
     options: dict[str, Any] | None = None,
+    padding: PaddingConfig | None = None,
 ) -> tuple[int, ...]:
     model = normalize_model_name(model)
     grid = AF3_TOKEN_BUCKETS if model == "alphafold3" else TOKEN_BUCKETS
+    compact = model == "opendde" and padding and padding.auxiliary_profile
+    if compact:
+        from foldjax._opendde_padding import COMPACT_TARGETS
+
+        grid = tuple(COMPACT_TARGETS)
     if model == "alphafold3" and options and "buckets" in options:
         from foldjax.backends.alphafold3 import _validated_buckets
 
@@ -46,6 +52,8 @@ def parse_token_buckets(
         selected = tuple(value for value in grid if low <= value <= high)
     elif re.fullmatch(r"[0-9]+(?:\s*,\s*[0-9]+)*", text):
         selected = tuple(sorted({int(value) for value in text.split(",")}))
+        if compact and any(value not in grid for value in selected):
+            raise ValueError("token buckets must belong to the OpenDDE compact profile")
         if any(value < 2 for value in selected):
             raise ValueError(
                 "token buckets must be at least 2 for two-length verification"
@@ -162,7 +170,13 @@ def bucket_request(
 ) -> PredictionRequest:
     """Build the representative request shared by warming and presence checks."""
     jobs.mkdir(parents=True, exist_ok=True)
-    source = Job.from_sequences(("A" * length,), name=f"warm-{bucket}-{index}").write(
+    compact = (
+        model == "opendde"
+        and request.padding is not None
+        and request.padding.auxiliary_profile is not None
+    )
+    sequence = (("GA" * ((length + 1) // 2))[:length] if compact else "A" * length)
+    source = Job.from_sequences((sequence,), name=f"warm-{bucket}-{index}").write(
         jobs / f"{model}-{bucket}-{index}.json"
     )
     native_buckets = model == "alphafold3" and "buckets" in request.options
@@ -286,7 +300,9 @@ def warm_token_buckets(
     if len(models) > 1 and request.weights is not None:
         raise ValueError("one explicit weights path cannot be shared by several models")
     selections = {
-        model: parse_token_buckets(spec, model=model, options=dict(request.options))
+        model: parse_token_buckets(
+            spec, model=model, options=dict(request.options), padding=request.padding
+        )
         for model in models
     }
     if request.msa not in {"none", "single"}:
@@ -336,7 +352,16 @@ def warm_token_buckets(
                     for name in ("atoms", "structural_tokens")
                     if getattr(padding, name) is None
                 ]
-                if automatic:
+                if padding.auxiliary_profile:
+                    model_report["shape_coverage"] = {
+                        "kind": "bounded_auxiliary_profile",
+                        "profile": padding.auxiliary_profile,
+                        "note": "OpenDDE compact warming covers the fixed atom/"
+                        "structural capacities only for inputs whose stored axes "
+                        "fit those bounds. Oversized chemistry is refused; explicit "
+                        "axis overrides must match warming and prediction.",
+                    }
+                elif automatic:
                     model_report["shape_coverage"] = {
                         "kind": "representative_concrete_shapes",
                         "automatic_axes": automatic,

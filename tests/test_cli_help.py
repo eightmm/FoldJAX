@@ -228,11 +228,22 @@ def test_esmfold2_plan_reports_capacity_risk_in_every_output_mode(
 
 
 @pytest.mark.parametrize(
-    "lengths,warning_count",
-    [((768, 896), 1), ((768, 896, 1536), 2), ((1536, 896, 768), 1)],
+    "lengths,expected_risks",
+    [
+        ((768, 896, 1024), ()),
+        ((1280, 1408), ("24 GB reported successful limits 1024",)),
+        (
+            (1280, 1408, 1792),
+            (
+                "24 GB reported successful limits 1024",
+                "observed ESMFold2 capacity refusal",
+            ),
+        ),
+        ((1792, 1408, 1280), ("observed ESMFold2 capacity refusal",)),
+    ],
 )
 def test_esmfold2_batch_plan_warns_once_for_each_capacity_risk(
-    tmp_path: Path, monkeypatch, capsys, lengths, warning_count
+    tmp_path: Path, monkeypatch, capsys, lengths, expected_risks
 ) -> None:
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "store"))
     weights = tmp_path / "weights"
@@ -253,8 +264,13 @@ def test_esmfold2_batch_plan_warns_once_for_each_capacity_risk(
         ]) == 0
 
     assert len(json.loads(capsys.readouterr().out)) == len(lengths)
-    assert len(caught) == warning_count
-    assert "24 GB cards with 22-23.5 GiB" in str(caught[0].message)
+    assert len(caught) == len(expected_risks)
+    for warning, risk in zip(caught, expected_risks, strict=True):
+        message = str(warning.message)
+        assert risk in message
+        assert "640-768" not in message
+        if "capacity refusal" in risk:
+            assert "conditional on using that card class" in message
 
 
 def _console_scripts() -> dict[str, str]:

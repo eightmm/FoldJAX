@@ -108,6 +108,7 @@ def test_fresh_workers_keep_repeats_and_continue_after_failure(
         compute_dtype="float32",
         esmc_dtype="bfloat16",
         deterministic=True,
+        compile_esmc_blocks=True,
         replay_barrier=True,
         compiler_fingerprints=fingerprints,
     )
@@ -128,6 +129,7 @@ def test_fresh_workers_keep_repeats_and_continue_after_failure(
             "bench.esmc_state_diagnostics",
         ]
         assert "--worker" in command and "--deterministic" in command
+        assert "--compile-esmc-blocks" in command
         assert "--replay-barrier" in command
         assert ("--compiler-fingerprints" in command) == fingerprints
         assert command[command.index("--packed-length") + 1] == "1026"
@@ -191,6 +193,7 @@ def _matching_controls():
         "esmc_settings": {"d_model": 8},
         "compute_dtype": "bfloat16",
         "deterministic": False,
+        "control_policy": diagnostic._control_policy(SimpleNamespace()),
         "device_kind": "test-device",
         "jax": "test-jax",
         "jaxlib": "test-jaxlib",
@@ -215,6 +218,8 @@ def _matching_controls():
     [
         "actual_esmc_parameters",
         "deterministic",
+        "control_policy",
+        "malformed-policy",
         "execution_environment",
         "missing",
         "malformed",
@@ -244,6 +249,10 @@ def test_mismatched_controls_preserve_raw_pairs_but_are_excluded(tmp_path, chang
         reports[1][changed] = {"sha256": "different-weights"}
     elif changed == "deterministic":
         reports[1][changed] = True
+    elif changed == "control_policy":
+        reports[1][changed]["compile_esmc_blocks"] = True
+    elif changed == "malformed-policy":
+        reports[1]["control_policy"] = {}
     else:
         reports[1][changed]["CUDA_LAUNCH_BLOCKING"] = "1"
     for arm, report in zip(("stack", "buffer"), reports, strict=True):
@@ -251,9 +260,14 @@ def test_mismatched_controls_preserve_raw_pairs_but_are_excluded(tmp_path, chang
     result = diagnostic._comparison(tmp_path)
     (pair,) = result["native_pairwise"]
     assert pair["max_abs_error"] == 1 and pair["controls_match"] is not True
-    if changed in ("missing", "malformed"):
+    if changed in ("missing", "malformed", "malformed-policy", "deterministic"):
         assert pair["controls_match"] is None
-        assert "actual_esmc_parameters" in pair["unverified_control_fields"]
+        expected = (
+            "actual_esmc_parameters"
+            if changed in ("missing", "malformed")
+            else "control_policy"
+        )
+        assert expected in pair["unverified_control_fields"]
     else:
         assert changed in pair["mismatched_control_fields"]
     assert result["native_distributions"]["between-storage"]["pairs"] == 0
@@ -261,18 +275,35 @@ def test_mismatched_controls_preserve_raw_pairs_but_are_excluded(tmp_path, chang
 
 
 @pytest.mark.parametrize("fingerprints", [False, True])
+@pytest.mark.parametrize(
+    "deterministic,compiled",
+    [(False, False), (True, False), (False, True), (True, True)],
+)
 def test_native_worker_reports_cold_warm_without_inserting_a_layer_observer(
-    tmp_path, monkeypatch, fingerprints
+    tmp_path, monkeypatch, fingerprints, deterministic, compiled
 ):
     device = jax.devices("cpu")[0]
     monkeypatch.setenv("CUDA_LAUNCH_BLOCKING", "1")
     monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     monkeypatch.setenv("NVIDIA_TF32_OVERRIDE", "0")
-    monkeypatch.setattr(diagnostic, "_benchmark_runtime", lambda: (jax, device))
+    runtime_calls = []
+    monkeypatch.setattr(
+        diagnostic,
+        "_benchmark_runtime",
+        lambda **kw: (runtime_calls.append(kw) or jax, device),
+    )
     monkeypatch.setattr(diagnostic, "_verify_binding", lambda *args: None)
     loaded, calls = _loaded(), []
     monkeypatch.setattr(inference, "load_language_model_stage", lambda *a, **kw: loaded)
     original = inference.language_model_embedding
+    encode_calls = []
+    original_encode = inference.esmc_model.encode
+
+    def encode(*args, **kwargs):
+        encode_calls.append(kwargs)
+        return original_encode(*args, **kwargs)
+
+    monkeypatch.setattr(inference.esmc_model, "encode", encode)
 
     def embedding(*args, **kwargs):
         calls.append(kwargs)
@@ -296,7 +327,8 @@ def test_native_worker_reports_cold_warm_without_inserting_a_layer_observer(
         output=tmp_path / "worker",
         arm="buffer",
         replicate=2,
-        deterministic=False,
+        deterministic=deterministic,
+        compile_esmc_blocks=compiled,
         packed_length=24,
         compute_dtype=None,
         esmc_dtype="bfloat16",
@@ -320,6 +352,13 @@ def test_native_worker_reports_cold_warm_without_inserting_a_layer_observer(
     assert "structure" not in report["memory"]["scope"]
     assert report["actual_esmc_parameters"]["leaves"]
     assert len(calls) == 2 and all(row["state_storage"] == "buffer" for row in calls)
+    assert runtime_calls == [{"deterministic": deterministic}]
+    assert all(not row["deterministic"] for row in calls)
+    assert len(encode_calls) == 2
+    assert all(row["compile_blocks"] is compiled for row in encode_calls)
+    assert report["control_policy"]["deterministic_requested"] is deterministic
+    assert report["control_policy"]["compile_esmc_blocks"] is compiled
+    assert not report["control_policy"]["per_executable_deterministic"]
 
 
 @pytest.mark.parametrize("failed", [False, True])
@@ -352,6 +391,7 @@ def test_cli_defaults_and_propagates_worker_failure_after_collecting_reports(
     assert captured[0].repeats == 5
     assert captured[0].mode == "native"
     assert not captured[0].compiler_fingerprints and not captured[0].deterministic
+    assert not captured[0].compile_esmc_blocks
 
 
 def _binding_files(tmp_path):
@@ -405,7 +445,8 @@ def test_reanchoring_verifies_content_and_preserves_original_binding(tmp_path):
 @pytest.mark.parametrize(
     "invalid", ["missing-hash", "weight-content", "source", "features"]
 )
-def test_reanchoring_refuses_unverified_provenance(tmp_path, invalid):
+@pytest.mark.parametrize("rebind_probe", [False, True])
+def test_reanchoring_refuses_unverified_provenance(tmp_path, invalid, rebind_probe):
     binding, weights, features, output, source = _binding_files(tmp_path)
     if invalid == "missing-hash":
         document = diagnostic.json.loads(binding.read_text())
@@ -418,7 +459,9 @@ def test_reanchoring_refuses_unverified_provenance(tmp_path, invalid):
     else:
         features.write_bytes(b"different features")
     with pytest.raises(ValueError):
-        diagnostic._reanchor_binding(binding, weights, features, output, source)
+        diagnostic._reanchor_binding(
+            binding, weights, features, output, source, rebind_probe=rebind_probe
+        )
     assert not (output / "local-binding.json").exists()
 
 
@@ -438,7 +481,12 @@ def test_reanchoring_detects_change_during_content_hash(tmp_path, monkeypatch):
     assert not (output / "local-binding.json").exists()
 
 
-def test_reanchored_copy_is_forwarded_to_every_worker(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "reanchor_weights,rebind_probe", [(True, False), (False, True), (True, True)]
+)
+def test_reanchored_copy_is_forwarded_to_every_worker(
+    tmp_path, monkeypatch, reanchor_weights, rebind_probe
+):
     binding = tmp_path / "binding.json"
     binding.write_text("{}")
     output = tmp_path / "result"
@@ -455,11 +503,16 @@ def test_reanchored_copy_is_forwarded_to_every_worker(tmp_path, monkeypatch):
         deterministic=False,
         replay_barrier=False,
         compiler_fingerprints=False,
-        reanchor_weights=True,
+        reanchor_weights=reanchor_weights,
+        rebind_probe=rebind_probe,
     )
 
-    def reanchor(original, weights, features, destination, source_root):
+    def reanchor(original, weights, features, destination, source_root, **kwargs):
         assert original == binding
+        assert kwargs == {
+            "reanchor_weights": reanchor_weights,
+            "rebind_probe": rebind_probe,
+        }
         result = destination / "local-binding.json"
         result.write_text('{"verified": true}')
         return result
@@ -479,5 +532,57 @@ def test_reanchored_copy_is_forwarded_to_every_worker(tmp_path, monkeypatch):
     )
     assert binding.read_text() == "{}"
     plan = diagnostic.json.loads((output / "plan.json").read_text())
-    assert plan["reanchored_weights"]
+    assert plan["reanchored_weights"] is reanchor_weights
+    assert plan["probe_rebound"] is rebind_probe
     assert plan["input_binding_sha256"] != plan["worker_binding_sha256"]
+
+
+@pytest.mark.parametrize("reanchor", [False, True])
+def test_archived_probe_rebinding_is_explicit_content_verified_and_immutable(
+    tmp_path, reanchor
+):
+    binding, weights, features, output, source = _binding_files(tmp_path)
+    document = diagnostic.json.loads(binding.read_text())
+    document["probe_sha256"] = "0" * 64
+    if not reanchor:
+        document["weights"]["checkpoint"]["local_change_anchor"] = (
+            diagnostic._local_anchor(weights / "checkpoint")
+        )
+    diagnostic._write_json(binding, document)
+    original = binding.read_bytes()
+    with pytest.raises(ValueError, match="probe source changed"):
+        diagnostic._reanchor_binding(
+            binding, weights, features, output, source, reanchor_weights=reanchor
+        )
+    assert not (output / "local-binding.json").exists()
+    copied = diagnostic._reanchor_binding(
+        binding,
+        weights,
+        features,
+        output,
+        source,
+        reanchor_weights=reanchor,
+        rebind_probe=True,
+    )
+    after = diagnostic.json.loads(copied.read_text())
+    assert binding.read_bytes() == original
+    assert after["probe_rebinding"]["previous_sha256"] == "0" * 64
+    assert (
+        after["probe_rebinding"]["current_sha256"] == after["probe_sha256"] != "0" * 64
+    )
+    diagnostic._verify_binding(after, weights, source)
+
+
+def test_probe_rebinding_alone_cannot_reanchor_a_changed_checkpoint(tmp_path):
+    binding, weights, features, output, source = _binding_files(tmp_path)
+    with pytest.raises(ValueError, match="checkpoint changed"):
+        diagnostic._reanchor_binding(
+            binding,
+            weights,
+            features,
+            output,
+            source,
+            reanchor_weights=False,
+            rebind_probe=True,
+        )
+    assert not (output / "local-binding.json").exists()

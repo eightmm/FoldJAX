@@ -154,7 +154,9 @@ def _verify_buckets(
         raise ValueError("native AF3 buckets and neutral padding cannot both be set")
     rows = []
     for model in models:
-        grid = parse_token_buckets(spec, model=model, options=dict(request.options))
+        grid = parse_token_buckets(
+            spec, model=model, options=dict(request.options), padding=request.padding
+        )
         default_grid = (
             tuple(request.options["buckets"])
             if model == "alphafold3" and "buckets" in request.options

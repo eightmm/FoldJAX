@@ -54,7 +54,7 @@ from foldjax.manifest import (
 )
 from foldjax.manifest import write as write_manifest
 from foldjax.models._representations import archive_headers, archive_identity
-from foldjax.oom import clear_mesh_record
+from foldjax.oom import clear_mesh_record, is_out_of_memory
 from foldjax.oom import diagnose as diagnose_oom
 from foldjax.output import normalize as normalize_output
 from foldjax.paths import compile_cache_dir
@@ -1779,11 +1779,13 @@ def _predict_once_on_device(
             result = backend.predict(request)
     except SystemExit as error:
         explanation = diagnose_oom(error)
-        if explanation is not None:
+        if explanation is not None and is_out_of_memory(error):
             raise MemoryError(
                 f"{backend.name} ran out of memory: {explanation}"
             ) from error
         detail = str(error).strip() or f"exit status {error.code}"
+        if explanation is not None:
+            detail += f". {explanation}"
         raise PredictionError(
             f"{backend.name} stopped its native runner: {detail}"
         ) from error
@@ -1791,6 +1793,10 @@ def _predict_once_on_device(
         explanation = diagnose_oom(error)
         if explanation is None:
             raise
+        if not isinstance(error, MemoryError) and not is_out_of_memory(error):
+            raise PredictionError(
+                f"{backend.name} failed: {error}. {explanation}"
+            ) from error
         raise MemoryError(f"{backend.name} ran out of memory: {explanation}") from error
     if session_managed:
         try:

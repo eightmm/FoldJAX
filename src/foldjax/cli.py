@@ -337,6 +337,13 @@ def _add_predict_arguments(
         "within +/-0.01. N is required; this remains opt-in",
     )
     shapes.add_argument(
+        "--opendde-padding-profile",
+        choices=("compact",),
+        help="opt-in OpenDDE fixed atom/structural capacities per token bucket "
+        "(through 1536); overflow is refused. Use the same profile for cache "
+        "warming and prediction; explicit --pad-* targets take precedence",
+    )
+    shapes.add_argument(
         "--padding",
         action="store_true",
         help="select a token bucket with derived atom capacity, and pad the MSA "
@@ -1020,6 +1027,14 @@ def _request(
     ``sources`` and ``unreadable`` are :func:`_resolve_inputs`'s.
     """
     fixed_msa = getattr(args, "fixed_msa", None)
+    auxiliary_profile = getattr(args, "opendde_padding_profile", None)
+    if auxiliary_profile is not None:
+        from foldjax._opendde_padding import COMPACT_PROFILE
+
+        if any(normalize_model_name(name) != "opendde" for name in args.model):
+            raise ValueError("--opendde-padding-profile requires only model opendde")
+        auxiliary_profile = COMPACT_PROFILE
+        args.padding = True
     if fixed_msa is not None:
         if fixed_msa <= 0:
             raise ValueError("--fixed-msa N requires a positive integer")
@@ -1076,6 +1091,7 @@ def _request(
         PaddingConfig(
             **padding_values,
             overflow=args.padding_overflow or "error",
+            auxiliary_profile=auxiliary_profile,
         )
         if padding_requested
         else None
@@ -1761,6 +1777,7 @@ def _print_warm_prediction_hint(args: argparse.Namespace) -> None:
         command.append("--padding")
     for attribute, flag in (
         ("fixed_msa", "--fixed-msa"),
+        ("opendde_padding_profile", "--opendde-padding-profile"),
         ("pad_tokens", "--pad-tokens"),
         ("pad_atoms", "--pad-atoms"),
         ("pad_msa", "--pad-msa"),

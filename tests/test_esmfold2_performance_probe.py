@@ -155,8 +155,9 @@ def test_binding_rejects_changed_weights_and_sources(tmp_path):
 
 
 @pytest.mark.parametrize("experiment", ["alignment", "lm-storage", "both"])
+@pytest.mark.parametrize("controls", [False, True])
 def test_coordinator_prepares_tape_in_its_own_process_before_every_arm(
-    tmp_path, monkeypatch, experiment
+    tmp_path, monkeypatch, experiment, controls
 ):
     weights = tmp_path / "weights"
     (weights / "esmc").mkdir(parents=True)
@@ -194,6 +195,9 @@ def test_coordinator_prepares_tape_in_its_own_process_before_every_arm(
         experiment=experiment,
         seed=101,
         smoke=False,
+        deterministic=controls,
+        compile_esmc_blocks=controls and experiment != "both",
+        compiler_fingerprints=controls,
     )
     probe._coordinator(args)
     experiments = probe.DEFAULT_EXPERIMENTS if experiment == "both" else (experiment,)
@@ -202,6 +206,8 @@ def test_coordinator_prepares_tape_in_its_own_process_before_every_arm(
     for offset in (0, per_case):
         assert "--prepare-tape" in calls[offset][0]
         assert "--worker" not in calls[offset][0]
+        assert ("--deterministic" in calls[offset][0]) is controls
+        assert "--compiler-fingerprints" not in calls[offset][0]
         workers = calls[offset + 1 : offset + per_case]
         assert [
             (
@@ -213,10 +219,190 @@ def test_coordinator_prepares_tape_in_its_own_process_before_every_arm(
         for command, kwargs in workers:
             assert "--worker" in command and "--prepare-tape" not in command
             assert kwargs["check"] is True
+            for flag in (
+                "--deterministic",
+                "--compile-esmc-blocks",
+                "--compiler-fingerprints",
+            ):
+                expected = (
+                    controls and experiment != "both"
+                    if flag == "--compile-esmc-blocks"
+                    else controls
+                )
+                assert (flag in command) is expected
     result = probe.json.loads((args.output / "report.json").read_text())
     assert result["full_model_admission"] is None
     plan = probe.json.loads((args.output / "plan.json").read_text())
     assert plan["experiments"] == list(experiments)
     assert plan["samples"] == 5 and plan["smoke_only"] is False
+    assert plan["control_policy"]["deterministic_requested"] is controls
+    assert plan["control_policy"]["compile_esmc_blocks"] is (
+        controls and experiment != "both"
+    )
+    assert plan["compiler_observer_enabled"] is controls
     if experiment == "both":
         assert list(experiments) == ["alignment", "esmc"]
+
+
+def test_deterministic_policy_is_set_before_device_initialization(monkeypatch):
+    import sys
+
+    from foldjax import oom
+
+    monkeypatch.setitem(
+        sys.modules,
+        "jax._src.xla_bridge",
+        SimpleNamespace(backends_are_initialized=lambda: False),
+    )
+    monkeypatch.setenv("XLA_FLAGS", "--xla_force_host_platform_device_count=1")
+    observed = []
+    monkeypatch.setattr(oom, "set_predict_mem_fraction", lambda: None)
+
+    def devices():
+        observed.append(probe.os.environ["XLA_FLAGS"])
+        return [SimpleNamespace(platform="gpu")]
+
+    monkeypatch.setattr(jax, "local_devices", devices)
+    monkeypatch.setattr(jax.config, "update", lambda *args: None)
+    probe._benchmark_runtime(deterministic=True)
+    assert observed == [
+        "--xla_force_host_platform_device_count=1 "
+        "--xla_gpu_deterministic_ops=true --xla_gpu_enable_triton_gemm=false"
+    ]
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        "--xla_gpu_deterministic_ops=false",
+        "--xla_gpu_enable_triton_gemm true",
+        "--xla_gpu_deterministic_ops=true --xla_gpu_deterministic_ops=false",
+    ],
+)
+def test_deterministic_policy_rejects_explicit_conflicts(monkeypatch, existing):
+    monkeypatch.setitem(
+        probe.sys.modules,
+        "jax._src.xla_bridge",
+        SimpleNamespace(backends_are_initialized=lambda: False),
+    )
+    monkeypatch.setenv("XLA_FLAGS", existing)
+    with pytest.raises(ValueError, match="conflicts"):
+        probe._configure_deterministic_runtime(True)
+    assert probe.os.environ["XLA_FLAGS"] == existing
+
+
+def test_deterministic_policy_requires_fresh_process_and_default_is_untouched(
+    monkeypatch,
+):
+    monkeypatch.setitem(
+        probe.sys.modules,
+        "jax._src.xla_bridge",
+        SimpleNamespace(backends_are_initialized=lambda: True),
+    )
+    monkeypatch.setenv("XLA_FLAGS", "caller-flags")
+    probe._configure_deterministic_runtime(False)
+    assert probe.os.environ["XLA_FLAGS"] == "caller-flags"
+    with pytest.raises(RuntimeError, match="fresh process"):
+        probe._configure_deterministic_runtime(True)
+
+
+def test_deterministic_policy_preserves_matching_flags_without_duplication(monkeypatch):
+    monkeypatch.setitem(
+        probe.sys.modules,
+        "jax._src.xla_bridge",
+        SimpleNamespace(backends_are_initialized=lambda: False),
+    )
+    original = "--xla_gpu_deterministic_ops 1 --xla_gpu_enable_triton_gemm=0"
+    monkeypatch.setenv("XLA_FLAGS", original)
+    probe._configure_deterministic_runtime(True)
+    assert probe.os.environ["XLA_FLAGS"] == original
+
+
+def test_fresh_cpu_process_accepts_the_deterministic_startup_flags():
+    environment = {
+        **probe.os.environ,
+        "JAX_PLATFORMS": "cpu",
+        "XLA_FLAGS": "--xla_force_host_platform_device_count=1",
+    }
+    code = """
+from bench.esmfold2_performance_probe import _configure_deterministic_runtime
+_configure_deterministic_runtime(True)
+import jax
+import jax.numpy as jnp
+assert int(jax.jit(lambda x: x + 1)(jnp.array(1))) == 2
+import os
+print(os.environ['XLA_FLAGS'])
+"""
+    completed = probe.subprocess.run(
+        [probe.sys.executable, "-c", code],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert "--xla_gpu_deterministic_ops=true" in completed.stdout
+    assert "--xla_gpu_enable_triton_gemm=false" in completed.stdout
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_encoder_control_does_not_conflate_block_compilation_with_determinism(compiled):
+    calls = []
+    selected = probe._select_encode(
+        lambda *args, **kw: calls.append(kw), compile_blocks=compiled
+    )
+    selected("ids", deterministic=False)
+    assert calls == [{"deterministic": False, "compile_blocks": compiled}]
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [[], ["--deterministic", "--compiler-fingerprints", "--compile-esmc-blocks"]],
+)
+def test_control_flags_are_available_on_the_original_paired_probe(
+    tmp_path, monkeypatch, flags
+):
+    captured = []
+    monkeypatch.setattr(probe, "_coordinator", captured.append)
+    monkeypatch.setattr(
+        probe.sys,
+        "argv",
+        [
+            "probe",
+            "--input",
+            "small.json",
+            "large.json",
+            "--weights",
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "out"),
+            "--experiment",
+            "lm-storage",
+            *flags,
+        ],
+    )
+    probe.main()
+    (args,) = captured
+    assert args.deterministic is bool(flags)
+    assert args.compiler_fingerprints is bool(flags)
+    assert args.compile_esmc_blocks is bool(flags)
+
+
+def test_block_control_cannot_erase_the_existing_esmc_experiment(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        probe.sys,
+        "argv",
+        [
+            "probe",
+            "--input",
+            "small.json",
+            "large.json",
+            "--output",
+            str(tmp_path),
+            "--experiment",
+            "esmc",
+            "--compile-esmc-blocks",
+        ],
+    )
+    with pytest.raises(SystemExit) as error:
+        probe.main()
+    assert error.value.code == 2

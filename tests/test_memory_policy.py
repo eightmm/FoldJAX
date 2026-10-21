@@ -127,6 +127,98 @@ def test_the_allowance_is_part_of_what_is_compared() -> None:
     assert _decide(BOLTZ2_PEAK, 3012, budget).state == "over_budget"
 
 
+@pytest.mark.parametrize(
+    "n_structural,card_gib,pool_gib,measured_peak",
+    [
+        (2752, 47.4, 40.3, 42_529_933_568),
+        (1856, 23.5, 21.2, None),
+    ],
+)
+def test_opendde_measured_small_card_runs_are_uncertain_not_falsely_refused(
+    n_structural, card_gib, pool_gib, measured_peak
+):
+    """A measured fit must not acquire another 10% reserve inside its pool."""
+    pool = int(pool_gib * _GIB)
+    law = OPENDDE_BF16_PEAK
+    assert law.estimate(n_structural) < pool < law.upper(n_structural)
+    if measured_peak is not None:
+        assert measured_peak < pool
+        assert law.estimate(n_structural) == pytest.approx(measured_peak, rel=0.002)
+    budget = resolve_budget(
+        pool_bytes=pool, card_bytes=int(card_gib * _GIB), override_gib=None
+    )
+    with pytest.warns(RuntimeWarning, match="historical uncertainty allowance"):
+        decision = memory_policy.admit(
+            model="opendde",
+            n_token=n_structural,
+            msa_rows=None,
+            candidates=(("bf16 trunk", law),),
+            budget=budget,
+            token_label="structural tokens",
+        )
+    assert decision.state == "unknown"
+    assert decision.threshold == pool
+    assert decision.selected is None
+    assert decision.estimates[0].fits is False
+    assert decision.estimates[0].upper_bytes == law.upper(n_structural)
+    record = memory_policy.recorded()
+    assert record["threshold_bytes"] == pool
+    assert record["state"] == "unknown"
+
+
+def test_opendde_nominal_peak_over_the_actual_pool_still_refuses():
+    law = OPENDDE_BF16_PEAK
+    # The paired gfp7 report predicted 52.2 GiB and actually failed.
+    assert law.estimate(3200) / _GIB == pytest.approx(52.2, abs=0.1)
+    budget = resolve_budget(
+        pool_bytes=int(40.3 * _GIB),
+        card_bytes=int(47.4 * _GIB),
+        override_gib=None,
+    )
+    with pytest.raises(MemoryError, match="52.2 GiB"):
+        memory_policy.admit(
+            model="opendde",
+            n_token=3200,
+            msa_rows=None,
+            candidates=(("bf16 trunk", law),),
+            budget=budget,
+            token_label="structural tokens",
+        )
+    assert memory_policy.recorded()["state"] == "over_budget"
+
+
+@pytest.mark.parametrize("card_gib", [None, 8, 16, 32, 96])
+def test_opendde_new_reserve_policy_does_not_infer_a_physical_card(card_gib):
+    pool = int(40.3 * _GIB)
+    decision = resolve_memory_policy(
+        model="opendde",
+        n_token=2752,
+        msa_rows=None,
+        budget_bytes=pool,
+        card_bytes=None if card_gib is None else int(card_gib * _GIB),
+        candidates=(("bf16 trunk", OPENDDE_BF16_PEAK),),
+    )
+    assert decision.threshold == int(pool * memory_policy.ADMISSION_FRACTION)
+    assert decision.state == "over_budget"
+
+
+def test_opendde_a_smaller_override_remains_the_revised_policy_ceiling():
+    budget = resolve_budget(
+        pool_bytes=int(40.3 * _GIB),
+        card_bytes=int(47.4 * _GIB),
+        override_gib=38,
+    )
+    with pytest.raises(MemoryError, match="38.0 GiB threshold"):
+        memory_policy.admit(
+            model="opendde",
+            n_token=2752,
+            msa_rows=None,
+            candidates=(("bf16 trunk", OPENDDE_BF16_PEAK),),
+            budget=budget,
+        )
+    assert memory_policy.recorded()["threshold_bytes"] == 38 * _GIB
+
+
 # --------------------------------------------------------------------------
 # Everything it refuses to answer
 # --------------------------------------------------------------------------
@@ -1489,7 +1581,7 @@ def test_the_esmfold2_law_carries_no_sample_term_and_binds_at_32_samples() -> No
 
 def test_an_over_budget_esmfold2_run_refuses_and_warn_runs_it_anyway() -> None:
     budget = resolve_budget(
-        pool_bytes=32 * _GIB, card_bytes=40 * _GIB, override_gib=None
+        pool_bytes=32 * _GIB, card_bytes=96 * _GIB, override_gib=None
     )
     lever = "--cp-devices N shards the pair state"
     with pytest.raises(MemoryError) as error:

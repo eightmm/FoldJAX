@@ -14,6 +14,12 @@ The [2026-10-20 plan](cluster-memory-2026-10-20.md) adds process-repeated LM
 diagnostics, the corrected interpretation of stack/buffer differences, finer
 OpenDDE capacities and the confirmed RTX 4090 fraction control.
 
+The [2026-10-21 ESMC panel](esmc-process-variation-2026-10-21.md) separates
+compiler observation, deterministic policy and block compilation, with explicit
+archive migration and final-structure assessment. OpenDDE can use a
+[bounded compact serving profile](opendde-compact-profile.md) to align synthetic
+warming with prediction; its limits still require real-input cluster checks.
+
 The [measurement follow-up](cluster-memory-followup.md) incorporates the
 reported e29548cf cluster results. OpenDDE row chunks changed the reported
 768-token temporary arena by only about 2.5%, without a latency benefit, and

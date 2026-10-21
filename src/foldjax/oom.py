@@ -387,6 +387,10 @@ def _module_failure(message: str) -> bool:
     )
 
 
+def _solver_handle_failure(message: str) -> bool:
+    return re.search(r"(?:gpu|cu)solverdncreate\([^)]*\)\s+failed", message) is not None
+
+
 def _cuda_launch_oom(message: str) -> bool:
     cuda_oom = any(
         marker in message
@@ -410,9 +414,10 @@ def _cuda_launch_oom(message: str) -> bool:
 
 
 def is_outside_pool_oom(error: BaseException) -> bool:
-    """Recognize module-only OOMs; a launch can report an earlier async error."""
+    """Recognize CUDA module/library OOMs, retaining ambiguous launch failures."""
     return is_out_of_memory(error) and all(
-        _module_failure(str(leaf).lower()) for leaf in _leaf_errors(error)
+        _module_failure(str(leaf).lower()) or _solver_handle_failure(str(leaf).lower())
+        for leaf in _leaf_errors(error)
     )
 
 
@@ -496,11 +501,26 @@ def device_budget() -> tuple[int | None, int | None]:
 
 
 def diagnose(error: BaseException) -> str | None:
-    """Explain an OOM against the pool, or return ``None`` if it cannot be read.
+    """Explain pool OOMs and CUDA handle failures when their evidence is useful.
 
     Silent about anything it cannot establish: a wrong explanation of a failure
     costs more than no explanation.
     """
+    leaves = _leaf_errors(error)
+    if all(_solver_handle_failure(str(leaf).lower()) for leaf in leaves):
+        message = (
+            "CUDA cuSolver handle creation failed. CUDA library/context memory "
+            "outside the allocator's pool may be exhausted, but handle creation "
+            "alone does not establish a memory allocation failure; inspect the "
+            "original CUDA/cuSolver status. Restart the process to recreate the "
+            "CUDA context. If allocation failure is confirmed, lower "
+            f"{configured_fraction_env() or CURRENT_FRACTION_ENV}, for example "
+            "from 0.9 to 0.8-0.85 (below the current fraction if already lower), "
+            "before restarting to leave more room outside the pool. Increasing "
+            "the pool fraction leaves less room for CUDA libraries."
+        )
+        mesh = recorded_mesh()
+        return message if mesh is None else f"{message} {_mesh_sentences(mesh)}"
     if not is_out_of_memory(error):
         return None
     if is_outside_pool_oom(error):
@@ -516,7 +536,6 @@ def diagnose(error: BaseException) -> str | None:
         )
         mesh = recorded_mesh()
         return message if mesh is None else f"{message} {_mesh_sentences(mesh)}"
-    leaves = _leaf_errors(error)
     if any(
         _module_failure(str(leaf).lower()) or _cuda_launch_oom(str(leaf).lower())
         for leaf in leaves

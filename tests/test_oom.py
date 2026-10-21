@@ -536,6 +536,80 @@ def test_module_names_without_an_oom_do_not_change_the_classification():
 
 
 @pytest.mark.parametrize(
+    "message",
+    [
+        "jaxlib/gpu/solver_handle_pool.cc:37: gpusolverDnCreate(&handle) failed",
+        "gpusolverDnCreate(&handle) failed: cuSolver internal error",
+        "cusolverDnCreate(&handle) failed: CUSOLVER_STATUS_NOT_INITIALIZED",
+    ],
+)
+def test_solver_handle_creation_has_cautious_outside_pool_guidance(
+    message, monkeypatch
+):
+    def unexpected_stats():
+        pytest.fail("handle creation alone must not query a failed GPU runtime")
+
+    monkeypatch.setattr(oom, "_pool_card_and_used", unexpected_stats)
+    monkeypatch.setenv(oom.CURRENT_FRACTION_ENV, "0.9")
+    error = RuntimeError(message)
+
+    assert not oom.is_out_of_memory(error)
+    assert not oom.is_outside_pool_oom(error)
+    explanation = oom.diagnose(error)
+    assert "CUDA library/context memory outside the allocator's pool" in explanation
+    assert "does not establish a memory allocation failure" in explanation
+    assert "original CUDA/cuSolver status" in explanation
+    assert "Restart the process" in explanation
+    assert f"lower {oom.CURRENT_FRACTION_ENV}" in explanation
+    assert "0.8-0.85" in explanation
+    assert "=0.95" not in explanation
+
+
+def test_solver_handle_creation_with_explicit_oom_is_outside_pool():
+    error = RuntimeError(
+        "jaxlib/gpu/solver_handle_pool.cc:37: gpusolverDnCreate(&handle) failed: "
+        "CUDA_ERROR_OUT_OF_MEMORY"
+    )
+    assert oom.is_out_of_memory(error)
+    assert oom.is_outside_pool_oom(error)
+    assert "outside the allocator's pool" in oom.diagnose(error)
+
+
+def test_unconfirmed_solver_handle_failure_does_not_stop_larger_warm_buckets():
+    from foldjax.warm_buckets import _failed_row
+
+    row = {}
+    _failed_row(row, RuntimeError("gpusolverDnCreate(&handle) failed"))
+    assert row["status"] == "failed"
+    assert not row["oom"]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "cuSolver eigendecomposition failed: singular matrix",
+        "gpusolverDnSgesvd failed: numerical convergence error",
+        "solver_handle_pool.cc:37: invalid solver argument",
+    ],
+)
+def test_solver_numerical_errors_do_not_become_outside_pool_failures(message):
+    error = RuntimeError(message)
+    assert not oom.is_out_of_memory(error)
+    assert not oom.is_outside_pool_oom(error)
+    assert oom.diagnose(error) is None
+
+
+def test_mixed_solver_handle_and_numerical_errors_retain_their_original_causes():
+    error = ExceptionGroup("solver attempts", [
+        RuntimeError("gpusolverDnCreate(&handle) failed"),
+        ValueError("singular matrix"),
+    ])
+    assert not oom.is_out_of_memory(error)
+    assert not oom.is_outside_pool_oom(error)
+    assert oom.diagnose(error) is None
+
+
+@pytest.mark.parametrize(
     "launch",
     (
         "Kernel launch failed",

@@ -66,7 +66,8 @@ old stack path. The later cluster comparison found exact cold/warm agreement
 within every process, but large compact-embedding differences between some
 fresh processes in both storage modes. This does not isolate a buffer defect
 or establish a kernel cause. Neither storage mode is promoted from that panel.
-See [the process-reproducibility diagnostic](cluster-memory-2026-10-20.md) and
+See [the repeated-process controls and structural assessment](esmc-process-variation-2026-10-21.md),
+[the earlier process diagnostic](cluster-memory-2026-10-20.md) and
 the earlier [measurement follow-up](cluster-memory-followup.md)
 for capacity tests and the separate five-sample `lm-storage` paired experiment.
 

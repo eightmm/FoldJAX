@@ -1,5 +1,26 @@
 # Compilation cache compatibility
 
+## 2026-10-21: bounded OpenDDE serving profiles and admission
+
+No existing model namespace revision changes. Memory-admission updates,
+cuSolver diagnostics and the opt-in ESMC measurement controls do not require
+rewarming working default caches for any of the six models.
+
+OpenDDE's optional `--opendde-padding-profile compact` fixes auxiliary targets
+within each supported token bucket. **Warm missing OpenDDE compact shapes**
+with the same option used for prediction. Padding policy metadata does not
+split the outer namespace; JAX distinguishes the concrete input/HLO keys.
+Existing entries with identical shapes and execution options remain eligible,
+and ordinary OpenDDE padding is unchanged. This bounded profile refuses inputs
+that exceed its auxiliary capacities instead of silently growing or truncating
+them. See the [profile table and cluster checks](opendde-compact-profile.md).
+
+ESMFold2 retains its default numerical path and compiled signatures. Its
+observed 48 GB refusal at 1792 or more tokens is an admission decision, not a
+graph change. The new [process-variation controls](esmc-process-variation-2026-10-21.md)
+are explicitly labelled experiments; their deterministic or compiled-block
+arms are not changes to prediction defaults.
+
 ## 2026-10-20: editable and fixed-install source paths
 
 FoldJAX defaults `jax_hlo_source_file_canonicalization_regex` to exactly

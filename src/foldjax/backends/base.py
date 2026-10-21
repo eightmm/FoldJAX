@@ -336,6 +336,12 @@ class Backend(ABC):
         neutral knob, execution value, or misspelled native option is knowable
         without loading weights and must have the same answer in both paths.
         """
+        if (
+            request.padding is not None
+            and request.padding.auxiliary_profile is not None
+            and self.name != "opendde"
+        ):
+            raise ValueError("the OpenDDE auxiliary padding profile requires opendde")
         capabilities = self.capabilities()
         if request.input_format not in capabilities.input_formats:
             raise ValueError(

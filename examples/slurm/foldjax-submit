@@ -8,6 +8,7 @@ PARTITION_CPU="${PARTITION_CPU:-}"
 MODULE="${MODULE:-}"
 DEFAULT_MSA="${DEFAULT_MSA:-single}"
 FIXED_MSA_DEPTH="${FIXED_MSA_DEPTH:-2048}"
+OPENDDE_PADDING_PROFILE="${OPENDDE_PADDING_PROFILE:-}"
 
 set -euo pipefail
 
@@ -20,6 +21,7 @@ Usage: foldjax-submit -m MODEL [-m MODEL ...] -o OUTDIR [OPTIONS] -- PREDICT_ARG
   --time LIMIT        Slurm wall time (otherwise the site's default)
   --shards N          submit an array and pass --shard auto to predict
   --fixed-msa N       fixed MSA rows for Boltz-2/Protenix/OpenFold3/OpenDDE (default: 2048)
+  --opendde-padding-profile compact  opt-in fixed OpenDDE auxiliary capacities
   --exact             disable automatic padding and the FIXED_MSA_DEPTH preset
   --dry-run           print commands; run neither FoldJAX nor sbatch
 With auto MSA, PREDICT_ARGS must include --input PATH [PATH ...].
@@ -47,12 +49,16 @@ model_preset() {
         alphafold3|esmfold2)
             if ((!exact)); then preset=(--padding); fi ;;
     esac
+    if [[ $1 == opendde && -n $OPENDDE_PADDING_PROFILE ]]; then
+        preset+=(--opendde-padding-profile "$OPENDDE_PADDING_PROFILE")
+    fi
 }
 
 models=() output='' msa="$DEFAULT_MSA" gpu='' time_limit='' shards=1 dry_run=0 exact=0
 partition_override=''
 shard_requested=0
 explicit_fixed=0
+explicit_profile=0
 while (($#)); do
     case "$1" in
         -m|--model)
@@ -67,6 +73,8 @@ while (($#)); do
         --shards) need_value "$@"; shards=$2; shard_requested=1; shift 2 ;;
         --fixed-msa)
             need_value "$@"; FIXED_MSA_DEPTH=$2; explicit_fixed=1; shift 2 ;;
+        --opendde-padding-profile)
+            need_value "$@"; OPENDDE_PADDING_PROFILE=$2; explicit_profile=1; shift 2 ;;
         --exact) exact=1; shift ;;
         --dry-run) dry_run=1; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -81,7 +89,12 @@ predict_args=("$@")
 [[ $msa == auto || $msa == single ]] || die '--msa must be auto or single'
 [[ $shards =~ ^[1-9][0-9]*$ && ${#shards} -le 9 ]] || die '--shards must be a positive integer of at most 9 digits'
 ((!exact || !explicit_fixed)) || die '--exact and --fixed-msa cannot be combined'
-if ((exact)); then FIXED_MSA_DEPTH=''; fi
+((!exact || !explicit_profile)) || die '--exact and --opendde-padding-profile cannot be combined'
+if ((exact)); then FIXED_MSA_DEPTH=''; OPENDDE_PADDING_PROFILE=''; fi
+[[ -z $OPENDDE_PADDING_PROFILE || $OPENDDE_PADDING_PROFILE == compact ]] || die 'OPENDDE_PADDING_PROFILE must be compact or empty'
+if ((explicit_profile)) && [[ " ${models[*]} " != *' opendde '* ]]; then
+    die '--opendde-padding-profile requires an OpenDDE model'
+fi
 [[ -z $FIXED_MSA_DEPTH || $FIXED_MSA_DEPTH =~ ^[1-9][0-9]*$ ]] || die 'FIXED_MSA_DEPTH/--fixed-msa must be a positive integer'
 gpu_partition=$PARTITIONS_GPU
 if [[ -n $gpu ]]; then
@@ -100,7 +113,7 @@ for ((index=0; index<${#predict_args[@]}; index++)); do
     case "$value" in
         --batch-output|--batch-output=*)
             die '--batch-output is managed by this wrapper; omit it after --' ;;
-        --model|--model=*|--output-dir|--output-dir=*|--msa|--msa=*|--shard|--shard=*|--fixed-msa|--fixed-msa=*)
+        --model|--model=*|--output-dir|--output-dir=*|--msa|--msa=*|--shard|--shard=*|--fixed-msa|--fixed-msa=*|--opendde-padding-profile|--opendde-padding-profile=*)
             die "set $value with the wrapper options before --" ;;
         --input)
             while ((index+1<${#predict_args[@]})) && [[ ${predict_args[index+1]} != -* ]]; do

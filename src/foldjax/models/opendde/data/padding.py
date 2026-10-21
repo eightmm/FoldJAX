@@ -118,6 +118,7 @@ def _resolve_auxiliary_targets(
     *,
     atom_storage: int,
     structural_storage: int,
+    token_storage: int | None = None,
 ) -> tuple[int, int]:
     """Keep independent axes near their stored size, without shrinking them.
 
@@ -126,6 +127,45 @@ def _resolve_auxiliary_targets(
     structural buckets retain 64-token granularity and the mesh's divisibility.
     Explicit pins keep their exact shape and existing CP fallback semantics.
     """
+    if config.auxiliary_profile is not None:
+        from foldjax._opendde_padding import compact_targets
+
+        if token_storage is None:
+            raise ValueError("the compact profile requires the stored token count")
+        bucket = resolve_axis(
+            token_storage,
+            PaddingConfig(tokens=config.tokens, overflow=config.overflow),
+            "tokens",
+        )
+        atom_cap, structural_cap = compact_targets(bucket)
+        rows = cp_rows(config)
+        atom_cap = ((atom_cap + 32 * rows - 1) // (32 * rows)) * (32 * rows)
+        unit = lcm(64, rows)
+        structural_cap = ((structural_cap + unit - 1) // unit) * unit
+        for axis, stored, cap, flag in (
+            ("atoms", atom_storage, atom_cap, "--pad-atoms"),
+            (
+                "structural_tokens",
+                structural_storage,
+                structural_cap,
+                "--pad-structural-tokens",
+            ),
+        ):
+            if getattr(config, axis) is None and stored > cap:
+                raise ValueError(
+                    f"OpenDDE compact {bucket}-token profile: stored {axis} "
+                    f"{stored} exceeds capacity {cap}; choose a larger token "
+                    f"bucket or explicitly set {flag} and warm that same shape."
+                )
+        config = replace(
+            config,
+            atoms=atom_cap if config.atoms is None else config.atoms,
+            structural_tokens=(
+                structural_cap
+                if config.structural_tokens is None
+                else config.structural_tokens
+            ),
+        )
     atoms = resolve_axis(atom_storage, config, "atoms")
     structural = resolve_axis(
         structural_storage,
@@ -209,6 +249,7 @@ def pad_opendde_features(
         config,
         atom_storage=storage_atom,
         structural_storage=storage_structural,
+        token_storage=storage_token,
     )
 
     # The raw MSA is not a graph input once sampled cycles are supplied.  Do

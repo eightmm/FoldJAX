@@ -30,9 +30,11 @@ import importlib.metadata
 import json
 import os
 import resource
+import shlex
 import subprocess
 import sys
 import time
+from contextlib import nullcontext
 from dataclasses import asdict, replace
 from functools import partial
 from pathlib import Path
@@ -180,7 +182,66 @@ def _host_arrays(values):
     }
 
 
-def _benchmark_runtime():
+def _configure_deterministic_runtime(deterministic):
+    if not deterministic:
+        return
+    bridge = sys.modules.get("jax._src.xla_bridge")
+    if bridge is not None and bridge.backends_are_initialized():
+        raise RuntimeError(
+            "--deterministic requires a fresh process before JAX backend initialization"
+        )
+    from foldjax.models._compile_policy import DETERMINISTIC_COMPILER_OPTIONS
+
+    original = os.environ.get("XLA_FLAGS", "")
+    tokens = shlex.split(original)
+    additions = []
+    for name, expected in DETERMINISTIC_COMPILER_OPTIONS.items():
+        values = []
+        for index, token in enumerate(tokens):
+            if token.startswith(f"--{name}="):
+                values.append(token.partition("=")[2].lower())
+            elif token == f"--{name}":
+                values.append(
+                    tokens[index + 1].lower()
+                    if index + 1 < len(tokens)
+                    and not tokens[index + 1].startswith("--")
+                    else "true"
+                )
+        accepted = ("true", "1") if expected else ("false", "0")
+        if any(value not in accepted for value in values):
+            raise ValueError(f"--deterministic conflicts with XLA_FLAGS option {name}")
+        if not values:
+            additions.append(f"--{name}={str(expected).lower()}")
+    os.environ["XLA_FLAGS"] = " ".join(filter(None, (original, *additions)))
+
+
+def _control_policy(args):
+    deterministic = bool(getattr(args, "deterministic", False))
+    from foldjax.models._compile_policy import DETERMINISTIC_COMPILER_OPTIONS
+
+    return {
+        "deterministic_requested": deterministic,
+        "deterministic_scope": (
+            "process-wide XLA options, set before backend initialization"
+        ),
+        "deterministic_compiler_options": dict(DETERMINISTIC_COMPILER_OPTIONS)
+        if deterministic
+        else {},
+        "compile_esmc_blocks": bool(getattr(args, "compile_esmc_blocks", False)),
+        "per_executable_deterministic": False,
+    }
+
+
+def _select_encode(original, *, compile_blocks):
+    def selected(*positional, **keywords):
+        keywords["compile_blocks"] = compile_blocks
+        return original(*positional, **keywords)
+
+    return selected
+
+
+def _benchmark_runtime(*, deterministic=False):
+    _configure_deterministic_runtime(deterministic)
     from foldjax import oom
 
     oom.set_predict_mem_fraction()
@@ -215,7 +276,9 @@ def _tape_identity(args, settings, binding):
 
 
 def _prepare_tape(args):
-    jax, device = _benchmark_runtime()
+    jax, device = _benchmark_runtime(
+        deterministic=getattr(args, "deterministic", False)
+    )
     from foldjax.models.esmfold2 import inference
 
     features = _npz(args.features)
@@ -250,13 +313,17 @@ def _prepare_tape(args):
 
 
 def _worker(args) -> None:
-    jax, device = _benchmark_runtime()
+    jax, device = _benchmark_runtime(
+        deterministic=getattr(args, "deterministic", False)
+    )
 
     from foldjax.models._chain_profile import chain_capacity
     from foldjax.models.esmfold2 import inference
     from foldjax.models.esmfold2.models import atom, esmc, model
 
     options = arm_options(args.experiment, args.arm)
+    if getattr(args, "compile_esmc_blocks", False):
+        options["compile_esmc_blocks"] = True
     # These development owners must never populate a managed serving cache.
     destination = args.output.resolve()
     destination.mkdir(parents=True, exist_ok=False)
@@ -289,6 +356,13 @@ def _worker(args) -> None:
             )
         },
         "persistent_compilation_cache": False,
+        "control_policy": {
+            **_control_policy(args),
+            "compile_esmc_blocks": options["compile_esmc_blocks"],
+        },
+        "compiler_observer_enabled": bool(
+            getattr(args, "compiler_fingerprints", False)
+        ),
         "rng_scope": (
             "shared explicit diffusion tape; other native consumers use "
             "unchanged key/features"
@@ -308,21 +382,30 @@ def _worker(args) -> None:
     def phase(name):
         _write_json(destination / "phase.json", {"phase": name, "report": report})
 
-    with jax.default_device(device):
+    observation = nullcontext()
+    if report["compiler_observer_enabled"]:
+        from bench import compilation_profile
+        from bench.compilation_profile import observe_compilation
+
+        report["compiler_observer_source_sha256"] = _sha256(
+            Path(compilation_profile.__file__)
+        )
+        report["compilation_observation"] = {}
+        report["compiler_observer_interference"] = (
+            "opt-in HLO hashing can perturb compilation and startup scheduling"
+        )
+        observation = observe_compilation(
+            report["compilation_observation"], fingerprint_hlo=True
+        )
+    with jax.default_device(device), observation:
         phase("load_language_model_stage")
         staged, report["lm_weight_load_seconds"] = _timed(
             lambda: inference.load_language_model_stage(args.weights)
         )
         native_settings = staged.settings
-        original_encode = esmc.encode
-
-        def selected_encode(*positional, **keywords):
-            if keywords.get("deterministic", False):
-                raise ValueError(
-                    "this experiment preserves nondeterministic released policy"
-                )
-            keywords["compile_blocks"] = bool(options["compile_esmc_blocks"])
-            return original_encode(*positional, **keywords)
+        selected_encode = _select_encode(
+            esmc.encode, compile_blocks=bool(options["compile_esmc_blocks"])
+        )
 
         phase("language_model_cold_and_warm")
         with patch.object(esmc, "encode", selected_encode):
@@ -474,6 +557,12 @@ def _worker(args) -> None:
         report["output_schema"] = _save_outputs(destination, "jax", host, native=False)
         report["memory"] = _memory(device)
         _verify_binding(binding, args.weights, source_root)
+        if (
+            report["compiler_observer_enabled"]
+            and _sha256(Path(compilation_profile.__file__))
+            != report["compiler_observer_source_sha256"]
+        ):
+            raise ValueError("compiler observer source changed during execution")
         report["status"] = "completed"
         _write_json(destination / "report.json", report)
         phase("completed")
@@ -619,6 +708,10 @@ def _coordinator(args) -> None:
             "smoke_only": args.smoke,
             "coordinate_diagnostic_angstrom": 0.05,
             "full_model_admission": None,
+            "control_policy": _control_policy(args),
+            "compiler_observer_enabled": bool(
+                getattr(args, "compiler_fingerprints", False)
+            ),
             "cases": [item[2] for item in prepared],
         },
     )
@@ -642,6 +735,8 @@ def _coordinator(args) -> None:
         ]
         if args.smoke:
             command.append("--smoke")
+        if getattr(args, "deterministic", False):
+            command.append("--deterministic")
         print(f"{directory.name}: prepare shared native tape", flush=True)
         with (directory / "tape-prepare.log").open("w") as log:
             subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
@@ -670,6 +765,13 @@ def _coordinator(args) -> None:
                 ]
                 if args.smoke:
                     command.append("--smoke")
+                for name in (
+                    "deterministic",
+                    "compile_esmc_blocks",
+                    "compiler_fingerprints",
+                ):
+                    if getattr(args, name, False):
+                        command.append("--" + name.replace("_", "-"))
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 print(f"{directory.name}: {experiment}/{arm}", flush=True)
                 with (destination.parent / f"{arm}.log").open("w") as log:
@@ -706,12 +808,38 @@ def main():
     )
     parser.add_argument("--seed", type=int, default=101)
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help=(
+            "set process-wide deterministic XLA policy before backend initialization; "
+            "block compilation is independent"
+        ),
+    )
+    parser.add_argument(
+        "--compile-esmc-blocks",
+        action="store_true",
+        help=(
+            "compile LM blocks in all arms; separate control for "
+            "lm-storage/alignment experiments"
+        ),
+    )
+    parser.add_argument(
+        "--compiler-fingerprints",
+        action="store_true",
+        help="opt-in HLO observer; can perturb compilation and startup scheduling",
+    )
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--prepare-tape", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--arm", choices=ARMS, help=argparse.SUPPRESS)
     parser.add_argument("--features", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--binding", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.compile_esmc_blocks and args.experiment in ("esmc", "both"):
+        parser.error(
+            "--compile-esmc-blocks requires --experiment lm-storage or alignment; "
+            "esmc already varies block compilation"
+        )
     if args.weights is None:
         from foldjax.paths import weights_dir
 

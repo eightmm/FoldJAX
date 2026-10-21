@@ -1624,6 +1624,47 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                         n_msa=padding_plan.target["msa"],
                     )
                     lm_target = padding_plan.target.get("language_model_tokens")
+                # Managed sessions run ESMC before `inference.predict`, where
+                # native admission lives. Refuse the measured failed profile
+                # here too, after its executable token axis is known and before
+                # computing an embedding or materializing structure weights.
+                memory_budget = overrides["memory_budget"]
+                token_mask = model_features.get("token_attention_mask")
+                if (
+                    not _lower_only
+                    and overrides["memory_check"] == "refuse"
+                    and token_mask is not None
+                    and memory_policy.observed_capacity(
+                        "esmfold2",
+                        int(token_mask.shape[-1]),
+                        memory_budget.budget_bytes,
+                        card_bytes=memory_budget.card_bytes,
+                    )["refusal"]
+                    is not None
+                ):
+                    settings = model.settings
+                    off_profile = memory_policy.esmfold2_off_profile_reason(
+                        num_samples=overrides.get("num_samples", settings.num_samples),
+                        cp_shards=overrides.get("cp_shards", 1),
+                        stop_after_inputs=request.stop_after == "inputs",
+                        lm_state_storage=lm_state_storage,
+                        glu_backend=overrides.get(
+                            "glu_backend", settings.diffusion.glu_backend
+                        ),
+                        rigid_align_backend=overrides.get(
+                            "rigid_align_backend",
+                            settings.diffusion.rigid_align_backend,
+                        ),
+                    )
+                    if not off_profile:
+                        memory_policy.admit(
+                            model="esmfold2",
+                            n_token=int(token_mask.shape[-1]),
+                            msa_rows=None,
+                            candidates=(("released", memory_policy.ESMFOLD2_PEAK),),
+                            budget=memory_budget,
+                            mode="refuse",
+                        )
                 if request.stop_after == "inputs":
                     lm_input = {}
                 elif _lower_only:

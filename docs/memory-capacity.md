@@ -1,9 +1,10 @@
 # Observed GPU capacity
 
 Reported capacity and fitted peak estimates answer different questions. The
-frozen peak laws retain their calibration data, coefficients, and refusal
-rules. User-reported successful buckets are not peak measurements from which
-to fit new coefficients.
+frozen peak laws retain their calibration data and coefficients. User-reported
+successful buckets are not peak measurements from which to fit new
+coefficients. The dated admission changes below distinguish a fitted peak
+from an operating limit or an uncertainty allowance.
 
 ## Reports from 2026-10-17 (historical)
 
@@ -71,8 +72,57 @@ The [2026-10-20 follow-up](cluster-memory-2026-10-20.md) reports RTX 4090
 Boltz-2 at 1536 tokens succeeding at fraction 0.8 or below, and OpenDDE at
 1024 tokens succeeding with structural capacity 1856. These are conditional
 observations, not replacements for the historical fitted laws. ESMFold2's
-A6000 1792-token success was single-chain warming; the reported multichain
-failure does not establish that single-chain limit and is being checked.
+A6000 1792-token success was single-chain warming; the later actual-input
+checks below supersede it for the deployment's default admission policy.
+
+## Reports and admission changes from 2026-10-21
+
+The fixed installation at `f787bdda` passed the cluster's 21-case validation
+on RTX 3090, RTX 4090, RTX A5000 and RTX A6000. That finite panel does not
+establish every input's capacity or local real-weight GPU reproduction.
+
+| Model/configuration | Reported completion | Reported failure |
+| --- | --- | --- |
+| ESMFold2, 24 GB RTX 3090/4090/A5000 | 1024-token warming | No new larger-input failure bound supplied |
+| ESMFold2, A6000 48 GB | 1536-token warming and multichain gfp6 | 1792 tokens, both single-chain gfp7sc (1726 real residues) and multichain gfp7 |
+| OpenDDE, A6000 48 GB, gfp6, pool fraction 0.85 | 1536 public tokens / 2752 structural tokens / 12288 atoms / 2048 MSA rows, using `--memory-check warn` | gfp7, fitted nominal peak 52.2 GiB |
+
+ESMFold2's failure requested a 29.16 GiB block from `jit__run`. That is a
+failed allocation, not a measurement of the whole run's peak. The historical
+continuous peak fit is unchanged. On a physically identified 48 GB class
+device, the default single-device released path now refuses **executable
+token counts of 1792 or more** before the LM forward. The count includes
+serving padding, so 1726 residues padded to 1792 reaches that refusal. This
+is an explicitly conservative operating policy from finite outcomes, not a
+proof of a physical boundary or a promise that every smaller input fits.
+`--memory-check warn` runs it anyway. Existing unmeasured alternatives such
+as context parallelism, buffered LM states or solver-free alignment retain
+their advisory treatment; no new capacity is claimed for them.
+
+OpenDDE's gfp6 peak was **42,529,933,568 bytes (39.61 GiB)**, with
+37,961,062,880 temporary bytes and a reported 980-second execution. The
+frozen law predicts 39.65 GiB at 2752 structural tokens; its historical
+1171 MiB uncertainty allowance raises that to 40.79 GiB. The approximately
+40.3 GiB allocator pool already excludes the device memory reserved outside
+the pool. Applying another factor of 0.9 reduced admission to 36.3 GiB and
+falsely refused this completed run.
+
+For OpenDDE on identified 24/48 GB physical classes, admission now compares
+against the **full effective pool budget**, including any smaller explicit
+`--memory-budget-gib` ceiling. The fitted coefficients and uncertainty
+allowance stay in the record. An upper estimate within that ceiling fits;
+a nominal estimate that fits while its allowance crosses the ceiling is
+`unknown` and proceeds with an uncertainty warning. A nominal estimate above
+the ceiling still refuses inside the fitted domain: the 52.2 GiB gfp7
+prediction remains over a 40.3 GiB pool. Below the fitted domain, the existing
+rule against refusing an extrapolation remains in force.
+
+These physical classes use the existing observed-capacity bins, 20–24.5 GiB
+and 40–48.5 GiB. Unidentified cards, other classes and the historical 96 GB
+measurements retain the original factor of 0.9; a 40 GiB planning override
+does not establish that a card is an A6000. No new repeat spread is invented
+from the single gfp6 peak, and no precision, model graph or cache key changes
+are involved.
 
 Planning and execution use the same `observed_capacity` assessment. It records
 the model, token axis/count, actual card and allocator/planning budget when
@@ -86,8 +136,11 @@ that device as a 24 GB card.
 The run manifest's `memory.observed_capacity` supplements the fitted decision.
 A fitted `fits` verdict still refers to that law and budget; the separate
 capacity warning can identify risks it did not measure. Reports outside the
-tested limits warn rather than inventing a hard refusal. Native fitted
-over-budget refusals remain in force.
+tested limits normally warn. ESMFold2's dated 48 GB operating refusal is the
+explicit exception: `refusal` records it for an identified card, while
+`conditional_refusal` records it for planning without a physical device.
+Planning remains `unknown` about an actual card and explains that the same
+policy would refuse on that class; it does not initialize JAX to infer one.
 
 ## Allocator policy and failures
 
@@ -109,3 +162,9 @@ ambiguous; it does not by itself prove outside-pool exhaustion or justify an
 instruction to increase the fraction to 0.95. Ordinary allocator-buffer OOMs
 retain their pool diagnosis. Pool capacity plus post-failure usage does not
 establish the failed allocation's peak requirement.
+
+A `gpusolverDnCreate(&handle) failed` / `cusolverDnCreate(...) failed` message
+also receives CUDA-library/context guidance. Handle creation alone does not
+establish OOM: the API retains a non-OOM error unless an allocation-failure
+status is present, and bucket warming stops only for confirmed OOM. Inspect
+the original status before attributing it to outside-pool exhaustion.

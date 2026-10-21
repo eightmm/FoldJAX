@@ -36,8 +36,10 @@ import numpy as np
 
 from bench.esmfold2_performance_probe import (
     _benchmark_runtime,
+    _control_policy,
     _local_anchor,
     _memory,
+    _select_encode,
     _timed,
     _verify_binding,
     _write_json,
@@ -54,6 +56,7 @@ _CONTROL_TYPES = {
     "esmc_settings": (dict,),
     "compute_dtype": (str,),
     "deterministic": (bool,),
+    "control_policy": (dict,),
     "device_kind": (str,),
     "jax": (str,),
     "jaxlib": (str,),
@@ -143,6 +146,22 @@ def _pair_controls(left, right):
                 name == "compiler_observer_source_sha256"
                 and document.get("compiler_observer_enabled") is True
                 and value is None
+            )
+            or (
+                name == "control_policy"
+                and (
+                    any(
+                        type(value.get(field)) is not expected
+                        for field, expected in (
+                            ("deterministic_requested", bool),
+                            ("deterministic_scope", str),
+                            ("deterministic_compiler_options", dict),
+                            ("compile_esmc_blocks", bool),
+                            ("per_executable_deterministic", bool),
+                        )
+                    )
+                    or value["deterministic_requested"] != document.get("deterministic")
+                )
             )
             for document, value in zip((left, right), values, strict=True)
         ):
@@ -331,7 +350,7 @@ def _replay(directory, records, expand_map, loaded, *, deterministic, barrier):
 
 
 def _worker(args):
-    jax, device = _benchmark_runtime()
+    jax, device = _benchmark_runtime(deterministic=args.deterministic)
     from foldjax.models.esmfold2 import inference
 
     features, binding = _npz(args.features), json.loads(args.binding.read_text())
@@ -372,12 +391,13 @@ def _worker(args):
         "compiler_observer_enabled": args.compiler_fingerprints,
         "compiler_observer_source_sha256": None,
         "deterministic": args.deterministic,
+        "control_policy": _control_policy(args),
         "packed_length": args.packed_length,
         "scope": "LM only; no structure inference, admission or capacity claim",
         "full_model_admission": None,
         "deterministic_control_scope": (
-            "deterministic also enables compiled ESMC blocks; it is a separate "
-            "combined control, not an isolated determinism-only intervention"
+            "process-wide deterministic XLA policy; eager/compiled LM blocks "
+            "are controlled independently by --compile-esmc-blocks"
         ),
     }
 
@@ -400,7 +420,15 @@ def _worker(args):
         observation = observe_compilation(
             report["compilation_observation"], fingerprint_hlo=True
         )
-    with jax.default_device(device), observation:
+    selected_encode = _select_encode(
+        inference.esmc_model.encode,
+        compile_blocks=bool(getattr(args, "compile_esmc_blocks", False)),
+    )
+    with (
+        jax.default_device(device),
+        observation,
+        patch.object(inference.esmc_model, "encode", selected_encode),
+    ):
         phase("load")
         loaded, report["load_seconds"] = _timed(
             lambda: inference.load_language_model_stage(
@@ -440,7 +468,7 @@ def _worker(args):
                     features,
                     loaded,
                     packed_length=args.packed_length,
-                    deterministic=args.deterministic,
+                    deterministic=False,
                     state_storage=storage,
                 )
 
@@ -466,7 +494,7 @@ def _worker(args):
                 loaded.esmc_settings,
                 args.output,
                 storage=storage,
-                deterministic=args.deterministic,
+                deterministic=False,
             )
             report["layers"] = records
             report["capture_token_states"] = _description(tokens)
@@ -485,7 +513,7 @@ def _worker(args):
                 records,
                 expand_map,
                 loaded,
-                deterministic=args.deterministic,
+                deterministic=False,
                 barrier=args.replay_barrier,
             )
         report["memory"] = _memory(device)
@@ -594,7 +622,16 @@ def _comparison(output):
     return result
 
 
-def _reanchor_binding(binding_path, weights, features, output, source_root):
+def _reanchor_binding(
+    binding_path,
+    weights,
+    features,
+    output,
+    source_root,
+    *,
+    reanchor_weights=True,
+    rebind_probe=False,
+):
     binding = json.loads(binding_path.read_text())
     if _sha256(features) != binding["features_sha256"]:
         raise ValueError("feature payload does not match the binding")
@@ -616,15 +653,36 @@ def _reanchor_binding(binding_path, weights, features, output, source_root):
             raise ValueError("reanchoring requires all checkpoint content hashes")
         path = weights / relative
         before = _local_anchor(path)
+        if not reanchor_weights and before != identity["local_change_anchor"]:
+            raise ValueError(f"checkpoint changed during the paired probe: {filename}")
         actual = _sha256(path)
         after = _local_anchor(path)
         if before != after:
             raise ValueError(f"checkpoint changed while hashing: {filename}")
         if actual != expected.lower():
             raise ValueError(f"checkpoint content differs: {filename}")
-        identity["local_change_anchor"] = after
-    # Retain every source/probe/content identity. Only already-verified local
-    # anchors change, in a new file rather than in the original provenance.
+        if reanchor_weights:
+            identity["local_change_anchor"] = after
+    if rebind_probe:
+        from bench import esmfold2_performance_probe
+
+        previous = binding.get("probe_sha256")
+        if (
+            not isinstance(previous, str)
+            or len(previous) != 64
+            or any(
+                character not in "0123456789abcdef" for character in previous.lower()
+            )
+        ):
+            raise ValueError("probe rebinding requires the original creator probe hash")
+        current = _sha256(Path(esmfold2_performance_probe.__file__))
+        binding["probe_rebinding"] = {
+            "previous_sha256": previous,
+            "current_sha256": current,
+        }
+        binding["probe_sha256"] = current
+    # All content and model-source identities remain required. Explicit
+    # migrations write a new local binding; archived provenance is immutable.
     _verify_binding(binding, weights, source_root)
     destination = output / "local-binding.json"
     _write_json(destination, binding)
@@ -636,7 +694,7 @@ def _coordinator(args):
         raise ValueError("repeats must be positive")
     args.output.mkdir(parents=True, exist_ok=False)
     worker_binding = args.binding
-    if getattr(args, "reanchor_weights", False):
+    if getattr(args, "reanchor_weights", False) or getattr(args, "rebind_probe", False):
         import foldjax
 
         worker_binding = _reanchor_binding(
@@ -645,6 +703,8 @@ def _coordinator(args):
             args.features,
             args.output,
             Path(foldjax.__file__).resolve().parent.parent,
+            reanchor_weights=getattr(args, "reanchor_weights", False),
+            rebind_probe=getattr(args, "rebind_probe", False),
         )
     tasks = []
     if args.mode != "capture":
@@ -662,9 +722,12 @@ def _coordinator(args):
             "repeats_per_storage": args.repeats,
             "tasks": tasks,
             "full_model_admission": None,
+            "control_policy": _control_policy(args),
+            "compiler_observer_enabled": args.compiler_fingerprints,
             "input_binding_sha256": _sha256(args.binding),
             "worker_binding_sha256": _sha256(worker_binding),
-            "reanchored_weights": worker_binding != args.binding,
+            "reanchored_weights": bool(getattr(args, "reanchor_weights", False)),
+            "probe_rebound": bool(getattr(args, "rebind_probe", False)),
         },
     )
     statuses = {}
@@ -694,8 +757,13 @@ def _coordinator(args):
                 command.extend(
                     ("--" + name.replace("_", "-"), str(getattr(args, name)))
                 )
-        for name in ("deterministic", "replay_barrier", "compiler_fingerprints"):
-            if getattr(args, name):
+        for name in (
+            "deterministic",
+            "compile_esmc_blocks",
+            "replay_barrier",
+            "compiler_fingerprints",
+        ):
+            if getattr(args, name, False):
                 command.append("--" + name.replace("_", "-"))
         with (args.output / f"{task_name}.log").open("w") as log:
             statuses[task_name] = subprocess.run(
@@ -726,12 +794,32 @@ def main():
     parser.add_argument(
         "--esmc-dtype", choices=("float32", "bfloat16"), default="bfloat16"
     )
-    parser.add_argument("--deterministic", action="store_true")
+    parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help=(
+            "process-wide deterministic XLA policy before backend initialization; "
+            "block compilation is independent"
+        ),
+    )
+    parser.add_argument(
+        "--compile-esmc-blocks",
+        action="store_true",
+        help="compile LM blocks; independent of process-wide deterministic control",
+    )
     parser.add_argument("--replay-barrier", action="store_true")
     parser.add_argument(
         "--reanchor-weights",
         action="store_true",
         help="verify weight content hashes and copy binding with current anchors",
+    )
+    parser.add_argument(
+        "--rebind-probe",
+        action="store_true",
+        help=(
+            "content-verify archived features, weights and model sources; "
+            "copy the binding for this probe revision"
+        ),
     )
     parser.add_argument(
         "--compiler-fingerprints",

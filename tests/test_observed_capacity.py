@@ -26,8 +26,8 @@ def _clear():
 @pytest.mark.parametrize(
     "model,card,quiet,risk",
     (
-        ("esmfold2", 23.5, 639, 640),
-        ("esmfold2", 47.5, 1024, 1025),
+        ("esmfold2", 23.5, 1024, 1025),
+        ("esmfold2", 47.5, 1536, 1537),
         ("boltz2", 23.5, 1279, 1280),
         ("boltz2", 47.5, 1280, 1281),
         ("opendde", 23.5, 896, 897),
@@ -229,7 +229,7 @@ def test_structural_tokens_are_not_compared_with_public_token_observations():
         ("protenix", 2304),
         ("openfold3", 2304),
         ("opendde", 1024),
-        ("esmfold2", 768),
+        ("esmfold2", 1280),
     ),
 )
 def test_planning_includes_reports_even_without_a_fitted_law(
@@ -263,13 +263,73 @@ def test_padded_planning_uses_the_serving_target_and_records_the_budget(tmp_path
         "input_format": "foldjax",
         "sampling": {"num_samples": 32},
         "padding": {},
-        "padding_estimate": {"token_bucket": 768, "msa_bucket": 2048},
+        "padding_estimate": {"token_bucket": 1280, "msa_bucket": 2048},
     }
     result = slurm.plan_slurm(summary, {"memory_budget_gib": 22, "max_msa_depth": 2048})
     assessment = result["observed_capacity"]
-    assert assessment["n_token"] == 768
+    assert assessment["n_token"] == 1280
     assert assessment["card_bytes"] is None and assessment["budget_bytes"] == 22 * _GIB
-    assert assessment["shape_profile"]["token_bucket"] == 768
+    assert assessment["shape_profile"]["token_bucket"] == 1280
     assert assessment["shape_profile"]["requested_msa_cap"] == 2048
     assert assessment["msa_rows"] is None and assessment["num_samples"] == 32
-    assert "reported out-of-memory" in result["warning"]
+    assert "reported successful limits 1024" in result["warning"]
+
+
+def test_esmfold2_latest_failures_are_a_separate_censored_policy():
+    assessment = memory.observed_capacity(
+        "esmfold2", 1792, int(40.3 * _GIB), card_bytes=int(47.4 * _GIB)
+    )
+    row = assessment["observations"][0]
+    assert row["reported_success_tokens"] == [1536, 1536]
+    assert row["reported_failure_tokens"] == [1792]
+    assert "2026-10-21" in assessment["basis"]
+    assert "single-chain and multichain" in assessment["refusal"]
+    assert "not a fitted peak" in assessment["refusal"]
+    assert assessment["conditional_refusal"] is None
+    assert "estimate_bytes" not in assessment
+    # Planning has a budget, not an identified card. It reports the same
+    # operating policy conditionally rather than manufacturing a GPU identity.
+    planned = memory.observed_capacity("esmfold2", 1792, int(40.3 * _GIB))
+    assert planned["refusal"] is None
+    assert "no actual device was read" in planned["conditional_refusal"]
+    assert planned["card_bytes"] is None
+
+
+def test_esmfold2_plan_keeps_the_48gb_refusal_conditional_and_jax_free(monkeypatch):
+    monkeypatch.setattr(
+        memory,
+        "device_memory_budget",
+        lambda **_: pytest.fail("planning must not initialize a GPU"),
+    )
+    document = {"entities": [{"type": "protein", "id": "A", "sequence": "A" * 1792}]}
+    planned = slurm.plan_resources(
+        "esmfold2", document, options={"memory_budget_gib": 40.3}, padding=True
+    )
+    assessment = planned["observed_capacity"]
+    assert planned["state"] == "unknown"
+    assert assessment["refusal"] is None
+    assert ">= 1792" in assessment["conditional_refusal"]
+    assert "conditional on using that card class" in planned["reason"]
+
+
+def test_esmfold2_plan_uses_padded_1792_for_the_observed_refusal(tmp_path):
+    source = tmp_path / "job.json"
+    source.write_text(
+        json.dumps(
+            {"entities": [{"type": "protein", "id": "A", "sequence": "A" * 1726}]}
+        )
+    )
+    summary = {
+        "model": "esmfold2",
+        "input": str(source),
+        "input_format": "foldjax",
+        "sampling": {"num_samples": 32},
+        "padding": {},
+        "padding_estimate": {"token_bucket": 1792},
+    }
+    planned = slurm.plan_slurm(summary, {"memory_budget_gib": 40.3})
+    assessment = planned["observed_capacity"]
+    assert assessment["n_token"] == 1792
+    assert assessment["refusal"] is None
+    assert "conditional on using that card class" in assessment["conditional_refusal"]
+    assert assessment["conditional_refusal"] in planned["reason"]

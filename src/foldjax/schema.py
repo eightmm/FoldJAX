@@ -373,6 +373,9 @@ class PaddingConfig:
     ``'exact'`` permits an exact token size beyond that grid; derived capacity
     checks still reject oversized axes without truncation.
 
+    OpenDDE's optional ``auxiliary_profile='opendde-compact-v1'`` fixes atom
+    and structural capacities from its token bucket, refusing overflow.
+
     Not every model owns every axis.  Backend capabilities advertise the axes
     they understand and reject an explicitly pinned unsupported axis before
     loading weights.
@@ -385,8 +388,19 @@ class PaddingConfig:
     structural_tokens: int | None = None
     language_model_tokens: int | None = None
     overflow: str = "error"
+    auxiliary_profile: str | None = None
 
     def __post_init__(self) -> None:
+        if self.auxiliary_profile is not None:
+            from foldjax._opendde_padding import COMPACT_PROFILE
+
+            if (
+                not isinstance(self.auxiliary_profile, str)
+                or self.auxiliary_profile != COMPACT_PROFILE
+            ):
+                raise ValueError(
+                    f"padding.auxiliary_profile must be {COMPACT_PROFILE!r} or None"
+                )
         for name in _PADDING_AXES:
             value = getattr(self, name)
             if value is not None:
@@ -410,6 +424,11 @@ class PaddingConfig:
         return {
             **{name: getattr(self, name) for name in _PADDING_AXES},
             "overflow": self.overflow,
+            **(
+                {"auxiliary_profile": self.auxiliary_profile}
+                if self.auxiliary_profile is not None
+                else {}
+            ),
         }
 
 

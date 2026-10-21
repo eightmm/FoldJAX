@@ -180,6 +180,20 @@ def test_alphafold3_uv_build_uses_the_active_python(
     assert command[:4] == ["/usr/bin/uv", "build", "--python", sys.executable]
 
 
+def test_alphafold3_pip_build_uses_the_active_python(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from foldjax.models.alphafold3 import build
+
+    monkeypatch.setattr(build.shutil, "which", lambda name: None)
+    monkeypatch.setattr(build.importlib.util, "find_spec", lambda name: object())
+
+    command = build._build_command(tmp_path / "stage", tmp_path / "wheels")
+
+    assert command[:4] == [sys.executable, "-m", "pip", "wheel"]
+    assert command[command.index("--wheel-dir") + 1] == str(tmp_path / "wheels")
+
+
 def _forbidden_python_imports(root: Path) -> list[str]:
     """Return direct forbidden imports below one installable package tree."""
 
@@ -570,6 +584,12 @@ def test_alphafold3_first_use_outputs_go_to_the_writable_store(
 ) -> None:
     from foldjax.models.alphafold3 import build
 
+    if (
+        build.shutil.which("uv") is None
+        and build.importlib.util.find_spec("pip") is None
+    ):
+        pytest.skip("AlphaFold 3 build discovery requires uv or this interpreter's pip")
+
     upstream = tmp_path / "installed" / "_upstream"
     package = upstream / "alphafold3"
     package.mkdir(parents=True)
@@ -602,7 +622,8 @@ def test_alphafold3_first_use_outputs_go_to_the_writable_store(
         import numpy as np
 
         assert f'"numpy=={np.__version__}"' in staged
-        output = Path(command[command.index("--out-dir") + 1])
+        output_flag = "--out-dir" if "--out-dir" in command else "--wheel-dir"
+        output = Path(command[command.index(output_flag) + 1])
         output.mkdir(parents=True)
         with zipfile.ZipFile(output / "alphafold3-3.0.4.whl", "w") as archive:
             archive.writestr(f"alphafold3/{extension_name}", b"extension")
@@ -872,6 +893,7 @@ def test_alphafold3_an_unreadable_runtime_is_an_error_not_a_rebuild(
     assert (root / build._EXTENSION_MARKER).is_file()
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory write checks")
 def test_alphafold3_another_accounts_abandoned_build_is_skipped(
     tmp_path: Path, monkeypatch
 ) -> None:

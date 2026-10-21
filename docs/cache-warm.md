@@ -56,6 +56,13 @@ Alternatively, use the same sufficient `--pad-atoms` and
 `--pad-structural-tokens` pins in warming and prediction. Existing dimensions
 are never truncated to make a pin fit. See [current measurements and controls](cluster-memory-2026-10-20.md).
 
+OpenDDE also has an opt-in [compact serving profile](opendde-compact-profile.md):
+pass `--opendde-padding-profile compact` to both warming and prediction.
+It fixes the auxiliary capacities for each supported token bucket, rejects
+inputs outside those bounds, and uses native glycine/alanine synthetic inputs
+that fit them. Its `auto` grid ends at 1536. This is bounded coverage, not a
+promise for every chemistry or GPU capacity in the token band.
+
 Protenix, OpenDDE, OpenFold3 and ESMFold2 keep the actual chain count out of the
 compiled model's static arguments. Confidence scores reserve 64 chain slots with
 runtime masks/counts and cropped output axes. Inputs with up to 64 chains therefore share

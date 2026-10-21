@@ -6,6 +6,7 @@ CPUS_PER_GPU="${CPUS_PER_GPU:-}"
 PARTITION_CPU="${PARTITION_CPU:-}"
 MODULE="${MODULE:-}"
 FIXED_MSA_DEPTH="${FIXED_MSA_DEPTH:-2048}"
+OPENDDE_PADDING_PROFILE="${OPENDDE_PADDING_PROFILE:-}"
 
 set -euo pipefail
 : "${SLURM_JOB_ID:?submit this script with sbatch; never warm on a login node}"
@@ -23,7 +24,7 @@ model_name() {
         *) die "unknown model: $1" ;;
     esac
 }
-models=() common=() verify=0 exact=0 explicit_fixed=0 has_input=0 has_weights=0
+models=() common=() verify=0 exact=0 explicit_fixed=0 explicit_profile=0 has_input=0 has_weights=0
 while (($#)); do
     case "$1" in
         --verify-only) verify=1; shift ;;
@@ -32,6 +33,10 @@ while (($#)); do
             [[ $# -ge 2 ]] || die '--fixed-msa needs a value'
             FIXED_MSA_DEPTH=$2; explicit_fixed=1; shift 2 ;;
         --fixed-msa=*) FIXED_MSA_DEPTH=${1#*=}; explicit_fixed=1; shift ;;
+        --opendde-padding-profile)
+            [[ $# -ge 2 ]] || die '--opendde-padding-profile needs a value'
+            OPENDDE_PADDING_PROFILE=$2; explicit_profile=1; shift 2 ;;
+        --opendde-padding-profile=*) OPENDDE_PADDING_PROFILE=${1#*=}; explicit_profile=1; shift ;;
         --model)
             shift
             [[ $# -gt 0 && $1 != -* ]] || die '--model needs a value'
@@ -50,7 +55,12 @@ while (($#)); do
 done
 ((${#models[@]})) || die 'choose at least one model with --model'
 ((!exact || !explicit_fixed)) || die '--exact and --fixed-msa cannot be combined'
-if ((exact)); then FIXED_MSA_DEPTH=''; fi
+((!exact || !explicit_profile)) || die '--exact and --opendde-padding-profile cannot be combined'
+if ((exact)); then FIXED_MSA_DEPTH=''; OPENDDE_PADDING_PROFILE=''; fi
+[[ -z $OPENDDE_PADDING_PROFILE || $OPENDDE_PADDING_PROFILE == compact ]] || die 'OPENDDE_PADDING_PROFILE must be compact or empty'
+if ((explicit_profile)) && [[ " ${models[*]} " != *' opendde '* ]]; then
+    die '--opendde-padding-profile requires an OpenDDE model'
+fi
 [[ -z $FIXED_MSA_DEPTH || $FIXED_MSA_DEPTH =~ ^[1-9][0-9]*$ ]] || die 'FIXED_MSA_DEPTH/--fixed-msa must be a positive integer'
 ((${#models[@]} == 1 || !has_weights)) || die 'one explicit weights path cannot be shared by several models'
 if ((!verify && exact && !has_input)); then
@@ -69,6 +79,9 @@ for model in "${models[@]}"; do
         alphafold3|esmfold2)
             if ((!exact)); then preset=(--padding); fi ;;
     esac
+    if [[ $model == opendde && -n $OPENDDE_PADDING_PROFILE ]]; then
+        preset+=(--opendde-padding-profile "$OPENDDE_PADDING_PROFILE")
+    fi
     if ((verify)); then
         # Submit this mode as the ordinary Unix user, to a fresh output root.
         foldjax predict --msa single --model "$model" --batch-output "${preset[@]}" "${common[@]}"

@@ -18,8 +18,8 @@ Two things this module deliberately does not do. It never narrows an input to
 make a job fit: reducing MSA depth changes the prediction, and on this
 repository's own accuracy-admission test it failed. And it never claims more
 than it measured -- outside a law's fitted token range the answer is
-``unknown`` and the run proceeds, because a refusal from an extrapolation is
-worse than no refusal at all. Below a fitted range a law may still say
+``unknown`` and the run proceeds, unless a dated operating policy separately
+refuses a reported failed configuration. Below a fitted range a law may still say
 ``fits`` where completed runs were checked against it (``admits_from``), and
 never refuses there.
 
@@ -73,7 +73,8 @@ _GIB = 2**30
 #: be laid out in it. A job admitted at exactly the ceiling would therefore be
 #: admitted into a space it cannot have. 0.9 leaves that room; it is a policy
 #: number, not a measurement, and `--memory-budget-gib` is how a caller
-#: overrides the budget it applies to.
+#: overrides the budget it applies to. OpenDDE's measured 24/48 GB operating
+#: classes use the pool ceiling directly; see :func:`_opendde_pool_ceiling`.
 ADMISSION_FRACTION = 0.9
 
 #: Basis term name -> value at a token count and a processed MSA row count.
@@ -440,7 +441,7 @@ ESMFOLD2_PEAK = PeakLaw(
 # buckets, NOT OpenDDE's expanded structural-token axis. The 48 GB Boltz-2
 # limit conflicts with some 24 GB successes; cause/profile were not controlled.
 _REPORTED_SUCCESS_TOKENS = {
-    "esmfold2": {24: (640, 768), 48: (1024, 1024)},
+    "esmfold2": {24: (1024, 1024), 48: (1536, 1536)},
     "boltz2": {24: (1280, 1536), 48: (1280, 1280)},
     "protenix": {24: (2048, 2048), 48: (2048, 2048)},
     "openfold3": {24: (2048, 2048), 48: (2048, 2048)},
@@ -455,8 +456,9 @@ _MODEL_LABELS = {
     "opendde": "OpenDDE",
     "alphafold3": "AlphaFold 3",
 }
-ESMFOLD2_SMALL_DEVICE_OOM_TOKENS = 640
-ESMFOLD2_SMALL_DEVICE_AVAILABLE_GIB = 23.5
+#: Operational refusal from the 2026-10-21 A6000 report, not a peak-law fit.
+ESMFOLD2_48GB_REFUSE_TOKENS = 1792
+ESMFOLD2_CAPACITY_POLICY_ID = "esmfold2-observed-2026-10-21"
 _OBSERVED_CAPACITY: ContextVar[dict[str, Any] | None] = ContextVar(
     "foldjax_observed_capacity", default=None
 )
@@ -495,8 +497,9 @@ def observed_capacity(
     """Compare public token counts with finite, profile-incomplete reports.
 
     A caller with OpenDDE structural tokens must instead supply its public
-    token count. This advisory never produces a peak estimate or a refusal.
-    An unreadable card yields conditional reports, not an inferred card size.
+    token count. Reports never produce a peak estimate. The explicitly
+    requested ESMFold2 48 GB refusal is exposed separately from those reports;
+    without an actual card it remains conditional.
     """
     reported = _REPORTED_SUCCESS_TOKENS.get(model, {})
     if card_bytes is not None:
@@ -524,23 +527,25 @@ def observed_capacity(
         if nominal not in reported:
             continue
         low, high = reported[nominal]
-        uncertain_band = model == "esmfold2" and nominal == 24
         conflicting = model == "boltz2"
         risky = (
             n_token >= low
-            if uncertain_band or (nominal == 24 and (conflicting or reduced_headroom))
+            if nominal == 24 and (conflicting or reduced_headroom)
             else (n_token > high)
         )
         row = {
             "device_class": "24 GB" if nominal == 24 else "A6000 48 GB",
             "reported_success_tokens": [low, high],
             "profile_conditions": (
-                "MSA depth, samples, padding and process history unknown"
+                "2026-10-21 cluster report; --padding, released SVD/stack path; "
+                "sample count and process history not fully specified"
+                if model == "esmfold2"
+                else "MSA depth, samples, padding and process history unknown"
             ),
             "risk": bool(risky),
         }
-        if model == "esmfold2" and nominal == 24:
-            row["reported_failure_tokens"] = [640, 768]
+        if model == "esmfold2" and nominal == 48:
+            row["reported_failure_tokens"] = [ESMFOLD2_48GB_REFUSE_TOKENS]
         elif model == "opendde" and nominal == 24:
             row["reported_failure_tokens"] = [1024]
         elif model == "boltz2":
@@ -554,14 +559,8 @@ def observed_capacity(
             )
     warning = None
     if risks:
-        prefix = (
-            "ESMFold2 has reported out-of-memory failures around 640-768 tokens "
-            "on 24 GB cards with 22-23.5 GiB available. "
-            if model == "esmfold2" and 24 in classes
-            else ""
-        )
         warning = (
-            prefix + f"{_MODEL_LABELS.get(model, model)} at {n_token} tokens is near "
+            f"{_MODEL_LABELS.get(model, model)} at {n_token} tokens is near "
             "or beyond reported capacity: " + "; ".join(risks) + ". "
             "The required peak was not measured; MSA, samples, padding and process "
             "history were not controlled, so this is an advisory capacity warning "
@@ -581,6 +580,25 @@ def observed_capacity(
                 " Boltz-2's 24 GB and A6000 results conflict; cumulative allocations "
                 "or outside-pool memory are possible causes, not established diagnoses."
             )
+    refusal = None
+    conditional_refusal = None
+    if model == "esmfold2" and 48 in classes and n_token >= ESMFOLD2_48GB_REFUSE_TOKENS:
+        message = (
+            "observed ESMFold2 capacity refusal: the 2026-10-21 A6000 48 GB "
+            "report completed 1536-token buckets and failed at 1792 for both "
+            "single-chain and multichain inputs. The default single-device "
+            f"policy refuses executable token counts >= {ESMFOLD2_48GB_REFUSE_TOKENS} "
+            "on the 48 GB class. This is an operational limit from finite "
+            "outcomes, not a fitted peak or proof that every smaller input fits"
+        )
+        if card_bytes is not None:
+            refusal = message
+        else:
+            conditional_refusal = (
+                message + "; no actual device was read, so this refusal is "
+                "conditional on using that card class"
+            )
+        warning = refusal or conditional_refusal
     return {
         "model": model,
         "n_token": int(n_token),
@@ -595,8 +613,12 @@ def observed_capacity(
         "shape_profile": _capacity_shape(shape_profile),
         "observations": observations,
         "warning": warning,
+        "refusal": refusal,
+        "conditional_refusal": conditional_refusal,
         "basis": (
-            "user-reported 2026-10-17; censored capacity observations, no peak fit"
+            "user-reported 2026-10-21; censored capacity observations, no peak fit"
+            if model == "esmfold2"
+            else "user-reported 2026-10-17; censored capacity observations, no peak fit"
         ),
     }
 
@@ -696,6 +718,46 @@ def off_profile_reason(
     return tuple(reasons)
 
 
+def esmfold2_off_profile_reason(
+    *,
+    num_samples: int,
+    cp_shards: int = 1,
+    stop_after_inputs: bool = False,
+    lm_state_storage: str = "stack",
+    glu_backend: str = "xla",
+    rigid_align_backend: str = "svd",
+) -> tuple[str, ...]:
+    """Mirror native inference's released-path guard before managed LM staging.
+
+    These alternatives may reduce or otherwise change the measured trunk/LM
+    peak. Neither a fitted refusal nor the single-device operating limit may
+    prevent the caller from measuring an uncalibrated alternative.
+    ``stop_after_trunk`` is deliberately absent: the trunk is the measured
+    peak, so returning after it does not reduce the run's maximum.
+    """
+    return off_profile_reason(
+        num_samples=num_samples,
+        samples_validated=SAMPLES_VALIDATED["esmfold2"],
+        extras=tuple(
+            reason
+            for reason, active in (
+                ("context parallelism", cp_shards > 1),
+                ("an inputs-only graph", stop_after_inputs),
+                (
+                    "buffered language-model states (unmeasured memory)",
+                    lm_state_storage != "stack",
+                ),
+                ("a fused GLU", glu_backend != "xla"),
+                (
+                    "solver-free rigid alignment (unmeasured memory)",
+                    rigid_align_backend != "svd",
+                ),
+            )
+            if active
+        ),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CandidateEstimate:
     """One configuration's estimated peak, and whether it is admitted."""
@@ -761,8 +823,9 @@ def resolve_memory_policy(
 ) -> MemoryDecision:
     """Say whether a configuration's upper estimate fits the budget.
 
-    A candidate is admitted when its upper estimate is at most
-    :data:`ADMISSION_FRACTION` of ``budget_bytes``; ``candidates`` is walked in
+    A candidate is admitted when its upper estimate is at most the model's
+    threshold (normally :data:`ADMISSION_FRACTION` of ``budget_bytes``);
+    ``candidates`` is walked in
     order and the first admitted one is selected. With none admitted the state
     is ``over_budget``. Every port here passes exactly one candidate -- the
     configuration it is about to run -- so the result is a verdict on that
@@ -781,6 +844,24 @@ def resolve_memory_policy(
         if law.model != model:
             raise ValueError(
                 f"candidate {name!r} carries a {law.model} law, not {model}"
+            )
+
+    threshold = (
+        None
+        if budget_bytes is None
+        else _threshold(budget_bytes, model=model, card_bytes=card_bytes)
+    )
+    if model == "esmfold2":
+        refusal = observed_capacity(
+            model, n_token, budget_bytes, card_bytes=card_bytes
+        )["refusal"]
+        if refusal is not None:
+            return MemoryDecision(
+                state="over_budget",
+                selected=None,
+                estimates=(),
+                threshold=None,
+                reason=refusal,
             )
 
     outside = [name for name, law in candidates if not law.bounds(n_token)]
@@ -813,7 +894,7 @@ def resolve_memory_policy(
             state="unknown",
             selected=None,
             estimates=(),
-            threshold=None if budget_bytes is None else _threshold(budget_bytes),
+            threshold=threshold,
             reason=(
                 reason
                 + (
@@ -829,7 +910,6 @@ def resolve_memory_policy(
             ),
         )
 
-    threshold = None if budget_bytes is None else _threshold(budget_bytes)
     estimates = tuple(
         _candidate(name, law, n_token, msa_rows, threshold) for name, law in candidates
     )
@@ -856,6 +936,23 @@ def resolve_memory_policy(
                     f"{_gib(threshold)} threshold"
                 ),
             )
+    if _opendde_pool_ceiling(model, card_bytes) and any(
+        candidate.estimate_bytes <= threshold for candidate in estimates
+    ):
+        return MemoryDecision(
+            state="unknown",
+            selected=None,
+            estimates=estimates,
+            threshold=threshold,
+            reason=(
+                "OpenDDE's nominal peak fits the allocator ceiling, but its "
+                "historical uncertainty allowance crosses it: "
+                + ", ".join(f"{c.name} {_render(c)}" for c in estimates)
+                + f" against a {_gib(threshold)} pool threshold. The 2026-10-21 "
+                "24/48 GB policy does not reserve another 10% inside the pool; "
+                "this overlap is uncertain rather than a justified refusal"
+            ),
+        )
     below = [name for name, law in candidates if not law.covers(n_token)]
     if below:
         # Below the fitted domain the law was checked against completed runs
@@ -888,8 +985,27 @@ def resolve_memory_policy(
     )
 
 
-def _threshold(budget_bytes: int) -> int:
-    return int(budget_bytes * ADMISSION_FRACTION)
+def _opendde_pool_ceiling(model: str, card_bytes: int | None) -> bool:
+    """Apply the changed guard only to the physical classes in the new report.
+
+    A smaller planning budget does not establish the card's capacity. The
+    historical 96 GB failures retain their original guard, including when a
+    caller overrides that card's pool with a smaller budget.
+    """
+    if model != "opendde" or card_bytes is None:
+        return False
+    gib = card_bytes / _GIB
+    return 20 <= gib <= 24.5 or 40 <= gib <= 48.5
+
+
+def _threshold(
+    budget_bytes: int, *, model: str | None = None, card_bytes: int | None = None
+) -> int:
+    return (
+        budget_bytes
+        if _opendde_pool_ceiling(model or "", card_bytes)
+        else int(budget_bytes * ADMISSION_FRACTION)
+    )
 
 
 def _token_span(law: PeakLaw, *, admitted: bool) -> str:
@@ -1078,10 +1194,15 @@ def check_message(
         lines.append(
             f"--memory-budget-gib held the budget to {_gib(budget.override_bytes)}."
         )
-    # With no estimate there is nothing for the off-profile note to qualify.
-    if off_profile and decision.estimates:
+    # Unmeasured alternatives also qualify an observed operating refusal.
+    if off_profile and (decision.estimates or decision.state == "over_budget"):
         lines.append(
-            "This estimate is advisory rather than binding: the run uses "
+            (
+                "This estimate is advisory rather than binding: the run uses "
+                if decision.estimates
+                else "This observed operating limit is advisory rather than "
+                "binding: the run uses "
+            )
             + "; ".join(off_profile)
             + "."
         )
@@ -1089,10 +1210,21 @@ def check_message(
         lines.append(
             "The run proceeds; the allocator will answer."
             if raw_state == "fits"
-            else "The run proceeds without the check."
+            else (
+                "The run proceeds with an uncertain peak; the allocator will answer."
+                if decision.estimates and decision.threshold is not None
+                else "The run proceeds without the check."
+            )
         )
         return " ".join(lines)
-    lines.append("Levers: " + "; ".join((_FRACTION_LEVER, *levers)) + ".")
+    # A finite-outcome capacity refusal has no fitted byte estimate that
+    # increasing the pool could make fit.
+    observed_refusal = model == "esmfold2" and not decision.estimates
+    applicable_levers = (
+        tuple(levers) if observed_refusal else (_FRACTION_LEVER, *levers)
+    )
+    if applicable_levers:
+        lines.append("Levers: " + "; ".join(applicable_levers) + ".")
     if mode == "refuse" and not off_profile:
         lines.append(
             "--memory-check=warn runs it anyway and lets the allocator answer."
@@ -1319,7 +1451,13 @@ def admit(
         calibration_id=(
             selected.calibration_id
             if selected is not None
-            else candidates[0][1].calibration_id
+            else (
+                ESMFOLD2_CAPACITY_POLICY_ID
+                if model == "esmfold2"
+                and decision.state == "over_budget"
+                and not decision.estimates
+                else candidates[0][1].calibration_id
+            )
         ),
         mode=mode,
         off_profile=off_profile,

@@ -186,7 +186,7 @@ def test_predict_refuses_before_the_language_model(monkeypatch) -> None:
         )
 
 
-@pytest.mark.parametrize("n_token", [768, 896])
+@pytest.mark.parametrize("n_token", [1280, 1408])
 @pytest.mark.parametrize("pool_gib", [22, 23.5])
 def test_small_card_capacity_risk_warns_before_the_language_model(
     monkeypatch, n_token, pool_gib
@@ -202,7 +202,7 @@ def test_small_card_capacity_risk_warns_before_the_language_model(
     model = inference.LoadedModel(
         parameters={}, settings=inference.structure_model.ModelSettings()
     )
-    with pytest.warns(RuntimeWarning, match="24 GB cards with 22-23.5 GiB"):
+    with pytest.warns(RuntimeWarning, match="reported successful limits 1024"):
         with pytest.raises(_StopError):
             inference.predict(
                 None,
@@ -225,8 +225,108 @@ def test_a_smaller_unknown_run_does_not_silence_the_capacity_warning():
     )
     with pytest.warns(RuntimeWarning, match="outside the fitted range"):
         _admit(128, budget=budget)
-    with pytest.warns(RuntimeWarning, match="24 GB cards"):
-        _admit(768, budget=budget)
+    with pytest.warns(RuntimeWarning, match="reported successful limits 1024"):
+        _admit(1280, budget=budget)
+
+
+@pytest.mark.parametrize("n_token", [1792, 2048])
+@pytest.mark.parametrize("n_chain", [1, 7])
+def test_48gb_observed_failure_refuses_the_padded_graph_before_lm(
+    monkeypatch, n_token, n_chain
+):
+    def _never(*_args, **_kwargs):
+        pytest.fail("observed refusal must happen before LM or graph execution")
+
+    monkeypatch.setattr(inference.atom_model, "_resolve_rows_per_block", _never)
+    monkeypatch.setattr(inference, "language_model_states", _never)
+    model = inference.LoadedModel(
+        parameters={}, settings=inference.structure_model.ModelSettings()
+    )
+    features = _features(n_token)
+    features["asym_id"] = np.arange(n_token)[None] % n_chain
+    with pytest.raises(MemoryError, match="observed ESMFold2 capacity refusal"):
+        inference.predict(
+            None,
+            features,
+            model,
+            memory_budget=memory_policy.resolve_budget(
+                pool_bytes=int(40.3 * _GIB),
+                card_bytes=int(47.4 * _GIB),
+                override_gib=None,
+            ),
+            padded=True,
+        )
+    record = memory_policy.recorded()
+    assert record["state"] == "over_budget"
+    assert record["n_token"] == n_token
+    assert record["estimates"] == []  # No peak is inferred from a censored failure.
+    assert record["threshold_bytes"] is None
+    assert record["calibration_id"] == memory_policy.ESMFOLD2_CAPACITY_POLICY_ID
+
+
+def test_48gb_observed_failure_warn_override_reaches_the_graph(monkeypatch):
+    class _StopError(Exception):
+        pass
+
+    def _stop(*_args, **_kwargs):
+        raise _StopError
+
+    monkeypatch.setattr(inference.atom_model, "_resolve_rows_per_block", _stop)
+    model = inference.LoadedModel(
+        parameters={}, settings=inference.structure_model.ModelSettings()
+    )
+    with pytest.warns(RuntimeWarning, match="Running anyway"):
+        with pytest.raises(_StopError):
+            inference.predict(
+                None,
+                _features(1792),
+                model,
+                memory_budget=memory_policy.resolve_budget(
+                    pool_bytes=int(40.3 * _GIB),
+                    card_bytes=int(47.4 * _GIB),
+                    override_gib=None,
+                ),
+                memory_check="warn",
+                padded=True,
+            )
+
+
+@pytest.mark.parametrize(
+    "n_token,card_gib,pool_gib", [(1024, 23.5, 21.2), (1536, 47.4, 40.3)]
+)
+def test_latest_successful_buckets_keep_unknown_peaks_without_capacity_refusal(
+    n_token, card_gib, pool_gib
+):
+    budget = memory_policy.resolve_budget(
+        pool_bytes=int(pool_gib * _GIB),
+        card_bytes=int(card_gib * _GIB),
+        override_gib=None,
+    )
+    with pytest.warns(RuntimeWarning, match="unknown peak memory"):
+        decision = _admit(n_token, budget=budget)
+    assert decision.state == "unknown"
+    assert decision.estimates == ()
+    assert "640-768" not in decision.reason
+    assert "capacity refusal" not in decision.reason
+
+
+@pytest.mark.parametrize("extra", ["context parallelism", "an inputs-only graph"])
+def test_unmeasured_alternatives_do_not_inherit_a_single_device_refusal(extra):
+    budget = memory_policy.resolve_budget(
+        pool_bytes=int(40.3 * _GIB),
+        card_bytes=int(47.4 * _GIB),
+        override_gib=None,
+    )
+    with pytest.warns(RuntimeWarning, match="observed operating limit is advisory"):
+        decision = memory_policy.admit(
+            model="esmfold2",
+            n_token=1792,
+            msa_rows=None,
+            candidates=(("released", memory_policy.ESMFOLD2_PEAK),),
+            budget=budget,
+            off_profile=(extra,),
+        )
+    assert decision.state == "over_budget"
 
 
 def test_predict_records_the_selected_configuration_when_the_peak_fits(monkeypatch):

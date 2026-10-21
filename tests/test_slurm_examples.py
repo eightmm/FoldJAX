@@ -52,6 +52,7 @@ elif os.environ.get('FAIL_PLAN') and sys.argv[1:2] == ['plan']:
         "MODULE": "",
         "DEFAULT_MSA": "single",
         "FIXED_MSA_DEPTH": "",
+        "OPENDDE_PADDING_PROFILE": "",
         "FAIL_PLAN": "",
     }
 
@@ -74,6 +75,61 @@ elif os.environ.get('FAIL_PLAN') and sys.argv[1:2] == ['plan']:
         )
 
     return run, calls, tmp_path
+
+
+@pytest.mark.parametrize("verify", [False, True])
+@pytest.mark.parametrize("profile_source", ["flag", "environment"])
+def test_compact_profile_reaches_only_opendde_in_warm_and_verify(
+    shell, verify, profile_source
+):
+    from foldjax.cli import _parser
+
+    run, calls, tmp = shell
+    extra = {"SLURM_JOB_ID": "123", "SLURM_SUBMIT_DIR": str(tmp)}
+    flags = []
+    if profile_source == "flag":
+        flags = ["--opendde-padding-profile", "compact"]
+    else:
+        extra["OPENDDE_PADDING_PROFILE"] = "compact"
+    completed = run(
+        "warm.sbatch",
+        *(("--verify-only",) if verify else ()),
+        "--model", "opendde", "boltz2", "esmfold2", *flags,
+        "--input", "job.json", extra_env=extra,
+    )
+    assert completed.returncode == 0, completed.stderr
+    for row in calls():
+        parsed = _parser().parse_args(row["args"])
+        assert parsed.opendde_padding_profile == (
+            "compact" if parsed.model == ["opendde"] else None
+        )
+
+
+def test_compact_submission_preset_reaches_plan_and_gpu_job(shell):
+    run, calls, tmp = shell
+    completed = run(
+        "foldjax-submit", "-m", "opendde", "-m", "esmfold2",
+        "-o", str(tmp / "out"), "--opendde-padding-profile", "compact",
+        "--", "--input", "job.json",
+    )
+    assert completed.returncode == 0, completed.stderr
+    rows = calls()
+    assert len(rows) == 4
+    for row in rows:
+        assert ("--opendde-padding-profile" in row["args"]) is (
+            "opendde" in row["args"]
+        )
+
+
+def test_exact_clears_optional_compact_environment_preset(shell):
+    run, calls, tmp = shell
+    completed = run(
+        "foldjax-submit", "-m", "opendde", "-o", str(tmp / "out"),
+        "--exact", "--", "--input", "job.json",
+        extra_env={"OPENDDE_PADDING_PROFILE": "compact"},
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert all("--opendde-padding-profile" not in row["args"] for row in calls())
 
 
 def test_auto_prefetch_dependencies_arrays_and_literal_passthrough(shell):

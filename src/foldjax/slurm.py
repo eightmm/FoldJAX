@@ -425,7 +425,8 @@ def plan_resources(
             "reason": (
                 "upper estimate over the admission fraction "
                 f"{memory_policy.ADMISSION_FRACTION}: a card with at least this "
-                "much memory is admitted"
+                "much memory meets the fitted threshold; observed operating "
+                "policies and profile conditions also apply"
             ),
         }
     )
