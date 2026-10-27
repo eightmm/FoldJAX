@@ -76,6 +76,12 @@ unless it says so here, in its own paragraph.
   `deterministic=on` every pass was bitwise identical, at 6-13% more warm
   wall time.
 
+- **Security patch releases in the lock**: aiohttp 3.14.5, certifi
+  2026.10.23, pillow 13.0.0 and setuptools 84.2.1 (all transitive), for
+  advisories the nightly `pip-audit` reported against the previous pins;
+  aiohttp 3.14.4 and later require yarl 1.25.1, which moves with it.
+  `pip-audit` reports no known vulnerability in any exported environment.
+
 ### Fixed
 
 - **`foldjax_run.json`'s `kernel_tuning.sources` accepts a source name it
