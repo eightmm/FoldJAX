@@ -8,144 +8,7 @@ upstream defaults and scientific results are documented beside their model and
 benchmark records: a release never changes what a recorded command predicts
 unless it says so here, in its own paragraph.
 
-## Unreleased
-
-### Added
-
-- **`bench/stage_parity.py --direct-capture`** reads the replay helpers'
-  fixture files from the `--capture` directory in its own layout
-  (`DIRECT_LAYOUT`) instead of the parity manifests, which name one case per
-  port, so the stage rows can be measured on any native capture the port's
-  capture tool wrote. The observed tripwires are recorded in the report, not
-  asserted. On the five committed cases the route hands the helpers
-  byte-identical files and reproduces the committed CPU rows. The OpenFold3
-  S5 row reads the query name from the capture instead of assuming 1URN.
-
-- **`bench/stage_parity.py --direct-capture --input-document`** gives
-  OpenFold3's and OpenDDE's S1 rows the document a direct capture actually
-  ran, instead of assuming the one bundled case's own input
-  (`protein_rna_1urn` / `protein_1ubq`); required with `--direct-capture` for
-  those two ports' S1 row. OpenFold3's input check now compares each chain's
-  molecule type, chain ids, sequence, SMILES and CCD codes instead of
-  sequence alone, so a ligand or ion chain's identity is checked too, not
-  just its polymer chains. OpenDDE's S1 tolerates a direct capture with no
-  capture-time port run beside it (no `fj-highest` directory): it skips the
-  stored-port drift comparison and infers `use_template` from the document
-  text instead of the missing capture's own input features.
-
-### Changed
-
-- **The benchmark statements in README.md and docs/benchmark.md now match
-  the measured release results and each other.** README claimed "precision
-  on both sides" and reported 1.08x-4.53x/0.94x-4.85x from a 20-pair sweep,
-  while its own Precision section already listed four ports that run
-  reduced precision relative to upstream — directly contradicting the first
-  claim. docs/benchmark.md described a 300 W Max-Q card and upstream
-  OpenFold3 0.3.1. Both now state the current, paper-sourced numbers: warm
-  speed-up 0.82x-4.16x (median 2.41x) and device-peak-memory ratio
-  1.03x-4.45x (median 2.24x) over 24 jointly completed cells on one RTX PRO
-  6000 Blackwell Server Edition, noting that FoldJAX's default (reduced)
-  precision contributes to the gain, plus a new matched-precision-rerun
-  table. The old docs/benchmark.md content (2026-09-01 to 2026-09-12, Max-Q
-  card, OpenFold3 0.3.1) moved to
-  `docs/archive/benchmark-full-report-2026-09-12.md` as a dated record;
-  `docs/openfold3.md` and `docs/archive/README.md` were updated to point at
-  it instead of describing stale rows as still live.
-
-- **Importing `foldjax.models.openfold3` no longer sets the JAX pool
-  fraction; the Python prediction calls choose it as the CLI does.** The
-  import wrote 0.90 whenever no fraction variable was set, so in a Python
-  process the pool depended on whether OpenFold3 had been imported, and on a
-  48 GB card it bypassed the 0.85 that class gets. `foldjax.predict`,
-  `predict_batch` and in-process `warm_cache` now apply the CLI's automatic
-  policy, but only when neither `XLA_CLIENT_MEM_FRACTION` nor
-  `XLA_PYTHON_CLIENT_MEM_FRACTION` is set and JAX's backend is not yet
-  initialized; a value FoldJAX itself wrote for earlier models in the same
-  process is decided again for the next call's models while JAX is still
-  down. The CLI's own choice is unchanged. Code that drives the OpenFold3
-  port directly (`foldjax.models.openfold3.load_checkpoint`,
-  `compile_predict`, `predict`, as the `bench/` scripts do) gets the same
-  policy from the first of those it calls. A caller that creates a JAX array
-  before any of them now gets JAX's default of 0.75 instead of 0.90; set
-  `XLA_CLIENT_MEM_FRACTION=0.9` to keep the old pool.
-
-- **docs/cli.md now reports the 2026-10-27 measurement of Protenix
-  repeatability with and without `deterministic=on`.** At main 3a21fc66 on
-  one RTX PRO 6000, default cold and warm passes on copies of one cache
-  differed by up to 17.2 Å (9JU4) and 18.4 Å (9BCJ); with
-  `deterministic=on` every pass was bitwise identical, at 6-13% more warm
-  wall time.
-
-- **Security patch releases in the lock**: aiohttp 3.14.5, certifi
-  2026.10.23, pillow 13.0.0 and setuptools 84.2.1 (all transitive), for
-  advisories the nightly `pip-audit` reported against the previous pins;
-  aiohttp 3.14.4 and later require yarl 1.25.1, which moves with it.
-  `pip-audit` reports no known vulnerability in any exported environment.
-
-### Fixed
-
-- **`foldjax_run.json`'s `kernel_tuning.sources` accepts a source name it
-  does not declare.** It closed its key set: the 0.1.0 copy of the 1.0
-  schema lacks `partial` and `heuristic`, so a newer manifest counting them
-  fails it, against the schema's own rule that a 1.x reader accepts any 1.y
-  file. A source added later no longer does the same; any key must still be
-  a non-negative integer.
-
-- **`foldjax compare` groups structures by the input's content, not its
-  path.** One job reached through a symlink, a relative path or a copy is now
-  one input, and two different files at one path in different output trees
-  are two. A path where a run recorded no input digest still groups by path.
-  Each `compare.json` input carries its `input_sha256` and each structure its
-  own run's input path as `run_input`; `compare.csv` and
-  `compare_structures.csv` gain `input_sha256` as their last column. When two
-  different files share an input label, their structure keys carry the run
-  directory (`boltz2[a]/seed-101/sample-00`) so their rows stay apart.
-
-- **`foldjax predict --resume`'s help says what makes a run reusable**: a
-  finished `foldjax_run.json` that records the same request, with structures
-  and saved representations that still match it, not merely a finished
-  manifest; and a run recorded with a since-removed option is an error, not a
-  rerun.
-
-- **docs/cli.md and docs/faq.md no longer claim a reused compiled
-  executable makes any backend's run repeatable.** GPU
-  measurement showed Protenix diverging by up to 17.2 Å same-index Cα RMSD
-  between two runs started from a copy of the same compilation cache (22/22
-  cache hits, so the identical executables ran) at a fixed seed; only
-  `deterministic=on` reproduces it bitwise there. AlphaFold 3's own
-  variation is confirmed as XLA kernel-autotuning noise -- a copied cache
-  reproduces it atom for atom -- and `--option kernel_autotuning=heuristics`
-  does not remove it on a fresh cache, because that option is Tokamax's own
-  cache-miss policy and leaves XLA's separate GEMM/fusion autotuner free to
-  vary. ESMFold2's existing claim (a replayed compilation cache reproduces a
-  run bit for bit) was already accurate and is unchanged. Boltz-2, OpenDDE
-  and OpenFold3 are unmeasured on this point.
-
-- **`bench/protenix_foldjax_capture.py` replay no longer crashes, or would
-  have applied FoldJAX's own MC dropout, when FoldJAX's dropout coin comes up
-  for an input whose native capture drew none.** The CLI's keys reached the
-  wrapper-options record (a JAX array is not JSON) and the model call beside
-  the native tape. The replay now follows native's decision only and records
-  `port_mc_dropout_keys_displaced`. Seen on E9 8PPX at seed 101.
-
-- **`bench/stage_parity.py` Boltz-2 S5 now compiles the confidence head the
-  way `foldjax predict` does.** The row wrapped the head in a plain `jax.jit`
-  over a closure: without the port's bfloat16 compile policy
-  (`compile_policy.jit`, `xla_allow_excess_precision=False`) the GPU erased
-  the FP32->BF16->FP32 rounding boundaries the head reproduces from native
-  autocast, and with the features folded in as constants the GPU program of
-  the ragged query-chunked pair-bias attention corrupted the single track.
-  On the GPU the row read max |d| pLDDT / PAE / pTM 0.356 / 10.9 A / 0.0118
-  (207 tokens) and 0.489 / 12.1 A / 0.0286 (1,138 tokens); compiled like
-  `predict` it reads 0.0016 / 0.18 A / 5.6e-05 and 0.0015 / 0.16 A /
-  6.4e-05, and the committed 1AAY GPU row's 0.00711 / 2.45 A / 0.00401
-  becomes 0.000402 / 0.106 A / 6.5e-05 (its CPU row: 0.000403 / 0.107 A).
-  Each cause is independent: with the policy alone the closure program
-  still reads pLDDT 0.342 at 207 tokens. The shipped model and CLI are
-  unchanged; the CPU 1AAY row moves at the 1e-4 level (0.000403 / 0.107 ->
-  0.000578 / 0.106).
-
-## 0.1.0 (2026-10-11)
+## 0.1.0 (2026-10-28)
 
 ### Added
 
@@ -620,6 +483,27 @@ unless it says so here, in its own paragraph.
   subsets of `common_schema_features`. Every other field is unchanged. See
   `docs/python-api.md` and `docs/input.md`.
 
+- **`bench/stage_parity.py --direct-capture`** reads the replay helpers'
+  fixture files from the `--capture` directory in its own layout
+  (`DIRECT_LAYOUT`) instead of the parity manifests, which name one case per
+  port, so the stage rows can be measured on any native capture the port's
+  capture tool wrote. The observed tripwires are recorded in the report, not
+  asserted. On the five committed cases the route hands the helpers
+  byte-identical files and reproduces the committed CPU rows. The OpenFold3
+  S5 row reads the query name from the capture instead of assuming 1URN.
+
+- **`bench/stage_parity.py --direct-capture --input-document`** gives
+  OpenFold3's and OpenDDE's S1 rows the document a direct capture actually
+  ran, instead of assuming the one bundled case's own input
+  (`protein_rna_1urn` / `protein_1ubq`); required with `--direct-capture` for
+  those two ports' S1 row. OpenFold3's input check now compares each chain's
+  molecule type, chain ids, sequence, SMILES and CCD codes instead of
+  sequence alone, so a ligand or ion chain's identity is checked too, not
+  just its polymer chains. OpenDDE's S1 tolerates a direct capture with no
+  capture-time port run beside it (no `fj-highest` directory): it skips the
+  stored-port drift comparison and infers `use_template` from the document
+  text instead of the missing capture's own input features.
+
 ### Changed
 
 - **AlphaFold 3 runs upstream's 10 recycles when `--num-recycles` is
@@ -971,8 +855,7 @@ unless it says so here, in its own paragraph.
   `omegaconf`), and it carried GHSA-2cp2-2r3c-7p7r; `omegaconf` and
   `antlr4-python3-runtime` leave the lock with it.
 - **Security patch releases in the lock**: urllib3 2.8.0, multidict 6.9.1,
-  oauthlib 4.0.0 and werkzeug 3.1.9 (all transitive). `pip-audit` reports no
-  known vulnerability in any exported environment.
+  oauthlib 4.0.0 and werkzeug 3.1.9 (all transitive).
 - **`docs/licences.md`** says which AlphaFold 3 terms ship in the wheel
   (`OUTPUT_TERMS_OF_USE.md` among them) and which installs pull in NVIDIA's
   proprietary GPU wheels: the CUDA extras, the default `gpu` group of a bare
@@ -1005,6 +888,53 @@ unless it says so here, in its own paragraph.
   and source comments, the parity manifests' notes and
   `bench/experiments/independent-input-entity-parity-2026-09-05.json` -- now
   names the new path. `docs/EXPERIMENTS.jsonl` stays where it was.
+
+- **The benchmark statements in README.md and docs/benchmark.md now match
+  the measured release results and each other.** README claimed "precision
+  on both sides" and reported 1.08x-4.53x/0.94x-4.85x from a 20-pair sweep,
+  while its own Precision section already listed four ports that run
+  reduced precision relative to upstream — directly contradicting the first
+  claim. docs/benchmark.md described a 300 W Max-Q card and upstream
+  OpenFold3 0.3.1. Both now state the current, paper-sourced numbers: warm
+  speed-up 0.82x-4.16x (median 2.41x) and device-peak-memory ratio
+  1.03x-4.45x (median 2.24x) over 24 jointly completed cells on one RTX PRO
+  6000 Blackwell Server Edition, noting that FoldJAX's default (reduced)
+  precision contributes to the gain, plus a new matched-precision-rerun
+  table. The old docs/benchmark.md content (2026-09-01 to 2026-09-12, Max-Q
+  card, OpenFold3 0.3.1) moved to
+  `docs/archive/benchmark-full-report-2026-09-12.md` as a dated record;
+  `docs/openfold3.md` and `docs/archive/README.md` were updated to point at
+  it instead of describing stale rows as still live.
+
+- **Importing `foldjax.models.openfold3` no longer sets the JAX pool
+  fraction; the Python prediction calls choose it as the CLI does.** The
+  import wrote 0.90 whenever no fraction variable was set, so in a Python
+  process the pool depended on whether OpenFold3 had been imported, and on a
+  48 GB card it bypassed the 0.85 that class gets. `foldjax.predict`,
+  `predict_batch` and in-process `warm_cache` now apply the CLI's automatic
+  policy, but only when neither `XLA_CLIENT_MEM_FRACTION` nor
+  `XLA_PYTHON_CLIENT_MEM_FRACTION` is set and JAX's backend is not yet
+  initialized; a value FoldJAX itself wrote for earlier models in the same
+  process is decided again for the next call's models while JAX is still
+  down. The CLI's own choice is unchanged. Code that drives the OpenFold3
+  port directly (`foldjax.models.openfold3.load_checkpoint`,
+  `compile_predict`, `predict`, as the `bench/` scripts do) gets the same
+  policy from the first of those it calls. A caller that creates a JAX array
+  before any of them now gets JAX's default of 0.75 instead of 0.90; set
+  `XLA_CLIENT_MEM_FRACTION=0.9` to keep the old pool.
+
+- **docs/cli.md now reports the 2026-10-27 measurement of Protenix
+  repeatability with and without `deterministic=on`.** At main 3a21fc66 on
+  one RTX PRO 6000, default cold and warm passes on copies of one cache
+  differed by up to 17.2 Å (9JU4) and 18.4 Å (9BCJ); with
+  `deterministic=on` every pass was bitwise identical, at 6-13% more warm
+  wall time.
+
+- **Security patch releases in the lock**: aiohttp 3.14.5, certifi
+  2026.10.23, pillow 13.0.0 and setuptools 84.2.1 (all transitive), for
+  advisories the nightly `pip-audit` reported against the previous pins;
+  aiohttp 3.14.4 and later require yarl 1.25.1, which moves with it.
+  `pip-audit` reports no known vulnerability in any exported environment.
 
 ### Fixed
 
@@ -1743,6 +1673,67 @@ unless it says so here, in its own paragraph.
 
 - Protenix and OpenDDE write mmCIF files in linear time per chain
   (byte-identical output).
+
+- **`foldjax_run.json`'s `kernel_tuning.sources` accepts a source name it
+  does not declare.** It closed its key set: the earlier copy of the 1.0
+  schema lacks `partial` and `heuristic`, so a newer manifest counting them
+  fails it, against the schema's own rule that a 1.x reader accepts any 1.y
+  file. A source added later no longer does the same; any key must still be
+  a non-negative integer.
+
+- **`foldjax compare` groups structures by the input's content, not its
+  path.** One job reached through a symlink, a relative path or a copy is now
+  one input, and two different files at one path in different output trees
+  are two. A path where a run recorded no input digest still groups by path.
+  Each `compare.json` input carries its `input_sha256` and each structure its
+  own run's input path as `run_input`; `compare.csv` and
+  `compare_structures.csv` gain `input_sha256` as their last column. When two
+  different files share an input label, their structure keys carry the run
+  directory (`boltz2[a]/seed-101/sample-00`) so their rows stay apart.
+
+- **`foldjax predict --resume`'s help says what makes a run reusable**: a
+  finished `foldjax_run.json` that records the same request, with structures
+  and saved representations that still match it, not merely a finished
+  manifest; and a run recorded with a since-removed option is an error, not a
+  rerun.
+
+- **docs/cli.md and docs/faq.md no longer claim a reused compiled
+  executable makes any backend's run repeatable.** GPU
+  measurement showed Protenix diverging by up to 17.2 Å same-index Cα RMSD
+  between two runs started from a copy of the same compilation cache (22/22
+  cache hits, so the identical executables ran) at a fixed seed; only
+  `deterministic=on` reproduces it bitwise there. AlphaFold 3's own
+  variation is confirmed as XLA kernel-autotuning noise -- a copied cache
+  reproduces it atom for atom -- and `--option kernel_autotuning=heuristics`
+  does not remove it on a fresh cache, because that option is Tokamax's own
+  cache-miss policy and leaves XLA's separate GEMM/fusion autotuner free to
+  vary. ESMFold2's existing claim (a replayed compilation cache reproduces a
+  run bit for bit) was already accurate and is unchanged. Boltz-2, OpenDDE
+  and OpenFold3 are unmeasured on this point.
+
+- **`bench/protenix_foldjax_capture.py` replay no longer crashes, or would
+  have applied FoldJAX's own MC dropout, when FoldJAX's dropout coin comes up
+  for an input whose native capture drew none.** The CLI's keys reached the
+  wrapper-options record (a JAX array is not JSON) and the model call beside
+  the native tape. The replay now follows native's decision only and records
+  `port_mc_dropout_keys_displaced`. Seen on E9 8PPX at seed 101.
+
+- **`bench/stage_parity.py` Boltz-2 S5 now compiles the confidence head the
+  way `foldjax predict` does.** The row wrapped the head in a plain `jax.jit`
+  over a closure: without the port's bfloat16 compile policy
+  (`compile_policy.jit`, `xla_allow_excess_precision=False`) the GPU erased
+  the FP32->BF16->FP32 rounding boundaries the head reproduces from native
+  autocast, and with the features folded in as constants the GPU program of
+  the ragged query-chunked pair-bias attention corrupted the single track.
+  On the GPU the row read max |d| pLDDT / PAE / pTM 0.356 / 10.9 A / 0.0118
+  (207 tokens) and 0.489 / 12.1 A / 0.0286 (1,138 tokens); compiled like
+  `predict` it reads 0.0016 / 0.18 A / 5.6e-05 and 0.0015 / 0.16 A /
+  6.4e-05, and the committed 1AAY GPU row's 0.00711 / 2.45 A / 0.00401
+  becomes 0.000402 / 0.106 A / 6.5e-05 (its CPU row: 0.000403 / 0.107 A).
+  Each cause is independent: with the policy alone the closure program
+  still reads pLDDT 0.342 at 207 tokens. The shipped model and CLI are
+  unchanged; the CPU 1AAY row moves at the 1e-4 level (0.000403 / 0.107 ->
+  0.000578 / 0.106).
 
 ### Security
 
@@ -5832,10 +5823,10 @@ unless it says so here, in its own paragraph.
   message names the pair of variables. FoldJAX added its own spelling with
   `setdefault`, so anyone who had set the current name lost the GPU by
   importing `foldjax.models.openfold3` -- silently, and with a message pointing
-  somewhere else. The fraction is now set through one place that respects
-  whichever spelling is already present and never adds a second, and the
-  out-of-memory explainer names the variable actually in effect rather than a
-  constant.
+  somewhere else. The fraction is set in one place, at prediction time, and
+  respects whichever spelling is already present and never adds a second, and
+  the out-of-memory explainer names the variable actually in effect rather than
+  a constant.
 
 - **Two more benchmark sizes, and the one where FoldJAX runs what its upstream
   cannot.** At 1,354 tokens OpenDDE finishes in 529 s at 77.8 GiB while upstream
@@ -6328,12 +6319,10 @@ unless it says so here, in its own paragraph.
   only 28.5 GiB; with it on the same command completed in 1,058.4 s at a peak
   of 59.8 GiB and logged no allocator failure. A pool grown on demand is
   assembled piecewise, so it cannot serve one large contiguous request even
-  with the card mostly free. Only the fraction is now set, still via
-  `setdefault`, so an explicit operator setting continues to win. This also
-  re-enables `foldjax.oom`'s pool-based diagnostic for OpenFold3, which
-  declines to report whenever preallocation is off. The recorded symptom of a
-  3,012-token first invocation failing while a second process succeeded is
-  explained by the same mechanism.
+  with the card mostly free. This also re-enables `foldjax.oom`'s pool-based
+  diagnostic for OpenFold3, which declines to report whenever preallocation is
+  off. The recorded symptom of a 3,012-token first invocation failing while a
+  second process succeeded is explained by the same mechanism.
 
 ### Added
 
