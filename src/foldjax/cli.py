@@ -589,8 +589,12 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--resume",
         action="store_true",
-        help="skip any model/input pair whose output directory already holds a "
-        f"finished {manifest.MANIFEST_NAME}",
+        help="reuse a model/input/seed run only when its finished "
+        f"{manifest.MANIFEST_NAME} records this same request (including model, "
+        "input path and content, weights, seed, sampling, options and padding) "
+        "and its structures and saved representations still match what it "
+        "recorded; rerun any other, except that a run recorded with an option "
+        "this version removed is reported as an error",
     )
     run.add_argument(
         "--keep-going",
@@ -1810,10 +1814,12 @@ def _apply_mem_fraction(
 ) -> None:
     """Validate and set the pool fraction before anything imports JAX.
 
-    Only here, and only for the CLI: this is a process-wide setting, and a
-    library that changed it on import would be deciding for a host application
-    that may be sharing the device. A caller's environment overrides the
-    automatic default; an explicit CLI value overrides both.
+    Never on import: this is a process-wide setting, and a library that
+    changed it on import would be deciding for a host application that may be
+    sharing the device. The Python prediction entry points apply the same
+    automatic default only while JAX's backend is not yet up. A caller's
+    environment overrides the automatic default; an explicit CLI value
+    overrides both.
     """
     _validate_mem_fraction(requested)
     if requested is not None:
@@ -1837,8 +1843,9 @@ def _apply_gc_threshold() -> None:
     Boltz-2, Protenix and OpenFold3 (fixed-cost job 2333). These thresholds
     still collect cycles, only rarely, and left peak RSS where it was.
 
-    Same restriction as `_apply_mem_fraction`: the collector is process-wide,
-    so a library that retuned it on import would be deciding for its host.
+    Applied only by the CLI: the collector is process-wide, so a library that
+    retuned it, on import or in `foldjax.predict`, would be deciding for its
+    host.
     """
     import gc
 
@@ -1873,12 +1880,12 @@ def _requested_cp_devices(args: argparse.Namespace) -> int:
 def _apply_rendezvous_timeout(args: argparse.Namespace) -> None:
     """Bound XLA's collective rendezvous before anything imports JAX.
 
-    Same argument as `_apply_mem_fraction`, and the same restriction to the
-    CLI: this is process-wide, and a library that set it on import would be
-    deciding for a host application. It has to happen here because XLA parses
-    ``XLA_FLAGS`` when the backend initialises -- by the time
-    `models/_cp.context_parallel` runs, a CLI prediction has long had one --
-    and without it one device's OOM leaves the rest waiting forever
+    Applied only by the CLI (unlike the pool fraction, which the Python
+    prediction calls also choose): this is process-wide, and a library that
+    set it would be deciding for a host application. It has to happen here
+    because XLA parses ``XLA_FLAGS`` when the backend initialises -- by the
+    time `models/_cp.context_parallel` runs, a CLI prediction has long had
+    one -- and without it one device's OOM leaves the rest waiting forever
     (`foldjax.oom.CP_RENDEZVOUS_SECONDS`). A value the caller already set for
     the flag wins.
     """

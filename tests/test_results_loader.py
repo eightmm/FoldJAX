@@ -251,7 +251,7 @@ def test_compare_on_one_structure_says_why_it_wrote_no_pair(
 def test_compare_writes_every_ordered_pair_with_its_correspondence(
     tmp_path: Path, capsys
 ) -> None:
-    root = _batch(tmp_path, ("alphafold3", "boltz2", "protenix"))
+    root = _batch(tmp_path, MONOMER)
     out = tmp_path / "cmp"
 
     assert cli.main(["compare", str(root), "--out", str(out)]) == 0
@@ -259,14 +259,10 @@ def test_compare_writes_every_ordered_pair_with_its_correspondence(
 
     document = json.loads(Path(written["json"]).read_text())
     (entry,) = document["inputs"]
-    assert len(entry["structures"]) == 3
-    assert len(entry["pairs"]) == 6
+    assert len(entry["structures"]) == 6
+    assert len(entry["pairs"]) == 30
     keys = {item["key"] for item in entry["structures"]}
-    assert keys == {
-        "alphafold3/seed-101/sample-00",
-        "boltz2/seed-101/sample-00",
-        "protenix/seed-101/sample-00",
-    }
+    assert keys == {f"{model}/seed-101/sample-00" for model in MONOMER}
     for pair in entry["pairs"]:
         assert pair["reference"] != pair["mobile"]
         assert pair["rmsd_angstrom"] >= 0.0
@@ -279,13 +275,9 @@ def test_compare_writes_every_ordered_pair_with_its_correspondence(
     pairs_csv = list(
         csv.DictReader(io.StringIO(Path(written["pairs_csv"]).read_text()))
     )
-    assert len(pairs_csv) == 6
-    assert {row["reference_model"] for row in pairs_csv} == {
-        "alphafold3",
-        "boltz2",
-        "protenix",
-    }
-    assert Path(written["structures_csv"]).read_text().count("\n") == 4
+    assert len(pairs_csv) == 30
+    assert {row["reference_model"] for row in pairs_csv} == set(MONOMER)
+    assert Path(written["structures_csv"]).read_text().count("\n") == 7
 
 
 def test_compare_best_only_falls_back_for_a_model_that_ranks_nothing(
@@ -300,6 +292,134 @@ def test_compare_best_only_falls_back_for_a_model_that_ranks_nothing(
     (entry,) = document["inputs"]
     flags = {item["model"]: item["best_within_model"] for item in entry["structures"]}
     assert flags == {"boltz2": True, "openfold3": False}
+
+
+def test_compare_groups_one_input_by_content_whatever_its_path(
+    tmp_path: Path,
+) -> None:
+    from foldjax.compare import compare_rows
+
+    root = tmp_path / "batch"
+    first = write_job(tmp_path / "jobs", "e9_8reh")
+    copy = write_job(tmp_path / "copied", "e9_8reh")
+    assert first.read_bytes() == copy.read_bytes()
+    for model, job in (("boltz2", first), ("protenix", copy)):
+        _run(
+            tmp_path / "scratch" / model,
+            f"{model}_e9_8reh",
+            out=root / model / "e9_8reh",
+            job=job,
+        )
+
+    (entry,) = compare_rows(root)["inputs"]
+    assert {item["model"] for item in entry["structures"]} == {"boltz2", "protenix"}
+    assert len(entry["pairs"]) == 2
+    assert entry["input"] == min(str(copy), str(first))
+    assert len(entry["input_sha256"]) == 64
+    assert {item["model"]: item["run_input"] for item in entry["structures"]} == {
+        "boltz2": str(first),
+        "protenix": str(copy),
+    }
+
+
+def test_compare_keeps_different_files_at_one_path_apart(tmp_path: Path) -> None:
+    from foldjax.compare import compare_directory, compare_rows
+
+    root = tmp_path / "batch"
+    job = write_job(tmp_path / "jobs", "e9_8reh")
+    _run(tmp_path / "scratch" / "a", "boltz2_e9_8reh", out=root / "a", job=job)
+    # The same job, rewritten in place before the next tree ran it.
+    job.write_text(json.dumps(json.loads(job.read_text()), indent=2))
+    _run(tmp_path / "scratch" / "b", "boltz2_e9_8reh", out=root / "b", job=job)
+
+    entries = compare_rows(root)["inputs"]
+    assert len(entries) == 2
+    assert {entry["input"] for entry in entries} == {str(job)}
+    assert len({entry["input_sha256"] for entry in entries}) == 2
+    for entry in entries:
+        assert len(entry["structures"]) == 1 and entry["pairs"] == []
+    keys = [item["key"] for entry in entries for item in entry["structures"]]
+    assert len(set(keys)) == 2
+    assert {key.split("/", 1)[0] for key in keys} == {"boltz2[a]", "boltz2[b]"}
+
+    written = compare_directory(root)
+    rows = list(csv.DictReader(io.StringIO(written["structures_csv"].read_text())))
+    assert len(rows) == 2
+    assert len({tuple(row.values()) for row in rows}) == 2
+    assert {row["key"] for row in rows} == set(keys)
+    assert {row["input_sha256"] for row in rows} == {
+        entry["input_sha256"] for entry in entries
+    }
+    for name in ("pairs_csv", "structures_csv"):
+        header = written[name].read_text().splitlines()[0].split(",")
+        assert header[0] == "input" and header[-1] == "input_sha256"
+
+
+def _two_chains_and_a_ligand(fixtures: Path, case_name: str) -> None:
+    """``case_name`` with its protein chain A split after residue 60: protein
+    chains A and C, and the GG2 ligand in chain B."""
+    import gzip
+    import shutil
+
+    import gemmi
+
+    from tests.test_output_contract import FIXTURES
+
+    case = fixtures / case_name
+    shutil.copytree(FIXTURES / case_name, case)
+    structure = gemmi.read_structure(str(case / "structure.cif.gz"))
+    chain = structure[0]["A"]
+    second = gemmi.Chain("C")
+    for residue in list(chain)[60:]:
+        second.add_residue(residue)
+    del chain[60:]
+    structure[0].add_chain(second)
+    structure.assign_subchains(force=True)
+    structure.entities.clear()
+    structure.setup_entities()
+    with gzip.open(case / "structure.cif.gz", "wt") as handle:
+        handle.write(structure.make_mmcif_document().as_string())
+
+
+def test_two_protein_chains_and_a_ligand_reach_the_rows_and_compare(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from foldjax.compare import compare_rows
+    from tests import test_output_contract
+
+    fixtures = tmp_path / "fixtures"
+    for model in ("alphafold3", "boltz2"):
+        _two_chains_and_a_ligand(fixtures, f"{model}_e9_8vez")
+    monkeypatch.setattr(test_output_contract, "FIXTURES", fixtures)
+    root = _batch(tmp_path, ("alphafold3", "boltz2"), target="e9_8vez")
+
+    rows = results_table(load_results(root))
+    assert {row["model"] for row in rows} == {"alphafold3", "boltz2"}
+    for row in rows:
+        assert row["status"] == "ok"
+        # Three author chains, the ligand's own among them: an interface.
+        assert row["iptm"] is not None
+        assert "iptm" not in (row["summary_missing"] or {})
+
+    (entry,) = compare_rows(root)["inputs"]
+    assert len(entry["pairs"]) == 2
+    for pair in entry["pairs"]:
+        assert pair["chain_map"] == {"A": "A", "B": "B", "C": "C"}
+        # Fitted on both protein chains' CA; the ligand moves with the fit
+        # but adds no fitted or reference atom.
+        assert pair["matched_atoms"] == pair["reference_atoms"] == 119
+        assert pair["matched_residues"] == 119
+        assert pair["coverage"] == pytest.approx(1.0)
+        assert pair["rmsd_angstrom"] == pytest.approx(0.0, abs=1e-3)
+        chains = {
+            item["source_chain"]: (item["kind"], item["residue_pairs"])
+            for item in entry["correspondences"][pair["correspondence"]]
+        }
+        assert chains == {
+            "A": ("protein", 60),
+            "B": ("ligand", 1),
+            "C": ("protein", 59),
+        }
 
 
 def test_confidence_array_records_validate_and_reach_the_row(tmp_path: Path) -> None:

@@ -66,7 +66,12 @@ def load_checkpoint(path: str | Path) -> dict[str, np.ndarray]:
     """Load a checkpoint into a flat ``{key: numpy array}`` mapping.
 
     Wrapper prefixes are stripped so the keys match what the mappers expect.
+    Loading is the first step of a direct prediction, still before JAX
+    starts, so it applies the pool policy (`inference.choose_pool_fraction`).
     """
+    from foldjax import oom
+
+    oom.set_api_predict_mem_fraction(models=("openfold3",))
     path = Path(path)
     if path.suffix == ".safetensors":
         from safetensors.numpy import load_file

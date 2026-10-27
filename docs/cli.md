@@ -483,7 +483,11 @@ nucleic acids, with ligands carried but not fitted. It writes
 matched and reference atom counts, chain map, and an id into the residue
 correspondence the fit used, run-length encoded) and `compare_structures.csv`
 (one row per structure with its ignored inputs, so a matched-input panel shows
-what each model actually read). Coverage is matched over reference atoms, so it
+what each model actually read). Inputs are grouped by content: both CSVs end
+with an `input_sha256` column, each structure in `compare.json` keeps its own
+run's input path as `run_input`, and when two different files share an input
+label the structure keys carry their run directory (`boltz2[a]/...`). Coverage
+is matched over reference atoms, so it
 is directional and the matrix is written in full. Cost grows with the square
 of the structure count. The pairwise matrix has no TM-score; scoring against a
 deposited structure is `--reference` (below).
@@ -2303,6 +2307,15 @@ dropout values, and one lowered input structure for both flag values. The user's
 the repeated-run spread. The underlying comparison arrays are not included
 here; neither that finite check nor the older RMSDs establish a universal
 tolerance for the change.
+
+A 2026-10-27 rerun at main 3a21fc66 (after that change; one RTX PRO 6000; seed
+102, five samples, 200 steps, 10 recycles; a cold pass, then three warm passes
+on separate copies of its cache, 27/27 hits) reproduced the effect by default:
+cold against warm moved one 9JU4 sample by up to 17.2 Å per-sample Cα RMSD and
+9BCJ (485 tokens) by 16.4-18.4 Å, and warm passes differed from each other by
+9.3-17.2 Å. With `deterministic=on` the cold and three warm passes were bitwise
+identical on both targets, at 6-13% more warm wall time and a device peak
+within 5% (one seed, two targets; a job ran on another GPU of the node).
 
 Keep one `--cache-dir` (the default cache is persistent) to get the same
 AlphaFold 3 or ESMFold2 structure again, and use `deterministic=on` for

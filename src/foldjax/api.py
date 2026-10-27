@@ -54,7 +54,11 @@ from foldjax.manifest import (
 )
 from foldjax.manifest import write as write_manifest
 from foldjax.models._representations import archive_headers, archive_identity
-from foldjax.oom import clear_mesh_record, is_out_of_memory
+from foldjax.oom import (
+    clear_mesh_record,
+    is_out_of_memory,
+    set_api_predict_mem_fraction,
+)
 from foldjax.oom import diagnose as diagnose_oom
 from foldjax.output import normalize as normalize_output
 from foldjax.paths import compile_cache_dir
@@ -963,6 +967,27 @@ def _with_drawn_seed(request: PredictionRequest) -> PredictionRequest:
     return request
 
 
+def _apply_pool_policy(request: PredictionRequest) -> None:
+    """Choose the allocator pool as the CLI would, if nothing has chosen it.
+
+    See `oom.set_api_predict_mem_fraction` for when this does nothing. An
+    unknown model name sets nothing either: resolving the request then refuses
+    it, and a later valid call still gets to choose.
+    """
+    try:
+        cp_devices = int(request.options.get("cp_devices", 1))
+    except (TypeError, ValueError):
+        cp_devices = 1
+    try:
+        set_api_predict_mem_fraction(
+            models=tuple(str(model) for model in request.resolved_models if model),
+            cp_devices=cp_devices,
+        )
+    except ValueError:
+        # An unknown model name; resolving the request reports it.
+        pass
+
+
 def _preflight_or_record(
     request: PredictionRequest,
     failures: list[PredictionFailure],
@@ -1012,6 +1037,7 @@ def predict_batch(
     caller could not turn into a request at all (an empty FASTA file in a
     directory, say); they are reported and recorded with this batch's own.
     """
+    _apply_pool_policy(request)
     plural = request.models is not None or request.inputs is not None
     if request.output_dir is None:
         output_root = Path.cwd()

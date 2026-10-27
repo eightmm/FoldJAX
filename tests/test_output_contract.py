@@ -269,11 +269,29 @@ def test_alphafold3_kernel_sources_reach_the_manifest_and_do_not_leak(
     schema = load_schema("run")
     assert errors(manifest, schema) == []
     assert undeclared(manifest, schema) == []
-    manifest["kernel_tuning"]["sources"] = {"guessed": 1}
-    assert errors(manifest, schema)
 
     _confidence, other, _fixture = _run(tmp_path / "next", "boltz2_e9_8reh")
     assert "kernel_tuning" not in other
+
+
+def test_kernel_sources_accept_a_source_a_newer_writer_adds() -> None:
+    """`sources` is a count map: 1.0 lacked `partial` and `heuristic`, so a
+    closed key set made every newer manifest fail the older 1.x schema."""
+    schema = load_schema("run")
+    tuning = {"kernel_autotuning": "autotune", "persistent_store": True}
+
+    def check(sources: object) -> list[str]:
+        return errors(
+            {**tuning, "sources": sources},
+            schema["properties"]["kernel_tuning"],
+            schema,
+        )
+
+    assert check({"store": 1, "partial": 2, "added_later": 3}) == []
+    assert check(None) == []
+    for bad in (-1, 1.5, "1", True, None):
+        assert check({"added_later": bad}), bad
+    assert check({"store": -1})
 
 
 def test_a_run_without_the_optional_fields_still_validates_and_resumes(

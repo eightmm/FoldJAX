@@ -44,6 +44,12 @@ DEFAULT_MEM_FRACTION = 0.75
 #: cuDNN and the cuEquivariance kernel take workspaces outside it, and a fraction
 #: chosen to just fit the pool moves the failure there instead. This leaves
 #: 9.6 GiB on that device against a measured need of 73.33.
+#:
+#: Only the fraction is chosen; the pool stays preallocated. Growing it on
+#: demand was once OpenFold3's setting, and at 3,012 tokens with a cold
+#: compilation cache it is what failed the run: a grown pool is assembled
+#: piecewise and cannot serve one large contiguous request, even on a mostly
+#: free card.
 PREDICT_MEM_FRACTION = 0.9
 _PREDICT_48GB_MEM_FRACTION = 0.85
 _BOLTZ2_4090_MEM_FRACTION = 0.8
@@ -115,6 +121,12 @@ def _is_rtx4090(name: str) -> bool:
     )
 
 
+#: The variable and value the automatic policy itself last wrote. Once written
+#: it reads like a caller's choice; this is how a later prediction in the same
+#: process tells the two apart.
+_AUTOMATIC_FRACTION: tuple[str, str] | None = None
+
+
 def set_predict_mem_fraction(
     *, models: Sequence[str] = (), cp_devices: int = 1
 ) -> None:
@@ -156,6 +168,35 @@ def set_predict_mem_fraction(
                 if target:
                     fraction = _BOLTZ2_4090_MEM_FRACTION
     set_mem_fraction(fraction)
+    global _AUTOMATIC_FRACTION
+    _AUTOMATIC_FRACTION = (CURRENT_FRACTION_ENV, str(fraction))
+
+
+def set_api_predict_mem_fraction(
+    *, models: Sequence[str] = (), cp_devices: int = 1
+) -> None:
+    """The CLI's pool policy for a Python prediction, while it can still apply.
+
+    Called when a prediction starts, never on import: a host that set either
+    fraction variable, or whose JAX backend is already up (and so already
+    sized its pool), keeps what it has. A value this policy wrote earlier for
+    other models is decided again for these, as long as JAX has not started.
+    """
+    name = configured_fraction_env()
+    if name is not None and (name, os.environ[name]) != _AUTOMATIC_FRACTION:
+        return
+    if "jax" in sys.modules:
+        from foldjax.models._cp import backends_are_initialized
+
+        if backends_are_initialized():
+            return
+    previous = os.environ.pop(name) if name is not None else None
+    try:
+        set_predict_mem_fraction(models=models, cp_devices=cp_devices)
+    except BaseException:
+        if name is not None and previous is not None:
+            os.environ[name] = previous
+        raise
 
 
 # ---------------------------------------------------------------------------

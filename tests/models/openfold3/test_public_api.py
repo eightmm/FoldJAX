@@ -1,9 +1,11 @@
 """The package's public surface and its process-level settings.
 
-The allocator settings are applied on import, because they are process-local
-and have to be in place before JAX initialises a device.
+Importing the port changes no allocator setting: the pool fraction is chosen
+when a prediction starts (`foldjax.oom.set_predict_mem_fraction`), where the
+card and every model sharing the process are known.
 
-Matmul precision is *not*, and that is the point of the two tests below.
+Matmul precision is not set on import either, and that is the point of the
+two tests below.
 `jax.config.update` is process-global, so a port that pins precision on import
 re-specifies the numerics of every other model sharing the process. This port
 was vendored beside four others into one package and one pytest session, so it
@@ -96,23 +98,19 @@ def test_predict_runs_under_the_precision_upstream_ships() -> None:
     assert jax.config.jax_default_matmul_precision == outside_before
 
 
-def test_allocator_env_is_set_on_import() -> None:
+def test_import_leaves_preallocation_alone() -> None:
     """Checked in a fresh process so an inherited value cannot mask it.
 
-    The import sets the fraction and deliberately leaves preallocation alone.
-    It used to force ``XLA_PYTHON_CLIENT_PREALLOCATE=false``; at 3,012 tokens
-    with a cold cache that is the difference between the run dying on a
+    The import used to force ``XLA_PYTHON_CLIENT_PREALLOCATE=false``; at 3,012
+    tokens with a cold cache that is the difference between the run dying on a
     54.34 GiB request at a 28.5 GiB high-water mark and completing at a
     59.8 GiB peak. Asserting the *absence* is the point -- a re-added default
-    would reinstate the wall, and only this direction catches it.
+    would reinstate the wall, and only this direction catches it. That the
+    import sets no pool fraction either is `tests/test_oom.py`'s.
     """
     code = (
         "import foldjax.models.openfold3, os; "
-        "from foldjax import oom; "
-        "print(os.environ.get('XLA_PYTHON_CLIENT_PREALLOCATE', '<unset>'), "
-        # The fraction, not the spelling it was written under: jaxlib has two
-        # names for it and writing ours beside a caller's costs them the GPU.
-        "oom.mem_fraction())"
+        "print(os.environ.get('XLA_PYTHON_CLIENT_PREALLOCATE', '<unset>'))"
     )
     result = subprocess.run(
         [sys.executable, "-c", code],
@@ -121,9 +119,7 @@ def test_allocator_env_is_set_on_import() -> None:
         check=True,
         env={"JAX_PLATFORMS": "cpu", **inherited_environment()},
     )
-    preallocate, fraction = result.stdout.split()
-    assert preallocate == "<unset>"
-    assert float(fraction) == 0.90
+    assert result.stdout.strip() == "<unset>"
 
 
 @requires_gpu
@@ -173,25 +169,3 @@ def test_the_port_does_not_force_the_allocator_to_grow() -> None:
         "is explicitly off -- the same order, so it is growing on demand, which "
         "is what made OpenFold3 fail at 3,012 tokens while the card had room"
     )
-
-
-def test_explicit_env_settings_are_not_overridden() -> None:
-    """setdefault, not assignment: an operator's choice must survive."""
-    code = (
-        "import foldjax.models.openfold3, os; "
-        "print(os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'])"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        check=True,
-        env={
-            **inherited_environment(),
-            "JAX_PLATFORMS": "cpu",
-            # Splatted first on purpose: this test asserts an operator's
-            # explicit setting survives, so nothing inherited may outrank it.
-            "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.55",
-        },
-    )
-    assert result.stdout.strip() == "0.55"

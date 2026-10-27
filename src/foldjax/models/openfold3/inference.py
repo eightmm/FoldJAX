@@ -22,7 +22,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from foldjax import memory_policy
+from foldjax import memory_policy, oom
 from foldjax._openfold3_compile import (
     canonical_cache_scope,
     inspect_cache_scope,
@@ -1345,6 +1345,18 @@ def _bespoke_iptm(
     return jax.vmap(one)(chain_pair, frames)
 
 
+def choose_pool_fraction() -> None:
+    """The prediction pool policy for a caller driving this port directly.
+
+    Importing the port once set 0.90 for every such caller; the policy now
+    runs on the first entry point instead (`load_checkpoint`, `compile_predict`
+    or `predict`). It does nothing once the caller has set a fraction or JAX
+    has started, so a caller that makes JAX arrays first keeps JAX's own
+    default.
+    """
+    oom.set_api_predict_mem_fraction(models=("openfold3",))
+
+
 @openfold3_precision
 def predict(
     key: jax.Array,
@@ -1393,6 +1405,7 @@ def predict(
     Returns:
         A :class:`Prediction`.
     """
+    choose_pool_fraction()
     augmentation_tape = _prediction_augmentation_tape(
         augmentation_tape,
         config=config,
@@ -2817,6 +2830,7 @@ def compile_predict(
     graph identity, so the two policies never share one program. See
     :mod:`foldjax.models._compile_policy`.
     """
+    choose_pool_fraction()
     table = _validated_representative_atoms(representative_atoms)
     capacity = chain_capacity(1 if n_chain is None else n_chain)
     runtime_count = np.asarray(-1 if n_chain is None else n_chain, dtype=np.int32)

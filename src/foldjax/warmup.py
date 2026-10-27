@@ -21,7 +21,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
-from foldjax.api import _predict_resolved, resolve_cache_dir, resolve_requests
+from foldjax.api import (
+    _apply_pool_policy,
+    _predict_resolved,
+    resolve_cache_dir,
+    resolve_requests,
+)
 from foldjax.backends.base import Backend
 from foldjax.cache import CacheSnapshot, cache_snapshot
 from foldjax.manifest import device_peak_bytes
@@ -475,6 +480,7 @@ def warm_cache(
         raise ValueError("isolation must be 'process' or 'in-process'")
     if isolation == "process":
         return _warm_processes(request)
+    _apply_pool_policy(request)
     plural = request.models is not None or request.inputs is not None
     keep_output = request.output_dir is not None
     output_root = Path(request.output_dir) if plural and keep_output else None

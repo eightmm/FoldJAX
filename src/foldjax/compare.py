@@ -64,6 +64,27 @@ def _signature(path: Path) -> tuple[Any, ...]:
     )
 
 
+def _input_identities(rows: Sequence[Mapping[str, Any]]) -> dict[str, tuple[str, str]]:
+    """Each run's input identity: its SHA-256, or its path when that is unknown.
+
+    By content, so one job reached through a symlink, a relative path or a
+    copy is one input, and two different files at one path in different output
+    trees are two. A path where any run recorded no digest keeps the path for
+    every run there: a run of unknown content cannot be split off or joined.
+    """
+    by_path: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        by_path.setdefault(row["input"], []).append(row)
+    identities: dict[str, tuple[str, str]] = {}
+    for path, members in by_path.items():
+        hashed = all(member.get("input_sha256") for member in members)
+        for member in members:
+            identities[member["run_dir"]] = (
+                ("sha256", member["input_sha256"]) if hashed else ("path", path)
+            )
+    return identities
+
+
 def _structures(rows: Sequence[Mapping[str, Any]], root: Path, samples: str):
     """Group verified structures by input, with stable readable keys."""
     usable = [
@@ -74,8 +95,9 @@ def _structures(rows: Sequence[Mapping[str, Any]], root: Path, samples: str):
         and (samples == "all" or row.get("best_within_model"))
     ]
     if samples == "best":
-        # A model that ranks nothing (OpenFold3 on protein input) has no best;
-        # its first sample stands in, and the row says so.
+        # A model that ranks nothing (OpenFold3 on protein input without its
+        # disorder term) has no best; its first sample stands in, and the row
+        # says so.
         covered = {(row["input"], row["run_dir"]) for row in usable}
         for row in rows:
             key = (row.get("input"), row.get("run_dir"))
@@ -86,19 +108,35 @@ def _structures(rows: Sequence[Mapping[str, Any]], root: Path, samples: str):
             ):
                 usable.append({**row, "best_within_model": None})
                 covered.add(key)
-    runs_per_model: dict[tuple[str, str], set[str]] = {}
+    identities = _input_identities(usable)
+    runs_per_model: dict[tuple[tuple[str, str], str], set[str]] = {}
     jobs_per_run: dict[str, set[str]] = {}
     for row in usable:
-        runs_per_model.setdefault((row["input"], row["model"]), set()).add(
-            row["run_dir"]
-        )
+        runs_per_model.setdefault(
+            (identities[row["run_dir"]], row["model"]), set()
+        ).add(row["run_dir"])
         jobs_per_run.setdefault(row["run_dir"], set()).add(str(row.get("job")))
-    groups: dict[tuple[str, str | None], list[dict[str, Any]]] = {}
-    for row in usable:
+
+    def group_of(row: Mapping[str, Any]) -> tuple[tuple[str, str], str | None]:
         several_jobs = len(jobs_per_run[row["run_dir"]]) > 1
-        job = row.get("job") if several_jobs else None
+        return identities[row["run_dir"]], row.get("job") if several_jobs else None
+
+    # A group is labelled by its smallest input path (`compare_rows`). Two
+    # different files that share that label and job would otherwise give the
+    # same keys in rows that differ only in input_sha256.
+    labels: dict[tuple[tuple[str, str], str | None], str] = {}
+    for row in usable:
+        group = group_of(row)
+        labels[group] = min(labels.get(group, row["input"]), row["input"])
+    identities_per_label: dict[tuple[str, str | None], set[tuple[str, str]]] = {}
+    for (identity, job), label in labels.items():
+        identities_per_label.setdefault((label, job), set()).add(identity)
+    groups: dict[tuple[tuple[str, str], str | None], list[dict[str, Any]]] = {}
+    for row in usable:
+        identity, job = group_of(row)
         model = row["model"]
-        if len(runs_per_model[(row["input"], model)]) > 1:
+        shared_label = len(identities_per_label[(labels[identity, job], job)]) > 1
+        if shared_label or len(runs_per_model[(identity, model)]) > 1:
             try:
                 relative = os.path.relpath(row["run_dir"], root)
             except ValueError:
@@ -106,7 +144,7 @@ def _structures(rows: Sequence[Mapping[str, Any]], root: Path, samples: str):
             model = f"{model}[{relative}]"
         job_part = f"{job}/" if job else ""
         key = f"{model}/{job_part}seed-{row['seed']}/sample-{int(row['sample']):02d}"
-        groups.setdefault((row["input"], job), []).append({**row, "key": key})
+        groups.setdefault((identity, job), []).append({**row, "key": key})
     return groups
 
 
@@ -178,8 +216,12 @@ def compare_rows(
             "--metrics scores against a deposited structure; give --reference"
         )
     inputs = []
-    for (input_path, job), members in sorted(
-        groups.items(), key=lambda item: (item[0][0], item[0][1] or "")
+    labelled = [
+        (min(member["input"] for member in members), identity, job, members)
+        for (identity, job), members in groups.items()
+    ]
+    for input_path, identity, job, members in sorted(
+        labelled, key=lambda item: (item[0], item[2] or "", item[1])
     ):
         paths = {member["key"]: Path(member["structure_path"]) for member in members}
         signatures = {}
@@ -258,11 +300,13 @@ def compare_rows(
         inputs.append(
             {
                 "input": input_path,
+                "input_sha256": identity[1] if identity[0] == "sha256" else None,
                 "job": job,
                 "structures": [
                     {
                         "key": member["key"],
                         "model": member["model"],
+                        "run_input": member["input"],
                         "configuration": member.get("configuration"),
                         "seed": member["seed"],
                         "sample": member["sample"],
@@ -356,11 +400,17 @@ def compare_directory(
                             *extra,
                         )
                     },
+                    "input_sha256": entry["input_sha256"],
                 }
             )
         for item in entry["structures"]:
             structure_rows.append(
-                {"input": entry["input"], "job": entry["job"], **item}
+                {
+                    "input": entry["input"],
+                    "job": entry["job"],
+                    **item,
+                    "input_sha256": entry["input_sha256"],
+                }
             )
     written = {
         "json": target / "compare.json",
@@ -389,6 +439,7 @@ def compare_directory(
                 "correspondence",
                 "error",
                 *extra,
+                "input_sha256",
             ),
         ),
         encoding="utf-8",
@@ -413,6 +464,7 @@ def compare_directory(
                 "structure_path",
                 "structure_sha256",
                 *extra,
+                "input_sha256",
             ),
         ),
         encoding="utf-8",

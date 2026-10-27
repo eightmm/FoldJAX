@@ -1,17 +1,10 @@
 """Standalone JAX inference port for OpenFold3."""
 
-# Take the pool up front. Growing the allocator on demand was the historical
-# setting here, justified as stopping a large token bucket from failing before
-# it had a chance to run; measured at 3,012 tokens with a cold compilation
-# cache, it is what *caused* that failure. A grown pool is assembled piecewise
-# and cannot serve one large contiguous request even with the card mostly
-# free, so the run dies asking for a block that would have fit. Only the
-# fraction is set, and only as a default: an explicit process-level setting
-# still wins.
-from foldjax import oom as _oom  # noqa: E402
-
-_oom.set_mem_fraction(0.90)
-
+# The pool fraction is chosen when a prediction starts
+# (`oom.set_api_predict_mem_fraction`, from `foldjax.predict` or this port's
+# `load_checkpoint`/`compile_predict`/`predict`), not on import: an import
+# cannot know the card or the other models sharing the process.
+#
 # The matmul precision OpenFold3 needs is applied by `openfold3_precision`
 # around `predict`, not here. `jax.config.update` is process-global, so setting
 # it on import re-specified the numerics of every other model sharing the

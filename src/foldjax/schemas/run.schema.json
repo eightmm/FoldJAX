@@ -239,7 +239,7 @@
             "heuristic": {"description": "Resource-only GLU misses execute a shared-memory-clamped heuristic while retaining any measured partial overlay. Never persisted as a measured result.", "type": "integer", "minimum": 0},
             "tokamax": {"type": "integer", "minimum": 0}
           },
-          "additionalProperties": false
+          "additionalProperties": {"type": "integer", "minimum": 0}
         },
         "calls": {
           "description": "Optional bounded per-call diagnostics: input ABI (tree, paths, shapes, dtypes, weak types), compile configuration, identity digests, repeat counts and kernel sources. No array contents, RNG values, sequences or filesystem paths. At most eight distinct calls are recorded by the writer.",

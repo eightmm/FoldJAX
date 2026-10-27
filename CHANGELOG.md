@@ -52,7 +52,54 @@ unless it says so here, in its own paragraph.
   `docs/openfold3.md` and `docs/archive/README.md` were updated to point at
   it instead of describing stale rows as still live.
 
+- **Importing `foldjax.models.openfold3` no longer sets the JAX pool
+  fraction; the Python prediction calls choose it as the CLI does.** The
+  import wrote 0.90 whenever no fraction variable was set, so in a Python
+  process the pool depended on whether OpenFold3 had been imported, and on a
+  48 GB card it bypassed the 0.85 that class gets. `foldjax.predict`,
+  `predict_batch` and in-process `warm_cache` now apply the CLI's automatic
+  policy, but only when neither `XLA_CLIENT_MEM_FRACTION` nor
+  `XLA_PYTHON_CLIENT_MEM_FRACTION` is set and JAX's backend is not yet
+  initialized; a value FoldJAX itself wrote for earlier models in the same
+  process is decided again for the next call's models while JAX is still
+  down. The CLI's own choice is unchanged. Code that drives the OpenFold3
+  port directly (`foldjax.models.openfold3.load_checkpoint`,
+  `compile_predict`, `predict`, as the `bench/` scripts do) gets the same
+  policy from the first of those it calls. A caller that creates a JAX array
+  before any of them now gets JAX's default of 0.75 instead of 0.90; set
+  `XLA_CLIENT_MEM_FRACTION=0.9` to keep the old pool.
+
+- **docs/cli.md now reports the 2026-10-27 measurement of Protenix
+  repeatability with and without `deterministic=on`.** At main 3a21fc66 on
+  one RTX PRO 6000, default cold and warm passes on copies of one cache
+  differed by up to 17.2 Å (9JU4) and 18.4 Å (9BCJ); with
+  `deterministic=on` every pass was bitwise identical, at 6-13% more warm
+  wall time.
+
 ### Fixed
+
+- **`foldjax_run.json`'s `kernel_tuning.sources` accepts a source name it
+  does not declare.** It closed its key set: the 0.1.0 copy of the 1.0
+  schema lacks `partial` and `heuristic`, so a newer manifest counting them
+  fails it, against the schema's own rule that a 1.x reader accepts any 1.y
+  file. A source added later no longer does the same; any key must still be
+  a non-negative integer.
+
+- **`foldjax compare` groups structures by the input's content, not its
+  path.** One job reached through a symlink, a relative path or a copy is now
+  one input, and two different files at one path in different output trees
+  are two. A path where a run recorded no input digest still groups by path.
+  Each `compare.json` input carries its `input_sha256` and each structure its
+  own run's input path as `run_input`; `compare.csv` and
+  `compare_structures.csv` gain `input_sha256` as their last column. When two
+  different files share an input label, their structure keys carry the run
+  directory (`boltz2[a]/seed-101/sample-00`) so their rows stay apart.
+
+- **`foldjax predict --resume`'s help says what makes a run reusable**: a
+  finished `foldjax_run.json` that records the same request, with structures
+  and saved representations that still match it, not merely a finished
+  manifest; and a run recorded with a since-removed option is an error, not a
+  rerun.
 
 - **docs/cli.md and docs/faq.md no longer claim a reused compiled
   executable makes any backend's run repeatable.** GPU

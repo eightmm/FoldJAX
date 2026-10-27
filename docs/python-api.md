@@ -121,6 +121,17 @@ the template search under `template_search`.
 `predict_batch(request)` is the entry point that returns results, skips and
 failures together; `predict` keeps its return type and raises.
 
+**The GPU memory pool is chosen once, before JAX starts.** JAX sizes its
+allocator pool when its backend initialises and never resizes it, so
+`predict`, `predict_batch` and in-process `warm_cache` apply the CLI's
+[allocator policy](configuration.md#allocator-policy) for the requested models
+only while JAX's backend is not yet up, by writing `XLA_CLIENT_MEM_FRACTION`.
+A process that has already made a JAX array keeps JAX's own default. Setting
+`XLA_CLIENT_MEM_FRACTION` (or the older `XLA_PYTHON_CLIENT_MEM_FRACTION`)
+yourself opts out: FoldJAX never replaces it. Importing a model sets nothing;
+the OpenFold3 port's own `load_checkpoint`, `compile_predict` and `predict`
+apply the same policy for callers who drive it directly.
+
 `resolve_request(request)` resolves one scalar model/input pair.
 `resolve_requests(request)` handles either spelling and returns the complete
 tuple of scalar requests, including the plural cross product and final output

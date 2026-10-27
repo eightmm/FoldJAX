@@ -76,6 +76,7 @@ Every `FOLDJAX_*` variable the package reads, with its default:
 | `FOLDJAX_TEMPLATE_MMCIF_DIR` | unset | a local mmCIF mirror (flat, or wwPDB-divided `ab/1abc.cif.gz`) read before anything is downloaded. Its files are trusted as they are, so keep it writable only by you |
 | `FOLDJAX_TEMPLATE_STRUCTURE_URL` | `https://files.rcsb.org/download` | where template structures are downloaded from; an empty value turns downloading off |
 | `FOLDJAX_TRUST_SHARED_COMPILE_CACHE` | unset | `1`, `true`, `yes` or `on` uses a compile cache other accounts can write into ([below](#compile-cache-trust)) |
+| `FOLDJAX_PRIVATE_COMPILE_CACHE` | `$XDG_CACHE_HOME/foldjax/compile`, else `~/.cache/foldjax/compile` | the per-user compile cache read after the shared one; point it at node-local storage when the home filesystem is full or slow ([shared installs](shared-install.md)) |
 | `FOLDJAX_PROGRESS` | unset | `0`, `false`, `no` or `off` silences the stage lines on stderr, as `--quiet` does |
 | `FOLDJAX_PROGRESS_MODE` | unset | `lines` prints download progress as tab-separated `[foldjax-progress]` lines when stderr is not a terminal (a batch log, say) |
 | `FOLDJAX_DOCKQ` | `DockQ` on `PATH` | the DockQ executable `foldjax compare --metrics dockq` runs |
@@ -95,7 +96,7 @@ into a failure.
 
 | variable | what FoldJAX does with it |
 |---|---|
-| `XLA_CLIENT_MEM_FRACTION`, `XLA_PYTHON_CLIENT_MEM_FRACTION` | `foldjax predict` uses the [allocator policy](#allocator-policy) when neither is set; an explicit `--mem-fraction` replaces whichever spelling is present. FoldJAX never adds a second spelling beside yours |
+| `XLA_CLIENT_MEM_FRACTION`, `XLA_PYTHON_CLIENT_MEM_FRACTION` | `foldjax predict` and `foldjax cache warm` use the [allocator policy](#allocator-policy) when neither is set, and so do the Python prediction calls while JAX is not yet initialized; an explicit `--mem-fraction` replaces whichever spelling is present. FoldJAX never adds a second spelling beside yours |
 | `XLA_FLAGS` | under context parallelism FoldJAX adds the collective timeout (`xla_gpu_nccl_termination_timeout_seconds`) unless it is already there |
 | `JAX_PLATFORMS` | `cpu` keeps every model on the CPU (slow, but complete) |
 | `JAX_HLO_SOURCE_FILE_CANONICALIZATION_REGEX` | defaults to the exact [shared source-path regex](shared-install.md) before lowering, so editable and wheel prefixes inside Pallas-Triton kernels match. Explicit environment or non-`None` config values win; an empty string disables rewriting |
@@ -131,7 +132,10 @@ JAX initialization and honors a known selected device. Caller environment and
 explicit fractions still take precedence. This is an allocator policy, not a
 new kernel, precision or cache profile.
 As before, this startup policy cannot resize an allocator that JAX already
-initialized in a long-running process.
+initialized in a long-running process. `foldjax.predict`, `predict_batch` and
+in-process `warm_cache` apply the same automatic default when neither variable
+is set and JAX's backend is not yet initialized, and otherwise leave the
+allocator alone; importing a model sets nothing.
 
 The lower 48 GB default leaves more space for CUDA allocations outside the JAX
 pool. It follows [reported A6000 runs](memory-capacity.md#reports-from-2026-10-19),

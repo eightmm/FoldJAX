@@ -179,9 +179,9 @@ def test_preallocation_off_means_there_is_no_pool_to_be_short_of(monkeypatch):
 
 
 def test_an_unparseable_fraction_falls_back_to_jax_s_default(monkeypatch):
-    # Importing any model sets the current spelling process-wide, and it is
-    # read first, so pinning only the deprecated one leaves this test reading
-    # somebody else's import.
+    # An earlier prediction in this session may have set the current spelling
+    # process-wide, and it is read first, so pinning only the deprecated one
+    # leaves this test reading somebody else's run.
     monkeypatch.delenv(oom.CURRENT_FRACTION_ENV, raising=False)
     monkeypatch.setenv(oom.FRACTION_ENV, "not-a-number")
     assert oom.mem_fraction() == oom.DEFAULT_MEM_FRACTION
@@ -292,6 +292,146 @@ def test_importing_a_model_keeps_a_chosen_pool_fraction_alone() -> None:
     )
     assert completed.returncode == 0, completed.stderr[-2000:]
     assert completed.stdout.strip() == "None"
+
+
+def test_importing_openfold3_sets_no_pool_fraction() -> None:
+    """It used to write 0.90, so whichever import ran first chose the pool --
+    over the 48 GB class's 0.85 -- for every model in the process."""
+    import subprocess
+    import sys
+
+    program = (
+        "import os, foldjax.models.openfold3;"
+        f"print(os.environ.get({oom.CURRENT_FRACTION_ENV!r}),"
+        f" os.environ.get({oom.FRACTION_ENV!r}))"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True,
+        text=True,
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if key not in {oom.CURRENT_FRACTION_ENV, oom.FRACTION_ENV}
+        }
+        | {"JAX_PLATFORMS": "cpu"},
+    )
+    assert completed.returncode == 0, completed.stderr[-2000:]
+    assert completed.stdout.split() == ["None", "None"]
+
+
+def _without_fraction(monkeypatch) -> None:
+    # Set first so monkeypatch restores the absence a policy call overwrites.
+    for name in (oom.CURRENT_FRACTION_ENV, oom.FRACTION_ENV):
+        monkeypatch.setenv(name, "0")
+        monkeypatch.delenv(name)
+    monkeypatch.setattr(oom, "_AUTOMATIC_FRACTION", None)
+
+
+def _on_48gb_cards(monkeypatch) -> None:
+    from foldjax import _cuda_memory
+
+    monkeypatch.setenv("JAX_PLATFORMS", "cuda")
+    monkeypatch.setattr(_cuda_memory, "visible_device_bytes", lambda: (48 * GIB,))
+
+
+def test_the_48gb_policy_reaches_an_openfold3_only_run(monkeypatch):
+    from foldjax import cli
+
+    _without_fraction(monkeypatch)
+    _on_48gb_cards(monkeypatch)
+    cli._apply_mem_fraction(None, models=("openfold3",))
+    assert oom.mem_fraction() == 0.85
+
+
+@pytest.mark.parametrize(
+    ("caller", "backend_up", "expected"),
+    [(None, False, "0.85"), ("0.6", False, "0.6"), (None, True, None)],
+)
+def test_python_predictions_apply_the_cli_policy_only_while_they_can(
+    monkeypatch, tmp_path, caller, backend_up, expected
+):
+    """A caller's variable wins, and a pool JAX already sized is left alone."""
+    import foldjax
+    from foldjax import api
+    from foldjax.models import _cp
+    from foldjax.schema import PredictionRequest
+
+    _without_fraction(monkeypatch)
+    _on_48gb_cards(monkeypatch)
+    if caller is not None:
+        monkeypatch.setenv(oom.FRACTION_ENV, caller)
+    monkeypatch.setattr(_cp, "backends_are_initialized", lambda: backend_up)
+    monkeypatch.setattr(api, "resolve_requests", lambda *args, **kwargs: ())
+    job = tmp_path / "job.json"
+    job.write_text("{}")
+    foldjax.predict_batch(
+        PredictionRequest(model="openfold3", input=job, output_dir=tmp_path)
+    )
+    name = oom.configured_fraction_env()
+    assert (os.environ[name] if name else None) == expected
+    if caller is not None:
+        assert oom.CURRENT_FRACTION_ENV not in os.environ
+
+
+@pytest.mark.parametrize(("backend_up", "expected"), [(False, "0.9"), (True, "0.8")])
+def test_a_fraction_foldjax_wrote_is_decided_again_until_jax_starts(
+    monkeypatch, backend_up, expected
+):
+    """Boltz-2 alone on a 4090 gets 0.8; that must not pin a later OpenFold3
+    call in a process whose JAX has not started, nor be changed once it has."""
+    from foldjax import _cuda_memory
+    from foldjax.models import _cp
+
+    _without_fraction(monkeypatch)
+    monkeypatch.delenv("JAX_DEFAULT_DEVICE", raising=False)
+    monkeypatch.setenv("JAX_PLATFORMS", "cuda")
+    card = ("NVIDIA GeForce RTX 4090", 24 * GIB)
+    monkeypatch.setattr(_cuda_memory, "visible_device_info", lambda: (card,))
+    monkeypatch.setattr(_cuda_memory, "visible_device_bytes", lambda: (card[1],))
+    monkeypatch.setattr(_cp, "backends_are_initialized", lambda: False)
+    oom.set_api_predict_mem_fraction(models=("boltz2",))
+    assert os.environ[oom.CURRENT_FRACTION_ENV] == "0.8"
+
+    monkeypatch.setattr(_cp, "backends_are_initialized", lambda: backend_up)
+    oom.set_api_predict_mem_fraction(models=("openfold3",))
+    assert os.environ[oom.CURRENT_FRACTION_ENV] == expected
+    assert oom.FRACTION_ENV not in os.environ
+
+    # The value FoldJAX wrote, under the spelling it never writes, is the caller's.
+    monkeypatch.setattr(_cp, "backends_are_initialized", lambda: False)
+    monkeypatch.delenv(oom.CURRENT_FRACTION_ENV)
+    monkeypatch.setenv(oom.FRACTION_ENV, "0.8")
+    oom.set_api_predict_mem_fraction(models=("openfold3",))
+    assert os.environ[oom.FRACTION_ENV] == "0.8"
+    assert oom.CURRENT_FRACTION_ENV not in os.environ
+
+
+@pytest.mark.parametrize("entry", ["choose_pool_fraction", "load_checkpoint"])
+def test_driving_the_openfold3_port_directly_applies_the_policy(
+    monkeypatch, tmp_path, entry
+):
+    """Its import no longer sets 0.90; its first entry point chooses instead."""
+    from foldjax.models import _cp
+    from foldjax.models.openfold3 import inference
+    from foldjax.models.openfold3.bridge import checkpoint
+
+    _without_fraction(monkeypatch)
+    _on_48gb_cards(monkeypatch)
+    monkeypatch.setattr(_cp, "backends_are_initialized", lambda: False)
+    if entry == "choose_pool_fraction":
+        inference.choose_pool_fraction()
+    else:
+        with pytest.raises(OSError):
+            checkpoint.load_checkpoint(tmp_path / "missing.safetensors")
+    assert os.environ[oom.CURRENT_FRACTION_ENV] == "0.85"
+
+    # A caller who made JAX arrays first keeps JAX's own default.
+    monkeypatch.delenv(oom.CURRENT_FRACTION_ENV)
+    monkeypatch.setattr(oom, "_AUTOMATIC_FRACTION", None)
+    monkeypatch.setattr(_cp, "backends_are_initialized", lambda: True)
+    inference.choose_pool_fraction()
+    assert oom.configured_fraction_env() is None
 
 
 @pytest.mark.parametrize(
