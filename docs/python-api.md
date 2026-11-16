@@ -28,7 +28,7 @@ result = predict(
         # Execution, likewise: dtype, matmul_precision, triangle_kernel,
         # attention_kernel, deterministic. "auto" is the fastest path this
         # build can run -- never a silent fallback to a slower one, and
-        # "deterministic" (on by default on four models) buys repeatable
+        # "deterministic" (on by default on three models) buys repeatable
         # reductions and fixed GEMM kernels.
         options={"dtype": "bfloat16", "triangle_kernel": "auto"},
     )
@@ -145,7 +145,7 @@ option spellings (`compute_dtype`, `trunk_dtype=bf16`, ...) still work and
 warn once; `foldjax.execution.KNOBS` lists the neutral vocabulary.
 `deterministic` is accepted by all six models and compiles that run's
 executables for repeatable reduction orders and fixed GEMM kernels; omitted,
-it is `"on"` for Boltz-2, Protenix, OpenDDE and ESMFold2 and `"off"` for
+it is `"on"` for Boltz-2, Protenix and ESMFold2 and `"off"` for OpenDDE,
 OpenFold3 and AlphaFold 3 (`foldjax.execution.DETERMINISTIC_DEFAULTS`), and
 `resolve_request` writes the value it ran with into the request's options.
 See [the CLI reference](cli.md#--option-deterministicon) for the measurements

@@ -188,11 +188,11 @@ Usually because they were not the same run:
   and a sensitive target amplifies that. On Protenix it does not, by
   measurement: reusing a compiled program (even the identical one, loaded
   from a copied cache) still leaves two runs apart. Boltz-2, OpenDDE and
-  OpenFold3 are unmeasured on this point. Boltz-2, Protenix, OpenDDE and
-  ESMFold2 therefore run `deterministic=on` unless told otherwise, which also
-  fixes the kernel choice between compiles; keep one compile cache for
-  AlphaFold 3, or pass `--option deterministic=on` on it or OpenFold3 (where
-  it costs wall time; [cli.md](cli.md#--option-deterministicon)).
+  OpenFold3 are unmeasured on this point. Boltz-2, Protenix and ESMFold2
+  therefore run `deterministic=on` unless told otherwise, which also fixes
+  the kernel choice between compiles; keep one compile cache for AlphaFold 3,
+  or pass `--option deterministic=on` on it, OpenDDE or OpenFold3 (where it
+  costs a third of the warm wall; [cli.md](cli.md#--option-deterministicon)).
 
 Different models given the same integer seed never produce the same
 coordinates: each has its own random-number scheme.

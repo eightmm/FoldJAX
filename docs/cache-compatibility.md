@@ -1,16 +1,16 @@
 # Compilation cache compatibility
 
-## 2026-11-17: repeatable compilation by default on four models
+## 2026-11-17: repeatable compilation by default on three models
 
 No namespace revision changes. An omitted `deterministic` now resolves to `on`
-for Boltz-2, Protenix, OpenDDE and ESMFold2 and to `off` for OpenFold3 and
+for Boltz-2, Protenix and ESMFold2 and to `off` for OpenDDE, OpenFold3 and
 AlphaFold 3 (`foldjax.execution.DETERMINISTIC_DEFAULTS`), and the resolved
 value is spelled into the request before the cache profile is read. The knob
 has always been part of every model's compile identity
 (`compile_options`), with `off` the stripped released value, so nothing
 recorded changes meaning: an explicit `off` still lands in the namespace an
 omitted option used to select, and the new default lands in the namespace an
-explicit `on` already warmed. **A default-warmed cache for the four models is
+explicit `on` already warmed. **A default-warmed cache for the three models is
 cold once** after this change; `foldjax cache warm` resolves the same default
 as `foldjax predict`, so one warm pass refills it. The two settings never
 share an executable: each is a separate `BoundedJitPool` owner compiled under

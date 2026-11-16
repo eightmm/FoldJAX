@@ -2264,24 +2264,27 @@ of the same structure to within the model's own rerun scatter. It also fixes
 the GEMM kernels: without it XLA's autotuner picks a kernel per compile, so
 two cold processes with empty compile caches return different structures on
 every model (max |dx| 1.5-2.1 Å at 250 tokens, one RTX PRO 6000 Blackwell,
-0.1.0). Skipping that autotuning cuts a cold compile 3-5x (Boltz-2, 250
-tokens: 121.6 s to 29.4 s).
+0.1.0). Skipping that autotuning cuts a cold compile 1.5-2.7x on every model
+at 1,000 tokens (3-5x at 250: Boltz-2 121.6 s to 29.4 s).
 
 What an omitted option runs as is decided per model
-(`foldjax.execution.DETERMINISTIC_DEFAULTS`), from the warm cost at 1,000
-tokens on that card, `on` against `off`:
+(`foldjax.execution.DETERMINISTIC_DEFAULTS`), by a rule fixed before the
+measurement: `on` where both the warm wall (median of three runs) and the
+device peak stay within 1.05x of `off`. Measured on that card at 1,000 tokens
+(3OG2, default padding, one cold and three warm runs per setting), `on`
+against `off`:
 
 | model | omitted `deterministic` | warm wall | device peak |
 |---|---|---|---|
 | Boltz-2 | `on` | 0.97x | 1.00x |
 | Protenix | `on` | 0.88x | 0.84x |
-| OpenDDE | `on` | measured next | |
-| ESMFold2 | `on` | measured next | |
+| ESMFold2 | `on` | 1.03x (GPU-active time +7.8%) | 1.00x |
+| OpenDDE | `off` | 1.34x (GPU-active time 1.40x) | 1.00x |
 | OpenFold3 | `off` | 1.33x | 1.11x |
 | AlphaFold 3 | `off` | not benchmarked | |
 
-OpenFold3 stays `off` because its large GEMMs lose Triton. `--option
-deterministic=off` (or `on`) in any spelling, including the argv ports'
+OpenDDE and OpenFold3 stay `off` because their large GEMMs lose Triton.
+`--option deterministic=off` (or `on`) in any spelling, including the argv ports'
 native `deterministic_ops`, overrides the table, and the resolved value is
 written into the request's options, so the manifest, `foldjax plan` and a
 warm packet say `on` or `off` for every run. Measurements recorded in this
@@ -2370,10 +2373,10 @@ identical on both targets, at 6-13% more warm wall time and a device peak
 within 5% (one seed, two targets; a job ran on another GPU of the node).
 
 Keep one `--cache-dir` (the default cache is persistent) to get the same
-AlphaFold 3 structure again. Boltz-2, Protenix, OpenDDE and ESMFold2 now run
+AlphaFold 3 structure again. Boltz-2, Protenix and ESMFold2 now run
 `deterministic=on` unless told otherwise (the table above), so two independent
-compilations agree there by default; pass it explicitly on OpenFold3 or
-AlphaFold 3 when they must.
+compilations agree there by default; pass it explicitly on OpenDDE, OpenFold3
+or AlphaFold 3 when they must.
 
 ### `--option pocket_sampling=select`
 

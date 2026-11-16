@@ -92,15 +92,18 @@ KNOBS: dict[str, tuple[str, ...]] = {
 #: names neither the knob nor the port's own name for it, so the run's record
 #: says which it was; a value the caller spelled, either way, is never touched.
 #:
-#: Measured at 0.1.0 on one RTX PRO 6000 Blackwell (96 GB), default padding.
+#: Measured at 0.1.0 on one RTX PRO 6000 Blackwell (96 GB), default padding,
+#: one cold and three warm runs per setting on a 1,000-token input (3OG2).
 #: Under `on` every model is byte-identical between two cold processes with
 #: empty compile caches; under `off` all five differ (max |dx| 1.5-2.1 A at
 #: 250 tokens), because GEMM autotuning picks a different kernel per compile.
-#: `on` also skips the Triton GEMM autotuner, which cuts a cold compile 3-5x
-#: (Boltz-2, 250 tokens: 121.6 s -> 29.4 s). Warm wall / device peak at 1,000
-#: tokens, `on` against `off`: Boltz-2 0.97x / 1.00x, Protenix 0.88x / 0.84x,
-#: OpenFold3 1.33x / 1.11x -- its large GEMMs lose Triton, which is why it
-#: stays `off`. OpenDDE and ESMFold2 are `on` ahead of their 1,000-token rows.
+#: `on` also skips the Triton GEMM autotuner, which cuts a cold compile
+#: 1.5-2.7x on every model at 1,000 tokens (3-5x at 250). The rule, fixed
+#: before the runs: `on` where the warm wall (median of three) and the device
+#: peak are both within 1.05x of `off`. Warm wall / device peak, `on` against
+#: `off`: Boltz-2 0.97x / 1.00x, Protenix 0.88x / 0.84x, ESMFold2 1.03x /
+#: 1.00x (GPU-active time +7.8%) -- `on`; OpenDDE 1.34x / 1.00x (GPU-active
+#: 1.40x) and OpenFold3 1.33x / 1.11x -- `off`, their large GEMMs lose Triton.
 #: AlphaFold 3 is not benchmarked here and keeps the run its upstream ships.
 #:
 #: One entry per model so that a measurement that lands is a one-line change.
@@ -110,7 +113,7 @@ DETERMINISTIC_DEFAULTS: dict[str, str] = {
     "alphafold3": "off",
     "boltz2": "on",
     "esmfold2": "on",
-    "opendde": "on",
+    "opendde": "off",
     "openfold3": "off",
     "protenix": "on",
 }

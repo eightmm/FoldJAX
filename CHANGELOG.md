@@ -506,6 +506,45 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Boltz-2, Protenix and ESMFold2 compile for repeatable results by
+  default.** An omitted `deterministic` now runs as `on` on those three models
+  and as `off` on OpenDDE, OpenFold3 and AlphaFold 3
+  (`foldjax.execution.DETERMINISTIC_DEFAULTS`, one row per model). `on`
+  compiles the run's executables for reduction orders that repeat and fixes
+  the GEMM kernels, so two processes given the same input return the same
+  structure bit for bit; without it XLA's autotuner picks a kernel per
+  compile, and two cold processes with empty compile caches returned
+  different structures on every model (max coordinate difference 1.5-2.1 Å
+  on a 250-token target, one RTX PRO 6000 Blackwell 96 GB; with `on`, all
+  five models byte-identical). Skipping that autotuning also cuts a cold
+  compile 1.5-2.7x on every model at 1,000 tokens.
+
+  The rows follow a rule fixed before the runs: `on` where the warm wall
+  (median of three) and the device peak both stay within 1.05x of `off`.
+  Measured at 1,000 tokens (3OG2, default padding, one cold and three warm
+  runs per setting), `on` against `off`: Boltz-2 0.97x wall / 1.00x peak,
+  Protenix 0.88x / 0.84x, ESMFold2 1.03x / 1.00x (GPU-active time +7.8%);
+  OpenDDE 1.34x / 1.00x (GPU-active time 1.40x) and OpenFold3 1.33x / 1.11x
+  lose Triton on their large GEMMs and stay `off`; AlphaFold 3 is not
+  benchmarked here. `--option deterministic=off` (or `on`) in any spelling,
+  the argv ports' native `deterministic_ops` included, overrides the table,
+  and the value a run used is written into its options, so the manifest,
+  `foldjax plan` and a warm packet say `on` or `off` for every run; a
+  manifest written before this change resumes as the `off` run it was.
+
+  Options that run a model eagerly make the default step aside rather than
+  fail the run, as the default padding does: Boltz-2's `use_potentials`,
+  active `steering_args` and a forced steering constraint, and Protenix's
+  `use_tfg_guidance` and a native `--no-graph-jit` in `cli_args`, run with a
+  one-line notice and `deterministic: off` in the record; the same options
+  with an explicit `deterministic=on` are refused as before. ESMFold2 by
+  default now runs its language model as compiled blocks rather than
+  operation by operation, which is what carries the setting there. The
+  compile-cache namespace an omitted option selects on the three models moves
+  once, to the one an explicit `on` already warmed; a cache warmed under the
+  earlier default is cold once, and `foldjax cache warm` fills the new one.
+  Measurements recorded in this file before 2026-11-17 were taken with it
+  off.
 - **Padding is on by default on every model.** An omitted `--padding` /
   `padding=` now gets `PaddingConfig()`: each input is rounded up to its
   token bucket (the grid below), atoms to the next atom step and the MSA axis
@@ -550,7 +589,10 @@ unless it says so here, in its own paragraph.
   Memory admission follows: the peak laws were fitted unpadded, so a run on
   the default padding is admitted as `unknown` with the estimate kept as a
   lower bound (the admission entries below), its warning now says that
-  padding is the default, and `--no-padding` gets a fitted verdict.
+  padding is the default, and `--no-padding` gets a fitted verdict. Where
+  admission refuses the padded shape but would admit the exact one, the
+  default steps aside for that too (Fixed: "Default padding steps aside when
+  only the padded shape is refused").
 - **Automatic atom targets follow the stored atom count on a grid instead of
   24x the token bucket.** The grid's first rung is 256 atoms, then 512-atom
   steps through 8,192 and 1,024-atom steps above; `24 * tokens` stays the
@@ -997,7 +1039,9 @@ unless it says so here, in its own paragraph.
   one RTX PRO 6000, default cold and warm passes on copies of one cache
   differed by up to 17.2 Å (9JU4) and 18.4 Å (9BCJ); with
   `deterministic=on` every pass was bitwise identical, at 6-13% more warm
-  wall time.
+  wall time. "Default" here is the run without it, which Protenix no longer
+  is: `on` is its omitted value since the entry at the top of this
+  subsection, and at 1,000 tokens it measured 0.88x the warm wall.
 
 - **Security patch releases in the lock**: aiohttp 3.14.5, certifi
   2026.10.23, pillow 13.0.0 and setuptools 84.2.1 (all transitive), for
@@ -1007,6 +1051,27 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **OpenFold3 returns its ligand-aware chain-pair ipTM
+  (`chain_pair_iptm_bespoke`) again.** The backend's feature filter dropped
+  the `is_ligand` token flag on its way to the model, so every multimer run
+  folded the same structure and reported the score as unavailable ("the
+  features carry no is_ligand flag"). The flag now passes through, with
+  0/1-per-token validation like the other features. It
+  feeds only that score: coordinates and every other confidence value are
+  unchanged, and an archive featurized without it still folds identically and
+  still reports the score as unavailable.
+- **Default padding steps aside when only the padded shape is refused.**
+  Memory admission checks a padded run at its padded shape, and a job whose
+  exact shape fits the card could be refused because the bucket above it did
+  not: OpenDDE 5DEI, 4,040 structural tokens padded to 4,096, was refused at
+  an estimated 84.2 GiB against the card's 76.9 GiB. Where admission refuses
+  the padded shape and would admit the exact one, a run on the default
+  padding now runs the exact shape instead, per seed and per job, with a
+  one-line notice and `"padding": {"disabled_by": "memory admission"}` in the
+  summary and `foldjax_run.json`. Padding that was asked for is still
+  refused, and the refusal names `--no-padding`. Protenix is not wired to
+  this: on 48 GB and 96 GB cards it has no padded band that admission refuses
+  while the exact shape fits.
 - **`--stop-after inputs` on a padded Boltz-2 or ESMFold2 run no longer fails
   with exit 3.** Both ports returned the stopped result without the shape
   profile they had padded to, and `predict` refuses a padded result that
@@ -1809,7 +1874,11 @@ unless it says so here, in its own paragraph.
   cache-miss policy and leaves XLA's separate GEMM/fusion autotuner free to
   vary. ESMFold2's existing claim (a replayed compilation cache reproduces a
   run bit for bit) was already accurate and is unchanged. Boltz-2, OpenDDE
-  and OpenFold3 are unmeasured on this point.
+  and OpenFold3 were unmeasured on this point when this was written; the
+  cold-process comparison in the Changed entry "Boltz-2, Protenix and
+  ESMFold2 compile for repeatable results by default" has since found all
+  five models differing between two cold compiles without `deterministic=on`
+  and byte-identical with it.
 
 - **`bench/protenix_foldjax_capture.py` replay no longer crashes, or would
   have applied FoldJAX's own MC dropout, when FoldJAX's dropout coin comes up
