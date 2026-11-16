@@ -99,7 +99,7 @@ def pad_protenix_features(
     if "constraint_feature" in features:
         raise ValueError(
             "padding Protenix constraint features is not yet supported; "
-            "remove padding or the constraint block"
+            "pass --no-padding (padding=False) or remove the constraint block"
         )
     required = {
         "asym_id",
