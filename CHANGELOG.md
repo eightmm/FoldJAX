@@ -957,6 +957,13 @@ unless it says so here, in its own paragraph.
   Boltz-2 groups the atoms by token once per prediction rather than at every
   denoising step. `bench/determinism_cold_warm.sbatch` checks the cold/warm
   repeat on a GPU.
+- **Protenix picks its precision from the real token count under padding.**
+  The diffusion and confidence autocast gates (2,560 and 3,840 tokens) read
+  the padded token axis, so a padding target above 3,840 moved a 3,800-token
+  job's denoiser to bfloat16. They now read the padding plan's real count;
+  buffers and chunk sizes still follow the padded shape. The per-cycle MSA
+  rebuilt by `sample_msa_cycle_features` also keeps a padded job's token
+  columns masked, as the on-device route already did.
 - **Protenix `use_tfg_guidance=true` finishes on a GPU.** The guided sampler is
   eager, and there the released tokamax denoiser attention compiled afresh on
   every call -- an eager Pallas call binds a new `jit` each time, and its

@@ -155,6 +155,13 @@ def sample_msa_cycle_features(
         real_slice = [slice(None)] * mask.ndim
         real_slice[-2] = slice(0, real_depth)
         mask[tuple(real_slice)] = 1.0
+        source_mask = input_feature_dict.get("msa_mask")
+        if source_mask is not None:
+            # As `_materialize_msa_cycle_from_index_tape`: a padded job's mask
+            # also zeroes its padded token columns.
+            mask[tuple(real_slice)] *= (
+                np.take(np.asarray(source_mask), row_indices[:real_depth], axis=-2) != 0
+            )
         padded["msa_mask"] = mask
         cycles.append(padded)
     return tuple(cycles)

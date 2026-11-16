@@ -1024,15 +1024,20 @@ def _run(
         # upstream's `update_inference_configs` keys on and what the port's own
         # table keys its diffusion half on -- a run with a small and a large
         # job in one `--input-json` gets two policies, and two executables,
-        # exactly as upstream would build two configurations.
+        # exactly as upstream would build two configurations. Upstream counts
+        # the input's tokens, so a padded job asks with its real count: padding
+        # a 3,800-token job to 4,096 must not move its denoiser to BF16.
+        policy_tokens = (
+            n_token if padding_plan is None else int(padding_plan.actual["tokens"])
+        )
         amp_policy = realise_amp_policy(
-            requested_amp_policy(config.amp_policy, n_token, model_name),
+            requested_amp_policy(config.amp_policy, policy_tokens, model_name),
             trunk_is_bf16=trunk_dtype is not None,
         )
         job_params = _amp_realised_params(params, amp_policy, amp_params_cache)
         print(
             f"{job['name']}: amp policy {amp_policy.label()} "
-            f"(--amp-policy {config.amp_policy}, n_token={n_token}, "
+            f"(--amp-policy {config.amp_policy}, n_token={policy_tokens}, "
             f"trunk={config.trunk_dtype})"
         )
         chunk_config = resolve_chunk_config(

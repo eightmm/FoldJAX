@@ -654,6 +654,38 @@ def test_cycle_msa_index_tape_reconstructs_the_materialized_cycles_bitwise() -> 
     assert tape_bytes * 50 < materialized_bytes
 
 
+def test_both_cycle_routes_keep_padded_token_columns_masked() -> None:
+    """A padded job's `msa_mask` zeroes its padded columns; a cycle keeps that."""
+    rng = np.random.default_rng(45)
+    shape = (19, 12)
+    features = {
+        "msa": rng.integers(0, 32, size=shape, dtype=np.int32),
+        "has_deletion": rng.normal(size=shape).astype(np.float32),
+        "deletion_value": rng.normal(size=shape).astype(np.float32),
+    }
+    unmasked = sample_msa_cycle_features(
+        features, num_recycles=3, seed=3, bucket_size=8
+    )
+    msa_mask = np.ones(shape, dtype=np.float32)
+    msa_mask[:, 9:] = 0.0
+    padded = {**features, "msa_mask": msa_mask}
+    cycles = sample_msa_cycle_features(padded, num_recycles=3, seed=3, bucket_size=8)
+    tape = sample_msa_cycle_index_tape(padded, num_recycles=3, seed=3, bucket_size=8)
+    assert tape is not None
+
+    for index, (cycle, plain) in enumerate(zip(cycles, unmasked, strict=True)):
+        expected = plain["msa_mask"].copy()
+        expected[:, 9:] = 0.0
+        compact = _materialize_msa_cycle_from_index_tape(
+            jax.tree.map(jnp.asarray, padded),
+            MSACycleIndexTape(tape.row_indices[index], tape.row_mask[index]),
+        )
+        np.testing.assert_array_equal(cycle["msa_mask"], expected)
+        np.testing.assert_array_equal(np.asarray(compact["msa_mask"]), expected)
+        for name in ("msa", "has_deletion", "deletion_value"):
+            np.testing.assert_array_equal(cycle[name], plain[name])
+
+
 def test_cycle_msa_index_tape_has_a_gather_not_token_wide_cycle_inputs() -> None:
     features = {
         "msa": jnp.arange(35, dtype=jnp.int32).reshape(7, 5),

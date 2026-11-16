@@ -1032,3 +1032,85 @@ def test_the_realised_policy_is_reported_per_job(
         "tiny: amp policy confidence=bf16 diffusion=fp32 "
         "(--amp-policy auto, n_token=3000, trunk=bf16)"
     ) in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("actual", "expected"),
+    (
+        # Padded across the 3,840 diffusion gate, decided by the real count.
+        (3800, AmpPolicy(True, False)),
+        (3841, AmpPolicy(True, True)),
+    ),
+)
+def test_a_padded_job_resolves_the_policy_from_its_real_tokens(
+    tmp_path: Path, monkeypatch, capsys, actual, expected
+) -> None:
+    """Padding sizes buffers; it must not change the job's precision.
+
+    Upstream's table counts the input's tokens. Padding 3,800 tokens to a
+    4,096 profile used to read the padded ``restype`` and move the denoiser to
+    BF16.
+    """
+    from foldjax.models.protenix.data import featurize_json
+    from foldjax.models.protenix.data import padding as padding_module
+    from foldjax.padding import PaddingPlan
+
+    job = tmp_path / "job.json"
+    job.write_text(
+        json.dumps([{"name": "tiny", "modelSeeds": [0], "sequences": []}]),
+        encoding="utf-8",
+    )
+    weights = tmp_path / "protenix.jax"
+    weights.write_bytes(b"native fixture")
+    features = dict(_toy_features())
+    monkeypatch.setattr(
+        featurize_json, "featurize_protein_json", lambda *a, **k: dict(features)
+    )
+
+    def pad(features, config, **_):
+        padded = dict(features)
+        padded["restype"] = jnp.zeros(
+            (config.tokens, features["restype"].shape[-1]),
+            dtype=features["restype"].dtype,
+        )
+        sizes = {"atoms": int(features["atom_to_token_idx"].shape[-1])}
+        if "msa" in features:
+            sizes["msa"] = int(features["msa"].shape[-2])
+        return padded, PaddingPlan(
+            actual={"tokens": actual, **sizes},
+            target={"tokens": config.tokens, **sizes},
+        )
+
+    monkeypatch.setattr(padding_module, "pad_protenix_features", pad)
+    monkeypatch.setattr(
+        predict_runner, "_load_prepared_params", lambda *a, **k: _toy_params()
+    )
+    captured: list[AmpPolicy] = []
+
+    def capture_predict(_params, *_args, **kwargs):
+        captured.append(
+            AmpPolicy(kwargs["confidence_autocast"], kwargs["diffusion_autocast"])
+        )
+        return {}
+
+    monkeypatch.setattr(predict_impl, "protenix_predict_static", capture_predict)
+    predict_cli.main(
+        [
+            "--input-json",
+            str(job),
+            "--weights",
+            str(weights),
+            "--out",
+            str(tmp_path / "out"),
+            "--model-name",
+            "protenix_mini_default_v0.5.0",
+            "--no-compile-cache",
+            "--prewarm-only",
+            "--padding",
+            "--pad-tokens",
+            "4096",
+        ]
+    )
+
+    assert captured == [expected]
+    assert f"n_token={actual}," in capsys.readouterr().out
