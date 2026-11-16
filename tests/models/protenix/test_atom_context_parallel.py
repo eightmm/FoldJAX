@@ -2,11 +2,10 @@
 
 Two questions, and they need different machinery. *Does a serial run still
 execute the program it executed before?* is answered by lowering the denoiser
-on a single device and comparing the text -- against this same tree's
-``main``, and against a recorded pin so a later change is visible once ``main``
-has moved on. *Does the mesh variant compute the same thing?* needs a forced
-host device count, which has to be set before JAX initialises, so those arms
-run in subprocesses driven by the scripts under ``scripts/``.
+on a single device and comparing its hash against a recorded pin. *Does the
+mesh variant compute the same thing?* needs a forced host device count, which
+has to be set before JAX initialises, so those arms run in subprocesses driven
+by the scripts under ``scripts/``.
 
 The scripts hold the assertions and print their own evidence; the tests here
 choose the arms and insist on the marker line. That split is deliberate: the
@@ -26,14 +25,10 @@ from tests.models.cp_probe_env import inherited_environment
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
-#: SHA-256 of the normalised HLO of one serial denoiser step, taken from a
-#: ``git archive main`` tree at the commit this branch left (see
-#: ``test_the_serial_lowering_is_unchanged_by_this_patch``, which recomputes
-#: the ``main`` side rather than trusting this number).  Its job is to outlive
-#: that comparison: once this branch is on ``main`` the dynamic test compares
-#: ``main`` with itself and guards nothing, while this pin still fails the
-#: moment the serial diffusion program changes.  A change here is a claim
-#: about the serial program and needs the measurement that justifies it;
+#: SHA-256 of the normalised HLO of one serial denoiser step. It fails the
+#: moment the serial diffusion program changes -- including through a JAX
+#: upgrade, which it cannot tell from a deliberate change. A change here is a
+#: claim about the serial program and needs the measurement that justifies it;
 #: recompute with
 #: ``python -m tests.models.protenix.scripts.serial_diffusion_lowering``.
 SERIAL_DIFFUSION_LOWERING_SHA256 = (
@@ -69,12 +64,11 @@ def _run(
     attention: str | None = None,
     scan: bool = False,
     token_chunk: int | None = None,
-    foldjax_source: Path | None = None,
     timeout: int = 600,
 ) -> str:
     """Run one probe module in a child with a forced device count."""
 
-    source = REPOSITORY_ROOT / "src" if foldjax_source is None else foldjax_source
+    source = REPOSITORY_ROOT / "src"
     environment = {
         "JAX_PLATFORMS": "cpu",
         "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
@@ -107,11 +101,10 @@ def _run(
     return completed.stdout
 
 
-def _lowering_report(source: Path | None = None) -> dict[str, str]:
+def _lowering_report() -> dict[str, str]:
     output = _run(
         "tests.models.protenix.scripts.serial_diffusion_lowering",
         devices=1,
-        foldjax_source=source,
     )
     report = {}
     for line in output.strip().splitlines():
@@ -139,42 +132,6 @@ def test_the_serial_lowering_matches_its_recorded_pin(
     assert serial_lowering["HASH"] == SERIAL_DIFFUSION_LOWERING_SHA256, (
         "the serial diffusion lowering changed; see the constant's docstring"
     )
-
-
-def test_the_serial_lowering_is_unchanged_by_this_patch(
-    tmp_path: Path,
-    serial_lowering: dict[str, str],
-) -> None:
-    """Compare against ``main`` in this interpreter, not against a memory.
-
-    The pin above cannot tell a deliberate change from a JAX upgrade. This
-    can: both sides run with the same JAX, the same parameters and the same
-    probe script, and only the ``foldjax`` tree differs.
-    """
-
-    revision = subprocess.run(
-        ["git", "-C", str(REPOSITORY_ROOT), "rev-parse", "--verify", "main"],
-        capture_output=True,
-        text=True,
-    )
-    if revision.returncode != 0:
-        pytest.skip("no `main` in this checkout to compare against")
-    archive = tmp_path / "main"
-    archive.mkdir()
-    export = subprocess.run(
-        f"git -C {REPOSITORY_ROOT} archive main | tar -x -C {archive}",
-        shell=True,
-        capture_output=True,
-        text=True,
-    )
-    assert export.returncode == 0, export.stderr
-
-    reference = _lowering_report(archive / "src")
-    assert reference["HASH"] == serial_lowering["HASH"], (
-        "this patch changed the program a serial Protenix denoiser runs: "
-        f"main {reference['HASH']}, here {serial_lowering['HASH']}"
-    )
-    assert reference["COLLECTIVES"] == "0", reference
 
 
 @pytest.mark.parametrize("attention", ATTENTION_ARMS)

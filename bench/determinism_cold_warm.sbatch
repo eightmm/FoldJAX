@@ -35,6 +35,9 @@ mkdir -p "$OUT"
 echo "job $SLURM_JOB_ID $(hostname) $(date -Is) code=$CODE out=$OUT"
 nvidia-smi --query-gpu=index,name,driver_version --format=csv,noheader
 "$PY" -c "import foldjax, os; p = os.path.realpath(foldjax.__file__); assert p.startswith(os.path.realpath('$CODE')), p; print('foldjax from', p)" || exit 3
+# JAX falls back to CPU when CUDA fails to initialise, and a CPU run would pass
+# this check by construction.
+"$PY" -c "import jax; assert jax.default_backend() == 'gpu', jax.devices(); print('jax', jax.default_backend(), jax.devices())" || exit 3
 
 status=0
 for model in "${MODELS[@]}"; do
