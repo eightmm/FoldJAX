@@ -560,35 +560,43 @@ def test_the_default_shares_the_namespace_an_explicit_value_warmed(
 
 
 @pytest.mark.parametrize(
-    ("model", "option"),
+    ("model", "options", "named"),
     [
-        ("boltz2", "use_potentials"),
-        ("protenix", "use_tfg_guidance"),
-        ("opendde", "use_tfg_guidance"),
+        ("boltz2", {"use_potentials": True}, "use_potentials"),
+        ("protenix", {"use_tfg_guidance": True}, "use_tfg_guidance"),
+        # The native argv escape hatch, whole and as the prefix argparse takes.
+        ("protenix", {"cli_args": ["--no-graph-jit"]}, "cli_args --no-graph-jit"),
+        ("protenix", {"cli_args": ["--no-graph"]}, "cli_args --no-graph"),
+        ("opendde", {"use_tfg_guidance": True}, "use_tfg_guidance"),
     ],
 )
 def test_the_default_steps_aside_for_an_eager_route(
-    resolvable, model: str, option: str
+    resolvable, model: str, options: dict, named: str
 ) -> None:
     """A job that ran eagerly yesterday still runs; only an asked-for `on` refuses.
 
-    The eager samplers build no executable to carry the policy, and every
-    one of them refuses an explicit `on`. The default is not a request, so
-    it gives way with a notice and the record says `off`.
+    The eager routes build no executable to carry the policy, and every one
+    of them refuses an explicit `on`. The default is not a request, so it
+    gives way with a notice naming the route and the record says `off`.
     """
     if execution.DETERMINISTIC_DEFAULTS[model] != "on":
         pytest.skip(f"{model} defaults to off; nothing to step aside")
-    with pytest.warns(UserWarning, match=f"{option} runs eagerly"):
-        resolved = api.resolve_request(
-            resolvable(model, **{option: True}), draw_seeds=False
-        )
+    with pytest.warns(UserWarning, match=f"{named} runs eagerly"):
+        resolved = api.resolve_request(resolvable(model, **options), draw_seeds=False)
     assert resolved.options["deterministic"] == "off"
 
     with pytest.raises(ValueError, match="eager"):
         api.resolve_request(
-            resolvable(model, **{option: True, "deterministic": "on"}),
-            draw_seeds=False,
+            resolvable(model, **options, deterministic="on"), draw_seeds=False
         )
+
+
+def test_protenix_cli_args_without_the_eager_flag_keep_the_default(resolvable) -> None:
+    resolved = api.resolve_request(
+        resolvable("protenix", cli_args=["--no-confidence"]), draw_seeds=False
+    )
+    default = execution.DETERMINISTIC_DEFAULTS["protenix"]
+    assert resolved.options["deterministic"] == default
 
 
 def test_the_deterministic_knob_takes_the_switch_spellings(request_with) -> None:

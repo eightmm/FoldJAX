@@ -383,6 +383,42 @@ def test_shipped_determinism_is_the_request_resolver_s_table() -> None:
     assert sp.shipped_deterministic("openfold3") is False
 
 
+def test_protenix_s5_calls_the_static_entry_under_the_shipped_policy(
+    monkeypatch,
+) -> None:
+    """S5 calls the entry directly, outside the rebinding S3/S4/S6 run under,
+    so the value it passes is read off the call: the table's, not the entry's
+    own ``False``, and the record beside it (`device_condition`) says the same."""
+    from foldjax.execution import DETERMINISTIC_DEFAULTS
+    from foldjax.models.protenix.models import predict as prediction
+
+    received: dict = {}
+
+    def recording(params, features, key, **kwargs):
+        received.update(kwargs, params=params, key=key)
+        return {"plddt": 0.0}
+
+    monkeypatch.setattr(prediction, "protenix_predict_static", recording)
+    shipped = sp.shipped_deterministic("protenix")
+    sp.protenix_s5_predict(
+        "params",
+        {"restype": 0},
+        [0, 1],
+        confidence_autocast=False,
+        denoiser_attention="xla_jit",
+        deterministic=shipped,
+    )
+    assert received["deterministic"] is (DETERMINISTIC_DEFAULTS["protenix"] == "on")
+    assert received["key"] is None
+    assert received["glu_backend"] == "xla"
+    assert received["diffusion_attention_backend"] == "xla_jit"
+    assert received["run_confidence"] and not received["return_trunk"]
+    monkeypatch.setattr(sp, "DEVICE", "cpu")
+    assert sp.device_condition("protenix")["deterministic"] == (
+        "on" if shipped else "off"
+    )
+
+
 def test_shipped_precision_table_matches_the_port_pins() -> None:
     """The GPU rows' pins are the ports' own constants, not this script's."""
     from foldjax.backends import protenix as protenix_backend

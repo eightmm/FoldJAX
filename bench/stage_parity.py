@@ -1123,6 +1123,51 @@ def protenix_confidence_dtype_label(policy: Any, *, n_token: int) -> str:
     return f"{dtype} ({source}, {policy.label()}, n_token={n_token})"
 
 
+def protenix_s5_predict(
+    params: Any,
+    features: Mapping[str, Any],
+    cycles: Any,
+    *,
+    confidence_autocast: bool,
+    denoiser_attention: str,
+    deterministic: bool,
+) -> Any:
+    """S5's call of the static entry: the trunk and sampler are patched to the
+    native tensors around it, so only the confidence head computes.
+
+    ``deterministic`` is spelled by the caller from the per-model table rather
+    than taken from the entry's own ``False``, because S5 calls the entry
+    directly instead of through the parity helpers `shipped_reductions`
+    rebinds; this is the one Protenix stage whose policy a test can read off
+    the call.
+    """
+    import jax
+    import jax.numpy as jnp
+
+    import tests.parity.test_protenix as parity
+    from foldjax.models.protenix.models import predict as prediction
+
+    return prediction.protenix_predict_static(
+        params,
+        dict(features),
+        None,
+        num_samples=parity.SAMPLES,
+        num_sampling_steps=parity.SAMPLING_STEPS,
+        recycling_steps=parity.RECYCLES,
+        trunk_dtype=jnp.bfloat16,
+        confidence_autocast=confidence_autocast,
+        cycle_msa_index_tape=jax.tree.map(jnp.asarray, cycles),
+        use_diffusion_efficient_fusion=True,
+        run_confidence=True,
+        return_confidence_logits=True,
+        return_confidence_details=True,
+        return_trunk=False,
+        glu_backend="xla",
+        diffusion_attention_backend=denoiser_attention,
+        deterministic=deterministic,
+    )
+
+
 def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
     import jax
     import jax.numpy as jnp
@@ -1161,7 +1206,8 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
 
         Both parity helpers look the entry point up on its module at call
         time (`_run_trunk` imports it inside the function), so one rebinding
-        reaches S3, S4 and S5 without the helpers growing a parameter.
+        reaches S3, S4 and S6 without the helpers growing a parameter. S5
+        calls the entry itself and spells the same value (`protenix_s5_predict`).
         """
         return overriding_kwargs(
             prediction,
@@ -1506,23 +1552,13 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
                     protenix_model, "sample_diffusion_with_module", native_coords
                 ) as sampler_calls,
             ):
-                output = prediction.protenix_predict_static(
+                output = protenix_s5_predict(
                     params,
-                    dict(features),
-                    None,
-                    num_samples=parity.SAMPLES,
-                    num_sampling_steps=parity.SAMPLING_STEPS,
-                    recycling_steps=parity.RECYCLES,
-                    trunk_dtype=jnp.bfloat16,
+                    features,
+                    cycles,
                     confidence_autocast=amp_policy.confidence_autocast,
-                    cycle_msa_index_tape=jax.tree.map(jnp.asarray, cycles),
-                    use_diffusion_efficient_fusion=True,
-                    run_confidence=True,
-                    return_confidence_logits=True,
-                    return_confidence_details=True,
-                    return_trunk=False,
-                    glu_backend="xla",
-                    diffusion_attention_backend=denoiser_attention,
+                    denoiser_attention=denoiser_attention,
+                    deterministic=shipped_deterministic("protenix"),
                 )
                 output = jax.device_get(jax.block_until_ready(output))
         finally:

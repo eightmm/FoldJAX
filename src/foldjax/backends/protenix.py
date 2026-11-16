@@ -727,6 +727,27 @@ def _extra_cli_args(value: Any) -> tuple[str, ...]:
     return arguments
 
 
+#: The op-by-op escape hatch (`_predict_flags.add_graph_jit`), the one eager
+#: route `cli_args` can select: the runner refuses it together with
+#: `--deterministic-ops on` (`models/predict.py`, "drop --no-graph-jit").
+_EAGER_CLI_FLAG = "--no-graph-jit"
+
+
+def _eager_cli_flag(cli_args: Sequence[str]) -> str | None:
+    """The argument in ``cli_args`` that selects eager execution, or None.
+
+    Spelled whole, or as the unambiguous long-option prefix argparse also
+    takes: every other ``--no-...`` flag of the parser diverges by the sixth
+    character, so a shorter prefix is one the parser rejects as ambiguous
+    rather than one that runs eagerly.
+    """
+    for argument in cli_args:
+        flag = argument.split("=", 1)[0]
+        if len(flag) >= len("--no-g") and _EAGER_CLI_FLAG.startswith(flag):
+            return argument
+    return None
+
+
 #: The one released model whose checkpoint carries the constraint embedder:
 #: upstream enables its pocket, contact, contact-atom and substructure
 #: projections for this name alone (Protenix ``configs/configs_model_type.py:
@@ -1070,9 +1091,15 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         return None
 
     def deterministic_conflict(self, request: PredictionRequest) -> str | None:
-        # The eager guided sampler's refusal in `validate_native_options`.
-        if self.canonical_options(request.options).get("use_tfg_guidance") is True:
+        # The two eager routes `validate_native_options` refuses `on` for.
+        options = self.canonical_options(request.options)
+        if options.get("use_tfg_guidance") is True:
             return "use_tfg_guidance"
+        cli_args = options.get("cli_args", ())
+        if isinstance(cli_args, Sequence) and not isinstance(cli_args, str):
+            eager = _eager_cli_flag([a for a in cli_args if isinstance(a, str)])
+            if eager is not None:
+                return f"cli_args {eager}"
         return None
 
     def validate_request(self, request: PredictionRequest) -> None:
@@ -1096,7 +1123,14 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             )
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
-        _extra_cli_args(options.get("cli_args", ()))
+        eager = _eager_cli_flag(_extra_cli_args(options.get("cli_args", ())))
+        if eager is not None and options.get("deterministic_ops", "off") == "on":
+            # The runner's refusal (`models/predict.py`), here so `foldjax
+            # plan` says so before the weights load.
+            raise ValueError(
+                f"cli_args {eager} runs the model eagerly, which builds no "
+                "executable for deterministic reductions; drop it or deterministic"
+            )
         if "model_name" in options and not isinstance(options["model_name"], str):
             raise ValueError("model_name must be a string")
         msa_seed = options.get("msa_seed")
