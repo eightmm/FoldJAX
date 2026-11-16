@@ -506,6 +506,75 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Padding is on by default on every model.** An omitted `--padding` /
+  `padding=` now gets `PaddingConfig()`: each input is rounded up to its
+  token bucket (the grid below), atoms to the next atom step and the MSA axis
+  to a row bucket, so jobs on one token bucket and atom step share one
+  compiled program, the shape reuse AlphaFold 3's own runner has always had.
+  `--no-padding` (Python: `padding=False`) runs the exact input shapes;
+  `--padding` is still accepted and changes no shape. `--padding-overflow`
+  now defaults to `exact` (it was `error`): an input above the last bucket
+  runs at its exact size with a one-line warning, where a `--padding` run
+  used to refuse before compiling; `error` still refuses it. `foldjax plan`
+  and `cache warm` read the same default.
+
+  Options that cannot run padded make the default step aside instead of
+  failing the run: AlphaFold 3's native `buckets` and an external `source`;
+  Boltz-2's `subsample_msa`, `use_potentials`, active `steering_args`, a
+  forced pocket, contact or template constraint, more than one template file
+  and a template search (`--templates auto|required`, which keeps up to
+  four); Protenix's and OpenDDE's `use_tfg_guidance`; a Protenix `constraint`
+  block (an empty one included, and a common pocket or contact the
+  translation keeps); an OpenFold3 `pocket_constraint` (a common pocket
+  included). Such a run uses the exact shapes with a one-line notice, and the
+  summary and `foldjax_run.json` record `"padding": {"disabled_by":
+  "<option>"}`. Padding that was asked for -- `--padding`, a `--pad-*` flag,
+  `--padding-overflow`, `--fixed-msa`, or `padding=True` / a `PaddingConfig`
+  in Python -- is still refused with these options, as before.
+
+  **This changes what a recorded command runs** when it did not spell a
+  padding flag: the same job now runs padded shapes, a different compiled
+  program from the exact-shape one the published results and the memory laws
+  were measured at, so its coordinates and scores are the same model's but
+  not bitwise the earlier default's. Padded positions cannot reach a real
+  output -- each port's `tests/models/*/test_padding_perturbation.py` fills
+  only the padded positions with garbage and requires the real slices of
+  every output bit-identical -- and padding never changes which alignment
+  rows a model reads. The trade-off: a single cold input pays up to one bucket
+  step of padded work (one 128- or 256-token step, one atom step), and inputs
+  on the same token bucket and atom step reuse one compiled program, so a
+  screen compiles once per shape pair rather than once per input.
+  `--no-padding` runs what the earlier default ran, in the cache namespace it
+  had.
+
+  Memory admission follows: the peak laws were fitted unpadded, so a run on
+  the default padding is admitted as `unknown` with the estimate kept as a
+  lower bound (the admission entries below), its warning now says that
+  padding is the default, and `--no-padding` gets a fitted verdict.
+- **Automatic atom targets follow the stored atom count on a grid instead of
+  24x the token bucket.** The grid's first rung is 256 atoms, then 512-atom
+  steps through 8,192 and 1,024-atom steps above; `24 * tokens` stays the
+  ceiling. A protein holds about 8 atoms per token, so the old target padded
+  its atom axis about 3x: 1,003 tokens with 8,000 atoms now pads to 8,192
+  atoms, not 24,576. The cost is executables: one token bucket compiles one
+  program per atom step its inputs reach -- two or three for proteins of one
+  token band, usually one for a ligand screen against one target -- and a
+  synthetic `cache warm` covers only the atom steps its own sequences land on
+  (the warm report says so under `shape_coverage`); warm real inputs, or pin
+  `--pad-atoms` for warming and prediction alike, when every job must hit a
+  warmed program. AlphaFold 3's native featurizer keeps its own bucket list,
+  and an explicit `--pad-atoms` pin means what it did. Entries in this
+  release that derive an atom target as `24 * tokens` (OpenDDE's 8RG4 at
+  9,216 atoms, the `6,144 * k` mesh alignment) describe the target before
+  this change.
+- **`cache warm` verification accepts two representatives of one token bucket
+  on different atom steps.** The second length used to have to select the
+  same padded targets on every axis; with atoms following each input, the two
+  may land on different atom steps, each a program of its own.
+  `padded_targets_match` now compares every axis but atoms, the new
+  `verification.atom_targets` lists each run's, and the table names them when
+  they differ. A different token, MSA or structural target still fails the
+  bucket.
 - **AlphaFold 3 runs upstream's 10 recycles when `--num-recycles` is
   omitted.** The adapter used to supply 3 (four trunk passes, the SI's
   Algorithm 1 `N_cycle=4`) where DeepMind's `run_alphafold.py --num_recycles`
@@ -938,6 +1007,11 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **`--stop-after inputs` on a padded Boltz-2 or ESMFold2 run no longer fails
+  with exit 3.** Both ports returned the stopped result without the shape
+  profile they had padded to, and `predict` refuses a padded result that
+  reports none -- which, with padding the default, was every such run. They
+  now report the profile the way a full run does.
 - **Boltz-2, Protenix and OpenDDE sum atoms into tokens without scatter-add.**
   A GPU scatter-add accumulates through atomics in no fixed order, and the
   diffusion rollout amplified that last-bit noise until the same seed wrote
