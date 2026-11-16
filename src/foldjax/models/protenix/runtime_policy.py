@@ -2,10 +2,69 @@
 
 from __future__ import annotations
 
+import copy
 import warnings
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 PROTENIX_V2_MAX_TOKENS = 2560
+
+#: Upstream's `sample_diffusion.guidance` mapping, which `--use_tfg_guidance`
+#: turns on by setting `enable` (Protenix `configs/configs_base.py:185-247`,
+#: `runner/batch_inference.py:410`). OpenDDE ships the identical mapping
+#: (`opendde/config/model_base.py:66-128`, `runner/batch_inference.py:487`).
+#:
+#: Here rather than in `tfg.config`, which that package's `__init__` imports
+#: along with the potentials' device-resident constants: the FoldJAX adapter
+#: reads this mapping while it plans, and planning must not start JAX.
+UPSTREAM_GUIDANCE_CONFIG: Mapping[str, Any] = {
+    "enable": False,
+    "log_last_step_energy": True,
+    "rho": 0.0,
+    "mu": 0.1,
+    "mc": {"std": 0.0, "batch": 1},
+    "steps": {
+        "tfg_outer": 1,
+        "tfg_inner": 20,
+        "projection_outer": 2,
+        "projection_inner": 10,
+    },
+    "terms": {
+        "VinaStericPotential": {"interval": 1, "weight": 0.1, "buffer": 0.225},
+        "ExperimentalTorsionPotential": {"interval": 1, "weight": 0.0015},
+        "InterchainBondPotential": {"interval": 1, "weight": 0.15, "buffer": 2.0},
+        "PairwiseDistancePotential": {
+            "interval": 1,
+            "weight": 0.5,
+            "enable_projection": True,
+            "bond_buffer": 0.00,
+            "angle_buffer": 0.00,
+            "clash_buffer": 0.00,
+        },
+        "ChiralAtomPotential": {
+            "interval": 1,
+            "weight": 0.0,
+            "enable_projection": True,
+            "buffer": 0.6155,
+        },
+        "StereoBondPotential": {"interval": 1, "weight": 0.25, "buffer": 0.52360},
+        "PlanarImproperPotential": {"interval": 1, "weight": 0.12},
+        "LinearBondPotential": {
+            "interval": 1,
+            "weight": 0.25,
+            "buffer": 0.08726646259,
+        },
+    },
+}
+
+
+def upstream_guidance_config() -> dict[str, Any]:
+    """A fresh, enabled copy of upstream's default guidance mapping."""
+
+    config = copy.deepcopy(dict(UPSTREAM_GUIDANCE_CONFIG))
+    config["enable"] = True
+    return config
 
 
 def eager_route(*, graph_jit: bool, guided: bool) -> str | None:

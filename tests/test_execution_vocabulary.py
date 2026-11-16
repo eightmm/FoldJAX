@@ -9,6 +9,7 @@ the contents of a table against itself.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -643,6 +644,101 @@ def test_protenix_guidance_config_decides_the_route_from_its_bytes(
             draw_seeds=False,
         )
         assert resolved.options["deterministic"] == default
+
+
+_UNINITIALIZED_PROBE = """
+import json, sys, warnings
+from foldjax import api
+from foldjax.models._cp import backends_are_initialized
+from foldjax.schema import PredictionRequest
+
+request = PredictionRequest(**json.loads(sys.argv[1]), padding=False)
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    resolved = api.resolve_request(request, draw_seeds=False)
+print(json.dumps({
+    "deterministic": resolved.options["deterministic"],
+    "warned": any("runs eagerly" in str(w.message) for w in caught),
+    "initialized": backends_are_initialized(),
+}))
+"""
+
+
+@pytest.mark.parametrize(
+    "named, options",
+    [
+        ("use_tfg_guidance", {"use_tfg_guidance": True}),
+        (
+            "--guidance-config",
+            {
+                "cli_args": ["--guidance-config", "GUIDANCE"],
+                # Pinned so `apply_sampling` has no omitted attention backend
+                # to realise: that resolution asks the process's device, on
+                # every Protenix request, and would start JAX here for a
+                # reason that has nothing to do with the guidance route.
+                "diffusion_attention_backend": "xla_jit",
+            },
+        ),
+    ],
+)
+def test_the_guidance_route_is_decided_without_a_device(
+    named, options, tmp_path
+) -> None:
+    """Resolving a guided request leaves JAX's backends uninitialized.
+
+    Planning is side-effect free, and a predict that follows it in the same
+    process still gets to size the allocator pool, which `oom.py` declines
+    once a backend is up. Reading the guidance mapping used to import
+    `tfg.config`, whose potentials build device arrays at import. A fresh
+    process, because a backend initialized by any earlier test would hide
+    it; `backends_are_initialized` reads the private predicate JAX's own
+    "before JAX is initialized" validators read (`models/_cp.py`).
+    """
+    import json
+    import subprocess
+    import sys
+
+    guidance = tmp_path / "enabled.json"
+    guidance.write_text(json.dumps({"enable": True}))
+    job = tmp_path / "job.json"
+    job.write_text("{}")
+    weights = tmp_path / "w"
+    weights.write_bytes(b"x")
+    if "cli_args" in options:
+        options = {**options, "cli_args": ["--guidance-config", str(guidance)]}
+    request = {
+        "model": "protenix",
+        "input": str(job),
+        "input_format": "foldjax",
+        "weights": str(weights),
+        "output_dir": str(tmp_path / "out"),
+        "options": options,
+    }
+    # The child imports the `foldjax` under test, not the one an editable
+    # install resolves when the parent was started without PYTHONPATH.
+    import foldjax
+
+    source_root = str(Path(foldjax.__file__).resolve().parents[1])
+    environment = {
+        **os.environ,
+        "JAX_PLATFORMS": "cpu",
+        "PYTHONPATH": os.pathsep.join(
+            [source_root, *filter(None, [os.environ.get("PYTHONPATH")])]
+        ),
+    }
+    completed = subprocess.run(
+        [sys.executable, "-c", _UNINITIALIZED_PROBE, json.dumps(request)],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    report = json.loads(completed.stdout.strip().splitlines()[-1])
+    # The route was decided, eagerly, from the same bytes the run reads ...
+    assert report["deterministic"] == "off", (named, report)
+    assert report["warned"], (named, report)
+    # ... and deciding it touched no device.
+    assert report["initialized"] is False, (named, report)
 
 
 def test_the_deterministic_knob_takes_the_switch_spellings(request_with) -> None:

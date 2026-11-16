@@ -164,7 +164,8 @@ def load_guidance_config(config: PredictionConfig) -> dict[str, Any] | None:
     is read from its file, which is the only way to learn whether it is
     enabled. The errors are the run's (`SystemExit`), and `backends/protenix.py`
     reads the mapping through here too, so it learns the route from the same
-    bytes the run will.
+    bytes the run will. Nothing here touches JAX: the adapter calls this while
+    it plans, before the allocator policy of a later predict is applied.
     """
     if config.use_tfg_guidance:
         if config.guidance_config is not None:
@@ -172,9 +173,7 @@ def load_guidance_config(config: PredictionConfig) -> dict[str, Any] | None:
                 "--use-tfg-guidance runs upstream's guidance mapping and "
                 "--guidance-config names another; pass one of them"
             )
-        from foldjax.models.protenix.tfg.config import upstream_guidance_config
-
-        return upstream_guidance_config()
+        return runtime_policy.upstream_guidance_config()
     if config.guidance_config is None:
         return None
     try:

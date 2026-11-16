@@ -275,7 +275,7 @@ host-streamed program has no refinement) and
 `cp_devices > 1` (the search has not been run on a mesh), and the replay
 routes (`noise_tape`, `noise_mask`, `augmentation_tape`, `noise_fn`) of the
 direct API. `deterministic=true` is compatible: the search is ordinary
-compiled code. (OpenFold3 is one of the two models whose omitted
+compiled code. (OpenFold3 is one of the three models whose omitted
 `deterministic` is `off`: its large GEMMs lose Triton under the option, 1.33x
 the warm wall at 1,000 tokens; [cli.md](cli.md#--option-deterministicon).) Memory admission records a pocket run as `unknown` with
 `exceeds_profile: ["pocket-guided sampling"]`, because the peak laws were
