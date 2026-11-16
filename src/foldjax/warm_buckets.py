@@ -15,7 +15,7 @@ from foldjax.backends.alphafold3 import AF3_TOKEN_BUCKETS
 from foldjax.job import Job
 from foldjax.padding import TOKEN_BUCKETS
 from foldjax.registry import normalize_model_name
-from foldjax.schema import DEFAULT_PADDING, PaddingConfig, PredictionRequest
+from foldjax.schema import PaddingConfig, PredictionRequest
 from foldjax.warmup import warm_cache
 
 
@@ -183,7 +183,12 @@ def bucket_request(
     padding = (
         None
         if native_buckets
-        else dataclasses.replace(request.padding or PaddingConfig(), tokens=bucket)
+        # A bucket is a requested target, never the implicit default: an
+        # option that cannot run padded refuses here rather than warming the
+        # exact shape under the bucket's name.
+        else dataclasses.replace(
+            request.padding or PaddingConfig(), tokens=bucket, implicit=False
+        )
     )
     output = (
         None
@@ -256,19 +261,33 @@ def _warm_bucket(
             )
         profiles = [run.get("shape_profile") for run in row["runs"]]
         targets = [_padded_targets(profile) for profile in profiles]
-        matching_targets = targets[0] == targets[1] if all(targets) else None
+        # An automatic atom target follows each input's stored atom count, so
+        # two lengths in one token bucket may land on different atom steps,
+        # each a valid profile of its own; every other axis must agree.
+        shared = [
+            [
+                {axis: size for axis, size in target.items() if axis != "atoms"}
+                for target in run
+            ]
+            for run in targets
+        ]
+        matching_targets = shared[0] == shared[1] if all(targets) else None
         matching_namespace = row["runs"][0]["cache_dir"] == row["runs"][1]["cache_dir"]
         row["verification"] = {
             "second_length_compile_requests": row["runs"][1]["compile_requests"],
             "shape_profiles": profiles,
             "padded_targets_match": matching_targets,
+            "atom_targets": [
+                [target.get("atoms") for target in run] for run in targets
+            ],
             "cache_namespace_match": matching_namespace,
             "note": "compile requests may restore persistent entries; "
             "not a cache-miss count",
         }
         if matching_targets is False or not matching_namespace:
             raise RuntimeError(
-                "two lengths selected different padded targets or cache namespaces"
+                "two lengths selected different padded token targets or cache "
+                "namespaces"
             )
     except Exception as error:  # noqa: BLE001 - each bucket has a failure row
         _failed_row(row, error)
@@ -316,7 +335,7 @@ def warm_token_buckets(
         "alphafold3" in models
         and "buckets" in request.options
         and request.padding is not None
-        and request.padding is not DEFAULT_PADDING
+        and not request.padding.implicit
     ):
         raise ValueError("native AF3 buckets and neutral padding cannot both be set")
     if isolation == "process":
@@ -460,6 +479,13 @@ def format_bucket_report(report: dict[str, Any]) -> str:
             )
             if row["error"]:
                 lines.append(f"  {row['error']}")
+            atoms = row.get("verification", {}).get("atom_targets") or []
+            if len({tuple(run) for run in atoms}) > 1:
+                lines.append(
+                    "  atom targets: "
+                    + " / ".join(", ".join(str(size) for size in run) for run in atoms)
+                    + " (each length its own atom step)"
+                )
         lines.append(
             f"  successful: {model['successful_buckets']}; "
             f"first failed: {model['first_failed_bucket']}"

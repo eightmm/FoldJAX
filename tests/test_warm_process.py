@@ -651,7 +651,9 @@ def test_request_transport_preserves_known_types_and_rejects_host_only_options(
             )
         )
         restored = _warm_process._request_from_packet(packet).padding
-        assert (restored is DEFAULT_PADDING) is (padding is DEFAULT_PADDING)
+        assert restored == padding
+        assert restored.implicit is padding.implicit
+    assert DEFAULT_PADDING.implicit and not PaddingConfig().implicit
     with pytest.raises(TypeError, match="isolation='in-process'"):
         warmup.warm_cache(
             dataclasses.replace(request, options={"callback": lambda: None}),

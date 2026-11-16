@@ -13,7 +13,7 @@ from foldjax import cache
 from foldjax._cache_tiers import open_directory
 from foldjax.api import resolve_cache_dir, resolve_requests
 from foldjax.registry import get_backend, normalize_model_name
-from foldjax.schema import DEFAULT_PADDING, PredictionRequest
+from foldjax.schema import PredictionRequest
 
 _LIMITATION = (
     "Namespace presence only: entries are not deserialized or matched against "
@@ -150,7 +150,7 @@ def _verify_buckets(
         "alphafold3" in models
         and "buckets" in request.options
         and request.padding is not None
-        and request.padding is not DEFAULT_PADDING
+        and not request.padding.implicit
     ):
         raise ValueError("native AF3 buckets and neutral padding cannot both be set")
     rows = []

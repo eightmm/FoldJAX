@@ -735,6 +735,62 @@ def _forced_steering(path: str | Path) -> str | None:
     return None
 
 
+#: The switches whose truth makes ``steering_args`` steer: the same three
+#: `models/boltz2/api.py:predict` reads for ``steering_active``.
+_STEERING_SWITCHES = (
+    "fk_steering",
+    "physical_guidance_update",
+    "contact_guidance_update",
+)
+
+
+def _steering_active(steering_args: object) -> bool:
+    """Whether explicit ``steering_args`` turn on the eager steering sampler.
+
+    `models/boltz2/api.py:predict`'s ``steering_active``, which
+    `select_model_features_for_padding` refuses: a missing switch is off.
+    """
+    return isinstance(steering_args, Mapping) and any(
+        bool(steering_args.get(key, False)) for key in _STEERING_SWITCHES
+    )
+
+
+def _template_rows(path: str | Path) -> int:
+    """Rows of the job's template features, read from the document alone.
+
+    Upstream names a template by its file's stem (`parse/schema.py`,
+    ``Path(path).stem``) and stacks one feature row per name
+    (`featurizerv2.process_template_features`); a job without templates gets
+    one dummy row. A native Boltz-2 YAML lists them at the top level, a
+    common job per entity, and the translation keeps each file
+    (`foldjax.input._boltz`). An unreadable document answers 0, left to the
+    translation to report.
+    """
+    from foldjax.input import read_job_document
+
+    try:
+        document = read_job_document(Path(path))
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(document, dict):
+        return 0
+    items = [
+        item
+        for item in document.get("templates") or ()
+        if isinstance(item, dict)
+    ]
+    for entity in document.get("entities") or ():
+        if isinstance(entity, dict) and isinstance(entity.get("templates"), list):
+            items.extend(item for item in entity["templates"] if isinstance(item, dict))
+    names = {
+        Path(location).stem
+        for item in items
+        for location in (item.get("cif") or item.get("pdb") or item.get("mmcif"),)
+        if isinstance(location, str)
+    }
+    return len(names)
+
+
 class Boltz2Backend(Backend):
     name = "boltz2"
     session_reuse = True
@@ -1601,16 +1657,37 @@ class Boltz2Backend(Backend):
         )
 
     def padding_conflict(self, request: PredictionRequest) -> str | None:
-        # The refusals in `validate_request` below and the native API's
-        # eager-steering refusal (`blocked_by_eager_steering`).
+        # The refusals in `validate_request` below, the native API's
+        # eager-steering refusal (`blocked_by_eager_steering`), and what
+        # `models/boltz2/data/bucket.py:select_model_features_for_padding`
+        # refuses: active steering, and more than one template row.
         if "bucket" in request.options:
             return None
         options = self.canonical_options(request.options)
         for name in ("subsample_msa", "use_potentials"):
             if options.get(name) is True:
                 return name
-        if options.get("steering_args") is None and request.input is not None:
-            return _forced_steering(request.input)
+        steering = options.get("steering_args")
+        if steering is not None:
+            if _steering_active(steering):
+                return "steering_args"
+        elif request.input is not None:
+            forced = _forced_steering(request.input)
+            if forced is not None:
+                return forced
+        return self._template_conflict(request)
+
+    @staticmethod
+    def _template_conflict(request: PredictionRequest) -> str | None:
+        """Templates beyond the one row a padded Boltz-2 run holds, or None.
+
+        A searched job keeps up to four hits (`foldjax.template_search`),
+        found only after this is asked, so a search counts as several.
+        """
+        if request.input_format == "foldjax" and request.templates != "none":
+            return f"templates={request.templates}"
+        if request.input is not None and _template_rows(request.input) > 1:
+            return "more than one template"
         return None
 
     def validate_request(self, request: PredictionRequest) -> None:
@@ -1653,6 +1730,20 @@ class Boltz2Backend(Backend):
                         f"{name} {reason}; drop it or pass --no-padding "
                         "(padding=False) instead of requesting padding"
                     )
+            # What `select_model_features_for_padding` would refuse after the
+            # weights load, refused here where `foldjax plan` sees it.
+            if _steering_active(options.get("steering_args")):
+                raise ValueError(
+                    "steering_args turns on the eager steering sampler, which "
+                    "has no padded profile; drop it or pass --no-padding "
+                    "(padding=False) instead of requesting padding"
+                )
+            if request.input is not None and _template_rows(request.input) > 1:
+                raise ValueError(
+                    "a padded Boltz-2 run holds one template row and this job "
+                    "names more than one template file; keep one or pass "
+                    "--no-padding (padding=False) instead of requesting padding"
+                )
         if (
             request.input_format == "foldjax"
             and options.get("steering_args") is None

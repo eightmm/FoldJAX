@@ -294,10 +294,9 @@ A batch compiles one program per input shape, so a screen over many inputs
 spends most of its time compiling unless the shapes repeat.
 
 - Padding is on by default: each input is rounded up to a token bucket (atoms
-  to the next atom step, the MSA axis to a row bucket), so jobs in one band
-  share one compiled executable. A single cold input can be slower by up to
-  one bucket step of padded work; repeated inputs in a bucket reuse the
-  compiled program.
+  to the next atom step, the MSA axis to a row bucket), so jobs on the same
+  token bucket and atom step share one compiled executable. A single cold
+  input can be slower by up to one bucket step of padded work.
   `--no-padding` (Python: `padding=False`) runs the exact input shapes, the
   shapes the published results were run at. Padding never changes which
   alignment rows a model reads.

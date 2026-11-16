@@ -69,7 +69,6 @@ from foldjax.pocket_selection import requested as pocket_selection_requested
 from foldjax.registry import get_backend
 from foldjax.result_validation import _sample_index, _validate_result
 from foldjax.schema import (
-    DEFAULT_PADDING,
     DEFAULT_SEEDS,
     JOB_DOCUMENT_SUFFIXES,
     JOB_SEEDS,
@@ -367,7 +366,7 @@ def _yield_default_padding(
     (``padding=True``, a ``PaddingConfig``, ``--padding`` or a ``--pad-*``
     flag) is left on, and the backend refuses the combination.
     """
-    if request.padding is not DEFAULT_PADDING:
+    if request.padding is None or not request.padding.implicit:
         return request
     option = backend.padding_conflict(request)
     if option is None:

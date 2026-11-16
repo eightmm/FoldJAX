@@ -2581,6 +2581,41 @@ _POCKET = {"binder": "B", "contacts": [["A", 1]]}
             None,
         ),
         (Boltz2Backend, {}, {"constraints": [{"pocket": _POCKET}]}, "foldjax", None),
+        # What `select_model_features_for_padding` refuses: active steering
+        # and more than one template row (one per template file).
+        (
+            Boltz2Backend,
+            {"steering_args": {"contact_guidance_update": True}},
+            {},
+            "native",
+            "steering_args",
+        ),
+        (
+            Boltz2Backend,
+            {"steering_args": {"fk_steering": False}},
+            {"templates": [{"cif": "a/t1.cif"}, {"pdb": "b/t2.pdb"}]},
+            "native",
+            "more than one template",
+        ),
+        (
+            Boltz2Backend,
+            {},
+            {"templates": [{"cif": "t1.cif"}, {"cif": "t1.cif", "chain_id": "B"}]},
+            "native",
+            None,
+        ),
+        (
+            Boltz2Backend,
+            {},
+            {
+                "entities": [
+                    {"templates": [{"mmcif": "t1.cif"}]},
+                    {"templates": [{"mmcif": "t2.cif"}]},
+                ]
+            },
+            "foldjax",
+            "more than one template",
+        ),
         (
             ProtenixBackend,
             {"use_tfg_guidance": True},
@@ -2594,6 +2629,28 @@ _POCKET = {"binder": "B", "contacts": [["A", 1]]}
             [{"constraint": {"contact": [{"residue1": ["A", 1, 1]}]}}],
             "native",
             "contact constraint",
+        ),
+        # The featurizer emits constraint features for any `constraint` key.
+        (ProtenixBackend, {}, [{}, {"constraint": {}}], "native", "constraint block"),
+        (ProtenixBackend, {}, [{"sequences": []}], "native", None),
+        # Under pocket selection the constraint checkpoint still conditions on
+        # the pocket; a checkpoint without the embedder only scores it.
+        (
+            ProtenixBackend,
+            {
+                "pocket_sampling": "select",
+                "model_name": "protenix_base_constraint_v0.5.0",
+            },
+            {"constraints": [{"pocket": _POCKET}]},
+            "foldjax",
+            "pocket constraint",
+        ),
+        (
+            ProtenixBackend,
+            {"pocket_sampling": "select", "model_name": "protenix_base_default_v0.5.0"},
+            {"constraints": [{"pocket": _POCKET}]},
+            "foldjax",
+            None,
         ),
         (OpenDDEBackend, {"use_tfg_guidance": True}, {}, "native", "use_tfg_guidance"),
         (
@@ -2627,6 +2684,31 @@ def test_padding_conflict_names_the_option_that_cannot_run_padded(
     assert backend().padding_conflict(request) == expected
 
 
+def test_boltz_template_search_and_padded_feature_refusals(tmp_path: Path) -> None:
+    """A searched job may keep several template rows, which only show up after
+    resolution; the padded feature selection's refusals reach `plan` for
+    explicit padding."""
+    job = tmp_path / "job.json"
+    job.write_text("{}")
+    backend = Boltz2Backend()
+    searched = PredictionRequest(
+        model="boltz2", input=job, input_format="foldjax", templates="auto"
+    )
+    assert backend.padding_conflict(searched) == "templates=auto"
+    job.write_text(json.dumps({"templates": [{"cif": "a.cif"}, {"cif": "b.cif"}]}))
+    native = PredictionRequest(
+        model="boltz2", input=job, input_format="native", padding=True
+    )
+    with pytest.raises(ValueError, match="more than one template file"):
+        backend.validate_request(native)
+    job.write_text("{}")
+    steered = dataclasses.replace(
+        native, options={"steering_args": {"physical_guidance_update": True}}
+    )
+    with pytest.raises(ValueError, match="steering_args turns on the eager"):
+        backend.validate_request(steered)
+
+
 def test_default_padding_gives_way_and_explicit_padding_refuses(
     tmp_path: Path,
 ) -> None:
@@ -2649,10 +2731,30 @@ def test_default_padding_gives_way_and_explicit_padding_refuses(
     # Resolving again is a no-op: the request no longer holds the default.
     assert resolve_request(resolved, draw_seeds=False) == resolved
 
-    for explicit in (True, PaddingConfig()):
+    # The default survives copying and pickling: it is marked, not a
+    # singleton, and the mark is not part of the profile.
+    import copy
+    import pickle
+
+    for copied in (
+        copy.deepcopy(request),
+        pickle.loads(pickle.dumps(request)),
+        dataclasses.replace(request, padding=dataclasses.replace(DEFAULT_PADDING)),
+    ):
+        assert copied.padding.implicit
+        with pytest.warns(UserWarning, match="buckets cannot run padded"):
+            assert resolve_request(copied, draw_seeds=False) == resolved
+    assert DEFAULT_PADDING == PaddingConfig()
+    assert hash(DEFAULT_PADDING) == hash(PaddingConfig())
+    assert DEFAULT_PADDING.summary() == PaddingConfig().summary()
+    assert "implicit" not in repr(DEFAULT_PADDING)
+
+    for explicit in (True, PaddingConfig(), {"overflow": "exact"}):
         asked = dataclasses.replace(request, padding=explicit)
-        assert asked.padding is not DEFAULT_PADDING
+        assert not asked.padding.implicit
         with pytest.raises(ValueError, match="'buckets' were both set"):
             resolve_request(asked, draw_seeds=False)
+    with pytest.raises(ValueError, match="unsupported padding fields"):
+        dataclasses.replace(request, padding={"implicit": True})
     # Turning padding back on clears the provenance it no longer describes.
     assert dataclasses.replace(resolved, padding=True).padding_disabled_by is None

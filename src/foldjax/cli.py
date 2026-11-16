@@ -354,9 +354,9 @@ def _add_predict_arguments(
         "only states it. Each input runs in a token bucket with derived atom "
         "capacity, and the MSA axis pads to the bucket at or above the rows "
         "the unpadded run would process (a profile depth is a floor, never a "
-        "cap); template limits stay at the native depth. Inputs in one bucket "
-        "reuse one compiled program; a single cold input can cost up to one "
-        "bucket step of padded work",
+        "cap); template limits stay at the native depth. Inputs that land on "
+        "the same token bucket and atom step reuse one compiled program; a "
+        "single cold input can cost up to one bucket step of padded work",
     )
     shapes.add_argument(
         "--no-padding",

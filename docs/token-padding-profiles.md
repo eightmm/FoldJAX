@@ -3,8 +3,8 @@
 Padding is on by default (`--no-padding` / `padding=False` turns it off), and
 the token bucket determines most automatic storage capacities; explicit axis
 targets take precedence. A single cold input can be slower by up to one
-bucket step of padded work; repeated inputs in a bucket reuse the compiled
-program. An option that cannot run padded turns the default off for its run
+bucket step of padded work; repeated inputs on one token bucket and atom step
+reuse the compiled program. An option that cannot run padded turns the default off for its run
 and is refused only when padding was asked for
 ([which options](cli.md#shape-padding-on-by-default)). This policy reduces
 shape variants without changing model weights or model inputs: the MSA

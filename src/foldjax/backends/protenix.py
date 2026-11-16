@@ -753,13 +753,47 @@ def _constraint_channels(request: PredictionRequest) -> list[str]:
     # Under ``pocket_sampling=select`` the translation keeps a common pocket
     # out of the native input of a checkpoint without the embedder and scores
     # it after the run instead (`foldjax.pocket_selection`), so the embedder
-    # never sees it.
+    # never sees it. A checkpoint that conditions on it keeps it
+    # (`ProtenixBackend.pocket_conditioning`, `foldjax.input`).
     if (
         request.input_format == "foldjax"
         and requested_pocket_sampling(request.options) == "select"
+        and _constraint_refusal(["pocket"], _model_name(request)) is not None
     ):
         channels = [channel for channel in channels if channel != "pocket"]
     return channels
+
+
+def _model_name(request: PredictionRequest) -> str:
+    """The checkpoint name the runner will use: explicit, else read off the weights."""
+    model_name = request.options.get("model_name", "auto")
+    if model_name == "auto":
+        model_name = runtime_policy.infer_model_name_from_path(request.weights)
+    return model_name
+
+
+def _padded_constraint_conflict(request: PredictionRequest) -> str | None:
+    """The constraint that gives the featurized input a ``constraint_feature``.
+
+    The featurizer emits one for every native job that has a ``constraint``
+    key, an empty block included (`models/protenix/data/featurize_json.py`),
+    and the padded featurizer refuses it. A common job gets that key from a
+    pocket or contact the translation keeps (`_constraint_channels`).
+    """
+    if request.input_format == "foldjax":
+        channels = _constraint_channels(request)
+        return f"{channels[0]} constraint" if channels else None
+    from foldjax.input import read_job_document
+
+    try:
+        document = read_job_document(Path(request.input))
+    except (OSError, ValueError):
+        return None
+    for job in document if isinstance(document, list) else [document]:
+        if isinstance(job, Mapping) and "constraint" in job:
+            channels = _document_constraint_channels(job, request.input_format)
+            return f"{channels[0]} constraint" if channels else "constraint block"
+    return None
 
 
 def _document_constraint_channels(document: Any, input_format: str) -> list[str]:
@@ -816,10 +850,7 @@ def _refuse_constraint_without_embedder(request: PredictionRequest) -> None:
     channels = _constraint_channels(request)
     if not channels:
         return
-    model_name = request.options.get("model_name", "auto")
-    if model_name == "auto":
-        model_name = runtime_policy.infer_model_name_from_path(request.weights)
-    refusal = _constraint_refusal(channels, model_name)
+    refusal = _constraint_refusal(channels, _model_name(request))
     if refusal is not None:
         raise ValueError(refusal)
 
@@ -1027,10 +1058,7 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         checkpoint it does not know, which is left to the embedder's own
         refusal as it is today.
         """
-        model_name = request.options.get("model_name", "auto")
-        if model_name == "auto":
-            model_name = runtime_policy.infer_model_name_from_path(request.weights)
-        return _constraint_refusal(["pocket"], model_name) is None
+        return _constraint_refusal(["pocket"], _model_name(request)) is None
 
     def padding_conflict(self, request: PredictionRequest) -> str | None:
         # The refusal in `validate_request` below, and the padded featurizer's
@@ -1038,9 +1066,7 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         if self.canonical_options(request.options).get("use_tfg_guidance") is True:
             return "use_tfg_guidance"
         if request.input is not None:
-            channels = _constraint_channels(request)
-            if channels:
-                return f"{channels[0]} constraint"
+            return _padded_constraint_conflict(request)
         return None
 
     def validate_request(self, request: PredictionRequest) -> None:

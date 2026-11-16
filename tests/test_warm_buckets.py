@@ -135,6 +135,44 @@ def test_two_real_lengths_execute_ascending_buckets_and_report_device(sweep):
     assert "mock GPU (24.0 GiB)" in warm_buckets.format_bucket_report(result)
 
 
+@pytest.mark.parametrize(
+    ("second", "matches"), [({"atoms": 1024}, True), ({"tokens": 256}, False)]
+)
+def test_bucket_lengths_may_land_on_different_atom_steps(
+    sweep, monkeypatch, second, matches
+):
+    """Automatic atoms follow each input's stored count (ESMFold2 bucket 112:
+    512 and 1024 atoms); every other axis must still agree."""
+    request, _, _ = sweep
+    # A bucket is a requested target even under the default padding, so it
+    # never gives way to an option that cannot run padded.
+    request = dataclasses.replace(
+        request, padding=dataclasses.replace(request.padding, implicit=True)
+    )
+    run = warm_buckets.warm_cache
+
+    def warm(item):
+        assert not item.padding.implicit
+        result = run(item)
+        target = {"tokens": item.padding.tokens, "atoms": 512, "msa": 7}
+        if len(json.loads(item.input.read_text())["entities"][0]["sequence"]) > 112:
+            target.update(second)
+        return dataclasses.replace(result, shape_profile={"target": target})
+
+    monkeypatch.setattr(warm_buckets, "warm_cache", warm)
+    report = warm_buckets.warm_token_buckets(request, "128")
+    row = report["models"][0]["buckets"][0]
+    assert row["status"] == ("success" if matches else "failed")
+    if matches:
+        assert row["verification"]["padded_targets_match"] is True
+        assert row["verification"]["atom_targets"] == [[512], [1024]]
+        assert "atom targets: 512 / 1024" in warm_buckets.format_bucket_report(
+            report
+        )
+    else:
+        assert "different padded token targets" in row["error"]
+
+
 @pytest.mark.parametrize("pinned", [False, True])
 def test_opendde_warm_reports_partial_shape_coverage_for_automatic_axes(sweep, pinned):
     request, _, _ = sweep

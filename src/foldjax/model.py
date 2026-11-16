@@ -251,11 +251,16 @@ class Model:
             }
             for common, native in backend.capabilities().sampling.items()
         }
+        requested = dataclasses.asdict(self.config)
+        if isinstance(requested.get("padding"), dict):
+            # Provenance of the default, not a setting; `padding` below
+            # records what ran.
+            requested["padding"].pop("implicit", None)
         configuration = {
             "interface": "model-v1",
             "model": self.name,
             "stage": stage,
-            "requested": dataclasses.asdict(self.config),
+            "requested": requested,
             "sampling_bindings": bindings,
             "padding": padding_record(request),
             "defaults": "selected FoldJAX model/checkpoint defaults",

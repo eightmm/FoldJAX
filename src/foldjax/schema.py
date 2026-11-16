@@ -394,8 +394,16 @@ class PaddingConfig:
     language_model_tokens: int | None = None
     overflow: str = "exact"
     auxiliary_profile: str | None = None
+    #: True only for the default a request gets when it names no padding
+    #: (`DEFAULT_PADDING`). Provenance, not shape: excluded from equality,
+    #: the hash, the summary and so every cache key, and carried by
+    #: ``copy``, ``pickle`` and ``dataclasses.replace``. Only an implicit
+    #: profile steps aside for an option that cannot run padded.
+    implicit: bool = field(default=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.implicit, bool):
+            raise ValueError("padding.implicit must be a boolean")
         if self.auxiliary_profile is not None:
             from foldjax._opendde_padding import COMPACT_PROFILE
 
@@ -437,12 +445,12 @@ class PaddingConfig:
         }
 
 
-#: The padding a request gets when it names none. One shared instance, so
-#: `foldjax.resolve_request` can tell this default (``padding is
-#: DEFAULT_PADDING``) from an explicit ``PaddingConfig()`` or ``padding=True``:
-#: only the default steps aside, with ``padding_disabled_by`` recorded, for an
-#: option that cannot run padded; an explicit request refuses that option.
-DEFAULT_PADDING = PaddingConfig()
+#: The padding a request gets when it names none. Marked ``implicit`` so
+#: `foldjax.resolve_request` can tell it from an explicit ``PaddingConfig()``
+#: or ``padding=True``, which compare equal to it: only the default steps
+#: aside, with ``padding_disabled_by`` recorded, for an option that cannot run
+#: padded; an explicit request refuses that option.
+DEFAULT_PADDING = PaddingConfig(implicit=True)
 
 
 def padding_record(request: Any) -> dict[str, Any] | None:
@@ -637,8 +645,8 @@ class PredictionRequest:
     # request dataclass while adding the same name used by ``foldjax weights``.
     profile: str | None = None
     # Appended to preserve the positional request layout. On by default: the
-    # default (`DEFAULT_PADDING`) is the backend's standard profile, and
-    # ``True`` or a ``PaddingConfig`` asks for padding explicitly;
+    # default (`DEFAULT_PADDING`, marked implicit) is the backend's standard
+    # profile, and ``True`` or a ``PaddingConfig`` asks for padding explicitly;
     # ``padding=False`` is the explicit off and runs exact input shapes.
     # ``None`` is accepted as the same off, and is what the field holds after
     # construction, so ``request.padding is None`` means "off". Only the

@@ -652,8 +652,8 @@ calibrated.
 JAX reuses a compiled executable only when all dynamic feature axes have the
 same shape. FoldJAX therefore pads every input to a shared shape grid by
 default, across all six models. A single cold input can be slower by up to
-one bucket step of padded work; repeated inputs in a bucket reuse the
-compiled program. To run the exact input shapes -- the historical model
+one bucket step of padded work; repeated inputs on one token bucket and atom
+step reuse the compiled program. To run the exact input shapes -- the historical model
 path, and the shapes the memory laws were fitted on -- turn it off:
 
 ```bash
@@ -665,9 +665,11 @@ In Python the same switch is `PredictionRequest(..., padding=False)`; omitting
 and asks for padding explicitly; it changes no shape.
 
 A few options cannot run padded: AlphaFold 3's native `buckets` and an
-external `source`, Boltz-2's `use_potentials`, `subsample_msa` and a forced
-pocket, contact or template, Protenix and OpenDDE `use_tfg_guidance`, a
-Protenix constraint, and an OpenFold3 `pocket_constraint`. Under the default
+external `source`, Boltz-2's `use_potentials`, `subsample_msa`, active
+`steering_args`, a forced pocket, contact or template, more than one
+template file and a template search (`--templates auto` or `required`, which
+may keep up to four), Protenix and OpenDDE `use_tfg_guidance`, a Protenix constraint
+block (an empty one included), and an OpenFold3 `pocket_constraint`. Under the default
 padding such a run uses the exact input shapes instead, with a one-line notice,
 and the summary and manifest record `"padding": {"disabled_by": "<option>"}`.
 When padding was asked for -- `--padding`, a `--pad-*` flag,

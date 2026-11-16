@@ -135,8 +135,11 @@ report and makes the CLI exit with status 3.
 The default output is a table. `--json` includes device kind and card/pool byte
 capacities when readable, requested and successful buckets, first failure and
 reason, elapsed seconds, and both ordinary warm reports for each bucket. The
-two runs must select the same compilation namespace and concrete padded targets
-when the backend reports them. The report also counts JAX compilation requests
+two runs must select the same compilation namespace and the same padded targets
+on every axis but atoms, when the backend reports them. An automatic atom target
+follows each input's stored atom count, so the two lengths may land on
+different atom steps, each a program of its own; `atom_targets` lists each
+run's, and the table names them when they differ. The report also counts JAX compilation requests
 on the second length. A request can restore an existing executable, so this
 count is diagnostic and **is not a persistent-cache miss count**. Cache file
 deltas likewise do not prove an executable hit. Exact-input warming retains its
