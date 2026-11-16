@@ -1396,6 +1396,127 @@ def test_the_measured_opendde_size_is_admitted_and_its_neighbours_are_not() -> N
         assert _decide(OPENDDE_BF16_PEAK, neighbour, pool).state == "over_budget"
 
 
+#: The 91,779,760,128-byte pool of the measured 5DEI run (threshold 76.9 GiB).
+_OPENDDE_POOL = 91_779_760_128
+
+
+def _admit_padded_opendde(
+    n_token: int, *, exact: memory_policy.ExactShape | None, mode: str = "refuse"
+) -> memory_policy.MemoryDecision:
+    """The runner's admission of a padded job: padded count, exact shape beside."""
+    return memory_policy.admit(
+        model="opendde",
+        n_token=n_token,
+        msa_rows=None,
+        candidates=(("bf16 trunk", OPENDDE_BF16_PEAK),),
+        budget=_budget(_OPENDDE_POOL),
+        mode=mode,
+        exceeds_profile=(memory_policy.SERVING_PADDING,),
+        token_label="structural tokens",
+        exact=exact,
+    )
+
+
+def test_the_default_padding_steps_aside_when_only_the_padded_shape_is_refused() -> (
+    None
+):
+    """5DEI's 4,040 structural tokens are measured to complete; the default
+    padding pads them to 4,096, which the law puts over the threshold. The
+    default gives way to the measured shape rather than refusing the run."""
+    with pytest.raises(MemoryError):
+        _admit_padded_opendde(4096, exact=None)
+    assert memory_policy.padding_disabled_by() is None
+
+    with pytest.warns(UserWarning, match="uses the exact input shapes") as caught:
+        decision = _admit_padded_opendde(
+            4096, exact=memory_policy.ExactShape(4040, implicit=True)
+        )
+    assert decision.state == "fits"
+    assert decision.padding_stepped_aside
+    assert memory_policy.padding_disabled_by() == memory_policy.PADDING_STEP_ASIDE
+    message = str(caught[0].message)
+    assert "padding to 4096 structural tokens would be refused" in message
+    assert "the exact 4040 structural tokens are admitted" in message
+    assert "padding is on by default" in message
+    # Recorded as the run that happens: the exact shape, no longer a lower
+    # bound on account of padding.
+    block = memory_policy.recorded()
+    assert block["n_token"] == 4040
+    assert block["state"] == "fits"
+    assert block["exceeds_profile"] == []
+
+
+def test_explicit_padding_is_refused_and_told_which_exact_shape_is_admitted() -> (
+    None
+):
+    with pytest.raises(MemoryError, match="--no-padding") as info:
+        _admit_padded_opendde(4096, exact=memory_policy.ExactShape(4040))
+    assert "runs the exact 4040 structural tokens, which this policy admits" in str(
+        info.value
+    )
+    assert memory_policy.padding_disabled_by() is None
+    assert memory_policy.recorded()["n_token"] == 4096
+
+
+def test_padding_does_not_step_aside_when_the_exact_shape_is_refused_too() -> None:
+    with pytest.raises(MemoryError) as info:
+        _admit_padded_opendde(4096, exact=memory_policy.ExactShape(4041, implicit=True))
+    assert "which this policy admits" not in str(info.value)
+    assert memory_policy.padding_disabled_by() is None
+    block = memory_policy.recorded()
+    assert (block["n_token"], block["state"]) == (4096, "over_budget")
+    # Warn mode refuses nothing, so there is nothing to step aside from.
+    with pytest.warns(RuntimeWarning, match="Running anyway"):
+        decision = _admit_padded_opendde(
+            4096, exact=memory_policy.ExactShape(4040, implicit=True), mode="warn"
+        )
+    assert decision.state == "over_budget"
+    assert not decision.padding_stepped_aside
+    assert memory_policy.padding_disabled_by() is None
+
+
+def test_a_padding_aware_admission_clears_an_earlier_step_aside() -> None:
+    """The flag belongs to the admission that set it: the next padded job in a
+    batch that fits padded does not inherit it, and `clear_record` drops it."""
+    with pytest.warns(UserWarning):
+        _admit_padded_opendde(4096, exact=memory_policy.ExactShape(4040, implicit=True))
+    assert memory_policy.padding_disabled_by() == memory_policy.PADDING_STEP_ASIDE
+    with pytest.warns(RuntimeWarning, match="lower bound"):
+        _admit_padded_opendde(2048, exact=memory_policy.ExactShape(2000, implicit=True))
+    assert memory_policy.padding_disabled_by() is None
+    with pytest.warns(UserWarning):
+        _admit_padded_opendde(4096, exact=memory_policy.ExactShape(4040, implicit=True))
+    memory_policy.clear_record()
+    assert memory_policy.padding_disabled_by() is None
+
+
+def test_the_default_padding_steps_aside_from_the_observed_esmfold2_refusal() -> None:
+    """The 48 GB class refuses ESMFold2 from 1,792 executable tokens on an
+    observed failure, not a law. An input the default pads up to that count
+    runs at its own, which the policy does not refuse."""
+    budget = _budget(int(0.9 * 47.5 * _GIB), card=int(47.5 * _GIB))
+
+    def admit(exact):
+        return memory_policy.admit(
+            model="esmfold2",
+            n_token=1792,
+            msa_rows=None,
+            candidates=(("released", ESMFOLD2_PEAK),),
+            budget=budget,
+            exceeds_profile=(memory_policy.SERVING_PADDING,),
+            exact=exact,
+        )
+
+    with pytest.raises(MemoryError, match="observed ESMFold2 capacity refusal"):
+        admit(memory_policy.ExactShape(1700))
+    assert memory_policy.padding_disabled_by() is None
+    with pytest.warns(UserWarning, match="uses the exact input shapes"):
+        decision = admit(memory_policy.ExactShape(1700, implicit=True))
+    assert decision.padding_stepped_aside
+    assert decision.state == "unknown"
+    assert memory_policy.recorded()["n_token"] == 1700
+
+
 def test_every_law_names_the_sample_count_it_was_fitted_at() -> None:
     """Boltz-2's released default is one sample, not the five every law was
     measured at, so this is the fact that decides whether its admission binds.

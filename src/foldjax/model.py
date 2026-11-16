@@ -237,6 +237,9 @@ class Model:
         # A scalar handle always submits exactly one model and one input.
         if not isinstance(result, PredictionResult):
             raise TypeError("scalar model execution did not return PredictionResult")
+        # So `model_config.json` records the padding that ran, as the run
+        # manifest does, when the default stepped aside at admission.
+        request = api._without_stepped_aside_padding(request)
         backend = get_backend(self.name)
         translated = backend.apply_sampling(request)
         bindings = {

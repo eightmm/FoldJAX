@@ -9,7 +9,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import NamedTuple
 
-from foldjax import confidence_arrays
+from foldjax import confidence_arrays, memory_policy
 from foldjax.backends._ccd_session import ManagedCcdSession
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import PreparedWeightSession
@@ -683,7 +683,10 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
         )
         shape_profile = _shape_profile(
             padding_profiles,
-            padded=request.padding is not None,
+            # None when the runner's admission let the default padding step
+            # aside: the run was unpadded and reported no profile.
+            padded=request.padding is not None
+            and memory_policy.padding_disabled_by() is None,
         )
         raw: dict[str, object] = {"argv": tuple(argv)}
         if shape_profile is not None:

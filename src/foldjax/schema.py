@@ -457,7 +457,8 @@ def padding_record(request: Any) -> dict[str, Any] | None:
     """The ``padding`` block a run manifest and summary record.
 
     The profile summary when the request pads; ``{"disabled_by": option}``
-    when the default stepped aside for an option that cannot run padded; None
+    when the default stepped aside for an option that cannot run padded or
+    (``"memory admission"``) for a padded shape only admission refused; None
     when the caller turned padding off.
     """
     if request.padding is not None:
@@ -713,9 +714,11 @@ class PredictionRequest:
     # `foldjax.resolve_request` into the sampling knobs it stands for.
     preset: str | None = None
     # Set by `foldjax.resolve_request`: the option that turned the default
-    # padding off because it cannot run padded (`Backend.padding_conflict`).
-    # Recorded as the run's ``padding`` block; meaningless, and cleared, while
-    # padding is on.
+    # padding off because it cannot run padded (`Backend.padding_conflict`);
+    # or, set after the run, `memory_policy.PADDING_STEP_ASIDE` when admission
+    # refused only the padded shape and the port ran the exact one. Recorded
+    # as the run's ``padding`` block; meaningless, and cleared, while padding
+    # is on.
     padding_disabled_by: str | None = None
 
     def __post_init__(self) -> None:

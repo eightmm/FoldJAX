@@ -456,6 +456,15 @@ _MODEL_LABELS = {
     "opendde": "OpenDDE",
     "alphafold3": "AlphaFold 3",
 }
+#: What an ESMFold2 refusal names, in native inference and in the adapter's
+#: admission of a padded shape.
+ESMFOLD2_CP_DEVICES_LEVER = (
+    "--cp-devices N shards the pair state across N visible devices, which is "
+    "the only lever measured to move this peak: the sample options do not, "
+    "because the peak is a folding-trunk arena with no sample axis in it "
+    "(--option structure_sample_sequential=true bought 0.3 GiB at 32 samples "
+    "for 84% more wall time)"
+)
 #: Operational refusal from the 2026-10-21 A6000 report, not a peak-law fit.
 ESMFOLD2_48GB_REFUSE_TOKENS = 1792
 ESMFOLD2_CAPACITY_POLICY_ID = "esmfold2-observed-2026-10-21"
@@ -780,6 +789,36 @@ class MemoryDecision:
     #: Bytes a candidate's upper estimate must not exceed, or ``None``.
     threshold: int | None
     reason: str
+    #: True when :func:`admit` was asked about a padded shape it would have
+    #: refused and answered for the exact shape instead (:class:`ExactShape`);
+    #: the port then runs unpadded.
+    padding_stepped_aside: bool = False
+
+
+#: What ``serving padding`` is called in every port's ``exceeds_profile``.
+SERVING_PADDING = "serving padding"
+
+
+@dataclass(frozen=True, slots=True)
+class ExactShape:
+    """The shape a padded run has without its padding, for :func:`admit`.
+
+    A port that pads passes the padded shape as the run's ``n_token`` and this
+    beside it. When the padded shape would be refused and this one would not,
+    the *default* padding (``implicit``) steps aside -- the run is admitted at
+    this shape and the port runs it unpadded, the way the default steps aside
+    for an option that cannot run padded (`foldjax.api._yield_default_padding`)
+    -- and padding the caller asked for is refused with ``--no-padding`` named.
+    """
+
+    n_token: int
+    msa_rows: int | None = None
+    implicit: bool = False
+
+
+#: What a run's ``padding_disabled_by`` records when the default padding
+#: stepped aside at admission.
+PADDING_STEP_ASIDE = "memory admission"
 
 
 #: Added wherever serving padding turns a ``fits`` into ``unknown``. Padding is
@@ -795,7 +834,7 @@ PADDING_UNKNOWN_NOTE = (
 
 def padding_note(exceeds_profile: Sequence[str]) -> str:
     """:data:`PADDING_UNKNOWN_NOTE` as a sentence to append, when it applies."""
-    return f". {PADDING_UNKNOWN_NOTE}" if "serving padding" in exceeds_profile else ""
+    return f". {PADDING_UNKNOWN_NOTE}" if SERVING_PADDING in exceeds_profile else ""
 
 
 def exceeding_profile(
@@ -1423,11 +1462,34 @@ def recorded() -> dict[str, Any] | None:
     return {**decision, "observed_capacity": observed}
 
 
+#: Whether the last padding-aware :func:`admit` (one given an
+#: :class:`ExactShape`) let the default padding step aside. Read by
+#: `foldjax.api` after the prediction, for the same reason `_RECORDED` is: the
+#: port decides it below the manifest writer. Every padding-aware admission
+#: overwrites it, so a port reading it right after its own call sees that
+#: call's answer; `foldjax.api` clears it before each prediction.
+_PADDING_STEP_ASIDE: ContextVar[str | None] = ContextVar(
+    "foldjax_padding_step_aside", default=None
+)
+
+
+def padding_disabled_by() -> str | None:
+    """:data:`PADDING_STEP_ASIDE` if this prediction's default padding stepped
+    aside at admission, else None."""
+    return _PADDING_STEP_ASIDE.get()
+
+
 def clear_record() -> None:
     """Forget the last decision, so the next run reports only its own."""
     _RECORDED.set(None)
     _OBSERVED_CAPACITY.set(None)
     _OBSERVED_DEVICE.set(None)
+    _PADDING_STEP_ASIDE.set(None)
+
+
+def _refuses(decision: MemoryDecision, mode: str, off_profile: Sequence[str]) -> bool:
+    """Whether :func:`enforce` would raise for ``decision``."""
+    return decision.state == "over_budget" and mode == "refuse" and not off_profile
 
 
 def admit(
@@ -1442,6 +1504,7 @@ def admit(
     off_profile: Sequence[str] = (),
     token_label: str = "tokens",
     exceeds_profile: Sequence[str] = (),
+    exact: ExactShape | None = None,
 ) -> MemoryDecision:
     """Resolve, record and enforce in one call: what a port's wiring needs.
 
@@ -1449,6 +1512,14 @@ def admit(
     describes; ``exceeds_profile`` names what needs *more*. See
     :func:`off_profile_reason` and :func:`exceeding_profile`. The decision
     returned is the one recorded and enforced.
+
+    ``exact`` is the run's shape without its serving padding, and makes this
+    the call to place *before* the port pads: a padded shape this would refuse
+    while the exact one is admitted means the default padding steps aside
+    (``padding_stepped_aside`` on the returned decision, the exact shape
+    recorded and enforced, one notice) or, for padding the caller asked for,
+    a refusal whose levers name ``--no-padding``. Every other outcome is the
+    padded shape's own.
     """
     decision = resolve_memory_policy(
         model=model,
@@ -1458,6 +1529,55 @@ def admit(
         candidates=candidates,
         card_bytes=budget.card_bytes,
     )
+    stepped_aside = False
+    if exact is not None:
+        _PADDING_STEP_ASIDE.set(None)
+        shape = f"{n_token} {token_label}" + (
+            f", {msa_rows} processed MSA rows" if msa_rows is not None else ""
+        )
+        exact_shape = f"{exact.n_token} {token_label}" + (
+            f", {exact.msa_rows} processed MSA rows"
+            if exact.msa_rows is not None
+            else ""
+        )
+        if shape != exact_shape and _refuses(decision, mode, off_profile):
+            unpadded = resolve_memory_policy(
+                model=model,
+                n_token=exact.n_token,
+                msa_rows=exact.msa_rows,
+                budget_bytes=budget.budget_bytes,
+                candidates=candidates,
+                card_bytes=budget.card_bytes,
+            )
+            if not _refuses(unpadded, mode, off_profile):
+                if exact.implicit:
+                    warnings.warn(
+                        f"{model}: padding to {shape} would be refused "
+                        f"({decision.reason}) and the exact {exact_shape} "
+                        f"{'are' if msa_rows is None else 'is'} admitted "
+                        f"({unpadded.reason}), so this run uses the exact input "
+                        "shapes (padding is on by default; request it explicitly "
+                        "to be refused instead)",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                    _PADDING_STEP_ASIDE.set(PADDING_STEP_ASIDE)
+                    stepped_aside = True
+                    decision = unpadded
+                    n_token, msa_rows = exact.n_token, exact.msa_rows
+                    # The run is unpadded now, so the law is no longer a lower
+                    # bound on that account.
+                    exceeds_profile = tuple(
+                        reason
+                        for reason in exceeds_profile
+                        if reason != SERVING_PADDING
+                    )
+                else:
+                    levers = (
+                        *levers,
+                        f"--no-padding (padding=False) runs the exact {exact_shape}, "
+                        f"which this policy admits ({unpadded.reason})",
+                    )
     selected = dict(candidates).get(decision.selected or "")
     record(
         decision,
@@ -1492,7 +1612,10 @@ def admit(
         token_label=token_label,
         exceeds_profile=exceeds_profile,
     )
-    return exceeding_profile(decision, exceeds_profile)
+    return replace(
+        exceeding_profile(decision, exceeds_profile),
+        padding_stepped_aside=stepped_aside,
+    )
 
 
 def admit_unmeasured(

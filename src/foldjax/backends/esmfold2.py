@@ -1574,6 +1574,25 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                     if model.settings.msa_n_layers is not None
                     else None
                 )
+
+                def off_profile_reasons() -> tuple[str, ...]:
+                    # What `inference.predict` will say puts this run below the
+                    # fitted profile, read off the same resolved settings.
+                    settings = model.settings
+                    return memory_policy.esmfold2_off_profile_reason(
+                        num_samples=overrides.get("num_samples", settings.num_samples),
+                        cp_shards=overrides.get("cp_shards", 1),
+                        stop_after_inputs=request.stop_after == "inputs",
+                        lm_state_storage=lm_state_storage,
+                        glu_backend=overrides.get(
+                            "glu_backend", settings.diffusion.glu_backend
+                        ),
+                        rigid_align_backend=overrides.get(
+                            "rigid_align_backend",
+                            settings.diffusion.rigid_align_backend,
+                        ),
+                    )
+
                 if request.padding is not None:
                     cp_padding_devices = int(overrides.get("cp_shards", 1))
                     cp_padding_layout = (
@@ -1603,6 +1622,36 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                         max_msa_depth=active_msa_depth,
                         language_model_tokens=lm_tokens,
                     )
+                    # Admitted at the padded shape before the features are
+                    # padded to it, and before the language model runs, so the
+                    # default padding can step aside for a job whose padded
+                    # shape alone is refused. `inference.predict` admits the
+                    # shape that runs again below; this call decides the
+                    # padding. Without a readable ceiling nothing is refused,
+                    # so there is nothing for the padding to step aside from.
+                    if overrides["memory_budget"].budget_bytes is not None:
+                        decision = memory_policy.admit(
+                            model="esmfold2",
+                            n_token=padding_plan.target["tokens"],
+                            msa_rows=None,
+                            candidates=(("released", memory_policy.ESMFOLD2_PEAK),),
+                            budget=overrides["memory_budget"],
+                            mode=overrides["memory_check"],
+                            levers=(memory_policy.ESMFOLD2_CP_DEVICES_LEVER,),
+                            off_profile=off_profile_reasons(),
+                            exceeds_profile=(memory_policy.SERVING_PADDING,),
+                            exact=memory_policy.ExactShape(
+                                int(
+                                    np.asarray(
+                                        model_features["token_attention_mask"]
+                                    ).shape[-1]
+                                ),
+                                implicit=request.padding.implicit,
+                            ),
+                        )
+                        if decision.padding_stepped_aside:
+                            padding_plan = None
+                if padding_plan is not None:
                     model_features = inference.normalize_msa_features(
                         prediction_key,
                         model_features,
@@ -1642,21 +1691,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                     )["refusal"]
                     is not None
                 ):
-                    settings = model.settings
-                    off_profile = memory_policy.esmfold2_off_profile_reason(
-                        num_samples=overrides.get("num_samples", settings.num_samples),
-                        cp_shards=overrides.get("cp_shards", 1),
-                        stop_after_inputs=request.stop_after == "inputs",
-                        lm_state_storage=lm_state_storage,
-                        glu_backend=overrides.get(
-                            "glu_backend", settings.diffusion.glu_backend
-                        ),
-                        rigid_align_backend=overrides.get(
-                            "rigid_align_backend",
-                            settings.diffusion.rigid_align_backend,
-                        ),
-                    )
-                    if not off_profile:
+                    if not off_profile_reasons():
                         memory_policy.admit(
                             model="esmfold2",
                             n_token=int(token_mask.shape[-1]),
@@ -1757,8 +1792,8 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                         model_features,
                         model,
                         language_model_tokens=lm_target,
-                        preserve_prefix_rng=request.padding is not None,
-                        padded=request.padding is not None,
+                        preserve_prefix_rng=padding_plan is not None,
+                        padded=padding_plan is not None,
                         return_distogram_logits=False,
                         **managed_output_kwargs,
                         **lm_input,

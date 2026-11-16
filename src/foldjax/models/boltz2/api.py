@@ -1307,26 +1307,20 @@ def predict(
         # Pair and atom category one-hots carry the same information as small
         # IDs; the graph rebuilds the historical arrays at its entry.
         feats_np = compact_category_storage(feats_np)
-    if padding_plan is not None:
-        from foldjax.models.boltz2.data.bucket import pad_feats
-
-        feats_np, _ = pad_feats(
-            feats_np,
-            padding_plan.target["tokens"],
-            padding_plan.target["atoms"],
-            target_msa=padding_plan.target["msa"],
-        )
-
-    # Admission, with the compiled token count final: every source of a
-    # padding plan -- an explicit one and the context parallel alignment --
-    # has been folded in above, and nothing
-    # activation-sized has been traced or placed. The weights are already on
-    # the device by this point; moving the check above them would mean hoisting
-    # the plan resolution over the feature-selection compaction it reads, which
-    # is a larger change than the seconds it would save on a refusal.
-    memory_policy.admit(
+    # Admission, with the compiled token count final -- the plan's target,
+    # with every source of a padding plan (an explicit one and the context
+    # parallel alignment) folded in above -- but before the features are
+    # padded to it, so the default padding can step aside for a job whose
+    # padded shape alone is refused. Nothing activation-sized has been traced
+    # or placed. The weights are already on the device by this point; moving
+    # the check above them would mean hoisting the plan resolution over the
+    # feature-selection compaction it reads, which is a larger change than the
+    # seconds it would save on a refusal.
+    decision = memory_policy.admit(
         model="boltz2",
-        n_token=int(feats_np["token_pad_mask"].shape[-1]),
+        n_token=(
+            original_tokens if padding_plan is None else padding_plan.target["tokens"]
+        ),
         msa_rows=None,
         candidates=(("released", memory_policy.BOLTZ2_PEAK),),
         budget=memory_policy.device_memory_budget(override_gib=memory_budget_gib),
@@ -1370,7 +1364,24 @@ def predict(
             )
             if active
         ),
+        exact=(
+            None
+            if padding is None
+            else memory_policy.ExactShape(original_tokens, implicit=padding.implicit)
+        ),
     )
+    if decision.padding_stepped_aside:
+        padding = None
+        padding_plan = None
+    if padding_plan is not None:
+        from foldjax.models.boltz2.data.bucket import pad_feats
+
+        feats_np, _ = pad_feats(
+            feats_np,
+            padding_plan.target["tokens"],
+            padding_plan.target["atoms"],
+            target_msa=padding_plan.target["msa"],
+        )
 
     # The public featurizer keeps publisher-native int64/float masks.  The
     # model immediately narrows the residue ids for indexing and casts binary

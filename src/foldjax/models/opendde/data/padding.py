@@ -179,6 +179,22 @@ def _resolve_auxiliary_targets(
     return atoms, structural
 
 
+def opendde_padding_targets(
+    features: Mapping[str, Any], config: PaddingConfig
+) -> tuple[int, int]:
+    """The atom and structural-token counts a padded run compiles for.
+
+    Read from the stored shapes alone, so admission can weigh the padded
+    structural axis before :func:`pad_opendde_features` builds any array.
+    """
+    return _resolve_auxiliary_targets(
+        config,
+        atom_storage=int(np.asarray(features["ref_pos"]).shape[0]),
+        structural_storage=int(np.asarray(features["parent_residue_idx"]).shape[0]),
+        token_storage=int(np.asarray(features["restype"]).shape[0]),
+    )
+
+
 def pad_opendde_features(
     features: Mapping[str, Any],
     cycle_msa_features: tuple[dict[str, np.ndarray], ...],
@@ -245,12 +261,7 @@ def pad_opendde_features(
     actual_structural = int(np.count_nonzero(structural_mask))
     if actual_structural < 1:
         raise ValueError("structural_token_padding_mask must retain at least one token")
-    target_atom, target_structural = _resolve_auxiliary_targets(
-        config,
-        atom_storage=storage_atom,
-        structural_storage=storage_structural,
-        token_storage=storage_token,
-    )
+    target_atom, target_structural = opendde_padding_targets(features, config)
 
     # The raw MSA is not a graph input once sampled cycles are supplied.  Do
     # not duplicate a potentially 16k-row alignment across the padded token

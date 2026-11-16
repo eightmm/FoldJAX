@@ -608,6 +608,7 @@ def resolve_pair_chunk_size(
     mode: str = memory_policy.DEFAULT_CHECK_MODE,
     off_profile: Sequence[str] = (),
     exceeds_profile: Sequence[str] = (),
+    exact: memory_policy.ExactShape | None = None,
 ) -> int | None:
     """Block the pair-stack row loop, and admit the run that will do it.
 
@@ -638,7 +639,9 @@ def resolve_pair_chunk_size(
     ``budget`` of ``None`` means the caller is not asking: the width, silently.
     That is what ``released_config`` does for every caller that is not about to
     predict, so inspecting a checkpoint does not initialize a device to check a
-    run it will never make.
+    run it will never make. ``exact`` is the unpadded shape of a padded
+    ``n_token`` (:class:`memory_policy.ExactShape`), under which the default
+    padding steps aside when only the padded shape is refused.
     """
     if budget is not None:
         memory_policy.admit(
@@ -661,6 +664,7 @@ def resolve_pair_chunk_size(
             ),
             off_profile=off_profile,
             exceeds_profile=exceeds_profile,
+            exact=exact,
         )
     return _blocked_width(n_token)
 
@@ -2065,6 +2069,7 @@ def released_config(
     padded: bool = False,
     pocket_sampling: PocketSamplingConfig | None = None,
     non_protein_tokens: int = 0,
+    exact_shape: memory_policy.ExactShape | None = None,
 ) -> InferenceConfig:
     """Return the released OpenFold3 architecture settings.
 
@@ -2093,6 +2098,10 @@ def released_config(
     :data:`memory_policy.OPENFOLD3_UNCHUNKED_PEAK`. ``padded`` says the
     features carry serving padding; it reaches only admission, where the
     unpadded law is then a lower bound, and is not part of the config.
+    ``exact_shape`` is what that padding padded from, for admission to weigh
+    (:class:`memory_policy.ExactShape`); the caller reads
+    `memory_policy.padding_disabled_by` after this returns to learn whether
+    the default padding stepped aside, and then builds the exact config.
     ``pocket_sampling`` is the static half of a query's pocket constraint
     (:func:`~foldjax.models.openfold3.data.pocket_constraints.pocket_sampling_config`);
     the laws were fitted without its second rollout, so admission treats it
@@ -2123,6 +2132,7 @@ def released_config(
             n_token,
             budget=memory_budget,
             mode=memory_check,
+            exact=exact_shape,
             off_profile=memory_policy.off_profile_reason(
                 num_samples=num_samples,
                 # Each of these leaves the run *below* the configuration the

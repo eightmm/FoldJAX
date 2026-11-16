@@ -781,14 +781,7 @@ def predict(
             candidates=(("released", memory_policy.ESMFOLD2_PEAK),),
             budget=memory_budget,
             mode=memory_check,
-            levers=(
-                "--cp-devices N shards the pair state across N visible "
-                "devices, which is the only lever measured to move this "
-                "peak: the sample options do not, because the peak is a "
-                "folding-trunk arena with no sample axis in it "
-                "(--option structure_sample_sequential=true bought 0.3 GiB "
-                "at 32 samples for 84% more wall time)",
-            ),
+            levers=(memory_policy.ESMFOLD2_CP_DEVICES_LEVER,),
             off_profile=memory_policy.off_profile_reason(
                 num_samples=settings.num_samples,
                 # Measured, not assumed: 46,041.8 MiB at 5 samples against

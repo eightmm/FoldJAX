@@ -763,7 +763,9 @@ def _run(
             if active
         ),
     )
-    admitted: set[int] = set()
+    # Per structural shape (exact, padded target): whether the default padding
+    # stepped aside for it.
+    admitted: dict[tuple[int, int | None], bool] = {}
     try:
         jobs = _load_jobs(config.input_json)
         if not jobs:
@@ -865,7 +867,76 @@ def _run(
                     if "asym_id" in model_features
                     else None
                 )
-                if padding is not None:
+                # Admission, before anything is padded and at the structural
+                # count the program will compile for -- the padded target
+                # when padding is on. The default padding steps aside for a
+                # job whose padded shape alone is refused (4,040 structural
+                # tokens is measured to complete where 4,096 is refused), so
+                # it is weighed against the exact count here, where the
+                # padding can still be left off. Once per shape, not once per
+                # seed: the seeds of a job fold the same structural tokens,
+                # and a warning repeated five times is a warning nobody
+                # reads. The *realized* trunk dtype picks the law --
+                # `trunk_dtype` is what `cast_trunk_params` was applied with,
+                # and `None` means the parameters were left float32, which
+                # since 2026-09-11 means the caller pinned `--trunk-dtype
+                # fp32`.
+                job_padding = padding
+                n_structural = _structural_token_count(model_features)
+                if n_structural is not None:
+                    padded_structural = None
+                    if padding is not None:
+                        from foldjax.models.opendde.data.padding import (
+                            opendde_padding_targets,
+                        )
+
+                        _, padded_structural = opendde_padding_targets(
+                            model_features, padding
+                        )
+                    shape = (n_structural, padded_structural)
+                    if shape not in admitted:
+                        bf16_trunk = trunk_dtype is not None
+                        decision = memory_policy.admit(
+                            model="opendde",
+                            n_token=(
+                                n_structural
+                                if padded_structural is None
+                                else padded_structural
+                            ),
+                            msa_rows=None,
+                            candidates=(
+                                ("bf16 trunk", memory_policy.OPENDDE_BF16_PEAK)
+                                if bf16_trunk
+                                else ("fp32 trunk", memory_policy.OPENDDE_FP32_PEAK),
+                            ),
+                            budget=memory_budget,
+                            mode=config.memory_check,
+                            levers=(
+                                _BF16_TRUNK_LEVER if bf16_trunk else _FP32_TRUNK_LEVER,
+                            ),
+                            off_profile=off_profile,
+                            # Serving padding needs *more* than either law,
+                            # both fitted unpadded. The fp32 trunk is not
+                            # here: it has its own fitted law, so it is in
+                            # profile.
+                            exceeds_profile=(
+                                (memory_policy.SERVING_PADDING,)
+                                if padding is not None
+                                else ()
+                            ),
+                            token_label="structural tokens",
+                            exact=(
+                                None
+                                if padding is None
+                                else memory_policy.ExactShape(
+                                    n_structural, implicit=padding.implicit
+                                )
+                            ),
+                        )
+                        admitted[shape] = decision.padding_stepped_aside
+                    if admitted[shape]:
+                        job_padding = None
+                if job_padding is not None:
                     import jax
 
                     from foldjax.models.opendde.data.padding import (
@@ -891,7 +962,7 @@ def _run(
                         pad_opendde_features(
                             features,
                             sampled,
-                            padding,
+                            job_padding,
                             n_queries=config.n_queries,
                             n_keys=config.n_keys,
                         )
@@ -956,40 +1027,6 @@ def _run(
                 features = None
                 sampled = None
                 padded_features = None
-                n_structural = _structural_token_count(model_features)
-                if n_structural is not None and n_structural not in admitted:
-                    # Once per shape, not once per seed: the seeds of a job
-                    # fold the same structural tokens, and a warning repeated
-                    # five times is a warning nobody reads. The *realized*
-                    # trunk dtype picks the law -- `trunk_dtype` is what
-                    # `cast_trunk_params` was applied with, and `None` means
-                    # the parameters were left float32, which since 2026-09-11
-                    # means the caller pinned `--trunk-dtype fp32`.
-                    admitted.add(n_structural)
-                    bf16_trunk = trunk_dtype is not None
-                    memory_policy.admit(
-                        model="opendde",
-                        n_token=n_structural,
-                        msa_rows=None,
-                        candidates=(
-                            ("bf16 trunk", memory_policy.OPENDDE_BF16_PEAK)
-                            if bf16_trunk
-                            else ("fp32 trunk", memory_policy.OPENDDE_FP32_PEAK),
-                        ),
-                        budget=memory_budget,
-                        mode=config.memory_check,
-                        levers=(
-                            _BF16_TRUNK_LEVER if bf16_trunk else _FP32_TRUNK_LEVER,
-                        ),
-                        off_profile=off_profile,
-                        # Serving padding needs *more* than either law, both
-                        # fitted unpadded. The fp32 trunk is not here: it has
-                        # its own fitted law, so it is in profile.
-                        exceeds_profile=(
-                            ("serving padding",) if padding is not None else ()
-                        ),
-                        token_label="structural tokens",
-                    )
                 output = _predict(
                     model_features,
                     params,

@@ -381,6 +381,20 @@ def _yield_default_padding(
     return dataclasses.replace(request, padding=None, padding_disabled_by=option)
 
 
+def _without_stepped_aside_padding(request: PredictionRequest) -> PredictionRequest:
+    """``request`` as it ran if its default padding stepped aside at admission.
+
+    The second place the default gives way, decided where the shape is known
+    rather than here: the port, before it pads, finds the padded shape refused
+    and the exact one admitted (`memory_policy.admit`), runs unpadded and
+    leaves `memory_policy.padding_disabled_by` set for this prediction.
+    """
+    disabled_by = memory_policy.padding_disabled_by()
+    if disabled_by is None or request.padding is None:
+        return request
+    return dataclasses.replace(request, padding=None, padding_disabled_by=disabled_by)
+
+
 def preflight(request: PredictionRequest, *, backend: Backend | None = None) -> None:
     """Refuse a resolved scalar request the way running it would, without running.
 
@@ -1544,7 +1558,9 @@ def _predict_seeds(
         try:
             _write_session_manifest(
                 backend,
-                request,
+                # The seeds fold one shape, so the last seed's admission says
+                # whether the default padding stepped aside for all of them.
+                _without_stepped_aside_padding(request),
                 combined,
                 request.output_dir,
                 cost={
@@ -1866,6 +1882,11 @@ def _predict_once_on_device(
         stop_after=request.stop_after,
         requested_representations=request.representations,
     )
+    # The port learned at admission that only the padded shape is refused and
+    # ran the default padding's exact shape instead (`memory_policy.admit`);
+    # recorded the way an option that cannot run padded is.
+    asked = _without_stepped_aside_padding(asked)
+    request = _without_stepped_aside_padding(request)
     if request.padding is not None and result.shape_profile is None:
         raise PredictionOutputError(
             f"{backend.name} accepted padding but did not report the concrete "

@@ -1303,6 +1303,8 @@ def request_mismatch(
             "search; or a native input names files FoldJAX cannot follow)"
         )
 
+    from foldjax import memory_policy
+
     expected_padding = padding_record(request)
     expected_representations = (
         list(request.representations) if request.representations is not None else None
@@ -1414,7 +1416,17 @@ def request_mismatch(
             "the options differ",
         ),
         (
-            _exact_value(document["padding"], expected_padding),
+            _exact_value(document["padding"], expected_padding)
+            # The default padding stepped aside at admission on that run; this
+            # request still carries the default, so it asked for the same.
+            or (
+                request.padding is not None
+                and request.padding.implicit
+                and _exact_value(
+                    document["padding"],
+                    {"disabled_by": memory_policy.PADDING_STEP_ASIDE},
+                )
+            ),
             "the padding differs",
         ),
         (

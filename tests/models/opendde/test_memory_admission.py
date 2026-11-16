@@ -299,3 +299,83 @@ def test_the_refusal_actually_comes_out_of_the_runner(pool, monkeypatch, tmp_pat
         predict_runner.run_prediction(
             config, _prepared_params_loader=lambda *_args: object()
         )
+
+
+@pytest.mark.parametrize("implicit", [True, False])
+def test_the_runner_admits_the_padded_shape_before_padding(
+    pool, monkeypatch, tmp_path, implicit
+):
+    """5DEI: 4,040 structural tokens are measured to complete, and the default
+    padding pads them to 4,096, which the law refuses. The runner weighs the
+    padded shape against the exact one before anything is padded, so the
+    default steps aside and the job runs at 4,040; padding asked for by name
+    is refused, with the exact shape named in the refusal.
+    """
+    from foldjax.schema import DEFAULT_PADDING, PaddingConfig
+
+    job = {"name": "tiny", "modelSeeds": [101]}
+    weights = tmp_path / "opendde.jax"
+    weights.write_bytes(b"native fixture")
+    document = tmp_path / "tiny.json"
+    document.write_text("[]", encoding="utf-8")
+    features = _features(4040, n_residue=2096)
+    features["parent_residue_idx"] = np.repeat(np.arange(2096), 2)[:4040]
+    features["ref_pos"] = np.zeros((31_000, 3), dtype=np.float32)
+
+    monkeypatch.setattr(predict_runner, "_load_jobs", lambda _path: [job])
+    monkeypatch.setattr(predict_runner, "_featurize", lambda _job, **_kw: features)
+    monkeypatch.setattr(
+        predict_runner,
+        "project_generated_output_features",
+        lambda features: features,
+        raising=False,
+    )
+
+    class _StopError(Exception):
+        pass
+
+    seen: dict[str, object] = {}
+
+    def _stop(model_features, *_args, **_kwargs):
+        seen["n_structural"] = predict_runner._structural_token_count(model_features)
+        raise _StopError
+
+    monkeypatch.setattr(predict_runner, "_predict", _stop)
+
+    fields = dict(_PARSER_DEFAULTS)
+    fields.update(
+        input_json=document,
+        weights=weights,
+        out=tmp_path / "out",
+        trunk_dtype="bf16",
+        confidence_dtype="fp32",
+        diffusion_dtype="fp32",
+    )
+    config = predict_runner.PredictionConfig(**fields)
+    padding = DEFAULT_PADDING if implicit else PaddingConfig()
+    profiles: list[dict[str, object]] = []
+
+    if implicit:
+        with pytest.warns(UserWarning, match="uses the exact input shapes"):
+            with pytest.raises(_StopError):
+                predict_runner.run_prediction(
+                    config,
+                    padding=padding,
+                    padding_profiles=profiles,
+                    _prepared_params_loader=lambda *_args: object(),
+                )
+        assert seen["n_structural"] == 4040
+        assert profiles == []
+        assert memory_policy.padding_disabled_by() == memory_policy.PADDING_STEP_ASIDE
+        assert memory_policy.recorded()["n_token"] == 4040
+    else:
+        with pytest.raises(MemoryError, match="4096 structural tokens") as info:
+            predict_runner.run_prediction(
+                config,
+                padding=padding,
+                padding_profiles=profiles,
+                _prepared_params_loader=lambda *_args: object(),
+            )
+        assert "--no-padding (padding=False) runs the exact 4040" in str(info.value)
+        assert seen == {}
+        assert memory_policy.padding_disabled_by() is None

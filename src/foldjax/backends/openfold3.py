@@ -1068,23 +1068,37 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
                 ),
                 max_msa_depth=config.msa_depth,
             )
-            features = data.pad_features(
-                features,
+            # Admitted at the padded shape before the features are padded to
+            # it, so the default padding can step aside for a query whose
+            # padded shape alone is refused; the config is then rebuilt at the
+            # exact shape, which is admitted the way an unpadded run is.
+            padded_config = inference.released_config(
                 n_token=padding_plan.target["tokens"],
                 n_atom=padding_plan.target["atoms"],
-                # Retain the host union; the streamed scheduler pads each
-                # selection after gathering, before device transfer.
-                n_msa=None,
-                n_templates=padding_plan.target["templates"],
-            )
-            n_token = padding_plan.target["tokens"]
-            n_atom = padding_plan.target["atoms"]
-            config = inference.released_config(
-                n_token=n_token,
-                n_atom=n_atom,
                 padded=True,
+                exact_shape=memory_policy.ExactShape(
+                    n_token, implicit=request.padding.implicit
+                ),
                 **{**overrides, "msa_depth": padding_plan.target["msa"]},
             )
+            if memory_policy.padding_disabled_by() is not None:
+                padding_plan = None
+                config = inference.released_config(
+                    n_token=n_token, n_atom=n_atom, **overrides
+                )
+            else:
+                features = data.pad_features(
+                    features,
+                    n_token=padding_plan.target["tokens"],
+                    n_atom=padding_plan.target["atoms"],
+                    # Retain the host union; the streamed scheduler pads each
+                    # selection after gathering, before device transfer.
+                    n_msa=None,
+                    n_templates=padding_plan.target["templates"],
+                )
+                n_token = padding_plan.target["tokens"]
+                n_atom = padding_plan.target["atoms"]
+                config = padded_config
         record_resolved_chunking(
             model="openfold3",
             n_token=n_token,

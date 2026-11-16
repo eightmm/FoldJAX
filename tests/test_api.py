@@ -14,6 +14,7 @@ from foldjax.backends.base import Backend
 from foldjax.registry import backend_override
 from foldjax.schema import (
     ModelCapabilities,
+    PaddingConfig,
     PredictionRequest,
     PredictionResult,
     PredictionSample,
@@ -2084,3 +2085,74 @@ def test_inputs_rejects_a_directory_with_no_job_documents(tmp_path: Path) -> Non
 
     with pytest.raises(FileNotFoundError, match="no job files in directory"):
         PredictionRequest(model="boltz2", inputs=(jobs,))
+
+
+def test_a_step_aside_at_admission_is_recorded_as_the_padding_that_ran(
+    tmp_path: Path,
+) -> None:
+    """The adapter admits the padded shape before padding; when the default
+    padding steps aside there, the run is recorded like one whose default gave
+    way to an option, and a resume with the same default matches it."""
+    from foldjax import memory_policy
+    from foldjax.manifest import MANIFEST_NAME
+
+    class SteppingAsideBackend(DummyBackend):
+        name = "opendde"
+
+        def predict(self, request: PredictionRequest) -> PredictionResult:
+            decision = memory_policy.admit(
+                model="opendde",
+                n_token=4096,
+                msa_rows=None,
+                candidates=(("bf16 trunk", memory_policy.OPENDDE_BF16_PEAK),),
+                budget=memory_policy.resolve_budget(
+                    pool_bytes=91_779_760_128, card_bytes=None, override_gib=None
+                ),
+                exceeds_profile=(memory_policy.SERVING_PADDING,),
+                token_label="structural tokens",
+                exact=(
+                    None
+                    if request.padding is None
+                    else memory_policy.ExactShape(
+                        4040, implicit=request.padding.implicit
+                    )
+                ),
+            )
+            padded = request.padding is not None and not decision.padding_stepped_aside
+            request.output_dir.mkdir(parents=True, exist_ok=True)
+            structure = request.output_dir / "prediction.cif"
+            structure.write_text("data_prediction\n")
+            result = super().predict(request)
+            return dataclasses.replace(
+                result,
+                samples=(
+                    dataclasses.replace(result.samples[0], structure_path=structure),
+                ),
+                shape_profile=shape_profile(request) if padded else None,
+            )
+
+    request = _request(tmp_path, model="opendde", use_compile_cache=False)
+    with backend_override("opendde", SteppingAsideBackend):
+        with pytest.warns(UserWarning, match="uses the exact input shapes"):
+            result = foldjax.predict(request)
+    assert result.shape_profile is None
+    manifest = json.loads((tmp_path / "out" / MANIFEST_NAME).read_text())
+    assert manifest["padding"] == {"disabled_by": "memory admission"}
+    assert "shape_profile" not in manifest
+    assert manifest["memory"]["n_token"] == 4040
+
+    with backend_override("opendde", SteppingAsideBackend):
+        report = foldjax.predict_batch(dataclasses.replace(request, resume=True))
+    assert len(report.skipped) == 1
+
+    explicit = _request(
+        tmp_path,
+        model="opendde",
+        output_dir=tmp_path / "explicit",
+        padding=PaddingConfig(),
+        use_compile_cache=False,
+    )
+    with backend_override("opendde", SteppingAsideBackend):
+        with pytest.raises(MemoryError, match="--no-padding"):
+            foldjax.predict(explicit)
+    assert not (tmp_path / "explicit" / MANIFEST_NAME).exists()
