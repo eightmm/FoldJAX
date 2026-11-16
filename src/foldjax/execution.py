@@ -26,7 +26,10 @@ translation, in the same place and with the same rules as sampling.
 What this does **not** do is decide defaults. A neutral name means the same
 thing everywhere; it does not follow that the same value is right everywhere,
 and for `dtype` it measurably is not -- see `DEFAULTS` in each backend and the
-measurements recorded beside them.
+measurements recorded beside them. `deterministic` is the one exception, and
+only in where the table lives: `DETERMINISTIC_DEFAULTS` below is still one
+value per model, kept here as one table because the decision is one
+measurement across the models and a row has to be a one-line change.
 
 `matmul_precision` is the exception to the rename model, and was the hole in
 it. Naming it here bought nothing for a long time: every one of the six
@@ -64,8 +67,9 @@ from typing import Any
 #:
 #: `deterministic` is the one knob here that buys repeatability rather than
 #: speed: it asks the compiler for reduction orders that do not vary between
-#: runs, which costs wall time. It is off everywhere, because the run every
-#: measurement in this repository describes is the one without it.
+#: runs, and fixes the GEMM kernels the autotuner would otherwise pick afresh
+#: per compile. What an omitted knob runs as is decided per model, in
+#: `DETERMINISTIC_DEFAULTS` below.
 #:
 #: `attention_kernel` has no `cueq`, and the asymmetry with `triangle_kernel`
 #: is the point: the cuEquivariance attention in this repository is triangle
@@ -81,6 +85,34 @@ KNOBS: dict[str, tuple[str, ...]] = {
     "triangle_kernel": ("auto", "cueq", "cueq-full", "cueq-pallas", "xla"),
     "attention_kernel": ("auto", "tokamax", "xla"),
     "deterministic": ("off", "on"),
+}
+
+#: What an omitted `deterministic` runs as, per model, in the neutral
+#: vocabulary. `foldjax.resolve_request` spells this value into a request that
+#: names neither the knob nor the port's own name for it, so the run's record
+#: says which it was; a value the caller spelled, either way, is never touched.
+#:
+#: Measured at 0.1.0 on one RTX PRO 6000 Blackwell (96 GB), default padding.
+#: Under `on` every model is byte-identical between two cold processes with
+#: empty compile caches; under `off` all five differ (max |dx| 1.5-2.1 A at
+#: 250 tokens), because GEMM autotuning picks a different kernel per compile.
+#: `on` also skips the Triton GEMM autotuner, which cuts a cold compile 3-5x
+#: (Boltz-2, 250 tokens: 121.6 s -> 29.4 s). Warm wall / device peak at 1,000
+#: tokens, `on` against `off`: Boltz-2 0.97x / 1.00x, Protenix 0.88x / 0.84x,
+#: OpenFold3 1.33x / 1.11x -- its large GEMMs lose Triton, which is why it
+#: stays `off`. OpenDDE and ESMFold2 are `on` ahead of their 1,000-token rows.
+#: AlphaFold 3 is not benchmarked here and keeps the run its upstream ships.
+#:
+#: One entry per model so that a measurement that lands is a one-line change.
+#: A model missing here, a third-party backend say, keeps its port's own
+#: omitted default.
+DETERMINISTIC_DEFAULTS: dict[str, str] = {
+    "alphafold3": "off",
+    "boltz2": "on",
+    "esmfold2": "on",
+    "opendde": "on",
+    "openfold3": "off",
+    "protenix": "on",
 }
 
 #: A native value meaning "pass nothing": the backend's own omitted default

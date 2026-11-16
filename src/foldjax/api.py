@@ -21,7 +21,7 @@ from typing import Any
 
 import numpy as np
 
-from foldjax import memory_policy, progress
+from foldjax import execution, memory_policy, progress
 from foldjax._fsutil import nonempty_file as _nonempty_file
 from foldjax.backends._tokamax_autotune import clear_record as clear_kernel_record
 from foldjax.backends.base import Backend
@@ -349,9 +349,48 @@ def resolve_request(
         )
     )
     resolved = dataclasses.replace(request, **updates) if updates else request
+    resolved = _spell_default_deterministic(resolved, backend)
     resolved = _yield_default_padding(resolved, backend)
     backend.validate_request(resolved)
     return resolved
+
+
+def _spell_default_deterministic(
+    request: PredictionRequest, backend: Backend
+) -> PredictionRequest:
+    """Write an omitted `deterministic` into the request as this model runs it.
+
+    Spelled into the options here rather than filled in where the knob is
+    translated, so everything that records a request's options -- the
+    manifest, `foldjax plan`, a warm packet -- says `on` or `off` for every
+    run, and `--resume` reads a manifest written before the default existed
+    as the `off` run it was rather than as a match for today's default.
+
+    An option that runs eagerly has no executable to carry the default, so
+    the default steps aside for it with a one-line notice and `off` is what
+    the record says, as default padding steps aside in `_yield_default_padding`.
+    A `deterministic=on` the caller spelled keeps the backend's refusal.
+    """
+    entry = backend.execution_options.get("deterministic")
+    default = execution.DETERMINISTIC_DEFAULTS.get(backend.name)
+    if entry is None or default is None:
+        return request
+    if "deterministic" in request.options or entry[0] in request.options:
+        return request
+    if default == "on":
+        option = backend.deterministic_conflict(request)
+        if option is not None:
+            warnings.warn(
+                f"{backend.name}: {option} runs eagerly, so this run compiles "
+                "without repeatable reductions (deterministic=on is the default; "
+                "request it explicitly to be refused instead)",
+                UserWarning,
+                stacklevel=3,
+            )
+            default = "off"
+    return dataclasses.replace(
+        request, options={**request.options, "deterministic": default}
+    )
 
 
 def _yield_default_padding(

@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 import foldjax
-from foldjax import progress
+from foldjax import execution, progress
 from foldjax.backends.base import Backend
 from foldjax.backends.boltz2 import Boltz2Backend
 from foldjax.manifest import MANIFEST_NAME
@@ -291,7 +291,8 @@ def test_resume_compares_options_as_the_backend_reads_them(
     """`bf16` and `bfloat16`, an alias and its name, `yes` and `True`: one run.
 
     The manifest records what the first caller typed -- as every manifest
-    written before this did -- so both sides are read through the backend.
+    written before this did -- plus the one default resolution spells into the
+    options (`deterministic`), so both sides are read through the backend.
     """
     calls: list[tuple[str, str, int]] = []
     backend = _Boltz2Vocabulary("boltz2", calls)
@@ -301,7 +302,11 @@ def test_resume_compares_options_as_the_backend_reads_them(
     with backend_override("boltz2", lambda: backend):
         foldjax.predict_batch(request)
         recorded = json.loads((request.output_dir / MANIFEST_NAME).read_text())
-        assert recorded["options"] == {"trunk_dtype": "bf16", "cp_atom_windows": "yes"}
+        assert recorded["options"] == {
+            "trunk_dtype": "bf16",
+            "cp_atom_windows": "yes",
+            "deterministic": execution.DETERMINISTIC_DEFAULTS["boltz2"],
+        }
         resumed = foldjax.predict_batch(
             dataclasses.replace(request, resume=True, options=resumed_options)
         )

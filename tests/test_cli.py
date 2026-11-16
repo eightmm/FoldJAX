@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from foldjax import execution
 from foldjax.cli import _options, _WeightReporter, entrypoint, main
 
 #: A native-dialect document for tests that only exercise request plumbing. An
@@ -832,6 +833,7 @@ def test_plan_profile_resolves_protenix_variant_without_native_options(
     assert payload["options"] == {
         "esm_checkpoint_dir": str(weights.parent),
         "model_name": "protenix_mini_esm_v0.5.0",
+        "deterministic": execution.DETERMINISTIC_DEFAULTS["protenix"],
     }
 
 
@@ -969,6 +971,7 @@ def test_plan_cli_redacts_secret_options(tmp_path: Path, capsys) -> None:
     assert payload["options"] == {
         "msa_server_password": "[REDACTED]",
         "steering_args": {"headers": {"Authorization": "[REDACTED]", "safe": "ok"}},
+        "deterministic": execution.DETERMINISTIC_DEFAULTS["boltz2"],
     }
 
 

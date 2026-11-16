@@ -1069,6 +1069,12 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             return _padded_constraint_conflict(request)
         return None
 
+    def deterministic_conflict(self, request: PredictionRequest) -> str | None:
+        # The eager guided sampler's refusal in `validate_native_options`.
+        if self.canonical_options(request.options).get("use_tfg_guidance") is True:
+            return "use_tfg_guidance"
+        return None
+
     def validate_request(self, request: PredictionRequest) -> None:
         super().validate_request(request)
         # Here, where `foldjax plan` sees it, rather than at the embedder,

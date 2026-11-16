@@ -340,6 +340,19 @@ class Backend(ABC):
         del request
         return None
 
+    def deterministic_conflict(self, request: PredictionRequest) -> str | None:
+        """The option this request uses that runs eagerly, or None.
+
+        An eager route has no executable to carry `deterministic`, so a
+        backend refuses the two together. Where the knob is omitted and this
+        model's default is `on` (`execution.DETERMINISTIC_DEFAULTS`),
+        `foldjax.resolve_request` spells `off` for the option named here
+        instead of refusing a request that never asked; an explicit `on`
+        keeps the refusal. Same contract as `padding_conflict`.
+        """
+        del request
+        return None
+
     def validate_request(self, request: PredictionRequest) -> None:
         """Validate the cheap, side-effect-free part of a prediction request.
 

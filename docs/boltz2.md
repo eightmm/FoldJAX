@@ -73,8 +73,9 @@ upstream v2.2.0 and later zero for every real alignment; the default
   (`main.py:156`), the same `BoltzSteeringParams()` `boltz predict` passes
   without `--use_potentials`, and runs the eager sampler for it. That sampler
   builds no outer executable, so it refuses explicit padding (the default
-  padding steps aside for it), `cp_devices > 1` and
-  `deterministic=true`; `foldjax plan` refuses the same combination before
+  padding steps aside for it), `cp_devices > 1` and an explicit
+  `deterministic=true` (the default steps aside for it too, and the record
+  says `off`); `foldjax plan` refuses the same combination before
   anything runs. Pass `--option steering_args='{"fk_steering": false,
   "physical_guidance_update": false, "contact_guidance_update": false}'` to
   keep `force` for the record and skip the guidance on purpose. Every other
@@ -100,7 +101,8 @@ option runs upstream's value:
 | `subsample_msa=true` | `false` | redraw a subset of MSA rows every trunk pass (the default padding steps aside for it; refused with explicit padding and context parallelism) |
 | `num_subsampled_msa=N` | `1024` | rows per pass when subsampling |
 | `method=NAME` | none | method conditioning, one of upstream's method types (for example `x-ray diffraction`, `electron microscopy`, `solution nmr`), case-insensitive |
-| `use_potentials=true` | `false` | Feynman-Kac steering and physical guidance; eager, so refused with `steering_args`, explicit padding (the default padding steps aside for it), `deterministic=on` and context parallelism |
+| `use_potentials=true` | `false` | Feynman-Kac steering and physical guidance; eager, so refused with `steering_args`, explicit padding (the default padding steps aside for it), explicit `deterministic=on` (the default steps aside for it) and context parallelism |
+| `deterministic=off` | `on` | drop the repeatable reductions and fixed GEMM kernels an omitted option compiles with ([why `on` is the default here](cli.md#--option-deterministicon): 0.97x the warm wall at 1,000 tokens, a 3-5x faster cold compile, and cold runs agree bit for bit) |
 
 Each of these joins the compile-cache identity. The full table, with upstream
 line references: [cli.md](cli.md).

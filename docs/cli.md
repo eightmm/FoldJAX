@@ -2260,11 +2260,32 @@ Limits:
 
 Compiles this run's executables for reduction orders that repeat, so two
 processes given the same input return the same structure bit for bit instead
-of the same structure to within the model's own rerun scatter. Measured on
-Protenix it costs 13% of the wall time at 1,003 tokens (9.7% at 3,012 with
-Triton GEMMs off); the other ports' costs are measured per port on GPU before
-the setting is recommended anywhere. It is off by default, which is what
-every measurement in this repository was taken under.
+of the same structure to within the model's own rerun scatter. It also fixes
+the GEMM kernels: without it XLA's autotuner picks a kernel per compile, so
+two cold processes with empty compile caches return different structures on
+every model (max |dx| 1.5-2.1 Å at 250 tokens, one RTX PRO 6000 Blackwell,
+0.1.0). Skipping that autotuning cuts a cold compile 3-5x (Boltz-2, 250
+tokens: 121.6 s to 29.4 s).
+
+What an omitted option runs as is decided per model
+(`foldjax.execution.DETERMINISTIC_DEFAULTS`), from the warm cost at 1,000
+tokens on that card, `on` against `off`:
+
+| model | omitted `deterministic` | warm wall | device peak |
+|---|---|---|---|
+| Boltz-2 | `on` | 0.97x | 1.00x |
+| Protenix | `on` | 0.88x | 0.84x |
+| OpenDDE | `on` | measured next | |
+| ESMFold2 | `on` | measured next | |
+| OpenFold3 | `off` | 1.33x | 1.11x |
+| AlphaFold 3 | `off` | not benchmarked | |
+
+OpenFold3 stays `off` because its large GEMMs lose Triton. `--option
+deterministic=off` (or `on`) in any spelling, including the argv ports'
+native `deterministic_ops`, overrides the table, and the resolved value is
+written into the request's options, so the manifest, `foldjax plan` and a
+warm packet say `on` or `off` for every run. Measurements recorded in this
+repository before 2026-11-17 were taken with it off.
 
 The setting rides on the executable rather than on the process. The equivalent
 XLA environment variable is read once at start-up, so it cannot distinguish one
@@ -2288,8 +2309,10 @@ therefore not expected to agree bit for bit with each other); AlphaFold 3's
 model runner, where the promise is XLA-emitted operations plus the pinned
 tokamax kernel store (the attention kernel has an XLA fallback, the GLU does
 not). Eager routes have no executable to put it on, so `--no-graph-jit`,
-OpenFold3's `--option no_compile=true`, Boltz-2 steering and the like are refused with the option
-rather than run without it. Custom-call kernels (cuEquivariance, tokamax,
+OpenFold3's `--option no_compile=true`, Boltz-2 steering and the like are
+refused with an explicit `deterministic=on` rather than run without it; where
+`on` is only the model's default it steps aside for them with a one-line
+notice and the record says `off`. Custom-call kernels (cuEquivariance, tokamax,
 Pallas) sit outside the flag's reach; their repeatability is observed, not
 documented. The option changes rounding routes (Triton GEMMs move to cuBLAS),
 so a deterministic run is repeatable but not the run the parity panel was
@@ -2347,8 +2370,10 @@ identical on both targets, at 6-13% more warm wall time and a device peak
 within 5% (one seed, two targets; a job ran on another GPU of the node).
 
 Keep one `--cache-dir` (the default cache is persistent) to get the same
-AlphaFold 3 or ESMFold2 structure again, and use `deterministic=on` for
-Protenix, or on any backend when two independent compilations must agree.
+AlphaFold 3 structure again. Boltz-2, Protenix, OpenDDE and ESMFold2 now run
+`deterministic=on` unless told otherwise (the table above), so two independent
+compilations agree there by default; pass it explicitly on OpenFold3 or
+AlphaFold 3 when they must.
 
 ### `--option pocket_sampling=select`
 
@@ -2723,8 +2748,8 @@ spelling the upstream value selects the namespace omitting it selects.
 | Boltz-2 | `subsample_msa=true` | `--subsample_msa` (`main.py:1021-1026`) | `false` | a click flag, so `boltz predict` does not subsample; `true` redraws rows each trunk pass; refused with explicit padding (the default padding steps aside for it) and `cp_devices>1` |
 | Boltz-2 | `num_subsampled_msa=N` | `--num_subsampled_msa` (`main.py:1027-1031`) | `1024` | rows per pass when subsampling |
 | Boltz-2 | `method=NAME` | `--method` (`main.py:979-984`) | none | method conditioning, case-insensitive, one of `const.method_types_ids`; also keys the feature cache; affinity keeps `other` |
-| Boltz-2 | `use_potentials=true` | `--use_potentials` (`main.py:969-972,1309-1311`) | `false` | Feynman-Kac steering and physical guidance on top of contact guidance; eager, so refused with `steering_args`, explicit padding (the default padding steps aside for it), `deterministic=on` and `cp_devices>1` |
-| Protenix | `use_tfg_guidance=true` | `--use_tfg_guidance` (`batch_inference.py:697-702,410`) | `false` | training-free guidance with `configs_base.py`'s default mapping, unrolled eager sampler; the denoiser attention resolves to `xla_jit`; refused with explicit padding (the default padding steps aside for it), `deterministic=on`, `cp_devices>1` and any `tokamax` attention; native CLI `--use-tfg-guidance` (which also runs `xla_jit`) |
+| Boltz-2 | `use_potentials=true` | `--use_potentials` (`main.py:969-972,1309-1311`) | `false` | Feynman-Kac steering and physical guidance on top of contact guidance; eager, so refused with `steering_args`, explicit padding (the default padding steps aside for it), explicit `deterministic=on` (the default steps aside for it) and `cp_devices>1` |
+| Protenix | `use_tfg_guidance=true` | `--use_tfg_guidance` (`batch_inference.py:697-702,410`) | `false` | training-free guidance with `configs_base.py`'s default mapping, unrolled eager sampler; the denoiser attention resolves to `xla_jit`; refused with explicit padding (the default padding steps aside for it), explicit `deterministic=on` (the default steps aside for it), `cp_devices>1` and any `tokamax` attention; native CLI `--use-tfg-guidance` (which also runs `xla_jit`) |
 | OpenDDE | `use_tfg_guidance=true` | `--use_tfg_guidance` (`batch_inference.py:848-853,487`) | `false` | the same mapping on Protenix's TFG port (OpenDDE's `tfg` is Protenix's plus Fold-CP plumbing); eager entry point; the same refusals; native CLI `--use-tfg-guidance true` |
 | AlphaFold 3 | `resolve_msa_overlaps=false` | `--resolve_msa_overlaps` (`run_alphafold.py:286-294`) | `true` | keep a hand-built unpaired MSA exactly as given |
 | AlphaFold 3 | `fix_standalone_glycans=true` | `--fix_standalone_glycans` (`run_alphafold.py:312-319`) | `false` | outside the trained regime, as upstream warns |

@@ -645,6 +645,14 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             )
         return "pocket_constraint" if found else None
 
+    def deterministic_conflict(self, request: PredictionRequest) -> str | None:
+        # The eager run's refusal in `predict` ("drop no_compile or
+        # deterministic"); this port's default is `off`, so it fires only if
+        # the table flips.
+        if self.canonical_options(request.options).get("no_compile") is True:
+            return "no_compile"
+        return None
+
     def validate_native_options(self, options: dict[str, Any]) -> None:
         _compile_enabled(dict(options))
         # Both memory-policy values are knowable without a device, so a

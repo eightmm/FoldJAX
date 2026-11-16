@@ -10,6 +10,7 @@ import pytest
 
 import foldjax
 import foldjax.api as api_module
+from foldjax import execution
 from foldjax.backends.base import Backend
 from foldjax.registry import backend_override
 from foldjax.schema import (
@@ -369,6 +370,7 @@ def test_protenix_profile_can_describe_an_external_complete_bundle(
     assert resolved.options == {
         "model_name": "protenix_mini_esm_v0.5.0",
         "esm_checkpoint_dir": external_weights.parent,
+        "deterministic": execution.DETERMINISTIC_DEFAULTS["protenix"],
     }
     assert foldjax.resolve_request(resolved) == resolved
 
@@ -432,7 +434,10 @@ def test_esmfold2_structure_only_profile_disables_the_language_model(
 
     assert calls == [("esmfold2", "structure-only")]
     assert resolved.profile == "structure-only"
-    assert resolved.options == {"no_language_model": True}
+    assert resolved.options == {
+        "no_language_model": True,
+        "deterministic": execution.DETERMINISTIC_DEFAULTS["esmfold2"],
+    }
 
 
 @pytest.mark.parametrize(
@@ -485,7 +490,10 @@ def test_esmfold2_structure_profile_accepts_an_external_language_model(
     )
 
     assert resolved.profile == "structure-only"
-    assert resolved.options == {"esmc_weights": "/tmp/external-esmc"}
+    assert resolved.options == {
+        "esmc_weights": "/tmp/external-esmc",
+        "deterministic": execution.DETERMINISTIC_DEFAULTS["esmfold2"],
+    }
     assert foldjax.resolve_request(resolved) == resolved
 
 

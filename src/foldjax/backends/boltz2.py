@@ -1664,18 +1664,32 @@ class Boltz2Backend(Backend):
         if "bucket" in request.options:
             return None
         options = self.canonical_options(request.options)
-        for name in ("subsample_msa", "use_potentials"):
-            if options.get(name) is True:
-                return name
+        if options.get("subsample_msa") is True:
+            return "subsample_msa"
+        steering = self._steering_conflict(request, options)
+        if steering is not None:
+            return steering
+        return self._template_conflict(request)
+
+    def deterministic_conflict(self, request: PredictionRequest) -> str | None:
+        # The eager steering sampler builds no executable to carry the option
+        # (`validate_request` below, and the native API's
+        # `blocked_by_eager_steering`).
+        return self._steering_conflict(request, self.canonical_options(request.options))
+
+    @staticmethod
+    def _steering_conflict(
+        request: PredictionRequest, options: Mapping[str, Any]
+    ) -> str | None:
+        """What selects upstream's eager steering sampler, or None."""
+        if options.get("use_potentials") is True:
+            return "use_potentials"
         steering = options.get("steering_args")
         if steering is not None:
-            if _steering_active(steering):
-                return "steering_args"
-        elif request.input is not None:
-            forced = _forced_steering(request.input)
-            if forced is not None:
-                return forced
-        return self._template_conflict(request)
+            return "steering_args" if _steering_active(steering) else None
+        if request.input is not None:
+            return _forced_steering(request.input)
+        return None
 
     @staticmethod
     def _template_conflict(request: PredictionRequest) -> str | None:

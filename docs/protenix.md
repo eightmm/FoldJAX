@@ -128,7 +128,7 @@ of a random subset ([cli.md](cli.md#--msa-seed-protenix)).
 | `use_tfg_guidance=true` | `false` | upstream's training-free guidance with its default mapping, on an eager sampler: geometry terms on ligands, ions and modified residues only, never on standard residues ([what it constrains](cli.md#upstream-run-options---option)); the denoiser attention runs `xla_jit`, and a spelled `tokamax` attention is refused, because the eager sampler recompiles it on every call; refused with explicit padding (the default padding steps aside for it), `deterministic=on` and context parallelism; expect an order of magnitude more wall time ([why](cli.md#upstream-run-options---option)) |
 | `attention_kernel=tokamax` | | fused pair-bias attention |
 | `amp_policy=upstream\|fp32\|bf16` | `auto` | which stages narrow to bfloat16 |
-| `deterministic=on` | `off` | repeatable reductions, at a cost in wall time |
+| `deterministic=off` | `on` | drop the repeatable reductions and fixed GEMM kernels an omitted option compiles with ([why `on` is the default here](cli.md#--option-deterministicon): 0.88x the warm wall at 1,000 tokens, and cold runs agree bit for bit) |
 
 Every option and its measurements: [cli.md](cli.md). Context parallelism
 splits one prediction over several GPUs

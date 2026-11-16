@@ -12,7 +12,7 @@ import os
 
 import pytest
 
-from foldjax import execution
+from foldjax import api, execution
 from foldjax.registry import available_models, get_backend
 from foldjax.schema import PredictionRequest
 
@@ -465,6 +465,130 @@ def test_only_a_declared_switch_is_rewritten(request_with) -> None:
     )
     assert options["diffusion_chunk_size"] == "1"
     assert options["use_template"] == "maybe"
+
+
+@pytest.fixture
+def resolvable(tmp_path):
+    """A request `resolve_request` can finish without weights or a model."""
+    job = tmp_path / "job.json"
+    job.write_text("{}")
+    weights = tmp_path / "w"
+    weights.write_bytes(b"x")
+
+    def build(model: str, **options) -> PredictionRequest:
+        return PredictionRequest(
+            model=model,
+            input=job,
+            input_format="foldjax",
+            weights=weights,
+            output_dir=tmp_path / "out",
+            options=options,
+            padding=False,
+        )
+
+    return build
+
+
+def _native_deterministic(value: str) -> tuple[object, ...]:
+    return ("on", True) if value == "on" else ("off", False)
+
+
+@pytest.mark.parametrize(
+    ("model", "native"), sorted(_DETERMINISTIC_NATIVE_NAMES.items())
+)
+def test_an_omitted_deterministic_resolves_to_the_model_s_default(
+    resolvable, model: str, native: str
+) -> None:
+    """One table, one row per model, spelled into the request it resolves.
+
+    The resolved request carries the value as an option, so the manifest, the
+    plan and a warm packet -- which all record the request's options -- say
+    `on` or `off` for every run rather than leaving the reader to know what
+    the default was on the day. Resolving again changes nothing.
+    """
+    expected = execution.DETERMINISTIC_DEFAULTS[model]
+    resolved = api.resolve_request(resolvable(model), draw_seeds=False)
+
+    assert resolved.options["deterministic"] == expected
+    assert get_backend(model).apply_sampling(resolved)[native] in (
+        _native_deterministic(expected)
+    )
+    assert api.resolve_request(resolved, draw_seeds=False) == resolved
+
+
+@pytest.mark.parametrize(
+    ("model", "native"), sorted(_DETERMINISTIC_NATIVE_NAMES.items())
+)
+def test_a_spelled_deterministic_is_left_as_spelled(
+    resolvable, model: str, native: str
+) -> None:
+    """Both values, in the neutral spelling and the port's own, override the table."""
+    for value in ("off", "on"):
+        request = resolvable(model, deterministic=value)
+        assert api.resolve_request(request, draw_seeds=False).options == request.options
+    for value in _native_deterministic("off") + _native_deterministic("on"):
+        if native == "deterministic" and isinstance(value, str):
+            continue  # the bool-shaped ports spell the neutral name natively
+        if native != "deterministic" and isinstance(value, bool):
+            continue  # the argv ports' field takes the strings
+        request = resolvable(model, **{native: value})
+        assert api.resolve_request(request, draw_seeds=False).options == request.options
+
+
+@pytest.mark.parametrize("model", sorted(_DETERMINISTIC_NATIVE_NAMES))
+def test_the_default_shares_the_namespace_an_explicit_value_warmed(
+    resolvable, model: str
+) -> None:
+    """`on` and `off` are two namespaces, and absence still means `off`.
+
+    The resolved default lands in the namespace an explicit value of the same
+    spelling already selects, so a cache warmed by the opt-in serves the
+    default run. An unresolved request -- how every namespace was recorded
+    before the default existed -- still reads as the `off` run it was.
+    """
+    backend = get_backend(model)
+    bare = resolvable(model)
+    on = backend.cache_profile(resolvable(model, deterministic="on"))
+    off = backend.cache_profile(resolvable(model, deterministic="off"))
+    default = backend.cache_profile(api.resolve_request(bare, draw_seeds=False))
+
+    assert on != off
+    assert off == backend.cache_profile(bare)
+    assert default == (
+        on if execution.DETERMINISTIC_DEFAULTS[model] == "on" else off
+    )
+
+
+@pytest.mark.parametrize(
+    ("model", "option"),
+    [
+        ("boltz2", "use_potentials"),
+        ("protenix", "use_tfg_guidance"),
+        ("opendde", "use_tfg_guidance"),
+    ],
+)
+def test_the_default_steps_aside_for_an_eager_route(
+    resolvable, model: str, option: str
+) -> None:
+    """A job that ran eagerly yesterday still runs; only an asked-for `on` refuses.
+
+    The eager samplers build no executable to carry the policy, and every
+    one of them refuses an explicit `on`. The default is not a request, so
+    it gives way with a notice and the record says `off`.
+    """
+    if execution.DETERMINISTIC_DEFAULTS[model] != "on":
+        pytest.skip(f"{model} defaults to off; nothing to step aside")
+    with pytest.warns(UserWarning, match=f"{option} runs eagerly"):
+        resolved = api.resolve_request(
+            resolvable(model, **{option: True}), draw_seeds=False
+        )
+    assert resolved.options["deterministic"] == "off"
+
+    with pytest.raises(ValueError, match="eager"):
+        api.resolve_request(
+            resolvable(model, **{option: True, "deterministic": "on"}),
+            draw_seeds=False,
+        )
 
 
 def test_the_deterministic_knob_takes_the_switch_spellings(request_with) -> None:

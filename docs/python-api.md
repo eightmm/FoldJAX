@@ -28,7 +28,8 @@ result = predict(
         # Execution, likewise: dtype, matmul_precision, triangle_kernel,
         # attention_kernel, deterministic. "auto" is the fastest path this
         # build can run -- never a silent fallback to a slower one, and
-        # "deterministic" buys repeatable reductions with wall time.
+        # "deterministic" (on by default on four models) buys repeatable
+        # reductions and fixed GEMM kernels.
         options={"dtype": "bfloat16", "triangle_kernel": "auto"},
     )
 )
@@ -142,10 +143,13 @@ the CLI and prints one object for a scalar request or a list for a plural one.
 `sample.scores` carries that model's released confidence summaries. Native
 option spellings (`compute_dtype`, `trunk_dtype=bf16`, ...) still work and
 warn once; `foldjax.execution.KNOBS` lists the neutral vocabulary.
-`deterministic="on"` is accepted by all six models and compiles that run's
-executables for repeatable reduction orders; on Protenix it costs 13% of the
-wall time at 1,003 tokens. See [the CLI reference](cli.md#--option-deterministicon)
-for what it covers on each port. Predictions return scalar summaries plus the
+`deterministic` is accepted by all six models and compiles that run's
+executables for repeatable reduction orders and fixed GEMM kernels; omitted,
+it is `"on"` for Boltz-2, Protenix, OpenDDE and ESMFold2 and `"off"` for
+OpenFold3 and AlphaFold 3 (`foldjax.execution.DETERMINISTIC_DEFAULTS`), and
+`resolve_request` writes the value it ran with into the request's options.
+See [the CLI reference](cli.md#--option-deterministicon) for the measurements
+and what it covers on each port. Predictions return scalar summaries plus the
 per-sample arrays in `confidence_full.npz` -- which arrays, PAE included,
 differs by model (`foldjax capabilities --model M`, and the table under
 "Outputs" in the README). The full-bin PAE/PDE logits are tens of GiB at long
