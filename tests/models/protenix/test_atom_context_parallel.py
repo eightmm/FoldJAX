@@ -37,7 +37,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 #: recompute with
 #: ``python -m tests.models.protenix.scripts.serial_diffusion_lowering``.
 SERIAL_DIFFUSION_LOWERING_SHA256 = (
-    "eea41b130670b7b70f4c6b79d619a3e267244b75aa78caa61d5ec3b92000573d"
+    "550d7fa909b2d4d67392eabf4bdbf5784d7c46845f491f17042da4d0be37cb7f"
 )
 
 #: Mesh arms. 96 atoms over 24 tokens with a 4/8 window divides both a 2x2 and

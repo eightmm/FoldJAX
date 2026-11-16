@@ -42,7 +42,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 #: the serial program and needs the measurement that justifies it; recompute
 #: with ``python -m tests.models.opendde.scripts.serial_diffusion_lowering``.
 SERIAL_DIFFUSION_LOWERING_SHA256 = (
-    "903b46d9525815c72c4fc936a6a3f5bbff4036e90a55072d9d3779993ab883ba"
+    "c4a3ad9ad14e4bb2464b4dc3358c9de1f368a7a903ddcfb60068d7100f692a0e"
 )
 
 #: Mesh arms. 96 atoms over 24 structural tokens with a 4/8 window divides both

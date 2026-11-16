@@ -93,6 +93,7 @@ def diffusion_score_model_forward(
         atom_to_token_idx=atom_to_token_idx,
         atom_context_parallel=atom_context_parallel,
         transformer_s_terms=atom_encoder_s_terms,
+        atom_to_token_plan=diffusion_conditioning.get("atom_to_token_plan"),
     )
 
     s_to_a = params["s_to_a_linear"]

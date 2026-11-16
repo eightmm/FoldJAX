@@ -53,6 +53,7 @@ from foldjax.models._cp_atom import (
     resolve_atom_windows,
     window_spec,
 )
+from foldjax.models._segment import segment_plan, segment_sum
 from foldjax.models.protenix.models.diffusion.transformer import (
     DiffusionTransformerStackParams,
     diffusion_transformer_stack,
@@ -158,18 +159,17 @@ def aggregate_atom_to_token_cp(
     axis_name = atom_axis_name()
 
     def local(values, index, weights=None):
-        channels = values.shape[-1]
-        out = jnp.zeros(values.shape[:-2] + (n_token, channels), dtype=values.dtype)
-        counts = jnp.zeros((n_token,), dtype=values.dtype)
         if weights is None:
-            out = out.at[..., index, :].add(values)
-            counts = counts.at[index].add(jnp.ones((), dtype=values.dtype))
+            plan = segment_plan(index, n_token)
+            out = segment_sum(values, None, n_token, axis=-2, plan=plan)
+            weights = jnp.ones(index.shape, dtype=values.dtype)
         else:
             shaped = weights.astype(values.dtype).reshape(
                 (1,) * (values.ndim - 2) + (-1, 1)
             )
-            out = out.at[..., index, :].add(values * shaped)
-            counts = counts.at[index].add(weights.astype(values.dtype))
+            plan = segment_plan(jnp.where(weights != 0, index, n_token), n_token)
+            out = segment_sum(values * shaped, None, n_token, axis=-2, plan=plan)
+        counts = segment_sum(weights.astype(values.dtype), None, n_token, plan=plan)
         out = jax.lax.psum_scatter(
             out,
             axis_name,

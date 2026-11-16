@@ -21,6 +21,7 @@ from abc import ABC, abstractmethod
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax.models._segment import segment_sum
 from foldjax.models.boltz2.models.trunk_blocks.trunk import _weighted_rigid_align
 
 # Vendored from boltz.data.const (the reference package is not a runtime dep).
@@ -209,22 +210,18 @@ def _np(x):
 
 def _scatter_mean_coords(coords, com_index, n_out):
     """Scatter-reduce mean of coords (..., n, 3) into (..., n_out, 3)."""
-    com_index = np.asarray(com_index)
-    out = jnp.zeros((*coords.shape[:-2], n_out, 3), dtype=coords.dtype)
-    counts = jnp.zeros((n_out,), dtype=coords.dtype)
-    idx = jnp.asarray(com_index)
-    out = out.at[..., idx, :].add(coords)
-    counts = counts.at[idx].add(1.0)
+    idx = jnp.asarray(np.asarray(com_index))
+    out = segment_sum(coords, idx, n_out, axis=-2)
+    counts = segment_sum(jnp.ones(idx.shape, dtype=coords.dtype), idx, n_out)
     counts = jnp.where(counts == 0, 1.0, counts)
     return out / counts[:, None]
 
 
 def _scatter_sum_atoms(grad_atom_shape, flat_index, prod, dtype):
     """Scatter-sum prod into atom grad tensor along the atom axis (-2)."""
-    out = jnp.zeros(grad_atom_shape, dtype=dtype)
     idx = jnp.asarray(np.asarray(flat_index))
-    out = out.at[..., idx, :].add(prod)
-    return out
+    prod = jnp.broadcast_to(prod, (*grad_atom_shape[:-2], *prod.shape[-2:]))
+    return segment_sum(prod.astype(dtype), idx, grad_atom_shape[-2], axis=-2)
 
 
 # ---------------------------------------------------------------------------
@@ -279,8 +276,7 @@ class Potential(ABC):
             lam = parameters["union_lambda"]
             neg_exp_energy = jnp.exp(-lam * energy)
             n_u = int(union_index.max()) + 1
-            z_part = jnp.zeros((*energy.shape[:-1], n_u), dtype=energy.dtype)
-            z_part = z_part.at[..., jnp.asarray(union_index)].add(neg_exp_energy)
+            z_part = segment_sum(neg_exp_energy, jnp.asarray(union_index), n_u, axis=-1)
             z_sel = z_part[..., jnp.asarray(union_index)]
             softmax_energy = jnp.where(
                 z_sel == 0,
@@ -327,16 +323,14 @@ class Potential(ABC):
             neg_exp_energy = jnp.exp(-lam * energy)
             n_u = int(union_index.max()) + 1
             ui = jnp.asarray(union_index)
-            z_part = jnp.zeros((*energy.shape[:-1], n_u), dtype=energy.dtype)
-            z_part = z_part.at[..., ui].add(neg_exp_energy)
+            z_part = segment_sum(neg_exp_energy, ui, n_u, axis=-1)
             z_sel = z_part[..., ui]
             softmax_energy = jnp.where(
                 z_sel == 0,
                 0.0,
                 neg_exp_energy / jnp.where(z_sel == 0, 1.0, z_sel),
             )
-            f = jnp.zeros((*energy.shape[:-1], n_u), dtype=energy.dtype)
-            f = f.at[..., ui].add(energy * softmax_energy)
+            f = segment_sum(energy * softmax_energy, ui, n_u, axis=-1)
             d_softmax = d_energy * softmax_energy * (1 + lam * (energy - f[..., ui]))
             d = d_softmax
         else:

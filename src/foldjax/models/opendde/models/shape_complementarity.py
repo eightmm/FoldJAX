@@ -36,6 +36,7 @@ import numpy as np
 
 from foldjax.models._compile_policy import policy_pools, select
 from foldjax.models._jit_pool import BoundedJitPool
+from foldjax.models._segment import segment_sum
 from foldjax.models.opendde.models.structural_tokens import STRUCTURAL_TOKEN_ROLES
 
 #: Upstream's `confidence.shape_comp` block (`opendde/config/model_base.py`).
@@ -258,8 +259,10 @@ def _token_centers_and_normals(
     token's *own* chain, which points away from that chain's bulk -- the
     direction a complementary surface has to face.
     """
-    atom_to_token = jnp.asarray(resolved.atom_to_token_idx)
     atom_mask_float = atom_mask.astype(coordinate.dtype)
+    atom_to_token = jnp.where(
+        atom_mask_float != 0, jnp.asarray(resolved.atom_to_token_idx), n_token
+    )
     rep_center = coordinate[jnp.asarray(resolved.rep_atom_indices)]
     rep_valid = jnp.asarray(resolved.rep_atom_valid)
 
@@ -267,12 +270,10 @@ def _token_centers_and_normals(
         # A sidechain subtoken's centre is the mean of the atoms it supervises,
         # not its representative atom: the representative is shared with the
         # backbone subtoken and would give the two the same surface point.
-        supervised_count = jnp.zeros(n_token, coordinate.dtype).at[atom_to_token].add(
-            atom_mask_float
+        supervised_count = segment_sum(atom_mask_float, atom_to_token, n_token)
+        supervised_sum = segment_sum(
+            coordinate * atom_mask_float[:, None], atom_to_token, n_token
         )
-        supervised_sum = jnp.zeros((n_token, 3), coordinate.dtype).at[
-            atom_to_token
-        ].add(coordinate * atom_mask_float[:, None])
         supervised_center = supervised_sum / jnp.maximum(supervised_count, 1.0)[:, None]
         sidechain = jnp.asarray(
             resolved.token_role_id == STRUCTURAL_TOKEN_ROLES["protein_sc"]

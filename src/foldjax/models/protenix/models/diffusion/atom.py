@@ -10,6 +10,7 @@ import jax.numpy as jnp
 
 from foldjax.models._cp import cp_mesh, shard_pair_rows
 from foldjax.models._cp_atom import replicate_atoms, shard_atoms, shard_windows
+from foldjax.models._segment import segment_plan, segment_sum
 from foldjax.models.protenix.models.diffusion._cp import (
     aggregate_atom_to_token_cp,
     atom_pair_conditioning_cp,
@@ -161,8 +162,6 @@ def aggregate_atom_to_token(
 
     if reduce not in {"mean", "sum"}:
         raise ValueError("reduce must be 'mean' or 'sum'")
-    out_shape = x_atom.shape[:-2] + (n_token, x_atom.shape[-1])
-    out = jnp.zeros(out_shape, dtype=x_atom.dtype)
     if atom_mask is None:
         weights = None
         weighted_atoms = x_atom
@@ -171,11 +170,17 @@ def aggregate_atom_to_token(
         if weights.shape != atom_to_token_idx.shape:
             raise ValueError("atom_mask must share shape [N_atom] with atom mapping")
         weighted_atoms = x_atom * weights.reshape((1,) * (x_atom.ndim - 2) + (-1, 1))
-    out = out.at[..., atom_to_token_idx, :].add(weighted_atoms)
+        # Padding gives masked atoms a real owner (token 0 when the token axis
+        # is already on a bucket); a dropped overflow owner keeps them out of
+        # that token's sum and out of the loop's per-token atom count.
+        atom_to_token_idx = jnp.where(weights != 0, atom_to_token_idx, n_token)
+    plan = segment_plan(atom_to_token_idx, n_token)
+    out = segment_sum(weighted_atoms, None, n_token, axis=-2, plan=plan)
     if reduce == "sum":
         return out
-    counts = jnp.zeros((n_token,), dtype=x_atom.dtype)
-    counts = counts.at[atom_to_token_idx].add(1.0 if weights is None else weights)
+    if weights is None:
+        weights = jnp.ones(atom_to_token_idx.shape, dtype=x_atom.dtype)
+    counts = segment_sum(weights, None, n_token, plan=plan)
     return out / jnp.maximum(counts[..., None], 1.0)
 
 

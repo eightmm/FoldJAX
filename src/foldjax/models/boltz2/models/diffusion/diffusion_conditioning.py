@@ -17,6 +17,7 @@ from foldjax.models._cp_atom import (
 )
 from foldjax.models.boltz2.models.diffusion.atom import (
     atom_to_token_index_from_feats,
+    atom_to_token_plan,
     gather_token_pairs_to_atom_windows_indexed,
     gather_tokens_to_atoms,
     get_indexing_matrix,
@@ -107,6 +108,16 @@ def diffusion_conditioning_forward(
         "q": q,
         "c": c,
         "atom_to_token_idx": atom_index,
+        # The per-step encoder's token mean reuses this grouping instead of
+        # sorting the atoms at every denoising step.
+        "atom_to_token_plan": None
+        if active
+        else atom_to_token_plan(
+            atom_index,
+            feats["atom_to_token"].shape[-1]
+            if "atom_to_token" in feats
+            else feats["token_pad_mask"].shape[1],
+        ),
         "to_keys": to_keys,
         "atom_enc_bias": _projection_list_forward(
             params["atom_enc_proj_z"],

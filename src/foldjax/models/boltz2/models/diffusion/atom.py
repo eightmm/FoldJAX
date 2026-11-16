@@ -24,6 +24,7 @@ from foldjax.models._cp_attention import (
     cp_fused_shard_map_options,
     resolve_cp_fused_attention,
 )
+from foldjax.models._segment import SegmentPlan, segment_plan, segment_sum
 from foldjax.models._stacking import take_layers
 from foldjax.models.boltz2.data.ownership import (
     ATOM_TO_TOKEN_INDEX,
@@ -116,11 +117,13 @@ def scatter_atoms_to_tokens_mean(
     eps: float = 1e-6,
     index: tuple[jnp.ndarray, jnp.ndarray] | None = None,
     num_tokens: int | None = None,
+    plan: SegmentPlan | None = None,
 ) -> jnp.ndarray:
     """Apply a dense or precomputed atom->token map as scatter mean.
 
     ``index`` may carry precomputed ``(token_idx, valid)``; see
-    :func:`gather_tokens_to_atoms`. Bit-identical either way.
+    :func:`gather_tokens_to_atoms`. ``plan`` is :func:`atom_to_token_plan` of
+    that index. Bit-identical either way.
     """
 
     if atom_to_token is not None:
@@ -133,17 +136,38 @@ def scatter_atoms_to_tokens_mean(
         if atom_to_token is None:
             raise ValueError("atom_to_token is required when index is absent")
         index = _one_hot_index(atom_to_token)
+    if plan is None:
+        plan = atom_to_token_plan(index, tokens)
+    valid = index[1]
+
+    def one(plan_b: SegmentPlan, valid_b: jnp.ndarray, values_b: jnp.ndarray):
+        # Upstream contracts a one-hot map with `bmm`, which accumulates
+        # bfloat16 inputs in float32; so does the context-parallel path.
+        values_f = values_b.astype(jnp.float32)
+        values_f = values_f * valid_b[:, None].astype(jnp.float32)
+        summed = segment_sum(values_f, None, tokens, plan=plan_b)
+        # Exactly the float sum of the valid atoms' ones.
+        counts = plan_b.counts.astype(jnp.float32)
+        return (summed / (counts[:, None] + eps)).astype(values_b.dtype)
+
+    return jax.vmap(one)(plan, valid, atom_values)
+
+
+def atom_to_token_plan(
+    index: tuple[jnp.ndarray, jnp.ndarray], num_tokens: int
+) -> SegmentPlan:
+    """Per-row owner grouping for :func:`scatter_atoms_to_tokens_mean`.
+
+    Fixed for a prediction, so the sampler builds it once rather than sorting
+    the atoms at every step. Invalid atoms go to a dropped overflow owner, not
+    to the token their index names: a padded atom's index would otherwise put
+    every padded atom on one token, and the largest owner sets the loop count.
+    """
+
     token_idx, valid = index
-
-    def one(batch_idx: jnp.ndarray, valid_b: jnp.ndarray, values_b: jnp.ndarray):
-        values_b = values_b * valid_b[:, None].astype(values_b.dtype)
-        summed = jnp.zeros((tokens, values_b.shape[-1]), dtype=values_b.dtype)
-        counts = jnp.zeros((tokens,), dtype=values_b.dtype)
-        summed = summed.at[batch_idx].add(values_b)
-        counts = counts.at[batch_idx].add(valid_b.astype(values_b.dtype))
-        return summed / (counts[:, None] + eps)
-
-    return jax.vmap(one)(token_idx, valid, atom_values)
+    return jax.vmap(
+        lambda idx, ok: segment_plan(jnp.where(ok, idx, num_tokens), num_tokens)
+    )(token_idx, valid)
 
 
 def gather_token_pairs_to_atom_windows(
@@ -341,6 +365,12 @@ def _repeat_index(
         jnp.repeat(idx, multiplicity, axis=0),
         jnp.repeat(valid, multiplicity, axis=0),
     )
+
+
+def _repeat_plan(plan: SegmentPlan | None, multiplicity: int) -> SegmentPlan | None:
+    if plan is None or multiplicity == 1:
+        return plan
+    return jax.tree.map(lambda x: jnp.repeat(x, multiplicity, axis=0), plan)
 
 
 def diffusion_transformer_forward(
@@ -855,6 +885,7 @@ def atom_attention_encoder_forward(
     atom_to_token_idx: tuple[jnp.ndarray, jnp.ndarray] | None = None,
     atom_context_parallel: bool = False,
     transformer_s_terms: tuple[jnp.ndarray, ...] | None = None,
+    atom_to_token_plan: SegmentPlan | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Run AtomAttentionEncoder with dense or CP-row atom ownership."""
 
@@ -917,6 +948,7 @@ def atom_attention_encoder_forward(
             q_to_a,
             index=idx,
             num_tokens=num_tokens,
+            plan=_repeat_plan(atom_to_token_plan, multiplicity),
         ).astype(q.dtype)
     return a, q, c
 

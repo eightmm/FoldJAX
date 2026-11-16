@@ -53,6 +53,7 @@ from foldjax.models._cp_attention import (
     resolve_cp_fused_attention,
     tile_attention_tokamax,
 )
+from foldjax.models._segment import segment_sum
 
 
 def atom_window_misalignment(
@@ -587,10 +588,9 @@ def scatter_atoms_to_tokens_mean_cp(
         def one(indices_b, valid_b, values_b):
             values_f = values_b.astype(jnp.float32)
             values_f = values_f * valid_b[:, None].astype(jnp.float32)
-            sums = jnp.zeros((num_tokens, values_b.shape[-1]), dtype=jnp.float32)
-            counts = jnp.zeros((num_tokens,), dtype=jnp.float32)
-            sums = sums.at[indices_b].add(values_f)
-            counts = counts.at[indices_b].add(valid_b.astype(jnp.float32))
+            indices_b = jnp.where(valid_b, indices_b, num_tokens)
+            sums = segment_sum(values_f, indices_b, num_tokens)
+            counts = segment_sum(valid_b.astype(jnp.float32), indices_b, num_tokens)
             return (sums / (counts[:, None] + eps)).astype(output_dtype)
 
         return jax.vmap(one)(token_indices, valid, atom_values)
@@ -605,10 +605,9 @@ def scatter_atoms_to_tokens_mean_cp(
         def one(indices_b, valid_b, values_b):
             values_f = values_b.astype(jnp.float32)
             values_f = values_f * valid_b[:, None].astype(jnp.float32)
-            sums = jnp.zeros((num_tokens, values_b.shape[-1]), dtype=jnp.float32)
-            counts = jnp.zeros((num_tokens,), dtype=jnp.float32)
-            sums = sums.at[indices_b].add(values_f)
-            counts = counts.at[indices_b].add(valid_b.astype(jnp.float32))
+            indices_b = jnp.where(valid_b, indices_b, num_tokens)
+            sums = segment_sum(values_f, indices_b, num_tokens)
+            counts = segment_sum(valid_b.astype(jnp.float32), indices_b, num_tokens)
             return sums, counts
 
         sums, counts = jax.vmap(one)(indices_local, valid_local, values_local)

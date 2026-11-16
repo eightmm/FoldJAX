@@ -938,6 +938,25 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **Boltz-2, Protenix and OpenDDE sum atoms into tokens without scatter-add.**
+  A GPU scatter-add accumulates through atomics in no fixed order, and the
+  diffusion rollout amplified that last-bit noise until the same seed wrote
+  different coordinates from a cold compile and from a cache load. The atom
+  encoder's atom-to-token mean (serial and context-parallel), OpenDDE's
+  shape-complementarity token centres and Boltz-2's steering potentials now
+  add each token's atoms in atom order through a gather loop, as OpenFold3
+  and ESMFold2 already avoided scatter. These are the same additions in a
+  fixed order, in the input dtype as upstream Protenix and OpenDDE's
+  scatter-add accumulates: on CPU the sums are bit-identical to the
+  scatter-add's. Boltz-2's serial mean alone now accumulates bfloat16 in
+  float32 and narrows after the division, as upstream's `bmm` and the
+  context-parallel path already did. Masked atoms go to a dropped owner instead of the real
+  token their padded index names (token 0, for an all-zero one-hot row or
+  Protenix's and OpenDDE's padded ownership), so they can no longer reach it
+  and do not lengthen the loop, and
+  Boltz-2 groups the atoms by token once per prediction rather than at every
+  denoising step. `bench/determinism_cold_warm.sbatch` checks the cold/warm
+  repeat on a GPU.
 - **Protenix `use_tfg_guidance=true` finishes on a GPU.** The guided sampler is
   eager, and there the released tokamax denoiser attention compiled afresh on
   every call -- an eager Pallas call binds a new `jit` each time, and its
