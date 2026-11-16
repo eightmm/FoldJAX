@@ -335,8 +335,13 @@ def test_device_condition_and_precision_scope_follow_the_device(monkeypatch) -> 
     """The GPU rows record the pin each port carries, read inside the scope."""
     import jax
 
+    from foldjax.execution import DETERMINISTIC_DEFAULTS
+
     monkeypatch.setattr(sp, "DEVICE", "cpu")
-    assert sp.device_condition("boltz2") == sp.CPU_CONDITION
+    assert sp.device_condition("boltz2") == {
+        **sp.CPU_CONDITION,
+        "deterministic": DETERMINISTIC_DEFAULTS["boltz2"],
+    }
     assert sp.host_condition() == sp.CPU_CONDITION
     with sp.precision_scope("opendde"):
         assert jax.config.jax_default_matmul_precision == "highest"
@@ -348,6 +353,7 @@ def test_device_condition_and_precision_scope_follow_the_device(monkeypatch) -> 
     with sp.precision_scope("opendde"):
         assert jax.config.jax_default_matmul_precision is None
     assert sp.device_condition("boltz2") == {
+        "deterministic": DETERMINISTIC_DEFAULTS["boltz2"],
         "backend": "gpu (k)",
         "matmul_precision": "high (port pin; jax_default_matmul_precision in the "
         "scope: high)",
@@ -355,7 +361,26 @@ def test_device_condition_and_precision_scope_follow_the_device(monkeypatch) -> 
     assert sp.device_condition("opendde")["matmul_precision"].startswith(
         "JAX default: the port pins none"
     )
+    # A stage that runs the port op by op records that nothing carried the policy.
+    eager = sp.device_condition("opendde", eager=True)["deterministic"]
+    assert eager.startswith("not carried")
+    assert f"deterministic={DETERMINISTIC_DEFAULTS['opendde']}" in eager
     assert sp.host_condition()["backend"].startswith("host")
+
+
+def test_shipped_determinism_is_the_request_resolver_s_table() -> None:
+    """Every stage compiles under the policy a default `foldjax predict` uses.
+
+    Read from `foldjax.execution.DETERMINISTIC_DEFAULTS`, not copied: a row
+    flipped there (OpenDDE and ESMFold2 await their 1,000-token data) flips
+    the stage rows with it.
+    """
+    from foldjax.execution import DETERMINISTIC_DEFAULTS
+
+    assert set(sp.MODELS) <= set(DETERMINISTIC_DEFAULTS)
+    for port, value in DETERMINISTIC_DEFAULTS.items():
+        assert sp.shipped_deterministic(port) is (value == "on")
+    assert sp.shipped_deterministic("openfold3") is False
 
 
 def test_shipped_precision_table_matches_the_port_pins() -> None:
@@ -620,6 +645,14 @@ def test_boltz2_s5_program_compiles_like_predict(monkeypatch) -> None:
 
     program = sp.boltz2_s5_program(forward, {"chunk_size": 128}, (0, 1))
     assert requested == [{"xla_allow_excess_precision": False}]
+    # The policy a default `foldjax predict` compiles with rides on the same
+    # call, merged onto the dtype policy rather than replacing it.
+    sp.boltz2_s5_program(forward, {"chunk_size": 128}, (0, 1), deterministic=True)
+    assert requested[1] == compile_policy.compiler_options(
+        jnp.bfloat16, deterministic=True
+    )
+    assert requested[1]["xla_allow_excess_precision"] is False
+    assert requested[1]["xla_gpu_deterministic_ops"] is True
     args = ({"w": jnp.ones(3)}, jnp.zeros(1), jnp.zeros(1), jnp.zeros(1))
     x = jnp.zeros((1, 2, 3))
     ones, twos = np.ones(3, np.float32), np.full(3, 2.0, np.float32)

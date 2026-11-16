@@ -132,22 +132,28 @@ def load_structure_model(weights: Path) -> Any:
 
 
 @lru_cache(maxsize=1)
-def _compiled_predict() -> Any:
+def _compiled_predict(*, deterministic: bool = False) -> Any:
     """One jit wrapper for the module.
 
     The tape arrays are traced values, not static, so the perturbed replay in
     the tripwire test reuses this program instead of compiling a second one --
-    which at this size is most of the wall time.
+    which at this size is most of the wall time. ``deterministic`` is for
+    `bench/stage_parity.py`, which compiles every stage under the policy a
+    default ``foldjax predict`` uses; the parity test itself keeps the program
+    its tolerances were calibrated on.
     """
     import jax
 
     from bench.esmfold2_lm_encoder_candidate import compiler_control
+    from foldjax.models._compile_policy import compiler_options
     from foldjax.models.esmfold2.models import model as structure_model
 
     return jax.jit(
         structure_model.predict,
         static_argnames=("settings", "n_chains"),
-        compiler_options=compiler_control("default"),
+        compiler_options=compiler_options(
+            deterministic=deterministic, base=compiler_control("default")
+        ),
     )
 
 

@@ -567,6 +567,22 @@ SHIPPED_MATMUL_PRECISION: dict[str, str | None] = {
     "esmfold2": None,
 }
 
+
+def shipped_deterministic(port: str) -> bool:
+    """Whether a default ``foldjax predict`` of ``port`` compiles repeatable reductions.
+
+    Every stage that compiles a program is built under the same policy, in
+    both conditions, read from the one table the request resolver reads
+    (`foldjax.execution.DETERMINISTIC_DEFAULTS`) rather than copied here, so
+    a row flipped there flips these rows with it. On the CPU the two XLA
+    options it carries are GPU-only and change nothing; the rows still record
+    what they were compiled under.
+    """
+    from foldjax.execution import DETERMINISTIC_DEFAULTS
+
+    return DETERMINISTIC_DEFAULTS[port] == "on"
+
+
 def require_device(device: str) -> None:
     """Refuse a process whose JAX backend is not the condition asked for."""
     if device not in DEVICES:
@@ -606,20 +622,35 @@ def precision_scope(port: str) -> Iterator[None]:
         yield
 
 
-def device_condition(port: str) -> dict[str, Any]:
-    """The ``backend``/``matmul_precision`` entries of a stage's condition.
+def device_condition(port: str, *, eager: bool = False) -> dict[str, Any]:
+    """The ``backend``/``matmul_precision``/``deterministic`` entries of a condition.
 
     On the GPU the precision is read inside the scope the stages open, so the
     record is the value in force there rather than the one the table intends.
+    ``eager`` marks a stage that calls the port's plain functions (Boltz-2's
+    trunk and sampler, OpenDDE's static entry) and so builds no executable the
+    reduction policy could ride on; its record says so rather than claiming
+    the policy.
     """
+    shipped = "on" if shipped_deterministic(port) else "off"
+    deterministic = {
+        "deterministic": (
+            shipped
+            if not eager
+            else "not carried: this stage runs the port op by op, with no "
+            f"executable to compile the policy into (a default foldjax predict "
+            f"compiles deterministic={shipped})"
+        )
+    }
     if DEVICE == "cpu":
-        return dict(CPU_CONDITION)
+        return {**CPU_CONDITION, **deterministic}
     import jax
 
     pin = SHIPPED_MATMUL_PRECISION[port]
     with precision_scope(port):
         observed = str(jax.config.jax_default_matmul_precision)
     return {
+        **deterministic,
         "backend": f"gpu ({jax.devices()[0].device_kind})",
         "matmul_precision": (
             f"{pin} (port pin; jax_default_matmul_precision in the scope: "
@@ -1125,6 +1156,19 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
             diffusion_attention_backend=denoiser_attention,
         )
 
+    def shipped_reductions() -> Any:
+        """The reduction policy a default `foldjax predict` compiles under.
+
+        Both parity helpers look the entry point up on its module at call
+        time (`_run_trunk` imports it inside the function), so one rebinding
+        reaches S3, S4 and S5 without the helpers growing a parameter.
+        """
+        return overriding_kwargs(
+            prediction,
+            "protenix_predict_static",
+            deterministic=shipped_deterministic("protenix"),
+        )
+
     def realised_kernels() -> dict[str, str]:
         if DEVICE == "cpu":
             return {}
@@ -1272,7 +1316,7 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         _, features, cycles = loaded()
         native = npz(fixture_case("protenix", "protein_1ubq", "A").path("trunk.npz"))
         started = time.perf_counter()
-        with precision_scope("protenix"):
+        with precision_scope("protenix"), shipped_reductions():
             port = parity._run_trunk(features, cycles)
         runtime = time.perf_counter() - started
         arrays = {
@@ -1332,6 +1376,7 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         with (
             precision_scope("protenix"),
             shipped_denoiser(),
+            shipped_reductions(),
             pytest.MonkeyPatch.context() as mp,
         ):
             port = parity._replay_coordinates(features, cycles, tape, mp)
@@ -1382,6 +1427,7 @@ def run_protenix(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
             with (
                 precision_scope("protenix"),
                 shipped_denoiser(),
+                shipped_reductions(),
                 pytest.MonkeyPatch.context() as mp,
                 counted_patch(
                     protenix_model,
@@ -1608,7 +1654,11 @@ def rigid_group_max_abs(port: Any, native: Any, groups: Any, mask: Any) -> float
 
 
 def boltz2_s5_program(
-    forward: Any, options: Mapping[str, Any], chain_ids: tuple[int, ...]
+    forward: Any,
+    options: Mapping[str, Any],
+    chain_ids: tuple[int, ...],
+    *,
+    deterministic: bool = False,
 ) -> Any:
     """Boltz-2 S5's confidence-head program, compiled as `foldjax predict` compiles it.
 
@@ -1641,7 +1691,9 @@ def boltz2_s5_program(
             **options,
         )
 
-    return compile_policy.jit(one, compute_dtype=jnp.bfloat16)
+    return compile_policy.jit(
+        one, compute_dtype=jnp.bfloat16, deterministic=deterministic
+    )
 
 
 def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
@@ -1738,7 +1790,9 @@ def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
     ca_mask = (atom_names == "CA") & (atom_element == 6) & protein_atom & atom_valid
 
     base = {
-        **device_condition("boltz2"),
+        # S3, S4 and S6 call the trunk and sampler functions directly, as the
+        # parity subset does; only S5 compiles (`boltz2_s5_program`).
+        **device_condition("boltz2", eager=True),
         "input": "native features.npz (upstream featurizer output; core-only)",
         "msa": "all 8,192 native rows (capture ran subsample_msa=false)",
         "trunk_dtype": (
@@ -2002,7 +2056,12 @@ def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
         }
 
         chain_ids = tuple(int(v) for v in np.unique(np.asarray(features["asym_id"])))
-        program = boltz2_s5_program(confidence_module_forward, options, chain_ids)
+        program = boltz2_s5_program(
+            confidence_module_forward,
+            options,
+            chain_ids,
+            deterministic=shipped_deterministic("boltz2"),
+        )
         started = time.perf_counter()
         with precision_scope("boltz2"):
             port_disto = np.asarray(
@@ -2058,9 +2117,11 @@ def run_boltz2(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
                 "sample_atom_coords and pdistogram[...,0] (pred_distogram_logits)",
                 "confidence_schedule": "one sample at a time "
                 "(run_confidence_sequentially=true upstream)",
+                "deterministic": "on" if shipped_deterministic("boltz2") else "off",
                 "confidence_compile": "foldjax.models.boltz2.compile_policy.jit "
-                "(bfloat16: xla_allow_excess_precision=false, as foldjax predict); "
-                "inputs passed as arguments",
+                "(bfloat16: xla_allow_excess_precision=false, deterministic="
+                f"{str(shipped_deterministic('boltz2')).lower()}, as foldjax "
+                "predict); inputs passed as arguments",
             },
             headline={
                 "metric": "max |d| pLDDT (0-1) / PAE (A) / pTM",
@@ -2204,7 +2265,10 @@ def run_openfold3(capture: Path, stages: set[str]) -> dict[str, dict[str, Any]]:
                 params, *inference.resolve_dtypes(config)
             )
         program = inference.compile_predict(
-            config, representative_atom_table(), triangle_kernel=triangle_kernel
+            config,
+            representative_atom_table(),
+            triangle_kernel=triangle_kernel,
+            deterministic=shipped_deterministic("openfold3"),
         )
         started = time.perf_counter()
         with precision_scope("openfold3"):
@@ -2766,7 +2830,7 @@ def run_esmfold2(
         original = parity._compiled_predict
 
         def recording() -> Any:
-            program = original()
+            program = original(deterministic=shipped_deterministic("esmfold2"))
 
             def call(*args: Any, **kwargs: Any) -> Any:
                 output = program(*args, **kwargs)
@@ -2870,6 +2934,7 @@ def run_esmfold2(
         """
         from bench.esmfold2_lm_encoder_candidate import compiler_control
         from bench.esmfold2_tape import SEED, _model_features, _replay_settings
+        from foldjax.models._compile_policy import compiler_options
         from foldjax.models.esmfold2.models import model as structure_model
 
         data = staged()
@@ -2901,7 +2966,13 @@ def run_esmfold2(
             "lm_hidden_states": jnp.asarray(data["lm"]),
             **{k: jnp.asarray(v) for k, v in data["tape"].items()},
         }
-        jitted = jax.jit(program, compiler_options=compiler_control("default"))
+        jitted = jax.jit(
+            program,
+            compiler_options=compiler_options(
+                deterministic=shipped_deterministic("esmfold2"),
+                base=compiler_control("default"),
+            ),
+        )
         jax.clear_caches()
         previous = jax.config.jax_default_matmul_precision
         if DEVICE == "cpu":
@@ -3468,7 +3539,7 @@ def run_opendde(
         return stage_record(
             "measured",
             condition={
-                **device_condition("opendde"),
+                **device_condition("opendde", eager=True),
                 "input": "native-input.npz + native-derived.npz (upstream "
                 "featurizer output; core-only)",
                 "trunk_dtype": trunk_dtype_record,
@@ -3703,7 +3774,7 @@ def run_opendde(
         data = staged()
         bitwise = data["rerun"]["bitwise"]
         return {
-            **device_condition("opendde"),
+            **device_condition("opendde", eager=True),
             "stage_capture": str(stage_capture),
             "input": "re-capture native-input.npz + native-derived.npz (bitwise "
             "equal to the stored capture's: "
@@ -4323,6 +4394,7 @@ def run_model(
     return {
         "model": model,
         "device": device,
+        "deterministic": "on" if shipped_deterministic(model) else "off",
         "capture": str(capture),
         "environment": env,
         "wall_s": round(time.perf_counter() - started, 1),
