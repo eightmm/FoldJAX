@@ -38,6 +38,7 @@ nvidia-smi --query-gpu=index,name,driver_version --format=csv,noheader
 # JAX falls back to CPU when CUDA fails to initialise, and a CPU run would pass
 # this check by construction.
 "$PY" -c "import jax; assert jax.default_backend() == 'gpu', jax.devices(); print('jax', jax.default_backend(), jax.devices())" || exit 3
+export JAX_PLATFORMS=cuda
 
 status=0
 for model in "${MODELS[@]}"; do
