@@ -2391,6 +2391,114 @@ def test_openfold3_feature_archive_loads_without_importing_torch(
     assert loaded_table is not None
 
 
+@pytest.mark.parametrize("route", ["raw", "archive"])
+def test_openfold3_backend_keeps_is_ligand_for_the_bespoke_iptm(
+    tmp_path: Path, monkeypatch, route: str
+) -> None:
+    """The model-ABI filter is driven by the real feature lists.
+
+    ``is_ligand`` is read by the bespoke chain-pair ipTM only, so a filter that
+    dropped it folded the same structure and silently reported that score as
+    unavailable on every multimer. Dataset bookkeeping must still be dropped.
+    """
+    from foldjax.models.openfold3 import data as real_data
+
+    features = {
+        "token_mask": np.asarray([[1, 1, 1]], dtype=np.float32),
+        "atom_mask": np.asarray([[1, 1, 1]], dtype=np.float32),
+        "asym_id": np.asarray([[1, 2, 3]], dtype=np.int32),
+        "is_atomized": np.asarray([[0, 0, 1]], dtype=np.int32),
+        "is_ligand": np.asarray([[0, 0, 1]], dtype=np.int32),
+        "num_paired_seqs": np.asarray([[0]], dtype=np.int32),
+        "_foldjax_zero_template_pair_features": np.zeros((), dtype=np.float32),
+        "_foldjax_compact_msa": np.zeros((), dtype=np.float32),
+        "_foldjax_msa_indices": np.asarray([[[0, 1, 2]]], dtype=np.uint8),
+    }
+    seen: dict[str, object] = {}
+    scores = tmp_path / "scores.json"
+    scores.write_text('{"samples": []}')
+
+    def fake_compile(config, table, *, n_chain=None, **compile_options):
+        def compiled(key, batch, params):
+            seen["batch"] = dict(batch)
+            return SimpleNamespace()
+
+        return compiled
+
+    def source(*args, **kwargs):
+        seen["route"] = route
+        return (features, object(), None) if route == "archive" else (features, None)
+
+    modules = {
+        "foldjax.models.openfold3.data": SimpleNamespace(
+            MODEL_FEATURES=real_data.MODEL_FEATURES,
+            OPTIONAL_MODEL_FEATURES=real_data.OPTIONAL_MODEL_FEATURES,
+            PRIVATE_MODEL_FEATURES=real_data.PRIVATE_MODEL_FEATURES,
+            COMPACT_MSA_PRIVATE_FEATURES=real_data.COMPACT_MSA_PRIVATE_FEATURES,
+            POCKET_SAMPLING_FEATURES=real_data.POCKET_SAMPLING_FEATURES,
+            pocket_sampling_config=lambda batch: None,
+            featurize_query_with_metadata=source,
+            load_feature_archive=source,
+            prepare_msa_cycle_features=lambda batch, depth, **kwargs: batch,
+            collapse_identical_templates=lambda batch: batch,
+            has_compact_zero_template_pair_features=(
+                real_data.has_compact_zero_template_pair_features
+            ),
+            has_compact_msa_features=real_data.has_compact_msa_features,
+            has_atomized_tokens=real_data.has_atomized_tokens,
+            normalize_asym_ids=real_data.normalize_asym_ids,
+        ),
+        "foldjax.models.openfold3.inference": SimpleNamespace(
+            resolve_dtypes=lambda config: (None, None),
+            cast_narrow_params=lambda params, dtype, confidence: params,
+            released_config=lambda **kwargs: SimpleNamespace(
+                msa_depth=1024, num_recycles=4
+            ),
+            compile_predict=fake_compile,
+        ),
+        "foldjax.models.openfold3.output": SimpleNamespace(
+            write_prediction_outputs=lambda *args, **kwargs: {
+                "structures": (),
+                "scores": scores,
+            }
+        ),
+        "foldjax.models.openfold3.bridge.chemistry": SimpleNamespace(
+            representative_atom_table=lambda: object()
+        ),
+        "foldjax.models.openfold3.bridge.checkpoint": SimpleNamespace(
+            load_checkpoint=lambda path: {}
+        ),
+        "foldjax.models.openfold3.bridge.torch_mapping": SimpleNamespace(
+            resolve_model_prefix=lambda state, prefix=None: "",
+            prune_sample_diffusion_aliases=lambda state, *, prefix: 0,
+            map_inference_params=lambda state, prefix: object(),
+        ),
+        "jax": SimpleNamespace(random=SimpleNamespace(key=lambda seed: seed)),
+    }
+    monkeypatch.setattr(
+        "foldjax.backends.openfold3.import_module", lambda name: modules[name]
+    )
+    request = _request(tmp_path, "openfold3")
+    if route == "archive":
+        archive = tmp_path / "features.npz"
+        archive.write_bytes(b"")
+        request = dataclasses.replace(
+            request, input=archive, input_format="openfold3-features"
+        )
+
+    OpenFold3Backend().predict(request)
+
+    assert seen["route"] == route
+    batch = seen["batch"]
+    np.testing.assert_array_equal(batch["is_ligand"], features["is_ligand"])
+    assert "num_paired_seqs" not in batch
+    assert set(batch) <= {
+        *real_data.MODEL_FEATURES,
+        *real_data.OPTIONAL_MODEL_FEATURES,
+        *real_data.PRIVATE_MODEL_FEATURES,
+    }
+
+
 def test_openfold3_cold_inference_import_closure_is_torch_free() -> None:
     """Guard before the first FoldJAX import, then traverse the real closure."""
     script = r"""

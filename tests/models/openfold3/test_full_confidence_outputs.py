@@ -18,7 +18,11 @@ import numpy as np
 import pytest
 
 from foldjax.models.openfold3 import inference, rasa
-from foldjax.models.openfold3.models.confidence import compute_chain_pair_iptm
+from foldjax.models.openfold3.models.confidence import (
+    compute_bespoke_iptm,
+    compute_chain_mean_iptm,
+    compute_chain_pair_iptm,
+)
 from tests.models.openfold3.test_pae_metric_sinking import (
     PAE_BINS,
     _install_tiny_predict,
@@ -163,6 +167,55 @@ def test_one_sample_takes_the_batched_path_and_still_returns_them(monkeypatch) -
     result = _predict(batch, params, base)
     assert result.pae.shape == (1, base.n_token, base.n_token)
     assert result.gpde.shape == (1,)
+
+
+def test_bespoke_iptm_follows_the_ligand_flag_and_moves_no_coordinate(
+    monkeypatch,
+) -> None:
+    """``is_ligand`` is read by the bespoke ipTM alone.
+
+    A batch without it (an archive written before the flag was kept) returns
+    every other output unchanged and no bespoke matrix; with it, the matrix is
+    the AF3 SI 5.9.3 composition of the per-chain means.
+    """
+    batch, params, base = _tiny(monkeypatch)
+    unflagged = {name: value for name, value in batch.items() if name != "is_ligand"}
+    plain = _predict(unflagged, params, base)
+    flagged = _predict(batch, params, base)
+
+    assert plain.bespoke_iptm is None
+    assert flagged.bespoke_iptm.shape == (base.num_samples, 3, 3)
+    for name in ("coordinates", "plddt", "ptm", "iptm", "chain_pair_iptm", "pae"):
+        np.testing.assert_array_equal(
+            np.asarray(getattr(plain, name)),
+            np.asarray(getattr(flagged, name)),
+            err_msg=name,
+        )
+    _, has_frame = inference.token_frame_atoms()
+    token_mask, asym_id, is_ligand = (
+        batch[name][0] for name in ("token_mask", "asym_id", "is_ligand")
+    )
+    expected = jnp.stack(
+        [
+            compute_bespoke_iptm(
+                compute_chain_mean_iptm(
+                    flagged.chain_pair_iptm[sample][None],
+                    has_frame[sample][None],
+                    token_mask,
+                    asym_id,
+                    n_chain=3,
+                ),
+                token_mask,
+                asym_id,
+                is_ligand,
+                n_chain=3,
+            )[0]
+            for sample in range(base.num_samples)
+        ]
+    )
+    np.testing.assert_allclose(flagged.bespoke_iptm, expected, atol=1e-6)
+    # The ligand chain's own mean carries its pairs, the protein pair averages.
+    assert not np.allclose(expected[:, 0, 1], expected[:, 0, 2])
 
 
 def test_turning_the_arrays_off_changes_no_coordinate(monkeypatch) -> None:

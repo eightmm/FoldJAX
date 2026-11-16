@@ -642,8 +642,12 @@ def test_openfold3_writer_stages_atom_plddt_and_chain_pair_iptm(
         assert "return_expected_errors=False" in loaded.unavailable["pae"]
         if multimer:
             np.testing.assert_allclose(loaded["chain_pair_iptm"], chain_pair[index])
+            # A multimer predicted from features without is_ligand must not
+            # be reported as a monomer.
+            assert "is_ligand" in loaded.unavailable["chain_pair_iptm_bespoke"]
         else:
             assert "chain_pair_iptm" in loaded.unavailable
+            assert "multimers" in loaded.unavailable["chain_pair_iptm_bespoke"]
         _assert_maps_name_every_cif_atom(loaded, cif)
         _assert_b_factors_are_the_plddt(loaded, cif)
 

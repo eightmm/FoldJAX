@@ -60,7 +60,9 @@ MODEL_FEATURES = (
 # template chemistry: rows already present in the source remain active (even
 # when chemically empty, matching the released fixed-width input), while rows
 # appended only for a serving bucket are excluded from the template reduction.
-OPTIONAL_MODEL_FEATURES = ("template_padding_mask", "cyclic_mask")
+# ``is_ligand`` feeds only the bespoke chain-pair ipTM; an archive without it
+# folds identically and reports that score as unavailable.
+OPTIONAL_MODEL_FEATURES = ("template_padding_mask", "cyclic_mask", "is_ligand")
 
 # Private trace-time provenance inserted only by
 # :func:`compact_zero_template_pair_features`.  Presence of this key changes the

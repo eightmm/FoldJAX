@@ -71,6 +71,7 @@ REQUIRED = (
     "ptm",
     "iptm",
     "chain_pair_iptm",
+    "bespoke_iptm",
     "pae",
     "pde",
     "gpde",

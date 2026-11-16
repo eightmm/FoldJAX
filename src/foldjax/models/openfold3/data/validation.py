@@ -161,6 +161,12 @@ def validate_features(
             raise ValueError("OpenFold3 cyclic_mask must be bool with token_mask shape")
         if np.any(cyclic & (token_mask == 0)):
             raise ValueError("OpenFold3 cyclic_mask cannot include padded tokens")
+    if "is_ligand" in arrays:
+        ligand = arrays["is_ligand"]
+        if ligand.shape != token_mask.shape or not np.isin(ligand, (0, 1)).all():
+            raise ValueError("OpenFold3 is_ligand must be a 0/1 token flag")
+        if np.any((ligand == 1) & (token_mask == 0)):
+            raise ValueError("OpenFold3 is_ligand cannot include padded tokens")
     atom_mask = arrays["atom_mask"]
     if token_mask.ndim != 2 or token_mask.shape[0] != 1:
         raise ValueError(

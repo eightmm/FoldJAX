@@ -1089,9 +1089,13 @@ def _write_confidence_arrays(
                 "the compiled program was built with return_expected_errors=False "
                 "(--option return_expected_errors=false)"
             )
-    for name in ("chain_pair_iptm", "chain_pair_iptm_bespoke"):
-        if chain_arrays[name] is None:
+    if chain_arrays["chain_pair_iptm"] is None:
+        for name in ("chain_pair_iptm", "chain_pair_iptm_bespoke"):
             reasons[name] = "OpenFold3 computes it only for multimers"
+    elif chain_arrays["chain_pair_iptm_bespoke"] is None:
+        reasons["chain_pair_iptm_bespoke"] = (
+            "the features carry no is_ligand flag; re-featurize the query to get it"
+        )
     if chain_arrays["chain_ptm"] is None:
         reasons["chain_ptm"] = "the chain count was not given to the program"
     for index, structure in enumerate(structures):

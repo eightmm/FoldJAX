@@ -46,6 +46,43 @@ def test_cyclic_mask_cannot_include_padding() -> None:
         validate_features(features)
 
 
+def test_is_ligand_is_optional_and_padded_as_zero() -> None:
+    """Archives written before the flag was kept still load; padding masks it."""
+    from foldjax.models.openfold3.data.featurize import (
+        OPTIONAL_MODEL_FEATURES,
+        pad_features,
+    )
+
+    assert "is_ligand" in OPTIONAL_MODEL_FEATURES
+    assert "is_ligand" not in MODEL_FEATURES
+    features = _features()
+    validate_features(features)
+    features["is_ligand"] = np.asarray([[0, 0, 1]], dtype=np.int32)
+    padded = pad_features(features, n_token=4, n_atom=5)
+    np.testing.assert_array_equal(padded["is_ligand"], [[0, 0, 1, 0]])
+    validate_features(padded)
+
+
+@pytest.mark.parametrize(
+    ("flag", "message"),
+    [
+        (np.asarray([[0, 2, 0]], dtype=np.int32), "0/1"),
+        (np.asarray([[0, 1]], dtype=np.int32), "0/1"),
+        (np.asarray([[0, 0, 0, 1]], dtype=np.int32), "padded"),
+    ],
+    ids=["not-binary", "wrong-shape", "on-padding"],
+)
+def test_is_ligand_must_be_a_token_flag_of_real_tokens(flag, message) -> None:
+    from foldjax.models.openfold3.data.featurize import pad_features
+
+    features = _features()
+    if flag.shape[-1] == 4:
+        features = pad_features(features, n_token=4, n_atom=5)
+    features["is_ligand"] = flag
+    with pytest.raises(ValueError, match=f"is_ligand.*{message}"):
+        validate_features(features)
+
+
 @pytest.mark.parametrize(
     ("name", "replacement", "message"),
     [
