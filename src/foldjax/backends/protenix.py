@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack
 from importlib import import_module
@@ -727,27 +728,6 @@ def _extra_cli_args(value: Any) -> tuple[str, ...]:
     return arguments
 
 
-#: The op-by-op escape hatch (`_predict_flags.add_graph_jit`), the one eager
-#: route `cli_args` can select: the runner refuses it together with
-#: `--deterministic-ops on` (`models/predict.py`, "drop --no-graph-jit").
-_EAGER_CLI_FLAG = "--no-graph-jit"
-
-
-def _eager_cli_flag(cli_args: Sequence[str]) -> str | None:
-    """The argument in ``cli_args`` that selects eager execution, or None.
-
-    Spelled whole, or as the unambiguous long-option prefix argparse also
-    takes: every other ``--no-...`` flag of the parser diverges by the sixth
-    character, so a shorter prefix is one the parser rejects as ambiguous
-    rather than one that runs eagerly.
-    """
-    for argument in cli_args:
-        flag = argument.split("=", 1)[0]
-        if len(flag) >= len("--no-g") and _EAGER_CLI_FLAG.startswith(flag):
-            return argument
-    return None
-
-
 #: The one released model whose checkpoint carries the constraint embedder:
 #: upstream enables its pocket, contact, contact-atom and substructure
 #: projections for this name alone (Protenix ``configs/configs_model_type.py:
@@ -1091,22 +1071,64 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         return None
 
     def deterministic_conflict(self, request: PredictionRequest) -> str | None:
-        # The two eager routes `validate_native_options` refuses `on` for.
+        return self._eager_route(request)
+
+    def _eager_route(self, request: PredictionRequest) -> str | None:
+        """The eager route the run this request renders takes, or None.
+
+        Decided as the runner decides it, not from option names: the rendered
+        argv (`cli_args` included) goes through the native parser, the
+        guidance file is read the way the run reads it, and the predicate is
+        the one the inference entry refuses `deterministic` on
+        (`runtime_policy.eager_route`). So `--no-graph-jit` and the prefixes
+        argparse takes, an enabled `--guidance-config`, `use_tfg_guidance` and
+        any route added later are covered by construction.
+
+        What cannot be decided here is left to the run's own error, not
+        guessed: options the adapter refuses are refused by `validate_request`,
+        argv the parser rejects fails at the parser, and a guidance file that
+        cannot be read fails with "invalid guidance config", each as before.
+        """
         options = self.canonical_options(request.options)
-        if options.get("use_tfg_guidance") is True:
-            return "use_tfg_guidance"
-        cli_args = options.get("cli_args", ())
-        if isinstance(cli_args, Sequence) and not isinstance(cli_args, str):
-            eager = _eager_cli_flag([a for a in cli_args if isinstance(a, str)])
-            if eager is not None:
-                return f"cli_args {eager}"
-        return None
+        if not options.get("cli_args") and options.get("use_tfg_guidance") is not True:
+            # Nothing the request can spell selects the eager sampler.
+            return None
+        if request.seed is None:
+            # Rendered for the parser only; the seed does not pick the route.
+            request = dataclasses.replace(request, seed=0)
+        try:
+            invocation = self._native_invocation(request)
+        except ValueError:
+            return None
+        runner = import_module("foldjax.models.protenix.runner")
+        if invocation.cli_args:
+            module = import_module("foldjax.models.protenix.cli.predict")
+            try:
+                config = module.parse_config(invocation.argv)
+            except SystemExit:
+                return None
+        else:
+            config = runner.PredictionConfig(**invocation.config_fields)
+        try:
+            guidance = runner.load_guidance_config(config)
+        except SystemExit:
+            return None
+        return runner.eager_route(config, guidance)
 
     def validate_request(self, request: PredictionRequest) -> None:
         super().validate_request(request)
         # Here, where `foldjax plan` sees it, rather than at the embedder,
         # which only answers after featurization and the weights load.
         _refuse_constraint_without_embedder(request)
+        if self.canonical_options(request.options).get("deterministic_ops") == "on":
+            # The inference entry's refusal (`models/predict.py`), raised here
+            # so `foldjax plan` says so before the weights load.
+            route = self._eager_route(request)
+            if route is not None:
+                raise ValueError(
+                    f"{route} runs the model eagerly, which builds no executable "
+                    "for deterministic reductions; drop it or deterministic"
+                )
         # The runner's own refusal (`runner.py`, "padding with TFG guidance"),
         # raised here too so `foldjax plan` reaches it.
         # The canonical form, where every switch spelling is a `bool`: a raw
@@ -1123,14 +1145,7 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             )
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
-        eager = _eager_cli_flag(_extra_cli_args(options.get("cli_args", ())))
-        if eager is not None and options.get("deterministic_ops", "off") == "on":
-            # The runner's refusal (`models/predict.py`), here so `foldjax
-            # plan` says so before the weights load.
-            raise ValueError(
-                f"cli_args {eager} runs the model eagerly, which builds no "
-                "executable for deterministic reductions; drop it or deterministic"
-            )
+        _extra_cli_args(options.get("cli_args", ()))
         if "model_name" in options and not isinstance(options["model_name"], str):
             raise ValueError("model_name must be a string")
         msa_seed = options.get("msa_seed")

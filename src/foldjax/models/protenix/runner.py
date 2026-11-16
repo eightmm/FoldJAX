@@ -19,7 +19,7 @@ import hashlib
 import json
 import os
 import shlex
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from dataclasses import asdict
 from functools import partial
@@ -32,6 +32,7 @@ from foldjax import memory_policy, progress
 from foldjax.execution import record_resolved_chunking
 from foldjax.models import _representations
 from foldjax.models._feature_storage import compact_msa_storage
+from foldjax.models.protenix import runtime_policy
 from foldjax.models.protenix.amp_policy import (
     realise_amp_policy,
     requested_amp_policy,
@@ -154,6 +155,54 @@ class PredictionConfig(NamedTuple):
     pad_templates: int | None
     pad_language_model_tokens: int | None
     padding_overflow: str
+
+
+def load_guidance_config(config: PredictionConfig) -> dict[str, Any] | None:
+    """The guidance mapping this run samples under, or None for none.
+
+    `--use-tfg-guidance` is upstream's own enabled mapping; `--guidance-config`
+    is read from its file, which is the only way to learn whether it is
+    enabled. The errors are the run's (`SystemExit`), and `backends/protenix.py`
+    reads the mapping through here too, so it learns the route from the same
+    bytes the run will.
+    """
+    if config.use_tfg_guidance:
+        if config.guidance_config is not None:
+            raise SystemExit(
+                "--use-tfg-guidance runs upstream's guidance mapping and "
+                "--guidance-config names another; pass one of them"
+            )
+        from foldjax.models.protenix.tfg.config import upstream_guidance_config
+
+        return upstream_guidance_config()
+    if config.guidance_config is None:
+        return None
+    try:
+        guidance_config = json.loads(config.guidance_config.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"invalid guidance config: {exc}") from exc
+    if not isinstance(guidance_config, dict):
+        raise SystemExit("guidance config must be a JSON object")
+    return guidance_config
+
+
+def eager_route(
+    config: PredictionConfig, guidance_config: Mapping[str, Any] | None
+) -> str | None:
+    """What makes this run dispatch op by op, named as it was spelled, or None.
+
+    `runtime_policy.eager_route` is the predicate the inference entry refuses
+    on; this names the argument behind it so a notice can say which one.
+    """
+    route = runtime_policy.eager_route(
+        graph_jit=not config.no_graph_jit,
+        guided=bool(guidance_config is not None and guidance_config.get("enable")),
+    )
+    if route == "guidance":
+        if config.use_tfg_guidance:
+            return "use_tfg_guidance"
+        return f"--guidance-config {config.guidance_config}"
+    return route
 
 
 def _resolve_msa_depth(value: int | None) -> int:
@@ -324,29 +373,9 @@ def _run(
         # MSA width, so no padded row can be selected and the executable does
         # not depend on the draw. See the tape call in the seed loop.
 
-    guidance_config = None
-    if config.use_tfg_guidance:
-        if config.guidance_config is not None:
-            raise SystemExit(
-                "--use-tfg-guidance runs upstream's guidance mapping and "
-                "--guidance-config names another; pass one of them"
-            )
-        from foldjax.models.protenix.tfg.config import upstream_guidance_config
-
-        guidance_config = upstream_guidance_config()
+    guidance_config = load_guidance_config(config)
+    if guidance_config is not None and guidance_config.get("enable"):
         if config.sampler_scan:
-            config = config._replace(sampler_scan=False)
-            print("TFG enabled: using the non-scan diffusion sampler")
-    elif config.guidance_config is not None:
-        try:
-            guidance_config = json.loads(
-                config.guidance_config.read_text(encoding="utf-8")
-            )
-        except (OSError, json.JSONDecodeError) as exc:
-            raise SystemExit(f"invalid guidance config: {exc}") from exc
-        if not isinstance(guidance_config, dict):
-            raise SystemExit("guidance config must be a JSON object")
-        if guidance_config.get("enable") and config.sampler_scan:
             config = config._replace(sampler_scan=False)
             print("TFG enabled: using the non-scan diffusion sampler")
     if (
@@ -368,8 +397,7 @@ def _run(
     # generated JSON job on that graph is eligible.
     compact_generated_atom_categories = (
         config.input_json is not None
-        and not config.no_graph_jit
-        and not bool(guidance_config and guidance_config.get("enable"))
+        and eager_route(config, guidance_config) is None
     )
 
     if config.cpu_only:

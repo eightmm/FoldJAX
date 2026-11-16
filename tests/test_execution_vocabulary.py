@@ -564,9 +564,10 @@ def test_the_default_shares_the_namespace_an_explicit_value_warmed(
     [
         ("boltz2", {"use_potentials": True}, "use_potentials"),
         ("protenix", {"use_tfg_guidance": True}, "use_tfg_guidance"),
-        # The native argv escape hatch, whole and as the prefix argparse takes.
-        ("protenix", {"cli_args": ["--no-graph-jit"]}, "cli_args --no-graph-jit"),
-        ("protenix", {"cli_args": ["--no-graph"]}, "cli_args --no-graph"),
+        # The native argv escape hatch, whole and as the prefix argparse takes;
+        # the route is read off the parsed run, so both name the parsed flag.
+        ("protenix", {"cli_args": ["--no-graph-jit"]}, "--no-graph-jit"),
+        ("protenix", {"cli_args": ["--no-graph"]}, "--no-graph-jit"),
         ("opendde", {"use_tfg_guidance": True}, "use_tfg_guidance"),
     ],
 )
@@ -597,6 +598,51 @@ def test_protenix_cli_args_without_the_eager_flag_keep_the_default(resolvable) -
     )
     default = execution.DETERMINISTIC_DEFAULTS["protenix"]
     assert resolved.options["deterministic"] == default
+
+
+def test_protenix_guidance_config_decides_the_route_from_its_bytes(
+    resolvable, tmp_path
+) -> None:
+    """A guidance file selects the eager sampler only when it says `enable`.
+
+    No flag name says so: the backend parses the argv with the native parser
+    and reads the file the way the run does, so an enabled mapping makes the
+    default step aside and refuses an explicit `on`, a disabled one changes
+    nothing, and a file that cannot be read is left to the run's own error
+    rather than guessed either way.
+    """
+    import json
+
+    enabled = tmp_path / "enabled.json"
+    enabled.write_text(json.dumps({"enable": True}))
+    disabled = tmp_path / "disabled.json"
+    disabled.write_text(json.dumps({"enable": False}))
+    missing = tmp_path / "missing.json"
+    default = execution.DETERMINISTIC_DEFAULTS["protenix"]
+    assert default == "on", "the step-aside is only observable while on"
+
+    with pytest.warns(UserWarning, match=f"--guidance-config {enabled} runs eagerly"):
+        resolved = api.resolve_request(
+            resolvable("protenix", cli_args=["--guidance-config", str(enabled)]),
+            draw_seeds=False,
+        )
+    assert resolved.options["deterministic"] == "off"
+    with pytest.raises(ValueError, match="eager"):
+        api.resolve_request(
+            resolvable(
+                "protenix",
+                cli_args=["--guidance-config", str(enabled)],
+                deterministic="on",
+            ),
+            draw_seeds=False,
+        )
+
+    for path in (disabled, missing):
+        resolved = api.resolve_request(
+            resolvable("protenix", cli_args=["--guidance-config", str(path)]),
+            draw_seeds=False,
+        )
+        assert resolved.options["deterministic"] == default
 
 
 def test_the_deterministic_knob_takes_the_switch_spellings(request_with) -> None:

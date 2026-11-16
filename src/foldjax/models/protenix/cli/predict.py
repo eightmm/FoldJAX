@@ -30,13 +30,12 @@ from foldjax.models.protenix.runner import (
 __all__ = ["PREPARED_PARAMS_LOADER_API", "_load_prepared_params", "main"]
 
 
-def main(
-    argv: Sequence[str] | None = None,
-    *,
-    on_padding_plan: Callable[..., None] | None = None,
-    _prepared_params_loader: Callable[[Path, str, bool], Any] | None = None,
-) -> list[Path]:
-    """Parse argv into a :class:`PredictionConfig`, then run the prediction."""
+def build_parser() -> argparse.ArgumentParser:
+    """The native argv parser, for `main` and for whoever must read argv as it does.
+
+    `backends/protenix.py` parses a request's `cli_args` through it to learn
+    which route the run would take before the run starts.
+    """
 
     parser = argparse.ArgumentParser(description=__doc__)
     feature_group = parser.add_mutually_exclusive_group(required=True)
@@ -442,10 +441,25 @@ def main(
         choices=("error", "exact"),
         default="error",
     )
-    args = parser.parse_args(argv)
+    return parser
+
+
+def parse_config(argv: Sequence[str] | None = None) -> PredictionConfig:
+    """The configuration ``argv`` runs, exactly as `main` would build it."""
+    args = build_parser().parse_args(argv)
     args.max_msa_depth = _resolve_msa_depth(args.max_msa_depth)
+    return PredictionConfig(**vars(args))
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    on_padding_plan: Callable[..., None] | None = None,
+    _prepared_params_loader: Callable[[Path, str, bool], Any] | None = None,
+) -> list[Path]:
+    """Parse argv into a :class:`PredictionConfig`, then run the prediction."""
     return run_prediction(
-        PredictionConfig(**vars(args)),
+        parse_config(argv),
         on_padding_plan=on_padding_plan,
         _prepared_params_loader=_prepared_params_loader,
     )

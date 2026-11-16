@@ -13,6 +13,7 @@ import jax
 import jax.numpy as jnp
 
 from foldjax.models._glu import GLU_BACKENDS
+from foldjax.models.protenix import runtime_policy
 from foldjax.models.protenix.models.diffusion.diffusion import inference_noise_schedule
 from foldjax.models.protenix.models.model import (
     ProtenixInferenceParams,
@@ -193,7 +194,8 @@ def protenix_predict_static(
             rho=rho,
             sigma_data=sigma_data,
         )
-        guided = guidance_config is not None and guidance_config.get("enable")
+        guided = bool(guidance_config is not None and guidance_config.get("enable"))
+        eager = runtime_policy.eager_route(graph_jit=graph_jit, guided=guided)
         if glu_backend not in GLU_BACKENDS:
             raise ValueError(
                 f"glu_backend must be one of {GLU_BACKENDS}; got {glu_backend!r}"
@@ -206,12 +208,12 @@ def protenix_predict_static(
                 "context parallelism requires glu_backend='xla'; a fused GLU "
                 "cannot be partitioned"
             )
-        if cp_shards > 1 and (not graph_jit or guided):
+        if cp_shards > 1 and eager is not None:
             raise ValueError(
                 "context parallelism requires the compiled graph; drop "
                 "--no-graph-jit/guidance or cp_shards"
             )
-        if deterministic and (not graph_jit or guided):
+        if deterministic and eager is not None:
             # The eager path has no outer executable to carry the option: it
             # dispatches module-level jitted primitives that every run in the
             # process shares. Running it anyway would report a deterministic

@@ -6,6 +6,26 @@ import warnings
 from pathlib import Path
 
 PROTENIX_V2_MAX_TOKENS = 2560
+
+
+def eager_route(*, graph_jit: bool, guided: bool) -> str | None:
+    """What makes a run dispatch the model op by op, or None for the compiled graph.
+
+    One predicate for everyone who asks: the inference entry refuses
+    `deterministic` and context parallelism on it (`models/predict.py`), the
+    runner gates the compact atom categories on it, and the FoldJAX backend
+    reads it off the parsed run to decide whether an omitted `deterministic`
+    can be `on`. Guidance that is enabled selects the eager sampler on its
+    own, however it was spelled (`--use-tfg-guidance` or an enabled
+    `--guidance-config`).
+    """
+    if not graph_jit:
+        return "--no-graph-jit"
+    if guided:
+        return "guidance"
+    return None
+
+
 KNOWN_MODEL_NAMES = (
     "protenix-v2",
     "protenix_base_default_v1.0.0",
