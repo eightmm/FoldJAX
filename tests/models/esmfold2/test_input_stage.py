@@ -65,6 +65,7 @@ def test_direct_backend_input_selectors(tmp_path, monkeypatch, selector):
         model="esmfold2", input=job, weights=tmp_path,
         output_dir=tmp_path / "output", stop_after="inputs",
         representations=selector,
+        padding=False,
     )
     if selector != "all":
         with pytest.raises(ValueError, match="unknown representation 'pair'"):

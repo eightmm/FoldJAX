@@ -271,6 +271,7 @@ def test_a_run_records_the_dropped_template_unless_the_option_refuses(
             msa="none",
             options=options,
             use_compile_cache=False,
+            padding=False,
         )
 
     with backend_override(model, _recorder(model, seen)):

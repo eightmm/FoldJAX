@@ -13,6 +13,7 @@ from foldjax.cli import main
 from foldjax.manifest import MANIFEST_NAME
 from foldjax.registry import backend_override
 from foldjax.schema import ModelCapabilities, PredictionResult, PredictionSample
+from tests.test_api import shape_profile
 
 SEQUENCE = "MKTAYIAKQRQISFVKSHFSRQ"
 
@@ -903,6 +904,7 @@ class _CountingBackend(Backend):
     """
 
     name = "boltz2"
+    padding_axes = ("tokens",)
 
     def __init__(self, fail: Callable[[Path, int], bool] | None = None) -> None:
         self.calls: list[tuple[str, int]] = []
@@ -928,6 +930,7 @@ class _CountingBackend(Backend):
                 ),
             ),
             output_dir=directory,
+            shape_profile=shape_profile(request),
         )
 
 

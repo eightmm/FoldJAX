@@ -464,7 +464,8 @@ default `false`) asks Boltz-2's own steering toward the pocket -- upstream's
 `force` field, unchanged -- and is refused on every other model: none has an
 equivalent potential to turn on. Off (the default), nothing about the run
 changes; on, Boltz-2 runs upstream's automatic contact-guidance sampler,
-which is eager and so refuses `--padding`, `cp_devices > 1` and
+which is eager and so refuses padding (pass `--no-padding`; padding is the
+default), `cp_devices > 1` and
 `deterministic=true` ([docs/boltz2.md](boltz2.md#templates-constraints-and-affinity)).
 
 `max_distance` does not mean the same thing to every model. For Boltz-2 and

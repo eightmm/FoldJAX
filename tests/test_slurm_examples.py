@@ -272,6 +272,7 @@ def test_exact_and_dry_run_make_no_scheduler_cli_or_filesystem_changes(
     assert completed.returncode == 0, completed.stderr
     assert "--fixed-msa" not in completed.stdout
     assert "--padding" not in completed.stdout
+    assert "--no-padding" in completed.stdout
     assert "--resume" in completed.stdout and "--keep-going" in completed.stdout
     assert not calls() and not (tmp / "out").exists()
 
@@ -434,6 +435,8 @@ def test_warm_and_verify_scope_each_model_preset_and_preserve_literal_arguments(
         assert parsed.model == [model]
         assert parsed.fixed_msa == (int(depth) if model == "boltz2" and depth else None)
         assert parsed.padding is (model != "boltz2" and depth is not None)
+        # Padding is the CLI default, so `--exact` has to turn it off.
+        assert parsed.no_padding is (depth is None)
         assert parsed.batch_output
         assert argv[-4:] == ["--input", source, "--output-dir", "out with spaces"]
         assert argv[:1] == (["predict"] if verify else ["cache"])

@@ -93,6 +93,7 @@ def _request(tmp_path: Path, **options: Any) -> PredictionRequest:
         weights=weights,
         seed=0,
         options={"cp_devices": 4, "pair_chunk_size": 0, **options},
+        padding=False,
     )
 
 

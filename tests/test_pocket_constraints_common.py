@@ -325,6 +325,7 @@ def test_the_manifest_records_what_ran(tmp_path, model) -> None:
                 seed=3,
                 msa="none",
                 use_compile_cache=False,
+                padding=False,
             )
         )
     manifest = json.loads((tmp_path / "out" / MANIFEST_NAME).read_text())

@@ -182,6 +182,7 @@ def test_split_releases_raw_lm_and_full_features_before_export_and_writer(
             weights=_weights(tmp_path),
             output_dir=tmp_path / "out",
             representations=("single",),
+            padding=False,
         )
     )
 
@@ -237,6 +238,7 @@ def test_scalar_single_predict_graph_is_preserved_and_full_features_are_released
             input=_job(tmp_path, all_atom=False),
             weights=_weights(tmp_path),
             output_dir=tmp_path / "out",
+            padding=False,
         )
     )
 
@@ -285,6 +287,7 @@ def test_writer_exception_observes_released_input_only_features(
                 input=_job(tmp_path, all_atom=False),
                 weights=_weights(tmp_path),
                 output_dir=tmp_path / "out",
+                padding=False,
             )
         )
 
@@ -334,6 +337,7 @@ def test_predict_exception_rebinds_every_caller_owner(
                 input=_job(tmp_path, all_atom=True),
                 weights=_weights(tmp_path),
                 output_dir=tmp_path / "out",
+                padding=False,
             )
         )
 
@@ -407,6 +411,7 @@ def test_trunk_only_releases_inputs_before_representation_export(
             output_dir=tmp_path / "out",
             stop_after="trunk",
             representations=("single",),
+            padding=False,
         )
     )
 
@@ -475,6 +480,7 @@ def test_multi_seed_session_keeps_one_compact_embedding_not_feature_trees(
         weights=weights,
         output_dir=tmp_path / "out",
         num_seeds=2,
+        padding=False,
     )
     backend = ESMFold2Backend()
 

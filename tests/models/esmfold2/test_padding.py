@@ -96,7 +96,8 @@ def test_padding_plan_carries_real_storage_and_target_dimensions() -> None:
     assert plan.storage["atoms"] == built["atom_attention_mask"].shape[-1]
     assert plan.target == {
         "tokens": 128,
-        "atoms": 3072,
+        # The stored atoms on the atom grid, not 24 per token (3,072).
+        "atoms": 256,
         "msa": 1024,
         "language_model_tokens": 384,
     }

@@ -34,6 +34,8 @@ def _request(tmp_path: Path, **updates) -> PredictionRequest:
         "weights": weights,
         "output_dir": tmp_path / "out",
         "use_compile_cache": False,
+        # Off unless a test sets it: the native `buckets` option needs it off.
+        "padding": False,
     }
     values.update(updates)
     return PredictionRequest(**values)
@@ -45,7 +47,7 @@ def test_legacy_buckets_must_be_strictly_increasing_and_unique(buckets) -> None:
         _validated_buckets(buckets)
 
 
-def test_default_off_keeps_af3_native_bucketing_disabled(tmp_path: Path) -> None:
+def test_padding_off_keeps_af3_native_bucketing_disabled(tmp_path: Path) -> None:
     request = _request(tmp_path)
     options = {}
 

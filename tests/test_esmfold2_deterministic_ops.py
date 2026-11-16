@@ -47,6 +47,7 @@ def _request(tmp_path: Path, **options: Any) -> PredictionRequest:
         cache_dir=tmp_path / "cache",
         input_format="foldjax",
         options=options,
+        padding=False,
     )
 
 

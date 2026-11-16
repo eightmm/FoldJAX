@@ -156,6 +156,23 @@ def test_opendde_warm_reports_partial_shape_coverage_for_automatic_axes(sweep, p
         assert coverage["note"] in warm_buckets.format_bucket_report(report)
 
 
+@pytest.mark.parametrize("pinned", [False, True])
+def test_automatic_atoms_report_partial_shape_coverage(sweep, pinned):
+    """Atoms follow each input's stored count, so a synthetic job warms only
+    the atom step it lands on."""
+    request, _, _ = sweep
+    padding = dataclasses.replace(request.padding, atoms=3072 if pinned else None)
+    report = warm_buckets.warm_token_buckets(
+        dataclasses.replace(request, padding=padding), "128"
+    )
+    model = report["models"][0]
+    if pinned:
+        assert "shape_coverage" not in model
+    else:
+        assert model["shape_coverage"]["automatic_axes"] == ["atoms"]
+        assert "--pad-atoms" in model["shape_coverage"]["note"]
+
+
 @pytest.mark.parametrize(
     "keep_going,expected", [(False, [128, 128, 256]), (True, [128, 128, 256, 512, 512])]
 )
@@ -205,8 +222,11 @@ def test_bucket_cli_routes_native_progress_to_stderr_and_formats_output(
     assert main(argv) == 0
     captured = capsys.readouterr()
     output = captured.out
-    assert "foldjax predict --model boltz2 --input JOB.json --padding" in captured.err
-    assert "--fixed-msa 7" in captured.err
+    # Padding is the default, so the template needs no flag to keep it on.
+    assert (
+        "foldjax predict --model boltz2 --input JOB.json --fixed-msa 7" in captured.err
+    )
+    assert "padding" not in captured.err.split("template:")[1].split("\n")[0]
     assert "Prediction command template" not in output
     if json_output:
         payload = json.loads(output)

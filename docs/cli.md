@@ -42,7 +42,7 @@ thing and stays upstream's. What changed is FoldJAX's vocabulary, not the
 checkpoints or the configs it writes into.
 
 Omit `--num-recycles` to use the selected model's managed default, including
-with `--padding` and `cache warm`. Padding does not impose a shared recycle count.
+with padding (the default) and `cache warm`. Padding does not impose a shared recycle count.
 See [recycling defaults](token-padding-profiles.md#recycling-defaults) for the
 model-specific settings, paper evidence and actual trunk pass counts. OpenFold3 translates the
 common additional-recycle count to its internal total count (3 to 4).
@@ -574,8 +574,8 @@ order -- an unnamed record is named from its canonical SMILES -- so a grown
 or reordered library keeps every finished directory. The target's alignment
 paths are made absolute, so every job reuses them; `--affinity` adds the
 Boltz-2 affinity property for the new ligand chain; unreadable records are
-refused unless `--skip-invalid`. **Run a screen with `--padding` and the
-persistent compile cache** (the default): jobs that differ only in their
+refused unless `--skip-invalid`. **Run a screen with padding and the
+persistent compile cache** (both the default): jobs that differ only in their
 ligand land in a few token buckets, so the screen compiles once per bucket
 rather than once per ligand. `foldjax show out/ --screen` then prints one row
 per model and job from the sample that model ranks first, with Boltz-2's
@@ -618,7 +618,7 @@ can run as a Slurm array and be resumed independently. `--shard auto` reads
 
 ```bash
 #SBATCH --array=0-7
-uv run foldjax predict --model boltz2 --input screen.json --padding --resume \
+uv run foldjax predict --model boltz2 --input screen.json --resume \
     --output-dir out --shard auto
 ```
 
@@ -632,8 +632,9 @@ not counted). It is `unknown`, with the reason, outside a law's fitted range
 structural tokens) and Protenix (needs the processed MSA row count). A run
 configured to need more than its law was fitted at is `unknown` too, as the
 run's own admission calls it, and the block lists why under
-`exceeds_profile` in admission's words: `--padding` on every port (the laws
-were fitted unpadded); on OpenFold3, whose law was fitted on protein-only
+`exceeds_profile` in admission's words: padding on every port (the default;
+the laws were fitted unpadded, and `--no-padding` gets a fitted verdict); on
+OpenFold3, whose law was fitted on protein-only
 inputs at the bfloat16 trunk and confidence head, any nucleic-acid or ligand
 entity, `--option dtype=float32`, `--option confidence_dtype=float32`, or a
 pocket constraint (it samples pocket-guided); on Boltz-2 a float32 pair
@@ -646,25 +647,37 @@ OpenDDE, already `unknown`, `exceeds_profile` still names `serving padding`.
 left `null`: the laws describe device memory and no host-memory law is
 calibrated.
 
-### Optional shape padding
+### Shape padding (on by default)
 
 JAX reuses a compiled executable only when all dynamic feature axes have the
-same shape. FoldJAX therefore offers one opt-in padding switch across all six
-models:
+same shape. FoldJAX therefore pads every input to a shared shape grid by
+default, across all six models. A single cold input can be slower by up to
+one bucket step of padded work; repeated inputs in a bucket reuse the
+compiled program. To run the exact input shapes -- the historical model
+path, and the shapes the memory laws were fitted on -- turn it off:
 
 ```bash
-uv run foldjax predict --model boltz2 --input job.yaml --padding
+uv run foldjax predict --model boltz2 --input job.yaml --no-padding
 ```
 
-With no padding flag, the exact historical model path and shapes are unchanged.
-With `--padding`, each backend selects a token bucket and derives a complete
-shape profile from it. The shared token grid steps by 128 below 1,024, then
+In Python the same switch is `PredictionRequest(..., padding=False)`; omitting
+`padding` gives the default `PaddingConfig()`. `--padding` is still accepted
+and changes nothing. With padding on, each backend selects a token bucket and
+derives a complete shape profile from it. The shared token grid steps by 128 below 1,024, then
 by 256 through 8,192. AlphaFold 3 uses its native grid beginning at 256 instead;
 `plan` reports the same selection as prediction. Explicit `--pad-tokens` pins
 remain valid below that automatic minimum. A deployment can bake one profile
 per bucket ahead of time (matching the profile
-is necessary for reuse, not sufficient -- see below). Atom storage is
-`24 * tokens`, rounded up to a multiple of 32. The MSA axis is padded up to
+is necessary for reuse, not sufficient -- see below). Atom storage follows
+the stored atom count: it rounds up to a 512-atom step through 8,192 atoms and
+a 1,024-atom step above, capped at `24 * tokens` (a nucleic acid's density).
+A protein at about 8 atoms per token is therefore padded by at most one atom
+step rather than to 24 atoms per token, and one token bucket compiles one
+program per atom step its inputs reach -- two or three for proteins of one
+128- or 256-token band, usually one for a ligand screen against one target.
+Synthetic `cache warm` jobs warm only the atom steps they land on (the warm
+report says so under `shape_coverage`); warm real inputs, or pin `--pad-atoms`
+for warming and prediction alike, when every job must hit a warmed program. The MSA axis is padded up to
 the smallest standard bucket that holds the rows the model reads, never down:
 template storage retains the native depth.
 OpenDDE structural tokens use `2 * tokens`. ESMFold2 language-model storage
@@ -674,7 +687,7 @@ native sequence length remains supported even when the token bucket is larger.
 AlphaFold 3 retains its native token-derived atom and fixed-MSA profile.
 
 **Padding never changes which alignment rows a model reads.** Each model keeps
-its own depth policy with `--padding` on exactly as with it off -- Protenix and
+its own depth policy with padding on exactly as with it off -- Protenix and
 OpenDDE their featurizer's 16,384-row assembly cap, Boltz-2 its
 `const.max_msa_seqs`, OpenDDE its released 1,280-row per-cycle sampling,
 OpenFold3 its 1,024 rows per streamed cycle, ESMFold2 and AF3 their released
@@ -697,8 +710,10 @@ above the automatic capacity; padding does not silently sample those inputs.
 
 Explicit `--pad-*` targets take precedence. Inputs exceeding a derived capacity
 fail rather than being truncated; use a larger token profile or an explicit
-axis target. `--padding-overflow exact` only changes token-grid overflow and
-does not bypass capacity validation. Padding can increase memory and computation,
+axis target. An input above the last bucket runs at its exact size with a
+one-line warning (`--padding-overflow exact`, the default);
+`--padding-overflow error` refuses it instead. Neither bypasses capacity
+validation. Padding can increase memory and computation,
 particularly for shallow MSAs and language-model inputs. Masks keep padded
 entries out of the structure and confidence output, and the run summary and
 `foldjax_run.json` report the concrete profile that ran. Matching this profile
@@ -721,9 +736,8 @@ The advanced axes are `--pad-templates`, `--pad-structural-tokens` (OpenDDE),
 and `--pad-language-model-tokens` (ESMFold2/ESMC and Protenix ESM/ISM). A
 target smaller than the materialized input is an error—padding never truncates
 tokens or atoms.
-Automatic profiles fail before compilation above their standard grid; use
-`--padding-overflow exact` only when an unplanned exact-shape compile is
-intentional. Padding can substantially increase quadratic token work, so a
+Above their standard grid, automatic profiles run the exact size and warn;
+`--padding-overflow error` makes that a refusal before compilation. Padding can substantially increase quadratic token work, so a
 4096-token profile is explicit capacity planning, not a good universal default.
 
 `--profile` is the prediction-side spelling of `foldjax weights ... --profile`.
@@ -861,7 +875,8 @@ estimate and loses the refusal, because the estimate reads high. A run
 configured to need *more* keeps its refusal, but a `fits` from it is recorded
 and warned as `unknown`, because its estimate is a lower bound: measured,
 padded runs and runs with a precision option exceeded the upper estimate by up
-to 1.69x. Those configurations are `--padding` on every port, `dtype=float32`
+to 1.69x. Those configurations are padding on every port (the default;
+`--no-padding` leaves it), `dtype=float32`
 or a float32 confidence head behind the bfloat16 trunk
 (`confidence_dtype=float32`) on OpenFold3, and a float32 pair residual stream
 or `matmul_precision=highest` on Boltz-2. The manifest's `memory` block names them under `exceeds_profile`,
@@ -2377,8 +2392,8 @@ upstream's computation: upstream's `MSAModule` redraws `U[1, n]` rows with a
 `configs/configs_data.py:265-276`). The full-depth path compiles one
 executable per input whatever the seed; the per-cycle path without padding
 sizes its tape to the deepest recycle's draw rounded up to 64 rows, so two
-seeds can compile two programs. `--padding` removes that: the tape is the
-padded width. A compile option.
+seeds can compile two programs. Padding (the default) removes that: the tape
+is the padded width. A compile option.
 
 ### `--option mc_dropout_apply_rate` / `mc_dropout_rate` (Protenix)
 
@@ -2406,15 +2421,16 @@ rate is a compile option; the apply rate changes the runtime coin only.
 ### `--fixed-msa N`
 
 An opt-in preset for Boltz-2, Protenix, OpenFold3 and OpenDDE, equivalent to
-`--padding --max-msa-depth N --pad-msa N`. `N` remains required in `predict`,
+`--max-msa-depth N --pad-msa N` on the default padding. `N` remains required in `predict`,
 `plan` and `cache warm`. **Recommended: 2048** for the deployment profile.
 The user-reported comparison of 1UBQ, 2LZM and 4HHB on these four models found
 lDDT within ±0.01 across 1024/2048/4096 rows. Raw measurements are not bundled,
 and that finite panel does not establish accuracy equivalence for other inputs.
 Use the same capacity for warm and prediction; see [fixed-msa.md](fixed-msa.md).
 The Slurm examples apply this preset automatically for these four models and
-`--padding` for AF3/ESMFold2; their `--exact` disables automatic presets. The
-core CLI keeps all of them opt-in.
+`--padding` (a no-op, padding being the default) for AF3/ESMFold2; their
+`--exact` drops the presets and passes `--no-padding`. The core CLI keeps the
+fixed-MSA preset opt-in.
 
 ### `--max-msa-depth`
 
@@ -2422,7 +2438,7 @@ Selects the model's native MSA depth control. Candidate assembly, profile
 statistics and per-cycle subsampling differ by model, so this is not a guarantee
 of identical rows or an exact common tensor size. See the
 [model-specific semantics](model-interface.md#msa-selection-and-execution-capacity).
-This is the only option that changes how many rows reach the model: `--padding`
+This is the only option that changes how many rows reach the model: padding
 pads that axis up to a bucket and leaves the depth alone, whether it is spelled
 here or left at the model's default.
 
@@ -2689,11 +2705,11 @@ spelling the upstream value selects the namespace omitting it selects.
 | model | option | upstream | default | notes |
 |---|---|---|---|---|
 | Boltz-2 | `step_scale=FLOAT` | `--step_scale` (`main.py:876-888`) | `1.5` | sampler step size; lower values diversify samples; affinity stage inherits it |
-| Boltz-2 | `subsample_msa=true` | `--subsample_msa` (`main.py:1021-1026`) | `false` | a click flag, so `boltz predict` does not subsample; `true` redraws rows each trunk pass; refused with `--padding` and `cp_devices>1` |
+| Boltz-2 | `subsample_msa=true` | `--subsample_msa` (`main.py:1021-1026`) | `false` | a click flag, so `boltz predict` does not subsample; `true` redraws rows each trunk pass; refused with padding (the default; pass `--no-padding`) and `cp_devices>1` |
 | Boltz-2 | `num_subsampled_msa=N` | `--num_subsampled_msa` (`main.py:1027-1031`) | `1024` | rows per pass when subsampling |
 | Boltz-2 | `method=NAME` | `--method` (`main.py:979-984`) | none | method conditioning, case-insensitive, one of `const.method_types_ids`; also keys the feature cache; affinity keeps `other` |
-| Boltz-2 | `use_potentials=true` | `--use_potentials` (`main.py:969-972,1309-1311`) | `false` | Feynman-Kac steering and physical guidance on top of contact guidance; eager, so refused with `steering_args`, `--padding`, `deterministic=on` and `cp_devices>1` |
-| Protenix | `use_tfg_guidance=true` | `--use_tfg_guidance` (`batch_inference.py:697-702,410`) | `false` | training-free guidance with `configs_base.py`'s default mapping, unrolled eager sampler; the denoiser attention resolves to `xla_jit`; refused with `--padding`, `deterministic=on`, `cp_devices>1` and any `tokamax` attention; native CLI `--use-tfg-guidance` (which also runs `xla_jit`) |
+| Boltz-2 | `use_potentials=true` | `--use_potentials` (`main.py:969-972,1309-1311`) | `false` | Feynman-Kac steering and physical guidance on top of contact guidance; eager, so refused with `steering_args`, padding (the default; pass `--no-padding`), `deterministic=on` and `cp_devices>1` |
+| Protenix | `use_tfg_guidance=true` | `--use_tfg_guidance` (`batch_inference.py:697-702,410`) | `false` | training-free guidance with `configs_base.py`'s default mapping, unrolled eager sampler; the denoiser attention resolves to `xla_jit`; refused with padding (the default; pass `--no-padding`), `deterministic=on`, `cp_devices>1` and any `tokamax` attention; native CLI `--use-tfg-guidance` (which also runs `xla_jit`) |
 | OpenDDE | `use_tfg_guidance=true` | `--use_tfg_guidance` (`batch_inference.py:848-853,487`) | `false` | the same mapping on Protenix's TFG port (OpenDDE's `tfg` is Protenix's plus Fold-CP plumbing); eager entry point; the same refusals; native CLI `--use-tfg-guidance true` |
 | AlphaFold 3 | `resolve_msa_overlaps=false` | `--resolve_msa_overlaps` (`run_alphafold.py:286-294`) | `true` | keep a hand-built unpaired MSA exactly as given |
 | AlphaFold 3 | `fix_standalone_glycans=true` | `--fix_standalone_glycans` (`run_alphafold.py:312-319`) | `false` | outside the trained regime, as upstream warns |

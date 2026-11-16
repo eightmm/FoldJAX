@@ -36,6 +36,8 @@ from tests._native_double import native_module
 
 
 def _request(tmp_path: Path, model: str, **options) -> PredictionRequest:
+    """An exact-shape request: these fakes stand in for the unpadded native
+    route, and each port's padded route has its own test here."""
     input_path = tmp_path / ("job.yaml" if model == "boltz2" else "job.json")
     input_path.write_text("{}")
     if model == "opendde":
@@ -52,6 +54,7 @@ def _request(tmp_path: Path, model: str, **options) -> PredictionRequest:
         seed=5,
         cache_dir=tmp_path / "cache",
         options=options,
+        padding=False,
     )
 
 
@@ -130,6 +133,37 @@ def test_boltz_adapter_routes_padding_and_preserves_the_native_profile(
     assert result.shape_profile == profile
     assert len(result.samples) == 2
     assert result.samples[0].coordinates.shape == (3, 3)
+
+
+def test_boltz_adapter_reports_the_padded_profile_when_stopping_after_inputs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Padding is the default, so a run that stops before folding still has
+    # to report its profile or `predict` refuses the result.
+    profile = {
+        "actual": {"tokens": 2, "atoms": 3, "msa": 1},
+        "target": {"tokens": 128, "atoms": 256, "msa": 1024},
+        "changed": True,
+    }
+    monkeypatch.setattr(
+        "foldjax.backends.boltz2.import_module",
+        lambda name: SimpleNamespace(
+            predict=lambda **kwargs: {"raw": {}, "padding": {"primary": profile}}
+        ),
+    )
+    mols = tmp_path / "mols"
+    mols.mkdir()
+    request = dataclasses.replace(
+        _request(tmp_path, "boltz2", mols=mols),
+        padding=PaddingConfig(),
+        stop_after="inputs",
+        representations=("all",),
+    )
+
+    result = Boltz2Backend().predict(request)
+
+    assert result.samples == ()
+    assert result.shape_profile == profile
 
 
 def test_boltz_gives_each_sample_its_own_confidence(
@@ -327,7 +361,7 @@ def test_boltz_refuses_the_retired_bucket_option_and_names_the_migration(
     with pytest.raises(ValueError, match="'bucket' was removed") as refusal:
         Boltz2Backend().validate_request(request)
 
-    assert "--padding" in str(refusal.value)
+    assert "--no-padding" in str(refusal.value)
     assert "PaddingConfig" in str(refusal.value)
 
 

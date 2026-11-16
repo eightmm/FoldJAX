@@ -182,6 +182,7 @@ class _RefusingBackend(Backend):
     """Stands in for Boltz-2; reaching `predict` means validation let it through."""
 
     name = "boltz2"
+    padding_axes = ("tokens",)
 
     def capabilities(self) -> ModelCapabilities:
         return ModelCapabilities(model="boltz2", input_formats=("foldjax", "native"))

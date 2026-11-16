@@ -20,7 +20,7 @@ import foldjax.models.boltz2.api as native_api
 from foldjax.api import resolve_cache_dir
 from foldjax.backends.boltz2 import Boltz2Backend
 from foldjax.models.boltz2.data.featurize import _cache_opts
-from foldjax.schema import PaddingConfig, PredictionRequest
+from foldjax.schema import PredictionRequest
 from tests.test_boltz2_session import _features
 
 
@@ -40,6 +40,8 @@ def _request(tmp_path: Path, **options) -> PredictionRequest:
         seed=0,
         cache_dir=tmp_path / "cache",
         options={"mols": mols, "write_fmt": None, **options},
+        # The eager options under test need the exact-shape route.
+        padding=False,
     )
 
 
@@ -208,10 +210,12 @@ def test_padding_refuses_the_options_it_cannot_carry(
 ) -> None:
     # Every switch spelling is one `bool` (`boolean_options`); the check read
     # the raw value and let "on" through.
+    # `True` is the default padding, which is what a user who never asked
+    # for it meets.
     request = dataclasses.replace(
-        _request(tmp_path, **{name: spelling}), padding=PaddingConfig()
+        _request(tmp_path, **{name: spelling}), padding=True
     )
-    with pytest.raises(ValueError, match=f"{name} .*drop it or --padding"):
+    with pytest.raises(ValueError, match=f"{name} .*drop it or pass --no-padding"):
         Boltz2Backend().validate_request(request)
 
 

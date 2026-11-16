@@ -718,7 +718,7 @@ def _recorder(model: str, placements: list[float], seen: list | None = None):
 
 def _predict(tmp_path: Path, model: str, placements: list[float], **kwargs):
     source = _job(tmp_path, _POCKET)
-    request = _request(tmp_path, model, source, **kwargs)
+    request = _request(tmp_path, model, source, **{"padding": False, **kwargs})
     with (
         backend_override(model, _recorder(model, placements)),
         warnings.catch_warnings(),
@@ -863,6 +863,7 @@ def test_several_seeds_combine_the_counts(tmp_path) -> None:
         seed=None,
         seeds=(1, 2),
         options={POCKET_SAMPLING: "select"},
+        padding=False,
     )
     with (
         backend_override("boltz2", _recorder("boltz2", [9.0, 3.0])),

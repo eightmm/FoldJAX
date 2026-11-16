@@ -22,7 +22,7 @@ Usage: foldjax-submit -m MODEL [-m MODEL ...] -o OUTDIR [OPTIONS] -- PREDICT_ARG
   --shards N          submit an array and pass --shard auto to predict
   --fixed-msa N       fixed MSA rows for Boltz-2/Protenix/OpenFold3/OpenDDE (default: 2048)
   --opendde-padding-profile compact  opt-in fixed OpenDDE auxiliary capacities
-  --exact             disable automatic padding and the FIXED_MSA_DEPTH preset
+  --exact             pass --no-padding and drop the FIXED_MSA_DEPTH preset
   --dry-run           print commands; run neither FoldJAX nor sbatch
 With auto MSA, PREDICT_ARGS must include --input PATH [PATH ...].
 EOF
@@ -49,6 +49,8 @@ model_preset() {
         alphafold3|esmfold2)
             if ((!exact)); then preset=(--padding); fi ;;
     esac
+    # FoldJAX pads by default, so the exact-shape path has to be asked for.
+    if ((exact)); then preset+=(--no-padding); fi
     if [[ $1 == opendde && -n $OPENDDE_PADDING_PROFILE ]]; then
         preset+=(--opendde-padding-profile "$OPENDDE_PADDING_PROFILE")
     fi

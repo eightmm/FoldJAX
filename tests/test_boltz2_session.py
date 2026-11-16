@@ -317,6 +317,7 @@ def _request(
         cache_dir=tmp_path / "cache",
         on_error=on_error,
         options={"mols": mols, "write_fmt": None},
+        padding=False,
     )
 
 

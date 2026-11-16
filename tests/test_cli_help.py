@@ -67,11 +67,13 @@ def test_plan_prints_the_effective_sampling_and_where_it_comes_from(
                 "2",
                 "--weights",
                 str(weights),
+                "--no-padding",
             ]
         )
         == 0
     )
     plan = json.loads(capsys.readouterr().out)
+    assert plan["padding"] is None
     assert plan["sampling"]["num_samples"] == 2
     assert plan["sampling_source"]["num_samples"] == "request"
     assert plan["sampling"]["num_steps"] == 200
@@ -124,8 +126,15 @@ def test_plan_with_padding_shows_the_token_bucket(
         "tokens": 160,
         "token_bucket": 512,
     }
+    # Padding is the default, so the flag only states it.
     assert main(argv[:-1]) == 0
-    assert "padding_estimate" not in json.loads(capsys.readouterr().out)
+    assert json.loads(capsys.readouterr().out)["padding_estimate"] == {
+        "tokens": 160,
+        "token_bucket": 256,
+    }
+    assert main([*argv[:-1], "--no-padding"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["padding"] is None and "padding_estimate" not in plan
 
 
 @pytest.mark.parametrize(
@@ -177,8 +186,8 @@ def test_fixed_msa_help_recommends_a_scoped_capacity_and_requires_explicit_n(cap
         (700, ("--padding",), 768),
         (700, ("--pad-tokens", "750"), 750),
         (700, ("--pad-tokens", "800"), 800),
-        (9000, ("--padding", "--padding-overflow", "exact"), 9000),
-        (9000, ("--padding",), None),
+        (9000, ("--padding",), 9000),
+        (9000, ("--padding", "--padding-overflow", "error"), None),
     ],
 )
 def test_esmfold2_plan_reports_capacity_risk_in_every_output_mode(
@@ -207,6 +216,10 @@ def test_esmfold2_plan_reports_capacity_risk_in_every_output_mode(
         warnings.simplefilter("always")
         assert main(argv) == 0
 
+    # Above the grid the default overflow runs the exact size, and says so.
+    overflow = [w for w in caught if "largest padding bucket" in str(w.message)]
+    assert bool(overflow) == (n_tokens > 8192 and token_bucket is not None)
+    caught = [w for w in caught if w not in overflow]
     plan = json.loads(capsys.readouterr().out)
     expected = memory_policy.capacity_warning(
         "esmfold2", max(n_tokens, token_bucket or 0)

@@ -249,6 +249,8 @@ def _request(
     resume: bool = False,
     on_error: str = "stop",
 ) -> PredictionRequest:
+    """An exact-shape request: the mock runtime stands in for the native AF3
+    modules, which the padded route would import."""
     input_path = root / f"job-{shape}.json"
     input_path.write_text(json.dumps({"name": "job", "shape": shape}))
     return PredictionRequest(
@@ -264,6 +266,7 @@ def _request(
         options={} if options is None else options,
         resume=resume,
         on_error=on_error,
+        padding=False,
     )
 
 

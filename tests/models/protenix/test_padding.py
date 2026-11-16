@@ -367,7 +367,7 @@ def test_confidence_masks_exclude_adversarial_dummy_tokens_and_atoms() -> None:
         )
 
 
-def test_backend_padding_flags_and_shape_profile_are_opt_in(
+def test_backend_padding_flags_and_shape_profile_follow_the_request(
     tmp_path, monkeypatch
 ) -> None:
     input_path = tmp_path / "job.json"
@@ -403,7 +403,7 @@ def test_backend_padding_flags_and_shape_profile_are_opt_in(
         seed=0,
     )
 
-    exact = backend.predict(PredictionRequest(**common))
+    exact = backend.predict(PredictionRequest(**common, padding=False))
     assert "--padding" not in exact.raw["argv"]
     assert configs[-1].padding is False
     assert exact.shape_profile is None

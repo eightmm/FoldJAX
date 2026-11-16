@@ -281,6 +281,7 @@ def run_replay(
         output_dir=out,
         seed=seed,
         use_compile_cache=False,
+        padding=False,
     )
     with backend_override(model, backend):
         foldjax.predict(request)

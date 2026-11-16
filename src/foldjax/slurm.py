@@ -441,6 +441,7 @@ def plan_resources(
                 "reason": (
                     f"{'; '.join(exceeding)}: the estimate is a lower bound "
                     "here, so no card size is suggested"
+                    + memory_policy.padding_note(exceeding)
                 ),
             }
         )

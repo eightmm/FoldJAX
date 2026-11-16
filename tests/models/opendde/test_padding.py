@@ -206,7 +206,7 @@ def test_opendde_msa_padding_refuses_shrink_nonprefix_and_capacity_overflow() ->
         msa_depth=20000,
     )
     with pytest.raises(ValueError, match="exceeds the largest standard bucket"):
-        pad_opendde_msa_cycle_features(over_grid, PaddingConfig())
+        pad_opendde_msa_cycle_features(over_grid, PaddingConfig(overflow="error"))
     _padded, plan = pad_opendde_msa_cycle_features(
         over_grid,
         PaddingConfig(msa=16385),
@@ -1004,9 +1004,10 @@ def test_automatic_profile_resolves_atom_and_structural_storage_independently():
 @pytest.mark.parametrize(
     "atoms,structural,expected",
     [
-        (7584, 1816, (8192, 1856)),
+        # One atom step (512 through 8,192, then 1,024) over the stored atoms.
+        (7584, 1816, (7680, 1856)),
         (8192, 1856, (8192, 1856)),
-        (8193, 1857, (12288, 1920)),
+        (8193, 1857, (9216, 1920)),
     ],
 )
 def test_automatic_auxiliary_targets_follow_real_need_not_token_bucket(
@@ -1025,7 +1026,7 @@ def test_automatic_auxiliary_targets_follow_real_need_not_token_bucket(
 
 @pytest.mark.parametrize(
     "devices,layout,expected",
-    [(4, "2d", (8192, 1856)), (4, "1d", (8192, 1856)), (3, "1d", (8256, 1920))],
+    [(4, "2d", (7680, 1856)), (4, "1d", (7680, 1856)), (3, "1d", (7680, 1920))],
 )
 def test_automatic_auxiliary_targets_retain_mesh_divisibility(
     devices, layout, expected
@@ -1064,10 +1065,9 @@ def test_auxiliary_axis_targets_never_truncate_or_silently_exceed_the_grid(axis)
         "structural_storage": 16385 if axis == "structural_tokens" else 1816,
     }
     with pytest.raises(ValueError, match="exceeds the largest standard bucket"):
-        _resolve_auxiliary_targets(PaddingConfig(), **oversized)
-    atoms, structural = _resolve_auxiliary_targets(
-        PaddingConfig(overflow="exact"), **oversized
-    )
+        _resolve_auxiliary_targets(PaddingConfig(overflow="error"), **oversized)
+    with pytest.warns(UserWarning, match="largest padding bucket"):
+        atoms, structural = _resolve_auxiliary_targets(PaddingConfig(), **oversized)
     assert atoms >= oversized["atom_storage"] and atoms % 32 == 0
     assert structural >= oversized["structural_storage"] and structural % 64 == 0
 

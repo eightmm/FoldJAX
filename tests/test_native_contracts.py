@@ -236,6 +236,7 @@ def test_opendde_adapter_restores_every_environment_variable_the_cli_exports(
         weights=weights,
         output_dir=tmp_path / "out",
         seed=1,
+        padding=False,
     )
     opendde.OpenDDEBackend().predict(request)
 

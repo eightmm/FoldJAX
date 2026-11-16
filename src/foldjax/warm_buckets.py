@@ -370,6 +370,21 @@ def warm_token_buckets(
                         "shape in the token bucket; warm real input jobs or use the "
                         "same explicit axis pins for warming and prediction.",
                     }
+            elif (
+                model != "alphafold3"
+                and (request.padding or PaddingConfig()).atoms is None
+            ):
+                # The automatic atom target follows the stored atom count, so
+                # a poly-alanine job lands on its own atom step, not a protein's.
+                model_report["shape_coverage"] = {
+                    "kind": "representative_concrete_shapes",
+                    "automatic_axes": ["atoms"],
+                    "note": f"{model} atom capacity follows each input's stored "
+                    "atom count (512-atom steps through 8,192, then 1,024). These "
+                    "synthetic lengths do not cover every shape in the token "
+                    "bucket; warm real input jobs or use the same --pad-atoms "
+                    "for warming and prediction.",
+                }
             report["models"].append(model_report)
             default_grid = (
                 tuple(request.options["buckets"])

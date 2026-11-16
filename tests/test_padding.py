@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -44,7 +45,7 @@ def test_padding_config_normalizes_numpy_integers_and_summarizes() -> None:
         "templates": None,
         "structural_tokens": None,
         "language_model_tokens": None,
-        "overflow": "error",
+        "overflow": "exact",
     }
 
 
@@ -64,10 +65,14 @@ def test_request_accepts_simple_boolean_and_mapping_padding(tmp_path: Path) -> N
         padding={"tokens": 512, "overflow": "exact"},
     )
     disabled = PredictionRequest(model="boltz2", input=path, padding=False)
+    omitted = PredictionRequest(model="boltz2", input=path)
 
     assert automatic.padding == PaddingConfig()
     assert pinned.padding == PaddingConfig(tokens=512, overflow="exact")
     assert disabled.padding is None
+    # On by default, and off stays off through `dataclasses.replace`.
+    assert omitted.padding == PaddingConfig(overflow="exact")
+    assert dataclasses.replace(disabled, seed=1).padding is None
 
 
 def test_request_rejects_unknown_padding_fields(tmp_path: Path) -> None:
@@ -83,9 +88,11 @@ def test_resolve_axis_selects_standard_pinned_and_overflow_targets() -> None:
     automatic = PaddingConfig()
     assert resolve_axis(300, automatic, "tokens") == 384
     assert resolve_axis(300, PaddingConfig(tokens=768), "tokens") == 768
-    assert resolve_axis(9000, PaddingConfig(overflow="exact"), "tokens") == 9000
+    # The default runs an input above the grid at its exact size, and says so.
+    with pytest.warns(UserWarning, match="exceeds the largest padding bucket 8192"):
+        assert resolve_axis(9000, automatic, "tokens") == 9000
     with pytest.raises(ValueError, match="largest standard bucket 8192"):
-        resolve_axis(9000, automatic, "tokens")
+        resolve_axis(9000, PaddingConfig(overflow="error"), "tokens")
     with pytest.raises(ValueError, match="smaller than the input size 600"):
         resolve_axis(
             300,
@@ -203,7 +210,29 @@ def test_cli_padding_shortcut_and_exact_targets(tmp_path: Path) -> None:
     assert _request(automatic_args).padding == PaddingConfig()
 
 
-def test_cli_rejects_overflow_policy_without_padding(tmp_path: Path) -> None:
+def test_cli_pads_by_default_and_no_padding_turns_it_off(tmp_path: Path) -> None:
+    base = ["plan", "--model", "boltz2", "--input", str(_input(tmp_path))]
+
+    assert _request(_parser().parse_args(base)).padding == PaddingConfig()
+    assert _request(_parser().parse_args([*base, "--no-padding"])).padding is None
+    assert (
+        _request(_parser().parse_args([*base, "--padding-overflow", "error"])).padding
+        == PaddingConfig(overflow="error")
+    )
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        ["--padding"],
+        ["--padding-overflow", "exact"],
+        ["--pad-tokens", "512"],
+        ["--fixed-msa", "2048"],
+    ],
+)
+def test_cli_refuses_a_padding_option_with_no_padding(
+    tmp_path: Path, flag: list[str]
+) -> None:
     args = _parser().parse_args(
         [
             "plan",
@@ -211,11 +240,11 @@ def test_cli_rejects_overflow_policy_without_padding(tmp_path: Path) -> None:
             "boltz2",
             "--input",
             str(_input(tmp_path)),
-            "--padding-overflow",
-            "exact",
+            "--no-padding",
+            *flag,
         ]
     )
-    with pytest.raises(ValueError, match="requires --padding"):
+    with pytest.raises(ValueError, match=f"--no-padding turns padding off.*{flag[0]}"):
         _request(args)
 
 
@@ -269,7 +298,7 @@ def test_host_padding_policy_does_not_fragment_cache_namespace(tmp_path: Path) -
 
 @pytest.mark.parametrize(
     "axis,expected",
-    [("atoms", 6144), ("structural_tokens", 512), ("language_model_tokens", 256)],
+    [("structural_tokens", 512), ("language_model_tokens", 256)],
 )
 def test_token_profile_capacity_is_independent_of_real_size(axis, expected):
     from foldjax.padding import resolve_token_axis
@@ -279,6 +308,40 @@ def test_token_profile_capacity_is_independent_of_real_size(axis, expected):
             resolve_token_axis(actual, PaddingConfig(), axis, token_target=256)
             == expected
         )
+
+
+def test_automatic_atoms_follow_the_stored_count_under_the_token_ceiling():
+    """One atom step of padded work, not 24 atoms per token.
+
+    A 1,003-token protein holds about 8,000 atoms; the token-derived target
+    gave it 24,576 (3x).  The grid steps by 512 through 8,192 and by 1,024
+    above, and ``24 * tokens`` stays the cap a dense nucleic acid reaches.
+    """
+    from foldjax.padding import ATOM_BUCKETS, atom_grid_target, resolve_token_axis
+
+    automatic = PaddingConfig()
+    assert resolve_token_axis(8000, automatic, "atoms", token_target=1024) == 8192
+    assert resolve_token_axis(8193, automatic, "atoms", token_target=1024) == 9216
+    assert resolve_token_axis(1, automatic, "atoms", token_target=256) == 256
+    assert resolve_token_axis(257, automatic, "atoms", token_target=256) == 512
+    # Storage is never shrunk: an archive already padded keeps its width.
+    assert (
+        resolve_token_axis(10, automatic, "atoms", token_target=1024, minimum=9000)
+        == 9216
+    )
+    # The ceiling: 24 atoms per token, as before, never more.
+    assert resolve_token_axis(24570, automatic, "atoms", token_target=1024) == 24576
+    assert resolve_token_axis(3, automatic, "atoms", token_target=3) == 96
+    for size in range(257, 24 * 8192 + 1, 97):
+        step = 512 if size <= 8192 else 1024
+        target = atom_grid_target(size)
+        assert 0 <= target - size < step and target % step == 0
+        assert target == next(bucket for bucket in ATOM_BUCKETS if bucket >= size)
+    # A pin is taken as written.
+    assert (
+        resolve_token_axis(8000, PaddingConfig(atoms=24576), "atoms", token_target=1024)
+        == 24576
+    )
 
 
 def test_token_profile_preserves_pins_and_rejects_storage_overflow():
@@ -392,10 +455,13 @@ def test_msa_axis_pads_up_to_a_bucket_and_refuses_a_target_below_storage():
         resolve_msa_axis(3000, PaddingConfig(msa=2048), minimum=3000)
     # Above the grid the overflow policy decides, as on every other axis.
     with pytest.raises(ValueError, match="exceeds the largest standard bucket"):
-        resolve_msa_axis(MSA_BUCKETS[-1] + 1, automatic, minimum=MSA_BUCKETS[-1] + 1)
-    assert (
-        resolve_msa_axis(20000, PaddingConfig(overflow="exact"), minimum=20000) == 20000
-    )
+        resolve_msa_axis(
+            MSA_BUCKETS[-1] + 1,
+            PaddingConfig(overflow="error"),
+            minimum=MSA_BUCKETS[-1] + 1,
+        )
+    with pytest.warns(UserWarning, match="input msa size 20000"):
+        assert resolve_msa_axis(20000, automatic, minimum=20000) == 20000
     # The mesh never splits this axis, so alignment must not inflate it.
     for devices in (2, 3, 4):
         assert (
@@ -422,8 +488,9 @@ def test_token_grid_reaches_past_one_card_and_still_refuses_above_it() -> None:
     assert resolve_axis(5121, automatic, "tokens") == 5376
     assert resolve_axis(6145, automatic, "tokens") == 6400
     with pytest.raises(ValueError, match="largest standard bucket 8192"):
-        resolve_axis(8193, automatic, "tokens")
-    assert resolve_axis(8193, PaddingConfig(overflow="exact"), "tokens") == 8193
+        resolve_axis(8193, PaddingConfig(overflow="error"), "tokens")
+    with pytest.warns(UserWarning, match="input tokens size 8193"):
+        assert resolve_axis(8193, automatic, "tokens") == 8193
 
 
 def test_a_token_bucket_costs_at_most_one_256_token_step() -> None:
@@ -481,36 +548,37 @@ def test_three_mesh_rows_compose_with_a_256_token_grid(
     tokens = resolve_axis(2096, config, "tokens")
     assert tokens == 2304
     assert tokens % 3 == 0
-    # 24 * 2304 = 55,296 is a multiple of 32 and of 32 * 3, so the atom axis
-    # needs no rounding either.
-    assert resolve_token_axis(1, config, "atoms", token_target=tokens) == 55296
+    # The atom ceiling, 24 * 2304 = 55,296, is a multiple of 32 * 3, so a
+    # dense input needs no rounding either; a protein's grid target (16,800
+    # atoms -> 17,408) is not, and rounds up to the next multiple of 96.
+    assert resolve_token_axis(55290, config, "atoms", token_target=tokens) == 55296
+    assert resolve_token_axis(16800, config, "atoms", token_target=tokens) == 17472
     assert resolve_token_axis(1, config, "structural_tokens", token_target=tokens) == (
         4608
     )
 
-    # A bucket three rows do not divide: 2,000 -> 2,048 -> 2,049, and the atom
-    # target then derives from 2,049 and does need its own rounding.
+    # A bucket three rows do not divide: 2,000 -> 2,048 -> 2,049, and its atom
+    # ceiling then derives from 2,049 and does need its own rounding.
     off_grid = resolve_axis(2000, config, "tokens")
     assert off_grid == 2049
-    assert resolve_token_axis(1, config, "atoms", token_target=off_grid) == 49248
+    assert resolve_token_axis(49170, config, "atoms", token_target=off_grid) == 49248
 
 
-def test_a_bucket_derives_an_atom_target_every_plausible_mesh_divides() -> None:
-    """``24 * 256 = 6,144 = 32 * 192``, so a bucket's atom target divides
-    ``32 * rows`` for every ``rows`` that divides 192.  The geometric grid had
-    this too -- every one of its buckets was a multiple of 256 -- and the
-    256-step grid preserves it rather than gaining it."""
+def test_an_atom_grid_target_is_one_every_power_of_two_mesh_divides() -> None:
+    """``512 = 32 * 16``, so an automatic atom target divides ``32 * rows``
+    for every ``rows`` that divides 16; another row count rounds it up to its
+    own multiple, as the shared rule always has."""
 
     from foldjax.padding import cp_aligned_padding, resolve_token_axis
 
-    assert resolve_token_axis(1, PaddingConfig(), "atoms", token_target=2304) == 55296
-    for cp_devices in (2, 3, 4, 6, 8):
+    assert resolve_token_axis(16800, PaddingConfig(), "atoms", token_target=2304) == (
+        17408
+    )
+    for cp_devices in (2, 4, 8, 16):
         config = cp_aligned_padding(PaddingConfig(), cp_devices=cp_devices)
-        assert resolve_token_axis(1, config, "atoms", token_target=2304) == 55296
-    # Five rows do not divide 192; the shared rule then rounds up, as it did
-    # before this grid existed.
+        assert resolve_token_axis(16800, config, "atoms", token_target=2304) == 17408
     five = cp_aligned_padding(PaddingConfig(), cp_devices=5)
-    assert resolve_token_axis(1, five, "atoms", token_target=2304) == 55360
+    assert resolve_token_axis(16800, five, "atoms", token_target=2304) == 17440
 
 
 def test_derived_grids_cover_the_largest_token_bucket() -> None:
@@ -611,7 +679,7 @@ def test_mesh_alignment_rounds_automatic_token_atom_and_structural_targets(
     structural = resolve_token_axis(1, config, "structural_tokens", token_target=tokens)
     assert structural % rows == 0
 
-    # A token pin the mesh divides but whose derived atom count it does not:
+    # A token pin the mesh divides but whose atom ceiling it does not:
     # ((24 * 3012 + 31) // 32) * 32 == 72288, a multiple of 32 and of nothing
     # larger. This is the case the whole change exists for.
     pinned = cp_aligned_padding(
@@ -619,7 +687,7 @@ def test_mesh_alignment_rounds_automatic_token_atom_and_structural_targets(
     )
     pinned_tokens = resolve_axis(3012, pinned, "tokens")
     assert pinned_tokens == 3012
-    assert resolve_token_axis(1, pinned, "atoms", token_target=pinned_tokens) == (
+    assert resolve_token_axis(72288, pinned, "atoms", token_target=pinned_tokens) == (
         ((72288 + 32 * rows - 1) // (32 * rows)) * 32 * rows
     )
     # ... and a token pin whose doubled structural count the mesh does not
@@ -695,6 +763,9 @@ def test_a_single_device_resolves_the_profile_every_port_had_before(
     with pytest.raises(ValueError, match="must be an integer"):
         cp_aligned_padding(plain, cp_devices=1.0)  # type: ignore[arg-type]
     token_target = resolve_axis(tokens, serial, "tokens")
+    # A protein's density, about 8 atoms per token.
+    atoms = 8 * tokens  # above the 256-atom first rung for every case here
+    atom_step = 512 if atoms <= 8192 else 1024
     for model in (
         "alphafold3",
         "boltz2",
@@ -706,7 +777,10 @@ def test_a_single_device_resolves_the_profile_every_port_had_before(
         depth = OPENDDE_MSA_PROFILE_DEPTH if model == "opendde" else MSA_PROFILE_DEPTH
         expected = {
             "tokens": token_target,
-            "atoms": ((24 * token_target + 31) // 32) * 32,
+            "atoms": min(
+                -(-atoms // atom_step) * atom_step,
+                ((24 * token_target + 31) // 32) * 32,
+            ),
             "structural_tokens": 2 * token_target,
             "language_model_tokens": token_target,
             "msa": depth,
@@ -720,6 +794,10 @@ def test_a_single_device_resolves_the_profile_every_port_had_before(
             elif axis == "templates":
                 resolved = resolve_token_axis(
                     1, serial, axis, token_target=token_target, fixed_size=4
+                )
+            elif axis == "atoms":
+                resolved = resolve_token_axis(
+                    atoms, serial, axis, token_target=token_target
                 )
             else:
                 resolved = resolve_token_axis(
@@ -789,7 +867,8 @@ def test_the_boltz2_plan_aligner_agrees_with_the_shared_mesh_policy() -> None:
         cp_cols=1,
     )
     assert shared.target["tokens"] == native.target["tokens"]
-    assert shared.target["atoms"] == native.target["atoms"] == 72320
+    # 71,000 atoms on the 1,024-step grid is 71,680, which 32 * 4 divides.
+    assert shared.target["atoms"] == native.target["atoms"] == 71680
 
 
 def test_the_opendde_backend_hands_its_native_path_a_mesh_aware_profile(

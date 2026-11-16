@@ -293,10 +293,14 @@ structure in `compare_structures.csv`.
 A batch compiles one program per input shape, so a screen over many inputs
 spends most of its time compiling unless the shapes repeat.
 
-- `--padding` rounds each input up to a token bucket (and the MSA axis to a row
-  bucket), so jobs in one band share one compiled executable. It is off by
-  default, because exact shapes are what the published results were run at;
-  padding never changes which alignment rows a model reads.
+- Padding is on by default: each input is rounded up to a token bucket (atoms
+  to the next atom step, the MSA axis to a row bucket), so jobs in one band
+  share one compiled executable. A single cold input can be slower by up to
+  one bucket step of padded work; repeated inputs in a bucket reuse the
+  compiled program.
+  `--no-padding` (Python: `padding=False`) runs the exact input shapes, the
+  shapes the published results were run at. Padding never changes which
+  alignment rows a model reads.
   [Profiles and pinning](https://github.com/eightmm/FoldJAX/blob/main/docs/token-padding-profiles.md).
 - The persistent compile cache is on by default (`foldjax home --path
   compile_cache`); `--cache-dir` moves it, `--no-cache` skips it.
@@ -318,9 +322,11 @@ first compile whether a run fits the device. `--memory-check refuse` (the
 default) stops a run that does not fit and names the levers;
 `--memory-check warn` prints the same message and runs anyway;
 `--memory-budget-gib` plans against a smaller card than the one you are on.
-A run that needs more than its law was fitted at (`--padding`, or a float32
-precision option) is still refused when over budget, but is never called a
-fit: its estimate is a lower bound, so it proceeds as `unknown`.
+A run that needs more than its law was fitted at (padding, which is the
+default, or a float32 precision option) is still refused when over budget,
+but is never called a fit: its estimate is a lower bound, so it proceeds as
+`unknown`. `--no-padding` runs the shape the laws were fitted on and gets a
+fitted verdict.
 AlphaFold 3 has no law and answers `unknown` when asked. Nothing is narrowed
 automatically to make a job fit. `--mem-fraction` (default 0.9) sets how much
 of the device JAX preallocates. Details: [docs/cli.md](https://github.com/eightmm/FoldJAX/blob/main/docs/cli.md#memory).

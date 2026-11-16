@@ -520,6 +520,10 @@ def test_a_fit_from_an_underestimate_is_recorded_as_unknown() -> None:
     message = str(caught[0].message)
     assert "serving padding; matmul_precision=highest" in message
     assert "the allocator will answer" in message
+    # A default-on user never asked for padding: say why it is unknown and
+    # how to get a fitted verdict.
+    assert "Padding is on by default" in message and "--no-padding" in message
+    assert "--no-padding" in decision.reason
     block = memory_policy.recorded()
     assert block["state"] == "unknown"
     assert block["selected"] is None
@@ -1120,6 +1124,7 @@ def test_the_manifest_records_the_decision_and_survives_a_json_round_trip(
         profile="released",
         output_dir=out,
         use_compile_cache=False,
+        padding=False,
     )
     with backend_override("opendde", _AdmittingBackend):
         foldjax.predict(request)
@@ -1176,6 +1181,7 @@ def test_unknown_memory_profile_records_the_execution_device_in_the_manifest(
         profile="released",
         output_dir=out,
         use_compile_cache=False,
+        padding=False,
     )
     with (
         backend_override("opendde", _UnmeasuredBackend),
@@ -1210,6 +1216,7 @@ def test_a_run_that_takes_no_decision_records_none_rather_than_the_last_one(
         profile="released",
         output_dir=out,
         use_compile_cache=False,
+        padding=False,
     )
 
     with backend_override("opendde", _Quiet):
@@ -1741,6 +1748,7 @@ def test_the_manifest_round_trips_an_opendde_decision(tmp_path: Path) -> None:
         profile="released",
         output_dir=out,
         use_compile_cache=False,
+        padding=False,
     )
     with backend_override("opendde", _OpenDDEAdmitting):
         foldjax.predict(request)

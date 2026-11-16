@@ -154,8 +154,8 @@ run (`use_compile_cache=False` in Python), and the two cannot be combined.
 
 An entry is reused only for the same accelerator, JAX runtime, weights,
 profile, static options **and input shapes**. A new shape compiles again, which
-is why a screen over many inputs runs with `--padding` (shapes rounded to a
-bucket; see [batches](tutorials/batch-slurm.md)) and why `foldjax cache warm`
+is why FoldJAX pads by default (shapes rounded to a
+bucket, `--no-padding` to turn it off; see [batches](tutorials/batch-slurm.md)) and why `foldjax cache warm`
 exists:
 
 ```bash

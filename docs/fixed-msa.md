@@ -4,11 +4,11 @@
 `predict`, `plan`, and `cache warm`. It means exactly:
 
 ```text
---padding --max-msa-depth N --pad-msa N
+--max-msa-depth N --pad-msa N
 ```
 
-`N` is required and must be a positive integer in the core CLI; padding and
-MSA caps remain opt-in there. **Recommended: 2048** for a deployment profile;
+on the default padding. `N` is required and must be a positive integer in the
+core CLI; MSA caps remain opt-in there. **Recommended: 2048** for a deployment profile;
 the Slurm scripts use it by default for these four models. The user-reported
 comparison of 1UBQ, 2LZM and 4HHB found lDDT within ±0.01 across
 1024/2048/4096 rows on these four models. The underlying results are not included
@@ -24,8 +24,8 @@ foldjax predict --model boltz2 --input job.json --msa auto --fixed-msa 2048
 
 `examples/slurm/foldjax-submit` accepts `--fixed-msa N` or the site variable
 `FIXED_MSA_DEPTH` to override 2048; `--exact` disables its automatic preset.
-AlphaFold 3 and ESMFold2 never receive that wrapper flag; the scripts select
-`--padding` for them instead. `warm.sbatch` and its `--verify-only` mode use the
+AlphaFold 3 and ESMFold2 never receive that wrapper flag; the scripts pass
+them `--padding` (a no-op now that padding is the default) instead. `warm.sbatch` and its `--verify-only` mode use the
 same model-specific presets, including in mixed-model jobs. Pass the same
 `--exact` or capacity override to every stage.
 
@@ -35,7 +35,8 @@ masked rows; a deeper alignment goes through the native cap and sampling.
 Explicit `N` takes precedence over the ordinary 1024-row profile floor and
 OpenDDE's 1280-row floor, including when `N` is smaller. Padding alone never
 crops alignment rows. Choosing a smaller cap can change the prediction, so the
-preset is opt-in and does not change unpadded or ordinary `--padding` defaults.
+preset is opt-in and does not change `--no-padding` runs or the ordinary
+padding defaults.
 
 | Model | Input selection and compiled rows |
 | --- | --- |

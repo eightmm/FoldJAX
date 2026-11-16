@@ -48,7 +48,7 @@ combination remain unchanged. It does not enable compiled ESMC blocks or change
 SVD alignment. The default remains `stack` pending full-model GPU comparison.
 
 ```bash
-foldjax predict --model esmfold2 --input job.yaml --padding \
+foldjax predict --model esmfold2 --input job.yaml \
   --option lm_state_storage=buffer
 ```
 

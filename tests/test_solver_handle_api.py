@@ -45,6 +45,7 @@ def _request(tmp_path, *, use_compile_cache=False):
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache" if use_compile_cache else None,
         use_compile_cache=use_compile_cache,
+        padding=False,
     )
 
 

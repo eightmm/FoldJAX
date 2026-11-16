@@ -29,12 +29,14 @@ from foldjax.schema import (
     PredictionResult,
     PredictionSample,
 )
+from tests.test_api import shape_profile
 
 
 class Scripted(Backend):
     """Fails on the run directories named in ``raises``; predicts the rest."""
 
     name = "boltz2"
+    padding_axes = ("tokens",)
 
     def __init__(self, raises: dict[str, BaseException] | None = None) -> None:
         self.raises = raises or {}
@@ -58,6 +60,7 @@ class Scripted(Backend):
                 ),
             ),
             output_dir=request.output_dir,
+            shape_profile=shape_profile(request),
         )
 
 

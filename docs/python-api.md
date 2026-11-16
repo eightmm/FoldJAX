@@ -20,8 +20,9 @@ result = predict(
         num_steps=200,
         num_recycles=10,
         max_msa_depth=8192,
-        # Opt-in shape normalization. `padding=True` uses standard buckets;
-        # pinning axes defines one exact serving/cache profile. An MSA pin is
+        # Shape normalization, on by default (standard buckets); `padding=False`
+        # runs exact shapes, and pinning axes defines one exact serving/cache
+        # profile. An MSA pin is
         # a capacity, so it has to hold the rows `max_msa_depth` lets through.
         padding=PaddingConfig(tokens=512, atoms=4096, msa=8192),
         # Execution, likewise: dtype, matmul_precision, triangle_kernel,

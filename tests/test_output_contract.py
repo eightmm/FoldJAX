@@ -165,6 +165,7 @@ def _run(
         output_dir=out,
         seed=int(fixture["seed"]),
         use_compile_cache=False,
+        padding=False,
     )
     with backend_override(model, backend):
         foldjax.predict(request)
@@ -253,6 +254,7 @@ def test_alphafold3_kernel_sources_reach_the_manifest_and_do_not_leak(
                 output_dir=out,
                 seed=int(fixture["seed"]),
                 use_compile_cache=False,
+                padding=False,
             )
         )
     manifest = json.loads((out / MANIFEST_NAME).read_text())
@@ -314,6 +316,7 @@ def test_a_run_without_the_optional_fields_still_validates_and_resumes(
             output_dir=tmp_path / "out",
             seed=int(fixture["seed"]),
             use_compile_cache=False,
+            padding=False,
         )
     )
     assert request_mismatch(manifest, request, seed=int(fixture["seed"])) is None

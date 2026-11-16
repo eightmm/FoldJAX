@@ -203,8 +203,8 @@ def register(
         description='Writes {"jobs": [...]}: the target job plus one SMILES '
         "ligand each, named <target>__<ligand name> (a digest of the canonical "
         "SMILES when the record has no name), with the target's alignment paths "
-        "made absolute so every job reuses them. Run it with --padding and the "
-        "persistent compile cache so the screen compiles once per size bucket.",
+        "made absolute so every job reuses them. Padding (the default) and the "
+        "persistent compile cache make the screen compile once per size bucket.",
     )
     expand.add_argument("--target", type=Path, required=True, help="one common job")
     expand.add_argument(

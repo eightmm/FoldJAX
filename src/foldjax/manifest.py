@@ -1228,9 +1228,9 @@ _RETIRED_OPTIONS: dict[str, dict[str, str]] = {
             "'bucket', whose legacy padding ladder capped tokens at 4,096 and "
             "truncated deep MSAs at 1,024 rows. No build since can reproduce "
             "those shapes, so --resume refuses rather than overwriting the "
-            "directory with a different program: rerun with --padding "
-            "(PaddingConfig) for the shared 256-token grid, or without it for "
-            "an exact-shape run, under a fresh --output-dir"
+            "directory with a different program: rerun with the default "
+            "padding (PaddingConfig) for the shared 256-token grid, or with "
+            "--no-padding for an exact-shape run, under a fresh --output-dir"
         ),
     },
 }

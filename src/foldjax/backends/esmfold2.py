@@ -1814,6 +1814,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                 samples=(),
                 output_dir=request.output_dir,
                 raw=raw,
+                shape_profile=shape_profile,
                 representations=_representations_result(
                     self.name, request.output_dir, wanted
                 ),

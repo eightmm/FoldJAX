@@ -144,7 +144,7 @@ def test_profile_summary_and_worker_transport_preserve_old_and_new_policies(tmp_
         "templates": None,
         "structural_tokens": None,
         "language_model_tokens": None,
-        "overflow": "error",
+        "overflow": "exact",
     }
     ordinary = PaddingConfig(tokens=1024, msa=2048)
     compact = dataclasses.replace(ordinary, auxiliary_profile=COMPACT_PROFILE)

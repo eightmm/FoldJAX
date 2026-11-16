@@ -72,7 +72,8 @@ upstream v2.2.0 and later zero for every real alignment; the default
   own steering: a forced job turns on `contact_guidance_update` automatically
   (`main.py:156`), the same `BoltzSteeringParams()` `boltz predict` passes
   without `--use_potentials`, and runs the eager sampler for it. That sampler
-  builds no outer executable, so it refuses `--padding`, `cp_devices > 1` and
+  builds no outer executable, so it refuses padding (the default; pass
+  `--no-padding`), `cp_devices > 1` and
   `deterministic=true`; `foldjax plan` refuses the same combination before
   anything runs. Pass `--option steering_args='{"fk_steering": false,
   "physical_guidance_update": false, "contact_guidance_update": false}'` to
@@ -96,10 +97,10 @@ option runs upstream's value:
 | option | default | effect |
 |---|---|---|
 | `step_scale=FLOAT` | `1.5` | sampler step size; lower values diversify the samples |
-| `subsample_msa=true` | `false` | redraw a subset of MSA rows every trunk pass (refused with `--padding` and context parallelism) |
+| `subsample_msa=true` | `false` | redraw a subset of MSA rows every trunk pass (refused with padding, the default, so pass `--no-padding`; and with context parallelism) |
 | `num_subsampled_msa=N` | `1024` | rows per pass when subsampling |
 | `method=NAME` | none | method conditioning, one of upstream's method types (for example `x-ray diffraction`, `electron microscopy`, `solution nmr`), case-insensitive |
-| `use_potentials=true` | `false` | Feynman-Kac steering and physical guidance; eager, so refused with `steering_args`, `--padding`, `deterministic=on` and context parallelism |
+| `use_potentials=true` | `false` | Feynman-Kac steering and physical guidance; eager, so refused with `steering_args`, padding (the default; pass `--no-padding`), `deterministic=on` and context parallelism |
 
 Each of these joins the compile-cache identity. The full table, with upstream
 line references: [cli.md](cli.md).

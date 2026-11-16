@@ -1048,7 +1048,8 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         ):
             raise ValueError(
                 "padding with TFG guidance is not yet supported; drop "
-                "use_tfg_guidance or --padding"
+                "use_tfg_guidance or pass --no-padding (padding=False), "
+                "since padding is on by default"
             )
 
     def validate_native_options(self, options: dict[str, Any]) -> None:

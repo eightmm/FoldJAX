@@ -44,6 +44,8 @@ def _request(tmp_path: Path, **options) -> PredictionRequest:
         seed=5,
         cache_dir=tmp_path / "cache",
         options=options,
+        # `_run` points at an external source, which padding refuses.
+        padding=False,
     )
 
 

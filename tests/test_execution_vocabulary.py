@@ -448,6 +448,9 @@ def test_every_switch_spelling_reaches_every_port_as_a_bool(
                 weights=weights,
                 output_dir=tmp_path / "out",
                 options={option: spelling},
+                # Some switches (TFG guidance, potentials) refuse padding;
+                # this test is about the spelling, not that refusal.
+                padding=False,
             )
             value = backend.apply_sampling(request)[option]
             assert value is switch, spelling

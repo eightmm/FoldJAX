@@ -613,6 +613,7 @@ def test_a_native_pocket_query_reaches_the_program_and_the_writer(
                 output_dir=tmp_path / "out",
                 seed=1,
                 options={"num_samples": 2, "num_steps": 4},
+                padding=False,
             )
         )
     config = seen["config"].pocket_sampling

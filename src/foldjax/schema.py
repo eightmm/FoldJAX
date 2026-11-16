@@ -360,7 +360,10 @@ _PADDING_AXES = (
 
 @dataclass(frozen=True, slots=True)
 class PaddingConfig:
-    """Optional shape normalization for reusable JAX executables.
+    """Shape normalization for reusable JAX executables.
+
+    A ``PredictionRequest`` gets ``PaddingConfig()`` unless it passes
+    ``padding=False``, which runs the exact input shapes instead.
 
     ``None`` targets use a token bucket with derived atom/LM capacity, the
     smallest MSA bucket holding the rows the model reads, and fixed native
@@ -368,10 +371,12 @@ class PaddingConfig:
     capacity for that axis rather than a row cap, so a target below the stored
     alignment is refused instead of truncating the input.
     Setting an integer pins that axis to an exact padded size, which is useful
-    for warming one known serving profile. The default ``overflow='error'``
-    refuses inputs beyond the standard grid before an unplanned large compile;
-    ``'exact'`` permits an exact token size beyond that grid; derived capacity
-    checks still reject oversized axes without truncation.
+    for warming one known serving profile. The default ``overflow='exact'``
+    pads on the standard grid and runs an input beyond its last bucket at its
+    exact size, with a warning, so padding never refuses an input that runs
+    unpadded; ``'error'`` refuses such an input before an unplanned large
+    compile. Derived capacity checks still reject oversized axes without
+    truncation.
 
     OpenDDE's optional ``auxiliary_profile='opendde-compact-v1'`` fixes atom
     and structural capacities from its token bucket, refusing overflow.
@@ -387,7 +392,7 @@ class PaddingConfig:
     templates: int | None = None
     structural_tokens: int | None = None
     language_model_tokens: int | None = None
-    overflow: str = "error"
+    overflow: str = "exact"
     auxiliary_profile: str | None = None
 
     def __post_init__(self) -> None:
@@ -557,6 +562,10 @@ class PredictionRequest:
     FoldJAX weight store, the output directory is derived from the input, and
     the compile cache defaults to the shared FoldJAX root, so the common case is
     one input file plus a model name.
+
+    Inputs are padded to the shared shape grid by default (``PaddingConfig()``)
+    so one compiled executable serves every input in a bucket; pass
+    ``padding=False`` to run the exact input shapes.
     """
 
     model: str | None = None
@@ -605,9 +614,12 @@ class PredictionRequest:
     # variant.  Appended to preserve the positional layout of the public
     # request dataclass while adding the same name used by ``foldjax weights``.
     profile: str | None = None
-    # Appended to preserve the positional request layout. ``None``/False keeps
-    # exact historical shapes; True selects a backend's standard profile.
-    padding: PaddingConfig | Mapping[str, Any] | bool | None = None
+    # Appended to preserve the positional request layout. On by default: True
+    # (the default) selects ``PaddingConfig()``, the backend's standard
+    # profile; ``padding=False`` is the explicit off and runs exact input
+    # shapes. ``None`` is accepted as the same off, and is what the field holds
+    # after construction, so ``request.padding is None`` means "off".
+    padding: PaddingConfig | Mapping[str, Any] | bool | None = True
     # Reuse a run only when its finished manifest proves the exact request and
     # the persisted structures/representation archive still match their
     # recorded identities. Seeds are checked individually -- a five-seed job
@@ -1028,9 +1040,10 @@ class PredictionResult:
     #: Present when the request asked for them. A ``stop_after='trunk'``
     #: run has these and no samples.
     representations: Representations | None = None
-    # Present only for opt-in padding. This is the concrete profile that ran,
-    # not the requested policy, so cache warm can report exactly one executable
-    # shape without pretending that it populated an entire grid.
+    # Present whenever padding is on, which is the default. This is the
+    # concrete profile that ran, not the requested policy, so cache warm can
+    # report exactly one executable shape without pretending that it populated
+    # an entire grid.
     shape_profile: dict[str, Any] | None = None
     # Populated by the model facade; unresolved checkpoint defaults are labelled.
     configuration: Mapping[str, Any] | None = None

@@ -862,7 +862,7 @@ atom axis must be a multiple of `n_queries * cp_rows` and the token axis must
 divide the rows (and the columns under `2d`). A request that cannot be split
 resolves to the replicated path **with a warning naming the multiple to pad
 to** -- a silent fallback would leave a run that reads as distributed and costs
-what the replicated one costs. Automatic padding (`--padding` with
+what the replicated one costs. Automatic padding (the default, with
 `cp_devices > 1`) derives targets the mesh divides, so it supplies the
 alignment by itself; pin `PaddingConfig(atoms=..., tokens=...)` when a run
 needs one exact shape, and pin it aligned, because a pin is taken as written.

@@ -313,6 +313,7 @@ def test_a_run_drops_and_records_it_unless_the_option_refuses(
             seed=3,
             options=options,
             use_compile_cache=False,
+            padding=False,
         )
 
     with backend_override(model, _recorder(model, seen)):
@@ -365,6 +366,7 @@ def test_a_run_without_a_dropped_alignment_records_none(tmp_path: Path) -> None:
                 output_dir=tmp_path / "out",
                 seed=3,
                 use_compile_cache=False,
+                padding=False,
             )
         )
     manifest = json.loads((tmp_path / "out" / MANIFEST_NAME).read_text())
@@ -436,6 +438,7 @@ def test_protenix_use_rna_msa_reaches_the_features(tmp_path: Path) -> None:
                 seed=3,
                 options={"use_rna_msa": True},
                 use_compile_cache=False,
+                padding=False,
             )
         )
     (ran,) = seen
@@ -680,6 +683,7 @@ def test_a_run_records_a_dropped_paired_msa_unless_the_option_refuses(
             seed=3,
             options=options,
             use_compile_cache=False,
+            padding=False,
         )
 
     with backend_override("protenix", _recorder("protenix", seen)):

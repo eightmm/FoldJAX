@@ -782,6 +782,22 @@ class MemoryDecision:
     reason: str
 
 
+#: Added wherever serving padding turns a ``fits`` into ``unknown``. Padding is
+#: on by default, so most runs that read this never asked for it.
+PADDING_UNKNOWN_NOTE = (
+    "Padding is on by default and every peak law was fitted on unpadded runs; "
+    "padded runs and runs with a precision option have measured up to 1.69x "
+    "the upper estimate, so the verdict is unknown rather than fits. "
+    "--no-padding (padding=False) runs the shape the law was fitted on and "
+    "gets a fitted verdict"
+)
+
+
+def padding_note(exceeds_profile: Sequence[str]) -> str:
+    """:data:`PADDING_UNKNOWN_NOTE` as a sentence to append, when it applies."""
+    return f". {PADDING_UNKNOWN_NOTE}" if "serving padding" in exceeds_profile else ""
+
+
 def exceeding_profile(
     decision: MemoryDecision, exceeds_profile: Sequence[str] = ()
 ) -> MemoryDecision:
@@ -808,6 +824,7 @@ def exceeding_profile(
             f"{decision.reason}, but that estimate is a lower bound for this "
             "run, which uses " + "; ".join(exceeds_profile) + " -- the law was "
             "fitted without them, so clearing the threshold is not a guarantee"
+            + padding_note(exceeds_profile)
         ),
     )
 

@@ -1587,9 +1587,10 @@ class Boltz2Backend(Backend):
             raise ValueError(
                 "the boltz2 option 'bucket' was removed with its legacy "
                 "padding ladder, which capped tokens at 4,096 and truncated "
-                "deep MSAs at 1,024 rows; use --padding (PaddingConfig) for "
-                "the shared 256-token grid, which pads the MSA axis instead "
-                "of cropping it, or omit it for an exact-shape run"
+                "deep MSAs at 1,024 rows; omit it for the default shared "
+                "256-token grid (PaddingConfig), which pads the MSA axis "
+                "instead of cropping it, or pass --no-padding (padding=False) "
+                "for an exact-shape run"
             )
         options = (
             self.canonical_options(request.options)
@@ -1611,7 +1612,10 @@ class Boltz2Backend(Backend):
                 ),
             ):
                 if options.get(name) is True:
-                    raise ValueError(f"{name} {reason}; drop it or --padding")
+                    raise ValueError(
+                        f"{name} {reason}; drop it or pass --no-padding "
+                        "(padding=False), since padding is on by default"
+                    )
         if (
             request.input_format == "foldjax"
             and options.get("steering_args") is None
@@ -1633,7 +1637,13 @@ class Boltz2Backend(Backend):
                 padding=request.padding is not None,
             )
             if blocked:
-                raise ValueError(steering_conflict_message(blocked))
+                message = steering_conflict_message(blocked)
+                if "padding" in blocked:
+                    message += (
+                        ". Padding is on by default; --no-padding "
+                        "(padding=False) turns it off"
+                    )
+                raise ValueError(message)
         super().validate_request(request)
 
     def lower_cache_graphs(
@@ -1766,6 +1776,7 @@ class Boltz2Backend(Backend):
                 if representations is not None
                 else ()
             )
+            shape_profile = _padding_shape_profile(output.get("padding"))
             output = _detach_prediction_output(
                 output, drop_representations=archived
             )
@@ -1775,6 +1786,7 @@ class Boltz2Backend(Backend):
                 output_dir=request.output_dir,
                 raw=output,
                 representations=representations,
+                shape_profile=shape_profile,
             )
         coords = np.asarray(output["coords"])
         plddt = np.asarray(output.get("plddt", []))

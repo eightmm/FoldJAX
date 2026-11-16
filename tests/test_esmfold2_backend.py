@@ -152,6 +152,7 @@ def test_external_esmc_keeps_the_released_language_model_branch(
             weights=weights,
             output_dir=tmp_path / "out",
             options={"esmc_weights": external_esmc},
+            padding=False,
         )
     )
 
@@ -205,6 +206,7 @@ def test_scalar_backend_withholds_unused_graph_outputs_without_exposing_an_overr
             weights=weights,
             output_dir=tmp_path / "out",
             options={"no_language_model": True},
+            padding=False,
         )
     )
 
@@ -258,6 +260,7 @@ def _stub_prediction(tmp_path, monkeypatch, options):
             weights=weights,
             output_dir=tmp_path / "out",
             options={"no_language_model": True, **options},
+            padding=False,
         )
     )
     return seen, result
@@ -622,6 +625,7 @@ def test_all_biomolecule_job_uses_common_feature_builder(tmp_path, monkeypatch) 
             weights=weights,
             output_dir=tmp_path / "out",
             options={"no_language_model": True},
+            padding=False,
         )
     )
 
@@ -790,6 +794,7 @@ def _all_atom_session_fixture(tmp_path, monkeypatch, *, build_error=None):
         seed=0,
         num_seeds=2,
         options={"no_language_model": True},
+        padding=False,
     )
     return request, calls
 
@@ -1008,6 +1013,7 @@ def test_a_plain_protein_is_featurized_from_the_ccd_on_the_single_route(
             output_dir=tmp_path / "out",
             seed=7,
             options={"no_language_model": True},
+            padding=False,
         )
     )
     assert seen["ccd_path"] == weights / "ccd.pkl"
@@ -1275,6 +1281,7 @@ def test_single_input_managed_session_stages_esmc_before_structure_weights(
         weights=weights,
         output_dir=tmp_path / "out",
         num_seeds=num_seeds,
+        padding=False,
     )
     backend = ESMFold2Backend()
 
@@ -1318,6 +1325,7 @@ def test_scalar_session_retry_reuses_embedding_without_touching_released_stage(
         ),
         weights=weights,
         output_dir=tmp_path / "out",
+        padding=False,
     )
     backend = ESMFold2Backend()
 
@@ -1419,6 +1427,7 @@ def test_compact_language_model_observes_explicit_matmul_precision(
         output_dir=tmp_path / "out",
         num_seeds=2,
         options={"matmul_precision": "highest"},
+        padding=False,
     )
     backend = ESMFold2Backend()
 
@@ -1469,6 +1478,7 @@ def test_multi_input_session_keeps_complete_model_resident(
         ),
         weights=weights,
         output_dir=tmp_path / "out-first",
+        padding=False,
     )
     second = dataclasses.replace(
         first,
@@ -1534,6 +1544,7 @@ def test_staged_transition_failure_clears_ownership_before_retry(
         ),
         weights=weights,
         output_dir=tmp_path / "out",
+        padding=False,
     )
     backend = ESMFold2Backend()
 
@@ -1596,6 +1607,7 @@ def test_direct_backend_call_keeps_complete_native_load_and_single_predict(
             ),
             weights=weights,
             output_dir=tmp_path / "out",
+            padding=False,
         )
     )
 
@@ -1625,6 +1637,7 @@ def test_request_session_loads_once_and_runs_esmc_once_per_input(
         weights=weights,
         output_dir=tmp_path / "out-first",
         num_seeds=3,
+        padding=False,
     )
     second = dataclasses.replace(
         first, input=second_job, output_dir=tmp_path / "out-second"
@@ -1683,6 +1696,7 @@ def test_legacy_split_wrapper_recomputes_raw_states_without_retaining_them(
         weights=weights,
         output_dir=tmp_path / "out",
         num_seeds=2,
+        padding=False,
     )
     backend = ESMFold2Backend()
 
@@ -1740,6 +1754,7 @@ def test_session_refuses_to_mix_replaced_weights(tmp_path, monkeypatch) -> None:
         weights=weights,
         output_dir=tmp_path / "out",
         num_seeds=2,
+        padding=False,
     )
     backend = ESMFold2Backend()
 
@@ -1951,6 +1966,7 @@ def test_multi_seed_session_keeps_single_route_wrappers_compatible(
         weights=weights,
         output_dir=tmp_path / "out",
         num_seeds=2,
+        padding=False,
     )
     backend = ESMFold2Backend()
 

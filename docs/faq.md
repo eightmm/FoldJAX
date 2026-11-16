@@ -68,7 +68,8 @@ what to try:
    rows: less memory, but a different prediction. Fewer `--num-samples` can
    lower a peak too, but not ESMFold2's, whose peak has no sample term.
 
-`--padding` raises the peak: shapes are rounded up to a bucket. Nothing is
+Padding, on by default, raises the peak: shapes are rounded up to a bucket
+(`--no-padding` runs the exact shapes). Nothing is
 narrowed automatically to make a job fit. The measurements behind each law
 and lever are in [cli.md](cli.md#memory) and
 [engineering-notes.md](engineering-notes.md#memory).
@@ -201,7 +202,7 @@ It compiles. These programs take minutes to compile and seconds to run once
 compiled, and the compiled program is cached per model, weights, options and
 **input shape**. `cost.breakdown` in `foldjax_run.json` shows how much went to
 `compile` ([outputs.md](outputs.md#cost)). For many inputs of different
-lengths, `--padding` rounds shapes to buckets so they share programs, and
+lengths, padding (the default) rounds shapes to buckets so they share programs, and
 `foldjax cache warm` compiles a representative shape ahead of time
 ([batches](tutorials/batch-slurm.md)).
 

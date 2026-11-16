@@ -239,6 +239,7 @@ def test_a_run_records_the_dropped_constraint_unless_the_option_refuses(
             msa="none",
             options=options,
             use_compile_cache=False,
+            padding=False,
         )
 
     with backend_override("opendde", _recorder(seen)):
@@ -283,6 +284,7 @@ def test_a_native_job_without_a_constraint_records_an_empty_list(tmp_path) -> No
                 seed=3,
                 msa="none",
                 use_compile_cache=False,
+                padding=False,
             )
         )
     manifest = json.loads((tmp_path / "out" / MANIFEST_NAME).read_text())
@@ -319,6 +321,7 @@ def test_other_backends_record_no_constraint_gate(tmp_path) -> None:
                 seed=3,
                 msa="none",
                 use_compile_cache=False,
+                padding=False,
             )
         )
     manifest = json.loads((tmp_path / "out" / MANIFEST_NAME).read_text())
@@ -391,6 +394,7 @@ def test_a_native_job_records_the_templates_and_rna_msas_it_drops(
                 msa="none",
                 options=options,
                 use_compile_cache=False,
+                padding=False,
             )
         )
         return json.loads((tmp_path / out / MANIFEST_NAME).read_text())

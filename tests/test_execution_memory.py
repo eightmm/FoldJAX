@@ -93,6 +93,7 @@ def test_input_boundaries_release_cycles_and_weights_but_keep_result_arrays(tmp_
                 output_dir=tmp_path / "out",
                 seeds=(7, 8),
                 use_compile_cache=False,
+                padding=False,
             )
         )
     assert live_before_load == [0] * 6

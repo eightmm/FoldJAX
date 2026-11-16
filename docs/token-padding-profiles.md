@@ -1,22 +1,33 @@
 # Token-derived padding profiles
 
-With `--padding`, the token bucket determines most automatic storage capacities.
-Padding remains opt-in, and explicit axis targets take precedence. This policy
-reduces shape variants without changing model weights or model inputs: the MSA
+Padding is on by default (`--no-padding` / `padding=False` turns it off), and
+the token bucket determines most automatic storage capacities; explicit axis
+targets take precedence. A single cold input can be slower by up to one
+bucket step of padded work; repeated inputs in a bucket reuse the compiled
+program. This policy reduces shape variants without changing model weights or model inputs: the MSA
 axis is padded *up* to a bucket, and no padded run reads fewer alignment rows
 than the same job run unpadded.
 
 | Backend | Atoms | MSA | Other capacity |
 | --- | --- | --- | --- |
 | AlphaFold 3 | native 24T, 32-aligned | native 16384-row pool / released trunk crop | native templates |
-| Boltz2 | 24T, 32-aligned | bucket >= stored rows, floor 1024 | existing supported axes |
-| Protenix | 24T, 32-aligned | bucket >= stored rows, floor 1024 | templates 4; LM min(T, provider limit) |
-| OpenDDE | smallest atom bucket >= stored atoms | bucket >= the released 1280-row cycle sample | stored structural tokens rounded up to 64 / CP alignment |
-| OpenFold3 | 24T, 32-aligned | 1024 per streamed cycle | templates 4 |
-| ESMFold2 | 24T, 32-aligned | 1024 | LM 3T for per-chain BOS/EOS |
+| Boltz2 | stored atoms on the atom grid, cap 24T | bucket >= stored rows, floor 1024 | existing supported axes |
+| Protenix | stored atoms on the atom grid, cap 24T | bucket >= stored rows, floor 1024 | templates 4; LM min(T, provider limit) |
+| OpenDDE | stored atoms on the atom grid | bucket >= the released 1280-row cycle sample | stored structural tokens rounded up to 64 / CP alignment |
+| OpenFold3 | stored atoms on the atom grid, cap 24T | 1024 per streamed cycle | templates 4 |
+| ESMFold2 | stored atoms on the atom grid, cap 24T | 1024 | LM 3T for per-chain BOS/EOS |
 
-T is the selected token bucket, not the real sequence length. `foldjax plan
---padding` shows it under `padding_estimate` (`tokens`, `token_bucket`) for a
+T is the selected token bucket, not the real sequence length. The atom grid
+rounds the stored atom count up to a 512-atom step through 8,192 atoms and a
+1,024-atom step above (first rung 256), so an input pays at most one atom step
+over its stored atoms; `24T` stays the ceiling. A protein holds about 8 atoms
+per token, so the old `24T` target padded its atom axis about 3x (OpenFold3:
+1.156x wall at 1,003 tokens for a 2% token pad). The cost is executables: one
+per (token bucket, atom step) pair an input set reaches -- typically two or
+three atom steps per token bucket for proteins, one for a ligand screen
+against one target. Synthetic `cache warm` jobs cover only the atom steps
+their own sequences land on; warm real inputs or pin `--pad-atoms` for both
+warming and prediction. `foldjax plan` shows T under `padding_estimate` (`tokens`, `token_bucket`) for a
 FoldJAX-format job; the count is estimated before featurization, so a CCD
 ligand it cannot count is listed under `tokens_not_counted` and the run may
 land one bucket higher. The MSA buckets
@@ -33,7 +44,7 @@ input.
 
 OpenDDE resolves its atom and structural axes independently of T. The reported
 952-token input at T=1024, with 7584 atoms and 1816 structural tokens, now uses
-8192 atoms and 1856 structural tokens instead of 24576 and 2048. Existing
+7680 atoms and 1856 structural tokens instead of 24576 and 2048. Existing
 storage is a lower bound even when some suffix slots are masked. Explicit pins
 remain exact and context-parallel alignment still applies. Synthetic all-alanine
 token warming does not cover every chemistry-dependent combination: warm the
@@ -47,7 +58,7 @@ padding then pads what they selected. Shallow
 MSAs are masked to the chosen storage size. Protenix retains its existing
 full-depth MSA requirement. ESMFold2 variants without an active row-selection
 cap reject oversized MSA storage unless explicitly pinned; padding never invents
-a new sampling route. Padding OFF is unchanged.
+a new sampling route. With padding off (`--no-padding`) nothing is padded.
 
 ## OpenFold3 MSA execution
 
@@ -144,7 +155,8 @@ as it did before this policy existed.
 ## Compatibility and verification scope
 
 Existing masks, atom-to-token mappings, crop functions, and prefix-preserving
-random draws are reused. Explicit pins and padding-off behavior remain intact.
+random draws are reused. Explicit pins and padding-off (`--no-padding`)
+behavior remain intact.
 A token-grid `overflow="exact"` choice never bypasses derived-capacity checks.
 This change applies to the common `PaddingConfig` / `--padding` interface,
 which is now the only one: the older Boltz-specific `bucket=True` mode, whose
@@ -241,7 +253,7 @@ compiled on demand; `cache warm` executes only the requested profile, not a
 sweep of MSA depths.
 
 ```bash
-uv run foldjax cache warm --model opendde --input job.yaml --padding
+uv run foldjax cache warm --model opendde --input job.yaml
 uv run foldjax cache warm --model opendde --input job.yaml --pad-msa 2048
 ```
 

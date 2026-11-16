@@ -282,6 +282,7 @@ def _batch(inputs: tuple[Path, ...], out: Path, **fields):
         seed=4,
         msa="none",
         use_compile_cache=False,
+        padding=False,
         **fields,
     )
 
@@ -416,6 +417,7 @@ def test_a_jobs_file_resumes_per_job(tmp_path: Path) -> None:
         msa="none",
         use_compile_cache=False,
         resume=True,
+        padding=False,
     )
 
     # One explicit checkpoint cannot be shared by two models, so both resolve

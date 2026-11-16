@@ -88,6 +88,7 @@ def _request(tmp_path: Path, *, output: str = "out") -> PredictionRequest:
         output_dir=tmp_path / output,
         cache_dir=tmp_path / "cache",
         seed=0,
+        padding=False,
     )
 
 

@@ -479,6 +479,8 @@ def _predict(
         "--no-cache",
         "--quiet",
         "--json",
+        # The replayed backend reports no padded shape profile.
+        "--no-padding",
         *extra,
     ]
     with backend_override(model, replay_backend(model)):
@@ -615,6 +617,12 @@ def test_plan_resources_from_the_law() -> None:
         "boltz2", {"entities": [{"type": "protein", "id": "A", "sequence": "MK"}]}
     )
     assert small["state"] == "unknown" and "does not extrapolate" in small["reason"]
+    # Padding is on by default, so the demotion says why and how to avoid it.
+    padded = slurm.plan_resources("boltz2", document, padding=True)
+    assert padded["state"] == "unknown" and padded["min_device_memory_gib"] is None
+    assert padded["exceeds_profile"] == ["serving padding"]
+    assert "fitted on unpadded runs" in padded["reason"]
+    assert "--no-padding" in padded["reason"]
 
 
 @pytest.mark.parametrize("n_token", [1280, 1408])
@@ -896,6 +904,7 @@ def test_plan_json_reads_openfold3_confidence_dtype(
         "--weights",
         str(weights),
         "--json",
+        "--no-padding",
     ]
     if option is not None:
         argv += ["--option", f"confidence_dtype={option}"]
@@ -906,8 +915,8 @@ def test_plan_json_reads_openfold3_confidence_dtype(
     assert (block["min_device_memory_gib"] is None) == (state == "unknown")
 
 
-@pytest.mark.parametrize("padding", [False, True])
-def test_plan_json_reads_padding(tmp_path: Path, capsys, padding: bool) -> None:
+@pytest.mark.parametrize("flag", ["--no-padding", None, "--padding"])
+def test_plan_json_reads_padding(tmp_path: Path, capsys, flag: str | None) -> None:
     weights = tmp_path / "w.jax"
     weights.write_bytes(b"x")
     argv = [
@@ -922,12 +931,12 @@ def test_plan_json_reads_padding(tmp_path: Path, capsys, padding: bool) -> None:
         str(weights),
         "--json",
     ]
-    if padding:
-        argv.append("--padding")
+    if flag is not None:
+        argv.append(flag)
     assert cli.main(argv) == 0
     block = json.loads(capsys.readouterr().out)["slurm"]
     assert block["tokens_estimate"] == 1200
-    if not padding:
+    if flag == "--no-padding":
         assert block["state"] == "estimated" and block["min_device_memory_gib"]
         return
     assert block["state"] == "unknown" and block["min_device_memory_gib"] is None

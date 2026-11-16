@@ -1,4 +1,4 @@
-"""Shared shape-profile selection for optional JAX input padding.
+"""Shared shape-profile selection for JAX input padding (on by default).
 
 The public contract deliberately describes semantic axes rather than array
 positions.  Backends remain responsible for schema-aware padding, masks, RNG
@@ -21,8 +21,12 @@ The grid ends at 8,192 rather than at what one card folds because context
 parallelism exists to run the targets that do not fit one card, and every
 derived grid reaches that token ceiling's own derivation (24x for atoms, 2x
 for structural tokens) so no axis can refuse a size the token axis accepts.
-Above the last bucket ``overflow='error'`` still refuses rather than compiling
-an unplanned shape.
+Atoms follow their own constant-step grid from the stored count, under the
+24x-tokens ceiling (:data:`ATOM_BUCKETS`), because the token-derived target
+padded proteins about 3x on the atom axis.
+Above the last bucket the default ``overflow='exact'`` runs the exact size and
+warns, so turning padding on never refuses an input that runs unpadded;
+``overflow='error'`` refuses rather than compiling an unplanned shape.
 
 The second policy is mesh alignment.  A distributed diffusion atom graph needs
 the padded atom count to divide ``32 * rows`` and the padded token count to
@@ -36,18 +40,19 @@ atom graph rather than silently becoming a different shape.
 
 Alignment is the one thing that can move an automatic target off the grid, and
 it mostly does not have to: a bucket ``128 * k`` already divides every
-power-of-two row count up to 128, and its derived atom target ``3,072 * k``
-divides ``32 * rows`` for every ``rows`` that divides 96, so two, three, four,
-six and eight rows leave a bucket's own atom target alone.  A row count with an odd
-factor the bucket index lacks does round the token target past its bucket, by
-at most ``rows - 1`` tokens: three rows take 2,048 to 2,049 but leave 2,304
-(``256 * 9``) alone.  The one-step bound above is therefore a statement about
-the bucket, not about every mesh width.
+power-of-two row count up to 128, and an automatic atom target, a multiple of
+512, divides ``32 * rows`` for every ``rows`` that divides 16, so two, four,
+eight and sixteen rows leave it alone.  A row count with an odd factor does
+round a target past its step -- the atom target to the next multiple of
+``32 * rows``, the token target by at most ``rows - 1`` tokens: three rows
+take 2,048 to 2,049 but leave 2,304 (``256 * 9``) alone.  The one-step bound
+above is therefore a statement about the grid, not about every mesh width.
 """
 
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import dataclass, fields, replace
 from typing import Any
 
@@ -63,25 +68,23 @@ OPENDDE_MSA_PROFILE_DEPTH = 1280
 #: the atoms -- OpenDDE's 8RG4 ran 373 -> 512 tokens and 720 -> 1,024
 #: structural tokens at 1.62x the unpadded wall (jctc-v3 E9-padding).
 TOKEN_BUCKETS = (*range(128, 1024, 128), *range(1024, 8192 + 1, 256))
+#: Automatic atom targets: the stored atom count rounded up to a constant
+#: step -- 512 atoms through 8,192, then 1,024 -- so, like tokens, no job pays
+#: more than one step of padded atom work.  Deriving the target from the token
+#: bucket instead (24 atoms per token, the nucleic-acid ceiling) padded a
+#: protein, at about 8 atoms per token, roughly 3x on the atom axis: OpenFold3
+#: paid 1.156x wall at 1,003 tokens for a 2% token pad (jctc-v3 P-padding).
+#: ``24 * tokens`` stays the ceiling of the token-derived axis
+#: (:func:`resolve_token_axis`).  A 256-atom first rung keeps the smallest
+#: inputs where the old grid put them, and the grid ends at the ceiling of the
+#: last token bucket, 196,608.
+ATOM_STEP_SMALL = 512
+ATOM_STEP_LARGE = 1024
+ATOM_STEP_BOUNDARY = 8192
 ATOM_BUCKETS = (
     256,
-    512,
-    1024,
-    1536,
-    2048,
-    3072,
-    4096,
-    6144,
-    8192,
-    12288,
-    16384,
-    24576,
-    32768,
-    49152,
-    65536,
-    98304,
-    131072,
-    196608,
+    *range(ATOM_STEP_SMALL, ATOM_STEP_BOUNDARY, ATOM_STEP_SMALL),
+    *range(ATOM_STEP_BOUNDARY, 24 * 8192 + 1, ATOM_STEP_LARGE),
 )
 
 #: The same bound on waste the token grid carries, applied to alignment rows:
@@ -279,6 +282,16 @@ def cp_rows(config: PaddingConfig) -> int:
     return rows if isinstance(rows, int) and rows > 1 else 1
 
 
+def warn_overflow(axis: str, size: int, largest: int) -> None:
+    """The one-line notice ``overflow='exact'`` gives instead of a refusal."""
+    warnings.warn(
+        f"input {axis} size {size} exceeds the largest padding bucket {largest}; "
+        "running this axis at its exact size (overflow='exact')",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
 def _cp_aligned_target(target: int, config: PaddingConfig, axis: str) -> int:
     """Round one automatic target up to what the mesh can divide."""
 
@@ -317,12 +330,13 @@ def resolve_axis(
     target = next((candidate for candidate in candidates if candidate >= floor), None)
     if target is not None:
         return _cp_aligned_target(target, config, axis)
+    largest = candidates[-1] if candidates else 0
     if config.overflow == "error":
-        largest = candidates[-1] if candidates else 0
         raise ValueError(
             f"input {axis} size {floor} exceeds the largest standard bucket "
             f"{largest}; pin padding.{axis} or use overflow='exact'"
         )
+    warn_overflow(axis, floor, largest)
     return _cp_aligned_target(floor, config, axis)
 
 
@@ -387,9 +401,22 @@ def resolve_msa_axis(
                 f"{buckets[-1] if buckets else 0}; pin padding.msa or use "
                 "overflow='exact'"
             )
+        warn_overflow("msa", floor, buckets[-1] if buckets else 0)
         target = floor
     # The mesh never splits this axis, so no alignment rounding here.
     return target if input_depth is None else max(floor, min(target, input_depth))
+
+
+def atom_grid_target(size: int) -> int:
+    """``size`` rounded up to the automatic atom grid (:data:`ATOM_BUCKETS`).
+
+    The step continues past the grid's end, so an overflowing token bucket
+    still gets a bounded atom target rather than an unrounded one.
+    """
+    if size <= ATOM_BUCKETS[0]:
+        return ATOM_BUCKETS[0]
+    step = ATOM_STEP_SMALL if size <= ATOM_STEP_BOUNDARY else ATOM_STEP_LARGE
+    return -(-size // step) * step
 
 
 def resolve_token_axis(
@@ -405,6 +432,18 @@ def resolve_token_axis(
 
     Explicit pins retain their meaning. Model-specific MSA limits and LM
     special-token overhead belong to callers, not to a shared bucket grid.
+
+    The automatic atom target is the stored atom count on the constant-step
+    atom grid, capped at ``24 * token_target``, so one token bucket compiles
+    one program per atom step its inputs reach rather than exactly one.  A
+    protein holds about 8 atoms per token, so a 128-token bucket (below 1,024
+    tokens) spans about 1,024 atoms -- two or three 512-atom steps -- and a
+    256-token bucket above 1,024 tokens about 2,048 atoms, two or three
+    1,024-atom steps.  A ligand screen against one target varies by a few
+    dozen atoms and mostly stays in one step.  Synthetic ``cache warm`` jobs
+    therefore cover only the atom steps their own sequences land on; warm
+    real inputs, or pin ``padding.atoms`` for warming and prediction alike,
+    when every input has to hit a warmed program.
     """
     if token_target < 1:
         raise ValueError("token_target must be positive")
@@ -412,7 +451,9 @@ def resolve_token_axis(
         target = fixed_size
         if target is None:
             if axis == "atoms":
-                target = ((24 * token_target + 31) // 32) * 32
+                ceiling = ((24 * token_target + 31) // 32) * 32
+                stored = max(actual, 0 if minimum is None else minimum)
+                target = min(atom_grid_target(stored), ceiling)
             elif axis == "structural_tokens":
                 target = 2 * token_target
             elif axis == "language_model_tokens":

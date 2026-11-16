@@ -426,7 +426,8 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
         ):
             raise ValueError(
                 "padding with TFG guidance is not yet supported; drop "
-                "use_tfg_guidance or --padding"
+                "use_tfg_guidance or pass --no-padding (padding=False), "
+                "since padding is on by default"
             )
 
     def cache_profile(self, request: PredictionRequest) -> dict[str, object]:

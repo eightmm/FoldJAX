@@ -22,6 +22,7 @@ from foldjax.schema import (
     PredictionResult,
     PredictionSample,
 )
+from tests.test_api import shape_profile
 
 
 class _Recorder(OpenDDEBackend):
@@ -37,6 +38,7 @@ class _Recorder(OpenDDEBackend):
                 ),
             ),
             output_dir=request.output_dir,
+            shape_profile=shape_profile(request),
         )
 
 

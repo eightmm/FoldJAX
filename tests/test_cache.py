@@ -1081,7 +1081,11 @@ def test_openfold3_cache_profile_names_every_static_runtime_route(
     tmp_path: Path,
 ) -> None:
     backend = OpenFold3Backend()
-    request = dataclasses.replace(_request(tmp_path), model="openfold3")
+    # Exact shapes, so the padded namespace below is the one that differs.
+    request = dataclasses.replace(_request(tmp_path), model="openfold3", padding=False)
+    assert backend.cache_profile(dataclasses.replace(request, padding=True))[
+        "rng_route"
+    ] == "mask"
 
     serial = backend.cache_profile(request)
     assert serial["cp_devices"] == 1

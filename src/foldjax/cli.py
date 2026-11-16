@@ -85,7 +85,9 @@ def _add_predict_arguments(
         "sampling", "seeds and the model-neutral schedule knobs"
     )
     shapes = parser.add_argument_group(
-        "padding", "opt-in shape normalization for executable reuse"
+        "padding",
+        "shape normalization for executable reuse (on by default; "
+        "--no-padding turns it off)",
     )
     execution = parser.add_argument_group(
         "execution", "device memory, the compile cache, and native options"
@@ -346,11 +348,19 @@ def _add_predict_arguments(
     shapes.add_argument(
         "--padding",
         action="store_true",
-        help="select a token bucket with derived atom capacity, and pad the MSA "
-        "axis to the bucket at or above the rows the unpadded run would process "
-        "(a profile depth is a floor, never a cap); template limits stay at the "
-        "native depth. Disabled by default so existing scientific results and "
-        "exact-shape execution are unchanged",
+        help="pad to the shared shape grid; this is the default, so the flag "
+        "only states it. Each input runs in a token bucket with derived atom "
+        "capacity, and the MSA axis pads to the bucket at or above the rows "
+        "the unpadded run would process (a profile depth is a floor, never a "
+        "cap); template limits stay at the native depth. Inputs in one bucket "
+        "reuse one compiled program; a single cold input can cost up to one "
+        "bucket step of padded work",
+    )
+    shapes.add_argument(
+        "--no-padding",
+        action="store_true",
+        help="run the exact input shapes instead of padding to the grid; "
+        "every input then compiles its own program",
     )
     shapes.add_argument(
         "--pad-tokens",
@@ -394,8 +404,8 @@ def _add_predict_arguments(
     shapes.add_argument(
         "--padding-overflow",
         choices=("error", "exact"),
-        help="when an automatic axis exceeds the standard grid: fail before "
-        "compilation (default) or keep that exact size",
+        help="when an automatic axis exceeds the standard grid: keep that "
+        "exact size with a warning (default) or fail before compilation",
     )
     execution.add_argument(
         "--mem-fraction",
@@ -1019,6 +1029,43 @@ def _as_job_file(
     return job.store(jobs_root), source
 
 
+def _padding_disabled(args: argparse.Namespace) -> bool:
+    """Whether ``--no-padding`` is set, refusing a flag that needs padding on."""
+    if not getattr(args, "no_padding", False):
+        return False
+    conflicts = [
+        flag
+        for flag, value in (
+            ("--padding", getattr(args, "padding", False)),
+            ("--fixed-msa", getattr(args, "fixed_msa", None)),
+            (
+                "--opendde-padding-profile",
+                getattr(args, "opendde_padding_profile", None),
+            ),
+            ("--pad-tokens", getattr(args, "pad_tokens", None)),
+            ("--pad-atoms", getattr(args, "pad_atoms", None)),
+            ("--pad-msa", getattr(args, "pad_msa", None)),
+            ("--pad-templates", getattr(args, "pad_templates", None)),
+            (
+                "--pad-structural-tokens",
+                getattr(args, "pad_structural_tokens", None),
+            ),
+            (
+                "--pad-language-model-tokens",
+                getattr(args, "pad_language_model_tokens", None),
+            ),
+            ("--padding-overflow", getattr(args, "padding_overflow", None)),
+            ("--token-buckets", getattr(args, "token_buckets", None)),
+        )
+        if value not in (None, False)
+    ]
+    if conflicts:
+        raise ValueError(
+            f"--no-padding turns padding off; drop it or {', '.join(conflicts)}"
+        )
+    return True
+
+
 def _request(
     args: argparse.Namespace,
     *,
@@ -1032,6 +1079,7 @@ def _request(
     """
     fixed_msa = getattr(args, "fixed_msa", None)
     auxiliary_profile = getattr(args, "opendde_padding_profile", None)
+    no_padding = _padding_disabled(args)
     if auxiliary_profile is not None:
         from foldjax._opendde_padding import COMPACT_PROFILE
 
@@ -1086,19 +1134,14 @@ def _request(
         "structural_tokens": args.pad_structural_tokens,
         "language_model_tokens": args.pad_language_model_tokens,
     }
-    padding_requested = args.padding or any(
-        value is not None for value in padding_values.values()
-    )
-    if args.padding_overflow is not None and not padding_requested:
-        raise ValueError("--padding-overflow requires --padding or a --pad-* target")
     padding = (
-        PaddingConfig(
+        None
+        if no_padding
+        else PaddingConfig(
             **padding_values,
-            overflow=args.padding_overflow or "error",
+            overflow=args.padding_overflow or "exact",
             auxiliary_profile=auxiliary_profile,
         )
-        if padding_requested
-        else None
     )
     templates = getattr(args, "templates", "none")
     return PredictionRequest(
@@ -1776,9 +1819,13 @@ def _print_warm_prediction_hint(args: argparse.Namespace) -> None:
     command = ["foldjax", "predict", "--model", *args.model, "--input", "JOB.json"]
     options = _options(args.option)
     if "buckets" in options:
-        command.extend(["--option", f"buckets={json.dumps(options['buckets'])}"])
-    elif args.token_buckets is not None or args.padding:
-        command.append("--padding")
+        # AlphaFold3's native bucket list replaces the shared grid, which is on
+        # unless turned off.
+        command.extend(
+            ["--option", f"buckets={json.dumps(options['buckets'])}", "--no-padding"]
+        )
+    elif getattr(args, "no_padding", False):
+        command.append("--no-padding")
     for attribute, flag in (
         ("fixed_msa", "--fixed-msa"),
         ("opendde_padding_profile", "--opendde-padding-profile"),
@@ -1948,8 +1995,12 @@ def _plan_summary(
         "options": public_options(request.options),
         **_effective_sampling(request),
     }
+    # Always present, null when --no-padding turned it off: padding is the
+    # default, so its absence would otherwise read as "unrecorded".
+    summary["padding"] = (
+        request.padding.summary() if request.padding is not None else None
+    )
     if request.padding is not None:
-        summary["padding"] = request.padding.summary()
         bucket = _planned_token_bucket(request, generated)
         if bucket is not None:
             summary["padding_estimate"] = bucket
@@ -1965,7 +2016,7 @@ def _plan_summary(
 def _planned_token_bucket(
     request: PredictionRequest, generated: Mapping[str, Any] | None
 ) -> dict[str, Any] | None:
-    """The token bucket ``--padding`` would pick, from the job's token estimate.
+    """The token bucket padding would pick, from the job's token estimate.
 
     The ``padding`` block shows the request, which leaves an unpinned axis
     null; the bucket itself is chosen from the featurized token count. That

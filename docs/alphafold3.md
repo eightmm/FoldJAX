@@ -106,13 +106,14 @@ directly with `--db_dir` — that path is outside FoldJAX.
 
 ## Cache warming and serving padding
 
-AlphaFold 3's automatic `--padding` and synthetic `cache warm --token-buckets`
+AlphaFold 3's automatic padding (the default) and synthetic `cache warm --token-buckets`
 use the carried runner's grid: 256, 512, 768, 1024, 1280, 1536, 2048, 2560,
 3072, 3584, 4096, 4608, 5120. This replaces the generic grid previously used
 by neutral AF3 padding, whose first bucket was 128. An explicit
 `--pad-tokens 128` still selects 128, and explicit targets above 5120 are also
-supported. Inputs above the automatic grid require an explicit target or the
-existing exact-overflow policy. Padding remains opt-in.
+supported. Inputs above the automatic grid run at their exact size with a
+warning (`--padding-overflow error` refuses them). Padding is on by default;
+`--no-padding` runs exact shapes, and the native `buckets` option needs it.
 
 Single-sequence warming retains the native 16,384-row featurization pool;
 real alignments use that same padded axis. The model retains its native
@@ -122,7 +123,7 @@ token target, MSA selection cap, and model options when warming and predicting:
 
 ```bash
 foldjax cache warm --model alphafold3 --token-buckets 256 --msa single
-foldjax predict --model alphafold3 --input job.yaml --padding --msa auto
+foldjax predict --model alphafold3 --input job.yaml --msa auto
 ```
 
 Tokamax keys the actual numeric model input structure, shape, and dtype,

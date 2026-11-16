@@ -19,12 +19,14 @@ from foldjax.schema import (
     PredictionResult,
     PredictionSample,
 )
+from tests.test_api import shape_profile
 
 
 class _ChattyBackend(Backend):
     """Prints from Python and from the file-descriptor level, as native code does."""
 
     name = "boltz2"
+    padding_axes = ("tokens",)
 
     def capabilities(self) -> ModelCapabilities:
         return ModelCapabilities(model="boltz2", input_formats=("native",))
@@ -43,6 +45,7 @@ class _ChattyBackend(Backend):
                 ),
             ),
             output_dir=request.output_dir,
+            shape_profile=shape_profile(request),
         )
 
 
@@ -115,6 +118,7 @@ class _TwoSampleBackend(Backend):
     """Two structures per seed; seed 2's second one ranks first."""
 
     name = "boltz2"
+    padding_axes = ("tokens",)
 
     def capabilities(self) -> ModelCapabilities:
         return ModelCapabilities(model="boltz2", input_formats=("native",))
@@ -133,7 +137,10 @@ class _TwoSampleBackend(Backend):
                 )
             )
         return PredictionResult(
-            model=self.name, samples=tuple(samples), output_dir=request.output_dir
+            model=self.name,
+            samples=tuple(samples),
+            output_dir=request.output_dir,
+            shape_profile=shape_profile(request),
         )
 
 

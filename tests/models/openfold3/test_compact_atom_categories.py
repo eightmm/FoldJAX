@@ -721,6 +721,7 @@ def test_managed_raw_and_archive_paths_compact_only_the_model_copy(
         weights=weights,
         output_dir=tmp_path / "out",
         cache_dir=None,
+        padding=False,
     )
 
     OpenFold3Backend().predict(request)

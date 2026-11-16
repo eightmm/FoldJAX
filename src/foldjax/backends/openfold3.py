@@ -914,6 +914,12 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
                     "pocket-guided sampling cannot be combined with "
                     f"{' or '.join(blocked)}; drop that option, or remove the "
                     "constraint to fold without it"
+                    + (
+                        ". Padding is on by default; --no-padding "
+                        "(padding=False) turns it off"
+                        if "padding" in blocked
+                        else ""
+                    )
                 )
             overrides["pocket_sampling"] = pocket_sampling
         # Written only when off, and only where a confidence head runs: an

@@ -25,13 +25,18 @@ class DummyBackend(Backend):
 
     name = "boltz2"
     compile_options = ("steps",)
+    padding_axes = ("tokens",)
 
     def __init__(self, input_formats: tuple[str, ...] = ("native",)) -> None:
         self.input_formats = input_formats
         self.seen: PredictionRequest | None = None
 
     def capabilities(self) -> ModelCapabilities:
-        return ModelCapabilities(model=self.name, input_formats=self.input_formats)
+        return ModelCapabilities(
+            model=self.name,
+            input_formats=self.input_formats,
+            padding_axes=self.padding_axes,
+        )
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
         self.seen = request
@@ -46,7 +51,15 @@ class DummyBackend(Backend):
             ),
             output_dir=request.output_dir,
             raw={"called": True},
+            shape_profile=shape_profile(request),
         )
+
+
+def shape_profile(request: PredictionRequest) -> dict | None:
+    """The concrete profile a padded run must report, for one-atom fakes."""
+    if request.padding is None:
+        return None
+    return {"actual": {"tokens": 1}, "target": {"tokens": 128}, "changed": True}
 
 
 class SessionBackend(DummyBackend):
@@ -683,6 +696,7 @@ def test_alphafold3_bucket_elements_are_validated_during_resolution(
                 weights=weights,
                 output_dir=tmp_path / "out",
                 options={"buckets": [256, "bad"]},
+                padding=False,
             )
         )
 
@@ -809,6 +823,7 @@ def test_non_session_resume_does_not_construct_scalar_backends(tmp_path: Path) -
                     ),
                 ),
                 output_dir=request.output_dir,
+                shape_profile=shape_profile(request),
             )
 
     request = _request(tmp_path, seed=0, num_seeds=2)
@@ -1338,6 +1353,7 @@ def test_numpy_scores_are_normalized_before_json_outputs(tmp_path: Path) -> None
                     ),
                 ),
                 output_dir=request.output_dir,
+                shape_profile=shape_profile(request),
             )
 
     output = tmp_path / "out"
@@ -1637,6 +1653,7 @@ def test_coordinate_fallback_drops_a_missing_structure_path(tmp_path: Path) -> N
                     ),
                 ),
                 output_dir=request.output_dir,
+                shape_profile=shape_profile(request),
             )
 
     with backend_override("boltz2", CoordinateBackend):
@@ -1656,6 +1673,7 @@ def test_common_result_reports_the_resolved_output_directory(tmp_path: Path) -> 
                     ),
                 ),
                 output_dir=tmp_path / "backend-internal",
+                shape_profile=shape_profile(request),
             )
 
     requested = tmp_path / "public-output"

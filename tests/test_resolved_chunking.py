@@ -74,6 +74,7 @@ def _request(tmp_path, model):
         output_dir=tmp_path / "out",
         msa="single",
         seed=0,
+        padding=False,
     )
 
 

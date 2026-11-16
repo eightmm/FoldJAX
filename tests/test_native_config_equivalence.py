@@ -90,6 +90,7 @@ def _request(tmp_path: Path, port: _Port, **kwargs: Any) -> PredictionRequest:
         "output_dir": tmp_path / "out",
         "seed": 5,
         "cache_dir": tmp_path / "cache",
+        "padding": False,
     }
     fields.update(kwargs)
     return PredictionRequest(**fields)

@@ -79,6 +79,8 @@ for model in "${models[@]}"; do
         alphafold3|esmfold2)
             if ((!exact)); then preset=(--padding); fi ;;
     esac
+    # FoldJAX pads by default, so the exact-shape path has to be asked for.
+    if ((exact)); then preset+=(--no-padding); fi
     if [[ $model == opendde && -n $OPENDDE_PADDING_PROFILE ]]; then
         preset+=(--opendde-padding-profile "$OPENDDE_PADDING_PROFILE")
     fi

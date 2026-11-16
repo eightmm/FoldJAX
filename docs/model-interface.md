@@ -121,6 +121,8 @@ depth control, not a guarantee of identical selected rows or identical tensors.
 | OpenFold3 | Per-cycle cap, bounded by the adapter at 1024; host union may be larger |
 | ESMFold2 | Per-cycle sampling cap when the checkpoint uses an MSA encoder; profiles remain model-native |
 
+Padding is on by default here as in `PredictionRequest`;
+`ExecutionConfig(padding=False)` runs exact shapes.
 `ExecutionConfig(padding=...)` selects shapes only: the MSA axis is padded up
 to a bucket that holds the rows the model would have read anyway, so enabling
 padding needs no `ModelConfig(msa_depth=...)` and never lowers it. `msa_depth`

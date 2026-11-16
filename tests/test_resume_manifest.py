@@ -1853,7 +1853,7 @@ def test_a_recorded_retired_option_refuses_the_resume_instead_of_rerunning(
     # Refused, not recomputed: the one call is the run that wrote the manifest.
     assert len(calls) == 1
     message = str(refusal.value)
-    assert "--padding" in message
+    assert "--no-padding" in message
     assert "--output-dir" in message
 
 

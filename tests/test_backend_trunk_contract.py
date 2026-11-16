@@ -134,6 +134,7 @@ def test_openfold3_trunk_only_never_reaches_the_writer(
         cache_dir=tmp_path / "cache",
         stop_after="trunk",
         representations=("single",),
+        padding=False,
     )
 
     result = OpenFold3Backend().predict(request)

@@ -418,6 +418,7 @@ def test_seeds_run_the_job_once_each_and_return_every_structure(
         seeds=(7, 11, 13),
         use_compile_cache=False,
         msa="single",
+        padding=False,
     )
     with backend_override("opendde", Recorder):
         result = foldjax.predict(request)
@@ -464,6 +465,7 @@ def test_num_seeds_child_manifests_name_only_the_seed_that_ran(
                 seed=4,
                 num_seeds=2,
                 use_compile_cache=False,
+                padding=False,
             )
         )
 
@@ -504,6 +506,7 @@ def test_one_seed_keeps_the_output_directory_it_was_given(
                 seed=4,
                 use_compile_cache=False,
                 msa="single",
+                padding=False,
             )
         )
     assert seen == [out]

@@ -3,7 +3,7 @@
 An exact-input warm still runs one representative seed through prediction:
 
 ```bash
-foldjax cache warm --model boltz2 --input job.json --padding --msa single
+foldjax cache warm --model boltz2 --input job.json --msa single
 ```
 
 To prepare several serving sizes on the selected device, supply token buckets
@@ -31,7 +31,7 @@ integer. `auto` selects the full grid. The ordinary grid is
 8192. AlphaFold 3 uses its carried runner's native list: 256, 512, 768, 1024,
 1280, 1536, 2048, 2560, 3072, 3584, 4096, 4608, 5120. An explicit native AF3
 `--option buckets='[...]'` selects that native route and retains its cache
-namespace; do not combine it with neutral `--padding` options. Native intervals
+namespace and needs `--no-padding`, since neutral padding is the default. Native intervals
 must contain two distinct positive lengths to be verified this way.
 
 Each bucket executes **two** nearby, shorter single-chain protein lengths under
@@ -42,18 +42,22 @@ installed. This runs real prediction and kernel tuning, can be expensive, and
 should be submitted to a GPU compute node on a cluster. It does not download
 weights or claim that the synthetic structure has scientific value.
 
-OpenDDE's automatic atom/structural targets now follow actual stored features,
-so its bucket report explicitly limits coverage to the representative concrete
-shapes. Token bucket and fixed MSA depth alone do not guarantee a hit for every
-chemistry in that band. Warm an actual input to populate its profile:
+Automatic atom targets follow each input's stored atom count on every model
+but AlphaFold 3 (512-atom steps through 8,192, then 1,024, capped at 24 atoms
+per token), and OpenDDE's structural targets follow its stored structural
+tokens, so each bucket report limits coverage to the representative concrete
+shapes (`shape_coverage`). Token bucket and fixed MSA depth alone do not
+guarantee a hit for every chemistry in that band: a protein at about 8 atoms
+per token lands on a different atom step than the synthetic poly-alanine.
+Warm an actual input to populate its profile:
 
 ```bash
 foldjax cache warm --model opendde --input job.yaml --msa auto \
   --fixed-msa 2048 --pad-tokens 1024
 ```
 
-Alternatively, use the same sufficient `--pad-atoms` and
-`--pad-structural-tokens` pins in warming and prediction. Existing dimensions
+Alternatively, use the same sufficient `--pad-atoms` (and, on OpenDDE,
+`--pad-structural-tokens`) pins in warming and prediction. Existing dimensions
 are never truncated to make a pin fit. See [current measurements and controls](cluster-memory-2026-10-20.md).
 
 OpenDDE also has an opt-in [compact serving profile](opendde-compact-profile.md):
@@ -162,7 +166,7 @@ loading model parameters, or searching for MSAs, add `--verify-only`:
 ```bash
 foldjax cache warm --verify-only --model protenix --token-buckets 128..1024 \
   --fixed-msa 2048 --msa single
-foldjax cache warm --verify-only --model esmfold2 --input job.json --padding
+foldjax cache warm --verify-only --model esmfold2 --input job.json
 ```
 
 This always prints JSON with the expected namespace and graph revision, each
@@ -186,7 +190,7 @@ again after an update.
 To check a real input's executable key rather than just its namespace, use:
 
 ```bash
-foldjax cache verify --model esmfold2 --input job.yaml --padding --msa single
+foldjax cache verify --model esmfold2 --input job.yaml --msa single
 foldjax cache verify --model boltz2 --input job.yaml --fixed-msa 2048 --msa auto
 ```
 
@@ -227,10 +231,12 @@ topology and runtime settings also participate in its executable key.
 
 For prediction reuse, select the same model/weights, device, runtime, token and
 other padded capacities, MSA cap, and compile-relevant native options.
-Bucket-warmed AF3/ESMFold2 profiles require `predict --padding`; the four-model
-fixed-MSA profiles require the same `predict --fixed-msa N` (recommended 2048).
-An unpadded exact-length prediction does not match those warmed profiles.
-`--padding` chooses the token bucket; explicit non-grid targets require the same
+Bucket-warmed AF3/ESMFold2 profiles need a padded prediction (the default);
+the four-model fixed-MSA profiles require the same `predict --fixed-msa N`
+(recommended 2048). A `--no-padding` exact-length prediction does not match
+those warmed profiles. Padding chooses the token bucket, and the atom axis
+follows each input's stored atoms, so a synthetic warm covers only the atom
+steps its own jobs land on (the report's `shape_coverage`); explicit non-grid targets require the same
 `--pad-tokens` value in prediction. Templates, extra modalities, language-model
 providers, context parallelism, or other shape axes can require additional
 executables. A warm report does not promise portability across GPU kinds or

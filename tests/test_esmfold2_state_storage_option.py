@@ -28,6 +28,7 @@ def _request(tmp_path):
         weights=_fake_session_weights(tmp_path),
         output_dir=tmp_path / "out",
         seed=7,
+        padding=False,
     )
 
 

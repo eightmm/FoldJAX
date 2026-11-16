@@ -85,12 +85,14 @@ user-reported 1UBQ/2LZM/4HHB comparison on these four models finding lDDT within
 ±0.01 across 1024/2048/4096 rows; the underlying measurements are not bundled,
 and this finite panel is not a general accuracy guarantee. Core `foldjax predict`
 and `cache warm` still enable the preset only when explicitly requested.
-AlphaFold 3 and ESMFold2 receive `--padding` and no fixed-MSA flag, including in
-mixed-model submissions. `--exact` disables all automatic presets, including
-their padding; it does not remove explicit padding
-or depth options supplied after `--`. `--exact` and explicit `--fixed-msa` are
+AlphaFold 3 and ESMFold2 receive `--padding` (a no-op: FoldJAX pads by
+default) and no fixed-MSA flag, including in mixed-model submissions.
+`--exact` drops all automatic presets and passes `--no-padding`, so FoldJAX
+runs the exact input shapes; an explicit padding option supplied after `--`
+is then refused rather than half-applied, while depth options such as
+`--max-msa-depth` still pass through. `--exact` and explicit `--fixed-msa` are
 mutually exclusive. To reproduce the publisher's exact-shape path, omit any
-other padding/depth overrides as well.
+other depth overrides as well.
 
 ## Warm and verify a shared cache
 

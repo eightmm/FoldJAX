@@ -58,7 +58,7 @@ from foldjax.execution import BACKEND_DEFAULT, DETERMINISTIC_API_OPTION
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
 from foldjax.models._compile_policy import compiler_options
-from foldjax.padding import PaddingPlan
+from foldjax.padding import PaddingPlan, warn_overflow
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -627,7 +627,8 @@ def _prediction_buckets(
     if "buckets" in options:
         raise ValueError(
             "padding and the native AlphaFold3 option 'buckets' were both set; "
-            "pass one of them"
+            "padding is on by default, so pass --no-padding (padding=False) "
+            "with 'buckets'"
         )
     if request.padding.tokens is not None:
         return (request.padding.tokens,)
@@ -676,6 +677,8 @@ def _resolved_token_padding_plan(
             f"input tokens size {actual} exceeds the requested AlphaFold3 "
             f"padding limit {buckets[-1]}"
         )
+    if actual > buckets[-1]:
+        warn_overflow("tokens", actual, buckets[-1])
     return PaddingPlan(
         actual={"tokens": actual},
         storage={"tokens": actual},
@@ -1343,12 +1346,14 @@ class AlphaFold3Backend(Backend):
         if request.padding is not None and "buckets" in request.options:
             raise ValueError(
                 "padding and the native AlphaFold3 option 'buckets' were both "
-                "set; pass one of them"
+                "set; padding is on by default, so pass --no-padding "
+                "(padding=False) with 'buckets'"
             )
         if request.padding is not None and request.options.get("source") is not None:
             raise ValueError(
                 "neutral AlphaFold3 padding requires FoldJAX's managed runtime; "
-                "an external source cannot guarantee prefix-stable diffusion noise"
+                "an external source cannot guarantee prefix-stable diffusion "
+                "noise, so pass --no-padding (padding=False) with it"
             )
         super().validate_request(request)
 

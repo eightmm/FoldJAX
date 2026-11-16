@@ -55,7 +55,7 @@ def _request(tmp_path: Path, model: str, **fields: Any) -> PredictionRequest:
         weights=weights,
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
-        **fields,
+        **{"padding": False, **fields},
     )
 
 
