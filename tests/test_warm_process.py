@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from foldjax import _warm_process, warm_buckets, warmup
-from foldjax.schema import JobSource, PaddingConfig, PredictionRequest
+from foldjax.schema import DEFAULT_PADDING, JobSource, PaddingConfig, PredictionRequest
 
 
 def _install_worker_stubs():
@@ -640,6 +640,18 @@ def test_request_transport_preserves_known_types_and_rejects_host_only_options(
         _warm_process._request_from_packet(_warm_process.request_packet(request))
         == request
     )
+    # The default padding stays the default, which an option that cannot run
+    # padded may turn off; an explicit profile stays explicit.
+    for padding in (DEFAULT_PADDING, PaddingConfig()):
+        packet = json.loads(
+            json.dumps(
+                _warm_process.request_packet(
+                    dataclasses.replace(request, padding=padding)
+                )
+            )
+        )
+        restored = _warm_process._request_from_packet(packet).padding
+        assert (restored is DEFAULT_PADDING) is (padding is DEFAULT_PADDING)
     with pytest.raises(TypeError, match="isolation='in-process'"):
         warmup.warm_cache(
             dataclasses.replace(request, options={"callback": lambda: None}),

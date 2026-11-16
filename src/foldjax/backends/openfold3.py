@@ -617,6 +617,34 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         profile["rng_route"] = "mask" if request.padding is not None else "native"
         return profile
 
+    def padding_conflict(self, request: PredictionRequest) -> str | None:
+        # The pocket-guided sampler `predict` refuses with padding, read from
+        # the document: a common job's pocket constraint becomes the query's
+        # `pocket_constraint` (`foldjax.input`). A feature archive is only
+        # judged once featurized, so it keeps that refusal.
+        if request.input is None or request.input_format == "openfold3-features":
+            return None
+        from foldjax.input import read_job_document
+
+        try:
+            document = read_job_document(Path(request.input))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(document, dict):
+            return None
+        if request.input_format == "foldjax":
+            constraints = document.get("constraints") or ()
+            found = isinstance(constraints, list) and any(
+                isinstance(item, dict) and item.get("pocket") for item in constraints
+            )
+        else:
+            queries = document.get("queries")
+            found = isinstance(queries, dict) and any(
+                isinstance(query, dict) and query.get("pocket_constraint")
+                for query in queries.values()
+            )
+        return "pocket_constraint" if found else None
+
     def validate_native_options(self, options: dict[str, Any]) -> None:
         _compile_enabled(dict(options))
         # Both memory-policy values are knowable without a device, so a
@@ -915,8 +943,7 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
                     f"{' or '.join(blocked)}; drop that option, or remove the "
                     "constraint to fold without it"
                     + (
-                        ". Padding is on by default; --no-padding "
-                        "(padding=False) turns it off"
+                        ". --no-padding (padding=False) turns padding off"
                         if "padding" in blocked
                         else ""
                     )

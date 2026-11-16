@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from foldjax.schema import (
+    DEFAULT_PADDING,
     JobSource,
     PaddingConfig,
     PredictionError,
@@ -56,8 +57,14 @@ def request_packet(request: PredictionRequest) -> dict[str, Any]:
                 str(value) if isinstance(value, Path) else value
                 for value in packet[name]
             ]
+    # The default travels by name: it is one shared instance, and only it
+    # gives way to an option that cannot run padded.
     packet["padding"] = (
-        request.padding.summary() if request.padding is not None else None
+        "default"
+        if request.padding is DEFAULT_PADDING
+        else request.padding.summary()
+        if request.padding is not None
+        else None
     )
     packet["source"] = request.source.summary() if request.source is not None else None
     packet["options"] = _json_options(dict(request.options))
@@ -66,7 +73,9 @@ def request_packet(request: PredictionRequest) -> dict[str, Any]:
 
 def _request_from_packet(packet: dict[str, Any]) -> PredictionRequest:
     values = dict(packet)
-    if values.get("padding") is not None:
+    if values.get("padding") == "default":
+        values["padding"] = DEFAULT_PADDING
+    elif values.get("padding") is not None:
         values["padding"] = PaddingConfig(**values["padding"])
     if values.get("source") is not None:
         values["source"] = JobSource(**values["source"])

@@ -943,6 +943,38 @@ def test_plan_json_reads_padding(tmp_path: Path, capsys, flag: str | None) -> No
     assert block["exceeds_profile"] == ["serving padding"]
 
 
+@pytest.mark.parametrize("flag", [None, "--padding", "--pad-tokens=256"])
+def test_plan_runs_an_option_that_cannot_pad_unpadded_unless_padding_was_asked(
+    tmp_path: Path, capsys, flag: str | None
+) -> None:
+    weights = tmp_path / "w.jax"
+    weights.write_bytes(b"x")
+    argv = [
+        "plan",
+        "--model",
+        "boltz2",
+        "--sequence",
+        "M" * 120,
+        "--msa",
+        "single",
+        "--weights",
+        str(weights),
+        "--option",
+        "use_potentials=true",
+        "--json",
+    ]
+    if flag is not None:
+        with pytest.raises(ValueError, match="use_potentials .*--no-padding"):
+            cli.main([*argv, flag])
+        return
+    with pytest.warns(UserWarning, match="use_potentials cannot run padded"):
+        assert cli.main(argv) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["padding"] == {"disabled_by": "use_potentials"}
+    assert "padding_estimate" not in summary
+    assert "serving padding" not in summary["slurm"].get("exceeds_profile", [])
+
+
 @pytest.mark.parametrize(
     "inputs",
     [

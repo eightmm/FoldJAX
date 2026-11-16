@@ -270,8 +270,8 @@ same order to 2.4e-6 Å. The RDKit conformer ensemble depends on the RDKit
 version, so FoldJAX's environment and upstream's differ there.
 
 Refused combinations, with an error rather than a fold without the
-constraint: padding (the default, so pass `--no-padding`; the host-streamed
-program has no refinement) and
+constraint: explicit padding (the default padding steps aside for it; the
+host-streamed program has no refinement) and
 `cp_devices > 1` (the search has not been run on a mesh), and the replay
 routes (`noise_tape`, `noise_mask`, `augmentation_tape`, `noise_fn`) of the
 direct API. `deterministic=true` is compatible: the search is ordinary

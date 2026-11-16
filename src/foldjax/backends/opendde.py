@@ -415,6 +415,12 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
                     "context parallelism cannot partition"
                 )
 
+    def padding_conflict(self, request: PredictionRequest) -> str | None:
+        # The refusal in `validate_request` below.
+        if self.canonical_options(request.options).get("use_tfg_guidance") is True:
+            return "use_tfg_guidance"
+        return None
+
     def validate_request(self, request: PredictionRequest) -> None:
         super().validate_request(request)
         # The canonical form, where every switch spelling is a `bool`: a raw
@@ -426,8 +432,8 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
         ):
             raise ValueError(
                 "padding with TFG guidance is not yet supported; drop "
-                "use_tfg_guidance or pass --no-padding (padding=False), "
-                "since padding is on by default"
+                "use_tfg_guidance or pass --no-padding (padding=False) "
+                "instead of requesting padding"
             )
 
     def cache_profile(self, request: PredictionRequest) -> dict[str, object]:

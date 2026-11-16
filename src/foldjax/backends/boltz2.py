@@ -711,6 +711,30 @@ def _forced_constraint_kinds(path: str | Path) -> tuple[str, ...]:
     return tuple(kinds)
 
 
+def _forced_steering(path: str | Path) -> str | None:
+    """What in the document turns on upstream's eager steering, or None.
+
+    A forced pocket/contact constraint (`_forced_constraint_kinds`, the same
+    ``constraints`` list in a common job and a native Boltz-2 YAML) or a
+    native ``templates`` entry with ``force: true`` (`models/boltz2/api.py`,
+    ``_carries_guidance_constraints``).
+    """
+    kinds = _forced_constraint_kinds(path)
+    if kinds:
+        return f"forced {kinds[0]} constraint"
+    from foldjax.input import read_job_document
+
+    try:
+        document = read_job_document(Path(path))
+    except (OSError, ValueError):
+        return None
+    if isinstance(document, dict):
+        for item in document.get("templates") or ():
+            if isinstance(item, dict) and item.get("force") is True:
+                return "forced template"
+    return None
+
+
 class Boltz2Backend(Backend):
     name = "boltz2"
     session_reuse = True
@@ -1576,6 +1600,19 @@ class Boltz2Backend(Backend):
             padding_axes=self.padding_axes,
         )
 
+    def padding_conflict(self, request: PredictionRequest) -> str | None:
+        # The refusals in `validate_request` below and the native API's
+        # eager-steering refusal (`blocked_by_eager_steering`).
+        if "bucket" in request.options:
+            return None
+        options = self.canonical_options(request.options)
+        for name in ("subsample_msa", "use_potentials"):
+            if options.get(name) is True:
+                return name
+        if options.get("steering_args") is None and request.input is not None:
+            return _forced_steering(request.input)
+        return None
+
     def validate_request(self, request: PredictionRequest) -> None:
         # Ahead of `super()`, which would answer a removed name with its
         # generic "unsupported boltz2 options" line and leave the caller to
@@ -1614,7 +1651,7 @@ class Boltz2Backend(Backend):
                 if options.get(name) is True:
                     raise ValueError(
                         f"{name} {reason}; drop it or pass --no-padding "
-                        "(padding=False), since padding is on by default"
+                        "(padding=False) instead of requesting padding"
                     )
         if (
             request.input_format == "foldjax"
@@ -1639,10 +1676,7 @@ class Boltz2Backend(Backend):
             if blocked:
                 message = steering_conflict_message(blocked)
                 if "padding" in blocked:
-                    message += (
-                        ". Padding is on by default; --no-padding "
-                        "(padding=False) turns it off"
-                    )
+                    message += ". --no-padding (padding=False) turns padding off"
                 raise ValueError(message)
         super().validate_request(request)
 

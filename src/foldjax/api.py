@@ -69,6 +69,7 @@ from foldjax.pocket_selection import requested as pocket_selection_requested
 from foldjax.registry import get_backend
 from foldjax.result_validation import _sample_index, _validate_result
 from foldjax.schema import (
+    DEFAULT_PADDING,
     DEFAULT_SEEDS,
     JOB_DOCUMENT_SUFFIXES,
     JOB_SEEDS,
@@ -349,8 +350,36 @@ def resolve_request(
         )
     )
     resolved = dataclasses.replace(request, **updates) if updates else request
+    resolved = _yield_default_padding(resolved, backend)
     backend.validate_request(resolved)
     return resolved
+
+
+def _yield_default_padding(
+    request: PredictionRequest, backend: Backend
+) -> PredictionRequest:
+    """Turn the *default* padding off for an option that cannot run padded.
+
+    Padding is on by default, and an option such as AlphaFold 3's native
+    ``buckets`` or Boltz-2's ``use_potentials`` worked unpadded before that
+    default existed; it keeps working, with a one-line notice and the option
+    recorded as ``padding_disabled_by``. Padding the caller asked for
+    (``padding=True``, a ``PaddingConfig``, ``--padding`` or a ``--pad-*``
+    flag) is left on, and the backend refuses the combination.
+    """
+    if request.padding is not DEFAULT_PADDING:
+        return request
+    option = backend.padding_conflict(request)
+    if option is None:
+        return request
+    warnings.warn(
+        f"{backend.name}: {option} cannot run padded, so this run uses the exact "
+        "input shapes (padding is on by default; request it explicitly to be "
+        "refused instead)",
+        UserWarning,
+        stacklevel=3,
+    )
+    return dataclasses.replace(request, padding=None, padding_disabled_by=option)
 
 
 def preflight(request: PredictionRequest, *, backend: Backend | None = None) -> None:

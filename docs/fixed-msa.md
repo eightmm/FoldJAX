@@ -25,7 +25,8 @@ foldjax predict --model boltz2 --input job.json --msa auto --fixed-msa 2048
 `examples/slurm/foldjax-submit` accepts `--fixed-msa N` or the site variable
 `FIXED_MSA_DEPTH` to override 2048; `--exact` disables its automatic preset.
 AlphaFold 3 and ESMFold2 never receive that wrapper flag; the scripts pass
-them `--padding` (a no-op now that padding is the default) instead. `warm.sbatch` and its `--verify-only` mode use the
+them `--padding` (explicit, so an option that cannot run padded is refused)
+instead. `warm.sbatch` and its `--verify-only` mode use the
 same model-specific presets, including in mixed-model jobs. Pass the same
 `--exact` or capacity override to every stage.
 

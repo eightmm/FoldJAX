@@ -2545,3 +2545,114 @@ def test_every_stripped_default_is_part_of_the_compile_identity():
             "add them to compile_options, or to outside_the_identity above "
             "with the code that justifies it"
         )
+
+
+_POCKET = {"binder": "B", "contacts": [["A", 1]]}
+
+
+@pytest.mark.parametrize(
+    ("backend", "options", "document", "input_format", "expected"),
+    [
+        (AlphaFold3Backend, {"buckets": [256, 512]}, {}, "native", "buckets"),
+        (AlphaFold3Backend, {"source": "/opt/af3"}, {}, "native", "source"),
+        (AlphaFold3Backend, {}, {}, "native", None),
+        (Boltz2Backend, {"use_potentials": True}, {}, "native", "use_potentials"),
+        (Boltz2Backend, {"subsample_msa": "true"}, {}, "native", "subsample_msa"),
+        (
+            Boltz2Backend,
+            {},
+            {"constraints": [{"pocket": {**_POCKET, "force": True}}]},
+            "foldjax",
+            "forced pocket constraint",
+        ),
+        (
+            Boltz2Backend,
+            {},
+            {"templates": [{"cif": "t.cif", "force": True}]},
+            "native",
+            "forced template",
+        ),
+        # Explicit steering arguments replace the automatic eager steering.
+        (
+            Boltz2Backend,
+            {"steering_args": {"fk_steering": False}},
+            {"constraints": [{"pocket": {**_POCKET, "force": True}}]},
+            "foldjax",
+            None,
+        ),
+        (Boltz2Backend, {}, {"constraints": [{"pocket": _POCKET}]}, "foldjax", None),
+        (
+            ProtenixBackend,
+            {"use_tfg_guidance": True},
+            [{}],
+            "native",
+            "use_tfg_guidance",
+        ),
+        (
+            ProtenixBackend,
+            {},
+            [{"constraint": {"contact": [{"residue1": ["A", 1, 1]}]}}],
+            "native",
+            "contact constraint",
+        ),
+        (OpenDDEBackend, {"use_tfg_guidance": True}, {}, "native", "use_tfg_guidance"),
+        (
+            OpenFold3Backend,
+            {},
+            {"constraints": [{"pocket": _POCKET}]},
+            "foldjax",
+            "pocket_constraint",
+        ),
+        (
+            OpenFold3Backend,
+            {},
+            {"queries": {"q": {"chains": [], "pocket_constraint": {"x": 1}}}},
+            "native",
+            "pocket_constraint",
+        ),
+        (OpenFold3Backend, {}, {"queries": {"q": {"chains": []}}}, "native", None),
+    ],
+)
+def test_padding_conflict_names_the_option_that_cannot_run_padded(
+    tmp_path: Path, backend, options, document, input_format, expected
+) -> None:
+    job = tmp_path / "job.json"
+    job.write_text(json.dumps(document))
+    request = PredictionRequest(
+        model=backend.name,
+        input=job,
+        input_format=input_format,
+        options=options,
+    )
+    assert backend().padding_conflict(request) == expected
+
+
+def test_default_padding_gives_way_and_explicit_padding_refuses(
+    tmp_path: Path,
+) -> None:
+    from foldjax.api import resolve_request
+    from foldjax.schema import DEFAULT_PADDING, padding_record
+
+    request = dataclasses.replace(
+        _request(tmp_path, "alphafold3", buckets=[256, 512]),
+        input_format="native",
+        padding=DEFAULT_PADDING,
+    )
+    assert request.padding is DEFAULT_PADDING
+    omitted = PredictionRequest(model="alphafold3", input=request.input)
+    assert omitted.padding is DEFAULT_PADDING
+    with pytest.warns(UserWarning, match="buckets cannot run padded"):
+        resolved = resolve_request(request, draw_seeds=False)
+    assert resolved.padding is None
+    assert resolved.padding_disabled_by == "buckets"
+    assert padding_record(resolved) == {"disabled_by": "buckets"}
+    # Resolving again is a no-op: the request no longer holds the default.
+    assert resolve_request(resolved, draw_seeds=False) == resolved
+
+    for explicit in (True, PaddingConfig()):
+        asked = dataclasses.replace(request, padding=explicit)
+        assert asked.padding is not DEFAULT_PADDING
+        with pytest.raises(ValueError, match="'buckets' were both set"):
+            resolve_request(asked, draw_seeds=False)
+    # Turning padding back on clears the provenance it no longer describes.
+    assert dataclasses.replace(resolved, padding=True).padding_disabled_by is None

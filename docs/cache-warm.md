@@ -31,7 +31,8 @@ integer. `auto` selects the full grid. The ordinary grid is
 8192. AlphaFold 3 uses its carried runner's native list: 256, 512, 768, 1024,
 1280, 1536, 2048, 2560, 3072, 3584, 4096, 4608, 5120. An explicit native AF3
 `--option buckets='[...]'` selects that native route and retains its cache
-namespace and needs `--no-padding`, since neutral padding is the default. Native intervals
+namespace; the default padding steps aside for it, and explicit neutral
+padding options are refused with it. Native intervals
 must contain two distinct positive lengths to be verified this way.
 
 Each bucket executes **two** nearby, shorter single-chain protein lengths under

@@ -627,8 +627,8 @@ def _prediction_buckets(
     if "buckets" in options:
         raise ValueError(
             "padding and the native AlphaFold3 option 'buckets' were both set; "
-            "padding is on by default, so pass --no-padding (padding=False) "
-            "with 'buckets'"
+            "drop the padding request, or pass --no-padding (padding=False), "
+            "to use 'buckets'"
         )
     if request.padding.tokens is not None:
         return (request.padding.tokens,)
@@ -1335,6 +1335,14 @@ class AlphaFold3Backend(Backend):
             input_representations=("single_inputs",),
         )
 
+    def padding_conflict(self, request: PredictionRequest) -> str | None:
+        # The two refusals in `validate_request` below.
+        if "buckets" in request.options:
+            return "buckets"
+        if request.options.get("source") is not None:
+            return "source"
+        return None
+
     def validate_request(self, request: PredictionRequest) -> None:
         if request.options.get("source") is not None and (
             request.representations or request.stop_after != "full"
@@ -1346,8 +1354,8 @@ class AlphaFold3Backend(Backend):
         if request.padding is not None and "buckets" in request.options:
             raise ValueError(
                 "padding and the native AlphaFold3 option 'buckets' were both "
-                "set; padding is on by default, so pass --no-padding "
-                "(padding=False) with 'buckets'"
+                "set; drop the padding request, or pass --no-padding "
+                "(padding=False), to use 'buckets'"
             )
         if request.padding is not None and request.options.get("source") is not None:
             raise ValueError(

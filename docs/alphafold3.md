@@ -113,7 +113,9 @@ by neutral AF3 padding, whose first bucket was 128. An explicit
 `--pad-tokens 128` still selects 128, and explicit targets above 5120 are also
 supported. Inputs above the automatic grid run at their exact size with a
 warning (`--padding-overflow error` refuses them). Padding is on by default;
-`--no-padding` runs exact shapes, and the native `buckets` option needs it.
+`--no-padding` runs exact shapes. The native `buckets` option and an external
+`source` cannot run padded: under the default padding their run uses exact
+shapes, with a notice, and with padding requested explicitly they are refused.
 
 Single-sequence warming retains the native 16,384-row featurization pool;
 real alignments use that same padded axis. The model retains its native

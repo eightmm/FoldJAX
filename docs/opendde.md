@@ -77,7 +77,7 @@ default ([cli.md](cli.md#a-bfloat16-trunk---option-trunk_dtypebf16),
 |---|---|---|
 | `include_raw=true` | `false` | also write PAE, PDE and contact probabilities to `confidence_full.npz` (and `predicted_aligned_error.json`) |
 | `dtype=float32`, `confidence_dtype=fp32` | bfloat16 | upstream's precision |
-| `use_tfg_guidance=true` | `false` | upstream's training-free guidance, on Protenix's guidance port: geometry terms on ligands, ions and modified residues only, never on standard residues ([what it constrains](cli.md#upstream-run-options---option)); eager, so refused with padding (the default; pass `--no-padding`), `deterministic=on` and context parallelism, and about 12x the unguided wall time ([measured](cli.md#upstream-run-options---option)) |
+| `use_tfg_guidance=true` | `false` | upstream's training-free guidance, on Protenix's guidance port: geometry terms on ligands, ions and modified residues only, never on standard residues ([what it constrains](cli.md#upstream-run-options---option)); eager, so refused with explicit padding (the default padding steps aside for it), `deterministic=on` and context parallelism, and about 12x the unguided wall time ([measured](cli.md#upstream-run-options---option)) |
 | `cp_devices=N` | `1` | context parallelism over N GPUs: the only way this port has run 2,096 residues on one node's cards |
 | `structural_triangle_att_row_chunk_size=N` | unset | experimental outer-row chunks for structural-refiner cuEq/Tokamax attention; preserves full column softmax and dtype; unsupported with context parallelism |
 

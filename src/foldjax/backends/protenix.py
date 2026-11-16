@@ -1032,6 +1032,17 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             model_name = runtime_policy.infer_model_name_from_path(request.weights)
         return _constraint_refusal(["pocket"], model_name) is None
 
+    def padding_conflict(self, request: PredictionRequest) -> str | None:
+        # The refusal in `validate_request` below, and the padded featurizer's
+        # refusal of constraint features (`models/protenix/data/padding.py`).
+        if self.canonical_options(request.options).get("use_tfg_guidance") is True:
+            return "use_tfg_guidance"
+        if request.input is not None:
+            channels = _constraint_channels(request)
+            if channels:
+                return f"{channels[0]} constraint"
+        return None
+
     def validate_request(self, request: PredictionRequest) -> None:
         super().validate_request(request)
         # Here, where `foldjax plan` sees it, rather than at the embedder,
@@ -1048,8 +1059,8 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         ):
             raise ValueError(
                 "padding with TFG guidance is not yet supported; drop "
-                "use_tfg_guidance or pass --no-padding (padding=False), "
-                "since padding is on by default"
+                "use_tfg_guidance or pass --no-padding (padding=False) "
+                "instead of requesting padding"
             )
 
     def validate_native_options(self, options: dict[str, Any]) -> None:

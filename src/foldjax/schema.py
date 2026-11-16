@@ -437,6 +437,28 @@ class PaddingConfig:
         }
 
 
+#: The padding a request gets when it names none. One shared instance, so
+#: `foldjax.resolve_request` can tell this default (``padding is
+#: DEFAULT_PADDING``) from an explicit ``PaddingConfig()`` or ``padding=True``:
+#: only the default steps aside, with ``padding_disabled_by`` recorded, for an
+#: option that cannot run padded; an explicit request refuses that option.
+DEFAULT_PADDING = PaddingConfig()
+
+
+def padding_record(request: Any) -> dict[str, Any] | None:
+    """The ``padding`` block a run manifest and summary record.
+
+    The profile summary when the request pads; ``{"disabled_by": option}``
+    when the default stepped aside for an option that cannot run padded; None
+    when the caller turned padding off.
+    """
+    if request.padding is not None:
+        return request.padding.summary()
+    if request.padding_disabled_by is not None:
+        return {"disabled_by": request.padding_disabled_by}
+    return None
+
+
 #: What a directory of jobs may hold when a request names the directory rather
 #: than the files. Deliberately narrower than the CLI's accepted set: the CLI
 #: can turn a FASTA or a deposited structure into a job document first, and a
@@ -614,12 +636,15 @@ class PredictionRequest:
     # variant.  Appended to preserve the positional layout of the public
     # request dataclass while adding the same name used by ``foldjax weights``.
     profile: str | None = None
-    # Appended to preserve the positional request layout. On by default: True
-    # (the default) selects ``PaddingConfig()``, the backend's standard
-    # profile; ``padding=False`` is the explicit off and runs exact input
-    # shapes. ``None`` is accepted as the same off, and is what the field holds
-    # after construction, so ``request.padding is None`` means "off".
-    padding: PaddingConfig | Mapping[str, Any] | bool | None = True
+    # Appended to preserve the positional request layout. On by default: the
+    # default (`DEFAULT_PADDING`) is the backend's standard profile, and
+    # ``True`` or a ``PaddingConfig`` asks for padding explicitly;
+    # ``padding=False`` is the explicit off and runs exact input shapes.
+    # ``None`` is accepted as the same off, and is what the field holds after
+    # construction, so ``request.padding is None`` means "off". Only the
+    # default gives way to an option that cannot run padded
+    # (`padding_disabled_by`); an explicit request refuses that option.
+    padding: PaddingConfig | Mapping[str, Any] | bool | None = DEFAULT_PADDING
     # Reuse a run only when its finished manifest proves the exact request and
     # the persisted structures/representation archive still match their
     # recorded identities. Seeds are checked individually -- a five-seed job
@@ -679,10 +704,22 @@ class PredictionRequest:
     # A named sampling preset (`PRESETS`), resolved by
     # `foldjax.resolve_request` into the sampling knobs it stands for.
     preset: str | None = None
+    # Set by `foldjax.resolve_request`: the option that turned the default
+    # padding off because it cannot run padded (`Backend.padding_conflict`).
+    # Recorded as the run's ``padding`` block; meaningless, and cleared, while
+    # padding is on.
+    padding_disabled_by: str | None = None
 
     def __post_init__(self) -> None:
         padding = _normalize_padding(self.padding)
         object.__setattr__(self, "padding", padding)
+        if padding is not None:
+            object.__setattr__(self, "padding_disabled_by", None)
+        elif self.padding_disabled_by is not None and (
+            not isinstance(self.padding_disabled_by, str)
+            or not self.padding_disabled_by.strip()
+        ):
+            raise ValueError("padding_disabled_by must be a non-empty string")
         object.__setattr__(
             self,
             "use_compile_cache",

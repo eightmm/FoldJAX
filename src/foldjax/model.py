@@ -14,6 +14,7 @@ from foldjax import api
 from foldjax.job import Job
 from foldjax.registry import capabilities, get_backend, normalize_model_name
 from foldjax.schema import (
+    DEFAULT_PADDING,
     MSA_POLICIES,
     TEMPLATE_POLICIES,
     ModelCapabilities,
@@ -23,6 +24,7 @@ from foldjax.schema import (
     _normalize_padding,
     _strict_boolean,
     _strict_integer,
+    padding_record,
 )
 
 # The old request interface remains compatible. This interface always counts
@@ -70,11 +72,12 @@ class ExecutionConfig:
     Padding needs no depth of its own: it pads the MSA axis up to a bucket
     that holds the rows the model would have read anyway, so enabling it
     leaves ``ModelConfig.msa_depth`` -- the scientific choice -- alone.
-    Padding is on by default, as on ``PredictionRequest``; ``padding=False``
-    runs exact input shapes.
+    Padding is on by default, as on ``PredictionRequest``, and the default
+    gives way to an option that cannot run padded; ``padding=False`` runs
+    exact input shapes.
     """
 
-    padding: PaddingConfig | Mapping[str, Any] | bool | None = True
+    padding: PaddingConfig | Mapping[str, Any] | bool | None = DEFAULT_PADDING
     use_compile_cache: bool = True
     cache_dir: Path | None = None
     resume: bool = False
@@ -254,7 +257,7 @@ class Model:
             "stage": stage,
             "requested": dataclasses.asdict(self.config),
             "sampling_bindings": bindings,
-            "padding": (request.padding.summary() if request.padding else None),
+            "padding": padding_record(request),
             "defaults": "selected FoldJAX model/checkpoint defaults",
         }
         # This supplements the existing run manifest, which remains the resume

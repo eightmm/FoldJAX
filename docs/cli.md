@@ -662,7 +662,19 @@ uv run foldjax predict --model boltz2 --input job.yaml --no-padding
 
 In Python the same switch is `PredictionRequest(..., padding=False)`; omitting
 `padding` gives the default `PaddingConfig()`. `--padding` is still accepted
-and changes nothing. With padding on, each backend selects a token bucket and
+and asks for padding explicitly; it changes no shape.
+
+A few options cannot run padded: AlphaFold 3's native `buckets` and an
+external `source`, Boltz-2's `use_potentials`, `subsample_msa` and a forced
+pocket, contact or template, Protenix and OpenDDE `use_tfg_guidance`, a
+Protenix constraint, and an OpenFold3 `pocket_constraint`. Under the default
+padding such a run uses the exact input shapes instead, with a one-line notice,
+and the summary and manifest record `"padding": {"disabled_by": "<option>"}`.
+When padding was asked for -- `--padding`, a `--pad-*` flag,
+`--padding-overflow`, `--fixed-msa`, or `padding=True` / a `PaddingConfig` in
+Python -- the combination is refused instead.
+
+With padding on, each backend selects a token bucket and
 derives a complete shape profile from it. The shared token grid steps by 128 below 1,024, then
 by 256 through 8,192. AlphaFold 3 uses its native grid beginning at 256 instead;
 `plan` reports the same selection as prediction. Explicit `--pad-tokens` pins
@@ -2428,7 +2440,8 @@ lDDT within ±0.01 across 1024/2048/4096 rows. Raw measurements are not bundled,
 and that finite panel does not establish accuracy equivalence for other inputs.
 Use the same capacity for warm and prediction; see [fixed-msa.md](fixed-msa.md).
 The Slurm examples apply this preset automatically for these four models and
-`--padding` (a no-op, padding being the default) for AF3/ESMFold2; their
+`--padding` (explicit, so an option that cannot run padded is refused) for
+AF3/ESMFold2; their
 `--exact` drops the presets and passes `--no-padding`. The core CLI keeps the
 fixed-MSA preset opt-in.
 
@@ -2705,11 +2718,11 @@ spelling the upstream value selects the namespace omitting it selects.
 | model | option | upstream | default | notes |
 |---|---|---|---|---|
 | Boltz-2 | `step_scale=FLOAT` | `--step_scale` (`main.py:876-888`) | `1.5` | sampler step size; lower values diversify samples; affinity stage inherits it |
-| Boltz-2 | `subsample_msa=true` | `--subsample_msa` (`main.py:1021-1026`) | `false` | a click flag, so `boltz predict` does not subsample; `true` redraws rows each trunk pass; refused with padding (the default; pass `--no-padding`) and `cp_devices>1` |
+| Boltz-2 | `subsample_msa=true` | `--subsample_msa` (`main.py:1021-1026`) | `false` | a click flag, so `boltz predict` does not subsample; `true` redraws rows each trunk pass; refused with explicit padding (the default padding steps aside for it) and `cp_devices>1` |
 | Boltz-2 | `num_subsampled_msa=N` | `--num_subsampled_msa` (`main.py:1027-1031`) | `1024` | rows per pass when subsampling |
 | Boltz-2 | `method=NAME` | `--method` (`main.py:979-984`) | none | method conditioning, case-insensitive, one of `const.method_types_ids`; also keys the feature cache; affinity keeps `other` |
-| Boltz-2 | `use_potentials=true` | `--use_potentials` (`main.py:969-972,1309-1311`) | `false` | Feynman-Kac steering and physical guidance on top of contact guidance; eager, so refused with `steering_args`, padding (the default; pass `--no-padding`), `deterministic=on` and `cp_devices>1` |
-| Protenix | `use_tfg_guidance=true` | `--use_tfg_guidance` (`batch_inference.py:697-702,410`) | `false` | training-free guidance with `configs_base.py`'s default mapping, unrolled eager sampler; the denoiser attention resolves to `xla_jit`; refused with padding (the default; pass `--no-padding`), `deterministic=on`, `cp_devices>1` and any `tokamax` attention; native CLI `--use-tfg-guidance` (which also runs `xla_jit`) |
+| Boltz-2 | `use_potentials=true` | `--use_potentials` (`main.py:969-972,1309-1311`) | `false` | Feynman-Kac steering and physical guidance on top of contact guidance; eager, so refused with `steering_args`, explicit padding (the default padding steps aside for it), `deterministic=on` and `cp_devices>1` |
+| Protenix | `use_tfg_guidance=true` | `--use_tfg_guidance` (`batch_inference.py:697-702,410`) | `false` | training-free guidance with `configs_base.py`'s default mapping, unrolled eager sampler; the denoiser attention resolves to `xla_jit`; refused with explicit padding (the default padding steps aside for it), `deterministic=on`, `cp_devices>1` and any `tokamax` attention; native CLI `--use-tfg-guidance` (which also runs `xla_jit`) |
 | OpenDDE | `use_tfg_guidance=true` | `--use_tfg_guidance` (`batch_inference.py:848-853,487`) | `false` | the same mapping on Protenix's TFG port (OpenDDE's `tfg` is Protenix's plus Fold-CP plumbing); eager entry point; the same refusals; native CLI `--use-tfg-guidance true` |
 | AlphaFold 3 | `resolve_msa_overlaps=false` | `--resolve_msa_overlaps` (`run_alphafold.py:286-294`) | `true` | keep a hand-built unpaired MSA exactly as given |
 | AlphaFold 3 | `fix_standalone_glycans=true` | `--fix_standalone_glycans` (`run_alphafold.py:312-319`) | `false` | outside the trained regime, as upstream warns |

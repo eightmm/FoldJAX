@@ -33,7 +33,7 @@ from typing import Any
 from foldjax._fsutil import sha256_file as _sha256_file
 from foldjax.portspec import PORTS, provider
 from foldjax.redaction import public_options
-from foldjax.schema import PredictionRequest, PredictionResult
+from foldjax.schema import PredictionRequest, PredictionResult, padding_record
 from foldjax.summary import SCHEMA_VERSION
 
 MANIFEST_NAME = "foldjax_run.json"
@@ -1303,9 +1303,7 @@ def request_mismatch(
             "search; or a native input names files FoldJAX cannot follow)"
         )
 
-    expected_padding = (
-        request.padding.summary() if request.padding is not None else None
-    )
+    expected_padding = padding_record(request)
     expected_representations = (
         list(request.representations) if request.representations is not None else None
     )
@@ -1643,7 +1641,9 @@ def describe_run(
         # When redaction or non-JSON values erased information, the public
         # options cannot prove an exact match and resume must rerun.
         "options_verifiable": _public_options_are_complete(request, options),
-        "padding": request.padding.summary() if request.padding is not None else None,
+        # The profile, ``{"disabled_by": option}`` when the default padding
+        # gave way to an option that cannot run padded, or None when off.
+        "padding": padding_record(request),
         "requested_representations": (
             list(request.representations)
             if request.representations is not None

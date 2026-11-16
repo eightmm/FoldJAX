@@ -351,6 +351,17 @@ def test_native_af3_bucket_options_preserve_the_prediction_cache_profile(
     assert result["models"][0]["successful_buckets"] == [64, 96]
     assert len(seen) == 4
 
+    # The default padding gives way to native buckets; asked-for padding not.
+    from foldjax.schema import DEFAULT_PADDING
+
+    defaulted = dataclasses.replace(request, padding=DEFAULT_PADDING)
+    result = warm_buckets.warm_token_buckets(defaulted, "auto")
+    assert result["models"][0]["successful_buckets"] == [64, 96]
+    with pytest.raises(ValueError, match="cannot both be set"):
+        warm_buckets.warm_token_buckets(
+            dataclasses.replace(request, padding=PaddingConfig()), "auto"
+        )
+
 
 def test_native_af3_selection_refuses_buckets_outside_its_grid():
     with pytest.raises(ValueError, match="must belong"):

@@ -39,6 +39,7 @@ from foldjax.registry import (
     normalize_model_name,
 )
 from foldjax.schema import (
+    DEFAULT_PADDING,
     MSA_PAIRINGS,
     MSA_POLICIES,
     PRESETS,
@@ -52,6 +53,7 @@ from foldjax.schema import (
     PredictionRequest,
     PredictionResult,
     expand_input_directories,
+    padding_record,
 )
 
 
@@ -1134,6 +1136,14 @@ def _request(
         "structural_tokens": args.pad_structural_tokens,
         "language_model_tokens": args.pad_language_model_tokens,
     }
+    # Any padding flag asks for padding explicitly, and then an option that
+    # cannot run padded is refused; with none, the default steps aside for it
+    # (`foldjax.api._yield_default_padding`).
+    explicit = (
+        getattr(args, "padding", False)
+        or any(value is not None for value in padding_values.values())
+        or args.padding_overflow is not None
+    )
     padding = (
         None
         if no_padding
@@ -1142,6 +1152,8 @@ def _request(
             overflow=args.padding_overflow or "exact",
             auxiliary_profile=auxiliary_profile,
         )
+        if explicit
+        else DEFAULT_PADDING
     )
     templates = getattr(args, "templates", "none")
     return PredictionRequest(
@@ -1995,11 +2007,11 @@ def _plan_summary(
         "options": public_options(request.options),
         **_effective_sampling(request),
     }
-    # Always present, null when --no-padding turned it off: padding is the
-    # default, so its absence would otherwise read as "unrecorded".
-    summary["padding"] = (
-        request.padding.summary() if request.padding is not None else None
-    )
+    # Always present, null when --no-padding turned it off and
+    # ``{"disabled_by": option}`` when the default gave way to an option that
+    # cannot run padded: padding is the default, so its absence would
+    # otherwise read as "unrecorded".
+    summary["padding"] = padding_record(request)
     if request.padding is not None:
         bucket = _planned_token_bucket(request, generated)
         if bucket is not None:

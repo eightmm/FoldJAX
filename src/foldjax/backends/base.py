@@ -328,6 +328,18 @@ class Backend(ABC):
         value = options.pop("matmul_precision", None)
         return functools.partial(execution.matmul_precision_scope, value)
 
+    def padding_conflict(self, request: PredictionRequest) -> str | None:
+        """The option this request uses that cannot run padded, or None.
+
+        Read from the options and the input document alone, before any
+        featurization. `foldjax.resolve_request` turns the *default* padding
+        off for it and records the name; an explicitly requested padding keeps
+        the backend's refusal in `validate_request`. A conflict this cannot
+        see from the document is still refused at prediction time.
+        """
+        del request
+        return None
+
     def validate_request(self, request: PredictionRequest) -> None:
         """Validate the cheap, side-effect-free part of a prediction request.
 

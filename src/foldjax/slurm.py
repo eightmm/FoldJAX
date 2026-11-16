@@ -495,8 +495,11 @@ def plan_slurm(
         else None,
         cp_devices=cp,
         options=options,
-        # `_plan_summary` adds this block exactly when the request pads.
-        padding=summary.get("padding") is not None,
+        # `_plan_summary` records the profile when the request pads, None when
+        # it does not, and `{"disabled_by": option}` when the default padding
+        # gave way to an option that cannot run padded.
+        padding=isinstance(summary.get("padding"), Mapping)
+        and "disabled_by" not in summary["padding"],
     )
     # Keep the law on its unpadded input, but apply the capacity advisory to
     # the serving shape already resolved from explicit pins/overflow policy.

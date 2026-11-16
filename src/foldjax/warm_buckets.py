@@ -15,7 +15,7 @@ from foldjax.backends.alphafold3 import AF3_TOKEN_BUCKETS
 from foldjax.job import Job
 from foldjax.padding import TOKEN_BUCKETS
 from foldjax.registry import normalize_model_name
-from foldjax.schema import PaddingConfig, PredictionRequest
+from foldjax.schema import DEFAULT_PADDING, PaddingConfig, PredictionRequest
 from foldjax.warmup import warm_cache
 
 
@@ -310,10 +310,13 @@ def warm_token_buckets(
             "synthetic bucket warming uses --msa single; "
             "use an input job to warm searched MSAs"
         )
+    # The default padding gives way to native buckets; padding asked for
+    # explicitly does not.
     if (
         "alphafold3" in models
         and "buckets" in request.options
         and request.padding is not None
+        and request.padding is not DEFAULT_PADDING
     ):
         raise ValueError("native AF3 buckets and neutral padding cannot both be set")
     if isolation == "process":
