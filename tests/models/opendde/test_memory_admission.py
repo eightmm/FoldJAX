@@ -365,7 +365,7 @@ def test_the_runner_admits_the_padded_shape_before_padding(
                     _prepared_params_loader=lambda *_args: object(),
                 )
         assert seen["n_structural"] == 4040
-        assert profiles == []
+        assert profiles == [{"disabled_by": "memory admission"}]
         assert memory_policy.padding_disabled_by() == memory_policy.PADDING_STEP_ASIDE
         assert memory_policy.recorded()["n_token"] == 4040
     else:
@@ -379,3 +379,113 @@ def test_the_runner_admits_the_padded_shape_before_padding(
         assert "--no-padding (padding=False) runs the exact 4040" in str(info.value)
         assert seen == {}
         assert memory_policy.padding_disabled_by() is None
+
+
+def test_the_step_aside_is_decided_per_job_in_one_call(pool, monkeypatch, tmp_path):
+    """Three jobs, 2,000 -> 4,040 -> 2,000 structural tokens, in one call. The
+    shape that fits padded runs padded both times, the middle one steps aside,
+    and the third job -- a cache hit on the first job's verdict -- neither
+    inherits the step-aside marker nor leaves it set for the adapter. Every job
+    reports an entry: its profile, or the step-aside record.
+    """
+    from types import SimpleNamespace
+
+    from foldjax.backends.opendde import _shape_profile
+    from foldjax.models.opendde.data import padding as padding_module
+    from foldjax.schema import DEFAULT_PADDING
+
+    jobs = [{"name": name, "modelSeeds": [101]} for name in ("a", "b", "c")]
+    sizes = {"a": 2000, "b": 4040, "c": 2000}
+
+    def featurize(job, **_kwargs):
+        features = _features(sizes[job["name"]], n_residue=2096)
+        features["parent_residue_idx"] = np.arange(sizes[job["name"]])
+        features["ref_pos"] = np.zeros((31_000, 3), dtype=np.float32)
+        return features
+
+    weights = tmp_path / "opendde.jax"
+    weights.write_bytes(b"native fixture")
+    document = tmp_path / "tiny.json"
+    document.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(predict_runner, "_load_jobs", lambda _path: jobs)
+    monkeypatch.setattr(predict_runner, "_featurize", featurize)
+    monkeypatch.setattr(
+        predict_runner,
+        "project_generated_output_features",
+        lambda features: features,
+        raising=False,
+    )
+    # The padded route, without padding anything: this test is about the
+    # decision and what it reports, not the features.
+    summary = {"target": {"structural_tokens": 2048}}
+    plan = SimpleNamespace(
+        actual={"atoms": 1},
+        target={"atoms": 1},
+        summary=lambda: dict(summary),
+        message=lambda model: f"{model}: padded",
+    )
+    monkeypatch.setattr(
+        padding_module,
+        "pad_opendde_features",
+        lambda features, sampled, padding, **_kwargs: (features, None, plan),
+    )
+    monkeypatch.setattr(padding_module, "select_opendde_model_features", lambda f: f)
+    monkeypatch.setattr(
+        "foldjax.models.opendde.models.msa_sampling.sample_opendde_msa_cycle_features",
+        lambda features, **_kwargs: None,
+    )
+    monkeypatch.setattr(predict_runner, "_prefix_rng_is_supported", lambda: True)
+    monkeypatch.setattr(predict_runner, "_collect_representations", lambda *_a: {})
+    monkeypatch.setattr(
+        predict_runner._representations, "save", lambda *_args, **_kwargs: None
+    )
+    seen: list[tuple[int | None, bool]] = []
+
+    def predict(model_features, *_args, **kwargs):
+        seen.append(
+            (
+                predict_runner._structural_token_count(model_features),
+                kwargs.get("preserve_prefix_rng", False),
+            )
+        )
+        return {}
+
+    monkeypatch.setattr(predict_runner, "_predict", predict)
+
+    fields = dict(_PARSER_DEFAULTS)
+    fields.update(
+        input_json=document,
+        weights=weights,
+        out=tmp_path / "out",
+        trunk_dtype="bf16",
+        confidence_dtype="fp32",
+        diffusion_dtype="fp32",
+        # Returns after the model call, before any output is written; unlike
+        # `inputs`, the trunk stage keeps the pair-stack peak and so the refusal.
+        stop_after="trunk",
+    )
+    config = predict_runner.PredictionConfig(**fields)
+    profiles: list[dict[str, object]] = []
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        predict_runner.run_prediction(
+            config,
+            padding=DEFAULT_PADDING,
+            padding_profiles=profiles,
+            _prepared_params_loader=lambda *_args: object(),
+        )
+
+    assert seen == [(2000, True), (4040, False), (2000, True)]
+    step_aside = {"disabled_by": "memory admission"}
+    assert profiles == [summary, step_aside, summary]
+    # Once per shape: the third job reused the first job's verdict.
+    notices = [w for w in caught if "uses the exact input shapes" in str(w.message)]
+    assert len(notices) == 1
+    # The last job ran padded, so the marker the adapter reads is clear ...
+    assert memory_policy.padding_disabled_by() is None
+    # ... and the adapter's record keeps every job's outcome.
+    assert _shape_profile(profiles, padded=True) == {
+        "per_run": [summary, step_aside, summary]
+    }
+    assert _shape_profile([step_aside, step_aside], padded=False) is None

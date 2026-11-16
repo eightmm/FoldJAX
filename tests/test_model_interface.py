@@ -89,6 +89,61 @@ def test_model_padding_selects_shapes_without_choosing_an_msa_depth(tmp_path):
     assert "max_msa_depth" not in get_backend("boltz2").apply_sampling(request)
 
 
+def test_model_config_records_a_step_aside_from_the_run_manifest(tmp_path):
+    """`model_config.json` says what padding ran, also on a resume: the resumed
+    run admits nothing, so the record comes from the manifest it reuses."""
+    from foldjax import memory_policy
+    from foldjax.registry import backend_override
+    from tests.test_api import DummyBackend
+
+    class SteppingAsideBackend(DummyBackend):
+        name = "opendde"
+
+        def predict(self, request: PredictionRequest) -> PredictionResult:
+            decision = memory_policy.admit(
+                model="opendde",
+                n_token=4096,
+                msa_rows=None,
+                candidates=(("bf16 trunk", memory_policy.OPENDDE_BF16_PEAK),),
+                budget=memory_policy.resolve_budget(
+                    pool_bytes=91_779_760_128, card_bytes=None, override_gib=None
+                ),
+                exceeds_profile=(memory_policy.SERVING_PADDING,),
+                token_label="structural tokens",
+                exact=memory_policy.ExactShape(4040, implicit=request.padding.implicit),
+            )
+            assert decision.padding_stepped_aside
+            request.output_dir.mkdir(parents=True, exist_ok=True)
+            structure = request.output_dir / "prediction.cif"
+            structure.write_text("data_prediction\n")
+            result = super().predict(request)
+            return dataclasses.replace(
+                result,
+                samples=(
+                    dataclasses.replace(result.samples[0], structure_path=structure),
+                ),
+                shape_profile=None,
+            )
+
+    (tmp_path / "job.yaml").write_text("version: 1\n")
+    handle = get_model(
+        "opendde",
+        weights=tmp_path / "weights",
+        execution=ExecutionConfig(use_compile_cache=False, resume=True),
+    )
+    out = tmp_path / "out"
+    with backend_override("opendde", SteppingAsideBackend):
+        with pytest.warns(UserWarning, match="uses the exact input shapes"):
+            handle.predict(tmp_path / "job.yaml", seed=7, output_dir=out)
+    first = json.loads((out / "model_config.json").read_text())
+    assert first["padding"] == {"disabled_by": "memory admission"}
+
+    with backend_override("opendde", SteppingAsideBackend):
+        resumed = handle.predict(tmp_path / "job.yaml", seed=7, output_dir=out)
+    assert resumed.configuration["padding"] == {"disabled_by": "memory admission"}
+    assert json.loads((out / "model_config.json").read_text()) == first
+
+
 @pytest.mark.parametrize("field", ["msa_depth", "samples", "steps", "trunk_passes"])
 @pytest.mark.parametrize("value", [True, -1, 0, 1.5, "4"])
 def test_config_rejects_invalid_counts(field, value):

@@ -934,8 +934,19 @@ def _run(
                             ),
                         )
                         admitted[shape] = decision.padding_stepped_aside
+                    # This job's verdict, whether admission ran for it or an
+                    # earlier job of the same shape already had it.
+                    memory_policy.note_padding_step_aside(admitted[shape])
                     if admitted[shape]:
                         job_padding = None
+                        if padding_profiles is not None:
+                            # In place of the shape profile a padded job
+                            # reports, so the adapter sees every job's outcome.
+                            padding_profiles.append(
+                                dict(memory_policy.PADDING_STEP_ASIDE_RECORD)
+                            )
+                else:
+                    memory_policy.note_padding_step_aside(False)
                 if job_padding is not None:
                     import jax
 

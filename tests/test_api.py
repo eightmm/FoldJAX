@@ -2156,3 +2156,57 @@ def test_a_step_aside_at_admission_is_recorded_as_the_padding_that_ran(
         with pytest.raises(MemoryError, match="--no-padding"):
             foldjax.predict(explicit)
     assert not (tmp_path / "explicit" / MANIFEST_NAME).exists()
+
+    # Several seeds: the combined manifest records what the seeds' own
+    # manifests say, so a resume that reruns nothing (and so admits nothing)
+    # still records the step-aside its seeds took.
+    multi = _request(
+        tmp_path, model="opendde", output_dir=tmp_path / "multi", num_seeds=2
+    )
+    multi = dataclasses.replace(multi, use_compile_cache=False)
+    with backend_override("opendde", SteppingAsideBackend):
+        with pytest.warns(UserWarning, match="uses the exact input shapes"):
+            foldjax.predict(multi)
+    combined = json.loads((tmp_path / "multi" / MANIFEST_NAME).read_text())
+    assert combined["padding"] == {"disabled_by": "memory admission"}
+    assert "shape_profile" not in combined
+    with backend_override("opendde", SteppingAsideBackend):
+        report = foldjax.predict_batch(dataclasses.replace(multi, resume=True))
+    assert len(report.skipped) == 2
+    resumed = json.loads((tmp_path / "multi" / MANIFEST_NAME).read_text())
+    assert resumed["padding"] == {"disabled_by": "memory admission"}
+    assert "shape_profile" not in resumed
+
+    # Seeds that disagree -- one resumed from a run that stepped aside, one
+    # that ran padded -- are recorded seed by seed, as their shape profiles are.
+    class PaddedBackend(SteppingAsideBackend):
+        def predict(self, request: PredictionRequest) -> PredictionResult:
+            request.output_dir.mkdir(parents=True, exist_ok=True)
+            structure = request.output_dir / "prediction.cif"
+            structure.write_text("data_prediction\n")
+            result = DummyBackend.predict(self, request)
+            return dataclasses.replace(
+                result,
+                samples=(
+                    dataclasses.replace(result.samples[0], structure_path=structure),
+                ),
+            )
+
+    mixed = tmp_path / "mixed"
+    with backend_override("opendde", SteppingAsideBackend):
+        with pytest.warns(UserWarning, match="uses the exact input shapes"):
+            foldjax.predict(
+                dataclasses.replace(multi, output_dir=mixed / "seed_7", num_seeds=1)
+            )
+    with backend_override("opendde", PaddedBackend):
+        report = foldjax.predict_batch(
+            dataclasses.replace(multi, output_dir=mixed, resume=True)
+        )
+    assert [path.name for path in report.skipped] == ["seed_7"]
+    combined = json.loads((mixed / MANIFEST_NAME).read_text())
+    padded = json.loads((mixed / "seed_8" / MANIFEST_NAME).read_text())
+    assert "disabled_by" not in padded["padding"]
+    assert combined["padding"] == {
+        "per_seed": [{"disabled_by": "memory admission"}, padded["padding"]]
+    }
+    assert combined["shape_profile"] == {"per_seed": [None, padded["shape_profile"]]}

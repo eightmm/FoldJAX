@@ -1487,8 +1487,12 @@ def describe_run(
     msa_search: list[dict[str, Any]] | None = None,
     msa_stats: list[dict[str, Any]] | None = None,
     pocket_sampling: dict[str, Any] | None = None,
+    padding: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the manifest for one finished prediction.
+
+    ``padding`` replaces the record derived from ``request`` when the seeds of
+    a combined run did not all run the same padding (``{"per_seed": [...]}``).
 
     ``request`` is what the caller asked for. ``native_input`` is the backend
     dialect FoldJAX generated from it, when the job arrived in the common
@@ -1655,7 +1659,7 @@ def describe_run(
         "options_verifiable": _public_options_are_complete(request, options),
         # The profile, ``{"disabled_by": option}`` when the default padding
         # gave way to an option that cannot run padded, or None when off.
-        "padding": padding_record(request),
+        "padding": padding_record(request) if padding is None else dict(padding),
         "requested_representations": (
             list(request.representations)
             if request.representations is not None
@@ -1728,6 +1732,7 @@ def write(
     msa_search: list[dict[str, Any]] | None = None,
     msa_stats: list[dict[str, Any]] | None = None,
     pocket_sampling: dict[str, Any] | None = None,
+    padding: Mapping[str, Any] | None = None,
 ) -> Path | None:
     """Write the manifest; return None if its provenance cannot be described.
 
@@ -1755,6 +1760,7 @@ def write(
                     msa_search=msa_search,
                     msa_stats=msa_stats,
                     pocket_sampling=pocket_sampling,
+                    padding=padding,
                 ),
                 indent=2,
                 sort_keys=True,

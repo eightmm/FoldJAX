@@ -238,8 +238,13 @@ class Model:
         if not isinstance(result, PredictionResult):
             raise TypeError("scalar model execution did not return PredictionResult")
         # So `model_config.json` records the padding that ran, as the run
-        # manifest does, when the default stepped aside at admission.
-        request = api._without_stepped_aside_padding(request)
+        # manifest does, when the default stepped aside at admission -- read
+        # from that manifest, which a resumed run reuses without admitting.
+        request = (
+            api._with_recorded_padding(request, Path(result.output_dir))
+            if result.output_dir is not None
+            else api._without_stepped_aside_padding(request)
+        )
         backend = get_backend(self.name)
         translated = backend.apply_sampling(request)
         bindings = {

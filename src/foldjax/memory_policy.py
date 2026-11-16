@@ -41,6 +41,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import Any, Literal
 
 from foldjax import oom
@@ -1477,6 +1478,23 @@ def padding_disabled_by() -> str | None:
     """:data:`PADDING_STEP_ASIDE` if this prediction's default padding stepped
     aside at admission, else None."""
     return _PADDING_STEP_ASIDE.get()
+
+
+#: What `schema.padding_record` writes for a run whose default padding stepped
+#: aside at admission; runners report it per job in place of a shape profile.
+PADDING_STEP_ASIDE_RECORD: Mapping[str, str] = MappingProxyType(
+    {"disabled_by": PADDING_STEP_ASIDE}
+)
+
+
+def note_padding_step_aside(stepped_aside: bool) -> None:
+    """Restate the verdict for a job whose admission :func:`admit` did not rerun.
+
+    A runner that admits once per shape and folds several jobs in one call
+    owns the marker between admissions: without this, a job reusing an earlier
+    verdict would run under the marker the *last* admission left.
+    """
+    _PADDING_STEP_ASIDE.set(PADDING_STEP_ASIDE if stepped_aside else None)
 
 
 def clear_record() -> None:

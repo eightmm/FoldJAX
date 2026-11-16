@@ -395,6 +395,69 @@ def _without_stepped_aside_padding(request: PredictionRequest) -> PredictionRequ
     return dataclasses.replace(request, padding=None, padding_disabled_by=disabled_by)
 
 
+def _recorded_padding(directory: Path) -> Any:
+    """The ``padding`` record in ``directory``'s manifest; None if unreadable."""
+    try:
+        document = json.loads(
+            (Path(directory) / MANIFEST_NAME).read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return document.get("padding") if isinstance(document, Mapping) else None
+
+
+def _with_recorded_padding(
+    request: PredictionRequest, directory: Path
+) -> PredictionRequest:
+    """``request`` as the finished run in ``directory`` ran it.
+
+    The manifest is the authority: a resumed run admits nothing, so the marker
+    `_without_stepped_aside_padding` reads is clear for it even when the run
+    it reuses stepped aside.
+    """
+    if request.padding is not None and _recorded_padding(directory) == dict(
+        memory_policy.PADDING_STEP_ASIDE_RECORD
+    ):
+        return dataclasses.replace(
+            request, padding=None, padding_disabled_by=memory_policy.PADDING_STEP_ASIDE
+        )
+    return request
+
+
+def _padding_as_the_seeds_ran(
+    request: PredictionRequest, seeds: Sequence[int]
+) -> tuple[PredictionRequest, dict[str, Any] | None]:
+    """``request`` as its seeds ran, read back from the manifests they wrote.
+
+    A seed that stepped aside left its record in its own manifest, written
+    when it ran -- this process or an earlier one a resume took it from -- so
+    the combined record comes from there and not from the marker the last
+    admission of this process left (a resumed seed admits nothing). Returns the
+    request to describe and, when the seeds disagree, the ``per_seed`` record
+    to write in place of the request's.
+    """
+    if request.padding is None:
+        return request, None
+    records = [
+        _recorded_padding(request.output_dir / f"seed_{seed}") for seed in seeds
+    ]
+    stepped = [
+        record == dict(memory_policy.PADDING_STEP_ASIDE_RECORD) for record in records
+    ]
+    if all(stepped):
+        return (
+            dataclasses.replace(
+                request,
+                padding=None,
+                padding_disabled_by=memory_policy.PADDING_STEP_ASIDE,
+            ),
+            None,
+        )
+    if any(stepped):
+        return request, {"per_seed": records}
+    return request, None
+
+
 def preflight(request: PredictionRequest, *, backend: Backend | None = None) -> None:
     """Refuse a resolved scalar request the way running it would, without running.
 
@@ -1555,18 +1618,18 @@ def _predict_seeds(
     # the recorded request identity and artifacts, but a partial top-level
     # manifest would still falsely claim that the missing seeds had finished.
     if len(failures) == entry_failure_count:
+        described, padding = _padding_as_the_seeds_ran(request, seeds)
         try:
             _write_session_manifest(
                 backend,
-                # The seeds fold one shape, so the last seed's admission says
-                # whether the default padding stepped aside for all of them.
-                _without_stepped_aside_padding(request),
+                described,
                 combined,
                 request.output_dir,
                 cost={
                     "seconds": round(time.perf_counter() - started, 2),
                     "peak_bytes": device_peak_bytes(),
                 },
+                padding=padding,
             )
         except _RESUMABLE_ERRORS as error:
             _absorb(

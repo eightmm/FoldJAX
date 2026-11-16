@@ -681,12 +681,23 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
             )
             for path, scores, metadata in ranked_native_samples(written)
         )
+        # The runner reports one entry per job it folded: a shape profile, or
+        # the step-aside record when its admission let the default padding
+        # step aside. The request ran unpadded only if every job did; the
+        # marker is restated from these entries rather than left at whatever
+        # the last job's admission set.
+        stepped_aside = (
+            request.padding is not None
+            and bool(padding_profiles)
+            and all(
+                profile == dict(memory_policy.PADDING_STEP_ASIDE_RECORD)
+                for profile in padding_profiles
+            )
+        )
+        memory_policy.note_padding_step_aside(stepped_aside)
         shape_profile = _shape_profile(
             padding_profiles,
-            # None when the runner's admission let the default padding step
-            # aside: the run was unpadded and reported no profile.
-            padded=request.padding is not None
-            and memory_policy.padding_disabled_by() is None,
+            padded=request.padding is not None and not stepped_aside,
         )
         raw: dict[str, object] = {"argv": tuple(argv)}
         if shape_profile is not None:
@@ -728,7 +739,13 @@ def _shape_profile(
     *,
     padded: bool,
 ) -> dict[str, object] | None:
-    """Collapse identical native-job profiles without hiding heterogeneous runs."""
+    """Collapse identical native-job profiles without hiding heterogeneous runs.
+
+    A job whose default padding stepped aside reports
+    `memory_policy.PADDING_STEP_ASIDE_RECORD` in place of a profile; beside
+    padded jobs it stays in the ``per_run`` list, so that record says which
+    jobs ran unpadded.
+    """
 
     if not padded:
         return None
