@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import zipfile
+
 import numpy as np
 import pytest
 
@@ -103,19 +105,52 @@ def test_save_output_npz_reports_what_it_left_out(tmp_path) -> None:
         assert set(data.files) == {"coordinate"}
 
 
-def test_save_output_npz_writes_compressed_arrays(tmp_path) -> None:
-    path = tmp_path / "out.npz"
-    save_output_npz(
+def test_save_output_npz_writes_uncompressed_arrays(tmp_path) -> None:
+    path = tmp_path / "raw_output.npz"
+    logits = np.linspace(-3.0, 3.0, 48, dtype=np.float32).reshape(1, 2, 2, 12)
+    coordinate = np.ones((1, 2, 3), dtype=np.float64)
+    has_clash = np.array([False, True], dtype=bool)
+    ranks = np.array([1, 0], dtype=np.int32)
+    empty_atoms = np.empty((0, 3), dtype=np.float32)
+    omitted = save_output_npz(
         path,
         {
-            "coordinate": np.ones((1, 2, 3)),
-            "s_trunk": np.ones((2, 2)),
+            "coordinate": coordinate,
+            "has_clash": has_clash,
+            "ranks": ranks,
+            "empty_atoms": empty_atoms,
+            "confidence": {"pae_logits": logits},
+            "s_trunk": np.ones((2, 2), dtype=np.float32),
         },
     )
+    assert omitted == ()
+
+    expected = {
+        "coordinate": coordinate,
+        "has_clash": has_clash,
+        "ranks": ranks,
+        "empty_atoms": empty_atoms,
+        "confidence.pae_logits": logits,
+    }
+    with zipfile.ZipFile(path) as archive:
+        infos = archive.infolist()
+        assert {info.filename: info.compress_type for info in infos} == {
+            f"{name}.npy": zipfile.ZIP_STORED for name in expected
+        }
 
     with np.load(path) as data:
-        assert set(data.files) == {"coordinate"}
-        np.testing.assert_array_equal(data["coordinate"], np.ones((1, 2, 3)))
+        assert set(data.files) == set(expected)
+        for name, array in expected.items():
+            assert data[name].dtype == array.dtype
+            assert data[name].shape == array.shape
+            np.testing.assert_array_equal(data[name], array)
+
+    empty_path = tmp_path / "empty.npz"
+    assert save_output_npz(empty_path, {}) == ()
+    with zipfile.ZipFile(empty_path) as archive:
+        assert archive.infolist() == []
+    with np.load(empty_path) as data:
+        assert data.files == []
 
 
 def test_static_feature_npz_roundtrips_nested_constraint_features(tmp_path) -> None:

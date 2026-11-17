@@ -152,10 +152,12 @@ def save_output_npz(
     max_bytes: int | None = DEFAULT_OUTPUT_ARRAY_BUDGET_BYTES,
     report: Callable[[str], None] | None = None,
 ) -> tuple[tuple[str, int], ...]:
-    """Save inference output arrays to compressed ``.npz``.
+    """Save inference output arrays to an uncompressed ``.npz``.
 
-    Returns the ``(name, nbytes)`` pairs left out by ``max_bytes`` so the caller can
-    report them; silently dropping an output would be worse than the crash it avoids.
+    Written uncompressed because deflating multi-GB confidence logits costs tens of
+    seconds for a 7% smaller file. Returns the ``(name, nbytes)`` pairs left out by
+    ``max_bytes`` so the caller can report them; silently dropping an output would be
+    worse than the crash it avoids.
     """
 
     path = Path(path)
@@ -163,5 +165,5 @@ def save_output_npz(
     flat_output, omitted = flatten_output_dict(
         output, include_trunk=include_trunk, max_bytes=max_bytes, report=report
     )
-    np.savez_compressed(path, **flat_output)
+    np.savez(path, **flat_output)
     return omitted

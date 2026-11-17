@@ -506,6 +506,14 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **`raw_output.npz` is written uncompressed** (OpenDDE `--option
+  include_raw=true`, Protenix `--option output_format=both` or `npz`).
+  Confidence logits barely compress: at 1,003 tokens on OpenDDE that archive
+  holds ~3 GB of confidence logits (2.77 GB compressed) and `include_raw`
+  added ~102 s to a 126 s prediction, and on CPU a 1.34 GB float32
+  logits-like array takes 43.6 s with `np.savez_compressed` vs 1.5 s with
+  `np.savez` for a 7% smaller file. Member names, dtypes and values are
+  unchanged (`np.load` reads both forms the same way).
 - **Boltz-2, Protenix and ESMFold2 compile for repeatable results by
   default.** An omitted `deterministic` now runs as `on` on those three models
   and as `off` on OpenDDE, OpenFold3 and AlphaFold 3
