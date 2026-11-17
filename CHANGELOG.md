@@ -514,6 +514,15 @@ unless it says so here, in its own paragraph.
   logits-like array takes 43.6 s with `np.savez_compressed` vs 1.5 s with
   `np.savez` for a 7% smaller file. Member names, dtypes and values are
   unchanged (`np.load` reads both forms the same way).
+- **cuEquivariance 0.13.0.** The lockfile moves cuequivariance,
+  cuequivariance-jax and the CUDA 12 and 13 ops wheels from 0.11.1 to 0.13.0;
+  nothing else in the lock changes. On an RTX PRO 6000 Blackwell card, every
+  kernel call FoldJAX makes (triangle attention with and without masked
+  columns, fused triangle multiplication, Boltz-2's mixed-precision
+  multiplication and the transposed layer norm, at 256 to 3,012 tokens) gave
+  bit-identical outputs under both versions, and timings stayed within the
+  run-to-run spread except triangle attention at 1,024 tokens (4-5% slower on
+  a 3 ms call). `bench/cueq_upgrade_check.py` reruns the comparison.
 - **Boltz-2, Protenix and ESMFold2 compile for repeatable results by
   default.** An omitted `deterministic` now runs as `on` on those three models
   and as `off` on OpenDDE, OpenFold3 and AlphaFold 3

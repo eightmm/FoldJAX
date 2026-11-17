@@ -343,6 +343,6 @@ def test_cuda13_extra_installs_cueq_runtime() -> None:
     base = parsed["dependencies"]
     cuda13 = parsed["optional-dependencies"]["cuda13"]
 
-    assert "cuequivariance==0.11.1" in base + cuda13
-    assert "cuequivariance-jax==0.11.1" in base + cuda13
-    assert "cuequivariance-ops-jax-cu13==0.11.1" in cuda13
+    assert "cuequivariance==0.13.0" in base + cuda13
+    assert "cuequivariance-jax==0.13.0" in base + cuda13
+    assert "cuequivariance-ops-jax-cu13==0.13.0" in cuda13

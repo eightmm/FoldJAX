@@ -406,8 +406,9 @@ movement, indexing, padding and loop, and the serial XLA path's arithmetic.
 The platform decides (`resolve_gather_attention_body`): an explicit `gather` in
 a GPU process without cuEquivariance is refused before featurization and is
 never handed the reference body under the gather label. The kernel's contract
-is read from the installed `cuequivariance_jax 0.11.1` /
-`cuequivariance_ops_jax_cu13 0.11.1`:
+is read from `cuequivariance_jax` /
+`cuequivariance_ops_jax_cu13` 0.11.1 and is unchanged for masked calls in
+the pinned 0.13.0:
 
 - q `[B, N, H, S_qo, D]`, k/v `[B, N, H, S_kv, D]`, bias `[B, 1, H, S_qo,
   S_kv]`, mask `[B, N, 1, 1, S_kv]` of dtype bool, **"True means valid"**. The
