@@ -28,8 +28,10 @@ def compute_has_clash(
 ) -> jnp.ndarray:
     """Return ``[num_samples]``, 1.0 where two distinct polymer chains clash.
 
-    A chain counts as a polymer chain only if *every* one of its atoms is marked
-    polymer, matching upstream's ``((asym_id != aid) | is_polymer).all()``.
+    A chain counts as a polymer chain only if *every* valid (unmasked) atom in
+    that chain is marked polymer: upstream's ``compute_has_clash`` receives
+    unpadded ``broadcast_token_feat_to_atoms`` slices, whereas this port keeps
+    static padded atom arrays.
 
     Args:
         asym_id: ``[N_atom]`` chain id per atom.
@@ -47,15 +49,15 @@ def compute_has_clash(
     """
     chains = jnp.arange(n_chain)
     # [N_atom, n_chain]
-    in_chain = asym_id[:, None] == chains[None, :]
+    valid_atom = atom_mask[:, None].astype(bool)
+    in_chain = (asym_id[:, None] == chains[None, :]) & valid_atom
 
-    # A chain is a polymer chain only if all of its atoms are polymer atoms.
+    # A chain is a polymer chain only if all of its valid atoms are polymer atoms.
     chain_is_polymer = jnp.all(~in_chain | is_polymer[:, None].astype(bool), axis=0)
     chain_exists = jnp.any(in_chain, axis=0)
 
     member = (
         in_chain
-        & atom_mask[:, None].astype(bool)
         & (chain_is_polymer & chain_exists)[None, :]
     ).astype(atom_positions.dtype)
 

@@ -220,14 +220,13 @@ def atom_metadata(
     # version added one, having been written against a hand-built batch that
     # numbered from zero; every residue in every output file was off by one.
     residue_ids = residue_index[tokens]
-    # Chain labels belong to emitted atoms. Padded token IDs are arbitrary
-    # sentinel values and must not shift a real chain from A to B (or create a
-    # chain that has no atom in the structure at all).
+    # Chain labels belong to emitted atoms in first-appearance order. Padded
+    # IDs are sentinel values and must not shift a real chain from A to B (or
+    # create a chain with no atom in the structure), and sidecar-less archives
+    # whose chains carry non-sorted asym_id values keep their atom-stream order.
     emitted_asym_id = asym_id[tokens]
-    order = {
-        value: rank
-        for rank, value in enumerate(sorted(set(emitted_asym_id.tolist())))
-    }
+    seen_chains = dict.fromkeys(int(value) for value in emitted_asym_id.tolist())
+    order = {value: rank for rank, value in enumerate(seen_chains)}
     chain_ids = np.asarray(
         [_chain_label(order[int(value)]) for value in emitted_asym_id], dtype="U4"
     )
@@ -339,15 +338,16 @@ def _has_clash_blocked(
             "OpenFold3 coordinates must have shape (samples, atoms, 3) for ranking"
         )
 
-    # Match upstream exactly: a chain is eligible only when every atom assigned
-    # to that chain is marked polymer; atom_mask is applied to its clash count.
+    # Exclude masked padding atoms from chain eligibility: upstream's
+    # `full_complex_sample_ranking_metric` strips padding before `compute_has_clash`.
+    valid_atom = np.asarray(atom_mask, dtype=bool)
     polymer_chains = [
         chain
-        for chain in np.unique(atom_asym_id)
-        if np.all((atom_asym_id != chain) | is_polymer)
+        for chain in np.unique(atom_asym_id[valid_atom])
+        if np.all(~valid_atom | (atom_asym_id != chain) | is_polymer)
     ]
     chain_indices = [
-        np.flatnonzero((atom_asym_id == chain) & atom_mask)
+        np.flatnonzero((atom_asym_id == chain) & valid_atom)
         for chain in polymer_chains
     ]
     result = np.zeros(positions.shape[0], dtype=np.float64)

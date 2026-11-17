@@ -107,12 +107,21 @@ departures from the readings above:
   but it gets there by being handed a narrowed feature mapping rather than by
   a cast inside the tower.
 
-A narrowed region's attention softmax runs bfloat16, pair bias included.
-Upstream does that on purpose: ``core/model/primitives/attention.py:111-127``
+A narrowed region's attention softmax runs bfloat16 by default, pair bias
+included. Upstream does that on purpose in triangle attention and MSA
+pair-weighted averaging: ``core/model/primitives/attention.py:111-127``
 (``softmax_no_cast``, whose docstring is "Softmax, but without automatic
 casting to fp32 when the input is of type bfloat16") disables autocast so a
 bfloat16 softmax stays bfloat16, overriding torch's float32 default, and
-AlphaFold 3's evoformer is the same shape.
+AlphaFold 3's evoformer is the same shape. In ``PairFormerBlock.forward``
+(``core/model/latent/pairformer.py:195-200``), however, upstream passes
+``use_high_precision_attention=True`` to ``AttentionPairBias``, upcasting
+``q``, ``k``, ``v`` and the pair/mask biases to float32 inside ``_attention``
+and casting back before gating (while upstream inference itself runs
+``32-true``). FoldJAX keeps the bfloat16 attention core as its default -- the
+configuration the 28-row deposited-RMSD panel below measured -- and exposes
+``high_precision_attention=True`` (``--option high_precision_attention=on``) to
+restore upstream's ``bf16-mixed`` Pairformer attention core.
 
 **Layer norm is the opposite.** Upstream's
 ``primitives/normalization.py:54-70`` disables autocast for the reverse

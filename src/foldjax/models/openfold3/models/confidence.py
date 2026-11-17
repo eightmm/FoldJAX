@@ -217,12 +217,13 @@ def compute_chain_mean_iptm(
     directions are averaged together, so a chain with no frame still gets a score
     from the columns of framed partners.
 
-    ``has_frame`` is reduced over samples as well as tokens, matching upstream's
-    unqualified ``.any()``.
+    ``has_frame`` is reduced over tokens per sample, matching OpenFold3 v0.5.0's
+    ``(chain_mask & has_frame).any(dim=-1)``.
 
     Args:
         chain_pair_iptm: ``[num_samples, n_chain, n_chain]`` pair matrix.
-        has_frame: ``[num_samples, N_token]`` tokens with a valid frame.
+        has_frame: ``[num_samples, N_token]`` (or broadcastable) tokens with a
+            valid frame.
         token_mask: ``[N_token]`` valid-token mask.
         asym_id: ``[N_token]`` chain id per token.
         n_chain: static chain-id upper bound.
@@ -231,17 +232,15 @@ def compute_chain_mean_iptm(
         ``[num_samples, n_chain]``; chains with no contributing entries score 0.
     """
     valid = token_mask.astype(bool)
-    any_frame = jnp.any(has_frame.astype(bool), axis=0)
-    framed = jnp.stack(
-        [
-            jnp.any(valid & (asym_id == chain) & any_frame)
-            for chain in range(n_chain)
-        ]
+    frames = jnp.broadcast_to(
+        has_frame.astype(bool), (chain_pair_iptm.shape[0], valid.shape[0])
     )
+    members = valid[None, :] & (asym_id[None, :] == jnp.arange(n_chain)[:, None])
+    framed = jnp.any(frames[:, None, :] & members[None, :, :], axis=-1)
 
     off_diagonal = ~jnp.eye(n_chain, dtype=bool)
-    row_take = off_diagonal & framed[:, None]
-    col_take = off_diagonal & framed[None, :]
+    row_take = off_diagonal & framed[..., :, None]
+    col_take = off_diagonal & framed[..., None, :]
 
     transposed = jnp.swapaxes(chain_pair_iptm, -1, -2)
     total = jnp.sum(chain_pair_iptm * row_take, axis=-1) + jnp.sum(

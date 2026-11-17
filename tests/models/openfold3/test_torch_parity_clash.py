@@ -151,3 +151,38 @@ def test_threshold_controls_sensitivity(openfold3_source: Path) -> None:
     loose = _run_both(torch, *scene, threshold=5.0, violation_frac=0.1)
     assert tight[0] == 0.0
     assert loose[0] == 1.0
+
+
+def test_masked_non_polymer_atoms_on_polymer_chain_match_torch(
+    openfold3_source: Path,
+) -> None:
+    """Padded masked non-polymer suffix atoms keep parity with unpadded upstream."""
+    torch = _torch()
+    asym_id, positions, atom_mask, is_polymer = _scene(torch, overlap=True)
+    expected = _upstream()(
+        asym_id=asym_id,
+        atom_positions_predicted=positions,
+        atom_mask=atom_mask.bool(),
+        is_polymer=is_polymer.bool(),
+        violation_frac=0.1,
+    )
+    # Append two masked non-polymer atoms sharing asym_id 0 with polymer chain 0.
+    padded_asym = torch.cat([asym_id, torch.tensor([0, 0])])
+    padded_pos = torch.cat([positions, torch.zeros(1, 2, 3)], dim=1)
+    padded_mask = torch.cat([atom_mask, torch.zeros(2)])
+    padded_poly = torch.cat([is_polymer, torch.zeros(2)])
+    actual = compute_has_clash(
+        jnp.asarray(padded_asym.numpy()),
+        jnp.asarray(padded_pos.numpy()),
+        jnp.asarray(padded_mask.numpy()),
+        jnp.asarray(padded_poly.numpy()),
+        n_chain=N_CHAIN,
+        violation_frac=0.1,
+    )
+    np.testing.assert_allclose(
+        np.asarray(actual, dtype=np.float64),
+        expected.detach().numpy().astype(np.float64),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    assert float(actual[0]) == 1.0

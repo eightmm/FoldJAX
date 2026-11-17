@@ -304,6 +304,12 @@ class InferenceConfig(NamedTuple):
     #: (``models/pocket_constraints.py``); its loop bounds and gather sizes are
     #: static, which is why the settings live here rather than in the batch.
     pocket_sampling: PocketSamplingConfig | None = None
+    #: Evaluate ``PairFormerBlock.attn_pair_bias``'s attention core (``q``,
+    #: ``k``, ``v``, pair/mask biases, logits, softmax and value contraction)
+    #: in ``float32`` before casting back to the stack's dtype, matching
+    #: upstream's ``use_high_precision_attention=True`` under ``bf16-mixed``.
+    #: Off by default so the measured ``bfloat16`` profile is unchanged.
+    high_precision_attention: bool = False
 
 
 class InferenceParams(NamedTuple):
@@ -379,12 +385,15 @@ def cast_narrow_params(
     Every head reads a float32 representation -- the stack's own exit cast
     restores it (``models/heads.py:337-339``) -- against float32 parameters,
     so every output logit is float32 in every profile. Note
-    what that does *not* say: the attention softmaxes inside the narrowed
-    Pairformers, MSA module and template tower run bfloat16 with a bfloat16
-    pair bias. Both upstreams do the same deliberately -- OpenFold3's
-    `softmax_no_cast` (`primitives/attention.py:107-122`) disables autocast so
-    a bfloat16 softmax stays bfloat16. The one place that shape is known to be
-    fatal is a diffusion token transformer's pair bias, and that transformer is
+    what that does *not* say: by default, the attention softmaxes inside the
+    narrowed Pairformers, MSA module and template tower run bfloat16 with a
+    bfloat16 pair bias. Upstream uses ``softmax_no_cast``
+    (``primitives/attention.py:111-127``) in triangle attention and MSA
+    pair-weighted averaging, while ``PairFormerBlock.forward`` passes
+    ``use_high_precision_attention=True`` to ``AttentionPairBias``
+    (``latent/pairformer.py:195-200``); ``high_precision_attention=True``
+    restores that float32 attention core. The one place a narrow pair bias is
+    known to be fatal is a diffusion token transformer, and that transformer is
     float32 here.
     """
 
@@ -1337,16 +1346,10 @@ def _bespoke_iptm(
         )
         return jnp.where(off_diagonal, pairwise, 0.0)
 
-    def one(pair, frames):
-        mean = compute_chain_mean_iptm(
-            pair[None], frames[None], token_mask, asym_id, n_chain=n_chain
-        )
-        return compute_bespoke_iptm(
-            mean, token_mask, asym_id, is_ligand, n_chain=n_chain
-        )[0]
-
-    frames = jnp.broadcast_to(has_frame, (chain_pair.shape[0], has_frame.shape[-1]))
-    return jax.vmap(one)(chain_pair, frames)
+    mean = compute_chain_mean_iptm(
+        chain_pair, has_frame, token_mask, asym_id, n_chain=n_chain
+    )
+    return compute_bespoke_iptm(mean, token_mask, asym_id, is_ligand, n_chain=n_chain)
 
 
 def choose_pool_fraction() -> None:
@@ -1464,6 +1467,7 @@ def predict(
         chunk_size=config.pair_chunk_size,
         glu_backend=config.glu_backend,
         dtype=resolve_dtypes(config)[0],
+        high_precision_attention=config.high_precision_attention,
     )
     return _predict_from_trunk(
         key, batch, params, config, representative_atoms,
@@ -1843,6 +1847,7 @@ def _predict_from_trunk(
             chunk_size=config.pair_chunk_size,
             glu_backend=config.glu_backend,
             dtype=confidence_narrow,
+            high_precision_attention=config.high_precision_attention,
         )
         # The pair heads are evaluated here rather than outside so the re-embedded
         # pair representation never has to exist at sample rank. PAE is either a
@@ -2068,6 +2073,7 @@ def released_config(
     max_array_bytes: int | None = DEFAULT_ARRAY_BUDGET_BYTES,
     padded: bool = False,
     pocket_sampling: PocketSamplingConfig | None = None,
+    high_precision_attention: bool = False,
     non_protein_tokens: int = 0,
     exact_shape: memory_policy.ExactShape | None = None,
 ) -> InferenceConfig:
@@ -2181,6 +2187,14 @@ def released_config(
                     # A second rollout plus the proposal search.
                     ("pocket-guided sampling", pocket_sampling is not None),
                     (
+                        "high-precision Pairformer attention",
+                        high_precision_attention
+                        and (
+                            dtype != "float32"
+                            or (confidence_dtype or dtype) != "float32"
+                        ),
+                    ),
+                    (
                         memory_policy.non_protein_reason(non_protein_tokens),
                         non_protein_tokens > 0,
                     ),
@@ -2268,6 +2282,7 @@ def released_config(
         dtype=dtype,
         confidence_dtype=confidence_dtype,
         pocket_sampling=pocket_sampling,
+        high_precision_attention=high_precision_attention,
     )
 
 

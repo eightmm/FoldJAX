@@ -1527,3 +1527,142 @@ def test_the_layer_norm_affine_is_left_float32_in_every_narrowed_subtree() -> No
     for path in _AFFINE_BEARING:
         affine, _other = _split_leaf_dtypes(_select(narrowed, path))
         assert affine == {jnp.dtype(jnp.float32)}, path
+
+
+def test_high_precision_attention_is_opt_in_and_upcasts_pairformer_attention_core(
+    tmp_path,
+) -> None:
+    """Default keeps bf16 Pairformer attention; ``high_precision_attention`` upcasts."""
+    from foldjax import memory_policy
+    from foldjax.api import resolve_cache_dir
+    from foldjax.backends.openfold3 import OpenFold3Backend
+    from foldjax.models.openfold3.models.attention import AttentionParams
+    from foldjax.models.openfold3.models.attention_pair_bias import (
+        AttentionPairBiasParams,
+        attention_pair_bias,
+    )
+    from foldjax.models.openfold3.models.primitives import LinearParams
+    from foldjax.schema import PredictionRequest
+
+    # Default config leaves high_precision_attention False.
+    default_cfg = released_config(n_token=8, n_atom=32)
+    assert default_cfg.high_precision_attention is False
+    opt_in_cfg = released_config(n_token=8, n_atom=32, high_precision_attention=True)
+    assert opt_in_cfg.high_precision_attention is True
+
+    # Construct a bf16 AttentionPairBias whose pair bias sits at +128.0 (bf16 ULP=1.0)
+    # while q.k separates key 0 vs key 1 by +/-0.4: bf16 collapses both scores to 128.0,
+    # whereas high_precision=True preserves the sub-ULP logit split and returns bf16.
+    eye8 = jnp.eye(8, dtype=jnp.bfloat16)
+    z_weight = jnp.zeros((2, 4), dtype=jnp.bfloat16).at[:, 0].set(128.0)
+    apb_params = AttentionPairBiasParams(
+        layer_norm_a=LayerNormParams(
+            weight=jnp.ones(8, jnp.float32), bias=jnp.zeros(8, jnp.float32)
+        ),
+        layer_norm_z=LayerNormParams(
+            weight=jnp.ones(4, jnp.float32), bias=jnp.zeros(4, jnp.float32)
+        ),
+        linear_z=LinearParams(weight=z_weight, bias=jnp.zeros(2, jnp.bfloat16)),
+        mha=AttentionParams(
+            linear_q=LinearParams(
+                weight=(eye8 * 0.8).astype(jnp.bfloat16),
+                bias=jnp.zeros(8, jnp.bfloat16),
+            ),
+            linear_k=LinearParams(weight=(eye8 * 0.8).astype(jnp.bfloat16)),
+            linear_v=LinearParams(weight=eye8),
+            linear_o=LinearParams(weight=eye8),
+            linear_g=LinearParams(weight=jnp.zeros((8, 8), jnp.bfloat16)),
+        ),
+    )
+    a_bf16 = jnp.asarray(
+        [
+            [
+                [1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0],
+                [-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0],
+            ]
+        ],
+        dtype=jnp.bfloat16,
+    )
+    z_bf16 = jnp.asarray(
+        [
+            [
+                [[2.0, 0.0, 0.0, 0.0], [2.0, 0.0, 0.0, 0.0]],
+                [[2.0, 0.0, 0.0, 0.0], [2.0, 0.0, 0.0, 0.0]],
+            ]
+        ],
+        dtype=jnp.bfloat16,
+    )
+    m_bf16 = jnp.ones((1, 2), dtype=jnp.bfloat16)
+
+    lo_out = attention_pair_bias(a_bf16, z_bf16, apb_params, no_heads=2, mask=m_bf16)
+    hi_out = attention_pair_bias(
+        a_bf16, z_bf16, apb_params, no_heads=2, mask=m_bf16, high_precision=True
+    )
+    assert lo_out.dtype == hi_out.dtype == jnp.bfloat16
+    delta = jnp.abs(hi_out.astype(jnp.float32) - lo_out.astype(jnp.float32))
+    assert float(jnp.max(delta)) > 0.04
+
+    # Threading through pairformer_stack (scanned & unscanned) keeps bf16 carry.
+    narrow = narrow_dtype("bfloat16")
+    pf_params = narrow_floats(_pairformer(_rng()), narrow)
+    s, z, mask = _stack_inputs()
+    for scanned in (True, False):
+        s_hi, z_hi = pairformer_stack(
+            s.astype(narrow),
+            z.astype(narrow),
+            pf_params,
+            single_mask=mask.astype(narrow),
+            pair_mask=(mask[:, None] * mask[None, :]).astype(narrow),
+            no_heads_pair=NO_HEADS,
+            no_heads_pair_bias=NO_HEADS,
+            scan_blocks=scanned,
+            high_precision_attention=True,
+        )
+        assert s_hi.dtype == z_hi.dtype == jnp.bfloat16
+
+    # Adapter cache namespace, validation and memory-policy exceeds_profile.
+    backend = OpenFold3Backend()
+    job = tmp_path / "job.json"
+    job.write_text('{"name": "t", "entities": []}', encoding="utf-8")
+    weights = tmp_path / "w.pt"
+    weights.touch()
+
+    def req(stop_after="full", **opts):
+        return PredictionRequest(
+            model="openfold3",
+            input=job,
+            weights=weights,
+            cache_dir=tmp_path / "cache",
+            stop_after=stop_after,
+            representations=("all",) if stop_after != "full" else (),
+            options=opts,
+        )
+
+    assert resolve_cache_dir(req(), backend) == resolve_cache_dir(
+        req(high_precision_attention="off"), backend
+    )
+    assert resolve_cache_dir(req(), backend) != resolve_cache_dir(
+        req(high_precision_attention="on"), backend
+    )
+    assert resolve_cache_dir(
+        req(stop_after="inputs"), backend
+    ) == resolve_cache_dir(
+        req(stop_after="inputs", high_precision_attention="on"), backend
+    )
+    assert resolve_cache_dir(
+        req(stop_after="trunk"), backend
+    ) != resolve_cache_dir(
+        req(stop_after="trunk", high_precision_attention="on"), backend
+    )
+    with pytest.raises(ValueError, match="high_precision_attention"):
+        backend.validate_native_options({"high_precision_attention": "maybe"})
+
+    # Under memory admission, high_precision_attention=True marks fits as unknown.
+    budget = memory_policy.device_memory_budget(override_gib=96.0)
+    with pytest.warns(Warning, match="high-precision Pairformer attention"):
+        released_config(
+            n_token=1200,
+            n_atom=9600,
+            memory_budget=budget,
+            high_precision_attention=True,
+        )

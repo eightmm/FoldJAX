@@ -39,18 +39,28 @@ def strip_wrapper_prefixes(
     return key
 
 
-def unwrap_state_dict(payload: Any) -> Mapping[str, Any]:
+def unwrap_state_dict(payload: Any, *, use_ema: bool = True) -> Mapping[str, Any]:
     """Find the parameter mapping inside a loaded checkpoint payload.
 
-    Checkpoints nest the weights under varying keys (``state_dict``, ``model``,
-    ...). This walks one level of those before giving up, and raises rather than
-    guessing if nothing looks like a parameter mapping.
+    Checkpoints nest the weights under varying keys (``ema['params']``,
+    ``state_dict``, ``model``, ...). Matching upstream OpenFold3's
+    ``get_state_dict_from_checkpoint(init_from_ema_weights=True)``, EMA weights
+    under ``payload['ema']['params']`` take precedence over raw training state
+    when ``use_ema`` is true. Raises rather than guessing if nothing looks like
+    a parameter mapping.
     """
     if not isinstance(payload, Mapping):
         raise TypeError(f"checkpoint payload is not a mapping: {type(payload)!r}")
 
     if any(isinstance(key, str) and "." in key for key in payload):
         return payload
+
+    if use_ema:
+        ema = payload.get("ema")
+        if isinstance(ema, Mapping):
+            ema_params = ema.get("params")
+            if isinstance(ema_params, Mapping) and ema_params:
+                return ema_params
 
     for candidate in _STATE_KEYS:
         if candidate in payload and isinstance(payload[candidate], Mapping):
@@ -62,7 +72,7 @@ def unwrap_state_dict(payload: Any) -> Mapping[str, Any]:
     )
 
 
-def load_checkpoint(path: str | Path) -> dict[str, np.ndarray]:
+def load_checkpoint(path: str | Path, *, use_ema: bool = True) -> dict[str, np.ndarray]:
     """Load a checkpoint into a flat ``{key: numpy array}`` mapping.
 
     Wrapper prefixes are stripped so the keys match what the mappers expect.
@@ -81,7 +91,7 @@ def load_checkpoint(path: str | Path) -> dict[str, np.ndarray]:
         from foldjax import torch_archive
 
         loaded = torch_archive.load(path)
-        raw = unwrap_state_dict(loaded)
+        raw = unwrap_state_dict(loaded, use_ema=use_ema)
 
     flat: dict[str, np.ndarray] = {}
     origins: dict[str, str] = {}

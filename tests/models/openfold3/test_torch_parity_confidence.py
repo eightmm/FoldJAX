@@ -522,3 +522,71 @@ def test_bespoke_iptm_protein_pair_averages(openfold3_source: Path) -> None:
     )
     assert actual[0, 0, 1] == pytest.approx(0.5)
     assert np.all(np.diagonal(actual, axis1=-2, axis2=-1) == 0.0)
+
+
+def test_chain_mean_iptm_matches_v050_per_sample_frames(
+    openfold3_source: Path,
+) -> None:
+    """v0.5.0 evaluates ``(chain_mask & has_frame).any(dim=-1)`` per sample."""
+    from openfold3.core.metrics.sample_ranking import (
+        compute_chain_pair_iptm as upstream_chain_pair_iptm,
+    )
+
+    from foldjax.models.openfold3.models.confidence import (
+        compute_bespoke_iptm,
+        compute_chain_mean_iptm,
+        compute_chain_pair_iptm,
+    )
+
+    torch = _torch()
+    n_chain = 3
+    logits = torch.randn(3, N_TOKEN, N_TOKEN, NO_BINS, dtype=torch.float32)
+    asym_id = torch.tensor([0, 0, 1, 1, 2, 2])
+    tok_mask = torch.ones(N_TOKEN)
+    is_ligand = torch.tensor([0, 0, 0, 0, 1, 1], dtype=torch.bool)
+    # Sample 0: all 3 chains framed; sample 1: chains 0 and 2 framed; sample 2: none.
+    has_frame = torch.tensor(
+        [
+            [1, 1, 1, 1, 1, 1],
+            [1, 1, 0, 0, 1, 1],
+            [0, 0, 0, 0, 0, 0],
+        ],
+        dtype=torch.bool,
+    )
+    bin_kwargs = {"bin_min": BIN_MIN, "bin_max": BIN_MAX, "no_bins": NO_BINS}
+    expected_maps = upstream_chain_pair_iptm(
+        batch={"token_mask": tok_mask, "asym_id": asym_id, "is_ligand": is_ligand},
+        logits=logits,
+        has_frame=has_frame,
+        **bin_kwargs,
+    )["bespoke_iptm"]
+
+    pair = compute_chain_pair_iptm(
+        jnp.asarray(logits.numpy()),
+        jnp.asarray(has_frame.numpy()),
+        jnp.asarray(tok_mask.numpy()),
+        jnp.asarray(asym_id.numpy()),
+        n_chain=n_chain,
+        **bin_kwargs,
+    )
+    mean = compute_chain_mean_iptm(
+        pair,
+        jnp.asarray(has_frame.numpy()),
+        jnp.asarray(tok_mask.numpy()),
+        jnp.asarray(asym_id.numpy()),
+        n_chain=n_chain,
+    )
+    actual = compute_bespoke_iptm(
+        mean,
+        jnp.asarray(tok_mask.numpy()),
+        jnp.asarray(asym_id.numpy()),
+        jnp.asarray(is_ligand.numpy()),
+        n_chain=n_chain,
+    )
+    for i in range(n_chain):
+        for j in range(i + 1, n_chain):
+            _close(
+                actual[:, i, j],
+                expected_maps[f"({i},{j})"],
+                f"bespoke_iptm({i},{j})",
+            )

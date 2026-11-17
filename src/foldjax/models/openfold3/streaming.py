@@ -127,6 +127,7 @@ class _StreamedGraph:
                 chunk_size=config.pair_chunk_size,
                 glu_backend=config.glu_backend,
                 dtype=trunk_dtype,
+                high_precision_attention=config.high_precision_attention,
             )
 
         def finish(

@@ -550,3 +550,208 @@ def test_summary_refuses_plddt_the_atom_mask_cannot_cover() -> None:
     )
     with pytest.raises(ValueError, match="pLDDT"):
         confidence_summary(prediction, features)
+
+
+def test_padded_polymer_ligand_complex_preserves_clash_and_sample_ranking() -> None:
+    """Default padding + ``normalize_asym_ids`` preserves clash and ranking scores."""
+    from foldjax.models.openfold3.data import normalize_asym_ids
+    from foldjax.models.openfold3.models.clash import compute_has_clash
+
+    exact = minimal_features(tokens=3, atoms=6)
+    exact["asym_id"] = np.asarray([[1, 2, 3]], dtype=np.int32)
+    exact["is_protein"] = np.zeros((1, 3), dtype=np.int32)
+    exact["is_rna"] = np.asarray([[1, 1, 0]], dtype=np.int32)
+    exact["is_dna"] = np.zeros((1, 3), dtype=np.int32)
+    exact["is_ligand"] = np.asarray([[0, 0, 1]], dtype=np.int32)
+    exact["atom_to_token_index"] = np.asarray([[0, 0, 1, 1, 2, 2]], dtype=np.int32)
+
+    padded = pad_features(exact, n_token=6, n_atom=10)
+    exact_norm, _ = normalize_asym_ids(exact)
+    padded_norm, n_chain = normalize_asym_ids(padded)
+
+    pair_base = np.asarray([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]], dtype=np.float32)
+    ligand_far = np.asarray([[50.0, 0.0, 0.0], [53.0, 0.0, 0.0]], dtype=np.float32)
+    sample_clash = np.concatenate((pair_base, pair_base + 0.1, ligand_far), axis=0)
+    sample_clean = np.concatenate((pair_base, pair_base + 20.0, ligand_far), axis=0)
+    exact_coords = np.stack((sample_clash, sample_clean))
+    padded_coords = np.pad(exact_coords, ((0, 0), (0, 4), (0, 0)))
+
+    exact_pred = Prediction(
+        coordinates=exact_coords,
+        plddt=np.full((2, 6), 0.85, dtype=np.float32),
+        ptm=np.asarray([0.9, 0.7], dtype=np.float32),
+        iptm=np.asarray([0.9, 0.7], dtype=np.float32),
+        chain_pair_iptm=None,
+        pae_logits=None,
+        pde_logits=None,
+        distogram_logits=None,
+    )
+    padded_pred = exact_pred._replace(
+        coordinates=padded_coords,
+        plddt=np.pad(exact_pred.plddt, ((0, 0), (0, 4))),
+    )
+    exact_summary = confidence_summary(exact_pred, exact_norm)
+    padded_summary = confidence_summary(padded_pred, padded_norm)
+    assert exact_summary["ranked_samples"] == padded_summary["ranked_samples"] == [1, 0]
+    for exact_entry, padded_entry in zip(
+        exact_summary["samples"], padded_summary["samples"], strict=True
+    ):
+        assert exact_entry == pytest.approx(padded_entry)
+
+    # Also verify direct callers whose padded atoms point to padded tokens (asym_id 0).
+    padded_unvalidated = {
+        **padded_norm,
+        "atom_to_token_index": np.asarray(
+            [[0, 0, 1, 1, 2, 2, 3, 4, 5, 5]], dtype=np.int32
+        ),
+    }
+    unval_summary = confidence_summary(padded_pred, padded_unvalidated)
+    assert unval_summary["ranked_samples"] == [1, 0]
+    owners = padded_unvalidated["atom_to_token_index"][0]
+    polymer_tok = (
+        padded_unvalidated["is_rna"][0].astype(bool)
+        & padded_unvalidated["token_mask"][0].astype(bool)
+    )
+    jax_clash = compute_has_clash(
+        jnp.asarray(padded_unvalidated["asym_id"][0][owners]),
+        jnp.asarray(padded_coords),
+        jnp.asarray(padded_unvalidated["atom_mask"][0]),
+        jnp.asarray(polymer_tok[owners]),
+        n_chain=n_chain,
+    )
+    np.testing.assert_array_equal(np.asarray(jax_clash), [1.0, 0.0])
+
+
+def test_unsupported_masked_prefix_draw_guards_sampler_and_falls_back_to_tape(
+    tmp_path, monkeypatch
+) -> None:
+    """When masked prefix draw is unsupported, sampler guards and adapter uses tape."""
+    import importlib
+    import warnings
+
+    import jax
+
+    from foldjax.backends import openfold3 as adapter
+    from foldjax.models import _random
+    from foldjax.models.openfold3 import inference
+    from foldjax.models.openfold3.models.sampler import sample_diffusion
+    from foldjax.schema import PredictionRequest
+
+    schedule = jnp.asarray([4.0, 2.0, 1.0], dtype=jnp.float32)
+    mask = jnp.asarray([[True, True, False], [True, True, False]])
+
+    monkeypatch.setattr(_random, "supports_masked_prefix_draw", lambda: False)
+    with pytest.raises(ValueError, match="prefix-preserving padding noise requires"):
+        sample_diffusion(
+            jax.random.key(0),
+            schedule,
+            (2, 3, 3),
+            lambda x, _t: x * 0.5,
+            gamma_0=0.8,
+            gamma_min=1.0,
+            noise_scale=1.003,
+            step_scale=1.5,
+            noise_mask=mask,
+        )
+
+    # Verify OpenFold3Backend.predict falls back to padded_noise_tape and matches
+    # the masked-prefix rollout on the real atom prefix.
+    features = minimal_features(tokens=4, atoms=6)
+    seen_routes: list[tuple[bool, bool]] = []
+
+    def run_adapter(supports_mask: bool):
+        monkeypatch.setattr(
+            _random, "supports_masked_prefix_draw", lambda: supports_mask
+        )
+
+        def fake_streamed_factory(config, _table, *, n_chain=None, **_kwargs):
+            def call(key, batch, _params, *, noise_mask=None, noise_tape=None):
+                seen_routes.append((noise_mask is not None, noise_tape is not None))
+                sched = jnp.asarray([2.0, 1.0, 0.5], dtype=jnp.float32)
+                coords = sample_diffusion(
+                    key,
+                    sched,
+                    (config.num_samples, config.n_atom, 3),
+                    lambda x, _t: x * 0.5,
+                    gamma_0=0.8,
+                    gamma_min=1.0,
+                    noise_scale=1.003,
+                    step_scale=1.5,
+                    noise_mask=noise_mask,
+                    noise_tape=noise_tape,
+                )
+                return inference.Prediction(
+                    coordinates=coords,
+                    plddt=jnp.full((config.num_samples, config.n_atom), 0.8),
+                    ptm=jnp.full((config.num_samples,), 0.7),
+                    iptm=jnp.full((config.num_samples,), 0.6),
+                    chain_pair_iptm=None,
+                    pae_logits=None,
+                    pde_logits=None,
+                    distogram_logits=None,
+                )
+
+            return call
+
+        data_mod = importlib.import_module("foldjax.models.openfold3.data")
+        data_ns = {
+            name: getattr(data_mod, name)
+            for name in dir(data_mod)
+            if not name.startswith("__")
+        }
+        data_ns["featurize_query_with_metadata"] = lambda *_a, **_k: (
+            {k: v.copy() for k, v in features.items()},
+            None,
+        )
+        inf_mod = importlib.import_module("foldjax.models.openfold3.inference")
+        inf_ns = {
+            n: getattr(inf_mod, n) for n in dir(inf_mod) if not n.startswith("__")
+        }
+        inf_ns["cast_narrow_params"] = lambda params, *_d: params
+        stubs = {
+            "foldjax.models.openfold3.data": SimpleNamespace(**data_ns),
+            "foldjax.models.openfold3.inference": SimpleNamespace(**inf_ns),
+            "foldjax.models.openfold3.bridge.checkpoint": SimpleNamespace(
+                load_checkpoint=lambda _path: {}
+            ),
+            "foldjax.models.openfold3.bridge.torch_mapping": SimpleNamespace(
+                resolve_model_prefix=lambda _state, prefix=None: "",
+                prune_sample_diffusion_aliases=lambda _state, *, prefix: 0,
+                map_inference_params=lambda _state, _prefix: object(),
+            ),
+        }
+        monkeypatch.setattr(
+            adapter,
+            "import_module",
+            lambda name: stubs.get(name) or importlib.import_module(name),
+        )
+        monkeypatch.setattr(
+            "foldjax.models.openfold3.streaming.compile_streamed_predict",
+            fake_streamed_factory,
+        )
+        job = tmp_path / "job.json"
+        job.write_text('{"queries": {}}', encoding="utf-8")
+        weights = tmp_path / "w.pt"
+        weights.write_bytes(b"x")
+        out_dir = tmp_path / ("out-mask" if supports_mask else "out-tape")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adapter.OpenFold3Backend().predict(
+                PredictionRequest(
+                    model="openfold3",
+                    input=job,
+                    input_format="openfold3",
+                    weights=weights,
+                    output_dir=out_dir,
+                    seed=11,
+                    padding=PaddingConfig(tokens=8, atoms=16, msa=4, templates=1),
+                    options={"num_samples": 2, "num_steps": 2, "all_arrays": True},
+                )
+            )
+        with np.load(out_dir / "job_raw.npz") as raw:
+            return raw["coordinates"][:, :6, :]
+
+    tape_coords = run_adapter(False)
+    mask_coords = run_adapter(True)
+    assert seen_routes == [(False, True), (True, False)]
+    np.testing.assert_allclose(tape_coords, mask_coords, rtol=1e-6, atol=1e-6)

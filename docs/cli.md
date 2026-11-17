@@ -1142,13 +1142,15 @@ embedding; the confidence head's geometry re-embedding
 output head. So every output logit — distogram, PAE, PDE, pLDDT,
 experimentally-resolved — is float32 in both profiles.
 
-The attention softmaxes *inside* the narrowed regions do run bfloat16, with a
-bfloat16 pair bias. That is deliberate and it is what both upstreams do:
-OpenFold3's `softmax_no_cast` disables autocast specifically so a bfloat16
-softmax stays bfloat16, and AlphaFold 3's evoformer runs the same way. It is
-also the shape that cost Protenix a chain when it was applied to the
-*diffusion token transformer's* pair bias — which is why that transformer is
-float32 here.
+The attention softmaxes *inside* the narrowed regions run bfloat16 by default,
+with a bfloat16 pair bias. Upstream uses `softmax_no_cast` to keep triangle
+attention and MSA pair-weighted averaging in bfloat16 (as AlphaFold 3's
+evoformer does), while `PairFormerBlock.attn_pair_bias` passes
+`use_high_precision_attention=True` under `bf16-mixed` (`--option
+high_precision_attention=on` opts into that float32 attention core; the shipped
+default keeps bfloat16). A narrow pair bias is also what cost Protenix a chain
+when applied to the *diffusion token transformer* — which is why that
+transformer is float32 here.
 
 That shape is AlphaFold 3's released inference shape, read out of its source
 rather than borrowed by analogy: AF3's bfloat16 context narrows only what
@@ -2535,15 +2537,20 @@ The default is unchunked for the released five-sample schedules; the automatic
 width engages only above five samples. Per-model measurements:
 [docs/engineering-notes.md](engineering-notes.md).
 
-**On OpenFold3 with `--option cp_devices=N` (`N > 1`) the default is `1`.** A
+**On OpenFold3 with `--option cp_devices=N` (`N > 1`) — and serially above
+`4,888` tokens (`SERIAL_DIFFUSION_CHUNK_ABOVE_TOKENS`, including `4,865..4,888`
+real tokens padded into the `5,120` token bucket under default padding) — the
+default is `1`.** A
 mesh shards the pair rows and not the samples, so there the rollout's pair
 conditioning is the value left at full width -- `f32[5, N/4, N, 128]`, 25.7 GiB
 per rank at 6,568 tokens on four devices, against 5.1 GiB one sample at a time
--- and a mesh is asked for because the target does not otherwise fit. Pass a
+-- and above 4,888 serial tokens the unchunked `f32[5, N, N, 128]` conditioning
+exceeds a single card. Pass a
 width at or above the sample count (`diffusion_chunk_size=5` at the released
 five samples) for the unchunked rollout on a mesh with room to spare. An
-explicit value always wins, serial runs are unchanged, and the width the run
-resolves to is what the compile-cache namespace records:
+explicit value always wins, serial runs at or below 4,888 compiled tokens are
+unchanged, and the width the adapter resolves from the request is what the
+compile-cache namespace records:
 [docs/context_parallel.md](context_parallel.md).
 
 ### `--option token_attention_chunk=N` (Boltz-2)

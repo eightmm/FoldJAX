@@ -14,6 +14,7 @@ the ``openfold3-preprocess`` extra.
 from __future__ import annotations
 
 import json
+import zipfile
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from importlib import import_module
@@ -103,6 +104,9 @@ _COMPILE_OPTIONS = (
     # Same for the confidence head's own knob: it is a second element type in
     # the same program, not a runtime branch.
     "confidence_dtype",
+    # Upcasts Pairformer AttentionPairBias's core to float32 before gating;
+    # recorded only when enabled above the shipped `false` default.
+    "high_precision_attention",
     # Two policies, two programs: the value becomes the `precision` attribute
     # on every float32 dot XLA lowers, and the cuEquivariance triangle FFI
     # reads it to pick its float32 mode (`models/_cueq.py:69`). The override
@@ -221,7 +225,49 @@ _RELEASED_COMPILE_DEFAULTS = {
     # ``released_config``'s value: upstream's writer saves full confidence
     # scores by default (``write_full_confidence_scores=True``).
     "return_expected_errors": True,
+    "high_precision_attention": False,
 }
+
+#: Member stems written by ``save_features`` when a feature archive carries a
+#: pocket constraint (copied from ``data.POCKET_SAMPLING_FEATURES`` so planning
+#: never imports the model package; a test pins the two sets).
+_POCKET_SAMPLING_ARCHIVE_NAMES = frozenset(
+    {
+        "pocket_sampling_enabled",
+        "pocket_sampling_contact_distance",
+        "pocket_sampling_num_parents",
+        "pocket_sampling_candidates",
+        "pocket_sampling_start_frac",
+        "pocket_sampling_ligand_jitter",
+        "pocket_sampling_center_jitter",
+        "pocket_sampling_surface_jitter",
+        "pocket_sampling_vdw_buffer",
+        "pocket_sampling_diversity_rmsd",
+        "pocket_sampling_ligand_atom_mask",
+        "pocket_sampling_pocket_atom_mask",
+        "pocket_sampling_vdw_radii",
+        "pocket_sampling_conformer_rels",
+    }
+)
+
+
+def _archive_names_pocket_sampling(path: Path) -> bool:
+    """Whether a feature ``.npz`` names any pocket-sampling member.
+
+    Reads the ZIP central directory only: no ``np.load``, no array decompression,
+    and no ``pickle`` decoding. Unreadable files return ``False`` so the archive
+    loader itself reports the file error.
+    """
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+    except (OSError, zipfile.BadZipFile):
+        return False
+    return any(
+        member.rsplit("/", 1)[-1].removesuffix(".npy")
+        in _POCKET_SAMPLING_ARCHIVE_NAMES
+        for member in names
+    )
 
 
 def _real_prefix_size(mask: np.ndarray, *, axis: str) -> int:
@@ -384,6 +430,7 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             "cp_devices",
             "cp_layout",
             "glu_backend",
+            "high_precision_attention",
             "no_compile",
             # Which 2-D triangle-attention algorithm runs; carried to both 2-D
             # entries by a scope `predict` enters, since no signature between
@@ -423,6 +470,7 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         {
             "all_arrays",
             "cp_atom_windows",
+            "high_precision_attention",
             "no_compile",
             "return_expected_errors",
         }
@@ -447,10 +495,11 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
     # conditioning's single branch, the confidence head's geometry
     # re-embedding, and every output head -- so every output logit is float32
     # in both profiles, while attention softmaxes inside the narrowed regions
-    # do run bfloat16, as they do in both upstreams. That is AlphaFold 3's
-    # released inference shape, and its two float32 islands are ones upstream
-    # OpenFold3 pins itself while training this checkpoint under `bf16-mixed`.
-    # `inference.cast_narrow_params` is the parameter split and
+    # run bfloat16 by default (`high_precision_attention` opts Pairformer
+    # `AttentionPairBias` into upstream's float32 attention core). That is
+    # AlphaFold 3's released inference shape, and its two float32 islands are
+    # ones upstream OpenFold3 pins itself while training this checkpoint under
+    # `bf16-mixed`. `inference.cast_narrow_params` is the parameter split and
     # models/openfold3/dtype.py carries the reading with line numbers.
     #
     # The confidence head is a second narrowing group with its own native
@@ -538,6 +587,8 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         # trunk-only graph never reaches -- the `all_arrays` rule above.
         if request.stop_after in ("trunk", "inputs"):
             profile.pop("return_expected_errors", None)
+        if request.stop_after == "inputs":
+            profile.pop("high_precision_attention", None)
         # Both widths are recorded as the value the run resolves to, never as
         # the spelling and never stripped. Aliasing still holds -- an omitted
         # `dtype` and an explicit `bfloat16` both write `"bfloat16"`, so they
@@ -635,16 +686,25 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         return profile
 
     def padding_conflict(self, request: PredictionRequest) -> str | None:
-        # The pocket-guided sampler `predict` refuses with padding, read from
-        # the document: a common job's pocket constraint becomes the query's
-        # `pocket_constraint` (`foldjax.input`). A feature archive is only
-        # judged once featurized, so it keeps that refusal.
-        if request.input is None or request.input_format == "openfold3-features":
+        # The pocket-guided sampler `predict` refuses with padding: read from
+        # the job document for raw inputs, or from the ZIP member list alone
+        # for precomputed `.npz` feature archives (no pickle or array load).
+        if request.input is None:
             return None
+        input_path = Path(request.input)
+        if (
+            request.input_format == "openfold3-features"
+            or input_path.suffix.lower() == ".npz"
+        ):
+            return (
+                "pocket_constraint"
+                if _archive_names_pocket_sampling(input_path)
+                else None
+            )
         from foldjax.input import read_job_document
 
         try:
-            document = read_job_document(Path(request.input))
+            document = read_job_document(input_path)
         except (OSError, ValueError):
             return None
         if not isinstance(document, dict):
@@ -680,6 +740,10 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             _strict_boolean(options["all_arrays"], name="all_arrays")
         if "cp_atom_windows" in options:
             _strict_boolean(options["cp_atom_windows"], name="cp_atom_windows")
+        if "high_precision_attention" in options:
+            _strict_boolean(
+                options["high_precision_attention"], name="high_precision_attention"
+            )
         if "return_expected_errors" in options:
             _strict_boolean(
                 options["return_expected_errors"], name="return_expected_errors"
@@ -983,6 +1047,11 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             name="return_expected_errors",
         ) and request.stop_after not in ("trunk", "inputs"):
             overrides["return_expected_errors"] = False
+        if _strict_boolean(
+            options.pop("high_precision_attention", False),
+            name="high_precision_attention",
+        ) and request.stop_after != "inputs":
+            overrides["high_precision_attention"] = True
         atom_windows = options.pop("cp_atom_windows", None)
         if atom_windows is not None:
             overrides["cp_atom_windows"] = _strict_boolean(
@@ -1221,16 +1290,36 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
 
         key = jax.random.key(request.seed)
         noise_mask = None
+        noise_tape = None
         if padding_plan is not None:
+            from foldjax.models import _random
+
             # Preserve the ordinary sampler's *stored* row stride, not only its
             # semantic atom count.  A portable archive may already have a
             # masked suffix; compacting that suffix would move sample 2's first
             # draw directly behind sample 1's real atoms instead of behind the
             # full source storage width.
-            noise_mask = _sampler_noise_mask(
-                padding_plan,
-                num_samples=config.num_samples,
-            )
+            if _random.supports_masked_prefix_draw():
+                noise_mask = _sampler_noise_mask(
+                    padding_plan,
+                    num_samples=config.num_samples,
+                )
+            else:
+                from foldjax.models.openfold3.models.sampler import padded_noise_tape
+
+                source_atoms = (padding_plan.storage or padding_plan.actual)["atoms"]
+                noise_tape = padded_noise_tape(
+                    key,
+                    n_steps=config.num_steps,
+                    num_samples=config.num_samples,
+                    actual_atoms=source_atoms,
+                    target_atoms=padding_plan.target["atoms"],
+                )
+        noise_kwargs: dict[str, Any] = {}
+        if noise_mask is not None:
+            noise_kwargs["noise_mask"] = noise_mask
+        elif noise_tape is not None:
+            noise_kwargs["noise_tape"] = noise_tape
         if table is None:
             table = chemistry.representative_atom_table()
         # `_default_backend()` reads this environment variable per call. Keep
@@ -1256,7 +1345,7 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
                     compiled=compile_it,
                     deterministic=deterministic,
                 )
-                prediction = streamed(key, features, params, noise_mask=noise_mask)
+                prediction = streamed(key, features, params, **noise_kwargs)
             elif compile_it:
                 compiled = inference.compile_predict(
                     config,
@@ -1268,31 +1357,16 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
                     ),
                     deterministic=deterministic,
                 )
-                prediction = (
-                    compiled(key, features, params)
-                    if noise_mask is None
-                    else compiled(key, features, params, noise_mask=noise_mask)
-                )
+                prediction = compiled(key, features, params, **noise_kwargs)
             else:
-                prediction = (
-                    inference.predict(
-                        key,
-                        features,
-                        params,
-                        config,
-                        table,
-                        n_chain=n_chain,
-                    )
-                    if noise_mask is None
-                    else inference.predict(
-                        key,
-                        features,
-                        params,
-                        config,
-                        table,
-                        n_chain=n_chain,
-                        noise_mask=noise_mask,
-                    )
+                prediction = inference.predict(
+                    key,
+                    features,
+                    params,
+                    config,
+                    table,
+                    n_chain=n_chain,
+                    **noise_kwargs,
                 )
 
         name = query_id or Path(request.input).stem

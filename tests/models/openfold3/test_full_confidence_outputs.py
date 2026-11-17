@@ -115,6 +115,53 @@ def test_chain_scores_match_upstream_on_every_schedule(upstream) -> None:
     )
 
 
+def test_compute_chain_mean_iptm_filters_frames_per_sample_and_handles_edges(
+    upstream,
+) -> None:
+    """Direct multi-sample ``compute_chain_mean_iptm`` uses per-sample frames."""
+    logits = jnp.asarray(upstream["conf_pae_logits"])
+    has_frame = jnp.asarray(upstream["conf_has_frame"])
+    asym_id = jnp.asarray(upstream["conf_asym_id"])
+    is_ligand = jnp.asarray(upstream["conf_is_ligand"])
+    tok_mask = jnp.ones(asym_id.shape[0])
+    n_chain = 3
+
+    batched_pair = compute_chain_pair_iptm(
+        logits, has_frame, tok_mask, asym_id, n_chain=n_chain, **PTM
+    )
+    chain_mean = compute_chain_mean_iptm(
+        batched_pair, has_frame, tok_mask, asym_id, n_chain=n_chain
+    )
+    bespoke = compute_bespoke_iptm(
+        chain_mean, tok_mask, asym_id, is_ligand, n_chain=n_chain
+    )
+    np.testing.assert_allclose(bespoke, upstream["conf_bespoke_iptm"], atol=ATOL)
+
+    # Edge cases: zero chains, zero samples, all-unframed sample, broadcast (1, N).
+    assert compute_chain_mean_iptm(
+        jnp.zeros((2, 0, 0)), has_frame[:2], tok_mask, asym_id, n_chain=0
+    ).shape == (2, 0)
+    assert compute_chain_mean_iptm(
+        jnp.zeros((0, 3, 3)), has_frame[:0], tok_mask, asym_id, n_chain=3
+    ).shape == (0, 3)
+    np.testing.assert_array_equal(
+        np.asarray(
+            compute_chain_mean_iptm(
+                batched_pair[:1],
+                jnp.zeros_like(has_frame[:1]),
+                tok_mask,
+                asym_id,
+                n_chain=n_chain,
+            )
+        ),
+        np.zeros((1, n_chain), dtype=np.float32),
+    )
+    broadcast_mean = compute_chain_mean_iptm(
+        batched_pair[:2], has_frame[:1], tok_mask, asym_id, n_chain=n_chain
+    )
+    assert broadcast_mean.shape == (2, n_chain)
+
+
 def _tiny(monkeypatch, **changes):
     batch, params = _install_tiny_predict(monkeypatch)
     batch["is_ligand"] = jnp.asarray([[0, 0, 0, 1]], dtype=jnp.int32)

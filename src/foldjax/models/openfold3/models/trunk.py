@@ -138,6 +138,7 @@ def trunk_cycle(
     glu_backend="xla",
     scan_blocks=True,
     dtype=None,
+    high_precision_attention=False,
 ):
     """One native recycle; the caller owns row selection and carry lifetime.
 
@@ -219,6 +220,7 @@ def trunk_cycle(
         chunk_size=chunk_size,
         glu_backend=glu_backend,
         scan_blocks=scan_blocks,
+        high_precision_attention=high_precision_attention,
     )
 
 
@@ -244,6 +246,7 @@ def trunk(
     scan_blocks: bool = True,
     scan_cycles: bool = True,
     dtype: object = None,
+    high_precision_attention: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Run the trunk for ``num_recycles`` recycling iterations.
 
@@ -338,6 +341,7 @@ def trunk(
             glu_backend=glu_backend,
             scan_blocks=scan_blocks,
             dtype=dtype,
+            high_precision_attention=high_precision_attention,
         )
 
     # Every cycle is the same computation on a different carry -- same weights, same

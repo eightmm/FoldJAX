@@ -53,6 +53,7 @@ def pairformer_block(
     eps: float = 1e-5,
     chunk_size: int | None = None,
     glu_backend: str = "xla",
+    high_precision_attention: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Apply one Pairformer block.
 
@@ -67,6 +68,8 @@ def pairformer_block(
         inf: masking constant.
         mask_transition: upstream's ``_mask_trans``.
         eps: layer norm epsilon.
+        high_precision_attention: evaluate ``attn_pair_bias``'s attention core
+            in ``float32`` before casting back to ``s.dtype``.
 
     Returns:
         ``(s, z)`` updated representations. The pair stack runs first, so the
@@ -92,6 +95,7 @@ def pairformer_block(
         mask=single_mask,
         inf=inf,
         eps=eps,
+        high_precision=high_precision_attention,
     )
 
     s = s + swiglu_transition(
@@ -120,6 +124,7 @@ def pairformer_stack(
     chunk_size: int | None = None,
     glu_backend: str = "xla",
     scan_blocks: bool = True,
+    high_precision_attention: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Run every Pairformer block in order.
 
@@ -143,6 +148,7 @@ def pairformer_stack(
             eps=eps,
             chunk_size=chunk_size,
             glu_backend=glu_backend,
+            high_precision_attention=high_precision_attention,
         )
     for block in params.blocks:
         s, z = pairformer_block(
@@ -158,6 +164,7 @@ def pairformer_stack(
             eps=eps,
             chunk_size=chunk_size,
             glu_backend=glu_backend,
+            high_precision_attention=high_precision_attention,
         )
     return s, z
 

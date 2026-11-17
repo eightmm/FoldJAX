@@ -56,16 +56,31 @@ def dot_product_attention(
     key: jnp.ndarray,
     value: jnp.ndarray,
     biases: tuple[jnp.ndarray, ...] = (),
+    *,
+    high_precision: bool = False,
 ) -> jnp.ndarray:
     """Biased softmax attention over ``[..., H, N, C]`` tensors.
 
     ``query`` is expected to be pre-scaled, matching upstream's ``_prep_qkv``.
+    When ``high_precision`` is true, ``query``, ``key``, ``value`` and each
+    bias are cast to ``float32`` before the logit contraction and softmax and
+    the weighted sum is cast back to ``query.dtype``, matching upstream's
+    ``_attention(..., use_high_precision=True)`` under ``bf16-mixed``.
     """
+    in_dtype = query.dtype
+    if high_precision and in_dtype != jnp.float32:
+        query = query.astype(jnp.float32)
+        key = key.astype(jnp.float32)
+        value = value.astype(jnp.float32)
+        biases = tuple(bias.astype(jnp.float32) for bias in biases)
     scores = jnp.einsum("...qc,...kc->...qk", query, key)
     for bias in biases:
         scores = scores + bias
     scores = jax.nn.softmax(scores, axis=-1)
-    return jnp.einsum("...qk,...kc->...qc", scores, value)
+    out = jnp.einsum("...qk,...kc->...qc", scores, value)
+    if high_precision and out.dtype != in_dtype:
+        out = out.astype(in_dtype)
+    return out
 
 
 def attention(
@@ -75,6 +90,7 @@ def attention(
     *,
     no_heads: int,
     biases: tuple[jnp.ndarray, ...] = (),
+    high_precision: bool = False,
 ) -> jnp.ndarray:
     """Apply gated multi-head attention.
 
@@ -84,6 +100,8 @@ def attention(
         params: mapped ``Attention`` parameters.
         no_heads: head count; it cannot be inferred from the flat projections.
         biases: tensors broadcasting to ``[..., H, Q, K]``.
+        high_precision: evaluate the attention core (logits, biases, softmax
+            and value contraction) in ``float32``, casting back before gating.
 
     Returns:
         ``[..., Q, C_q]`` attention update.
@@ -100,7 +118,9 @@ def attention(
     # Upstream scales by the per-head hidden dimension.
     query = query / math.sqrt(query.shape[-1])
 
-    out = dot_product_attention(query, key, value, biases)
+    out = dot_product_attention(
+        query, key, value, biases, high_precision=high_precision
+    )
 
     # [..., Q, H, C_hidden]
     out = jnp.swapaxes(out, -2, -3)

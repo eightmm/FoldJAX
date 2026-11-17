@@ -392,7 +392,10 @@ With no alignments the MSA is the query alone and accuracy drops sharply, so the
 featurizer warns rather than folding a query-only alignment silently.
 
 Featurization uses FoldJAX's one-query NumPy/JAX orchestration while reusing the
-vendored publisher chemistry and parsing routines. It does not instantiate the
+vendored publisher chemistry and parsing routines (including `.a3m`, `.sto` and
+`.m8` template alignments, with pseudo-beta and backbone coordinates validated
+before writing `template_restype` so rejected candidates leave trailing slots
+`GAP`). It does not instantiate the
 publisher Dataset or Lightning DataModule and does not create PyTorch tensors.
 The self-contained `.npz` can be reused without the preprocessing extra. No CCD
 download is required -- biotite's bundled copy is the default.
@@ -503,7 +506,9 @@ still unverified. `foldjax doctor` reports the environment and asset side of the
 same question without loading the graph.
 
 `safetensors` uses its NumPy loader; a `.pt`/`.ckpt` file uses FoldJAX's
-restricted archive reader and does not import torch. Publisher-reference parity
+restricted archive reader and does not import torch, preferring `ema["params"]`
+when present before `state_dict` / `module` like upstream's
+`get_state_dict_from_checkpoint(init_from_ema_weights=True)`. Publisher-reference parity
 tooling stays outside FoldJAX's install metadata. Wrapper prefixes (`module.`,
 `_orig_mod.`, `ema.`) are stripped on load.
 

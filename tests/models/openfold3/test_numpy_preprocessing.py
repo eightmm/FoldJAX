@@ -727,3 +727,146 @@ def test_object_valued_msa_npz_is_never_unpickled(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Object-valued upstream archives"):
         featurize_query(_spec(main_msa_file_paths=[str(archive)]))
+
+
+def test_m8_template_alignment_realigns_low_score_hit_without_cif_direct_cutoff(
+    tmp_path: Path,
+) -> None:
+    """Upstream registers ``.m8`` and realigns without CifDirectParser's 0.1 floor."""
+    from foldjax.models.openfold3._upstream.openfold3.core.data.io.sequence.template import (  # noqa: E501
+        A3mParser,
+    )
+    from foldjax.models.openfold3.data import _numpy_featurization as numpy_features
+
+    shutil.copy2(LOCAL_TEMPLATE_CIF, tmp_path / "gaag.cif")
+    # 12-residue query vs 4-residue "GAAG" template: 1/4 identity * 4/12 coverage
+    # = 0.0833 < 0.10, so CifDirectParser drops it while M8 + Kalign retains it.
+    low_score_query = "GCCCCCCCCCCC"
+    assert (
+        numpy_features._template_entry_from_cif(
+            tmp_path / "gaag.cif", low_score_query, preferred_chain_id="A"
+        )
+        is None
+    )
+
+    # Include a missing-chain row (gaag_Z, skipped without falling back to A)
+    # and duplicate gaag_A rows (13-column MMseqs2 TSV) sorted by e_value.
+    m8_path = tmp_path / "templates.m8"
+    m8_path.write_text(
+        "query\tgaag_Z\t99.0\t4\t0\t0\t1\t4\t1\t4\t1e-9\t50.0\t4M\n"
+        "query\tgaag_A\t25.0\t4\t3\t0\t1\t4\t1\t4\t5.0\t12.0\t4M\n"
+        "query\tgaag_A\t25.0\t4\t3\t0\t1\t4\t1\t4\t0.5\t18.0\t4M\n",
+        encoding="utf-8",
+    )
+    realigned = A3mParser(max_sequences=None)(
+        f">query_X/1-{len(low_score_query)}\n{low_score_query}\n"
+        f">gaag_A/1-{len(TEMPLATE_SEQUENCE)}\n{TEMPLATE_SEQUENCE}\n",
+        low_score_query,
+        realign=True,
+    )[1]
+    expected_map = realigned.build_residue_idx_map()
+
+    entries = numpy_features._alignment_template_entries(m8_path, low_score_query, [])
+    assert list(entries) == ["gaag_A"]
+    np.testing.assert_array_equal(entries["gaag_A"].idx_map, expected_map)
+
+    features = featurize_query(
+        {
+            "queries": {
+                "query": {
+                    "chains": [
+                        {
+                            "molecule_type": "protein",
+                            "chain_ids": ["A"],
+                            "sequence": low_score_query,
+                            "template_alignment_file_path": str(m8_path),
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    assert int(features["template_pseudo_beta_mask"][0, 0].sum()) == len(expected_map)
+    assert int(features["template_pseudo_beta_mask"][0, 1:].sum()) == 0
+
+    # Edge cases: empty .m8 -> no hits; malformed column counts -> ValueError;
+    # unsupported extension -> ValueError naming .m8.
+    empty_m8 = tmp_path / "empty.m8"
+    empty_m8.write_text("", encoding="utf-8")
+    assert numpy_features._alignment_templates(empty_m8, low_score_query) == []
+    empty_feat = featurize_query(
+        {
+            "queries": {
+                "query": {
+                    "chains": [
+                        {
+                            "molecule_type": "protein",
+                            "chain_ids": ["A"],
+                            "sequence": low_score_query,
+                            "template_alignment_file_path": str(empty_m8),
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    assert int(empty_feat["template_pseudo_beta_mask"].sum()) == 0
+
+    for bad_cols in (11, 14):
+        bad_m8 = tmp_path / f"bad_{bad_cols}.m8"
+        bad_m8.write_text("\t".join(["x"] * bad_cols) + "\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="12 or 13 tab-separated columns"):
+            numpy_features._alignment_templates(bad_m8, low_score_query)
+
+    bad_ext = tmp_path / "hits.tsv"
+    bad_ext.write_text("query\tgaag_A\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"\.m8"):
+        numpy_features._alignment_templates(bad_ext, low_score_query)
+
+
+def test_template_precursor_validates_pseudo_beta_before_writing_restype() -> None:
+    """A rejected CB-less slice must leave trailing ``template_restype`` slots GAP."""
+    from types import SimpleNamespace
+
+    import biotite.structure as struc
+
+    from foldjax.models.openfold3.data import _numpy_featurization as numpy_features
+
+    def make_slice(include_cb: bool):
+        atoms = [("ALA", "N"), ("ALA", "CA"), ("ALA", "C")]
+        if include_cb:
+            atoms.append(("ALA", "CB"))
+        arr = struc.AtomArray(len(atoms))
+        arr.res_id = np.ones(len(atoms), dtype=int)
+        arr.res_name = np.asarray([res for res, _ in atoms], dtype="U3")
+        arr.atom_name = np.asarray([atom for _, atom in atoms], dtype="U4")
+        arr.coord = np.arange(len(atoms) * 3, dtype=np.float32).reshape(len(atoms), 3)
+        return SimpleNamespace(
+            atom_array=arr,
+            template_residue_repeats=np.asarray([1], dtype=np.int64),
+            query_token_positions=np.asarray([0], dtype=np.int64),
+        )
+
+    valid_slice = make_slice(include_cb=True)
+    missing_cb_slice = make_slice(include_cb=False)
+
+    res_names, pseudo_beta, _frame = numpy_features._template_precursor(
+        {"A": [valid_slice, missing_cb_slice]},
+        n_templates=4,
+        n_tokens=5,
+    )
+    assert res_names[0, 0] == "ALA"
+    assert np.all(res_names[1:] == "GAP")
+    assert not np.all(np.isnan(pseudo_beta[0, 0]))
+    assert np.all(np.isnan(pseudo_beta[1:]))
+
+    with pytest.raises(ValueError, match="none of the aligned OpenFold3 template"):
+        numpy_features._template_precursor(
+            {"A": [missing_cb_slice]},
+            n_templates=4,
+            n_tokens=5,
+        )
+    guide = (
+        Path(__file__).resolve().parents[3] / "docs" / "openfold3.md"
+    ).read_text(encoding="utf-8")
+    assert "_template_precursor" in guide

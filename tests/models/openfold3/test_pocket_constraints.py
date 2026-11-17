@@ -624,6 +624,166 @@ def test_a_native_pocket_query_reaches_the_program_and_the_writer(
     assert len(result.samples) == 2
 
 
+def test_default_padding_steps_aside_for_raw_and_archive_pocket_inputs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Default padding yields on both raw queries and ``.npz`` pocket archives."""
+    import importlib
+    import zipfile
+
+    import foldjax
+    from foldjax.backends import openfold3 as adapter
+    from foldjax.models.openfold3.data import (
+        featurize_query_with_metadata,
+        save_features,
+    )
+    from foldjax.schema import PredictionRequest
+
+    assert adapter._POCKET_SAMPLING_ARCHIVE_NAMES == frozenset(
+        pocket_data.POCKET_SAMPLING_FEATURES
+    )
+    # Malformed, missing and empty archives return False without raising.
+    assert not adapter._archive_names_pocket_sampling(tmp_path / "missing.npz")
+    bad_zip = tmp_path / "corrupt.npz"
+    bad_zip.write_bytes(b"not-a-zip")
+    assert not adapter._archive_names_pocket_sampling(bad_zip)
+    empty_zip = tmp_path / "empty.npz"
+    with zipfile.ZipFile(empty_zip, "w"):
+        pass
+    assert not adapter._archive_names_pocket_sampling(empty_zip)
+    nested_zip = tmp_path / "nested.npz"
+    with zipfile.ZipFile(nested_zip, "w") as zf:
+        zf.writestr("./pocket_sampling_enabled.npy", b"")
+    assert adapter._archive_names_pocket_sampling(nested_zip)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        pocket_features, pocket_meta = featurize_query_with_metadata(
+            _query_spec("smiles")
+        )
+        plain_spec = _query_spec("smiles")
+        for query_body in plain_spec["queries"].values():
+            query_body.pop("pocket_constraint", None)
+        plain_features, plain_meta = featurize_query_with_metadata(plain_spec)
+
+    pocket_archive = save_features(
+        pocket_features, tmp_path / "pocket.npz", output_metadata=pocket_meta
+    )
+    plain_archive = save_features(
+        plain_features, tmp_path / "plain.npz", output_metadata=plain_meta
+    )
+    weights = tmp_path / "openfold3.pt"
+    weights.write_bytes(b"native")
+
+    # Resolving a pocket archive's padding conflict never calls np.load or pickle.
+    monkeypatch.setattr(
+        np,
+        "load",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("padding_conflict loaded arrays")
+        ),
+    )
+    backend = adapter.OpenFold3Backend()
+    assert (
+        backend.padding_conflict(
+            PredictionRequest(model="openfold3", input=pocket_archive, weights=weights)
+        )
+        == "pocket_constraint"
+    )
+    assert (
+        backend.padding_conflict(
+            PredictionRequest(model="openfold3", input=plain_archive, weights=weights)
+        )
+        is None
+    )
+    monkeypatch.undo()
+
+    seen_configs: list = []
+
+    def fake_compile(config, table, *, n_chain=None, **_kwargs):
+        seen_configs.append(config)
+
+        def run(key, batch, _params):
+            return inference.Prediction(
+                coordinates=jnp.zeros((config.num_samples, config.n_atom, 3)),
+                plddt=jnp.full((config.num_samples, config.n_atom), 0.8),
+                ptm=jnp.full((config.num_samples,), 0.7),
+                iptm=jnp.full((config.num_samples,), 0.6),
+                chain_pair_iptm=jnp.zeros((config.num_samples, 2, 2)),
+                pae_logits=None,
+                pde_logits=None,
+                distogram_logits=None,
+            )
+
+        return run
+
+    inference_proxy = SimpleNamespace(
+        **{
+            name: getattr(inference, name)
+            for name in dir(inference)
+            if not name.startswith("__")
+        }
+    )
+    inference_proxy.compile_predict = fake_compile
+    inference_proxy.cast_narrow_params = lambda params, *_dtypes: params
+    stubs = {
+        "foldjax.models.openfold3.inference": inference_proxy,
+        "foldjax.models.openfold3.bridge.checkpoint": SimpleNamespace(
+            load_checkpoint=lambda path: {}
+        ),
+        "foldjax.models.openfold3.bridge.torch_mapping": SimpleNamespace(
+            resolve_model_prefix=lambda state, prefix=None: "",
+            prune_sample_diffusion_aliases=lambda state, *, prefix: 0,
+            map_inference_params=lambda state, prefix: object(),
+        ),
+    }
+    monkeypatch.setattr(
+        adapter,
+        "import_module",
+        lambda name: stubs.get(name) or importlib.import_module(name),
+    )
+
+    raw_job = tmp_path / "query.json"
+    raw_job.write_text(json.dumps(_query_spec("smiles")))
+
+    # Leave ``padding`` at PredictionRequest's default on both raw and archive inputs.
+    for label, inp in (("raw", raw_job), ("archive", pocket_archive)):
+        with pytest.warns(UserWarning, match="pocket_constraint cannot run padded"):
+            result = foldjax.predict(
+                PredictionRequest(
+                    model="openfold3",
+                    input=inp,
+                    weights=weights,
+                    output_dir=tmp_path / f"out-{label}",
+                    seed=1,
+                    options={"num_samples": 2, "num_steps": 4},
+                )
+            )
+        assert result.shape_profile is None
+        assert result.raw["pocket_sampling"]["candidates"] == 1024
+        manifest = json.loads(
+            (tmp_path / f"out-{label}" / "foldjax_run.json").read_text()
+        )
+        assert manifest["padding"] == {"disabled_by": "pocket_constraint"}
+
+    assert len(seen_configs) == 2
+    assert all(cfg.pocket_sampling is not None for cfg in seen_configs)
+
+    # Explicit padding on the pocket archive is still refused.
+    with pytest.raises(ValueError, match="cannot be combined with padding"):
+        foldjax.predict(
+            PredictionRequest(
+                model="openfold3",
+                input=pocket_archive,
+                weights=weights,
+                output_dir=tmp_path / "out-explicit",
+                seed=1,
+                padding=True,
+                options={"num_samples": 2, "num_steps": 4},
+            )
+        )
+
+
 # --- review follow-ups ---------------------------------------------------------
 
 

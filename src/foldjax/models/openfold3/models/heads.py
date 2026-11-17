@@ -249,6 +249,7 @@ def pairformer_embedding(
     chunk_size: int | None = None,
     glu_backend: str = "xla",
     dtype: object = None,
+    high_precision_attention: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Embed the predicted geometry into the confidence representations.
 
@@ -344,6 +345,7 @@ def pairformer_embedding(
         eps=eps,
         chunk_size=chunk_size,
         glu_backend=glu_backend,
+        high_precision_attention=high_precision_attention,
     )
     if dtype is not None:
         si = si.astype(jnp.float32)

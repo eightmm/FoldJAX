@@ -142,6 +142,37 @@ def test_serial_auto_width_chunks_above_the_measured_domain() -> None:
     assert released_config(n_token=top, n_atom=top * 8).diffusion_chunk_size is None
 
 
+def test_padding_bucket_above_serial_threshold_enables_sample_chunking() -> None:
+    """Default padding steps tokens 4,865..4,888 into bucket 5,120 (> 4,888)."""
+    from foldjax.padding import resolve_axis
+    from foldjax.schema import PaddingConfig
+
+    padding = PaddingConfig()
+    below_bucket = resolve_axis(4864, padding, "tokens")
+    crossing_bucket = resolve_axis(4888, padding, "tokens")
+    assert below_bucket == 4864 <= SERIAL_DIFFUSION_CHUNK_ABOVE_TOKENS
+    assert crossing_bucket == 5120 > SERIAL_DIFFUSION_CHUNK_ABOVE_TOKENS
+
+    # Unpadded 4,888 stays unchunked; padded to bucket 5,120 chunks to 1 sample.
+    assert (
+        released_config(n_token=4888, n_atom=4888 * 8).diffusion_chunk_size is None
+    )
+    assert (
+        released_config(
+            n_token=below_bucket, n_atom=below_bucket * 8, padded=True
+        ).diffusion_chunk_size
+        is None
+    )
+    assert (
+        released_config(
+            n_token=crossing_bucket, n_atom=crossing_bucket * 8, padded=True
+        ).diffusion_chunk_size
+        == CP_DIFFUSION_CHUNK_SIZE
+    )
+    guide = (REPOSITORY_ROOT / "docs" / "openfold3.md").read_text(encoding="utf-8")
+    assert "SERIAL_DIFFUSION_CHUNK_ABOVE_TOKENS" in guide and "5,120" in guide
+
+
 def _request(tmp_path: Path, **options) -> PredictionRequest:
     job = tmp_path / "job.json"
     job.write_text(

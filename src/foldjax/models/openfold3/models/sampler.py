@@ -22,12 +22,14 @@ from collections.abc import Callable
 import jax
 import jax.numpy as jnp
 
-from foldjax.models._random import masked_prefix_draw
+from foldjax.models import _random
 from foldjax.models.openfold3.models.augmentation import (
     AugmentationTape,
     centre_augmentation_from_draws,
     validate_augmentation_tape,
 )
+
+masked_prefix_draw = _random.masked_prefix_draw
 
 
 def sample_diffusion(
@@ -140,6 +142,12 @@ def sample_diffusion(
                 f"x_start expected shape {tuple(shape)}, got {jnp.shape(x_start)}"
             )
     if noise_mask is not None:
+        if not _random.supports_masked_prefix_draw():
+            raise ValueError(
+                "prefix-preserving padding noise requires "
+                "jax_default_prng_impl='threefry2x32' and "
+                "jax_threefry_partitionable=True"
+            )
         noise_mask = jnp.asarray(noise_mask, dtype=bool)
         expected_mask = shape[:-1]
         if tuple(noise_mask.shape) != expected_mask:

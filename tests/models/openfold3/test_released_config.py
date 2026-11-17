@@ -149,19 +149,28 @@ def test_no_field_is_left_unchecked(upstream) -> None:
     foldjax_only = {
         "n_token",
         "n_atom",
-            "pair_chunk_size",
-            "diffusion_chunk_size",
+        "pair_chunk_size",
+        "diffusion_chunk_size",
         "returned_pair_logits",
         "has_atomized_tokens",
         "returned_representations",
         "return_plddt_logits",
+        "return_expected_errors",
         "stop_after_trunk",
         "stop_after_inputs",
         "cp_shards",
         "cp_layout",
+        "cp_atom_windows",
+        "glu_backend",
+        "dtype",
+        "confidence_dtype",
+        "pocket_sampling",
+        "high_precision_attention",
     }
     unchecked = set(config._fields) - set(_expected(upstream)) - foldjax_only
     assert not unchecked, f"fields not compared against upstream: {sorted(unchecked)}"
+    stale = foldjax_only - set(config._fields)
+    assert not stale, f"unknown FoldJAX-only fields: {sorted(stale)}"
 
 
 def test_block_counts_match_upstream(upstream) -> None:

@@ -685,21 +685,36 @@ def _alignment_templates(path: Path, query_sequence: str) -> list[Any]:
     """Read ordered template hits while preserving residue-wise coordinates."""
     from foldjax.models.openfold3._upstream.openfold3.core.data.io.sequence.template import (  # noqa: E501
         A3mParser,
+        M8Parser,
         StoParser,
     )
 
-    parsers = {".a3m": A3mParser, ".sto": StoParser}
-    parser_type = parsers.get(path.suffix.lower())
+    suffix = path.suffix.lower()
+    parsers = {".a3m": A3mParser, ".sto": StoParser, ".m8": M8Parser}
+    parser_type = parsers.get(suffix)
     if parser_type is None:
         raise ValueError(
-            "OpenFold3 template alignment must be .a3m, .sto, or a preprocessed "
+            "OpenFold3 template alignment must be .a3m, .sto, .m8, or a preprocessed "
             f".npz cache, got {path}"
         )
-    alignment_source = (
-        _read_a3m_template_prefix(path, max_hits=_MAX_TEMPLATE_ALIGNMENT_HITS)
-        if path.suffix.lower() == ".a3m"
-        else path.read_text()
-    )
+    if suffix == ".m8":
+        import pandas as pd
+
+        try:
+            alignment_source: Any = pd.read_csv(path, sep="\t", header=None)
+        except pd.errors.EmptyDataError:
+            return []
+        if len(alignment_source.columns) not in (12, 13):
+            raise ValueError(
+                "OpenFold3 .m8 template alignment must have 12 or 13 tab-separated "
+                f"columns, got {len(alignment_source.columns)}"
+            )
+    elif suffix == ".a3m":
+        alignment_source = _read_a3m_template_prefix(
+            path, max_hits=_MAX_TEMPLATE_ALIGNMENT_HITS
+        )
+    else:
+        alignment_source = path.read_text(encoding="utf-8")
     parsed = parser_type(max_sequences=_MAX_TEMPLATE_ALIGNMENT_HITS)(
         alignment_source, query_sequence
     )
@@ -733,25 +748,37 @@ def _template_entry_from_alignment(
     template: Any,
     query_sequence: str,
 ) -> _TemplateCandidate | None:
-    """Create a local entry, retaining the alignment's residue correspondence."""
+    """Create a local entry, retaining or Kalign-realigning its residue map."""
+    from foldjax.models.openfold3._upstream.openfold3.core.data.io.sequence.template import (  # noqa: E501
+        A3mParser,
+    )
     from foldjax.models.openfold3._upstream.openfold3.core.data.primitives.structure.template import (  # noqa: E501
         TemplateCacheEntry,
     )
 
+    _cif_file, sequences, release_date = _cif_template_metadata(path)
     index_map = _aligned_residue_map(template)
     mapping_is_complete = (
         bool(template.seq) and index_map is not None and bool(template.q_cov)
     )
     if not mapping_is_complete:
-        return _template_entry_from_cif(
-            path,
+        # Upstream TemplatePreprocessor step E (preprocessing/template.py:2287):
+        # sequence-less hits (notably .m8 rows) realign against the CIF chain's
+        # sequence with A3mParser(..., realign=True) and no 0.1 score cutoff.
+        template_sequence = sequences.get(template.chain_id)
+        if not template_sequence:
+            return None
+        template = A3mParser(max_sequences=None)(
+            f">query_X/1-{len(query_sequence)}\n{query_sequence}\n"
+            f">{template.entry_id}_{template.chain_id}/1-{len(template_sequence)}\n"
+            f"{template_sequence}\n",
             query_sequence,
-            preferred_chain_id=template.chain_id,
-        )
+            realign=True,
+        )[1]
+        index_map = _aligned_residue_map(template)
 
-    _cif_file, sequences, release_date = _cif_template_metadata(path)
     matched_chain = _matching_structure_chain(template, sequences)
-    if matched_chain is None or not len(index_map):
+    if matched_chain is None or index_map is None or not len(index_map):
         return None
     name = f"{template.entry_id}_{matched_chain}"
     return _TemplateCandidate(
@@ -762,7 +789,7 @@ def _template_entry_from_alignment(
             idx_map=index_map,
             cif_path=path,
         ),
-        score=float(template.seq_id) * float(template.q_cov),
+        score=float(template.seq_id) * float(template.q_cov or 0.0),
     )
 
 
@@ -789,6 +816,7 @@ def _alignment_template_entries(
         raise ValueError(
             f"failed to parse OpenFold3 template alignment {path}: {error}"
         ) from error
+    # A repeated hit overwrites the earlier one, as upstream's cache entry does.
     by_name = {
         f"{template.entry_id}_{template.chain_id}": template for template in parsed
     }

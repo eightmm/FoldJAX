@@ -341,3 +341,116 @@ def test_existing_output_symlinks_are_refused(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="escapes its output directory"):
         _output_path(root, "prediction_raw.npz")
+
+
+def test_sidecarless_atom_metadata_orders_chains_by_first_appearance() -> None:
+    """Sidecar-less archives label chains A, B, ... by atom-stream appearance."""
+    from foldjax.models.openfold3.data import normalize_asym_ids
+
+    features = {
+        "ref_atom_name_chars": np.zeros((1, 5, 4, 64), dtype=np.float32),
+        "ref_element": np.zeros((1, 5, 119), dtype=np.float32),
+        "atom_mask": np.asarray([[1, 1, 1, 1, 0]], dtype=np.float32),
+        "atom_to_token_index": np.asarray([[0, 0, 1, 1, 2]], dtype=np.int64),
+        "token_mask": np.asarray([[1, 1, 0]], dtype=np.float32),
+        "restype": np.zeros((1, 3, 32), dtype=np.float32),
+        "residue_index": np.asarray([[1, 1, 0]], dtype=np.int64),
+        "asym_id": np.asarray([[5, 2, 0]], dtype=np.int64),
+    }
+    assert atom_metadata(features).chain_id.tolist() == ["A", "A", "B", "B"]
+
+    # After normalize_asym_ids, [5, 2, 0] -> [1, 0, 0]; first appearance stays A, B.
+    normalized, _ = normalize_asym_ids(features)
+    assert atom_metadata(normalized).chain_id.tolist() == ["A", "A", "B", "B"]
+
+    # Edge cases: zero emitted atoms -> empty chain_id; 27 chains -> A..Z, AA.
+    all_masked = {**features, "atom_mask": np.zeros((1, 5), dtype=np.float32)}
+    assert atom_metadata(all_masked).chain_id.tolist() == []
+    many = {
+        "ref_atom_name_chars": np.zeros((1, 27, 4, 64), dtype=np.float32),
+        "ref_element": np.zeros((1, 27, 119), dtype=np.float32),
+        "atom_mask": np.ones((1, 27), dtype=np.float32),
+        "atom_to_token_index": np.arange(27, dtype=np.int64)[None],
+        "restype": np.zeros((1, 27, 32), dtype=np.float32),
+        "residue_index": np.ones((1, 27), dtype=np.int64),
+        "asym_id": np.arange(27, 0, -1, dtype=np.int64)[None],
+    }
+    labels = atom_metadata(many).chain_id.tolist()
+    assert labels[0] == "A" and labels[25] == "Z" and labels[26] == "AA"
+
+
+def test_masked_nonpolymer_atoms_do_not_disqualify_polymer_chain_clash_veto() -> None:
+    """Masked atoms sharing ``asym_id`` with a polymer chain keep ``has_clash``."""
+    import jax.numpy as jnp
+
+    from foldjax.models.openfold3.models.clash import compute_has_clash
+    from foldjax.models.openfold3.output import _has_clash_blocked, confidence_summary
+
+    # Two 2-atom polymer chains (asym_id 0 and 1) overlapping within 0.1 A, plus
+    # one masked non-polymer padding atom assigned to asym_id 0.
+    base = np.asarray([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]], dtype=np.float32)
+    zero_atom = np.zeros((1, 3), dtype=np.float32)
+    coords = np.concatenate((base, base + 0.1, zero_atom))[None]
+    atom_asym = np.asarray([0, 0, 1, 1, 0], dtype=np.int32)
+    atom_mask = np.asarray([True, True, True, True, False])
+    is_polymer = np.asarray([True, True, True, True, False])
+
+    jax_clash = compute_has_clash(
+        jnp.asarray(atom_asym),
+        jnp.asarray(coords),
+        jnp.asarray(atom_mask),
+        jnp.asarray(is_polymer),
+        n_chain=2,
+    )
+    blocked_clash = _has_clash_blocked(coords, atom_mask, atom_asym, is_polymer)
+    np.testing.assert_array_equal(np.asarray(jax_clash), [1.0])
+    np.testing.assert_array_equal(blocked_clash, [1.0])
+
+    # Through confidence_summary with a padded non-polymer token at index 2 (asym_id 0).
+    ranking_features = {
+        "atom_mask": atom_mask.astype(np.float32)[None],
+        "atom_to_token_index": np.asarray([[0, 0, 1, 1, 2]], dtype=np.int32),
+        "token_mask": np.asarray([[1.0, 1.0, 0.0]], dtype=np.float32),
+        "asym_id": np.asarray([[0, 1, 0]], dtype=np.int32),
+        "is_protein": np.zeros((1, 3), dtype=np.int32),
+        "is_rna": np.asarray([[1, 1, 0]], dtype=np.int32),
+        "is_dna": np.zeros((1, 3), dtype=np.int32),
+    }
+    pred = Prediction(
+        coordinates=coords,
+        plddt=np.full((1, 5), 0.9, dtype=np.float32),
+        ptm=np.asarray([0.8], dtype=np.float32),
+        iptm=np.asarray([0.7], dtype=np.float32),
+        chain_pair_iptm=None,
+        pae_logits=None,
+        pde_logits=None,
+        distogram_logits=None,
+    )
+    summary = confidence_summary(pred, ranking_features)
+    assert summary["samples"][0]["has_clash"] == 1.0
+    assert summary["samples"][0]["sample_ranking_score"] < -90.0
+
+    # Boundary and empty-mask checks: all-masked -> 0.0; distance == threshold -> 0.0.
+    zero_mask = np.zeros(5, dtype=bool)
+    np.testing.assert_array_equal(
+        _has_clash_blocked(coords, zero_mask, atom_asym, is_polymer), [0.0]
+    )
+    np.testing.assert_array_equal(
+        np.asarray(
+            compute_has_clash(
+                jnp.asarray(atom_asym),
+                jnp.asarray(coords),
+                jnp.asarray(zero_mask),
+                jnp.asarray(is_polymer),
+                n_chain=2,
+            )
+        ),
+        [0.0],
+    )
+    at_limit = np.concatenate(
+        (base, base + np.asarray([[1.1, 0.0, 0.0]]), np.zeros((1, 3), dtype=np.float32))
+    )[None]
+    np.testing.assert_array_equal(
+        _has_clash_blocked(at_limit, atom_mask, atom_asym, is_polymer, threshold=1.1),
+        [0.0],
+    )

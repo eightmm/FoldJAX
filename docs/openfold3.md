@@ -28,6 +28,13 @@ foldjax predict --model openfold3 --input features.npz \
   --input-format openfold3-features
 ```
 
+Archives written with `output_metadata` carry exact chain IDs, CCD/ligand
+component names, and `_chem_comp_bond` / `_struct_conn` connectivity (`output.*`
+members). Sidecar-less external `.npz` archives still run, emitting a
+`RuntimeWarning` and falling back to canonical residue decoding: non-standard
+and ligand residues are written as `UNK` without bond tables, and mmCIF chain
+labels `A, B, ...` are assigned in first-appearance order across emitted atoms.
+
 `openfold3-query.json` is OpenFold3's native upstream `{"queries": ...}`
 document, not FoldJAX's common job schema. Common JSON/YAML jobs use the
 one-shot `foldjax predict` command above; the split featurizer intentionally
@@ -87,7 +94,11 @@ checkpoint hashes, and support boundary.
 Nothing is converted: the port reads the released checkpoint directly with
 FoldJAX's restricted torch-archive reader. It reconstructs `.pt`/`.ckpt`
 tensors as NumPy arrays without importing PyTorch; a `safetensors` export can
-also be passed to `--weights`.
+also be passed to `--weights`. The released `of3-ob-2025-06-30-174k.pt` is a
+flat parameter dictionary; when `--weights` points to a Lightning/DeepSpeed
+training checkpoint containing `ema["params"]`, `load_checkpoint` prefers those
+EMA parameters over `state_dict` / `module`, matching upstream's
+`get_state_dict_from_checkpoint(init_from_ema_weights=True)`.
 
 ## Torch-free featurization
 
@@ -171,10 +182,22 @@ missing candidates are warned about and skipped until four valid entries have
 been selected; accepted entries are reindexed from zero. A request for which no
 entry is valid raises a detailed error, and FoldJAX never downloads a CIF.
 
-Legacy upstream object-valued NPZ files require Python pickle and are therefore
-rejected. To migrate trusted legacy data, extract its primitive arrays in an
-isolated conversion environment and pass those values to the writers above;
-the production FoldJAX process never needs to enable pickle.
+Legacy upstream object-valued NPZ files — including pickled dictionary caches
+written by upstream's `TemplatePreprocessor` — require Python pickle and are
+therefore rejected (`allow_pickle=False` everywhere, as a deliberate security
+deviation from upstream). Raw `template_alignment_file_path` inputs accept
+`.a3m`, `.sto`, `.m8` (12- or 13-column MMseqs2 TSVs, Kalign-realigned against
+the local CIF chain sequence without `CifDirectParser`'s `0.1` score floor,
+matching upstream `TemplatePreprocessor`), and `save_template_cache`'s
+plain-JSON `entries_json` `.npz` schema. During template featurization,
+`_template_precursor` validates pseudo-beta (`CB`, or `CA` for `GLY`)
+and backbone `N`/`CA`/`C` coordinates *before* writing `template_restype`, so a
+rejected candidate leaves unused template slots cleanly `GAP` rather than
+retaining partial residue names as upstream's
+`primitives/featurization/template.py` does. To migrate trusted legacy pickled
+caches, extract their primitive arrays in an isolated conversion environment and
+pass those values to the writers above; the production FoldJAX process never
+enables pickle.
 
 ### What the vendoring was checked against
 
@@ -196,10 +219,13 @@ absent.
 released `msa_depth` setting and subsamples on the host before device transfer.
 
 Backend options: `query_id`, `ccd_file_path`, `pair_chunk_size`,
-`memory_budget_gib`, `memory_check`, `prefix`, `no_compile`, and the three
-native sampling spellings. `ccd_file_path` applies only while preprocessing raw
-input; a feature archive already contains fixed chemistry and rejects that
-option rather than ignoring it.
+`diffusion_chunk_size`, `memory_budget_gib`, `memory_check`, `dtype`,
+`confidence_dtype`, `high_precision_attention`, `triangle_kernel`,
+`triangle_attention_grid`, `glu_backend`, `cp_devices`, `cp_layout`,
+`cp_atom_windows`, `all_arrays`, `return_expected_errors`, `prefix`,
+`no_compile`, and the three native sampling spellings. `ccd_file_path` applies
+only while preprocessing raw input; a feature archive already contains fixed
+chemistry and rejects that option rather than ignoring it.
 
 `pair_chunk_size` is worth knowing about. It blocks the pair stack's row loop,
 which caps the row block's temporaries — chiefly the pair transition's widened
@@ -270,8 +296,10 @@ same order to 2.4e-6 Å. The RDKit conformer ensemble depends on the RDKit
 version, so FoldJAX's environment and upstream's differ there.
 
 Refused combinations, with an error rather than a fold without the
-constraint: explicit padding (the default padding steps aside for it; the
-host-streamed program has no refinement) and
+constraint: explicit padding (`--padding`, `--pad-*`, `padding=True`; default
+padding steps aside for both raw pocket queries and pocket-constrained `.npz`
+feature archives, inspecting the archive's ZIP member names without loading
+arrays or pickle, because the host-streamed program has no refinement) and
 `cp_devices > 1` (the search has not been run on a mesh), and the replay
 routes (`noise_tape`, `noise_mask`, `augmentation_tape`, `noise_fn`) of the
 direct API. `deterministic=true` is compatible: the search is ordinary
@@ -322,6 +350,19 @@ To let OpenFold3 pair for itself, give `unpaired_msa` an alignment
 *directory* -- the translation hands a directory over untouched, as upstream
 reads one -- holding a main-stem file beside a `uniprot_hits.a3m` whose
 headers carry the UniProt species upstream pairs on.
+
+**Unaligned RNA chains.** Upstream v0.5.0's CLI defaults to
+`use_msa_server=True` (`entry_points/validator.py:124`), under which
+`InferenceDataModule.prepare_data` (`data_module.py:681-693`) runs ColabFold on
+protein chains only and skips `augment_main_msa_with_query_sequence` (which is
+in the `use_msa_server=False` branch). An RNA chain with no supplied alignment
+therefore gets no MSA file under upstream's `use_msa_server=True` default and
+featurizes with all-gap `msa` (`"-"`) and an all-zero `profile`, whereas under
+upstream `--use_msa_server=False` it gets a one-row query-only dummy MSA.
+FoldJAX runs offline without implicit server queries and follows upstream's
+`use_msa_server=False` path (`_query_with_native_dummy_msas`), populating a
+one-row query-only dummy MSA (and one-hot query `profile`) for unaligned
+protein and RNA chains alike while emitting a `UserWarning`.
 
 ## The compile cache
 
@@ -378,8 +419,16 @@ would have run five -- and it is unmeasured here: the 4,100-token comparison
 above has no unchunked wall time to compare against, because that arm does not
 run. Say `--option diffusion_chunk_size=5` (any width at or above
 the sample count, or `None` through `released_config`) to get the unchunked
-rollout back on a mesh with room to spare; serial runs are unchanged, and the
-two spellings compile and cache separately.
+rollout back on a mesh with room to spare; serial runs up to
+`SERIAL_DIFFUSION_CHUNK_ABOVE_TOKENS` (`4,888` tokens, the top of
+`OPENFOLD3_CHUNKED_PEAK`'s measured domain) keep the whole sample axis, while
+serial runs with `n_token > 4,888` automatically resolve omitted
+`diffusion_chunk_size` to `1`. Under default padding, `padded_config` resolves
+`diffusion_chunk_size` at the *padded* token bucket (`padding_plan.target["tokens"]`),
+and the standard token ladder steps by 256 from `4,864` to `5,120`: inputs with
+`4,865..4,888` real tokens therefore pad to `5,120 > 4,888` and denoise one
+sample at a time unless `--no-padding` or an explicit `diffusion_chunk_size` is
+supplied. The unchunked and chunked spellings compile and cache separately.
 
 **The mesh shape is the other capacity-first default.** `cp_layout=auto` --
 which is what an omitted layout means -- builds Fold-CP's square grid on a
@@ -501,9 +550,36 @@ representation narrows and everything atom- or coordinate-shaped stays fp32,
 and the confidence head's Pairformer follows the trunk (`--option
 confidence_dtype=float32` holds it wide, as upstream's is, at a memory cost
 [`cli.md`](cli.md#separating-openfold3s-confidence-head---option-confidence_dtype)
-records); `--option dtype=float32` restores upstream's `32-true` storage, and the
-verification gates below are run on that arm. `models/openfold3/dtype.py`
-carries the split and the measurement.
+records); `--option dtype=float32` restores upstream's `32-true` inference
+precision (`PROJECT.md:46-47`), and the verification gates below are run on that
+arm. Under upstream's `bf16-mixed` training configuration, `PairFormerBlock`
+(`core/model/latent/pairformer.py:195-200`) passes
+`use_high_precision_attention=True` to `AttentionPairBias` (upcasting `q`, `k`,
+`v` and biases to float32 for logits, softmax and value contraction before
+casting back to bfloat16, while `TriangleAttention` and
+`MSAPairWeightedAveraging` keep bfloat16 via `softmax_no_cast`, and the input
+embedder and diffusion module run float32). FoldJAX leaves Pairformer
+`AttentionPairBias` in bfloat16 by default — a documented deviation from
+upstream's `bf16-mixed` mode that preserves the measured 28-row deposited-RMSD
+panel — and exposes `--option high_precision_attention=on`
+(`InferenceConfig.high_precision_attention=True`) to opt into the float32
+attention core. `models/openfold3/dtype.py` carries the split and the
+measurement.
+
+**Live FoldJAX kernel defaults versus upstream v0.5.0 eval defaults.** On a
+serial GPU process, FoldJAX resolves omitted `triangle_kernel` to
+`cueq-pallas` (cuEquivariance triangle attention plus Pallas-Triton triangle
+multiplication) and omitted `glu_backend` to `pallas` (Pallas-Triton SwiGLU
+transitions on pair, template and MSA tracks at `c_z <= 128`), with automatic
+pair row-chunking (`pair_chunk_size=128`) from `1,003` tokens up; off GPU,
+`triangle_kernel` resolves to `cueq-full` (XLA fallback on CPU) and
+`glu_backend` to `xla`; under context parallelism (`cp_devices > 1`), both
+resolve to `xla`. By contrast, upstream OpenFold3 `v0.5.0`'s evaluation config
+(`projects/of3_all_atom/config/model_config.py:114-124`,
+`core/model/primitives/activations.py:32`) defaults to
+`use_triton_triangle_kernels=True`, `use_cueq_triangle_kernels=False`,
+`use_deepspeed_evo_attention=False`, `use_lma=False`, `chunk_size=None`,
+`tune_chunk_size=True`, and unfused `SwiGLU` (`use_kernel=False`).
 The fused cuEquivariance triangle contractions explicitly pin
 `lax.Precision.DEFAULT`, so the surrounding scope does not make every
 accelerator contraction identical to upstream Torch. Pairformer accelerator
@@ -526,10 +602,11 @@ not fit, as recorded in the scaling table.
 
 - **Structural accuracy beyond 1UBQ** is unmeasured — no RMSD or clash gate
   across a target set.
-- **Upstream's memory-optimization and kernel paths** (chunked forward,
-  `forward_offload`, DeepSpeed/cuEq/Triton/LMA) are not ported. Upstream asserts
-  they are numerically equivalent; that is upstream's claim, not a measurement
-  here.
+- **Upstream's DeepSpeed/LMA/`forward_offload` paths and dynamic `tune_chunk_size`
+  probing** are not ported; FoldJAX uses its own static `pair_chunk_size=128`
+  row blocking (from `1,003` tokens) and `cueq-pallas` / `pallas` GPU kernels
+  above. Upstream asserts its own alternative kernels are numerically
+  equivalent; that is upstream's claim, not a measurement here.
 - **MSA row choice above 1024 rows** cannot be reproduced without an explicit
   permutation, because upstream draws it with `torch.randperm`.
 - **Batch size** is always 1. Nothing assumes it; nothing measures it either.

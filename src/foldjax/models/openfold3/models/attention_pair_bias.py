@@ -45,6 +45,7 @@ def attention_pair_bias(
     mask: jnp.ndarray | None = None,
     inf: float = 1e9,
     eps: float = 1e-5,
+    high_precision: bool = False,
 ) -> jnp.ndarray:
     """Apply attention over ``a`` biased by the pair representation ``z``.
 
@@ -56,6 +57,9 @@ def attention_pair_bias(
         mask: ``[..., N]`` mask; ``None`` means all ones.
         inf: masking constant.
         eps: layer norm epsilon.
+        high_precision: upstream's ``use_high_precision_attention``; casts the
+            attention core to ``float32`` and restores ``a.dtype`` before
+            gating and output projection.
 
     Returns:
         ``[..., N, C_q]`` update. Upstream returns the update only.
@@ -72,7 +76,14 @@ def attention_pair_bias(
     pair_bias = linear(layer_norm(z, params.layer_norm_z, eps=eps), params.linear_z)
     pair_bias = permute_final_dims(pair_bias, (2, 0, 1))
 
-    return attention(a, a, params.mha, no_heads=no_heads, biases=(mask_bias, pair_bias))
+    return attention(
+        a,
+        a,
+        params.mha,
+        no_heads=no_heads,
+        biases=(mask_bias, pair_bias),
+        high_precision=high_precision,
+    )
 
 
 class AdaAttentionPairBiasParams(NamedTuple):

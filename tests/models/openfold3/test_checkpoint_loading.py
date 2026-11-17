@@ -163,6 +163,46 @@ def test_load_torch_checkpoint_round_trip(tmp_path: Path) -> None:
     np.testing.assert_allclose(loaded["a.weight"], np.ones((2, 2)))
 
 
+def test_unwrap_and_load_prefer_ema_params_like_upstream(tmp_path: Path) -> None:
+    """Upstream ``get_state_dict_from_checkpoint(init_from_ema_weights=True)``."""
+    raw_state = {"model.trunk.linear.weight": np.zeros((2, 2), dtype=np.float32)}
+    ema_state = {"trunk.linear.weight": np.full((2, 2), 3.0, dtype=np.float32)}
+    payload = {
+        "state_dict": raw_state,
+        "module": raw_state,
+        "ema": {"decay": 0.999, "params": ema_state},
+    }
+    assert unwrap_state_dict(payload) is ema_state
+    assert unwrap_state_dict(payload, use_ema=False) is raw_state
+
+    # Empty or malformed EMA records fall through to ordinary wrapper keys,
+    # and raise KeyError when no usable parameter mapping exists anywhere.
+    assert (
+        unwrap_state_dict({"state_dict": raw_state, "ema": {"params": {}}}) is raw_state
+    )
+    assert (
+        unwrap_state_dict({"state_dict": raw_state, "ema": {"params": "bad"}})
+        is raw_state
+    )
+    assert unwrap_state_dict({"state_dict": raw_state, "ema": None}) is raw_state
+    with pytest.raises(KeyError, match="could not find a parameter mapping"):
+        unwrap_state_dict({"ema": {"params": {}}})
+
+    torch = pytest.importorskip("torch")
+    path = tmp_path / "ema_training.ckpt"
+    torch.save(
+        {
+            "state_dict": {"model.a.weight": torch.zeros(2, 2)},
+            "ema": {"decay": 0.999, "params": {"a.weight": torch.full((2, 2), 5.0)}},
+        },
+        path,
+    )
+    np.testing.assert_allclose(load_checkpoint(path)["a.weight"], np.full((2, 2), 5.0))
+    np.testing.assert_allclose(
+        load_checkpoint(path, use_ema=False)["a.weight"], np.zeros((2, 2))
+    )
+
+
 def test_load_torch_checkpoint_never_imports_torch(monkeypatch) -> None:
     fixture = Path(__file__).parents[2] / "data" / "torch_archive_fixture.pt"
     original_import = builtins.__import__
