@@ -1984,8 +1984,9 @@ def _predict_once_on_device(
         stop_after=request.stop_after,
         requested_representations=request.representations,
     )
-    # The port learned at admission that only the padded shape is refused and
-    # ran the default padding's exact shape instead (`memory_policy.admit`);
+    # The port learned at admission that only the padded shape is refused, or
+    # has no estimate, and ran the default padding's exact shape instead
+    # (`memory_policy.admit`);
     # recorded the way an option that cannot run padded is.
     asked = _without_stepped_aside_padding(asked)
     request = _without_stepped_aside_padding(request)

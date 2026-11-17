@@ -1427,7 +1427,7 @@ def test_the_default_padding_steps_aside_when_only_the_padded_shape_is_refused()
         _admit_padded_opendde(4096, exact=None)
     assert memory_policy.padding_disabled_by() is None
 
-    with pytest.warns(UserWarning, match="uses the exact input shapes") as caught:
+    with pytest.warns(UserWarning, match="to be refused instead") as caught:
         decision = _admit_padded_opendde(
             4096, exact=memory_policy.ExactShape(4040, implicit=True)
         )
@@ -1488,6 +1488,108 @@ def test_a_padding_aware_admission_clears_an_earlier_step_aside() -> None:
         _admit_padded_opendde(4096, exact=memory_policy.ExactShape(4040, implicit=True))
     memory_policy.clear_record()
     assert memory_policy.padding_disabled_by() is None
+
+
+#: The 85.5 GiB pool of the 96 GB card the L5000_8e2f runs fell over on
+#: (threshold 76.9 GiB; Boltz-2's 4,888 tokens read 76.6 GiB).
+_L5000_POOL = int(85.5 * 2**30)
+
+
+def _admit_padded_boltz2(
+    n_token: int,
+    *,
+    exact: memory_policy.ExactShape | None,
+    pool: int = _L5000_POOL,
+    mode: str = "refuse",
+) -> memory_policy.MemoryDecision:
+    """The Boltz-2 port's admission of a padded job: padded count, exact beside."""
+    return memory_policy.admit(
+        model="boltz2",
+        n_token=n_token,
+        msa_rows=None,
+        candidates=(("released", BOLTZ2_PEAK),),
+        budget=_budget(pool),
+        mode=mode,
+        exceeds_profile=(memory_policy.SERVING_PADDING,),
+        exact=exact,
+    )
+
+
+def test_the_default_padding_steps_aside_when_the_padded_shape_has_no_estimate() -> (
+    None
+):
+    """L5000_8e2f's 4,888 tokens are the top of the fitted range and fit the
+    card; the default padding pads them to 5,120, which no law estimates. The
+    run used to proceed unchecked into the allocator and fail there."""
+    assert not BOLTZ2_PEAK.bounds(5120) and BOLTZ2_PEAK.covers(4888)
+    with pytest.warns(RuntimeWarning, match="outside the fitted range"):
+        decision = _admit_padded_boltz2(5120, exact=None)
+    assert decision.state == "unknown"
+    assert memory_policy.padding_disabled_by() is None
+
+    with pytest.warns(UserWarning, match="keep the padded shape") as caught:
+        decision = _admit_padded_boltz2(
+            5120, exact=memory_policy.ExactShape(4888, implicit=True)
+        )
+    assert decision.state == "fits"
+    assert decision.padding_stepped_aside
+    assert memory_policy.padding_disabled_by() == memory_policy.PADDING_STEP_ASIDE
+    message = str(caught[0].message)
+    assert "padding to 5120 tokens has no memory estimate" in message
+    assert "outside the fitted range" in message
+    assert "the exact 4888 tokens are admitted" in message
+    assert "padding is on by default" in message
+    block = memory_policy.recorded()
+    assert (block["n_token"], block["state"]) == (4888, "fits")
+    assert block["exceeds_profile"] == []
+
+
+def test_padding_runs_with_the_warning_when_neither_shape_has_an_estimate() -> None:
+    with pytest.warns(RuntimeWarning, match="proceeds without the check"):
+        decision = _admit_padded_boltz2(
+            5120, exact=memory_policy.ExactShape(4900, implicit=True)
+        )
+    assert decision.state == "unknown"
+    assert not decision.padding_stepped_aside
+    assert memory_policy.padding_disabled_by() is None
+    block = memory_policy.recorded()
+    assert (block["n_token"], block["state"]) == (5120, "unknown")
+
+
+def test_an_unestimated_padded_shape_takes_the_exact_shapes_refusal() -> None:
+    """Padding only adds to a run, so when the exact shape is refused the
+    padded one is too, instead of running unchecked into the allocator."""
+    pool = 80 * _GIB
+    assert _decide(BOLTZ2_PEAK, 4888, pool).state == "over_budget"
+    with pytest.raises(MemoryError, match="boltz2 at 4888 tokens") as info:
+        _admit_padded_boltz2(
+            5120, exact=memory_policy.ExactShape(4888, implicit=True), pool=pool
+        )
+    assert "padding to 5120 tokens has no memory estimate" in str(info.value)
+    assert "needs at least as much" in str(info.value)
+    assert memory_policy.padding_disabled_by() is None
+    block = memory_policy.recorded()
+    assert (block["n_token"], block["state"]) == (4888, "over_budget")
+    # Warn mode refuses nothing, so the padded shape runs with its own warning.
+    with pytest.warns(RuntimeWarning, match="proceeds without the check"):
+        decision = _admit_padded_boltz2(
+            5120,
+            exact=memory_policy.ExactShape(4888, implicit=True),
+            pool=pool,
+            mode="warn",
+        )
+    assert (decision.state, decision.padding_stepped_aside) == ("unknown", False)
+    assert memory_policy.recorded()["n_token"] == 5120
+
+
+def test_explicit_padding_to_an_unestimated_shape_runs_as_before() -> None:
+    with pytest.warns(RuntimeWarning, match="proceeds without the check") as caught:
+        decision = _admit_padded_boltz2(5120, exact=memory_policy.ExactShape(4888))
+    assert decision.state == "unknown"
+    assert not decision.padding_stepped_aside
+    assert "--no-padding" not in str(caught[0].message)
+    assert memory_policy.padding_disabled_by() is None
+    assert memory_policy.recorded()["n_token"] == 5120
 
 
 def test_the_default_padding_steps_aside_from_the_observed_esmfold2_refusal() -> None:

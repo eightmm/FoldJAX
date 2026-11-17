@@ -1095,8 +1095,8 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             )
             # Admitted at the padded shape before the features are padded to
             # it, so the default padding can step aside for a query whose
-            # padded shape alone is refused; the config is then rebuilt at the
-            # exact shape, which is admitted the way an unpadded run is.
+            # padded shape alone is refused or unestimated; the config is then
+            # rebuilt at the exact shape, admitted the way an unpadded run is.
             padded_config = inference.released_config(
                 n_token=padding_plan.target["tokens"],
                 n_atom=padding_plan.target["atoms"],

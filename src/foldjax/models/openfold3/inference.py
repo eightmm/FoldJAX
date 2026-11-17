@@ -641,7 +641,7 @@ def resolve_pair_chunk_size(
     predict, so inspecting a checkpoint does not initialize a device to check a
     run it will never make. ``exact`` is the unpadded shape of a padded
     ``n_token`` (:class:`memory_policy.ExactShape`), under which the default
-    padding steps aside when only the padded shape is refused.
+    padding steps aside when only the padded shape is refused or unestimated.
     """
     if budget is not None:
         memory_policy.admit(

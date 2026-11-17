@@ -791,8 +791,8 @@ class MemoryDecision:
     threshold: int | None
     reason: str
     #: True when :func:`admit` was asked about a padded shape it would have
-    #: refused and answered for the exact shape instead (:class:`ExactShape`);
-    #: the port then runs unpadded.
+    #: refused, or could not estimate, and answered for the exact shape instead
+    #: (:class:`ExactShape`); the port then runs unpadded.
     padding_stepped_aside: bool = False
 
 
@@ -810,6 +810,10 @@ class ExactShape:
     this shape and the port runs it unpadded, the way the default steps aside
     for an option that cannot run padded (`foldjax.api._yield_default_padding`)
     -- and padding the caller asked for is refused with ``--no-padding`` named.
+    The default also steps aside when the padded shape has no estimate at all
+    (outside every fitted range) and this one fits; when this one is refused
+    instead, so is the run, since padding only adds to it. Padding the caller
+    asked for runs an unestimated shape as it always has, with the warning.
     """
 
     n_token: int
@@ -1536,8 +1540,10 @@ def admit(
     while the exact one is admitted means the default padding steps aside
     (``padding_stepped_aside`` on the returned decision, the exact shape
     recorded and enforced, one notice) or, for padding the caller asked for,
-    a refusal whose levers name ``--no-padding``. Every other outcome is the
-    padded shape's own.
+    a refusal whose levers name ``--no-padding``. A padded shape with no
+    estimate (outside every fitted range) steps the default aside the same way
+    when the exact shape fits, and takes the exact shape's refusal when it is
+    refused. Every other outcome is the padded shape's own.
     """
     decision = resolve_memory_policy(
         model=model,
@@ -1558,7 +1564,11 @@ def admit(
             if exact.msa_rows is not None
             else ""
         )
-        if shape != exact_shape and _refuses(decision, mode, off_profile):
+        refused = _refuses(decision, mode, off_profile)
+        # Outside every fitted range (or missing the row count a law needs);
+        # every other ``unknown`` carries an estimate.
+        unestimated = decision.state == "unknown" and not decision.estimates
+        if shape != exact_shape and (refused or unestimated):
             unpadded = resolve_memory_policy(
                 model=model,
                 n_token=exact.n_token,
@@ -1567,28 +1577,11 @@ def admit(
                 candidates=candidates,
                 card_bytes=budget.card_bytes,
             )
-            if not _refuses(unpadded, mode, off_profile):
+            step_aside = None
+            if refused and not _refuses(unpadded, mode, off_profile):
                 if exact.implicit:
-                    warnings.warn(
-                        f"{model}: padding to {shape} would be refused "
-                        f"({decision.reason}) and the exact {exact_shape} "
-                        f"{'are' if msa_rows is None else 'is'} admitted "
-                        f"({unpadded.reason}), so this run uses the exact input "
-                        "shapes (padding is on by default; request it explicitly "
-                        "to be refused instead)",
-                        UserWarning,
-                        stacklevel=2,
-                    )
-                    _PADDING_STEP_ASIDE.set(PADDING_STEP_ASIDE)
-                    stepped_aside = True
-                    decision = unpadded
-                    n_token, msa_rows = exact.n_token, exact.msa_rows
-                    # The run is unpadded now, so the law is no longer a lower
-                    # bound on that account.
-                    exceeds_profile = tuple(
-                        reason
-                        for reason in exceeds_profile
-                        if reason != SERVING_PADDING
+                    step_aside = (
+                        f"padding to {shape} would be refused ({decision.reason})"
                     )
                 else:
                     levers = (
@@ -1596,6 +1589,46 @@ def admit(
                         f"--no-padding (padding=False) runs the exact {exact_shape}, "
                         f"which this policy admits ({unpadded.reason})",
                     )
+            elif unestimated and exact.implicit:
+                if unpadded.state == "fits":
+                    step_aside = (
+                        f"padding to {shape} has no memory estimate ({decision.reason})"
+                    )
+                elif _refuses(unpadded, mode, off_profile):
+                    # The padded run needs at least what the exact one does,
+                    # so a shape nobody fitted inherits the exact refusal
+                    # rather than running unchecked into the allocator.
+                    decision = replace(
+                        unpadded,
+                        reason=(
+                            f"{unpadded.reason}; padding to {shape} has no "
+                            "memory estimate and needs at least as much"
+                        ),
+                    )
+                    n_token, msa_rows = exact.n_token, exact.msa_rows
+            if step_aside is not None:
+                warnings.warn(
+                    f"{model}: {step_aside} and the exact {exact_shape} "
+                    f"{'are' if msa_rows is None else 'is'} admitted "
+                    f"({unpadded.reason}), so this run uses the exact input "
+                    "shapes (padding is on by default; request it explicitly "
+                    + (
+                        "to be refused instead)"
+                        if refused
+                        else "to keep the padded shape, with no memory estimate)"
+                    ),
+                    UserWarning,
+                    stacklevel=2,
+                )
+                _PADDING_STEP_ASIDE.set(PADDING_STEP_ASIDE)
+                stepped_aside = True
+                decision = unpadded
+                n_token, msa_rows = exact.n_token, exact.msa_rows
+                # The run is unpadded now, so the law is no longer a lower
+                # bound on that account.
+                exceeds_profile = tuple(
+                    reason for reason in exceeds_profile if reason != SERVING_PADDING
+                )
     selected = dict(candidates).get(decision.selected or "")
     record(
         decision,
