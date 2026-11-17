@@ -63,5 +63,7 @@ A port that produced one fixed answer would not be reproducing this model.
 Ported and gated. `tests/models/esmfold2/` holds 60-odd parity tests against
 the torch modules these notes describe, plus an end-to-end run on the released
 checkpoint. What this file records is what the torch source does; where the
-port deliberately departs from it -- the PDB writer's chain field and b-factor
-scale -- the departure is stated where it happens.
+port deliberately departs from it -- such as the structure writer's chain
+field and per-atom `0–100` pLDDT B-factors (versus upstream `output_to_pdb`'s
+token-level `0–1` scale; see `docs/esmfold2.md`) -- the departure is stated
+where it happens.

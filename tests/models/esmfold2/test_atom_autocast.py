@@ -116,3 +116,128 @@ def test_predict_routes_original_atom_weights_only_in_native_scope(
     np.testing.assert_array_equal(
         captured["params"]["inputs_embedder.probe.weight"], expected
     )
+
+
+def _reference_fp32_swa_attention(
+    x: jnp.ndarray,
+    params: dict[str, jnp.ndarray],
+    *,
+    cos: jnp.ndarray,
+    sin: jnp.ndarray,
+    valid: jnp.ndarray,
+    n_heads: int,
+    half_window: int,
+) -> jnp.ndarray:
+    batch, length, width = x.shape
+    head_dim = width // n_heads
+    qkv = atom.linear(x, params, "Wqkv").reshape(batch, length, 3, n_heads, head_dim)
+    q = atom.apply_rotary_3d(atom.rms_norm(qkv[:, :, 0]), cos, sin).astype(jnp.bfloat16)
+    k = atom.apply_rotary_3d(atom.rms_norm(qkv[:, :, 1]), cos, sin).astype(jnp.bfloat16)
+    v = qkv[:, :, 2].astype(jnp.bfloat16)
+    logits = jnp.einsum(
+        "bihd,bjhd->bhij", q, k, preferred_element_type=jnp.float32
+    ) * (head_dim**-0.5)
+    allowed = atom.sliding_window_mask(valid, half_window)[:, None]
+    logits = jnp.where(allowed, logits, jnp.finfo(jnp.float32).min)
+    attention = jax.nn.softmax(logits, axis=-1)
+    context = jnp.einsum(
+        "bhij,bjhd->bihd", attention, v, preferred_element_type=jnp.float32
+    ).astype(jnp.bfloat16)
+    context = context.reshape(batch, length, width)
+    context = (context * valid[..., None].astype(jnp.bfloat16)).astype(x.dtype)
+    gate = jax.nn.sigmoid(atom.linear(x, params, "gate_proj"))
+    return atom.linear(context * gate, params, "out_proj")
+
+
+def _reference_bf16_swa_attention(
+    x: jnp.ndarray,
+    params: dict[str, jnp.ndarray],
+    *,
+    cos: jnp.ndarray,
+    sin: jnp.ndarray,
+    valid: jnp.ndarray,
+    n_heads: int,
+    half_window: int,
+) -> jnp.ndarray:
+    batch, length, width = x.shape
+    head_dim = width // n_heads
+    qkv = atom.linear(x, params, "Wqkv").reshape(batch, length, 3, n_heads, head_dim)
+    q = atom.apply_rotary_3d(atom.rms_norm(qkv[:, :, 0]), cos, sin).astype(jnp.bfloat16)
+    k = atom.apply_rotary_3d(atom.rms_norm(qkv[:, :, 1]), cos, sin).astype(jnp.bfloat16)
+    v = qkv[:, :, 2].astype(jnp.bfloat16)
+    logits = jnp.einsum("bihd,bjhd->bhij", q, k) * (head_dim**-0.5)
+    allowed = atom.sliding_window_mask(valid, half_window)[:, None]
+    logits = jnp.where(allowed, logits, jnp.finfo(jnp.bfloat16).min)
+    attention = jax.nn.softmax(logits, axis=-1)
+    context = jnp.einsum("bhij,bjhd->bihd", attention, v)
+    context = context.reshape(batch, length, width)
+    context = (context * valid[..., None].astype(jnp.bfloat16)).astype(x.dtype)
+    gate = jax.nn.sigmoid(atom.linear(x, params, "gate_proj"))
+    return atom.linear(context * gate, params, "out_proj")
+
+
+@pytest.mark.parametrize(
+    ("length", "rows_per_block", "valid_count"),
+    [
+        (11, 8, 11),  # one short of blocked threshold (8 + 2*2 = 12): dense edge
+        (12, 8, 12),  # exact blocked threshold (8 + 2*2 = 12)
+        (24, 8, 21),  # blocked with padded tail
+        (24, 0, 21),  # explicit dense
+        (12, 8, 0),   # zero valid atoms edge
+    ],
+)
+def test_non_autocast_swa_attention_accumulates_scores_and_pv_in_fp32(
+    length: int, rows_per_block: int, valid_count: int
+) -> None:
+    rng = np.random.default_rng(17 + length + rows_per_block + valid_count)
+    n_heads, head_dim, half_window = 2, 32, 2
+    width = n_heads * head_dim
+    x = jnp.asarray(rng.normal(size=(1, length, width)).astype(np.float32) * 2.5)
+    params = {
+        "Wqkv.weight": jnp.asarray(
+            rng.normal(size=(3 * width, width)).astype(np.float32) * 0.5
+        ),
+        "gate_proj.weight": jnp.eye(width, dtype=jnp.float32),
+        "out_proj.weight": jnp.eye(width, dtype=jnp.float32),
+    }
+    cos, sin = atom.build_3d_rope(
+        jnp.asarray(rng.normal(size=(1, length, 3)).astype(np.float32)),
+        jnp.arange(length, dtype=jnp.int32)[None] // 3,
+        head_dim=head_dim,
+    )
+    valid = (jnp.arange(length)[None] < valid_count).astype(jnp.float32)
+
+    actual = atom.swa_attention(
+        x,
+        params,
+        "",
+        cos=cos,
+        sin=sin,
+        valid=valid,
+        n_heads=n_heads,
+        half_window=half_window,
+        rows_per_block=rows_per_block,
+        native_autocast=False,
+    )
+    expected = _reference_fp32_swa_attention(
+        x,
+        params,
+        cos=cos,
+        sin=sin,
+        valid=valid,
+        n_heads=n_heads,
+        half_window=half_window,
+    )
+    assert actual.dtype == jnp.float32
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
+    if valid_count > 0:
+        bf16_ref = _reference_bf16_swa_attention(
+            x,
+            params,
+            cos=cos,
+            sin=sin,
+            valid=valid,
+            n_heads=n_heads,
+            half_window=half_window,
+        )
+        assert float(jnp.max(jnp.abs(actual - bf16_ref))) > 1e-3

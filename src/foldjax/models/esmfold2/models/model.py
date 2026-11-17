@@ -24,6 +24,7 @@ through the encoder.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 
@@ -38,7 +39,7 @@ from foldjax.models._cp import (
     manual_axes,
     shard_pair_rows,
 )
-from foldjax.models._random import masked_prefix_draw
+from foldjax.models._random import masked_prefix_draw, supports_masked_prefix_draw
 from foldjax.models.esmfold2.models import diffusion
 from foldjax.models.esmfold2.models import trunk as trunk_ops
 from foldjax.models.esmfold2.models.atom import atom_encoder, one_hot_atom_features
@@ -314,6 +315,11 @@ class ModelSettings:
     #: head over the sample axis; this is a trace-time constant inside the
     #: mapped body, so the two compose without interacting.
     confidence_dtype: str = "float32"
+    lm_mask_pct: float = 0.0
+    inputs_spatial_rope_base_frequency: float = 20.0
+    inputs_n_spatial_rope_pairs_per_axis: int = 2
+    inputs_n_uid_rope_pairs: int = 10
+    inputs_uid_rope_base_frequency: float = 10000.0
     diffusion: diffusion.DiffusionSettings = field(
         default_factory=diffusion.DiffusionSettings
     )
@@ -325,6 +331,19 @@ def settings_from_config(config: Mapping[str, object]) -> ModelSettings:
     A mapping, not an `ESMFold2Config`, so nothing on the loading path imports
     torch or transformers; `ESMFold2Config.to_dict()` produces this shape.
     """
+    checkpoint_type = config.get("type", "release")
+    if checkpoint_type is None:
+        checkpoint_type = "release"
+    if not isinstance(checkpoint_type, str) or checkpoint_type != "release":
+        if checkpoint_type == "experimental":
+            raise ValueError(
+                "unsupported ESMFold2 checkpoint type 'experimental': FoldJAX "
+                "ports ESMFold2Model (type='release'), not ESMFold2ExperimentalModel"
+            )
+        raise ValueError(
+            f"unsupported ESMFold2 checkpoint type {checkpoint_type!r}; "
+            "expected 'release'"
+        )
 
     def block(source: Mapping[str, object], name: str) -> Mapping[str, object]:
         value = source.get(name)
@@ -343,6 +362,41 @@ def settings_from_config(config: Mapping[str, object]) -> ModelSettings:
         value = source.get(name, fallback)
         return fallback if value is None else float(value)  # type: ignore[arg-type]
 
+    raw_lm_mask_pct = config.get("lm_mask_pct", base.lm_mask_pct)
+    if raw_lm_mask_pct is None:
+        lm_mask_pct = base.lm_mask_pct
+    else:
+        if isinstance(raw_lm_mask_pct, bool) or not isinstance(
+            raw_lm_mask_pct, (int, float)
+        ):
+            raise ValueError(
+                f"lm_mask_pct must be a number; got {raw_lm_mask_pct!r}"
+            )
+        lm_mask_pct = float(raw_lm_mask_pct)
+        if not math.isfinite(lm_mask_pct) or not 0.0 <= lm_mask_pct < 1.0:
+            raise ValueError(
+                f"lm_mask_pct must lie in [0, 1); got {raw_lm_mask_pct!r}"
+            )
+
+    inputs_d_atom = int(number(atom, "d_atom", 128))
+    inputs_atom_n_heads = int(number(atom, "n_heads", base.inputs_atom_n_heads))
+    (
+        inputs_spatial_freq,
+        inputs_n_spatial,
+        inputs_n_uid,
+        inputs_uid_freq,
+    ) = diffusion._read_rope_settings(
+        atom,
+        c_atom=inputs_d_atom,
+        n_heads=inputs_atom_n_heads,
+        defaults=(
+            base.inputs_spatial_rope_base_frequency,
+            base.inputs_n_spatial_rope_pairs_per_axis,
+            base.inputs_n_uid_rope_pairs,
+            base.inputs_uid_rope_base_frequency,
+        ),
+    )
+
     return ModelSettings(
         d_pair=int(number(config, "d_pair", base.d_pair)),
         d_inputs=int(number(inputs, "d_inputs", base.d_inputs)),
@@ -351,11 +405,15 @@ def settings_from_config(config: Mapping[str, object]) -> ModelSettings:
         ),
         n_chain_bins=int(number(config, "n_relative_chain_bins", base.n_chain_bins)),
         inputs_atom_n_blocks=int(number(atom, "n_blocks", base.inputs_atom_n_blocks)),
-        inputs_atom_n_heads=int(number(atom, "n_heads", base.inputs_atom_n_heads)),
+        inputs_atom_n_heads=inputs_atom_n_heads,
         inputs_half_window=int(
             number(atom, "swa_window_size", base.inputs_half_window * 2)
         )
         // 2,
+        inputs_spatial_rope_base_frequency=inputs_spatial_freq,
+        inputs_n_spatial_rope_pairs_per_axis=inputs_n_spatial,
+        inputs_n_uid_rope_pairs=inputs_n_uid,
+        inputs_uid_rope_base_frequency=inputs_uid_freq,
         trunk_n_layers=int(number(trunk, "n_layers", base.trunk_n_layers)),
         lm_encoder_n_layers=(
             int(number(lm, "n_layers", 4)) if lm.get("enabled", True) else None
@@ -379,6 +437,7 @@ def settings_from_config(config: Mapping[str, object]) -> ModelSettings:
         # renamed while decoding the file.
         num_recycles=int(number(config, "num_loops", base.num_recycles)),
         num_samples=int(number(config, "num_diffusion_samples", base.num_samples)),
+        lm_mask_pct=lm_mask_pct,
         diffusion=diffusion.settings_from_config(config),
     )
 
@@ -577,6 +636,10 @@ def inputs_embedding(
         n_blocks=settings.inputs_atom_n_blocks,
         n_heads=settings.inputs_atom_n_heads,
         half_window=settings.inputs_half_window,
+        n_spatial_rope_pairs_per_axis=settings.inputs_n_spatial_rope_pairs_per_axis,
+        n_uid_rope_pairs=settings.inputs_n_uid_rope_pairs,
+        spatial_rope_base_frequency=settings.inputs_spatial_rope_base_frequency,
+        uid_rope_base_frequency=settings.inputs_uid_rope_base_frequency,
         n_tokens=n_tokens,
         native_autocast=native_autocast,
     )
@@ -718,6 +781,8 @@ def _dropout(
     if rate <= 0.0:
         return x
     if preserve_prefix_rng:
+        if not supports_masked_prefix_draw():
+            raise ValueError(diffusion._PREFIX_RNG_UNSUPPORTED_MSG)
         if valid_mask is None:
             raise ValueError("prefix-preserving dropout requires a validity mask")
         keep = masked_prefix_draw(
@@ -757,6 +822,8 @@ def _initial_pair_state_draw(
     shape = (*pair_mask.shape, width)
     if not preserve_prefix_rng:
         return jax.random.truncated_normal(key, -3.0, 3.0, shape, dtype=jnp.float32)
+    if not supports_masked_prefix_draw():
+        raise ValueError(diffusion._PREFIX_RNG_UNSUPPORTED_MSG)
     return masked_prefix_draw(
         lambda draw_key, draw_shape: jax.random.truncated_normal(
             draw_key, -3.0, 3.0, draw_shape, dtype=jnp.float32
@@ -782,6 +849,8 @@ def _msa_column_keep(
             raise ValueError("native MSA tape does not support prefix RNG padding")
         return keep_tape
     if preserve_prefix_rng:
+        if not supports_masked_prefix_draw():
+            raise ValueError(diffusion._PREFIX_RNG_UNSUPPORTED_MSG)
         values = masked_prefix_draw(
             lambda draw_key, shape: jax.random.uniform(draw_key, shape),
             key,
@@ -1317,6 +1386,8 @@ def predict(
         )
     ):
         raise ValueError("native tapes do not support prefix RNG padding")
+    if preserve_prefix_rng and not supports_masked_prefix_draw():
+        raise ValueError(diffusion._PREFIX_RNG_UNSUPPORTED_MSG)
     validate_initial_pair_state(
         initial_pair_state,
         batch=batch,

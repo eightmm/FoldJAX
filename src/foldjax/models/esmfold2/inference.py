@@ -91,6 +91,10 @@ MANAGED_AUXILIARY_OUTPUT_API = True
 # Compatibility wrappers must explicitly preserve the no-dispatch branch.
 MANAGED_CACHE_LOWERING_API = True
 
+# Explicit capability marker for padded compact-RNG tape fallback when JAX's
+# active PRNG implementation does not support masked prefix draws.
+PADDED_RANDOM_TAPES_API = True
+
 
 @dataclass(frozen=True)
 class LoadedModel:
@@ -149,8 +153,8 @@ def load(
     weights = Path(weights)
     if weights.is_file():
         weights = weights.parent
-    parameters = structure_checkpoint.load_parameters(weights, dtype=dtype)
     settings = structure_checkpoint.load_settings(weights)
+    parameters = structure_checkpoint.load_parameters(weights, dtype=dtype)
 
     if not language_model:
         return LoadedModel(parameters=parameters, settings=settings)
@@ -282,6 +286,7 @@ def load_language_model_stage(
     weights = Path(weights)
     if weights.is_file():
         weights = weights.parent
+    settings = structure_checkpoint.load_settings(weights)
     names = (
         *_LANGUAGE_MODEL_EMBEDDING_REQUIRED_PARAMETERS,
         *_LANGUAGE_MODEL_EMBEDDING_OPTIONAL_PARAMETERS,
@@ -313,7 +318,7 @@ def load_language_model_stage(
         )
     return LoadedModel(
         parameters=parameters,
-        settings=structure_checkpoint.load_settings(weights),
+        settings=settings,
         esmc_parameters=_load_esmc(directory, esmc_dtype),
         esmc_settings=replace(
             esmc_checkpoint.load_settings(directory),
@@ -592,6 +597,149 @@ def _model_bound_features(
     return compact
 
 
+def _has_prefix_atom_mask(features: Mapping[str, Any]) -> bool:
+    """Whether every batch row's valid atoms form a contiguous prefix."""
+
+    raw_mask = features.get("atom_attention_mask")
+    if raw_mask is None:
+        return True
+    try:
+        mask = np.asarray(raw_mask, dtype=bool)
+    except (TypeError, ValueError):
+        return False
+    if mask.ndim != 2:
+        return False
+    return not bool(np.any(~mask[:, :-1] & mask[:, 1:]))
+
+
+def padded_random_tapes(
+    key: jnp.ndarray,
+    *,
+    settings: structure_model.ModelSettings,
+    actual_tokens: int,
+    target_tokens: int,
+    actual_atoms: int,
+    target_atoms: int,
+    real_atom_mask: jnp.ndarray,
+    msa_depth: int | None,
+    lm_active: bool,
+) -> dict[str, jnp.ndarray]:
+    """Generate native-storage draws and right-pad for non-partitionable PRNGs."""
+
+    for name, size in (
+        ("actual_tokens", actual_tokens),
+        ("target_tokens", target_tokens),
+        ("actual_atoms", actual_atoms),
+        ("target_atoms", target_atoms),
+    ):
+        if isinstance(size, bool) or not isinstance(size, int) or size < 1:
+            raise ValueError(f"{name} must be a positive integer; got {size!r}")
+    if target_tokens < actual_tokens or target_atoms < actual_atoms:
+        raise ValueError(
+            "padded random tape targets cannot be smaller than native storage"
+        )
+    if (
+        real_atom_mask.ndim != 2
+        or real_atom_mask.shape[0] < 1
+        or real_atom_mask.shape[1] != actual_atoms
+    ):
+        raise ValueError(
+            "real_atom_mask must have shape [batch, actual_atoms]; "
+            f"got {real_atom_mask.shape} for {actual_atoms} atoms"
+        )
+
+    batch = int(real_atom_mask.shape[0])
+    tok_pad = target_tokens - actual_tokens
+    atom_pad = target_atoms - actual_atoms
+    _root, state_key, column_key, loop_key, sample_key = jax.random.split(key, 5)
+
+    std = (2.0 / (5.0 * settings.d_pair)) ** 0.5
+    z_compact = std * jax.random.truncated_normal(
+        state_key,
+        -3.0,
+        3.0,
+        (batch, actual_tokens, actual_tokens, settings.d_pair),
+        dtype=jnp.float32,
+    )
+    tapes: dict[str, jnp.ndarray] = {
+        "initial_pair_state": jnp.pad(
+            z_compact, ((0, 0), (0, tok_pad), (0, tok_pad), (0, 0))
+        )
+    }
+
+    if (
+        settings.msa_n_layers is not None
+        and msa_depth is not None
+        and msa_depth > 1
+        and settings.msa_column_mask_rate > 0
+    ):
+        col_compact = (
+            jax.random.uniform(column_key, (batch, actual_tokens))
+            >= settings.msa_column_mask_rate
+        )
+        tapes["msa_column_keep"] = jnp.pad(
+            col_compact, ((0, 0), (0, tok_pad)), constant_values=True
+        )
+
+    total_steps = max(1, settings.num_recycles + 1)
+    if lm_active and settings.per_loop_lm_dropout and 0.0 < settings.lm_dropout < 1.0:
+
+        def loop_draw(carry_key: jnp.ndarray, _: None):
+            next_key, dropout_key, _msa_key = jax.random.split(carry_key, 3)
+            keep_compact = jax.random.bernoulli(
+                dropout_key,
+                1.0 - settings.lm_dropout,
+                (batch, actual_tokens, actual_tokens, settings.d_pair),
+            )
+            keep = jnp.pad(
+                keep_compact,
+                ((0, 0), (0, tok_pad), (0, tok_pad), (0, 0)),
+                constant_values=False,
+            )
+            return next_key, keep
+
+        _, lm_masks = jax.lax.scan(loop_draw, loop_key, None, length=total_steps)
+        tapes["lm_dropout_masks"] = lm_masks
+
+    steps = len(structure_model.diffusion.noise_schedule(settings.diffusion)) - 1
+    sample_batch = batch * settings.num_samples
+    repeated_mask = jnp.repeat(
+        jnp.asarray(real_atom_mask, dtype=jnp.float32), settings.num_samples, axis=0
+    )
+    sample_key, initial_key = jax.random.split(sample_key)
+    init_compact = (
+        jax.random.normal(
+            initial_key, (sample_batch, actual_atoms, 3), dtype=jnp.float32
+        )
+        * repeated_mask[..., None]
+    )
+    tapes["diffusion_initial_normal"] = jnp.pad(
+        init_compact, ((0, 0), (0, atom_pad), (0, 0))
+    )
+
+    def step_draw(carry_key: jnp.ndarray, _: None):
+        next_key, aug_key, churn_key = jax.random.split(carry_key, 3)
+        rot_key, trans_key = jax.random.split(aug_key)
+        quat = jax.random.normal(rot_key, (sample_batch, 4), dtype=jnp.float32)
+        trans = jax.random.normal(trans_key, (sample_batch, 1, 3), dtype=jnp.float32)
+        churn_compact = (
+            jax.random.normal(
+                churn_key, (sample_batch, actual_atoms, 3), dtype=jnp.float32
+            )
+            * repeated_mask[..., None]
+        )
+        churn = jnp.pad(churn_compact, ((0, 0), (0, atom_pad), (0, 0)))
+        return next_key, (quat, trans, churn)
+
+    _, (quats, trans, churns) = jax.lax.scan(
+        step_draw, sample_key, None, length=steps
+    )
+    tapes["diffusion_rotation_quaternions"] = quats
+    tapes["diffusion_translations"] = trans
+    tapes["diffusion_churn_normals"] = churns
+    return tapes
+
+
 def _resolve_cp_layout(layout: str, n_devices: int) -> str:
     """Resolve ESMFold2's context-parallel layout alias.
 
@@ -693,6 +841,7 @@ def predict(
     #: lower bound and a "fits" is recorded as unknown.
     padded: bool = False,
     _lower_only: bool = False,
+    _padded_random_tapes: Mapping[str, jnp.ndarray] | None = None,
 ) -> Any:
     """One forward over already-built features.
 
@@ -828,7 +977,8 @@ def predict(
     # attention call during tracing, so a later environment change cannot hit
     # an executable traced for another backend or block width. Dense is the
     # canonical zero; blocked is its positive resolved row width.
-    atom_rows_per_block = atom_model._resolve_rows_per_block(None)
+    resolved_rows = atom_model._resolve_rows_per_block(None)
+    atom_rows_per_block = resolved_rows if _has_prefix_atom_mask(features) else 0
     compact_token_bond_encoding = _has_compact_token_bond_encoding(
         features,
         model.parameters,
@@ -873,7 +1023,11 @@ def predict(
         else precomputed_lm_states
     )
     if hidden is None and not stop_after_inputs and not _lower_only:
-        resolved_lm_mask_pct = LM_MASK_PCT if lm_mask_pct is None else lm_mask_pct
+        resolved_lm_mask_pct = (
+            float(getattr(model.settings, "lm_mask_pct", LM_MASK_PCT))
+            if lm_mask_pct is None
+            else lm_mask_pct
+        )
         hidden = language_model_states(
             features,
             model,
@@ -944,6 +1098,10 @@ def predict(
             arrays = replicate_tree(arrays)
             parameters = replicate_tree(parameters)
             hidden = replicate_tree(hidden)
+            if _padded_random_tapes is not None:
+                _padded_random_tapes = replicate_tree(_padded_random_tapes)
+        if _padded_random_tapes is not None:
+            arrays = {**arrays, "_padded_random_tapes": dict(_padded_random_tapes)}
         dispatch = runner.lower if _lower_only else runner
         output = dispatch(
             key,
@@ -976,7 +1134,7 @@ def predict(
 
 def _run(
     key: jnp.ndarray,
-    features: Mapping[str, jnp.ndarray],
+    features: Mapping[str, Any],
     parameters: Mapping[str, jnp.ndarray],
     lm_hidden_states: jnp.ndarray | None,
     settings: structure_model.ModelSettings,
@@ -1012,6 +1170,11 @@ def _run(
             "context_parallel() around this call"
         )
     resolved_atom_rows = atom_model._resolve_rows_per_block(atom_rows_per_block)
+    if "_padded_random_tapes" in features:
+        features = dict(features)
+        tape_overrides = dict(features.pop("_padded_random_tapes"))
+    else:
+        tape_overrides = {}
     with atom_model._atom_rows_per_block_scope(resolved_atom_rows):
         return structure_model.predict(
             key,
@@ -1029,6 +1192,7 @@ def _run(
             compact_token_bond_encoding=compact_token_bond_encoding,
             return_distogram_logits=return_distogram_logits,
             return_auxiliary_outputs=return_auxiliary_outputs,
+            **tape_overrides,
         )
 
 

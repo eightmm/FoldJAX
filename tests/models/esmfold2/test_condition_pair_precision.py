@@ -180,3 +180,71 @@ def test_transition_autocast_keeps_norm_fp32(monkeypatch, dtype):
     assert result.dtype == jnp.dtype(dtype)
     assert calls == ["norm", "a_proj", "b_proj", "out_proj"]
     assert all(x.dtype == jnp.float32 for x in params.values())
+
+
+def test_bfloat16_transition_and_swiglu_accumulate_linear_and_silu_in_fp32() -> None:
+    import jax
+
+    rng = np.random.default_rng(29)
+    in_width, hidden_width = 64, 96
+
+    def bf16(shape):
+        vals = rng.normal(size=shape).astype(np.float32) * 0.6
+        return jnp.asarray(vals, jnp.bfloat16)
+
+    def ref_linear(x_bf16, w_bf16, b_bf16=None):
+        acc = jnp.matmul(x_bf16, w_bf16.T, preferred_element_type=jnp.float32)
+        if b_bf16 is not None:
+            acc = acc + b_bf16.astype(jnp.bfloat16).astype(jnp.float32)
+        return acc.astype(jnp.bfloat16)
+
+    x = bf16((2, 5, in_width))
+    w = bf16((hidden_width, in_width))
+    b = bf16((hidden_width,))
+    lin_actual = primitives.linear(x, {"p.weight": w, "p.bias": b}, "p")
+    lin_expected = ref_linear(x, w, b)
+    np.testing.assert_array_equal(lin_actual, lin_expected)
+    # Zero input edge: bias alone survives in bfloat16.
+    zero_actual = primitives.linear(
+        jnp.zeros_like(x), {"p.weight": w, "p.bias": b}, "p"
+    )
+    np.testing.assert_array_equal(zero_actual, jnp.broadcast_to(b, zero_actual.shape))
+
+    w12 = bf16((2 * hidden_width, in_width))
+    w3 = bf16((in_width, hidden_width))
+    swiglu_actual = primitives.swiglu(x, {"w12.weight": w12, "w3.weight": w3})
+    packed = ref_linear(x, w12)
+    gate, val = packed[..., :hidden_width], packed[..., hidden_width:]
+    silu_fp32 = jax.nn.silu(gate.astype(jnp.float32)).astype(jnp.bfloat16)
+    swiglu_expected = ref_linear(silu_fp32 * val, w3)
+    np.testing.assert_array_equal(swiglu_actual, swiglu_expected)
+    swiglu_bf16_silu = ref_linear(jax.nn.silu(gate) * val, w3)
+    assert not np.array_equal(np.asarray(swiglu_actual), np.asarray(swiglu_bf16_silu))
+
+    x_f32 = jnp.asarray(rng.normal(size=(1, 4, in_width)).astype(np.float32))
+    t_params = {
+        "norm.weight": jnp.asarray(
+            rng.uniform(0.8, 1.2, size=(in_width,)), jnp.float32
+        ),
+        "norm.bias": jnp.asarray(
+            rng.normal(scale=0.1, size=(in_width,)), jnp.float32
+        ),
+        "a_proj.weight": jnp.asarray(w12[:hidden_width], jnp.float32),
+        "b_proj.weight": jnp.asarray(w12[hidden_width:], jnp.float32),
+        "out_proj.weight": jnp.asarray(w3, jnp.float32),
+    }
+    trans_actual = primitives.transition_layer(
+        x_f32, t_params, linear_dtype=jnp.bfloat16
+    )
+    normed = primitives.layer_norm(
+        x_f32, t_params["norm.weight"], t_params["norm.bias"]
+    ).astype(jnp.bfloat16)
+    a_ref = ref_linear(normed, t_params["a_proj.weight"].astype(jnp.bfloat16))
+    b_ref = ref_linear(normed, t_params["b_proj.weight"].astype(jnp.bfloat16))
+    gated_ref = (
+        jax.nn.silu(a_ref.astype(jnp.float32)).astype(jnp.bfloat16) * b_ref
+    )
+    trans_expected = ref_linear(
+        gated_ref, t_params["out_proj.weight"].astype(jnp.bfloat16)
+    )
+    np.testing.assert_array_equal(trans_actual, trans_expected)

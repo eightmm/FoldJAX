@@ -308,3 +308,135 @@ def test_released_spellings_share_a_namespace_and_departures_fork(
         {"full_depth_msa": True},
     ):
         assert scope(**departure) != omitted, departure
+
+
+def test_checkpoint_config_lm_mask_pct_reaches_settings_predict_backend_and_cache(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import json
+
+    assert structure_model.settings_from_config({}).lm_mask_pct == 0.0
+    none_cfg = {"lm_mask_pct": None}
+    assert structure_model.settings_from_config(none_cfg).lm_mask_pct == 0.0
+    assert structure_model.settings_from_config({"lm_mask_pct": 0}).lm_mask_pct == 0.0
+    configured = structure_model.settings_from_config({"lm_mask_pct": 0.125})
+    assert configured.lm_mask_pct == pytest.approx(0.125)
+
+    for bad in (-0.01, 1.0, 1.5, float("nan"), float("inf"), True, "0.1"):
+        with pytest.raises(ValueError, match="lm_mask_pct"):
+            structure_model.settings_from_config({"lm_mask_pct": bad})
+
+    features = build_features([("ACDE", "A", 0, 0)])
+    loaded = SimpleNamespace(
+        settings=configured,
+        parameters={
+            "token_bonds.weight": jnp.ones((configured.d_pair, 1), jnp.bfloat16)
+        },
+        esmc_parameters={"w": jnp.ones((1,))},
+        esmc_settings=SimpleNamespace(),
+        has_language_model=True,
+    )
+    seen_lm: list[tuple[float, object]] = []
+
+    def fake_lm_states(_features, _model, *, lm_mask_pct=0.0, mask_key=None, **_):
+        seen_lm.append((lm_mask_pct, mask_key))
+        return jnp.zeros((1, 4, 2, 8), dtype=jnp.float32)
+
+    monkeypatch.setattr(inference, "language_model_states", fake_lm_states)
+    monkeypatch.setattr(
+        inference, "compiled_predict", lambda *a, **k: lambda *ra, **rk: {}
+    )
+    key = jax.random.key(5)
+    inference.predict(key, features, loaded)
+    assert seen_lm[0][0] == pytest.approx(0.125)
+    np.testing.assert_array_equal(
+        jax.random.key_data(seen_lm[0][1]),
+        jax.random.key_data(inference.lm_mask_key(key)),
+    )
+    # Explicit 0.0 overrides a positive checkpoint default.
+    inference.predict(key, features, loaded, lm_mask_pct=0.0)
+    assert seen_lm[1] == (0.0, None)
+
+    ckpt_dir = tmp_path / "ckpt_masked"
+    ckpt_dir.mkdir()
+    (ckpt_dir / "config.json").write_text(
+        json.dumps({"lm_mask_pct": 0.125}), encoding="utf-8"
+    )
+    backend = ESMFold2Backend()
+    req_omitted = dataclasses.replace(_request(tmp_path), weights=ckpt_dir, seed=0)
+    req_same = dataclasses.replace(
+        req_omitted, options={"lm_mask_pct": 0.125}
+    )
+    req_zero = dataclasses.replace(
+        req_omitted, options={"lm_mask_pct": 0.0}
+    )
+    assert resolve_cache_dir(req_same, backend) == resolve_cache_dir(
+        req_omitted, backend
+    )
+    assert resolve_cache_dir(req_zero, backend) != resolve_cache_dir(
+        req_omitted, backend
+    )
+
+    bad_ckpt = tmp_path / "ckpt_bad"
+    bad_ckpt.mkdir()
+    (bad_ckpt / "config.json").write_text(
+        json.dumps({"lm_mask_pct": 1.0}), encoding="utf-8"
+    )
+    req_bad_omitted = dataclasses.replace(_request(tmp_path), weights=bad_ckpt)
+    req_bad_zero = dataclasses.replace(req_bad_omitted, options={"lm_mask_pct": 0.0})
+    assert backend.cache_profile(req_bad_zero) != backend.cache_profile(req_bad_omitted)
+
+    split_seen: list[dict] = []
+    unsplit_overrides: list[dict] = []
+
+    def fake_embedding(_self, _inf, _feat, _mod, **kwargs):
+        split_seen.append(kwargs)
+        return "emb"
+
+    monkeypatch.setattr(
+        ESMFold2Backend, "_load_model", lambda self, *a, **k: loaded
+    )
+    monkeypatch.setattr(
+        ESMFold2Backend, "_language_model_embedding", fake_embedding
+    )
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module",
+        lambda name: (
+            SimpleNamespace(
+                LANGUAGE_MODEL_FEATURES=inference.LANGUAGE_MODEL_FEATURES,
+                COMPACT_LANGUAGE_MODEL_API=True,
+                language_model_embedding=lambda *a, **k: "emb",
+                build_job_features=lambda *a, **k: features,
+                build_common_job_features=lambda *a, **k: features,
+                language_model_states=lambda *a, **k: "states",
+                language_model_length=lambda *a, **k: 6,
+                normalize_msa_features=lambda _k, feat, **_: feat,
+                pad_features=lambda feat, **_: feat,
+                seed_key=inference.seed_key,
+                lm_mask_key=inference.lm_mask_key,
+                predict=lambda _k, _f, _m, **kw: unsplit_overrides.append(kw) or {},
+            )
+            if name.endswith(".inference")
+            else SimpleNamespace(
+                write_prediction_outputs=lambda *a, **k: {
+                    "structures": (),
+                    "summary": (),
+                }
+            )
+        ),
+    )
+    # Unsplit route (outside session, no padding): overrides stays empty on default,
+    # explicit 0.0 passes lm_mask_pct=0.0 to override the checkpoint's 0.125.
+    backend.predict(req_omitted)
+    assert "lm_mask_pct" not in unsplit_overrides[-1]
+    backend.predict(req_zero)
+    assert unsplit_overrides[-1]["lm_mask_pct"] == 0.0
+
+    # Split route (managed session): masking uses checkpoint 0.125 unless 0.0 overrides.
+    with backend.session([req_omitted, req_zero]):
+        backend.predict(req_omitted)
+        assert split_seen[-1]["masking"]["lm_mask_pct"] == pytest.approx(0.125)
+        assert "lm_mask_pct" not in unsplit_overrides[-1]
+        backend.predict(req_zero)
+        assert "masking" not in split_seen[-1]
+        assert unsplit_overrides[-1]["lm_mask_pct"] == 0.0

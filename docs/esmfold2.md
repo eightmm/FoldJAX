@@ -16,8 +16,11 @@ is an all-biomolecule model**: its released input pipeline supports proteins,
 DNA, RNA, small-molecule ligands, and modified residues. FoldJAX ports that
 input contract without Torch: standard polymers, CCD and SMILES ligands,
 modified residues, and explicit covalent bonds are featurized in NumPy from
-the verified Biohub CCD snapshot. Protein-only jobs retain the established
-in-package fast path.
+the verified Biohub CCD snapshot (`data/all_atom.py`), which `foldjax predict`
+uses for every job including plain protein chains. The standalone
+`foldjax.models.esmfold2.inference.build_job_features` (`data/features.py`)
+helper remains available as a CCD-free in-package protein-only API using
+`PROTEIN_REF_POS` conformers.
 
 The complete released ESMFold2 profile is the compatible default. To run the
 explicit structure-network-only variant without downloading ESMC-6B, fetch its
@@ -169,3 +172,61 @@ pLDDT ordering. The sampler and the structures are unchanged; `max_distance`
 is required, since upstream has no default of its own
 ([cli.md](cli.md#--option-pocket_samplingselect)). With ESMFold2's sampling
 spread, several samples or seeds give the selection something to choose from.
+
+## Deviations from upstream
+
+* **Release checkpoints only (`type="release"`).** Upstream dispatches
+  `type="experimental"` in `config.json` to a separate
+  `ESMFold2ExperimentalModel` architecture. FoldJAX ports `ESMFold2Model`
+  (`type="release"`) only and rejects non-release checkpoint configs at load
+  time.
+* **Context-parallel pair-stack mixed precision.** On single-device runs with
+  `trunk_dtype="bfloat16"`, `native_pair_autocast` keeps `float32` residual
+  streams and `LayerNorm` statistics across `inputs_embedder`, `msa_encoder`,
+  `folding_trunk`, `parcae` discretization, `parcae_coda`, and
+  `confidence_head.folding_trunk`. When `cp_devices > 1`, `native_pair_autocast`
+  is disabled on those sharded pair stacks so distributed pair highways stay in
+  `bfloat16` rather than carrying full `float32` pair residuals; `lm_encoder`
+  retains `native_autocast=True`, Cannon triangle contractions accumulate in
+  `float32`, and `bfloat16` Linear / SwiGLU blocks accumulate GEMMs and `silu`
+  in `float32`.
+* **Shape-specialized CUDA pair-attention softmax.** Under single-device CUDA
+  `native_pair_autocast`, `models/native_softmax.py` dispatches to a custom
+  Pallas/Triton softmax kernel only for the exact logit shape `(1, 437, 437, 8)`
+  and uses `jax.nn.softmax` for every other token count (~1 FP32 ULP rounding
+  difference).
+* **Blocked atom-attention prefix precondition.** The blocked sliding-window
+  atom attention (`atom._windowed_attention`) assumes valid atoms form a
+  contiguous prefix of `atom_attention_mask`. `inference.predict` checks that
+  invariant and automatically falls back to the exact dense packed-rank window
+  (`atom_rows_per_block=0`) when internal mask holes are present; direct
+  low-level callers of `model.predict` or `atom.swa_attention` with non-prefix
+  atom masks must pass `rows_per_block=0` (or
+  `ESMFOLD2_ATOM_ATTENTION_BACKEND=dense`).
+* **ESMC-6B execution and FP8.** Upstream supports `esmc_precision="fp8"` via
+  TransformerEngine and dispatches ESMC self-attention through
+  TransformerEngine, xFormers, or FlashAttention2. FoldJAX is Torch- and
+  TransformerEngine-free and runs ESMC-6B in pure XLA (`bfloat16` default,
+  `float32` optional). Across ESMC's 80 unnormalized `bfloat16` residual
+  blocks, ~1 BF16 ULP kernel differences yield valid alternative ensemble
+  draws within natural multi-seed spread rather than bitwise Torch identity.
+* **Structure B-factors (per-atom `0–100` vs upstream token `0–1`).**
+  Upstream's protein-only `output_to_pdb` helper writes token-level `plddt` on
+  `0–1` into every atom of a residue. FoldJAX writes per-atom
+  `plddt_per_atom * 100` (`0–100`) into both `.cif`
+  (`_atom_site.B_iso_or_equiv`) and `.pdb` B-factors in accordance with the
+  cross-model output contract (`docs/outputs.md`).
+* **Sample ranking vs summary `plddt`.** Upstream `output_to_pdb` formats a
+  single sample without ranking. FoldJAX orders multi-sample outputs by
+  valid-token mean `plddt` (`scores.plddt`), while `summary.json` records
+  atom-weighted `complex_plddt * 100` as `plddt` alongside `ranking_score`
+  (`docs/outputs.md`).
+* **Modified nucleic-acid featurization details.** Three `data/all_atom.py`
+  choices for CCD-built modified DNA/RNA tokens are retained pending direct
+  comparison against Biohub's `prepare_input.py`: modified DNA/RNA tokens map
+  to `res_type = 22` (`UNK` / `"DX"` slot) rather than `"DN"` (`26`) or `"N"`
+  (`31`); 5'-terminal phosphate atoms (`P`, `OP1`, `OP2`, `OP3`) are stripped
+  at `residue_index == 0` while `OP3` is dropped only when
+  `residue_index != len(sequence) - 1`; and implicit polymer-backbone
+  `token_bonds` entries are added only between adjacent protein tokens (plus
+  any explicit covalent bonds).

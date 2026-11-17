@@ -22,13 +22,17 @@ no-alignment case against `prepare_protein_features` tensor for tensor.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Sequence
-from itertools import islice
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import numpy as np
 
 from foldjax.models.esmfold2.data import chemistry
+from foldjax.models.esmfold2.data.paired_msa import (
+    MSA,
+    MSAEntry,
+    construct_paired_msa,
+)
 
 #: The atom axis is padded to a multiple of this. Upstream's sliding-window
 #: attention is happier on a round length, and the padding is masked anyway.
@@ -455,6 +459,10 @@ def normalize_msa_features(
     return normalized
 
 
+def _reconstruct_a3m_sequence(sequence: str, counts: Sequence[int]) -> str:
+    return "".join("a" * count + letter for letter, count in zip(sequence, counts))
+
+
 def build_msa(
     chain_spans: Sequence[tuple[int, int, int]],
     res_type: Sequence[int],
@@ -462,83 +470,75 @@ def build_msa(
     *,
     msa_depth: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Assemble one alignment block per chain, gaps everywhere else.
+    """Assemble taxonomy-paired and unpaired MSA rows across chains.
 
-    Row 0 is the query: every chain's own sequence, which is what the model
-    reads when there is no alignment at all. Each further row belongs to one
-    chain and is a gap over the others -- the unpaired arrangement, which is
-    what a per-chain a3m can honestly support. Pairing rows across chains would
-    claim the alignments were searched together, and they were not.
-
-    ``msa_depth`` caps the total row count, query included. The rows below the
-    query are shared out across the aligned chains one at a time, so a deep
-    first chain cannot starve the next one of every row; each chain's rows
-    keep their file order, and chains keep theirs.
+    Row 0 is the query across every chain. Multi-chain alignments with
+    ``key=<TaxID>`` headers are paired by taxonomy and remaining homologs are
+    packed side by side through ``paired_msa.construct_paired_msa``, matching
+    Biohub's ``prepare_input.py``. Unaligned chains carry only row 0 and are
+    gap-filled on lower rows. Insertion counts are scaled with
+    ``arctan(count / 3) * (pi / 2)`` matching ``all_atom.build_job_features``.
     """
-    n_token = len(res_type)
-    rows: list[list[int]] = [list(res_type)]
-    deletions: list[list[float]] = [[0.0] * n_token]
-    budget = None if msa_depth is None else max(0, msa_depth - 1)
+    if msa_depth is not None and (
+        isinstance(msa_depth, bool) or not isinstance(msa_depth, int) or msa_depth < 0
+    ):
+        raise ValueError(f"msa_depth must be a non-negative integer; got {msa_depth!r}")
 
-    per_chain: list[tuple[int, Iterable[tuple[str, list[int]]]]] = []
-    for start, end, entity in chain_spans:
+    aligned_chains = [
+        chain_index
+        for chain_index, (_start, _end, entity) in enumerate(chain_spans)
+        if entity in alignments
+    ]
+    if not aligned_chains or (msa_depth is not None and msa_depth <= 1):
+        msa = np.asarray([list(res_type)], dtype=np.int64)
+        mask = np.ones(msa.shape, dtype=bool)
+        has_deletion = np.zeros(msa.shape, dtype=bool)
+        deletion_value = np.zeros(msa.shape, dtype=np.float32)
+        return msa, mask, has_deletion, deletion_value
+
+    parsed_by_entity: dict[tuple[int, str], MSA] = {}
+    chain_msas: dict[int, MSA | None] = {}
+    chain_queries: dict[int, np.ndarray] = {}
+    asym_ids: list[int] = []
+    residue_ids: list[int] = []
+
+    for chain_index, (start, end, entity) in enumerate(chain_spans):
+        chain_res = np.asarray(res_type[start:end], dtype=np.int64)
+        chain_queries[chain_index] = chain_res
+        asym_ids.extend([chain_index] * (end - start))
+        residue_ids.extend(range(end - start))
         path = alignments.get(entity)
         if path is None:
+            chain_msas[chain_index] = None
             continue
         query = "".join(
-            chemistry.RES_TYPE_TO_LETTER.get(value, "X")
-            for value in res_type[start:end]
+            chemistry.RES_TYPE_TO_LETTER.get(int(value), "X")
+            for value in chain_res
         )
-        if budget is None:
-            # Uncapped: stream, so no chain's alignment is held twice.
-            per_chain.append((start, _iter_a3m(path, query=query)))
-        else:
-            # No chain can be given more than the whole budget, so reading
-            # past it would only hold rows that are dropped below.
-            per_chain.append(
-                (start, list(islice(_iter_a3m(path, query=query), budget)))
+        cache_key = (entity, query)
+        if cache_key not in parsed_by_entity:
+            records = _iter_a3m_records(path, query=query)
+            entries = [MSAEntry("query", query)]
+            entries.extend(
+                MSAEntry(header, _reconstruct_a3m_sequence(sequence, counts))
+                for header, sequence, counts in records
             )
+            parsed_by_entity[cache_key] = MSA(tuple(entries))
+        chain_msas[chain_index] = parsed_by_entity[cache_key]
 
-    if budget is not None:
-        quotas = [0] * len(per_chain)
-        remaining = budget
-        while remaining > 0:
-            granted = False
-            for index, (_, hits) in enumerate(per_chain):
-                if remaining == 0:
-                    break
-                if quotas[index] < len(hits):
-                    quotas[index] += 1
-                    remaining -= 1
-                    granted = True
-            if not granted:
-                break
-        per_chain = [
-            (start, hits[:quota]) for (start, hits), quota in zip(per_chain, quotas)
-        ]
-
-    for start, hits in per_chain:
-        for sequence, counts in hits:
-            row = [chemistry.MSA_GAP_TOKEN_ID] * n_token
-            deletion = [0.0] * n_token
-            for offset, (letter, count) in enumerate(zip(sequence, counts)):
-                residue = (
-                    chemistry.PROTEIN_1TO3.get(letter, "UNK") if letter != "-" else None
-                )
-                row[start + offset] = (
-                    chemistry.MSA_GAP_TOKEN_ID
-                    if residue is None
-                    else chemistry.PROTEIN_RESIDUE_TO_RES_TYPE.get(
-                        residue, chemistry.PROTEIN_UNK_RES_TYPE
-                    )
-                )
-                deletion[start + offset] = float(count)
-            rows.append(row)
-            deletions.append(deletion)
-
-    msa = np.asarray(rows, dtype=np.int64)
-    values = np.asarray(deletions, dtype=np.float32)
-    return msa, np.ones(msa.shape, dtype=bool), values > 0, values
+    max_seqs = 16384 if msa_depth is None else msa_depth
+    msa, raw_deletions, _paired = construct_paired_msa(
+        chain_msas,
+        chain_queries,
+        np.asarray(asym_ids, dtype=np.int64),
+        np.asarray(residue_ids, dtype=np.int64),
+        max_seqs=max_seqs,
+        max_total=max(16384, max_seqs),
+    )
+    deletion_value = np.arctan(raw_deletions / np.float32(3)) * np.float32(
+        np.pi / 2
+    )
+    return msa, np.ones(msa.shape, dtype=bool), raw_deletions > 0, deletion_value
 
 
 def _a3m_blocks(path: Path) -> Iterator[str]:
@@ -567,19 +567,26 @@ def _a3m_blocks(path: Path) -> Iterator[str]:
         yield pending
 
 
-def _iter_a3m(path: Path, *, query: str) -> Iterator[tuple[str, list[int]]]:
-    """Yield aligned rows and insertion counts without retaining later rows."""
+def _iter_a3m_records(
+    path: Path, *, query: str
+) -> Iterator[tuple[str, str, list[int]]]:
+    """Yield `(header, aligned_sequence, insertion_counts)` for non-query hits."""
 
+    first_valid = True
     for block in _a3m_blocks(path):
         if not block.strip():
             continue
-        body = "".join(block.split("\n")[1:])
+        lines = block.split("\n")
+        header = lines[0].rstrip("\r")
+        body = "".join(lines[1:])
         aligned: list[str] = []
         counts: list[int] = []
         pending = 0
         for character in body:
-            if character.islower():
+            if character == "." or character.islower():
                 pending += 1
+                continue
+            if character in ("\r", " ", "\t"):
                 continue
             aligned.append(character.upper() if character != "-" else "-")
             counts.append(pending)
@@ -587,21 +594,30 @@ def _iter_a3m(path: Path, *, query: str) -> Iterator[tuple[str, list[int]]]:
         if len(aligned) != len(query):
             continue
         sequence = "".join(aligned)
-        if sequence == query and not any(counts):
-            continue
+        if first_valid:
+            first_valid = False
+            if sequence == query and not any(counts):
+                continue
+        yield header, sequence, counts
+
+
+def _iter_a3m(path: Path, *, query: str) -> Iterator[tuple[str, list[int]]]:
+    """Yield aligned rows and insertion counts without retaining later rows."""
+
+    for _header, sequence, counts in _iter_a3m_records(path, query=query):
         yield sequence, counts
 
 
 def read_a3m(path: Path, *, query: str) -> list[tuple[str, list[int]]]:
-    """Aligned rows and their insertion counts, without the query row.
+    """Aligned rows and their insertion counts, without the leading query row.
 
-    a3m writes insertions as lowercase letters, which occupy no query column;
-    each is counted against the column that follows it, which is what
-    `deletion_value` means. A row whose aligned length is not the query's is
-    dropped rather than padded -- it is not an alignment to this sequence --
-    and a row identical to the query is dropped because row 0 already is it.
-    Identity is the test rather than position: a search that does not repeat
-    the query first would otherwise lose a real hit.
+    a3m writes insertions as lowercase letters (and `.` insertion gaps), which
+    occupy no query column; each is counted against the column that follows it,
+    which is what `deletion_value` scales. A row whose aligned length is not the
+    query's is dropped rather than padded -- it is not an alignment to this
+    sequence -- and a leading query copy in the first valid record is dropped
+    because row 0 already carries the query, while subsequent query-identical
+    homologs are retained.
     """
     return list(_iter_a3m(path, query=query))
 

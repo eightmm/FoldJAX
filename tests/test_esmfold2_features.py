@@ -61,11 +61,7 @@ def test_two_entities_are_numbered_apart() -> None:
 
 
 def test_an_alignment_lands_in_its_own_chains_columns(tmp_path) -> None:
-    """Unpaired assembly: a row belongs to one chain and gaps the others.
-
-    Pairing rows across chains would claim the alignments were searched
-    together; a per-chain a3m cannot support that claim.
-    """
+    """An aligned chain populates its own columns and gaps an unaligned partner."""
     short = UBIQUITIN[:10]
     a3m = tmp_path / "chain.a3m"
     a3m.write_text(f">query\n{short}\n>hit\n{'A' * 10}\n")
@@ -82,15 +78,19 @@ def test_an_alignment_lands_in_its_own_chains_columns(tmp_path) -> None:
 
 
 def test_insertions_are_counted_against_the_column_that_follows(tmp_path) -> None:
-    """Lowercase a3m columns are deletions, and they are what the model reads."""
+    """Lowercase a3m insertions scale by arctan(count / 3) * (pi / 2)."""
+    import math
+
     short = UBIQUITIN[:10]
     a3m = tmp_path / "chain.a3m"
     a3m.write_text(f">query\n{short}\n>hit\nAAAAAaaAAAAA\n")
 
     got = build_features([(short, "A", 0, 0)], {0: a3m})
 
-    assert got["deletion_value"][0, 1, 5].item() == 2.0
+    expected = math.atan(2.0 / 3.0) * (math.pi / 2.0)
+    assert got["deletion_value"][0, 1, 5].item() == pytest.approx(expected, abs=1e-6)
     assert bool(got["has_deletion"][0, 1, 5])
+    assert not bool(got["has_deletion"][0, 1, 4])
     assert got["deletion_value"][0, 1, 4].item() == 0.0
 
 

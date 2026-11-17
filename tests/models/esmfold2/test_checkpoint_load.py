@@ -338,3 +338,231 @@ def test_the_trunk_runs_at_the_dtype_it_was_configured_for(monkeypatch) -> None:
         assert all(seen == expected for seen in msa), (
             f"configured {configured}, MSA encoder ran {sorted({str(d) for d in msa})}"
         )
+
+
+def test_experimental_and_malformed_checkpoint_types_are_rejected_before_weights(
+    tmp_path, monkeypatch: Any
+) -> None:
+    import json
+
+    from foldjax.models.esmfold2 import inference
+
+    assert jax_model.settings_from_config({}).d_pair == 256
+    assert jax_model.settings_from_config({"type": None}).d_pair == 256
+    assert jax_model.settings_from_config({"type": "release"}).d_pair == 256
+
+    with pytest.raises(ValueError, match="experimental"):
+        jax_model.settings_from_config({"type": "experimental"})
+
+    for bad_type in ("", "v2", 123, True):
+        with pytest.raises(ValueError, match="unsupported ESMFold2 checkpoint type"):
+            jax_model.settings_from_config({"type": bad_type})
+
+    (tmp_path / checkpoint.CONFIG_NAME).write_text(
+        json.dumps({"type": "experimental"}), encoding="utf-8"
+    )
+    save_file(
+        {"trunk.weight": np.asarray([1.0], dtype=np.float32)},
+        tmp_path / checkpoint.WEIGHTS_NAME,
+    )
+
+    def forbid_load_parameters(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise AssertionError("unsupported checkpoint config reached parameter loading")
+
+    monkeypatch.setattr(checkpoint, "load_parameters", forbid_load_parameters)
+
+    with pytest.raises(ValueError, match="experimental"):
+        inference.load(tmp_path, language_model=False)
+    with pytest.raises(ValueError, match="experimental"):
+        inference.load_language_model_stage(tmp_path)
+
+
+def test_rope_config_fields_reach_inputs_and_diffusion_and_validate_bounds() -> None:
+    from foldjax.models.esmfold2.models import atom, diffusion
+
+    custom_cfg = {
+        "inputs": {
+            "atom_encoder": {
+                "d_atom": 64,
+                "n_heads": 2,
+                "n_blocks": 1,
+                "spatial_rope_base_frequency": 50.0,
+                "n_spatial_rope_pairs_per_axis": 1,
+                "n_uid_rope_pairs": 5,
+                "uid_rope_base_frequency": 500.0,
+            }
+        },
+        "structure_head": {
+            "diffusion_module": {
+                "c_atom": 64,
+                "atom_num_heads": 2,
+                "atom_num_blocks": 1,
+            }
+        },
+    }
+    settings = jax_model.settings_from_config(custom_cfg)
+    assert settings.inputs_spatial_rope_base_frequency == 50.0
+    assert settings.inputs_n_spatial_rope_pairs_per_axis == 1
+    assert settings.inputs_n_uid_rope_pairs == 5
+    assert settings.inputs_uid_rope_base_frequency == 500.0
+    assert settings.diffusion.spatial_rope_base_frequency == 50.0
+    assert settings.diffusion.n_spatial_rope_pairs_per_axis == 1
+    assert settings.diffusion.n_uid_rope_pairs == 5
+    assert settings.diffusion.uid_rope_base_frequency == 500.0
+
+    rng = np.random.default_rng(11)
+    ref_pos = jnp.asarray(rng.normal(size=(1, 8, 3)).astype(np.float32) * 3.0)
+    ref_uid = jnp.arange(8, dtype=jnp.int32)[None]
+    atom_mask = jnp.ones((1, 8), dtype=jnp.float32)
+    ref_charge = jnp.zeros((1, 8), dtype=jnp.float32)
+    elem_oh = jnp.zeros((1, 8, 128), dtype=jnp.float32).at[..., 6].set(1.0)
+    chars_oh = jnp.zeros((1, 8, 4, 64), dtype=jnp.float32).at[..., 0].set(1.0)
+    atom_to_tok = (jnp.arange(8, dtype=jnp.int32) // 2)[None]
+
+    def zero_atom_params(prefix: str) -> dict[str, jnp.ndarray]:
+        dot = f"{prefix}."
+        p = {
+            f"{dot}atom_linear.weight": jnp.zeros((64, 389), jnp.float32),
+            f"{dot}atom_norm.weight": jnp.ones((64,), jnp.float32),
+            f"{dot}atom_norm.bias": jnp.zeros((64,), jnp.float32),
+            f"{dot}atom_to_token_linear.weight": jnp.zeros((384, 64), jnp.float32),
+            f"{dot}atom_transformer.blocks.0.adaln_modulation.1.weight": jnp.zeros(
+                (6 * 64, 64), jnp.float32
+            ),
+            f"{dot}atom_transformer.blocks.0.attn.Wqkv.weight": jnp.zeros(
+                (3 * 64, 64), jnp.float32
+            ),
+            f"{dot}atom_transformer.blocks.0.attn.gate_proj.weight": jnp.zeros(
+                (64, 64), jnp.float32
+            ),
+            f"{dot}atom_transformer.blocks.0.attn.out_proj.weight": jnp.zeros(
+                (64, 64), jnp.float32
+            ),
+            f"{dot}atom_transformer.blocks.0.ffn.w_up.weight": jnp.zeros(
+                (256, 64), jnp.float32
+            ),
+            f"{dot}atom_transformer.blocks.0.ffn.w_down.weight": jnp.zeros(
+                (64, 128), jnp.float32
+            ),
+        }
+        return p
+
+    expected_cos, expected_sin = atom.build_3d_rope(
+        ref_pos,
+        ref_uid,
+        head_dim=32,
+        n_spatial_per_axis=1,
+        n_uid_pairs=5,
+        spatial_base_frequency=50.0,
+        uid_base_frequency=500.0,
+    )
+    default_cos, _ = atom.build_3d_rope(ref_pos, ref_uid, head_dim=32)
+    assert not np.array_equal(np.asarray(expected_cos), np.asarray(default_cos))
+
+    seen_rope: list[tuple[jnp.ndarray, jnp.ndarray]] = []
+    real_transformer = atom.atom_transformer
+
+    def capture_transformer(*args: Any, **kwargs: Any) -> jnp.ndarray:
+        seen_rope.append((kwargs["cos"], kwargs["sin"]))
+        return real_transformer(*args, **kwargs)
+
+    inp_params = zero_atom_params("inputs_embedder.atom_attention_encoder")
+    orig_transformer = atom.atom_transformer
+    try:
+        atom.atom_transformer = capture_transformer  # type: ignore[assignment]
+        jax_model.inputs_embedding(
+            jnp.zeros((1, 4, 33), jnp.float32),
+            jnp.zeros((1, 4, 33), jnp.float32),
+            jnp.zeros((1, 4), jnp.float32),
+            ref_pos,
+            atom_mask,
+            ref_uid,
+            ref_charge,
+            elem_oh,
+            chars_oh,
+            atom_to_tok,
+            inp_params,
+            settings=settings,
+            n_tokens=4,
+        )
+    finally:
+        atom.atom_transformer = orig_transformer  # type: ignore[assignment]
+    np.testing.assert_array_equal(seen_rope[0][0], expected_cos)
+    np.testing.assert_array_equal(seen_rope[0][1], expected_sin)
+
+    diff_params = zero_atom_params("atom_encoder")
+    diff_params.update(
+        {
+            "conditioning.z_input_norm.weight": jnp.ones((512,), jnp.float32),
+            "conditioning.z_input_norm.bias": jnp.zeros((512,), jnp.float32),
+            "conditioning.z_proj.weight": jnp.zeros((256, 512), jnp.float32),
+        }
+    )
+    for idx in range(2):
+        diff_params[f"conditioning.z_transitions.{idx}.norm.weight"] = jnp.ones(
+            (256,), jnp.float32
+        )
+        diff_params[f"conditioning.z_transitions.{idx}.norm.bias"] = jnp.zeros(
+            (256,), jnp.float32
+        )
+        for proj, shape in (
+            ("a_proj", (512, 256)),
+            ("b_proj", (512, 256)),
+            ("out_proj", (256, 512)),
+        ):
+            diff_params[f"conditioning.z_transitions.{idx}.{proj}.weight"] = jnp.zeros(
+                shape, jnp.float32
+            )
+    cache = diffusion.build_cache(
+        ref_pos,
+        ref_charge,
+        atom_mask,
+        elem_oh,
+        chars_oh,
+        ref_uid,
+        atom_to_tok,
+        jnp.zeros((1, 4, 4, 256), jnp.float32),
+        jnp.zeros((1, 4, 4, 256), jnp.float32),
+        diff_params,
+        settings=settings.diffusion,
+        n_tokens=4,
+    )
+    np.testing.assert_array_equal(cache.cos, expected_cos)
+    np.testing.assert_array_equal(cache.sin, expected_sin)
+
+    # Edge cases: zero pairs (identity) and exact half-head limit (3*4 + 4 == 16).
+    zero_cos, zero_sin = atom.build_3d_rope(
+        ref_pos, ref_uid, head_dim=32, n_spatial_per_axis=0, n_uid_pairs=0
+    )
+    np.testing.assert_array_equal(zero_cos, jnp.ones((1, 8, 16), jnp.bfloat16))
+    np.testing.assert_array_equal(zero_sin, jnp.zeros((1, 8, 16), jnp.bfloat16))
+
+    limit_cfg = {
+        "inputs": {
+            "atom_encoder": {
+                "n_spatial_rope_pairs_per_axis": 4,
+                "n_uid_rope_pairs": 4,
+            }
+        }
+    }
+    assert (
+        jax_model.settings_from_config(limit_cfg).inputs_n_spatial_rope_pairs_per_axis
+        == 4
+    )
+
+    for bad_atom_cfg in (
+        {"n_spatial_rope_pairs_per_axis": 4, "n_uid_rope_pairs": 5},  # 17 > 16
+        {"n_spatial_rope_pairs_per_axis": -1},
+        {"n_uid_rope_pairs": True},
+        {"spatial_rope_base_frequency": 0.0},
+        {"uid_rope_base_frequency": -10.0},
+        {"spatial_rope_base_frequency": float("nan")},
+        {"uid_rope_base_frequency": False},
+    ):
+        with pytest.raises(ValueError):
+            jax_model.settings_from_config({"inputs": {"atom_encoder": bad_atom_cfg}})
+
+    for bad_head_dim in (0, -2, 3, True):
+        with pytest.raises(ValueError, match="head_dim"):
+            atom.build_3d_rope(ref_pos, ref_uid, head_dim=bad_head_dim)  # type: ignore[arg-type]

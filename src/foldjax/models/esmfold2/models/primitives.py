@@ -27,9 +27,27 @@ Params = Mapping[str, jnp.ndarray]
 
 def linear(x: jnp.ndarray, params: Params, prefix: str) -> jnp.ndarray:
     """`nn.Linear`, bias included when the checkpoint has one."""
-    out = jnp.matmul(x, params[f"{prefix}.weight"].T)
+    weight = params[f"{prefix}.weight"]
+    if x.dtype in (jnp.bfloat16, jnp.float16) and weight.dtype in (
+        jnp.bfloat16,
+        jnp.float16,
+    ):
+        result_dtype = jnp.result_type(x.dtype, weight.dtype)
+        out = jnp.matmul(x, weight.T, preferred_element_type=jnp.float32)
+        bias = params.get(f"{prefix}.bias")
+        if bias is not None:
+            out = out + bias.astype(result_dtype).astype(jnp.float32)
+        return out.astype(result_dtype)
+    out = jnp.matmul(x, weight.T)
     bias = params.get(f"{prefix}.bias")
     return out if bias is None else out + bias
+
+
+def _autocast_silu(x: jnp.ndarray) -> jnp.ndarray:
+    """`F.silu`, accumulating in FP32 for narrow floating dtypes like CUDA."""
+    if x.dtype in (jnp.bfloat16, jnp.float16):
+        return jax.nn.silu(x.astype(jnp.float32)).astype(x.dtype)
+    return jax.nn.silu(x)
 
 
 def _cuda_profile_divide(numerator, denominator):
@@ -108,7 +126,7 @@ def _swiglu_block(x: jnp.ndarray, params: Params, dot: str) -> jnp.ndarray:
     packed = linear(x, params, f"{dot}w12")
     hidden = packed.shape[-1] // 2
     gate, value = packed[..., :hidden], packed[..., hidden:]
-    return linear(jax.nn.silu(gate) * value, params, f"{dot}w3")
+    return linear(_autocast_silu(gate) * value, params, f"{dot}w3")
 
 
 def _swiglu_row_axis(x: jnp.ndarray) -> int | None:
@@ -238,7 +256,7 @@ def _transition_block(
         }
     a = linear(x, params, f"{dot}a_proj")
     b = linear(x, params, f"{dot}b_proj")
-    return linear(jax.nn.silu(a) * b, params, f"{dot}out_proj")
+    return linear(_autocast_silu(a) * b, params, f"{dot}out_proj")
 
 
 def transition_layer(

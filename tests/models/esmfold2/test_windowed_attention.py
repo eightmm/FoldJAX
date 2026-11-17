@@ -362,3 +362,74 @@ def test_there_is_no_auto_mode(monkeypatch) -> None:
     with pytest.raises(ValueError, match="unsupported atom attention backend"):
         atom._atom_attention_backend()
     assert "auto" not in atom.ATOM_ATTENTION_BACKENDS
+
+
+def test_inference_predict_routes_non_prefix_atom_masks_to_dense_window(
+    monkeypatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from foldjax.models.esmfold2 import inference
+    from foldjax.models.esmfold2.data import features as featurisation
+    from foldjax.models.esmfold2.models import model as structure_model
+
+    assert inference._has_prefix_atom_mask({})
+    assert inference._has_prefix_atom_mask(
+        {"atom_attention_mask": np.zeros((1, 0), dtype=bool)}
+    )
+    assert inference._has_prefix_atom_mask(
+        {"atom_attention_mask": np.zeros((1, 4), dtype=bool)}
+    )
+    assert inference._has_prefix_atom_mask(
+        {"atom_attention_mask": np.ones((1, 4), dtype=bool)}
+    )
+    assert inference._has_prefix_atom_mask(
+        {"atom_attention_mask": np.asarray([[True, True, False, False]])}
+    )
+    assert not inference._has_prefix_atom_mask(
+        {"atom_attention_mask": np.asarray([[False, True, True, False]])}
+    )
+    assert not inference._has_prefix_atom_mask(
+        {"atom_attention_mask": np.asarray([[True, False, True, False]])}
+    )
+    assert not inference._has_prefix_atom_mask(
+        {"atom_attention_mask": np.ones((1, 1, 4), dtype=bool)}
+    )
+    assert not inference._has_prefix_atom_mask(
+        {"atom_attention_mask": [[True, False], [True]]}
+    )
+
+    monkeypatch.setenv("ESMFOLD2_ATOM_ATTENTION_BACKEND", "blocked")
+    monkeypatch.delenv("ESMFOLD2_ATOM_ROWS_PER_BLOCK", raising=False)
+
+    built = featurisation.pad_features(
+        featurisation.build_features([("ACDEFG", "A", 0, 0)]),
+        n_token=8,
+        n_atom=512,
+        n_msa=1,
+    )
+    settings = structure_model.ModelSettings()
+    loaded = SimpleNamespace(
+        settings=settings,
+        parameters={
+            "token_bonds.weight": jnp.ones((settings.d_pair, 1), jnp.bfloat16)
+        },
+        esmc_parameters=None,
+        esmc_settings=None,
+    )
+    seen_rows: list[int] = []
+
+    def fake_compiled_predict(*identity, **_kwargs):
+        seen_rows.append(identity[10])
+        return lambda *args, **kwargs: {}
+
+    monkeypatch.setattr(inference, "compiled_predict", fake_compiled_predict)
+    inference.predict(jax.random.key(0), built, loaded)
+    assert seen_rows[-1] == atom.ATOM_ROWS_PER_BLOCK
+
+    holed = dict(built)
+    holed_mask = np.array(built["atom_attention_mask"], copy=True)
+    holed_mask[0, 3] = False
+    holed["atom_attention_mask"] = holed_mask
+    inference.predict(jax.random.key(0), holed, loaded)
+    assert seen_rows[-1] == 0

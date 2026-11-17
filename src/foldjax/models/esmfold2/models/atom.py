@@ -5,8 +5,9 @@ subtly wrong, so each convention is stated where it is used:
 
 * **RoPE is three-dimensional plus one discrete axis.** The angles come from
   the *reference conformer* coordinates and `ref_space_uid`, not from any
-  sequence position, and `build_3d_rope`'s signature defaults are dead code --
-  the call site passes `(2, 10, 20.0, 10000.0)`, which fills `half_dim` exactly.
+  sequence position, with pair counts and base frequencies read from
+  `inputs.atom_encoder` in `config.json` (defaulting to `(2, 10, 20.0, 10000.0)`,
+  which fills `half_dim` at `head_dim=32`).
 * **The rotation is half-split**, `cos` repeated as `concat([c, c])`, pairing
   `(j, j + half)`. Interleaved pairing is the other common convention and
   produces plausible garbage.
@@ -22,6 +23,7 @@ subtly wrong, so each convention is stated where it is used:
 
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -207,11 +209,40 @@ def build_3d_rope(
     `head_dim // 2` is right-zero-padded, which for the released widths is
     never needed: 3*2 + 10 fills 16 exactly.
     """
+    if (
+        isinstance(head_dim, bool)
+        or not isinstance(head_dim, int)
+        or head_dim <= 0
+        or head_dim % 2 != 0
+    ):
+        raise ValueError(f"head_dim must be a positive even integer; got {head_dim!r}")
+    for name, count in (
+        ("n_spatial_per_axis", n_spatial_per_axis),
+        ("n_uid_pairs", n_uid_pairs),
+    ):
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValueError(f"{name} must be a non-negative integer; got {count!r}")
+    for name, freq in (
+        ("spatial_base_frequency", spatial_base_frequency),
+        ("uid_base_frequency", uid_base_frequency),
+    ):
+        if (
+            isinstance(freq, bool)
+            or not isinstance(freq, (int, float))
+            or not math.isfinite(float(freq))
+            or float(freq) <= 0.0
+        ):
+            raise ValueError(f"{name} must be a positive finite number; got {freq!r}")
     half = head_dim // 2
-    spatial_exponent = (
-        jnp.arange(n_spatial_per_axis, dtype=jnp.float32) / n_spatial_per_axis
+    if 3 * n_spatial_per_axis + n_uid_pairs > half:
+        raise ValueError(
+            "3D RoPE pair counts exceed half the head width: "
+            f"3 * {n_spatial_per_axis} + {n_uid_pairs} > {half}"
+        )
+    spatial_exponent = jnp.arange(n_spatial_per_axis, dtype=jnp.float32) / max(
+        1, n_spatial_per_axis
     )
-    uid_exponent = jnp.arange(n_uid_pairs, dtype=jnp.float32) / n_uid_pairs
+    uid_exponent = jnp.arange(n_uid_pairs, dtype=jnp.float32) / max(1, n_uid_pairs)
     if native_autocast:
         spatial_inv = 1.0 / (spatial_base_frequency**spatial_exponent)
         uid_inv = 1.0 / (uid_base_frequency**uid_exponent)
@@ -332,7 +363,17 @@ def _windowed_attention(
         query, key, value = take_q(q_padded), take_k(k), take_k(v)
         if native_autocast:
             query, key, value = (a.astype(jnp.float32) for a in (query, key, value))
-        logits = jnp.einsum("bihd,bjhd->bhij", query, key) * scale
+        acc_dtype = (
+            jnp.float32
+            if value.dtype in (jnp.bfloat16, jnp.float16)
+            else value.dtype
+        )
+        logits = (
+            jnp.einsum(
+                "bihd,bjhd->bhij", query, key, preferred_element_type=acc_dtype
+            )
+            * scale
+        )
         rank_q, rank_k = take_q(rank_padded), take_k(rank)
         within = jnp.abs(rank_q[:, :, None] - rank_k[:, None, :]) <= half_window
         allowed = (
@@ -348,8 +389,10 @@ def _windowed_attention(
             (allowed | diagonal)[:, None], logits, jnp.finfo(logits.dtype).min
         )
         attention = jax.nn.softmax(logits, axis=-1)
-        context = jnp.einsum("bhij,bjhd->bihd", attention, value)
-        return None, context.astype(v.dtype) if native_autocast else context
+        context = jnp.einsum(
+            "bhij,bjhd->bihd", attention, value, preferred_element_type=acc_dtype
+        )
+        return None, context.astype(v.dtype)
 
     _, blocks = jax.lax.scan(one_block, None, jnp.arange(n_blocks))
     context = blocks.swapaxes(0, 1).reshape(batch, padded, n_heads, head_dim)
@@ -404,10 +447,11 @@ def swa_attention(
     # released 32 samples and 7776 atoms, and the softmax of it is another,
     # together 90% of the whole temp arena.
     #
-    # The legacy path below retains its narrowed scores/softmax. Native
-    # autocast uses FP32 mathematical scores, softmax and context accumulation
-    # with BF16 context storage. This does not promise the same reduction order
-    # as Torch's selected fused SDPA kernel. At most 129 keys are allowed.
+    # Both paths match upstream's FlashAttention / SDPA precision: narrowed
+    # BF16 operands with FP32 score accumulation, softmax and context
+    # accumulation, stored back to BF16 before restoring `input_dtype`. This
+    # does not promise the same reduction order as Torch's selected fused SDPA
+    # kernel. At most 129 keys are allowed.
     input_dtype = q.dtype
     if input_dtype not in (jnp.float16, jnp.bfloat16):
         q = q.astype(jnp.bfloat16)
@@ -435,13 +479,20 @@ def swa_attention(
         query, key, value = q, k, v
         if native_autocast:
             query, key, value = (a.astype(jnp.float32) for a in (q, k, v))
-        logits = jnp.einsum("bihd,bjhd->bhij", query, key) * (head_dim**-0.5)
+        acc_dtype = (
+            jnp.float32
+            if value.dtype in (jnp.bfloat16, jnp.float16)
+            else value.dtype
+        )
+        logits = jnp.einsum(
+            "bihd,bjhd->bhij", query, key, preferred_element_type=acc_dtype
+        ) * (head_dim**-0.5)
         allowed = sliding_window_mask(valid, half_window)[:, None]
         logits = jnp.where(allowed, logits, jnp.finfo(logits.dtype).min)
         attention = jax.nn.softmax(logits, axis=-1)
-        context = jnp.einsum("bhij,bjhd->bihd", attention, value)
-        if native_autocast:
-            context = context.astype(v.dtype)
+        context = jnp.einsum(
+            "bhij,bjhd->bihd", attention, value, preferred_element_type=acc_dtype
+        ).astype(v.dtype)
     context = context.reshape(batch, length, width)
     context = context * valid[..., None].astype(context.dtype)
     context = context.astype(input_dtype)
@@ -639,6 +690,10 @@ def atom_conditioning(
     prefix: str = "",
     *,
     n_heads: int,
+    n_spatial_rope_pairs_per_axis: int = 2,
+    n_uid_rope_pairs: int = 10,
+    spatial_rope_base_frequency: float = 20.0,
+    uid_rope_base_frequency: float = 10000.0,
     native_autocast: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """The step-invariant half of the atom encoder: conditioning and rotary tables.
@@ -667,6 +722,10 @@ def atom_conditioning(
         ref_pos,
         ref_space_uid,
         head_dim=conditioning.shape[-1] // n_heads,
+        n_spatial_per_axis=n_spatial_rope_pairs_per_axis,
+        n_uid_pairs=n_uid_rope_pairs,
+        spatial_base_frequency=spatial_rope_base_frequency,
+        uid_base_frequency=uid_rope_base_frequency,
         native_autocast=native_autocast,
     )
     return conditioning, cos, sin
@@ -686,6 +745,10 @@ def atom_encoder(
     n_blocks: int,
     n_heads: int,
     half_window: int,
+    n_spatial_rope_pairs_per_axis: int = 2,
+    n_uid_rope_pairs: int = 10,
+    spatial_rope_base_frequency: float = 20.0,
+    uid_rope_base_frequency: float = 10000.0,
     coords: jnp.ndarray | None = None,
     precomputed: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray] | None = None,
     n_tokens: int | None = None,
@@ -720,6 +783,10 @@ def atom_encoder(
             params,
             prefix,
             n_heads=n_heads,
+            n_spatial_rope_pairs_per_axis=n_spatial_rope_pairs_per_axis,
+            n_uid_rope_pairs=n_uid_rope_pairs,
+            spatial_rope_base_frequency=spatial_rope_base_frequency,
+            uid_rope_base_frequency=uid_rope_base_frequency,
             native_autocast=native_autocast,
         )
     else:

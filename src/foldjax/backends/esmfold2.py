@@ -125,6 +125,33 @@ def _checkpoint_sampling(weights: Path) -> dict[str, int | None]:
         for knob, value in values.items()
     }
 
+
+def _checkpoint_lm_mask_pct(weights: Path) -> tuple[str, float | None]:
+    """Read a checkpoint's `lm_mask_pct` default status and value."""
+
+    root = weights.parent if weights.is_file() else weights
+    try:
+        config = json.loads((root / "config.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return ("default", 0.0)
+    if not isinstance(config, Mapping) or config.get("lm_mask_pct") is None:
+        return ("default", 0.0)
+    value = config["lm_mask_pct"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return ("invalid", None)
+    rate = float(value)
+    if not math.isfinite(rate) or not 0.0 <= rate < 1.0:
+        return ("invalid", None)
+    return ("valid", rate)
+
+
+def _prefix_rng_is_supported() -> bool:
+    """Whether masked padding draws preserve JAX's compact random prefix."""
+
+    from foldjax.models._random import supports_masked_prefix_draw
+
+    return supports_masked_prefix_draw()
+
 # These are the only ESMFold2 compile defaults whose omitted resolution is
 # independent of checkpoint configuration. The managed recycle value is
 # injected into every effective request and retained in its compile identity.
@@ -1157,7 +1184,14 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             value = profile.get(name)
             if isinstance(value, int) and not isinstance(value, bool):
                 profile[name] = float(value)
-        self._strip_released_defaults(profile, _FIXED_COMPILE_DEFAULTS)
+        compile_defaults = dict(_FIXED_COMPILE_DEFAULTS)
+        if request.weights is not None:
+            status, ckpt_lm_mask_pct = _checkpoint_lm_mask_pct(Path(request.weights))
+            if status == "valid":
+                compile_defaults["lm_mask_pct"] = ckpt_lm_mask_pct
+            elif status == "invalid":
+                compile_defaults.pop("lm_mask_pct", None)
+        self._strip_released_defaults(profile, compile_defaults)
         # Every distributed run records the layout it resolved rather than the
         # one it spelled: `auto` is the square grid on a perfect-square device
         # count here (`models/esmfold2/inference._resolve_cp_layout`), so on
@@ -1382,9 +1416,11 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             name="return_expected_errors",
         ):
             overrides["return_expected_errors"] = False
-        lm_mask_pct = _checked_rate("lm_mask_pct", options.pop("lm_mask_pct", 0.0))
-        if lm_mask_pct > 0.0:
-            overrides["lm_mask_pct"] = lm_mask_pct
+        lm_mask_pct_opt = (
+            _checked_rate("lm_mask_pct", options.pop("lm_mask_pct"))
+            if "lm_mask_pct" in options
+            else None
+        )
         # `translate` has already turned `off`/`on` into this port's own bool,
         # so an absent key means unasked. Written into `overrides` only when
         # asked, for the reason `structure_sample_sequential` above is: an
@@ -1455,6 +1491,16 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                 language_model=not without_lm and request.stop_after != "inputs",
             )
         )
+        model_lm_mask_pct = float(
+            getattr(getattr(model, "settings", None), "lm_mask_pct", 0.0)
+        )
+        effective_lm_mask_pct = (
+            model_lm_mask_pct if lm_mask_pct_opt is None else lm_mask_pct_opt
+        )
+        if lm_mask_pct_opt is not None and (
+            lm_mask_pct_opt > 0.0 or model_lm_mask_pct != 0.0
+        ):
+            overrides["lm_mask_pct"] = lm_mask_pct_opt
         padding_plan = None
         lm_target = None
         split_lm_api = all(
@@ -1562,11 +1608,13 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                 masking = (
                     {
                         "masking": {
-                            "lm_mask_pct": lm_mask_pct,
+                            "lm_mask_pct": effective_lm_mask_pct,
                             "mask_key": inference.lm_mask_key(prediction_key),
                         }
                     }
-                    if lm_mask_pct > 0.0 and not _lower_only
+                    if effective_lm_mask_pct > 0.0
+                    and language_model_enabled
+                    and not _lower_only
                     else {}
                 )
                 active_msa_depth = (
@@ -1786,18 +1834,88 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                             **masking,
                         )
                     }
+                preserve_prefix_rng = (
+                    padding_plan is not None and _prefix_rng_is_supported()
+                )
+                padded_tape_kwargs: dict[str, Any] = {}
+                if (
+                    padding_plan is not None
+                    and not preserve_prefix_rng
+                    and request.stop_after != "inputs"
+                    and bool(getattr(inference, "PADDED_RANDOM_TAPES_API", False))
+                ):
+                    resolved_settings = import_module(
+                        "foldjax.models.esmfold2.models.model"
+                    ).with_overrides(
+                        model.settings,
+                        **{
+                            key: overrides[key]
+                            for key in (
+                                "num_recycles",
+                                "num_samples",
+                                "num_steps",
+                                "max_msa_depth",
+                                "structure_sample_sequential",
+                                "glu_backend",
+                                "rigid_align_backend",
+                                "confidence_dtype",
+                                "msa_column_mask_rate",
+                                "full_depth_msa",
+                                "return_expected_errors",
+                            )
+                            if key in overrides
+                        },
+                    )
+                    native_atoms = int(padding_plan.storage["atoms"])
+                    real_atom_mask = np.asarray(
+                        model_features["atom_attention_mask"][:, :native_atoms],
+                        dtype=np.float32,
+                    )
+                    msa_array = model_features.get("msa")
+                    msa_depth_val = (
+                        None
+                        if msa_array is None
+                        else int(np.asarray(msa_array).shape[1])
+                    )
+                    lm_active = (
+                        any(value is not None for value in lm_input.values())
+                        if lm_input
+                        else bool(getattr(model, "has_language_model", False))
+                    )
+
+                    def _make_tapes(tape_key: Any) -> Any:
+                        return inference.padded_random_tapes(
+                            tape_key,
+                            settings=resolved_settings,
+                            actual_tokens=int(padding_plan.storage["tokens"]),
+                            target_tokens=int(padding_plan.target["tokens"]),
+                            actual_atoms=native_atoms,
+                            target_atoms=int(padding_plan.target["atoms"]),
+                            real_atom_mask=real_atom_mask,
+                            msa_depth=msa_depth_val,
+                            lm_active=lm_active,
+                        )
+
+                    padded_tape_kwargs = {
+                        "_padded_random_tapes": (
+                            inference.jax.eval_shape(_make_tapes, prediction_key)
+                            if _lower_only
+                            else _make_tapes(prediction_key)
+                        )
+                    }
                 with matmul_precision():
                     prediction = inference.predict(
                         prediction_key,
                         model_features,
                         model,
                         language_model_tokens=lm_target,
-                        preserve_prefix_rng=padding_plan is not None,
+                        preserve_prefix_rng=preserve_prefix_rng,
                         padded=padding_plan is not None,
                         return_distogram_logits=False,
                         **managed_output_kwargs,
                         **lm_input,
                         **overrides,
+                        **padded_tape_kwargs,
                         **({"_lower_only": True} if _lower_only else {}),
                     )
                 if _lower_only:

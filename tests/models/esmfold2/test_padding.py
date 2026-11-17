@@ -715,3 +715,429 @@ def test_lm_token_profile_covers_one_residue_per_chain() -> None:
     )
     assert plan.target["language_model_tokens"] == natural
     assert plan.target["atoms"] == 224
+
+
+def test_prefix_rng_guards_unsupported_prng_and_backend_falls_back_to_tapes(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dataclasses
+    import json
+    from types import SimpleNamespace
+
+    from foldjax.backends.esmfold2 import ESMFold2Backend
+    from foldjax.schema import PredictionRequest
+
+    key = jax.random.key(19)
+    atom_mask = jnp.asarray([[1.0, 1.0, 0.0, 0.0]], dtype=jnp.float32)
+    pair_mask = jnp.ones((1, 2, 2), dtype=jnp.float32)
+    tok_mask = jnp.asarray([[1.0, 0.0]], dtype=jnp.float32)
+    tiny_settings = structure_model.ModelSettings(
+        d_pair=8,
+        d_inputs=203,
+        inputs_atom_n_blocks=1,
+        inputs_atom_n_heads=2,
+        trunk_n_layers=1,
+        lm_encoder_n_layers=1,
+        coda_n_layers=1,
+        confidence_n_layers=1,
+        msa_n_layers=1,
+        num_recycles=1,
+        num_samples=2,
+        trunk_dtype="float32",
+        diffusion=diffusion.DiffusionSettings(
+            c_atom=64,
+            c_token=32,
+            c_z=8,
+            atom_n_blocks=1,
+            atom_n_heads=2,
+            token_n_blocks=1,
+            token_n_heads=2,
+            num_steps=2,
+        ),
+    )
+    dummy_cache = diffusion.DiffusionCache(
+        atom_conditioning=jnp.zeros((2, 4, 64), jnp.float32),
+        cos=jnp.ones((2, 4, 16), jnp.bfloat16),
+        sin=jnp.zeros((2, 4, 16), jnp.bfloat16),
+        pair=jnp.zeros((1, 2, 2, 8), jnp.float32),
+        atom_to_token=jnp.zeros((2, 4), jnp.int32),
+        atom_mask=jnp.ones((2, 4), jnp.float32),
+        n_tokens=2,
+    )
+
+    for ctx in (jax.threefry_partitionable(False), jax.default_prng_impl("rbg")):
+        with ctx:
+            curr_key = jax.random.key(19)
+            with pytest.raises(ValueError, match="jax_threefry_partitionable=True"):
+                diffusion._atom_normal(
+                    curr_key, atom_mask, dtype=jnp.float32, preserve_prefix_rng=True
+                )
+            with pytest.raises(ValueError, match="jax_threefry_partitionable=True"):
+                diffusion.sample(
+                    curr_key,
+                    jnp.zeros((1, 2, 203), jnp.float32),
+                    dummy_cache,
+                    {},
+                    settings=tiny_settings.diffusion,
+                    num_samples=2,
+                    preserve_prefix_rng=True,
+                )
+            with pytest.raises(ValueError, match="jax_threefry_partitionable=True"):
+                structure_model._dropout(
+                    curr_key,
+                    jnp.ones((1, 2, 2, 8), jnp.float32),
+                    0.25,
+                    valid_mask=pair_mask,
+                    preserve_prefix_rng=True,
+                )
+            with pytest.raises(ValueError, match="jax_threefry_partitionable=True"):
+                structure_model._initial_pair_state_draw(
+                    curr_key, pair_mask, 8, preserve_prefix_rng=True
+                )
+            with pytest.raises(ValueError, match="jax_threefry_partitionable=True"):
+                structure_model._msa_column_keep(
+                    curr_key, tok_mask, 0.1, preserve_prefix_rng=True
+                )
+            with pytest.raises(ValueError, match="jax_threefry_partitionable=True"):
+                structure_model.predict(
+                    curr_key,
+                    _features(),
+                    {},
+                    settings=tiny_settings,
+                    preserve_prefix_rng=True,
+                )
+
+    # Verify compact-drawn padded_random_tapes match prefix draws on real slices.
+    tapes = inference.padded_random_tapes(
+        key,
+        settings=tiny_settings,
+        actual_tokens=2,
+        target_tokens=4,
+        actual_atoms=32,
+        target_atoms=64,
+        real_atom_mask=jnp.concatenate(
+            [jnp.ones((1, 14), jnp.float32), jnp.zeros((1, 18), jnp.float32)], axis=1
+        ),
+        msa_depth=3,
+        lm_active=True,
+    )
+    _root, state_k, col_k, loop_k, samp_k = jax.random.split(key, 5)
+    std = (2.0 / (5.0 * tiny_settings.d_pair)) ** 0.5
+    expected_z = std * jax.random.truncated_normal(
+        state_k, -3.0, 3.0, (1, 2, 2, tiny_settings.d_pair), dtype=jnp.float32
+    )
+    np.testing.assert_array_equal(tapes["initial_pair_state"][:, :2, :2], expected_z)
+    np.testing.assert_array_equal(
+        tapes["msa_column_keep"][:, :2],
+        jax.random.uniform(col_k, (1, 2)) >= tiny_settings.msa_column_mask_rate,
+    )
+    assert tapes["lm_dropout_masks"].shape == (2, 1, 4, 4, 8)
+    _, init_k = jax.random.split(samp_k)
+    expected_init = jax.random.normal(init_k, (2, 32, 3), dtype=jnp.float32)
+    np.testing.assert_array_equal(
+        tapes["diffusion_initial_normal"][:, :14], expected_init[:, :14]
+    )
+    assert not np.any(np.asarray(tapes["diffusion_initial_normal"][:, 14:]))
+
+    # Backend fallback under non-partitionable PRNG: preserve_prefix_rng=False + tapes.
+    job = tmp_path / "job.json"
+    job.write_text(
+        json.dumps(
+            {
+                "name": "fallback",
+                "entities": [{"type": "protein", "id": "A", "sequence": "AC"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    built_ac = features.build_features([("AC", "A", 0, 0)])
+    assert int(built_ac["atom_attention_mask"].sum()) == 11
+    assert built_ac["atom_attention_mask"].shape == (1, 32)
+    churn_settings = dataclasses.replace(
+        tiny_settings,
+        diffusion=dataclasses.replace(tiny_settings.diffusion, noise_scale=1.003),
+    )
+    captured_calls: list[dict] = []
+    fake_model = SimpleNamespace(
+        settings=churn_settings,
+        parameters={"token_bonds.weight": jnp.ones((8, 1), jnp.float32)},
+        esmc_parameters={"w": jnp.ones((1,))},
+        esmc_settings=SimpleNamespace(),
+        has_language_model=True,
+    )
+
+    monkeypatch.setattr(
+        ESMFold2Backend, "_load_model", lambda self, *a, **k: fake_model
+    )
+    monkeypatch.setattr(
+        ESMFold2Backend,
+        "_can_stage_language_model",
+        lambda self, _inf: False,
+    )
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module",
+        lambda name: (
+            SimpleNamespace(
+                jax=jax,
+                LANGUAGE_MODEL_FEATURES=inference.LANGUAGE_MODEL_FEATURES,
+                COMPACT_LANGUAGE_MODEL_API=True,
+                MANAGED_CACHE_LOWERING_API=True,
+                PADDED_RANDOM_TAPES_API=True,
+                load=lambda *a, **k: fake_model,
+                abstract_language_model_embedding=lambda *a, **k: jax.ShapeDtypeStruct(
+                    (1, 8, 2560), jnp.float32
+                ),
+                language_model_embedding=lambda *a, **k: jnp.zeros(
+                    (1, 8, 2560), jnp.float32
+                ),
+                build_job_features=lambda *a, **k: built_ac,
+                build_common_job_features=lambda *a, **k: built_ac,
+                language_model_states=lambda *a, **k: None,
+                language_model_length=inference.language_model_length,
+                normalize_msa_features=inference.normalize_msa_features,
+                pad_features=inference.pad_features,
+                padded_random_tapes=inference.padded_random_tapes,
+                seed_key=inference.seed_key,
+                lm_mask_key=inference.lm_mask_key,
+                predict=lambda _k, _f, _m, **kw: captured_calls.append(kw) or {},
+            )
+            if name == "foldjax.models.esmfold2.inference"
+            else (
+                structure_model
+                if name == "foldjax.models.esmfold2.models.model"
+                else SimpleNamespace(
+                    write_prediction_outputs=lambda *a, **k: {
+                        "structures": (),
+                        "summary": (),
+                    }
+                )
+            )
+        ),
+    )
+    req = PredictionRequest(
+        model="esmfold2",
+        input=job,
+        output_dir=tmp_path / "out",
+        weights=tmp_path,
+        seed=19,
+        input_format="foldjax",
+        padding=PaddingConfig(tokens=8, atoms=64, msa=4),
+        options={"no_language_model": True},
+    )
+    backend = ESMFold2Backend()
+    exact_atom_mask = jnp.repeat(
+        jnp.asarray(built_ac["atom_attention_mask"], dtype=jnp.float32), 2, axis=0
+    )
+    padded_atom_mask = jnp.pad(exact_atom_mask, ((0, 0), (0, 32)))
+    schedule_steps = len(diffusion.noise_schedule(churn_settings.diffusion)) - 1
+    monkeypatch.setattr(
+        diffusion,
+        "diffusion_module",
+        lambda x_noisy, _t_hat, s_in, *_a, **_kw: (
+            0.5 * x_noisy,
+            jnp.zeros((x_noisy.shape[0], s_in.shape[1], 32), jnp.float32),
+        ),
+    )
+
+    for ctx in (jax.threefry_partitionable(False), jax.default_prng_impl("rbg")):
+        captured_calls.clear()
+        with ctx:
+            backend.predict(req)
+            backend.lower_cache_graphs(req)
+
+            exact_root = inference.seed_key(19)
+            _r, exact_state_k, _col_k, _loop_k, exact_samp_k = jax.random.split(
+                exact_root, 5
+            )
+            exact_z = std * jax.random.truncated_normal(
+                exact_state_k,
+                -3.0,
+                3.0,
+                (1, 2, 2, churn_settings.d_pair),
+                dtype=jnp.float32,
+            )
+            step_samp_k, exact_init_k = jax.random.split(exact_samp_k)
+            exact_init = diffusion._atom_normal(
+                exact_init_k,
+                exact_atom_mask,
+                dtype=jnp.float32,
+                preserve_prefix_rng=False,
+            )
+            exact_quats = []
+            exact_trans = []
+            exact_churns = []
+            for _ in range(schedule_steps):
+                step_samp_k, aug_k, churn_k = jax.random.split(step_samp_k, 3)
+                rot_k, trans_k = jax.random.split(aug_k)
+                exact_quats.append(
+                    jax.random.normal(rot_k, (2, 4), dtype=jnp.float32)
+                )
+                exact_trans.append(
+                    jax.random.normal(trans_k, (2, 1, 3), dtype=jnp.float32)
+                )
+                exact_churns.append(
+                    diffusion._atom_normal(
+                        churn_k,
+                        exact_atom_mask,
+                        dtype=jnp.float32,
+                        preserve_prefix_rng=False,
+                    )
+                )
+
+            assert captured_calls[0]["preserve_prefix_rng"] is False
+            backend_tapes = captured_calls[0]["_padded_random_tapes"]
+            np.testing.assert_array_equal(
+                backend_tapes["initial_pair_state"][:, :2, :2], exact_z
+            )
+            np.testing.assert_array_equal(
+                backend_tapes["diffusion_initial_normal"][:, :11],
+                exact_init[:, :11],
+            )
+            assert not np.any(
+                np.asarray(backend_tapes["diffusion_initial_normal"][:, 11:])
+            )
+            np.testing.assert_array_equal(
+                backend_tapes["diffusion_rotation_quaternions"],
+                jnp.stack(exact_quats),
+            )
+            np.testing.assert_array_equal(
+                backend_tapes["diffusion_translations"],
+                jnp.stack(exact_trans),
+            )
+            np.testing.assert_array_equal(
+                backend_tapes["diffusion_churn_normals"][:, :, :11],
+                jnp.stack(exact_churns)[:, :, :11],
+            )
+            assert not np.any(
+                np.asarray(backend_tapes["diffusion_churn_normals"][:, :, 11:])
+            )
+
+            exact_cache = dataclasses.replace(dummy_cache, atom_mask=exact_atom_mask)
+            padded_cache = dataclasses.replace(
+                dummy_cache, atom_mask=padded_atom_mask, n_tokens=8
+            )
+            exact_coords, _ = diffusion.sample(
+                exact_samp_k,
+                jnp.zeros((1, 2, 203), jnp.float32),
+                exact_cache,
+                {},
+                settings=churn_settings.diffusion,
+                num_samples=2,
+                preserve_prefix_rng=False,
+            )
+            padded_coords, _ = diffusion.sample(
+                exact_samp_k,
+                jnp.zeros((1, 8, 203), jnp.float32),
+                padded_cache,
+                {},
+                settings=churn_settings.diffusion,
+                num_samples=2,
+                preserve_prefix_rng=False,
+                diffusion_initial_normal=backend_tapes["diffusion_initial_normal"],
+                diffusion_rotation_quaternions=backend_tapes[
+                    "diffusion_rotation_quaternions"
+                ],
+                diffusion_translations=backend_tapes["diffusion_translations"],
+                diffusion_churn_normals=backend_tapes["diffusion_churn_normals"],
+            )
+            np.testing.assert_allclose(
+                np.asarray(padded_coords[:, :11]),
+                np.asarray(exact_coords[:, :11]),
+                rtol=1e-5,
+                atol=2e-5,
+            )
+
+            assert captured_calls[1]["preserve_prefix_rng"] is False
+            assert isinstance(
+                captured_calls[1]["_padded_random_tapes"]["initial_pair_state"],
+                jax.ShapeDtypeStruct,
+            )
+
+    # Edge and failure cases for padded_random_tapes: equal-to-limit, zero,
+    # target < actual, boolean counts, and mismatched real_atom_mask shape.
+    exact_limit_tapes = inference.padded_random_tapes(
+        key,
+        settings=tiny_settings,
+        actual_tokens=2,
+        target_tokens=2,
+        actual_atoms=32,
+        target_atoms=32,
+        real_atom_mask=jnp.asarray(built_ac["atom_attention_mask"], dtype=jnp.float32),
+        msa_depth=1,
+        lm_active=False,
+    )
+    assert exact_limit_tapes["initial_pair_state"].shape == (
+        1,
+        2,
+        2,
+        tiny_settings.d_pair,
+    )
+    assert exact_limit_tapes["diffusion_initial_normal"].shape == (2, 32, 3)
+    assert "msa_column_keep" not in exact_limit_tapes
+    assert "lm_dropout_masks" not in exact_limit_tapes
+
+    import inspect
+
+    assert (
+        tuple(inspect.signature(inference._run).parameters)[4:]
+        == inference._COMPILED_PREDICT_STATIC_ARGNAMES
+    )
+    seen_structure_kwargs: list[dict] = []
+    monkeypatch.setattr(
+        structure_model,
+        "predict",
+        lambda _k, feat, _p, **kw: (
+            seen_structure_kwargs.append({"feat_keys": set(feat), "kw": kw}) or {}
+        ),
+    )
+    inference._run(
+        key,
+        {"token_attention_mask": tok_mask, "_padded_random_tapes": exact_limit_tapes},
+        {},
+        None,
+        tiny_settings,
+        1,
+        False,
+    )
+    assert "_padded_random_tapes" not in seen_structure_kwargs[0]["feat_keys"]
+    assert (
+        seen_structure_kwargs[0]["kw"]["initial_pair_state"]
+        is exact_limit_tapes["initial_pair_state"]
+    )
+
+    for bad_tok, tgt_tok, bad_atom, tgt_atom in (
+        (0, 2, 32, 32),
+        (True, 2, 32, 32),
+        (3, 2, 32, 32),
+        (2, 2, 0, 32),
+        (2, 2, 64, 32),
+    ):
+        with pytest.raises(ValueError):
+            inference.padded_random_tapes(
+                key,
+                settings=tiny_settings,
+                actual_tokens=bad_tok,  # type: ignore[arg-type]
+                target_tokens=tgt_tok,
+                actual_atoms=bad_atom,
+                target_atoms=tgt_atom,
+                real_atom_mask=jnp.ones((1, 32), jnp.float32),
+                msa_depth=1,
+                lm_active=False,
+            )
+    for bad_mask in (
+        jnp.ones((1, 11), jnp.float32),
+        jnp.ones((32,), jnp.float32),
+        jnp.ones((0, 32), jnp.float32),
+    ):
+        with pytest.raises(ValueError, match="real_atom_mask"):
+            inference.padded_random_tapes(
+                key,
+                settings=tiny_settings,
+                actual_tokens=2,
+                target_tokens=4,
+                actual_atoms=32,
+                target_atoms=64,
+                real_atom_mask=bad_mask,
+                msa_depth=1,
+                lm_active=False,
+            )

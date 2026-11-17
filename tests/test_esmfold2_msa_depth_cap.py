@@ -1,8 +1,9 @@
-"""`build_msa`'s ``msa_depth`` is one cap on the whole alignment, shared fairly.
+"""`build_msa`'s ``msa_depth`` caps the assembled taxonomy-paired alignment.
 
-The cap used to be checked against the shared row list inside the per-chain
-loop: the first chain filled it, and every later chain still appended one row
-past it -- so the cap was exceeded and the later chains were starved.
+``paired_msa.construct_paired_msa`` pairs shared taxa across chains and packs
+remaining homologs side by side, then caps the assembled result at
+``msa_depth`` rows (query row 0 included) so the cap is never exceeded and a
+shorter chain leaves remaining rows to deeper chains.
 """
 
 from __future__ import annotations
@@ -47,22 +48,22 @@ def _features(tmp_path: Path, *, depth: int | None, first: int = 6, second: int 
 def test_the_cap_counts_every_row_and_is_never_exceeded(tmp_path: Path) -> None:
     msa = _features(tmp_path, depth=4)
     assert msa.shape[0] == 4
-    # Query plus three rows: the first chain takes the odd one, the second
-    # chain is not starved.
-    assert _rows_per_chain(msa) == (2, 1)
+    # Query plus three side-by-side packed rows: neither chain is starved.
+    assert _rows_per_chain(msa) == (3, 3)
 
 
 def test_a_short_chain_leaves_its_share_to_the_other(tmp_path: Path) -> None:
     msa = _features(tmp_path, depth=6, first=1, second=6)
     assert msa.shape[0] == 6
-    assert _rows_per_chain(msa) == (1, 4)
+    assert _rows_per_chain(msa) == (1, 5)
 
 
 def test_a_cap_above_the_alignment_is_the_uncapped_result(tmp_path: Path) -> None:
     capped = _features(tmp_path, depth=100)
     uncapped = _features(tmp_path, depth=None)
     np.testing.assert_array_equal(capped, uncapped)
-    assert uncapped.shape[0] == 13
+    assert uncapped.shape[0] == 7
+    assert _rows_per_chain(uncapped) == (6, 6)
 
 
 def test_a_cap_of_one_is_the_query_alone(tmp_path: Path) -> None:

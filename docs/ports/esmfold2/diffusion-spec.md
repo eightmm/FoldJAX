@@ -48,10 +48,10 @@ inside `AttentionPairBias`.
 * `AdaptiveLayerNorm` normalises the conditioning with `s_scale` and no bias,
   but the output gates consume **raw `s`**.
 * RoPE uses the half-split convention: `cos` is `concat([c, c])`, pairing
-  `(j, j+16)`, not interleaved. `build_3d_rope`'s signature defaults are dead
-  -- the call site passes `(2, 10, 20.0, 10000.0)`, which fills `half_dim=16`
-  exactly, and the axes are the *reference conformer* coordinates plus
-  `ref_space_uid`.
+  `(j, j+16)`, not interleaved. `build_3d_rope` reads its pair counts and base
+  frequencies from `inputs.atom_encoder` in `config.json` (defaulting to
+  `(2, 10, 20.0, 10000.0)`, which fills `half_dim=16` at `head_dim=32`), and
+  the axes are the *reference conformer* coordinates plus `ref_space_uid`.
 * the sliding window is `swa_window_size // 2 = 64` each side, measured in
   **packed rank** (padding atoms do not consume window), with the diagonal
   force-allowed.
@@ -74,10 +74,10 @@ inside `AttentionPairBias`.
 Upstream ESMFold2 supports proteins, DNA, RNA, ligands, and modified residues.
 FoldJAX exposes that same contract through a Torch-free NumPy builder. Standard
 polymers, atom-tokenized modified residues, CCD/SMILES ligands and explicit
-covalent bonds produce the feature dictionary consumed by the JAX port. The
-publisher's pinned 417 MB `ccd.pkl` supplies arbitrary component chemistry and
-is checked again before deserialization; ordinary protein-only jobs keep the
-established in-package chemistry path.
+covalent bonds produce the feature dictionary consumed by the JAX port. The publisher's pinned 417 MB `ccd.pkl` supplies arbitrary component chemistry
+and reference conformers for every backend job (including plain protein chains)
+and is checked again before deserialization; the standalone `data/features.py`
+helper retains the CCD-free in-package protein-only path.
 
 The managed store has two explicit profiles:
 
@@ -94,6 +94,3 @@ automatically. Request resolution also selects the smaller managed bundle from
 the legacy native option, or from an explicit external `esmc_weights`, when no
 structure weights were supplied. The default path fails with the complete-bundle
 fetch instruction instead of silently changing the model.
-Porting upstream ligand and nucleic-acid support remains a separate
-feature-building task; merely downloading the old CCD pickle would not make
-those inputs valid.

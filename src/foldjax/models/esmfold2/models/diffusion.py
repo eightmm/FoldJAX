@@ -26,6 +26,7 @@ written through the identity `t_hat = sigma (1 + g)` as
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 
@@ -41,7 +42,7 @@ from foldjax.models._cp import (
     shard_pair_rows,
 )
 from foldjax.models._glu import gated_linear_unit_packed, site_backend
-from foldjax.models._random import masked_prefix_draw
+from foldjax.models._random import masked_prefix_draw, supports_masked_prefix_draw
 from foldjax.models.esmfold2.models.atom import (
     FLOAT32_EPS,
     atom_conditioning,
@@ -86,6 +87,10 @@ class DiffusionSettings:
     token_n_heads: int = 16
     #: `swa_window_size // 2`, the reach on each side, in packed atom rank.
     half_window: int = 64
+    spatial_rope_base_frequency: float = 20.0
+    n_spatial_rope_pairs_per_axis: int = 2
+    n_uid_rope_pairs: int = 10
+    uid_rope_base_frequency: float = 10000.0
     gamma_0: float = 0.605
     gamma_min: float = 1.107
     noise_scale: float = 0.0
@@ -587,6 +592,10 @@ def build_cache(
         params,
         f"{dot}atom_encoder",
         n_heads=settings.atom_n_heads,
+        n_spatial_rope_pairs_per_axis=settings.n_spatial_rope_pairs_per_axis,
+        n_uid_rope_pairs=settings.n_uid_rope_pairs,
+        spatial_rope_base_frequency=settings.spatial_rope_base_frequency,
+        uid_rope_base_frequency=settings.uid_rope_base_frequency,
     )
     if n_tokens is None:
         n_tokens = int(atom_to_token.max()) + 1
@@ -837,6 +846,12 @@ def center_random_augmentation(
     return x, second
 
 
+_PREFIX_RNG_UNSUPPORTED_MSG = (
+    "prefix-preserving padding noise requires "
+    "jax_default_prng_impl='threefry2x32' and jax_threefry_partitionable=True"
+)
+
+
 def _atom_normal(
     key: jnp.ndarray,
     atom_mask: jnp.ndarray,
@@ -859,6 +874,8 @@ def _atom_normal(
     if not preserve_prefix_rng:
         # Keep the exact historical call for default, unpadded inference.
         return jax.random.normal(key, shape, dtype=dtype)
+    if not supports_masked_prefix_draw():
+        raise ValueError(_PREFIX_RNG_UNSUPPORTED_MSG)
     semantic_mask = atom_mask.astype(bool)
     real_count = jnp.sum(semantic_mask.astype(jnp.int32), axis=-1, keepdims=True)
     native_count = ((real_count + 31) // 32) * 32
@@ -1161,6 +1178,8 @@ def sample(
         )
     ):
         raise ValueError("native diffusion tape does not support prefix RNG padding")
+    if preserve_prefix_rng and not supports_masked_prefix_draw():
+        raise ValueError(_PREFIX_RNG_UNSUPPORTED_MSG)
     schedule = noise_schedule(settings)
     gammas = np.where(schedule > settings.gamma_min, settings.gamma_0, 0.0)
     steps = np.stack([schedule[:-1], schedule[1:], gammas[1:]], axis=-1)
@@ -1317,6 +1336,55 @@ def sample(
     return carry[0], carry[3]
 
 
+def _read_rope_settings(
+    atom: Mapping[str, object],
+    *,
+    c_atom: int,
+    n_heads: int,
+    defaults: tuple[float, int, int, float] = (20.0, 2, 10, 10000.0),
+) -> tuple[float, int, int, float]:
+    """Read and validate `AtomAttentionConfig`'s four 3D-RoPE fields."""
+    if c_atom <= 0 or n_heads <= 0 or c_atom % n_heads != 0:
+        raise ValueError(
+            f"atom width {c_atom} must be a positive multiple of head count {n_heads}"
+        )
+    head_dim = c_atom // n_heads
+    if head_dim % 2 != 0:
+        raise ValueError(f"atom head width must be even; got {head_dim}")
+
+    def read_freq(name: str, fallback: float) -> float:
+        value = atom.get(name, fallback)
+        if value is None:
+            return fallback
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) <= 0.0
+        ):
+            raise ValueError(f"{name} must be a positive finite number; got {value!r}")
+        return float(value)
+
+    def read_pairs(name: str, fallback: int) -> int:
+        value = atom.get(name, fallback)
+        if value is None:
+            return fallback
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer; got {value!r}")
+        return value
+
+    spatial_freq = read_freq("spatial_rope_base_frequency", defaults[0])
+    n_spatial = read_pairs("n_spatial_rope_pairs_per_axis", defaults[1])
+    n_uid = read_pairs("n_uid_rope_pairs", defaults[2])
+    uid_freq = read_freq("uid_rope_base_frequency", defaults[3])
+    if 3 * n_spatial + n_uid > head_dim // 2:
+        raise ValueError(
+            "3D RoPE pair counts exceed half the head width: "
+            f"3 * {n_spatial} + {n_uid} > {head_dim // 2}"
+        )
+    return spatial_freq, n_spatial, n_uid, uid_freq
+
+
 def settings_from_config(config: Mapping[str, object]) -> DiffusionSettings:
     """Read a `DiffusionSettings` out of upstream's `config.json`.
 
@@ -1333,23 +1401,43 @@ def settings_from_config(config: Mapping[str, object]) -> DiffusionSettings:
     module: Mapping[str, object] = head.get("diffusion_module", {})  # type: ignore[assignment]
     inputs: Mapping[str, object] = config.get("inputs", {})  # type: ignore[assignment]
     atom: Mapping[str, object] = inputs.get("atom_encoder", {})  # type: ignore[assignment]
+    if not isinstance(atom, Mapping):
+        atom = {}
     base = DiffusionSettings()
 
     def read(source: Mapping[str, object], name: str, fallback: object) -> object:
         value = source.get(name, fallback)
         return fallback if value is None else value
 
+    c_atom = int(read(module, "c_atom", base.c_atom))  # type: ignore[call-overload]
+    atom_n_heads = int(read(module, "atom_num_heads", base.atom_n_heads))  # type: ignore[call-overload]
+    spatial_freq, n_spatial, n_uid, uid_freq = _read_rope_settings(
+        atom,
+        c_atom=c_atom,
+        n_heads=atom_n_heads,
+        defaults=(
+            base.spatial_rope_base_frequency,
+            base.n_spatial_rope_pairs_per_axis,
+            base.n_uid_rope_pairs,
+            base.uid_rope_base_frequency,
+        ),
+    )
+
     return replace(
         base,
         sigma_data=float(read(module, "sigma_data", base.sigma_data)),  # type: ignore[arg-type]
-        c_atom=int(read(module, "c_atom", base.c_atom)),  # type: ignore[call-overload]
+        c_atom=c_atom,
         c_token=int(read(module, "c_token", base.c_token)),  # type: ignore[call-overload]
         c_z=int(read(module, "c_z", base.c_z)),  # type: ignore[call-overload]
         atom_n_blocks=int(read(module, "atom_num_blocks", base.atom_n_blocks)),  # type: ignore[call-overload]
-        atom_n_heads=int(read(module, "atom_num_heads", base.atom_n_heads)),  # type: ignore[call-overload]
+        atom_n_heads=atom_n_heads,
         token_n_blocks=int(read(module, "token_num_blocks", base.token_n_blocks)),  # type: ignore[call-overload]
         token_n_heads=int(read(module, "token_num_heads", base.token_n_heads)),  # type: ignore[call-overload]
         half_window=int(read(atom, "swa_window_size", base.half_window * 2)) // 2,  # type: ignore[call-overload]
+        spatial_rope_base_frequency=spatial_freq,
+        n_spatial_rope_pairs_per_axis=n_spatial,
+        n_uid_rope_pairs=n_uid,
+        uid_rope_base_frequency=uid_freq,
         gamma_0=float(read(head, "gamma_0", base.gamma_0)),  # type: ignore[arg-type]
         gamma_min=float(read(head, "gamma_min", base.gamma_min)),  # type: ignore[arg-type]
         noise_scale=float(read(head, "noise_scale", base.noise_scale)),  # type: ignore[arg-type]
