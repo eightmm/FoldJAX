@@ -31,16 +31,16 @@ from foldjax.registry import get_backend
 ROOT = Path(__file__).parents[1]
 NOTEBOOK = ROOT / "notebooks" / "FoldJAX_Colab.ipynb"
 COLAB_COMMON_STACK = {
-    "cuequivariance": "0.11.1",
-    "cuequivariance-jax": "0.11.1",
+    "cuequivariance": "0.13.0",
+    "cuequivariance-jax": "0.13.0",
     "flax": "0.12.9",
     "jaxlib": "0.11.1",
     "qwix": "0.1.8",
     "tokamax": "0.0.13",
 }
 COLAB_CUDA_STACK = {
-    "cuequivariance-ops-cu12": "0.11.1",
-    "cuequivariance-ops-jax-cu12": "0.11.1",
+    "cuequivariance-ops-cu12": "0.13.0",
+    "cuequivariance-ops-jax-cu12": "0.13.0",
     "jax-cuda12-pjrt": "0.11.1",
     "jax-cuda12-plugin": "0.11.1",
     "triton": "3.7.1",

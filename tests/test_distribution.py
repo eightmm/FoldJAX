@@ -62,15 +62,15 @@ def test_supported_python_and_accelerator_runtime_are_consistent() -> None:
         assert "runs-on: ubuntu-latest" not in workflow, name
 
     assert "jax==0.11.1" in dependencies
-    assert "cuequivariance==0.11.1" in dependencies
-    assert "cuequivariance-jax==0.11.1" in dependencies
+    assert "cuequivariance==0.13.0" in dependencies
+    assert "cuequivariance-jax==0.13.0" in dependencies
     assert "flax==0.12.9" in dependencies
     assert "qwix==0.1.8" in dependencies
     assert "tokamax==0.0.13" in dependencies
     assert "jax[cuda12]==0.11.1" in extras["cuda12"]
     assert "jax[cuda13]==0.11.1" in extras["cuda13"]
-    assert "cuequivariance-ops-jax-cu12==0.11.1" in extras["cuda12"]
-    assert "cuequivariance-ops-jax-cu13==0.11.1" in extras["cuda13"]
+    assert "cuequivariance-ops-jax-cu12==0.13.0" in extras["cuda12"]
+    assert "cuequivariance-ops-jax-cu13==0.13.0" in extras["cuda13"]
     assert "triton==3.7.1" in extras["cuda12"]
     assert "triton==3.7.1" in extras["cuda13"]
     assert "dm-haiku==0.0.17" in extras["alphafold3"]

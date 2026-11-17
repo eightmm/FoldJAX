@@ -39,8 +39,8 @@ dependencies = [
     # shared JAX runtime
     "jax==0.11.1",
     "numpy>=2.1",
-    "cuequivariance==0.11.1",
-    "cuequivariance-jax==0.11.1",
+    "cuequivariance==0.13.0",
+    "cuequivariance-jax==0.13.0",
     # Qwix (via Tokamax) imports Flax NNX. Flax 0.12.7 resolves against JAX
     # 0.11.1 but still calls the removed MutableHiType API; 0.12.9 contains
     # the matching HiType compatibility update.
@@ -87,12 +87,12 @@ dependencies = [
 # (vendored sources, the CPU-only AlphaFold 3 pybind module, the weight store,
 # compile caches) is CUDA-generation-agnostic and shared.
 cuda12 = [
-    "cuequivariance-ops-jax-cu12==0.11.1",
+    "cuequivariance-ops-jax-cu12==0.13.0",
     "jax[cuda12]==0.11.1",
     "triton==3.7.1",
 ]
 cuda13 = [
-    "cuequivariance-ops-jax-cu13==0.11.1",
+    "cuequivariance-ops-jax-cu13==0.13.0",
     "jax[cuda13]==0.11.1",
     # cuequivariance-jax's GPU layer-norm/triangle kernels import triton but do
     # not declare it. It used to arrive via torch; now that prediction is
@@ -271,7 +271,7 @@ dev = [
 # self-referential extra in a group without a word and hands back a CPU-only
 # environment. `tests/test_distribution.py` asserts the two sets stay equal.
 gpu = [
-    "cuequivariance-ops-jax-cu13==0.11.1",
+    "cuequivariance-ops-jax-cu13==0.13.0",
     "jax[cuda13]==0.11.1",
     "triton==3.7.1",
 ]

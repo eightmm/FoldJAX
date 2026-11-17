@@ -67,13 +67,13 @@ def load_cueq():
 
 
 #: The wheel whose ``_get_autotuned_kernel`` was read for the memoization below.
-_DUAL_GEMM_MEMOIZED_VERSION = "0.11.1"
+_DUAL_GEMM_MEMOIZED_VERSION = "0.13.0"
 
 
 def _memoize_dual_gemm_kernel() -> None:
     """Skip the dual-GEMM kernel lookup's per-lowering config rebuild.
 
-    ``cuequivariance_jax 0.11.1``'s ``_get_autotuned_kernel(is_forward)``
+    ``cuequivariance_jax 0.13.0``'s ``_get_autotuned_kernel(is_forward)``
     builds a 1,572,864-entry ``input_configs`` list (about a second on the
     campaign host) *before* it checks its module globals
     ``_autotuned_forward``/``_autotuned_backward``, and every lowering of the
@@ -174,7 +174,7 @@ def cueq_attention_arguments(
 
     Split out so the one mask-polarity conversion in this repository -- the
     additive ``0``/``-1e9`` bias becomes the kernel's boolean, whose installed
-    contract (``cuequivariance_jax 0.11.1``, ``triangle_attention``) reads
+    contract (``cuequivariance_jax 0.13.0``, ``triangle_attention``) reads
     "boolean, True means valid" -- can be checked without the kernel: a CPU
     host cannot load ``libcue_ops.so``. Nothing here imports cuEquivariance.
 
@@ -264,7 +264,7 @@ def cueq_attention_core(
 
 
 #: The attended extents cuEquivariance's half-precision triangle attention is
-#: fast at. Measured on the installed wheel (``cuequivariance_jax 0.11.1``, RTX
+#: fast at. Measured on 0.11.1 (``cuequivariance_jax 0.11.1``, RTX
 #: PRO 6000 Blackwell, bf16, 4 heads x 32): an extent that is not a multiple of
 #: 8 takes a path 1.7x slower at 2,100, 2.2x at 3,012 and 6-8x at 4,100 than
 #: its aligned neighbours, while 16- and 32-alignment buy nothing over 8

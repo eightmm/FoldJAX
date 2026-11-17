@@ -52,7 +52,7 @@ belong with them (including the one row FoldJAX loses on time) are in
 
 ## Installation
 
-FoldJAX requires Python 3.13. Its lockfile pins JAX 0.11.1 and the matching
+FoldJAX requires Python 3.13. Its lockfile pins JAX 0.11.1 and cuEquivariance 0.13.0 with the matching
 cuEquivariance JAX/CUDA packages for reproducible CPU and GPU environments.
 
 ```bash
