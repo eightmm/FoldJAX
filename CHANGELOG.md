@@ -1072,6 +1072,40 @@ unless it says so here, in its own paragraph.
   refused, and the refusal names `--no-padding`. Protenix is not wired to
   this: on 48 GB and 96 GB cards it has no padded band that admission refuses
   while the exact shape fits.
+  The default also steps aside when the padded shape has no memory estimate
+  at all (outside every fitted range) and the exact shape fits; the notice
+  then says the padded shape has no estimate. When the exact shape is refused,
+  the run is refused with it, since padding only adds memory. Padding that was
+  asked for still runs an unestimated shape with the warning, as before.
+- **Boltz-2 template steering uses every forced template.** The reference
+  potential read only the first forced template for every sample, so a second
+  or later forced template had no effect. Each template now contributes, as
+  upstream's does, and the symmetric-chain centre divides by the atom count
+  plus one, as upstream's does. Predictions without forced templates and with
+  one forced template are unchanged.
+- **Boltz-2 steering resamples particles per sample.** Steered runs drew one
+  resampling index set shared by all samples; each sample now draws its own,
+  as upstream does. Only runs with steering potentials change.
+- **Boltz-2 affinity re-embeds the input at the trunk's precision.** Upstream
+  re-embeds inside the trunk's bf16-mixed autocast before turning autocast off
+  for the affinity modules; the port re-embedded with the float32 parameters.
+  Affinity values can differ slightly from earlier builds; structures and
+  confidence values are unchanged.
+- **Boltz-2 `--subsample-msa` keeps shallow alignments selectable.** The cap
+  applied only above 1,024 rows; it now selects `min(depth, cap)` rows
+  whenever it is on, as upstream's `randperm(depth)[:cap]` does, so an
+  alignment at or under the cap keeps every row in drawn order. Subsampling is
+  off by default.
+- **Multi-sample Boltz-2 native filenames follow confidence rank.** Each
+  `<id>_model_<rank>` file now carries its sample's rank, NaN confidence
+  first, as upstream's `torch.argsort` orders them, and the result's
+  `out_path_ranks` gives every draw's rank. The common `sample-<nn>` layout is
+  unchanged.
+- **OpenFold3 keeps a template-free query's template axis collapsed under
+  padding.** Padding restored four stored template rows, so a template-free
+  query ran its template stack four times for what one row gives. Stored rows
+  now pad to the next of 1, 2 or 4 (`--pad-templates` pins the width), and a
+  synthetic `cache warm` job warms the one-row width.
 - **`--stop-after inputs` on a padded Boltz-2 or ESMFold2 run no longer fails
   with exit 3.** Both ports returned the stopped result without the shape
   profile they had padded to, and `predict` refuses a padded result that
