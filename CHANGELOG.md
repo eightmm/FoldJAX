@@ -1130,6 +1130,20 @@ unless it says so here, in its own paragraph.
   fields, the language-model mask follows the checkpoint, and an atom mask
   with interior holes keeps them. A depth cap on a paired MSA now applies after
   taxonomy pairing instead of truncating each chain first.
+- **OpenFold3 matches upstream in checkpoints, templates and ranking.** A
+  checkpoint that wraps training state under `module` or `state_dict` loads its
+  `ema` weights, as upstream's runner does; the released checkpoint is a flat
+  state dict and loads as before. `.m8` template hits are read and realigned
+  against the template chain, as upstream does. The chain-pair ipTM used in
+  ranking pools frames per sample instead of across samples, so a ranking can
+  change where samples differ in which chains have a valid frame. Clash checks
+  ignore masked atoms. A pocket-constrained `.npz` feature archive under
+  default padding now runs at its exact shape with a notice instead of failing,
+  and a sidecar-less archive names its chains by first appearance.
+- **`--option high_precision_attention=on` for OpenFold3.** Upstream runs its
+  pair-biased attention in float32 inside bf16-mixed autocast; this option does
+  the same. It is off by default, so default predictions keep their bf16
+  attention.
 - **`--stop-after inputs` on a padded Boltz-2 or ESMFold2 run no longer fails
   with exit 3.** Both ports returned the stopped result without the shape
   profile they had padded to, and `predict` refuses a padded result that
