@@ -692,8 +692,14 @@ program per atom step its inputs reach -- two or three for proteins of one
 Synthetic `cache warm` jobs warm only the atom steps they land on (the warm
 report says so under `shape_coverage`); warm real inputs, or pin `--pad-atoms`
 for warming and prediction alike, when every job must hit a warmed program. The MSA axis is padded up to
-the smallest standard bucket that holds the rows the model reads, never down:
-template storage retains the native depth.
+the smallest standard bucket that holds the rows the model reads, never down.
+Template storage retains the native depth, except that OpenFold3 pads its
+stored template rows to the next of 1, 2 or 4: a template-free query, which
+FoldJAX collapses to one row before padding, compiles and runs its template
+stack once per cycle rather than four times, so a synthetic `cache warm` job
+(no templates) warms the width a template-free prediction compiles and an
+input with templates lands on 2 or 4 (`shape_coverage` says so; warm real
+inputs or pin `--pad-templates` for both).
 OpenDDE structural tokens use `2 * tokens`. ESMFold2 language-model storage
 reserves `3 * tokens` to include BOS/EOS for every possible protein chain;
 Protenix ESM/ISM uses `min(tokens, provider maximum length)` so its terminal

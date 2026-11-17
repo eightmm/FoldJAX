@@ -392,21 +392,36 @@ def warm_token_buckets(
                         "shape in the token bucket; warm real input jobs or use the "
                         "same explicit axis pins for warming and prediction.",
                     }
-            elif (
-                model != "alphafold3"
-                and (request.padding or PaddingConfig()).atoms is None
-            ):
+            elif model != "alphafold3":
+                padding = request.padding or PaddingConfig()
                 # The automatic atom target follows the stored atom count, so
                 # a poly-alanine job lands on its own atom step, not a protein's.
-                model_report["shape_coverage"] = {
-                    "kind": "representative_concrete_shapes",
-                    "automatic_axes": ["atoms"],
-                    "note": f"{model} atom capacity follows each input's stored "
-                    "atom count (512-atom steps through 8,192, then 1,024). These "
-                    "synthetic lengths do not cover every shape in the token "
-                    "bucket; warm real input jobs or use the same --pad-atoms "
-                    "for warming and prediction.",
-                }
+                automatic: list[str] = []
+                notes: list[str] = []
+                if padding.atoms is None:
+                    automatic.append("atoms")
+                    notes.append(
+                        f"{model} atom capacity follows each input's stored atom "
+                        "count (512-atom steps through 8,192, then 1,024)."
+                    )
+                if model == "openfold3" and padding.templates is None:
+                    # A template-free job -- every synthetic one -- stores one
+                    # template row; real templates pad to 2 or 4.
+                    automatic.append("templates")
+                    notes.append(
+                        "Template capacity follows the stored template rows "
+                        "(1, 2 or 4); these template-free jobs warm one row."
+                    )
+                if automatic:
+                    pins = " and ".join(f"--pad-{axis}" for axis in automatic)
+                    model_report["shape_coverage"] = {
+                        "kind": "representative_concrete_shapes",
+                        "automatic_axes": automatic,
+                        "note": " ".join(notes) + " These synthetic lengths do "
+                        "not cover every shape in the token bucket; warm real "
+                        f"input jobs or use the same {pins} for warming and "
+                        "prediction.",
+                    }
             report["models"].append(model_report)
             default_grid = (
                 tuple(request.options["buckets"])

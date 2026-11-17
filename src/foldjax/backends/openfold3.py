@@ -49,6 +49,7 @@ from foldjax.execution import (
 )
 from foldjax.models import _representations
 from foldjax.padding import (
+    TEMPLATE_BUCKETS,
     PaddingPlan,
     cp_aligned_padding,
     resolve_axis,
@@ -280,7 +281,7 @@ def _padding_plan(
             actual["tokens"], config, "tokens", minimum=storage["tokens"]
         )
     }
-    for axis, fixed_size in (("atoms", None), ("msa", max_msa_depth), ("templates", 4)):
+    for axis, fixed_size in (("atoms", None), ("msa", max_msa_depth)):
         target[axis] = resolve_token_axis(
             actual[axis],
             config,
@@ -289,6 +290,22 @@ def _padding_plan(
             minimum=storage[axis],
             fixed_size=fixed_size,
         )
+    # The stored rows on the template ladder, not the released width of four:
+    # `collapse_identical_templates` has already reduced a template-free query
+    # to one row, and padding it back to four would run the template stack
+    # four times for the value one row gives. Unlike Protenix, OpenFold3's
+    # average weights rows by `template_padding_mask`, not by storage depth, so
+    # any target on the ladder is value-neutral. Storage above the ladder is
+    # still refused automatically, as the fixed width refused it, rather than
+    # run exact under the default overflow policy; an explicit pin keeps its say.
+    if config.templates is None and storage["templates"] > TEMPLATE_BUCKETS[-1]:
+        raise ValueError(
+            f"OpenFold3 stores {storage['templates']} template rows, above the "
+            f"released width of {TEMPLATE_BUCKETS[-1]}; pin padding.templates"
+        )
+    target["templates"] = resolve_axis(
+        actual["templates"], config, "templates", minimum=storage["templates"]
+    )
     return PaddingPlan(actual=actual, storage=storage, target=target)
 
 

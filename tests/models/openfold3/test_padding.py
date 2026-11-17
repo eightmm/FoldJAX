@@ -98,7 +98,8 @@ def test_padding_plan_reports_real_storage_and_standard_targets() -> None:
         # The stored atoms on the atom grid, not 24 per token (3,072).
         "atoms": 256,
         "msa": 1024,
-        "templates": 4,
+        # The one stored row, not the released width of four.
+        "templates": 1,
     }
 
 
@@ -114,7 +115,44 @@ def test_padding_plan_accepts_compacted_empty_template_geometry() -> None:
 
     assert plan.actual["templates"] == 0
     assert plan.storage["templates"] == 1
+    assert plan.target["templates"] == 1
+
+
+@pytest.mark.parametrize(
+    ("stored", "expected"), [(1, 1), (2, 2), (3, 4), (4, 4)]
+)
+def test_padding_plan_keeps_stored_templates_on_the_template_ladder(
+    stored: int, expected: int
+) -> None:
+    """Rows that differ are kept and padded to the next of 1, 2 and 4.
+
+    A template-free query reaches the plan already collapsed to one row; padding
+    it back to four would run the template stack four times per cycle for the
+    value one row gives.
+    """
+    features = minimal_features(tokens=4, atoms=7, msa_rows=2, templates=stored)
+    # Distinct distograms, so `collapse_identical_templates` keeps every row.
+    for row in range(stored):
+        features["template_distogram"][0, row, 0, 1, row] = 1.0
+    assert collapse_identical_templates(features)["template_restype"].shape[1] == stored
+
+    plan = _padding_plan(features, PaddingConfig())
+
+    assert plan.actual["templates"] == plan.storage["templates"] == stored
+    assert plan.target["templates"] == expected
+
+
+def test_explicit_template_pin_still_decides_the_padded_width() -> None:
+    features = minimal_features(tokens=4, atoms=7, msa_rows=2, templates=1)
+
+    plan = _padding_plan(features, PaddingConfig(templates=4))
+
     assert plan.target["templates"] == 4
+    with pytest.raises(ValueError, match="padding.templates=2 is smaller"):
+        _padding_plan(
+            minimal_features(tokens=4, atoms=7, msa_rows=2, templates=4),
+            PaddingConfig(templates=2),
+        )
 
 
 def test_existing_archive_padding_is_never_shrunk() -> None:
@@ -393,12 +431,17 @@ def test_native_msa_cap_and_token_profile_are_stable() -> None:
         )
         for tokens, atoms, rows, templates in ((4, 7, 2, 1), (8, 20, 80, 4))
     ]
-    assert plans[0].target == plans[1].target
+    # Only the template axis follows its stored rows; every other axis of the
+    # profile is the token bucket's.
+    assert {k: v for k, v in plans[0].target.items() if k != "templates"} == {
+        k: v for k, v in plans[1].target.items() if k != "templates"
+    }
+    assert [plan.target["templates"] for plan in plans] == [1, 4]
     assert plans[0].target["msa"] == 100
 
 
 def test_native_template_capacity_does_not_truncate_archive() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="above the released width of 4"):
         _padding_plan(
             minimal_features(tokens=4, atoms=7, msa_rows=2, templates=5),
             PaddingConfig(),

@@ -784,13 +784,18 @@ def test_a_single_device_resolves_the_profile_every_port_had_before(
             "structural_tokens": 2 * token_target,
             "language_model_tokens": token_target,
             "msa": depth,
-            "templates": 4,
+            # OpenFold3 keeps its stored rows on the template ladder -- one for
+            # a template-free query -- where the other ports hold the released
+            # four.
+            "templates": 1 if model == "openfold3" else 4,
         }
         for axis in get_backend(model).padding_axes:
             if axis == "tokens":
                 resolved = resolve_axis(tokens, serial, axis)
             elif axis == "msa":
                 resolved = resolve_msa_axis(1, serial, profile_depth=depth)
+            elif axis == "templates" and model == "openfold3":
+                resolved = resolve_axis(1, serial, axis, minimum=1)
             elif axis == "templates":
                 resolved = resolve_token_axis(
                     1, serial, axis, token_target=token_target, fixed_size=4

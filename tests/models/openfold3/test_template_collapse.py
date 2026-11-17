@@ -21,6 +21,7 @@ import pytest
 from foldjax.models.openfold3.data import (
     collapse_identical_templates,
     compact_zero_template_pair_features,
+    pad_features,
 )
 from foldjax.models.openfold3.data.featurize import _ZERO_TEMPLATE_PAIR_MARKER
 from foldjax.models.openfold3.models.attention import AttentionParams
@@ -41,6 +42,7 @@ from foldjax.models.openfold3.models.template_module import (
 from foldjax.models.openfold3.models.triangle import TriangleMultiplicationParams
 from foldjax.models.openfold3.models.triangle_attention import TriangleAttentionParams
 from tests.models.cp_probe_env import inherited_environment
+from tests.models.openfold3.feature_fixture import minimal_features
 
 N_TOKEN, N_TEMPLATE = 5, 4
 DISTOGRAM_BINS, RESTYPE = 39, 32
@@ -446,6 +448,61 @@ def test_the_model_computes_the_same_update_from_the_collapsed_axis(
         run(collapsed),
         rtol=0,
         atol=np.finfo(np.float32).eps,
+    )
+
+
+def test_padding_the_collapsed_axis_back_to_four_changes_only_the_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The padded trunk's template update at one stored row against four.
+
+    Serving padding used to re-expand a collapsed template-free axis to the
+    released four; the plan now keeps it at one. Both widths are what `predict`
+    hands the model -- padded, then compacted -- and the three appended rows
+    carry zero weight in `template_padding_mask`, so they add exact zeros to
+    the sum and nothing to the denominator. The widths take different branches
+    (four rows scan, one does not), hence the same one-epsilon tolerance as
+    above rather than bytes.
+    """
+    monkeypatch.setenv("OPENFOLD3_TRIANGLE_BACKEND", "xla")
+    channels, heads = 8, 2
+    params = _embedder_params(channels, heads)
+    features = minimal_features(tokens=N_TOKEN, atoms=7, templates=N_TEMPLATE)
+    features["template_pseudo_beta_mask"].fill(0.0)
+    features["template_backbone_frame_mask"].fill(0.0)
+    collapsed = collapse_identical_templates(features)
+    assert _template_rows(collapsed) == 1
+
+    def serve(n_templates: int) -> dict[str, np.ndarray]:
+        padded = pad_features(
+            collapsed, n_token=N_TOKEN, n_atom=7, n_msa=2, n_templates=n_templates
+        )
+        compact = compact_zero_template_pair_features(padded)
+        assert compact["template_restype"].shape[1] == n_templates
+        assert _ZERO_TEMPLATE_PAIR_MARKER in compact
+        return {
+            name: value
+            for name, value in compact.items()
+            if name.startswith("template_") or name == _ZERO_TEMPLATE_PAIR_MARKER
+        }
+
+    one, four = serve(1), serve(N_TEMPLATE)
+    np.testing.assert_array_equal(four["template_padding_mask"], [[1.0, 0.0, 0.0, 0.0]])
+
+    z = jax.random.normal(jax.random.key(7), (1, N_TOKEN, N_TOKEN, channels))
+    pair_mask = jnp.ones((1, N_TOKEN, N_TOKEN))
+
+    def run(source: dict[str, np.ndarray]) -> np.ndarray:
+        return np.asarray(
+            template_embedder(
+                _model_batch(source), z, params, pair_mask=pair_mask, no_heads=heads
+            )
+        )
+
+    update_one, update_four = run(one), run(four)
+    assert np.isfinite(update_one).all() and np.isfinite(update_four).all()
+    np.testing.assert_allclose(
+        update_four, update_one, rtol=0, atol=np.finfo(np.float32).eps
     )
 
 

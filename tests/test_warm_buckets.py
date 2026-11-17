@@ -212,6 +212,38 @@ def test_automatic_atoms_report_partial_shape_coverage(sweep, pinned):
 
 
 @pytest.mark.parametrize(
+    ("pinned", "expected"),
+    [
+        ((), ["atoms", "templates"]),
+        (("atoms",), ["templates"]),
+        (("atoms", "templates"), []),
+    ],
+)
+def test_openfold3_automatic_templates_report_partial_shape_coverage(
+    sweep, pinned, expected
+):
+    """A synthetic job has no templates, so it warms the one-row template
+    width a template-free prediction compiles; inputs with templates land on
+    2 or 4 and are covered only by warming them or pinning the axis."""
+    request, _, _ = sweep
+    padding = dataclasses.replace(
+        request.padding, **{axis: 4 if axis == "templates" else 3072 for axis in pinned}
+    )
+    report = warm_buckets.warm_token_buckets(
+        dataclasses.replace(request, model="openfold3", padding=padding), "128"
+    )
+    model = report["models"][0]
+    if not expected:
+        assert "shape_coverage" not in model
+    else:
+        coverage = model["shape_coverage"]
+        assert coverage["automatic_axes"] == expected
+        for axis in expected:
+            assert f"--pad-{axis}" in coverage["note"]
+        assert ("atom capacity" in coverage["note"]) == ("atoms" in expected)
+
+
+@pytest.mark.parametrize(
     "keep_going,expected", [(False, [128, 128, 256]), (True, [128, 128, 256, 512, 512])]
 )
 def test_stop_on_oom_is_the_default_and_can_be_disabled(sweep, keep_going, expected):

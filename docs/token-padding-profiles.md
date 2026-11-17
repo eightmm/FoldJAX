@@ -17,7 +17,7 @@ than the same job run unpadded.
 | Boltz2 | stored atoms on the atom grid, cap 24T | bucket >= stored rows, floor 1024 | existing supported axes |
 | Protenix | stored atoms on the atom grid, cap 24T | bucket >= stored rows, floor 1024 | templates 4; LM min(T, provider limit) |
 | OpenDDE | stored atoms on the atom grid | bucket >= the released 1280-row cycle sample | stored structural tokens rounded up to 64 / CP alignment |
-| OpenFold3 | stored atoms on the atom grid, cap 24T | 1024 per streamed cycle | templates 4 |
+| OpenFold3 | stored atoms on the atom grid, cap 24T | 1024 per streamed cycle | stored template rows on the 1/2/4 ladder (a template-free query stores 1) |
 | ESMFold2 | stored atoms on the atom grid, cap 24T | 1024 | LM 3T for per-chain BOS/EOS |
 
 T is the selected token bucket, not the real sequence length. The atom grid
