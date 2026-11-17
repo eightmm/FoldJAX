@@ -8,6 +8,11 @@ CPU::
     python bench/cueq_upgrade_check.py --compare \\
         results/cueq_0111.json results/cueq_0130.json
 
+In ``--out`` mode, JAX, Triton, and cuEquivariance write compile caches under the
+user cache directories (``XDG_CACHE_HOME``, ``TRITON_CACHE_DIR``) rather than
+under ``--out``. Set ``XDG_CACHE_HOME`` and ``TRITON_CACHE_DIR`` to a private
+directory per run when the default cache is shared.
+
 Importing this module and running ``--compare`` require only NumPy and the Python
 standard library. ``--out`` imports JAX, FoldJAX, and cuEquivariance lazily and
 requires an active GPU backend.
@@ -57,6 +62,7 @@ LN_DTYPES = ("bf16", "fp32")
 DEFAULT_WARMUP = 3
 DEFAULT_REPEATS = 10
 DEFAULT_MAX_SAMPLE_ELEMENTS = 1_000_000
+MAX_REPORTED_ITEMS = 5
 NORM_EPS = 1e-5
 MASK_BIAS_INF = 1e9
 
@@ -242,6 +248,27 @@ def write_sample_npy(path: Path, sample: np.ndarray) -> str:
 def sample_filename(out_path: Path, case_name: str) -> str:
     """Return the sidecar ``.npy`` filename next to ``out_path`` for ``case_name``."""
     return f"{out_path.stem}.{case_name}.npy"
+
+
+def _existing_outputs(out_path: Path) -> list[Path]:
+    """Return existing report or sidecar paths next to ``out_path``."""
+    existing: list[Path] = []
+    if out_path.exists() or out_path.is_symlink():
+        existing.append(out_path)
+    parent = out_path.parent
+    if parent.is_dir() and out_path.stem:
+        prefix = f"{out_path.stem}."
+        existing.extend(
+            sorted(
+                entry
+                for entry in parent.iterdir()
+                if entry.name != out_path.name
+                and entry.name.startswith(prefix)
+                and entry.name.endswith(".npy")
+                and len(entry.name) >= len(prefix) + 4
+            )
+        )
+    return existing
 
 
 def _dist_version(*names: str) -> str | None:
@@ -598,13 +625,27 @@ def run_benchmark(
     max_sample_elements: int = DEFAULT_MAX_SAMPLE_ELEMENTS,
     _allow_non_gpu: bool = False,
 ) -> dict[str, Any]:
-    """Execute the cuEquivariance benchmark panel and atomically write ``out_path``."""
+    """Execute the cuEquivariance benchmark panel and atomically write ``out_path``.
+
+    Raises ``ValueError`` if ``out_path`` or any matching ``<stem>.*.npy`` sidecar
+    already exists.
+    """
+    out_path = Path(out_path)
     validate_run_config(
         warmup=warmup, repeats=repeats, max_sample_elements=max_sample_elements
     )
     chosen_specs = select_cases(
         default_case_specs() if specs is None else specs, case_filter=case_filter
     )
+    existing = _existing_outputs(out_path)
+    if existing:
+        preview = ", ".join(str(path) for path in existing[:MAX_REPORTED_ITEMS])
+        if len(existing) > MAX_REPORTED_ITEMS:
+            preview = f"{preview}, +{len(existing) - MAX_REPORTED_ITEMS} more"
+        raise ValueError(
+            f"refusing to overwrite existing output ({preview}); "
+            "pass a fresh --out path"
+        )
     _ensure_foldjax_on_path()
 
     import jax
@@ -945,7 +986,10 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--out",
         type=Path,
-        help="Run the GPU benchmark panel and write JSON results to PATH.",
+        help=(
+            "Run the GPU benchmark panel and write JSON results to a fresh PATH "
+            "(exits 2 if any case fails)."
+        ),
     )
     mode.add_argument(
         "--compare",
@@ -984,24 +1028,39 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """CLI entry point returning 0 on success and 1 on runtime/validation error."""
+    """CLI entry point.
+
+    Returns 0 on success, 1 on runtime or validation error, and 2 when ``--out``
+    writes a report containing one or more failed cases.
+    """
     args = build_parser().parse_args(argv)
     try:
         if args.compare is not None:
             table = compare_reports(args.compare[0], args.compare[1])
             print(table)
             return 0
-        run_benchmark(
+        report = run_benchmark(
             args.out,
             case_filter=args.case_filter,
             warmup=args.warmup,
             repeats=args.repeats,
             max_sample_elements=args.max_sample_elements,
         )
-        return 0
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    cases = report["cases"]
+    failed = [name for name, entry in cases.items() if entry.get("status") != "ok"]
+    if failed:
+        shown = ", ".join(failed[:MAX_REPORTED_ITEMS])
+        if len(failed) > MAX_REPORTED_ITEMS:
+            shown = f"{shown} (+{len(failed) - MAX_REPORTED_ITEMS} more)"
+        print(
+            f"error: {len(failed)} of {len(cases)} cases failed: {shown}",
+            file=sys.stderr,
+        )
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

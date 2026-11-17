@@ -556,3 +556,218 @@ def test_run_benchmark_end_to_end_with_fake_cueq_on_cpu(
     table = mod.compare_reports(tmp_path / "run_a.json", tmp_path / "run_b.json")
     assert "raw_att" in table and "2.500e-01" in table
     assert "ln_bijd" in table and "bad_fam" in table and "ERROR" in table
+
+
+def test_run_mode_returns_2_on_case_failure_and_still_writes_report(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    import jax
+    import jax.numpy as jnp
+
+    from foldjax.models import _cueq as cueq_mod
+
+    mod = _load_check_module()
+    env_before = (
+        os.environ.get("XDG_CACHE_HOME"),
+        os.environ.get("TRITON_CACHE_DIR"),
+    )
+
+    cuex = types.ModuleType("cuequivariance_jax")
+    cuex.__version__ = "0.13.0"
+    cuex.TriMulPrecision = types.SimpleNamespace(
+        DEFAULT="DEFAULT", TF32="TF32", TF32x3="TF32x3", IEEE="IEEE"
+    )
+    calls = {"count": 0}
+
+    def triangle_attention(**kwargs):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise RuntimeError("synthetic kernel failure")
+        q = kwargs["q"]
+        stats = jnp.zeros((*q.shape[:-1], 1), dtype=jnp.float32)
+        return q, stats, stats
+
+    cuex.triangle_attention = triangle_attention
+    monkeypatch.setitem(sys.modules, "cuequivariance_jax", cuex)
+    monkeypatch.setattr(cueq_mod, "load_cueq", lambda: cuex)
+    orig_devices = jax.devices
+    monkeypatch.setattr(jax, "default_backend", lambda: "gpu")
+    monkeypatch.setattr(jax, "devices", lambda *_a, **_kw: orig_devices())
+
+    out_fail = tmp_path / "partial_fail.json"
+    rc = mod.main(
+        [
+            "--out",
+            str(out_fail),
+            "--case-filter",
+            "a_raw_tri_att_n256_fp32",
+            "--warmup",
+            "0",
+            "--repeats",
+            "1",
+            "--max-sample-elements",
+            "16",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert (
+        "error: 1 of 2 cases failed: a_raw_tri_att_n256_fp32_last5pct_invalid"
+        in captured.err
+    )
+    assert out_fail.is_file()
+    loaded = mod.load_report(out_fail)
+    assert loaded["cases"]["a_raw_tri_att_n256_fp32_all_valid"]["status"] == "ok"
+    assert (
+        loaded["cases"]["a_raw_tri_att_n256_fp32_last5pct_invalid"]["status"]
+        == "error"
+    )
+    assert (
+        tmp_path / "partial_fail.a_raw_tri_att_n256_fp32_all_valid.npy"
+    ).is_file()
+
+    out_ok = tmp_path / "all_ok.json"
+    rc_ok = mod.main(
+        [
+            "--out",
+            str(out_ok),
+            "--case-filter",
+            "a_raw_tri_att_n256_fp32_all_valid",
+            "--warmup",
+            "0",
+            "--repeats",
+            "1",
+            "--max-sample-elements",
+            "16",
+        ]
+    )
+    assert rc_ok == 0
+    assert capsys.readouterr().err == ""
+    assert out_ok.is_file()
+    assert (
+        os.environ.get("XDG_CACHE_HOME"),
+        os.environ.get("TRITON_CACHE_DIR"),
+    ) == env_before
+    assert mod.__doc__ is not None
+    assert "XDG_CACHE_HOME" in mod.__doc__
+    assert "TRITON_CACHE_DIR" in mod.__doc__
+    assert mod.main.__doc__ is not None
+    assert "2" in mod.main.__doc__
+    help_text = mod.build_parser().format_help()
+    assert "fresh PATH" in help_text and "exits 2" in help_text
+
+
+def test_main_failed_case_summary_limits_and_malformed_status(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    mod = _load_check_module()
+
+    def make_stub_report(case_statuses: list[tuple[str, object]]):
+        return {"cases": {name: {"status": st} for name, st in case_statuses}}
+
+    five_failures = [(f"c{idx}", "error") for idx in range(1, 6)]
+    monkeypatch.setattr(
+        mod, "run_benchmark", lambda *_a, **_kw: make_stub_report(five_failures)
+    )
+    rc_five = mod.main(["--out", str(tmp_path / "five.json")])
+    err_five = capsys.readouterr().err.strip()
+    assert rc_five == 2
+    assert err_five == "error: 5 of 5 cases failed: c1, c2, c3, c4, c5"
+
+    six_failures = [
+        ("ok0", "ok"),
+        *[(f"c{idx}", "error") for idx in range(1, 6)],
+        ("c6", None),
+    ]
+    monkeypatch.setattr(
+        mod, "run_benchmark", lambda *_a, **_kw: make_stub_report(six_failures)
+    )
+    rc_six = mod.main(["--out", str(tmp_path / "six.json")])
+    err_six = capsys.readouterr().err.strip()
+    assert rc_six == 2
+    assert err_six == "error: 6 of 7 cases failed: c1, c2, c3, c4, c5 (+1 more)"
+
+
+def test_run_mode_refuses_existing_report_or_sidecars(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    import jax
+
+    from foldjax.models import _cueq as cueq_mod
+
+    mod = _load_check_module()
+    orig_devices = jax.devices
+    monkeypatch.setattr(jax, "default_backend", lambda: "gpu")
+    monkeypatch.setattr(jax, "devices", lambda *_a, **_kw: orig_devices())
+    monkeypatch.setattr(
+        cueq_mod,
+        "load_cueq",
+        lambda: pytest.fail("run_benchmark should refuse before loading cueq"),
+    )
+
+    existing_report = tmp_path / "existing.json"
+    original_json = '{"sentinel": true}\n'
+    existing_report.write_text(original_json, encoding="utf-8")
+    rc_report = mod.main(["--out", str(existing_report)])
+    err_report = capsys.readouterr().err
+    assert rc_report == 1
+    assert "refusing to overwrite existing output" in err_report
+    assert "fresh --out" in err_report
+    assert existing_report.read_text(encoding="utf-8") == original_json
+    assert list(tmp_path.glob("existing.*.npy")) == []
+
+    dangling_report = tmp_path / "dangling.json"
+    dangling_report.symlink_to(tmp_path / "missing_target.json")
+    assert mod.main(["--out", str(dangling_report)]) == 1
+    assert "refusing to overwrite existing output" in capsys.readouterr().err
+    assert dangling_report.is_symlink()
+
+    sidecar_target = tmp_path / "with_sidecar.json"
+    sidecar_file = tmp_path / "with_sidecar.raw_att.npy"
+    original_bytes = b"untouched-sidecar-bytes"
+    sidecar_file.write_bytes(original_bytes)
+    rc_sidecar = mod.main(["--out", str(sidecar_target)])
+    err_sidecar = capsys.readouterr().err
+    assert rc_sidecar == 1
+    assert "refusing to overwrite existing output" in err_sidecar
+    assert "with_sidecar.raw_att.npy" in err_sidecar
+    assert sidecar_file.read_bytes() == original_bytes
+    assert not sidecar_target.exists()
+
+    dir_sidecar_target = tmp_path / "with_dir.json"
+    sidecar_dir = tmp_path / "with_dir.case_a.npy"
+    sidecar_dir.mkdir()
+    rc_dir = mod.main(["--out", str(dir_sidecar_target)])
+    err_dir = capsys.readouterr().err
+    assert rc_dir == 1
+    assert "refusing to overwrite existing output" in err_dir
+    assert sidecar_dir.is_dir()
+    assert not dir_sidecar_target.exists()
+
+    rc_empty = mod.main(["--out", ""])
+    assert rc_empty == 1
+    assert "refusing to overwrite existing output" in capsys.readouterr().err
+
+    clean_dir = tmp_path / "neighbors"
+    clean_dir.mkdir()
+    (clean_dir / "other.case1.npy").write_bytes(b"x")
+    (clean_dir / "run_extra.case1.npy").write_bytes(b"x")
+    (clean_dir / "run.npy").write_bytes(b"x")
+    (clean_dir / "run1.case1.npy").write_bytes(b"x")
+    assert mod._existing_outputs(clean_dir / "run.json") == []
+    assert mod._existing_outputs(clean_dir / "run[1].json") == []
+
+    limit_dir = tmp_path / "limits"
+    limit_dir.mkdir()
+    for idx in range(1, 6):
+        (limit_dir / f"lim.c{idx}.npy").write_bytes(b"x")
+    with pytest.raises(ValueError) as exc_five:
+        mod.run_benchmark(limit_dir / "lim.json", warmup=0, repeats=1)
+    msg_five = str(exc_five.value)
+    assert "lim.c5.npy" in msg_five and "more" not in msg_five
+
+    (limit_dir / "lim.c6.npy").write_bytes(b"x")
+    with pytest.raises(ValueError) as exc_six:
+        mod.run_benchmark(limit_dir / "lim.json", warmup=0, repeats=1)
+    msg_six = str(exc_six.value)
+    assert "+1 more" in msg_six
