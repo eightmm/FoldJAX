@@ -1106,6 +1106,30 @@ unless it says so here, in its own paragraph.
   query ran its template stack four times for what one row gives. Stored rows
   now pad to the next of 1, 2 or 4 (`--pad-templates` pins the width), and a
   synthetic `cache warm` job warms the one-row width.
+- **Protenix and OpenDDE read ligands and alignments as upstream does.** A
+  ligand read from a file drops its hydrogens before atoms are indexed, so
+  bond atom indices (zero-based) name the atoms upstream names; isotopic and
+  ionic hydrogens left after that are removed too. An empty inline MSA now
+  overrides alignment paths, and the mini ESM/ISM Protenix profiles run without
+  an MSA, as upstream's configurations do. These change features, and so
+  predictions, only for inputs that carry them.
+- **Protenix `chain_pair_pae_mean` is the unweighted mean.** It was weighted by
+  contact probability; upstream averages the pair block directly. Coordinates
+  and ranking are unchanged.
+- **OpenDDE keeps polymer links next to cyclic and explicit backbone bonds.**
+  Explicit bonds replaced the consecutive-residue links instead of adding to
+  them. Shape complementarity now uses the reference atom mask, as upstream
+  does, so its score changes where that mask excludes atoms. Jobs are validated
+  before weights load, a job without seeds draws them as upstream's runner
+  does, and native output records them in `seed.json`.
+- **ESMFold2 runs diffusion atom attention and SiLU in float32.** Upstream
+  computes attention scores, softmax and value accumulation, and the SiLU in
+  its conditioning, in float32 under bf16 storage; the port did them in bf16.
+  This changes default ESMFold2 predictions. Narrow linear layers accumulate
+  and add their bias as upstream does, RoPE reads all four configuration
+  fields, the language-model mask follows the checkpoint, and an atom mask
+  with interior holes keeps them. A depth cap on a paired MSA now applies after
+  taxonomy pairing instead of truncating each chain first.
 - **`--stop-after inputs` on a padded Boltz-2 or ESMFold2 run no longer fails
   with exit 3.** Both ports returned the stopped result without the shape
   profile they had padded to, and `predict` refuses a padded result that
