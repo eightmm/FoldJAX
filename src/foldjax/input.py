@@ -26,7 +26,7 @@ import tempfile
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 # The search moved to `foldjax.msa_search`; the three aliased names are
 # re-exported because the Colab notebook and `foldjax doctor` import them from
@@ -43,6 +43,9 @@ from foldjax.schema import (
     ModelCapabilities,
     _strict_boolean,
 )
+
+if TYPE_CHECKING:
+    from foldjax.msa_stats import MsaStatsHandle
 
 _ENTITY_TYPES = ("protein", "dna", "rna", "ligand")
 _JOB_KEYS = frozenset({"name", "entities", "bonds", "properties", "constraints"})
@@ -3422,6 +3425,7 @@ def materialize_native_input(
     msa_pairing: str = "model",
     template_dir: Path | None = None,
     msa_stats: list[dict[str, Any]] | None = None,
+    msa_stats_pending: list[MsaStatsHandle] | None = None,
     pocket_conditioning: bool | None = None,
 ) -> Path:
     """Translate a FoldJAX JSON document to one backend-native input file.
@@ -3430,7 +3434,8 @@ def materialize_native_input(
     (`foldjax.msa_search.resolve_pairing`), ``template_dir`` searches a private
     folder of mmCIFs for templates, and ``msa_stats`` receives each chain's
     alignment depth and Neff (`foldjax.msa_stats`) as the native input reads
-    it.
+    it (``msa_stats_pending`` receives a background :class:`MsaStatsHandle`
+    instead so prediction can overlap the calculation).
 
     ``ignored``, when given, receives one record per alignment the document
     named but the native input leaves out (see ``IGNORE_NUCLEIC_MSA``), and
@@ -3451,6 +3456,8 @@ def materialize_native_input(
     """
     from foldjax.pocket_selection import requested
 
+    if msa_stats is not None and msa_stats_pending is not None:
+        raise ValueError("pass at most one of msa_stats and msa_stats_pending")
     model = capabilities.model
     target = _TARGETS.get(model)
     if target is None:
@@ -3612,14 +3619,6 @@ def materialize_native_input(
         )
         if template_search is not None:
             template_search.extend(records)
-    if msa_stats is not None:
-        from foldjax.msa_stats import job_msa_stats
-
-        msa_stats.extend(
-            job_msa_stats(
-                job, base, skip={str(record["resolved_path"]) for record in dropped}
-            )
-        )
 
     # Which writer, and its suffix, are the port table's; OpenDDE reads the
     # Protenix dialect, so the two entries name one writer rather than a
@@ -3629,4 +3628,14 @@ def materialize_native_input(
     path = output_dir / f"{model}_input{target.suffix}"
     text = document if isinstance(document, str) else json.dumps(document, indent=2)
     _write_text_atomic(path, text)
+    if msa_stats is not None or msa_stats_pending is not None:
+        from foldjax.msa_stats import job_msa_stats, start_job_msa_stats
+
+        skipped_msas = {str(record["resolved_path"]) for record in dropped}
+        if msa_stats_pending is not None:
+            msa_stats_pending.append(
+                start_job_msa_stats(job, base, skip=skipped_msas)
+            )
+        elif msa_stats is not None:
+            msa_stats.extend(job_msa_stats(job, base, skip=skipped_msas))
     return path

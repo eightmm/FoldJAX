@@ -506,6 +506,14 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Per-chain alignment depth and Neff (`foldjax.msa_stats`) are computed on a
+  background thread.** Input preparation starts the calculation for the run
+  manifest once the native input is written, so it overlaps weight loading,
+  compilation and prediction instead of adding to `prepare input`; FoldJAX
+  waits for it before writing the manifest, and the timeline shows an
+  `alignment statistics (wait)` stage only when that wait is real. A failure
+  reading one alignment still becomes that file's `error` record; values and
+  record shape are unchanged.
 - **`raw_output.npz` is written uncompressed** (OpenDDE `--option
   include_raw=true`, Protenix `--option output_format=both` or `npz`).
   Confidence logits barely compress: at 1,003 tokens on OpenDDE that archive

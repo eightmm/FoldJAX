@@ -12,9 +12,11 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tarfile
+import threading
 import urllib.parse
 from pathlib import Path
 from typing import Any
@@ -422,6 +424,154 @@ def test_alignment_stats_reach_manifest_show_and_rows(tmp_path: Path):
         {"chains": ["A"], "depth": 1, "neff": 1.0,
          "paired_depth": None, "paired_neff": None}
     ]
+
+
+def test_async_msa_stats_matches_job_msa_stats(tmp_path: Path):
+    from foldjax import msa_stats
+
+    a3m = Path(__file__).resolve().parents[1] / "examples" / "uniref90_hits.a3m"
+    seq = a3m.read_text(encoding="utf-8").splitlines()[1]
+    job = {"entities": [{"type": "protein", "id": "A", "sequence": seq,
+                         "unpaired_msa": str(a3m)}]}
+    source = _write(tmp_path / "common.json", {"name": "async_check", **job})
+    expected = msa_stats.job_msa_stats(job, tmp_path)
+    msa_stats._alignment_stats.cache_clear()
+    handle = msa_stats.start_job_msa_stats(job, tmp_path)
+    assert handle.result() == expected and handle.done()
+    skipped = msa_stats.start_job_msa_stats(job, tmp_path, skip={str(a3m.resolve())})
+    assert skipped.done() and skipped.result() == []
+    pending: list[Any] = []
+    _materialize(source, "boltz2", tmp_path / "out", msa="none",
+                 msa_stats_pending=pending)
+    assert len(pending) == 1 and pending[0].result() == expected
+    with pytest.raises(ValueError, match="msa_stats"):
+        _materialize(source, "boltz2", tmp_path / "both", msa="none",
+                     msa_stats=[], msa_stats_pending=[])
+
+
+def test_async_msa_stats_exception_and_system_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from foldjax import msa_stats
+
+    (tmp_path / "good.a3m").write_text(">q\nWWWWWGHIKL\n", encoding="utf-8")
+    job = {"entities": [
+        {"type": "protein", "id": "A", "sequence": "ACDEFGHIKL",
+         "unpaired_msa": "bad.a3m", "paired_msa": "empty.a3m"},
+        {"type": "protein", "id": "B", "sequence": "WWWWWGHIKL",
+         "unpaired_msa": "good.a3m"},
+    ]}
+    real_stats = msa_stats.alignment_stats
+    fatal = False
+
+    def failing_stats(path: str | Path) -> dict[str, Any]:
+        if fatal:
+            raise SystemExit("worker stop")
+        name = Path(path).name
+        if name == "bad.a3m":
+            raise RuntimeError("boom")
+        if name == "empty.a3m":
+            raise RuntimeError()
+        return real_stats(path)
+
+    monkeypatch.setattr(msa_stats, "alignment_stats", failing_stats)
+    first, second = msa_stats.start_job_msa_stats(job, tmp_path).result()
+    assert first["unpaired_msa"] == {
+        "path": str((tmp_path / "bad.a3m").resolve()),
+        "depth": None, "neff": None, "error": "boom",
+    }
+    assert first["paired_msa"]["error"] == "RuntimeError"
+    assert second["unpaired_msa"]["depth"] == 1
+    fatal = True
+    with pytest.raises(SystemExit, match="worker stop"):
+        msa_stats.start_job_msa_stats(job, tmp_path).result()
+
+
+def test_concurrent_msa_stats_for_same_file_computes_neff_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from foldjax import msa_stats
+
+    (tmp_path / "shared.a3m").write_text(">q\nACDEFGHIKL\n>1\nWWWWWGHIKL\n")
+    job = {"entities": [{"type": "protein", "id": "A", "sequence": "ACDEFGHIKL",
+                         "unpaired_msa": "shared.a3m"}]}
+    msa_stats._alignment_stats.cache_clear()
+    real_neff = msa_stats.neff
+    entered, release = threading.Event(), threading.Event()
+    bound, calls = float(os.environ.get("OMS_TEST_CALL_TIMEOUT", "30")), 0
+
+    def gated_neff(rows: list[str], *, identity: float = msa_stats.NEFF_IDENTITY):
+        nonlocal calls
+        calls += 1
+        entered.set()
+        assert release.wait(timeout=bound)
+        return real_neff(rows, identity=identity)
+
+    monkeypatch.setattr(msa_stats, "neff", gated_neff)
+    first = msa_stats.start_job_msa_stats(job, tmp_path)
+    try:
+        assert entered.wait(timeout=bound) and not first.done()
+        second = msa_stats.start_job_msa_stats(job, tmp_path)
+    finally:
+        release.set()
+    assert first.result() == second.result() and calls == 1
+
+
+def test_predict_overlaps_msa_stats_and_abandons_wait_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from contextlib import contextmanager
+
+    from foldjax import msa_stats, predict, progress
+    from foldjax.registry import backend_override
+    from tests.test_output_contract import FIXTURES, _replay_backend, write_job
+
+    bound = float(os.environ.get("OMS_TEST_CALL_TIMEOUT", "30"))
+    real_stats, real_stage = msa_stats.alignment_stats, progress.Timeline.stage
+    replay_cls, fixture = _replay_backend("boltz2", FIXTURES / "boltz2_e9_8reh")
+    (weights := tmp_path / "weights.jax").write_bytes(b"replayed")
+    job_path = write_job(tmp_path / "job", fixture["job"])
+    entered, release, should_fail = threading.Event(), threading.Event(), False
+    common: dict[str, Any] = {
+        "model": "boltz2", "input": job_path, "weights": weights,
+        "seed": int(fixture["seed"]), "use_compile_cache": False, "padding": False,
+    }
+
+    def gated_stats(path: str | Path) -> dict[str, Any]:
+        entered.set()
+        release.wait(timeout=bound)
+        return real_stats(path)
+
+    @contextmanager
+    def release_on_wait(self: progress.Timeline, label: str, *, detail: str = ""):
+        if not should_fail and label == "alignment statistics (wait)":
+            release.set()
+        with real_stage(self, label, detail=detail):
+            yield
+
+    class SyncBackend(replay_cls):  # type: ignore[misc, valid-type]
+        def predict(self, request: PredictionRequest):
+            assert entered.wait(timeout=bound)
+            if should_fail:
+                raise RuntimeError("predict boom")
+            return super().predict(request)
+
+    monkeypatch.setattr(msa_stats, "alignment_stats", gated_stats)
+    monkeypatch.setattr(progress.Timeline, "stage", release_on_wait)
+    try:
+        with backend_override("boltz2", SyncBackend):
+            predict(PredictionRequest(output_dir=tmp_path / "waited", **common))
+            waited = json.loads((tmp_path / "waited" / "foldjax_run.json").read_text())
+            assert "alignment statistics (wait)" in waited["cost"]["phases"]
+
+            entered.clear()
+            release.clear()
+            should_fail = True
+            with pytest.raises(RuntimeError, match="predict boom"):
+                predict(PredictionRequest(output_dir=tmp_path / "failed", **common))
+            assert not release.is_set()
+    finally:
+        release.set()
 
 
 # -- 3. show --rank-by -----------------------------------------------------------

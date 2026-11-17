@@ -15,6 +15,7 @@ import os
 import time
 import warnings
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from itertools import groupby
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,7 @@ from foldjax.manifest import (
 )
 from foldjax.manifest import write as write_manifest
 from foldjax.models._representations import archive_headers, archive_identity
+from foldjax.msa_stats import MsaStatsHandle
 from foldjax.oom import (
     clear_mesh_record,
     is_out_of_memory,
@@ -1802,8 +1804,11 @@ def _predict_once_on_device(
     template_search: list[dict[str, Any]] | None = None
     # The same for `msa="auto"`/`"required"`, failures included.
     msa_search: list[dict[str, Any]] | None = None
-    # Each chain's alignment depth and Neff; None for native input.
+    # Each chain's alignment depth and Neff; None for native input. Started on
+    # a daemon thread during input preparation and joined only before writing
+    # the manifest so Neff overlaps weight load, compilation and prediction.
     msa_stats: list[dict[str, Any]] | None = None
+    msa_stats_pending: list[MsaStatsHandle] | None = None
     # A common job's pocket and contact constraints: each as written into
     # the native input, with the distance it runs at, and any dropped as
     # upstream drops them.
@@ -1823,7 +1828,7 @@ def _predict_once_on_device(
         ignored_msas = []
         ignored_templates = []
         constraints = []
-        msa_stats = []
+        msa_stats_pending = []
         if request.templates != "none":
             template_search = []
         if request.msa in ("auto", "required"):
@@ -1847,7 +1852,7 @@ def _predict_once_on_device(
                     constraints=constraints,
                     msa_pairing=request.msa_pairing,
                     template_dir=request.template_dir,
-                    msa_stats=msa_stats,
+                    msa_stats_pending=msa_stats_pending,
                     pocket_conditioning=pocket_conditioning,
                 )
             except (ValueError, FileNotFoundError) as error:
@@ -2018,6 +2023,16 @@ def _predict_once_on_device(
             job=_job_name(asked),
             root=layout_root or request.output_dir,
         )
+    if msa_stats_pending is not None:
+        wait_stage = (
+            timeline.stage("alignment statistics (wait)")
+            if any(not handle.done() for handle in msa_stats_pending)
+            else nullcontext()
+        )
+        with wait_stage:
+            msa_stats = [
+                record for handle in msa_stats_pending for record in handle.result()
+            ]
     cost = {
         "seconds": round(time.perf_counter() - started, 2),
         "peak_bytes": device_peak_bytes(),

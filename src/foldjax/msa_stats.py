@@ -24,7 +24,8 @@ from __future__ import annotations
 import csv
 import io
 import math
-from collections.abc import Mapping
+import threading
+from collections.abc import Callable, Mapping
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -102,18 +103,32 @@ def neff(rows: list[str], *, identity: float = NEFF_IDENTITY) -> tuple[float, in
     return float((1.0 / neighbours).sum()), count
 
 
+_cache_lock = threading.Lock()
+
+
+def _error_record(path: str | Path, error: BaseException) -> dict[str, Any]:
+    return {
+        "path": str(Path(path)),
+        "depth": None,
+        "neff": None,
+        "error": str(error) or type(error).__name__,
+    }
+
+
 def alignment_stats(path: str | Path) -> dict[str, Any]:
     """``depth`` (rows) and ``neff`` of one alignment file, or why not.
 
-    Memoized on the file's identity, so the seeds of one request, which each
-    translate the same job, pay for Neff once.
+    Memoized on the file's identity under one lock, so concurrent callers and
+    the seeds of one request, which each translate the same job, pay for Neff
+    once.
     """
     path = Path(path)
     try:
         stat = path.stat()
     except OSError as error:
-        return {"path": str(path), "depth": None, "neff": None, "error": str(error)}
-    return dict(_alignment_stats(str(path), stat.st_mtime_ns, stat.st_size))
+        return _error_record(path, error)
+    with _cache_lock:
+        return dict(_alignment_stats(str(path), stat.st_mtime_ns, stat.st_size))
 
 
 @lru_cache(maxsize=256)
@@ -122,7 +137,7 @@ def _alignment_stats(raw: str, _mtime: int, _size: int) -> dict[str, Any]:
     try:
         rows = _rows(path)
     except (OSError, UnicodeDecodeError, csv.Error) as error:
-        return {"path": str(path), "depth": None, "neff": None, "error": str(error)}
+        return _error_record(path, error)
     value, used = neff(rows)
     record: dict[str, Any] = {
         "path": str(path),
@@ -136,6 +151,31 @@ def _alignment_stats(raw: str, _mtime: int, _size: int) -> dict[str, Any]:
     return record
 
 
+def _job_msa_targets(
+    job: Mapping[str, Any], base: Path, *, skip: set[str] | None = None
+) -> list[tuple[list[str], Any, list[tuple[str, str]]]]:
+    from foldjax.input import _ids, _path
+
+    base = Path(base)
+    skipped = set(skip) if skip else set()
+    targets: list[tuple[list[str], Any, list[tuple[str, str]]]] = []
+    for entity in job.get("entities") or []:
+        if not isinstance(entity, Mapping):
+            continue
+        fields: list[tuple[str, str]] = []
+        for field in ("unpaired_msa", "paired_msa"):
+            value = entity.get(field)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            resolved = _path(value, base)
+            if resolved in skipped:
+                continue
+            fields.append((field, resolved))
+        if fields:
+            targets.append((_ids(entity), entity.get("type"), fields))
+    return targets
+
+
 def job_msa_stats(
     job: Mapping[str, Any], base: Path, *, skip: set[str] | None = None
 ) -> list[dict[str, Any]]:
@@ -144,29 +184,80 @@ def job_msa_stats(
     ``skip`` holds resolved alignment paths the native input leaves out (the
     run's ``ignored_msas``); those are not what the model saw.
     """
-    from foldjax.input import _ids, _path
+    return [
+        {
+            "chains": chains,
+            "type": entity_type,
+            **{field: alignment_stats(resolved) for field, resolved in fields},
+            "neff_identity": NEFF_IDENTITY,
+        }
+        for chains, entity_type, fields in _job_msa_targets(job, base, skip=skip)
+    ]
 
-    skip = skip or set()
-    records = []
-    for entity in job.get("entities") or []:
-        if not isinstance(entity, Mapping):
-            continue
-        record: dict[str, Any] = {}
-        for field in ("unpaired_msa", "paired_msa"):
-            value = entity.get(field)
-            if not isinstance(value, str) or not value.strip():
-                continue
-            resolved = _path(value, base)
-            if resolved in skip:
-                continue
-            record[field] = alignment_stats(resolved)
-        if record:
-            records.append(
-                {
-                    "chains": _ids(entity),
-                    "type": entity.get("type"),
-                    **record,
-                    "neff_identity": NEFF_IDENTITY,
-                }
-            )
-    return records
+
+class MsaStatsHandle:
+    """Background ``job_msa_stats`` calculation started during input preparation."""
+
+    def __init__(
+        self, runner: Callable[[], list[dict[str, Any]]] | None = None
+    ) -> None:
+        self._records: list[dict[str, Any]] = []
+        self._error: BaseException | None = None
+        self._thread: threading.Thread | None = None
+        if runner is None:
+            return
+
+        def _target() -> None:
+            try:
+                self._records = runner()
+            except BaseException as error:
+                self._error = error
+
+        self._thread = threading.Thread(
+            target=_target, name="foldjax-msa-stats", daemon=True
+        )
+        self._thread.start()
+
+    def done(self) -> bool:
+        """Whether the background computation has finished."""
+        return self._thread is None or not self._thread.is_alive()
+
+    def result(self) -> list[dict[str, Any]]:
+        """Join the worker thread and return per-chain alignment records."""
+        if self._thread is not None:
+            self._thread.join()
+        if self._error is not None:
+            raise self._error
+        return list(self._records)
+
+
+def start_job_msa_stats(
+    job: Mapping[str, Any], base: Path, *, skip: set[str] | None = None
+) -> MsaStatsHandle:
+    """Start :func:`job_msa_stats` on a daemon thread and return its handle.
+
+    Unexpected worker ``Exception``s are recorded per alignment file under
+    ``error`` so a diagnostic failure never discards a finished prediction;
+    non-``Exception`` ``BaseException``s re-raise from :meth:`MsaStatsHandle.result`.
+    """
+    targets = _job_msa_targets(job, base, skip=skip)
+    if not targets:
+        return MsaStatsHandle()
+
+    def _stat(path: str) -> dict[str, Any]:
+        try:
+            return alignment_stats(path)
+        except Exception as error:
+            return _error_record(path, error)
+
+    return MsaStatsHandle(
+        lambda: [
+            {
+                "chains": chains,
+                "type": entity_type,
+                **{field: _stat(resolved) for field, resolved in fields},
+                "neff_identity": NEFF_IDENTITY,
+            }
+            for chains, entity_type, fields in targets
+        ]
+    )
