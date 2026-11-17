@@ -269,6 +269,12 @@ def test_padded_cli_projection_never_reaches_model_bound_features(
     weights_path = tmp_path / "weights.npz"
     weights_path.write_bytes(b"fixture")
     padding = PaddingConfig(msa=8)
+    drawn_seed = 202
+    monkeypatch.setattr(
+        predict_runner.random,
+        "randint",
+        lambda low, high: drawn_seed if (low, high) == (1, 65536) else -1,
+    )
 
     expected_source = predict_runner._featurize(
         job,
@@ -276,13 +282,13 @@ def test_padded_cli_projection_never_reaches_model_bound_features(
         n_queries=2,
         n_keys=4,
         max_msa_depth=16384,
-        seed=101,
+        seed=drawn_seed,
     )
     expected_source = compact_msa_storage(expected_source)
     expected_cycles = sample_opendde_msa_cycle_features(
         expected_source,
         num_recycles=2,
-        seed=101,
+        seed=drawn_seed,
     )
     expected_padded, expected_cycles, _ = pad_opendde_features(
         expected_source,

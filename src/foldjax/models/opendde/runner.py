@@ -13,7 +13,10 @@ admission and output writing, in the same order.
 
 from __future__ import annotations
 
+import json
 import os
+import random
+import tempfile
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from dataclasses import asdict
@@ -513,6 +516,41 @@ def _score(
     }
 
 
+def _write_seed_record(
+    seed_dir: Path, *, job_name: str, seed: int, seed_source: str
+) -> Path:
+    seed_dir.mkdir(parents=True, exist_ok=True)
+    target = seed_dir / "seed.json"
+    payload = {
+        "job_name": job_name,
+        "seed": int(seed),
+        "seed_source": seed_source,
+    }
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=seed_dir,
+            prefix=".seed.",
+            suffix=".json.tmp",
+            delete=False,
+        ) as handle:
+            tmp_path = handle.name
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+        os.replace(tmp_path, target)
+        tmp_path = None
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    return target
+
+
 def _write(root: Path, **kwargs: Any) -> list[Path]:
     from foldjax.models.opendde.postprocess import (
         SHAPE_COMPLEMENTARITY_SCORE_KEYS,
@@ -520,6 +558,7 @@ def _write(root: Path, **kwargs: Any) -> list[Path]:
     )
     from foldjax.models.protenix.data.output import write_protenix_outputs
 
+    seed_source = str(kwargs.pop("seed_source", "direct"))
     # The shared Protenix writer intentionally rejects unknown arrays from its
     # confidence JSON. OpenDDE's seven shape-complementarity fields are native
     # reported outputs, so opt them in explicitly without widening Protenix's
@@ -538,21 +577,47 @@ def _write(root: Path, **kwargs: Any) -> list[Path]:
         )
         if repaired:
             kwargs["output"] = {**output, "coordinate": coordinates}
-    return write_protenix_outputs(root, **kwargs)
+    paths = write_protenix_outputs(root, **kwargs)
+    if paths:
+        _write_seed_record(
+            paths[0].parent.parent,
+            job_name=str(kwargs["job_name"]),
+            seed=int(kwargs["seed"]),
+            seed_source=seed_source,
+        )
+    return paths
 
 
 def _job_seeds(job: Mapping[str, Any], explicit_seed: int | None) -> list[int]:
+    from foldjax.models.opendde.data.featurize_json import validate_inference_seed
+
     if explicit_seed is not None:
-        return [explicit_seed]
-    seeds = job.get("modelSeeds") if "modelSeeds" in job else [101]
-    if seeds == []:
-        seeds = [101]
+        return [validate_inference_seed(explicit_seed, location="seed")]
+    seeds = job.get("modelSeeds")
+    if seeds is None or seeds == []:
+        return [random.randint(1, 65536)]
     if not isinstance(seeds, list):
-        raise ValueError("modelSeeds must be a non-empty list")
-    result = [int(seed) for seed in seeds]
+        raise ValueError("modelSeeds must be a list of integers")
+    result = [validate_inference_seed(seed, location="modelSeeds") for seed in seeds]
     if len(set(result)) != len(result):
         raise ValueError("modelSeeds must be unique")
     return result
+
+
+def _resolve_job_seed_schedule(
+    jobs: list[dict[str, Any]], explicit_seed: int | None
+) -> list[tuple[list[int], str]]:
+    from foldjax.models.opendde.data.featurize_json import validate_inference_seed
+
+    if explicit_seed is not None:
+        validated = validate_inference_seed(explicit_seed, location="seed")
+        return [([validated], "cli") for _ in jobs]
+    schedule: list[tuple[list[int], str]] = []
+    for job in jobs:
+        raw_seeds = job.get("modelSeeds")
+        source = "random" if raw_seeds is None or raw_seeds == [] else "job"
+        schedule.append((_job_seeds(job, None), source))
+    return schedule
 
 
 #: OpenDDE's own names for the arrays, against the shared vocabulary. The
@@ -767,9 +832,12 @@ def _run(
     # stepped aside for it.
     admitted: dict[tuple[int, int | None], bool] = {}
     try:
-        jobs = _load_jobs(config.input_json)
-        if not jobs:
-            raise ValueError("input JSON must contain at least one job")
+        from foldjax.models.opendde.data.featurize_json import (
+            validate_inference_jobs,
+        )
+
+        jobs = validate_inference_jobs(_load_jobs(config.input_json))
+        seed_schedule = _resolve_job_seed_schedule(jobs, config.seed)
         trunk_dtype = None
         confidence_dtype = None
         if config.trunk_dtype == "bf16":
@@ -817,9 +885,11 @@ def _run(
             params = params._replace(
                 diffusion=native_diffusion_autocast_params(params.diffusion)
             )
-        for job in jobs:
+        for job, (seeds, seed_source) in zip(jobs, seed_schedule, strict=True):
             job_name = str(job.get("name") or config.input_json.stem)
-            for seed in _job_seeds(job, config.seed):
+            for seed in seeds:
+                if seed_source == "random":
+                    print(f"{job_name}: resolved random fallback seed {seed}")
                 from foldjax.models.opendde.postprocess import (
                     project_generated_output_features,
                 )
@@ -1122,6 +1192,13 @@ def _run(
                         _representations.specs_for("opendde"),
                         model="opendde",
                     )
+                    if config.representations_dir is None:
+                        _write_seed_record(
+                            destination.parent,
+                            job_name=job_name,
+                            seed=seed,
+                            seed_source=seed_source,
+                        )
                     if archive is not None:
                         written.append(archive)
                         print(f"wrote: {archive}")
@@ -1145,6 +1222,7 @@ def _run(
                     config.out,
                     job_name=job_name,
                     seed=seed,
+                    seed_source=seed_source,
                     output=scored,
                     features=output_features,
                     include_raw=config.include_raw,

@@ -936,3 +936,53 @@ def test_contract_bins_does_not_materialize_the_product():
         jax.lax.Precision.HIGHEST,
         jax.lax.Precision.HIGHEST,
     )
+
+
+def test_confidence_scores_from_logits_leaves_chain_pair_pae_mean_unweighted() -> None:
+    # Pair (0, 2) has low PAE (bin 0) and near-zero contact prob; pair (1, 2)
+    # has high PAE (bin 1) and high contact prob. Upstream leaves
+    # chain_pair_pae_mean unweighted (`protenix/model/sample_confidence.py:153-157`).
+    pae_logits = jnp.zeros((1, 3, 3, 2), dtype=jnp.float32)
+    pae_logits = pae_logits.at[0, 0, 2].set(jnp.asarray([20.0, -20.0], jnp.float32))
+    pae_logits = pae_logits.at[0, 1, 2].set(jnp.asarray([-20.0, 20.0], jnp.float32))
+
+    distogram_logits = jnp.zeros((3, 3, 2), dtype=jnp.float32)
+    distogram_logits = distogram_logits.at[0, 2].set(
+        jnp.asarray([-20.0, 20.0], jnp.float32)
+    )
+    distogram_logits = distogram_logits.at[1, 2].set(
+        jnp.asarray([20.0, -20.0], jnp.float32)
+    )
+    asym_id = jnp.asarray([0, 0, 1], dtype=jnp.int32)
+    has_frame = jnp.asarray([True, True, True])
+
+    scores = confidence_scores_from_logits(
+        plddt_logits=jnp.zeros((1, 3, 2), dtype=jnp.float32),
+        pae_logits=pae_logits,
+        pde_logits=jnp.zeros((1, 3, 3, 2), dtype=jnp.float32),
+        distogram_logits=distogram_logits,
+        plddt_max_bin=2.0,
+        pae_max_bin=2.0,
+        pde_max_bin=2.0,
+        distogram_min_bin=0.0,
+        distogram_max_bin=2.0,
+        contact_threshold=1.0,
+        token_asym_id=asym_id,
+        token_has_frame=has_frame,
+        atom_to_token_idx=jnp.asarray([0, 1, 2], dtype=jnp.int32),
+    )
+
+    unweighted = calculate_chain_pair_pae(scores["token_pair_pae"], asym_id, has_frame)
+    weighted = calculate_chain_pair_pae(
+        scores["token_pair_pae"], asym_id, has_frame, scores["contact_probs"]
+    )
+    np.testing.assert_allclose(
+        np.asarray(scores["chain_pair_pae_mean"]),
+        np.asarray(unweighted["chain_pair_pae_mean"]),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    assert not np.allclose(
+        np.asarray(scores["chain_pair_pae_mean"][0, 0, 1]),
+        np.asarray(weighted["chain_pair_pae_mean"][0, 0, 1]),
+    )

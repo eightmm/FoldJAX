@@ -702,3 +702,94 @@ def _dense_atom_layout(
     d_lm = jnp.zeros((2, 2, 4, 3), dtype=jnp.float32)
     v_lm = jnp.ones((2, 2, 4, 1), dtype=jnp.float32)
     return d_lm, v_lm, {"mask_trunked": jnp.ones((2, 2, 4), dtype=bool)}
+
+
+def test_protenix_1token_multisample_preserves_contact_probs_and_guards_rng() -> None:
+    params = _toy_params()
+    one_res_features = {
+        "atom_to_token_idx": jnp.asarray([0, 0], dtype=jnp.int32),
+        "ref_pos": jnp.zeros((2, 3), dtype=jnp.float32),
+        "ref_charge": jnp.zeros((2,), dtype=jnp.float32),
+        "ref_mask": jnp.ones((2,), dtype=jnp.float32),
+        "ref_atom_name_chars": jnp.zeros((2, 4, 64), dtype=jnp.float32),
+        "ref_element": jnp.zeros((2, 128), dtype=jnp.float32),
+        "d_lm": jnp.zeros((1, 2, 4, 3), dtype=jnp.float32),
+        "v_lm": jnp.ones((1, 2, 4, 1), dtype=jnp.float32),
+        "pad_info": {"mask_trunked": jnp.ones((1, 2, 4), dtype=bool)},
+        "restype": jnp.zeros((1, 32), dtype=jnp.float32),
+        "profile": jnp.zeros((1, 32), dtype=jnp.float32),
+        "deletion_mean": jnp.zeros((1,), dtype=jnp.float32),
+        "relp": jnp.zeros((1, 1, 2), dtype=jnp.float32),
+        "token_bonds": jnp.zeros((1, 1), dtype=jnp.float32),
+        "has_frame": jnp.asarray([1], dtype=jnp.int32),
+        "asym_id": jnp.asarray([0], dtype=jnp.int32),
+        "distogram_rep_atom_mask": jnp.asarray([1, 0], dtype=jnp.int32),
+        "atom_to_tokatom_idx": jnp.asarray([0, 1], dtype=jnp.int32),
+    }
+    one_res_features["token_is_ligand"] = jnp.asarray([False])
+    num_samples = 5
+    init_noise = jnp.ones((num_samples, 2, 3), dtype=jnp.float32)
+    step_noise = jnp.zeros_like(init_noise)
+
+    out = protenix_infer_static(
+        one_res_features,
+        params,
+        jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+        key=None,
+        num_samples=num_samples,
+        init_noise=init_noise,
+        step_noises=(step_noise,),
+        num_recycles=1,
+        input_atom_heads=1,
+        atom_encoder_heads=1,
+        token_heads=1,
+        atom_decoder_heads=1,
+        n_queries=2,
+        n_keys=4,
+        sigma_data=4.0,
+        centre_each_step=False,
+        diffusion_attention_backend="xla_jit",
+    )
+    assert out["contact_probs"].shape == (1, 1)
+    assert out["distogram_logits"].shape == (1, 1, 3)
+    assert out["token_pair_pae"].shape == (num_samples, 1, 1)
+    assert out["token_pair_pde"].shape == (num_samples, 1, 1)
+
+    with jax.threefry_partitionable(False):
+        with pytest.raises(ValueError, match="jax_threefry_partitionable"):
+            protenix_infer_static(
+                _toy_features(),
+                params,
+                jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+                key=jax.random.PRNGKey(0),
+                num_samples=1,
+                num_recycles=1,
+                input_atom_heads=1,
+                atom_encoder_heads=1,
+                token_heads=1,
+                atom_decoder_heads=1,
+                n_queries=2,
+                n_keys=4,
+                sigma_data=4.0,
+                preserve_prefix_rng=True,
+                diffusion_attention_backend="xla_jit",
+            )
+    with jax.default_prng_impl("rbg"):
+        with pytest.raises(ValueError, match="jax_default_prng_impl"):
+            protenix_infer_static(
+                _toy_features(),
+                params,
+                jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+                key=jax.random.PRNGKey(0),
+                num_samples=1,
+                num_recycles=1,
+                input_atom_heads=1,
+                atom_encoder_heads=1,
+                token_heads=1,
+                atom_decoder_heads=1,
+                n_queries=2,
+                n_keys=4,
+                sigma_data=4.0,
+                preserve_prefix_rng=True,
+                diffusion_attention_backend="xla_jit",
+            )

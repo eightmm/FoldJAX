@@ -113,6 +113,16 @@ RNA_MSA_MODEL_NAMES = frozenset(
 #: (`runner/batch_inference.py:877-881`).
 TEMPLATE_MODEL_NAMES = RNA_MSA_MODEL_NAMES
 
+#: Upstream sets `use_msa: False` on the ESM/ISM mini checkpoints
+#: (`configs/configs_model_type.py:281,314`), substituting a one-row dummy
+#: alignment (`profile = restype`) by default.
+NO_MSA_DEFAULT_MODEL_NAMES = frozenset(
+    {
+        "protenix_mini_esm_v0.5.0",
+        "protenix_mini_ism_v0.5.0",
+    }
+)
+
 _BASE_INFERENCE_DEFAULTS = {
     "num_recycles": 10,
     "num_steps": 200,
@@ -179,6 +189,16 @@ def model_inference_defaults(model_name: str) -> dict[str, int | float]:
     except KeyError as exc:
         raise ValueError(f"unknown Protenix model: {model_name}") from exc
     return dict(defaults)
+
+
+def model_uses_msa_by_default(model_name: str | None) -> bool:
+    """Whether upstream's model configuration enables protein MSA by default."""
+
+    if model_name in {None, "unknown"}:
+        return True
+    if model_name not in KNOWN_MODEL_NAMES:
+        raise ValueError(f"unknown Protenix model: {model_name}")
+    return model_name not in NO_MSA_DEFAULT_MODEL_NAMES
 
 
 def estimate_protenix_v2_peak_mib(n_token: int) -> float:

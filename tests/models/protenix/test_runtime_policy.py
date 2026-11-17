@@ -126,3 +126,26 @@ def test_lifting_the_v2_limit_does_not_touch_the_other_models() -> None:
 
     with pytest.raises(ValueError, match="must be positive"):
         validate_inference_limits(model_name="protenix-v2", n_token=0)
+
+
+def test_model_uses_msa_by_default_disables_msa_only_for_mini_esm_and_ism() -> None:
+    from foldjax.models.protenix.runtime_policy import model_uses_msa_by_default
+
+    assert model_uses_msa_by_default(None) is True
+    assert model_uses_msa_by_default("unknown") is True
+    for enabled_model in (
+        "protenix_base_default_v1.0.0",
+        "protenix_base_20250630_v1.0.0",
+        "protenix-v2",
+        "protenix_base_constraint_v0.5.0",
+        "protenix_mini_default_v0.5.0",
+        "protenix_tiny_default_v0.5.0",
+    ):
+        assert model_uses_msa_by_default(enabled_model) is True
+    for disabled_model in (
+        "protenix_mini_esm_v0.5.0",
+        "protenix_mini_ism_v0.5.0",
+    ):
+        assert model_uses_msa_by_default(disabled_model) is False
+    with pytest.raises(ValueError, match="unknown Protenix model"):
+        model_uses_msa_by_default("made-up")

@@ -507,14 +507,17 @@ def _shape_complementarity_scores(
         return {}
 
     coordinate = jnp.asarray(output["coordinate"])
-    atom_mask = features.get("atom_exists_mask")
+    atom_mask = features.get("ref_mask")
     if atom_mask is None:
-        atom_mask = features.get("atom_padding_mask")
+        atom_mask = features.get("atom_exists_mask")
     atom_mask = (
         jnp.ones(coordinate.shape[-2], dtype=bool)
         if atom_mask is None
         else jnp.asarray(atom_mask).astype(bool).reshape(-1)
     )
+    padding_mask = features.get("atom_padding_mask")
+    if padding_mask is not None:
+        atom_mask = atom_mask & jnp.asarray(padding_mask).astype(bool).reshape(-1)
 
     stacked = compute_shape_complementarity_batched(
         coordinate, features, atom_mask, n_token=n_token, deterministic=deterministic

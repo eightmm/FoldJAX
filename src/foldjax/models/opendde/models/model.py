@@ -1410,14 +1410,19 @@ def opendde_infer_static(
                 jnp.moveaxis(coordinates, -3, 0)[..., None, :, :],
             )
             # Every leaf gains a leading map axis over its single-sample shape.
-            # A leaf whose next axis is the size-1 sample axis is collapsed back
-            # onto it; a sample-independent leaf keeps one copy, as the batched
-            # call produced. The same reduction Protenix applies to its own map.
+            # Per-sample leaves squeeze their size-1 inner sample axis; shared
+            # sample-independent leaves keep one copy, even on a 1-token input.
+            shared_confidence_keys = {
+                "contact_probs",
+                "distogram_logits",
+                "num_recycles",
+                "shape_comp_uses_structural_tokens",
+            }
             conf = {
                 name: (
-                    jnp.squeeze(value, axis=1)
-                    if value.ndim > 1 and value.shape[1] == 1
-                    else value[0]
+                    value[0]
+                    if name in shared_confidence_keys
+                    else jnp.squeeze(value, axis=1)
                 )
                 for name, value in conf.items()
             }

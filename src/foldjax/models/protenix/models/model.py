@@ -34,6 +34,7 @@ from foldjax.models._graph import (
     traceable_features,
 )
 from foldjax.models._jit_pool import BoundedJitPool
+from foldjax.models._random import supports_masked_prefix_draw
 from foldjax.models.protenix.data.compact_categories import (
     COMPACT_REF_ATOM_CATEGORIES_MARKER,
     COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES,
@@ -530,6 +531,11 @@ def protenix_infer_static(
     token_padding_mask = input_feature_dict.get("token_padding_mask")
     atom_padding_mask = input_feature_dict.get("atom_padding_mask")
     pair_dropout_valid_mask = None
+    if preserve_prefix_rng and not supports_masked_prefix_draw():
+        raise ValueError(
+            "preserve_prefix_rng requires jax_default_prng_impl='threefry2x32' "
+            "and jax_threefry_partitionable=True"
+        )
     if token_padding_mask is not None:
         token_valid = jnp.asarray(token_padding_mask).astype(bool)
         padding_pair_mask = token_valid[..., :, None] & token_valid[..., None, :]
@@ -809,15 +815,14 @@ def protenix_infer_static(
                 jnp.moveaxis(coordinates, -3, 0)[..., None, :, :],
             )
             # Every leaf gains a leading map axis over its single-sample shape.
-            # A leaf whose next axis is the size-1 sample axis is collapsed
-            # back onto it; a sample-independent leaf (contact_probs is
-            # [N, N] whichever sample scored it) keeps one copy, as the
-            # batched call produced.
+            # Per-sample leaves squeeze their size-1 inner sample axis; shared
+            # sample-independent leaves keep one copy, even on a 1-token input.
+            shared_confidence_keys = {"contact_probs", "num_recycles"}
             conf = {
                 name: (
-                    jnp.squeeze(value, axis=1)
-                    if value.ndim > 1 and value.shape[1] == 1
-                    else value[0]
+                    value[0]
+                    if name in shared_confidence_keys
+                    else jnp.squeeze(value, axis=1)
                 )
                 for name, value in conf.items()
             }

@@ -382,15 +382,16 @@ def test_nonconsecutive_same_chain_backbone_bond_controls_parent_graph() -> None
         augment_reference=False,
     )
 
-    # Each alanine produces a backbone and side-chain structural token. The
-    # explicit parent-0 -> parent-2 backbone edge takes precedence over the
-    # adjacent-residue fallback, matching upstream's real bond-graph logic.
+    # Each alanine produces a backbone and side-chain structural entry.
+    # Upstream's bond graph populates standard adjacent peptide bonds first
+    # (0 -> 1 -> 2), then applies explicit covalent bonds so (0, 2) overwrites
+    # only next_parent[0] and prev_parent[2] while keeping 1's links intact.
     np.testing.assert_array_equal(features["parent_residue_idx"], [0, 0, 1, 1, 2, 2])
     np.testing.assert_array_equal(
-        features["prev_parent_residue_idx"], [-1, -1, -1, -1, 0, 0]
+        features["prev_parent_residue_idx"], [-1, -1, 0, 0, 0, 0]
     )
     np.testing.assert_array_equal(
-        features["next_parent_residue_idx"], [2, 2, -1, -1, -1, -1]
+        features["next_parent_residue_idx"], [2, 2, 2, 2, -1, -1]
     )
 
 
@@ -792,3 +793,322 @@ def test_opendde_heteromer_keeps_unselected_paired_rows_as_upstream() -> None:
     np.testing.assert_allclose(
         np.asarray(features["deletion_mean"]), expected_deletion_mean, atol=1e-6
     )
+
+
+def test_cyclic_polymer_graph_preserves_interior_backbone_edges() -> None:
+    from foldjax.models.opendde.data.featurize_json import _polymer_residue_graph
+
+    cyclic_path = Path(__file__).parent / "examples" / "2lwu_cyclic.json"
+    cyclic_job = load_jobs(cyclic_path)[0]
+    cyclic = featurize_opendde_json(
+        cyclic_job,
+        base_dir=cyclic_path.parent,
+        n_queries=2,
+        n_keys=4,
+        augment_reference=False,
+    )
+    np.testing.assert_array_equal(
+        cyclic["parent_residue_idx"],
+        [
+            0,
+            1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7,
+            8,
+            9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14,
+        ],
+    )
+    np.testing.assert_array_equal(
+        cyclic["prev_parent_residue_idx"],
+        [
+            -1,
+            0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6,
+            7,
+            8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 0, 0,
+        ],
+    )
+    np.testing.assert_array_equal(
+        cyclic["next_parent_residue_idx"],
+        [
+            14,
+            2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8,
+            9,
+            10, 10, 11, 11, 12, 12, 13, 13, 14, 14, -1, -1,
+        ],
+    )
+
+    cyclic_dna = featurize_opendde_json(
+        {
+            "sequences": [{"dnaSequence": {"sequence": "ACGT"}}],
+            "covalent_bonds": [
+                {
+                    "entity1": 1,
+                    "copy1": 1,
+                    "position1": 1,
+                    "atom1": "P",
+                    "entity2": 1,
+                    "copy2": 1,
+                    "position2": 4,
+                    "atom2": "O3'",
+                }
+            ],
+        },
+        n_queries=2,
+        n_keys=4,
+        augment_reference=False,
+    )
+    np.testing.assert_array_equal(
+        cyclic_dna["prev_parent_residue_idx"], [-1, -1, 0, 0, 1, 1, 0, 0]
+    )
+    np.testing.assert_array_equal(
+        cyclic_dna["next_parent_residue_idx"], [3, 3, 2, 2, 3, 3, -1, -1]
+    )
+
+    self_loop = featurize_opendde_json(
+        {
+            "sequences": [{"proteinChain": {"sequence": "A"}}],
+            "covalent_bonds": [
+                {
+                    "entity1": 1,
+                    "copy1": 1,
+                    "position1": 1,
+                    "atom1": "N",
+                    "entity2": 1,
+                    "copy2": 1,
+                    "position2": 1,
+                    "atom2": "C",
+                }
+            ],
+        },
+        n_queries=2,
+        n_keys=4,
+        augment_reference=False,
+    )
+    np.testing.assert_array_equal(self_loop["prev_parent_residue_idx"], [-1, -1])
+    np.testing.assert_array_equal(self_loop["next_parent_residue_idx"], [-1, -1])
+
+    disulfide = featurize_opendde_json(
+        {
+            "sequences": [{"proteinChain": {"sequence": "CC"}}],
+            "covalent_bonds": [
+                {
+                    "entity1": 1,
+                    "copy1": 1,
+                    "position1": 1,
+                    "atom1": "SG",
+                    "entity2": 1,
+                    "copy2": 1,
+                    "position2": 2,
+                    "atom2": "SG",
+                }
+            ],
+        },
+        n_queries=2,
+        n_keys=4,
+        augment_reference=False,
+    )
+    np.testing.assert_array_equal(disulfide["prev_parent_residue_idx"], [-1, -1, 0, 0])
+    np.testing.assert_array_equal(disulfide["next_parent_residue_idx"], [1, 1, -1, -1])
+
+    prev_raw, next_raw = _polymer_residue_graph(
+        np.asarray([1, 1], dtype=np.int64),
+        np.asarray([0, 0], dtype=np.int64),
+        np.asarray([1, 2], dtype=np.int64),
+        atom_to_parent=np.asarray([0, 0, 1, 1], dtype=np.int64),
+        atom_names=np.asarray(["N", "C", "N", "C"], dtype=str),
+        covalent_atom_indices=np.asarray([[-1, 0], [0, 99]], dtype=np.int64),
+    )
+    np.testing.assert_array_equal(prev_raw, [-1, 0])
+    np.testing.assert_array_equal(next_raw, [1, -1])
+
+
+def test_smiles_isotopic_and_ionic_hydrogens_are_stripped_and_pure_h_fails() -> None:
+    pytest.importorskip("rdkit")
+    for smiles, expected_names in (
+        ("[2H]C", ["C1"]),
+        ("[H-].[Na+]", ["NA1"]),
+        ("[2H]C([2H])([2H])O", ["C1", "O1"]),
+        ("[2H][C@](F)(Cl)Br", ["C1", "F1", "CL1", "BR1"]),
+    ):
+        features = featurize_opendde_json(
+            {"sequences": [{"ligand": {"ligand": smiles}}]},
+            n_queries=2,
+            n_keys=4,
+            augment_reference=False,
+        )
+        assert np.asarray(features["output_atom_name"]).tolist() == expected_names
+        assert "H" not in set(np.asarray(features["output_atom_element"]).tolist())
+
+    for pure_h in ("[H][H]", "[2H][2H]", "[H-]"):
+        with pytest.raises(ValueError, match="no heavy atoms"):
+            featurize_opendde_json(
+                {"sequences": [{"ligand": {"ligand": pure_h}}]},
+                n_queries=2,
+                n_keys=4,
+            )
+
+
+def test_empty_inline_msa_suppresses_msa_path_and_legacy_dir(tmp_path) -> None:
+    existing_a3m = tmp_path / "homologs.a3m"
+    existing_a3m.write_text(">query\nAC\n>h1\nAG\n>h2\nGC\n", encoding="utf-8")
+    legacy_dir = tmp_path / "legacy_msa"
+    legacy_dir.mkdir()
+    (legacy_dir / "non_pairing.a3m").write_text(
+        ">query\nAC\n>u1\nAG\n", encoding="utf-8"
+    )
+    (legacy_dir / "pairing.a3m").write_text(
+        ">query\nAC\n>p1\nGC\n", encoding="utf-8"
+    )
+
+    missing_path_features = featurize_opendde_json(
+        {
+            "sequences": [
+                {
+                    "proteinChain": {
+                        "sequence": "AC",
+                        "unpairedMsa": "",
+                        "unpairedMsaPath": str(tmp_path / "does_not_exist.a3m"),
+                        "pairedMsa": "",
+                        "pairedMsaPath": str(tmp_path / "missing_paired.a3m"),
+                    }
+                }
+            ]
+        },
+        n_queries=2,
+        n_keys=4,
+    )
+    assert np.asarray(missing_path_features["msa"]).shape == (2, 2)
+    np.testing.assert_array_equal(
+        np.asarray(missing_path_features["msa"]), [[0, 4], [0, 4]]
+    )
+
+    existing_path_features = featurize_opendde_json(
+        {
+            "sequences": [
+                {
+                    "proteinChain": {
+                        "sequence": "AC",
+                        "unpairedMsa": "",
+                        "unpairedMsaPath": str(existing_a3m),
+                        "pairedMsa": "",
+                        "msa": {"precomputed_msa_dir": str(legacy_dir)},
+                    }
+                }
+            ]
+        },
+        n_queries=2,
+        n_keys=4,
+    )
+    assert np.asarray(existing_path_features["msa"]).shape == (2, 2)
+    np.testing.assert_array_equal(
+        np.asarray(existing_path_features["msa"]), [[0, 4], [0, 4]]
+    )
+
+    existing_rna = tmp_path / "rna_homologs.a3m"
+    existing_rna.write_text(">query\nAU\n>r1\nAC\n>r2\nGU\n", encoding="utf-8")
+    rna_features = featurize_opendde_json(
+        {
+            "sequences": [
+                {
+                    "rnaSequence": {
+                        "sequence": "AU",
+                        "unpairedMsa": "",
+                        "unpairedMsaPath": str(existing_rna),
+                    }
+                }
+            ]
+        },
+        n_queries=2,
+        n_keys=4,
+        use_rna_msa=True,
+    )
+    assert np.asarray(rna_features["msa"]).shape == (2, 2)
+
+    with pytest.raises(ValueError, match="unpairedMsa must be a string"):
+        featurize_opendde_json(
+            {"sequences": [{"proteinChain": {"sequence": "A", "unpairedMsa": 123}}]},
+            n_queries=2,
+            n_keys=4,
+        )
+
+
+def test_validate_inference_jobs_and_seeds_enforces_limits_and_edges(tmp_path) -> None:
+    from foldjax.models.opendde.data.featurize_json import (
+        MAX_INFERENCE_SEED,
+        validate_inference_jobs,
+        validate_inference_seed,
+    )
+
+    assert validate_inference_seed(0) == 0
+    assert validate_inference_seed(MAX_INFERENCE_SEED) == MAX_INFERENCE_SEED
+    assert validate_inference_seed("42") == 42
+    assert _resolve_seed({"modelSeeds": [0, MAX_INFERENCE_SEED]}, None) == 0
+
+    valid_path = tmp_path / "valid.json"
+    valid_jobs = [
+        {"name": "zero_and_max", "modelSeeds": [0, MAX_INFERENCE_SEED], "sequences": []}
+    ]
+    valid_path.write_text(json.dumps(valid_jobs), encoding="utf-8")
+    assert load_jobs(valid_path) == valid_jobs
+
+    for bad_seed in (
+        -1,
+        MAX_INFERENCE_SEED + 1,
+        1.9,
+        True,
+        False,
+        "",
+        " 7",
+        "1.0",
+        None,
+    ):
+        with pytest.raises(ValueError):
+            validate_inference_seed(bad_seed)
+
+    with pytest.raises(ValueError):
+        _resolve_seed({}, 1.9)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        _resolve_seed({"modelSeeds": [1.9]}, None)
+    with pytest.raises(ValueError):
+        _resolve_seed({"modelSeeds": [5, 5]}, None)
+    with pytest.raises(ValueError):
+        _resolve_seed({"modelSeeds": "101"}, None)
+
+    assert validate_inference_jobs(
+        [
+            {"name": "../../escaped", "sequences": []},
+            {"name": "a/b", "sequences": []},
+            {"name": "..", "sequences": []},
+        ]
+    ) == [
+        {"name": "../../escaped", "sequences": []},
+        {"name": "a/b", "sequences": []},
+        {"name": "..", "sequences": []},
+    ]
+
+    invalid_documents: list[tuple[object, str]] = [
+        ([], "non-empty top-level list"),
+        ({}, "non-empty top-level list"),
+        ([1], "must be an object"),
+        ([{"sequences": []}], "non-empty string"),
+        ([{"name": "", "sequences": []}], "non-empty string"),
+        ([{"name": "   ", "sequences": []}], "non-empty string"),
+        ([{"name": 123, "sequences": []}], "non-empty string"),
+        ([{"name": "err", "sequences": []}], "reserved"),
+        ([{"name": "ERR", "sequences": []}], "reserved"),
+        ([{"name": "../err", "sequences": []}], "reserved"),
+        ([{"name": "..ERR..", "sequences": []}], "reserved"),
+        ([{"name": "a\x00b", "sequences": []}], "NUL"),
+        ([{"name": "dup"}, {"name": "dup"}], "duplicated"),
+        ([{"name": "a:b"}, {"name": "a_b"}], "duplicated"),
+        ([{"name": "a/b"}, {"name": "a_b"}], "duplicated"),
+        ([{"name": ".."}, {"name": "../.."}], "duplicated"),
+        ([{"name": "../../escaped"}, {"name": "escaped"}], "duplicated"),
+        ([{"name": "ok", "modelSeeds": 101}], "list of integers"),
+        ([{"name": "ok", "modelSeeds": [1.9]}], "invalid seed"),
+        ([{"name": "ok", "modelSeeds": [True]}], "invalid seed"),
+        ([{"name": "ok", "modelSeeds": [-1]}], "invalid seed"),
+        ([{"name": "ok", "modelSeeds": [MAX_INFERENCE_SEED + 1]}], "invalid seed"),
+        ([{"name": "ok", "modelSeeds": [7, 7]}], "unique"),
+    ]
+    for document, pattern in invalid_documents:
+        with pytest.raises(ValueError, match=pattern):
+            validate_inference_jobs(document)

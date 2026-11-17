@@ -793,3 +793,204 @@ def test_token_profile_fixes_atom_and_active_msa_capacity(depth):
     np.testing.assert_array_equal(padded["ref_pos"][:5], features["ref_pos"])
     np.testing.assert_array_equal(padded["atom_padding_mask"][5:], 0)
     np.testing.assert_array_equal(padded["msa_mask"][depth:], 0)
+
+
+def test_trunk_valid_mask_dropout_rejects_non_partitionable_and_rbg_prngs() -> None:
+    from foldjax.models._random import masked_prefix_draw
+    from foldjax.models.protenix.models.trunk_blocks.trunk import (
+        pairformer_output_from_s_inputs,
+        recycle_embeddings,
+    )
+
+    from .test_trunk import _pairformer_output_params as _toy_pairformer_output_params
+
+    params = _toy_pairformer_output_params()
+    s_inputs = jnp.zeros((2, 2), dtype=jnp.float32)
+    feats = {
+        "relp": jnp.zeros((2, 2, 2), dtype=jnp.float32),
+        "token_bonds": jnp.zeros((2, 2), dtype=jnp.float32),
+    }
+    valid_pair_mask = jnp.asarray([[True, False], [False, False]])
+    s_init = jnp.zeros((2, 2), dtype=jnp.float32)
+    z_init = jnp.zeros((2, 2, 2), dtype=jnp.float32)
+
+    for scope, pattern in (
+        (jax.threefry_partitionable(False), "jax_threefry_partitionable"),
+        (jax.default_prng_impl("rbg"), "jax_default_prng_impl"),
+    ):
+        with scope:
+            # Shared helper stays unguarded so other models' padded callers run.
+            shared_draw = masked_prefix_draw(
+                lambda key, shape: jax.random.normal(key, shape),
+                jax.random.key(0),
+                jnp.asarray([True, False]),
+            )
+            assert shared_draw.shape == (2,)
+
+            raw_key = jax.random.key_data(jax.random.key(0))
+            with pytest.raises(ValueError, match=pattern):
+                recycle_embeddings(
+                    s_init,
+                    z_init,
+                    s_init,
+                    z_init,
+                    params.trunk.recycling,
+                    pair_dropout_key=raw_key,
+                    pair_dropout_enabled=jnp.asarray(True),
+                    pair_dropout_valid_mask=valid_pair_mask,
+                )
+            with pytest.raises(ValueError, match=pattern):
+                pairformer_output_from_s_inputs(
+                    feats,
+                    s_inputs,
+                    params,
+                    num_recycles=1,
+                    cycle_pair_dropout_keys=raw_key[None, ...],
+                    pair_dropout_enabled=jnp.asarray(True),
+                    pair_dropout_valid_mask=valid_pair_mask,
+                )
+
+
+def test_padded_mc_dropout_fallback_matches_unpadded_real_pair_draws() -> None:
+    from foldjax.models.protenix.models.trunk_blocks.trunk import (
+        pairformer_output_from_s_inputs,
+    )
+    from foldjax.models.protenix.runner import (
+        _padded_mc_dropout_tapes,
+        mc_dropout_input_digest,
+        mc_dropout_keys,
+    )
+
+    from .test_trunk import _pairformer_output_params as _toy_pairformer_output_params
+
+    with pytest.raises(ValueError, match="must be >="):
+        _padded_mc_dropout_tapes(
+            7,
+            num_recycles=2,
+            apply_rate=1.0,
+            rate=0.4,
+            input_digest=0,
+            actual_size=5,
+            target_size=4,
+            pair_width=2,
+        )
+    for bad_actual, bad_width in ((0, 2), (2, 0)):
+        with pytest.raises(ValueError, match="must be positive"):
+            _padded_mc_dropout_tapes(
+                7,
+                num_recycles=2,
+                apply_rate=1.0,
+                rate=0.4,
+                input_digest=0,
+                actual_size=bad_actual,
+                target_size=4,
+                pair_width=bad_width,
+            )
+
+    off_masks, off_enabled = _padded_mc_dropout_tapes(
+        7,
+        num_recycles=2,
+        apply_rate=0.0,
+        rate=0.4,
+        input_digest=123,
+        actual_size=2,
+        target_size=4,
+        pair_width=2,
+    )
+    assert off_masks.shape == (2, 4, 4, 2)
+    assert bool(off_enabled) is False
+    assert not bool(jnp.any(off_masks))
+
+    exact_masks, exact_enabled = _padded_mc_dropout_tapes(
+        7,
+        num_recycles=2,
+        apply_rate=1.0,
+        rate=0.4,
+        input_digest=123,
+        actual_size=3,
+        target_size=3,
+        pair_width=2,
+    )
+    assert exact_masks.shape == (2, 3, 3, 2)
+    assert bool(exact_enabled) is True
+
+    params = _toy_pairformer_output_params()
+    unpadded_s = jnp.asarray([[1.0, -0.5], [0.25, 0.75]], dtype=jnp.float32)
+    padded_s = jnp.pad(unpadded_s, ((0, 2), (0, 0)))
+    unpadded_feats = {
+        "relp": jnp.zeros((2, 2, 2), dtype=jnp.float32),
+        "token_bonds": jnp.zeros((2, 2), dtype=jnp.float32),
+        "restype": jnp.eye(32, dtype=jnp.float32)[:2],
+        "asym_id": jnp.asarray([0, 0], dtype=jnp.int32),
+        "residue_index": jnp.asarray([1, 2], dtype=jnp.int32),
+        "entity_id": jnp.asarray([0, 0], dtype=jnp.int32),
+        "sym_id": jnp.asarray([0, 0], dtype=jnp.int32),
+    }
+    padded_feats = {
+        "relp": jnp.zeros((4, 4, 2), dtype=jnp.float32),
+        "token_bonds": jnp.zeros((4, 4), dtype=jnp.float32),
+    }
+    pair_mask = jnp.asarray(
+        [
+            [1.0, 1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+        ],
+        dtype=jnp.float32,
+    )
+    digest = mc_dropout_input_digest(unpadded_feats)
+
+    for scope in (jax.threefry_partitionable(False), jax.default_prng_impl("rbg")):
+        with scope:
+            raw_keys = mc_dropout_keys(
+                13,
+                num_recycles=2,
+                apply_rate=1.0,
+                rate=0.4,
+                input_digest=digest,
+            )
+            assert raw_keys is not None
+            wrapped_keys = tuple(
+                key
+                if jax.dtypes.issubdtype(key.dtype, jax.dtypes.prng_key)
+                else jax.random.wrap_key_data(key)
+                for key in raw_keys
+            )
+            padded_masks, enabled = _padded_mc_dropout_tapes(
+                13,
+                num_recycles=2,
+                apply_rate=1.0,
+                rate=0.4,
+                input_digest=digest,
+                actual_size=2,
+                target_size=4,
+                pair_width=2,
+            )
+            _, ref_s, ref_z = pairformer_output_from_s_inputs(
+                unpadded_feats,
+                unpadded_s,
+                params,
+                num_recycles=2,
+                cycle_pair_dropout_keys=jnp.stack(raw_keys, axis=0)
+                if raw_keys[0].dtype == jnp.uint32
+                else wrapped_keys,
+                pair_dropout_enabled=jnp.asarray(True),
+                pair_dropout_rate=0.4,
+            )
+            _, pad_s, pad_z = pairformer_output_from_s_inputs(
+                padded_feats,
+                padded_s,
+                params,
+                num_recycles=2,
+                pair_mask=pair_mask,
+                cycle_pair_dropout_keep_masks=padded_masks,
+                pair_dropout_enabled=enabled,
+                pair_dropout_rate=0.4,
+            )
+            np.testing.assert_allclose(
+                np.asarray(pad_s[:2]), np.asarray(ref_s), rtol=1e-6, atol=1e-6
+            )
+            np.testing.assert_allclose(
+                np.asarray(pad_z[:2, :2]), np.asarray(ref_z), rtol=1e-6, atol=1e-6
+            )

@@ -391,6 +391,11 @@ def test_native_cli_falls_back_to_materialized_tapes_for_other_prngs(
 
     monkeypatch.setattr(predict_runner, "_load_jobs", lambda _path: [{"name": "job"}])
     monkeypatch.setattr(
+        predict_runner.random,
+        "randint",
+        lambda low, high: 24680 if (low, high) == (1, 65536) else -1,
+    )
+    monkeypatch.setattr(
         predict_runner,
         "_load_prepared_params",
         lambda _path, _dtype: _params_double(),
@@ -463,7 +468,7 @@ def test_native_cli_falls_back_to_materialized_tapes_for_other_prngs(
     assert len(tape_calls) == 1
     np.testing.assert_array_equal(
         tape_calls[0].pop("key"),
-        jax.random.PRNGKey(101),
+        jax.random.PRNGKey(24680),
     )
     assert tape_calls[0] == {
         "num_samples": 1,

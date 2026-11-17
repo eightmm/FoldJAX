@@ -445,6 +445,7 @@ def _run(
         TEMPLATE_MODEL_NAMES,
         infer_model_name_from_path,
         model_inference_defaults,
+        model_uses_msa_by_default,
         validate_inference_limits,
     )
 
@@ -509,6 +510,7 @@ def _run(
     )
     gamma0 = config.gamma0 if config.gamma0 is not None else sampler_defaults["gamma0"]
     eta = config.eta if config.eta is not None else sampler_defaults["step_scale_eta"]
+    use_msa = model_uses_msa_by_default(model_name)
 
     msa_pipeline = None
     if config.msa_search != "off":
@@ -676,7 +678,7 @@ def _run(
                     if len(json_jobs) == 1
                     else f"{config.input_json.stem}_{index}"
                 )
-                if msa_pipeline is not None:
+                if msa_pipeline is not None and use_msa:
                     from foldjax.models.protenix.data.search import apply_msa_paths
 
                     job = apply_msa_paths(job, msa_pipeline)
@@ -684,7 +686,7 @@ def _run(
                     from foldjax.models.protenix.data.search import apply_template_paths
 
                     job = apply_template_paths(job, template_pipeline)
-                if rna_msa_pipeline is not None:
+                if rna_msa_pipeline is not None and use_msa:
                     from foldjax.models.protenix.data.search import apply_rna_msa_paths
 
                     job = apply_rna_msa_paths(job, rna_msa_pipeline)
@@ -704,6 +706,7 @@ def _run(
                             n_queries=config.n_queries,
                             n_keys=config.n_keys,
                             max_msa_depth=config.max_msa_depth,
+                            use_msa=use_msa,
                             use_rna_msa=config.use_rna_msa,
                             use_template=config.use_template,
                             seed=seed,
@@ -1091,6 +1094,8 @@ def _run(
         for seed in seeds:
             init_noise = None
             step_noises = None
+            cycle_pair_dropout_keep_masks = None
+            cycle_pair_dropout_keys = None
             preserve_prefix_rng = (
                 padding_plan is not None and _prefix_rng_is_supported()
             )
@@ -1126,13 +1131,27 @@ def _run(
                     seed=seed if config.msa_seed is None else config.msa_seed,
                     **padded_tape,
                 )
-            cycle_pair_dropout_keys, pair_dropout_enabled = _mc_dropout_inputs(
-                seed,
-                num_recycles=num_recycles,
-                apply_rate=config.mc_dropout_apply_rate,
-                rate=config.mc_dropout_rate,
-                input_digest=job["mc_dropout_digest"],
-            )
+            if padding_plan is not None and not preserve_prefix_rng:
+                cycle_pair_dropout_keep_masks, pair_dropout_enabled = (
+                    _padded_mc_dropout_tapes(
+                        seed,
+                        num_recycles=num_recycles,
+                        apply_rate=config.mc_dropout_apply_rate,
+                        rate=config.mc_dropout_rate,
+                        input_digest=job["mc_dropout_digest"],
+                        actual_size=int(padding_plan.actual["tokens"]),
+                        target_size=int(padding_plan.target["tokens"]),
+                        pair_width=_pair_channel_width(job_params),
+                    )
+                )
+            else:
+                cycle_pair_dropout_keys, pair_dropout_enabled = _mc_dropout_inputs(
+                    seed,
+                    num_recycles=num_recycles,
+                    apply_rate=config.mc_dropout_apply_rate,
+                    rate=config.mc_dropout_rate,
+                    input_digest=job["mc_dropout_digest"],
+                )
             print(
                 f"{job['name']}: seed {seed}: MC dropout "
                 + (
@@ -1194,6 +1213,15 @@ def _run(
                 confidence_autocast=amp_policy.confidence_autocast,
                 diffusion_autocast=amp_policy.diffusion_autocast,
                 cycle_msa_index_tape=cycle_msa_index_tape,
+                **(
+                    {
+                        "cycle_pair_dropout_keep_masks": (
+                            cycle_pair_dropout_keep_masks
+                        )
+                    }
+                    if cycle_pair_dropout_keep_masks is not None
+                    else {}
+                ),
                 cycle_pair_dropout_keys=cycle_pair_dropout_keys,
                 pair_dropout_enabled=pair_dropout_enabled,
                 pair_dropout_rate=config.mc_dropout_rate,
@@ -1421,6 +1449,73 @@ def _mc_dropout_inputs(
         key_shape = jax.random.key_data(jax.random.key(0)).shape
         keys = jnp.zeros((num_recycles, *key_shape), dtype=jnp.uint32)
     return keys, jnp.asarray(enabled, dtype=jnp.bool_)
+
+
+def _pair_channel_width(params: Any) -> int:
+    recycling = getattr(
+        getattr(getattr(params, "pairformer_output", None), "trunk", None),
+        "recycling",
+        None,
+    )
+    weight = getattr(getattr(recycling, "linear_z", None), "weight", None)
+    return 128 if weight is None else int(weight.shape[0])
+
+
+def _padded_mc_dropout_tapes(
+    seed: int,
+    *,
+    num_recycles: int,
+    apply_rate: float,
+    rate: float,
+    input_digest: int,
+    actual_size: int,
+    target_size: int,
+    pair_width: int,
+) -> tuple[Any, Any]:
+    """Generate real-shape per-recycle pair dropout masks, then right-pad them."""
+    import jax
+    import jax.numpy as jnp
+
+    pad_width = target_size - actual_size
+    if pad_width < 0:
+        raise ValueError(
+            f"target_size ({target_size}) must be >= actual_size ({actual_size})"
+        )
+    if actual_size <= 0 or pair_width <= 0:
+        raise ValueError("actual_size and pair_width must be positive")
+    keys = mc_dropout_keys(
+        seed,
+        num_recycles=num_recycles,
+        apply_rate=apply_rate,
+        rate=rate,
+        input_digest=input_digest,
+    )
+    if keys is None:
+        masks = jnp.zeros(
+            (num_recycles, target_size, target_size, pair_width),
+            dtype=jnp.bool_,
+        )
+        return masks, jnp.asarray(False, dtype=jnp.bool_)
+    cycle_masks = []
+    for raw_key in keys:
+        wrapped = (
+            raw_key
+            if jax.dtypes.issubdtype(raw_key.dtype, jax.dtypes.prng_key)
+            else jax.random.wrap_key_data(raw_key)
+        )
+        compact = jax.random.bernoulli(
+            wrapped,
+            p=1.0 - rate,
+            shape=(actual_size, actual_size, pair_width),
+        )
+        if pad_width:
+            compact = jnp.pad(
+                compact,
+                ((0, pad_width), (0, pad_width), (0, 0)),
+                constant_values=False,
+            )
+        cycle_masks.append(compact)
+    return jnp.stack(cycle_masks, axis=0), jnp.asarray(True, dtype=jnp.bool_)
 
 
 def _prefix_rng_is_supported() -> bool:

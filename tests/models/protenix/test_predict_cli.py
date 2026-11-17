@@ -2075,3 +2075,108 @@ def test_a_feature_archive_without_ligand_identity_is_refused_before_weights(
     with pytest.raises(SystemExit) as refused:
         main(argv)
     assert "no ligand identity" in str(refused.value)
+
+
+def test_mini_esm_skips_msa_loading_and_padded_rbg_uses_dropout_mask_fallback(
+    tmp_path, monkeypatch
+) -> None:
+    import jax
+
+    from foldjax.models.protenix.cli.predict import main as predict_main
+
+    weights_path = tmp_path / "toy_weights.pkl"
+    save_native_weights(weights_path, _toy_params_with_relp_dim(139), compress=False)
+
+    input_json = tmp_path / "mini_esm_with_msa.json"
+    input_json.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "mini_esm_job",
+                    "modelSeeds": [7],
+                    "sequences": [
+                        {
+                            "proteinChain": {
+                                "sequence": "AC",
+                                "count": 1,
+                                "unpairedMsaPath": str(tmp_path / "missing.a3m"),
+                                "pairedMsa": ">query\nAC\n>h1\nAG\n",
+                            }
+                        }
+                    ],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeProvider:
+        max_sequence_length = 4094
+
+        def __init__(self, _model_name, *, checkpoint_dir, deterministic=False):
+            del checkpoint_dir, deterministic
+
+        def __call__(self, sequence):
+            return np.ones((len(sequence), 2560), dtype=np.float32)
+
+        def embed(self, sequence, *, target_length):
+            del target_length
+            return np.ones((len(sequence), 2560), dtype=np.float32)
+
+    captured: list[tuple[dict[str, object], dict[str, object]]] = []
+
+    def fake_predict(_params, features, **kwargs):
+        captured.append((dict(features), dict(kwargs)))
+        n_atom = len(features["atom_to_token_idx"])
+        return {"coordinate": np.zeros((1, n_atom, 3), dtype=np.float32)}
+
+    monkeypatch.setattr(
+        "foldjax.models.protenix.data.search.apply_msa_paths",
+        lambda *_a, **_k: pytest.fail(
+            "apply_msa_paths must be skipped when use_msa is False"
+        ),
+    )
+    monkeypatch.setattr("foldjax.models.protenix.data.esm.JaxEsmProvider", FakeProvider)
+    monkeypatch.setattr(
+        "foldjax.models.protenix.models.predict.protenix_predict_static", fake_predict
+    )
+
+    with jax.default_prng_impl("rbg"):
+        predict_main(
+            [
+                "--weights",
+                str(weights_path),
+                "--input-json",
+                str(input_json),
+                "--out",
+                str(tmp_path / "out.npz"),
+                "--model-name",
+                "protenix_mini_esm_v0.5.0",
+                "--trunk-dtype",
+                "fp32",
+                "--n-sample",
+                "1",
+                "--n-queries",
+                "2",
+                "--n-keys",
+                "4",
+                "--mc-dropout-apply-rate",
+                "1.0",
+                "--padding",
+                "--pad-tokens",
+                "4",
+                "--pad-atoms",
+                "16",
+                "--no-compile-cache",
+            ]
+        )
+
+    assert len(captured) == 1
+    seen_features, seen_kwargs = captured[0]
+    assert np.asarray(seen_features["msa_mask"])[0, :2].tolist() == [1.0, 1.0]
+    assert np.asarray(seen_features["msa_mask"])[1:, :2].sum() == 0.0
+    assert seen_kwargs["preserve_prefix_rng"] is False
+    assert seen_kwargs["cycle_pair_dropout_keys"] is None
+    assert seen_kwargs["cycle_pair_dropout_keep_masks"] is not None
+    assert seen_kwargs["cycle_pair_dropout_keep_masks"].shape[:3] == (4, 4, 4)
+    assert bool(seen_kwargs["pair_dropout_enabled"]) is True

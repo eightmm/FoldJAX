@@ -151,6 +151,101 @@ _PYRIMIDINE_RESTYPE_INDICES = frozenset({23, 24, 28, 29})
 _DOCUMENTED_PROTEIN_ALPHABET = frozenset("ARNDCQEGHILKMFPSTWYVX")
 _DOCUMENTED_DNA_ALPHABET = frozenset("ACGTNX")
 _DOCUMENTED_RNA_ALPHABET = frozenset("ACGUNX")
+MAX_INFERENCE_SEED = 2**32 - 1
+
+
+def validate_inference_seed(value: Any, *, location: str = "seed") -> int:
+    """Validate an OpenDDE seed strictly without truncating floats or booleans."""
+
+    if isinstance(value, bool):
+        raise ValueError(f"{location} must be an integer, not a boolean.")
+    if isinstance(value, int):
+        seed = value
+    elif (
+        isinstance(value, str)
+        and value
+        and value.strip() == value
+        and value.isdecimal()
+    ):
+        seed = int(value)
+    else:
+        raise ValueError(f"{location} must be an integer; got {value!r}.")
+    if not 0 <= seed <= MAX_INFERENCE_SEED:
+        raise ValueError(
+            f"{location} must be in [0, {MAX_INFERENCE_SEED}]; got {seed}."
+        )
+    return seed
+
+
+def validate_sample_name(value: Any, *, job_index: int | None = None) -> str:
+    """Validate one OpenDDE job name against blank, NUL, and reserved names.
+
+    Separators and dots are permitted here because FoldJAX sanitizes every job
+    name into a single safe directory component via :func:`safe_job_name`
+    (``CHANGELOG.md``, ``runner.py``), while still rejecting collisions after
+    sanitization in :func:`validate_inference_jobs`.
+    """
+    from foldjax._fsutil import safe_job_name
+
+    location = f" for job {job_index}" if job_index is not None else ""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Inference job name{location} must be a non-empty string.")
+    if "\x00" in value:
+        raise ValueError(
+            f"Inference job name{location} must not contain NUL bytes; got {value!r}."
+        )
+    if value.strip().casefold() == "err" or safe_job_name(value).casefold() == "err":
+        raise ValueError(
+            f"Inference job name{location} {value!r} is reserved for error reports."
+        )
+    return value
+
+
+def validate_inference_jobs(value: Any) -> list[dict[str, Any]]:
+    """Validate the top-level inference job list, names, collisions, and seeds."""
+    from foldjax._fsutil import safe_job_name
+
+    if not isinstance(value, list) or not value:
+        raise ValueError("input JSON must be a non-empty top-level list")
+    if not all(isinstance(job, dict) for job in value):
+        raise ValueError("every input JSON job must be an object")
+
+    seen_names: set[str] = set()
+    seen_safe_names: set[str] = set()
+    validated_jobs: list[dict[str, Any]] = []
+    for index, job in enumerate(value):
+        name = validate_sample_name(job.get("name"), job_index=index)
+        safe_name = safe_job_name(name)
+        if name in seen_names or safe_name in seen_safe_names:
+            raise ValueError(
+                f"Inference job name {name!r} is duplicated in the same input JSON; "
+                "duplicate names would overwrite outputs."
+            )
+        seen_names.add(name)
+        seen_safe_names.add(safe_name)
+
+        model_seeds = job.get("modelSeeds")
+        if model_seeds is not None:
+            if not isinstance(model_seeds, list):
+                raise ValueError(
+                    f"modelSeeds for job {name!r} must be a list of integers."
+                )
+            seeds: list[int] = []
+            for seed in model_seeds:
+                try:
+                    seeds.append(
+                        validate_inference_seed(
+                            seed, location=f"modelSeeds for job {name!r}"
+                        )
+                    )
+                except ValueError as exc:
+                    raise ValueError(
+                        f"modelSeeds for job {name!r} contains invalid seed {seed!r}."
+                    ) from exc
+            if len(set(seeds)) != len(seeds):
+                raise ValueError(f"modelSeeds for job {name!r} must be unique.")
+        validated_jobs.append(job)
+    return validated_jobs
 
 
 def load_jobs(path: str | Path) -> list[dict[str, Any]]:
@@ -158,11 +253,7 @@ def load_jobs(path: str | Path) -> list[dict[str, Any]]:
 
     with Path(path).open("r", encoding="utf-8") as handle:
         jobs = json.load(handle)
-    if not isinstance(jobs, list) or not jobs:
-        raise ValueError("input JSON must be a non-empty top-level list")
-    if not all(isinstance(job, dict) for job in jobs):
-        raise ValueError("every input JSON job must be an object")
-    return jobs
+    return validate_inference_jobs(jobs)
 
 
 def featurize_opendde_json(
@@ -296,11 +387,21 @@ def _resolve_asset_path(value: str | Path, *, base_dir: str | Path) -> Path:
 
 
 def _resolve_seed(job: Mapping[str, Any], seed: int | None) -> int:
-    if seed is not None:
-        return int(seed)
     model_seeds = job.get("modelSeeds")
-    if isinstance(model_seeds, list) and model_seeds:
-        return int(model_seeds[0])
+    validated_model_seeds: list[int] = []
+    if model_seeds is not None:
+        if not isinstance(model_seeds, list):
+            raise ValueError("modelSeeds must be a list of integers.")
+        validated_model_seeds = [
+            validate_inference_seed(item, location="modelSeeds")
+            for item in model_seeds
+        ]
+        if len(set(validated_model_seeds)) != len(validated_model_seeds):
+            raise ValueError("modelSeeds must be unique.")
+    if seed is not None:
+        return validate_inference_seed(seed, location="seed")
+    if validated_model_seeds:
+        return validated_model_seeds[0]
     return 101
 
 
@@ -801,10 +902,43 @@ def _polymer_residue_graph(
     prev_parent = np.full(n_parent, -1, dtype=np.int64)
     next_parent = np.full(n_parent, -1, dtype=np.int64)
     graph_edges: set[tuple[int, int]] = set()
+
+    names_by_parent: list[set[str]] = [set() for _ in range(n_parent)]
+    for atom_idx, parent_idx in enumerate(atom_to_parent):
+        parent_id = int(parent_idx)
+        if 0 <= parent_id < n_parent:
+            names_by_parent[parent_id].add(str(atom_names[atom_idx]))
+
+    # Upstream's Biotite bond list carries standard inter-residue backbone
+    # links ahead of explicit `covalent_bonds`, so head-to-tail cyclization
+    # overwrites only `next_parent[first]` and `prev_parent[last]` while
+    # preserving interior edges (`opendde/data/core/featurizer.py:698-747`).
+    for parent_idx in range(n_parent - 1):
+        next_idx = parent_idx + 1
+        if (
+            polymer_type[parent_idx] > 0
+            and polymer_type[parent_idx] == polymer_type[next_idx]
+            and asym_id[parent_idx] == asym_id[next_idx]
+            and residue_index[next_idx] - residue_index[parent_idx] == 1
+            and _has_inter_residue_backbone_atoms(
+                int(polymer_type[parent_idx]),
+                names_by_parent[parent_idx],
+                names_by_parent[next_idx],
+            )
+        ):
+            next_parent[parent_idx] = next_idx
+            prev_parent[next_idx] = parent_idx
+            graph_edges.add((parent_idx, next_idx))
+
+    n_atom = int(atom_to_parent.shape[0])
     for atom_a, atom_b in covalent_atom_indices:
-        parent_a = int(atom_to_parent[atom_a])
-        parent_b = int(atom_to_parent[atom_b])
-        if parent_a == parent_b:
+        idx_a = int(atom_a)
+        idx_b = int(atom_b)
+        if not (0 <= idx_a < n_atom and 0 <= idx_b < n_atom):
+            continue
+        parent_a = int(atom_to_parent[idx_a])
+        parent_b = int(atom_to_parent[idx_b])
+        if parent_a < 0 or parent_b < 0 or parent_a == parent_b:
             continue
         if (
             polymer_type[parent_a] <= 0
@@ -812,8 +946,8 @@ def _polymer_residue_graph(
             or asym_id[parent_a] != asym_id[parent_b]
             or not _is_polymer_backbone_bond(
                 int(polymer_type[parent_a]),
-                str(atom_names[atom_a]),
-                str(atom_names[atom_b]),
+                str(atom_names[idx_a]),
+                str(atom_names[idx_b]),
             )
         ):
             continue
@@ -837,6 +971,16 @@ def _polymer_residue_graph(
             next_parent[parent_idx] = next_idx
             prev_parent[next_idx] = parent_idx
     return prev_parent, next_parent
+
+
+def _has_inter_residue_backbone_atoms(
+    polymer_type: int, left_names: set[str], right_names: set[str]
+) -> bool:
+    if polymer_type == 1:
+        return "C" in left_names and "N" in right_names
+    if polymer_type in (2, 3):
+        return bool(left_names & {"O3'", "O3*", "O3T"}) and "P" in right_names
+    return False
 
 
 def _is_polymer_backbone_bond(

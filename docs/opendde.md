@@ -34,7 +34,7 @@ never substituted implicitly.
 |---|---|
 | samples / steps / recycles | 5 / 200 / 10 |
 | MSA | up to 16,384 rows |
-| seed | a native job's `modelSeeds`; for a common-schema job none upstream, so FoldJAX draws one and records it |
+| seed | a native job's `modelSeeds`; when `--seed` and `modelSeeds` are absent or empty, both `foldjax predict` and `opendde-jax-predict` draw one integer in `1..65536` per job (matching upstream) and record it (`run.json` and `seed_<seed>/seed.json`) |
 | precision | bfloat16 trunk and bfloat16 confidence Pairformer |
 
 Upstream runs float32: `--option dtype=float32 --option confidence_dtype=fp32`
@@ -70,6 +70,41 @@ default ([cli.md](cli.md#a-bfloat16-trunk---option-trunk_dtypebf16),
   (`max_distance` required; the model itself still sees no constraint)
   ([cli.md](cli.md#--option-pocket_samplingselect)).
 - **Native only**: ligands read from a file need a native OpenDDE job.
+- **Polymer modifications and terminal caps.** Inline `modifications` on
+  `proteinChain`, `dnaSequence` and `rnaSequence` require a CCD component with a
+  canonical linking polymer type (`protein`, `dna` or `rna`). Non-polymer caps
+  such as `CCD_ACE` and `CCD_NME` are refused as inline `modifications`
+  (upstream reclassifies them inside the chain and leaves the preceding
+  residue's C-terminal `OXT` attached); supply terminal caps as separate
+  `ligand` entities joined to the terminal polymer residue via `covalent_bonds`.
+- **Sequence alphabets and job validation.** Polymer sequences accept only the
+  letters upstream's input specification documents (`ARNDCQEGHILKMFPSTWYVX` for
+  protein, `ACGTNX` for DNA, `ACGUNX` for RNA; undocumented parser aliases such
+  as DNA `I`/`U` and RNA `I` are refused). Top-level native jobs are validated
+  before weights load for non-empty, NUL-free, non-`"err"`, collision-free
+  names (both raw and after `safe_job_name` directory sanitization) and unique
+  integer `modelSeeds` in `0..4294967295` (booleans and fractional numbers are
+  refused rather than truncated; direct `featurize_opendde_json` calls with
+  neither `seed` nor `modelSeeds` default to `101`).
+
+## Upstream behavioural notes
+
+- **Job-name path sanitization and shared featurizer normalization.** Where
+  upstream `validate_sample_name` rejects separators and `.`/`..` outright,
+  FoldJAX sanitizes job names into a single safe directory component via
+  `safe_job_name` (still rejecting raw or post-sanitization directory
+  collisions and `"err"` before weights load). In the shared Protenix/OpenDDE
+  featurizer, A3Ms whose first aligned row differs in ungapped length from the
+  query sequence are truncated or gap-padded, and `covalent_bonds` accepts
+  0-based numeric atom indices on `CCD_` ligands as well as `FILE_`/SMILES
+  ligands (with SMILES ligands also accepting explicit nonzero atom-map
+  numbers).
+- **Sample ranking tie-break.** Samples with identical `ranking_score` break
+  ties deterministically in ascending source sample order (`stable` sort),
+  whereas upstream delegates to PyTorch's unstable `torch.argsort`.
+- **Zero-contact `gPDE`.** When every contact probability in a structure or
+  chain pair is zero, `gpde`, `chain_gpde` and `chain_pair_gpde` report `0.0`
+  rather than dividing by zero.
 
 ## Options worth knowing
 

@@ -404,3 +404,74 @@ def test_density_mask_is_formed_per_chunk_instead_of_embedded_in_full() -> None:
 
     assert f"tensor<{n_token}x{n_atom}xi1>" not in hlo
     assert f"tensor<{chunk}x{n_atom}xi1>" in hlo
+
+
+def test_postprocess_shape_complementarity_uses_ref_mask_and_padding_mask(
+    recorded,
+) -> None:
+    import jax.numpy as jnp
+
+    from foldjax.models.opendde import postprocess
+
+    base_features = {
+        name[len("input_") :]: recorded[name].copy()
+        for name in recorded.files
+        if name.startswith("input_")
+    }
+    base_features.pop("atom_exists_mask", None)
+    coordinate = np.asarray(recorded["coordinate"], dtype=np.float32)
+    samples = jnp.asarray(coordinate[None, ...])
+    n_atom = int(coordinate.shape[0])
+    n_res = int(np.asarray(base_features["token_index"]).size)
+
+    all_valid_features = {
+        **base_features,
+        "ref_mask": np.ones(n_atom, dtype=np.int64),
+    }
+    ref_mask = np.ones(n_atom, dtype=np.int64)
+    # Zero half the atoms so interface normals/densities shift measurably.
+    ref_mask[::2] = 0
+    masked_features = {
+        **base_features,
+        "ref_mask": ref_mask,
+    }
+
+    unmasked_out = postprocess._shape_complementarity_scores(
+        {"coordinate": samples}, all_valid_features, n_token=n_res
+    )
+    masked_out = postprocess._shape_complementarity_scores(
+        {"coordinate": samples}, masked_features, n_token=n_res
+    )
+    direct = compute_shape_complementarity(
+        jnp.asarray(coordinate),
+        masked_features,
+        jnp.asarray(ref_mask.astype(bool)),
+    )
+
+    assert not np.allclose(
+        np.asarray(masked_out["shape_comp_global_pred"]),
+        np.asarray(unmasked_out["shape_comp_global_pred"]),
+    )
+    np.testing.assert_allclose(
+        np.asarray(masked_out["shape_comp_global_pred"][0]),
+        np.asarray(direct["shape_comp_global_pred"]),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+
+    padding_mask = np.ones(n_atom, dtype=np.int64)
+    padding_mask[::2] = 0
+    padded_features = {
+        **base_features,
+        "ref_mask": np.ones(n_atom, dtype=np.int64),
+        "atom_padding_mask": padding_mask,
+    }
+    padded_out = postprocess._shape_complementarity_scores(
+        {"coordinate": samples}, padded_features, n_token=n_res
+    )
+    np.testing.assert_allclose(
+        np.asarray(padded_out["shape_comp_global_pred"]),
+        np.asarray(masked_out["shape_comp_global_pred"]),
+        rtol=1e-6,
+        atol=1e-6,
+    )

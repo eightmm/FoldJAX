@@ -380,8 +380,25 @@ def test_predict_cli_module_does_not_import_torch() -> None:
     )
 
 
-def test_empty_model_seeds_use_release_default() -> None:
-    assert predict_runner._job_seeds({"modelSeeds": []}, None) == [101]
+def test_empty_model_seeds_use_release_default(monkeypatch) -> None:
+    observed_bounds: list[tuple[int, int]] = []
+
+    def fake_randint(low: int, high: int) -> int:
+        observed_bounds.append((low, high))
+        return 42424
+
+    monkeypatch.setattr(predict_runner.random, "randint", fake_randint)
+    assert predict_runner._job_seeds({"modelSeeds": []}, None) == [42424]
+    assert predict_runner._job_seeds({}, None) == [42424]
+    assert observed_bounds == [(1, 65536), (1, 65536)]
+
+    for bad_seed in (1.9, True, -1, 2**32):
+        with pytest.raises(ValueError):
+            predict_runner._job_seeds({"modelSeeds": [bad_seed]}, None)
+        with pytest.raises(ValueError):
+            predict_runner._job_seeds({}, bad_seed)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="unique"):
+        predict_runner._job_seeds({"modelSeeds": [9, 9]}, None)
 
 
 @pytest.mark.parametrize("padded", [False, True], ids=["unpadded", "padded"])
@@ -458,3 +475,128 @@ def test_a_template_free_query_reaches_the_model_as_the_zero_geometry_marker(
         assert name not in model_features, name
     # Two distinct survivors: the all-gap row and the zero-padded rows.
     assert np.asarray(model_features["template_aatype"]).shape[0] == 2
+
+
+def test_runner_validates_jobs_before_loading_weights_and_records_random_seed(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from foldjax.models.opendde.data.featurize_json import featurize_opendde_json
+
+    weights_path = tmp_path / "opendde.jax"
+    weights_path.write_bytes(b"native fixture")
+
+    def fail_if_weights_loaded(*_args, **_kwargs):
+        pytest.fail("weights must not load before job and seed validation")
+
+    monkeypatch.setattr(
+        predict_runner, "_load_prepared_params", fail_if_weights_loaded
+    )
+    for bad_jobs, extra_argv in (
+        ([{"name": "dup", "sequences": []}, {"name": "dup", "sequences": []}], []),
+        ([{"name": "float_seed", "modelSeeds": [1.9], "sequences": []}], []),
+        ([{"name": "err", "sequences": []}], []),
+        ([{"name": "valid", "sequences": []}], ["--seed", str(2**32)]),
+    ):
+        bad_input = tmp_path / "invalid.json"
+        bad_input.write_text(json.dumps(bad_jobs), encoding="utf-8")
+        out_dir = tmp_path / "never_created"
+        with pytest.raises(SystemExit):
+            predict_impl.main(
+                [
+                    "--input-json",
+                    str(bad_input),
+                    "--weights",
+                    str(weights_path),
+                    "--out",
+                    str(out_dir),
+                    *extra_argv,
+                ]
+            )
+        assert not out_dir.exists()
+
+    job_missing = {
+        "name": "missing_seeds",
+        "sequences": [{"proteinChain": {"sequence": "AC", "count": 1}}],
+    }
+    job_empty = {
+        "name": "empty_seeds",
+        "modelSeeds": [],
+        "sequences": [{"proteinChain": {"sequence": "AG", "count": 1}}],
+    }
+    input_path = tmp_path / "random_jobs.json"
+    input_path.write_text(json.dumps([job_missing, job_empty]), encoding="utf-8")
+    features_by_name = {
+        item["name"]: featurize_opendde_json(item, n_queries=2, n_keys=4, seed=101)
+        for item in (job_missing, job_empty)
+    }
+
+    draws = iter([12345, 54321])
+    draw_bounds: list[tuple[int, int]] = []
+    featurized_seeds: list[tuple[str, int]] = []
+    predicted_seeds: list[int] = []
+
+    def fake_randint(low: int, high: int) -> int:
+        draw_bounds.append((low, high))
+        return next(draws)
+
+    def fake_featurize(job, **kwargs):
+        featurized_seeds.append((job["name"], kwargs["seed"]))
+        return features_by_name[job["name"]]
+
+    def fake_predict(value, _params, **kwargs):
+        predicted_seeds.append(kwargs["seed"])
+        n_atom = int(np.asarray(value["atom_to_token_idx"]).shape[0])
+        return {"coordinate": np.zeros((1, n_atom, 3), dtype=np.float32)}
+
+    def fake_score(output, value, **_kwargs):
+        n_atom = int(np.asarray(value["atom_to_token_idx"]).shape[0])
+        return {
+            **output,
+            "atom_plddt": np.full((1, n_atom), 0.8, dtype=np.float32),
+            "summary_ranking_score": np.asarray([0.9], dtype=np.float32),
+        }
+
+    monkeypatch.setattr(predict_runner.random, "randint", fake_randint)
+    monkeypatch.setattr(
+        predict_runner, "_load_prepared_params", lambda _p, _d: _params_double()
+    )
+    monkeypatch.setattr(predict_runner, "_featurize", fake_featurize)
+    monkeypatch.setattr(predict_runner, "_predict", fake_predict)
+    monkeypatch.setattr(predict_runner, "_score", fake_score)
+
+    out_root = tmp_path / "recorded_out"
+    predict_impl.main(
+        [
+            "--input-json",
+            str(input_path),
+            "--weights",
+            str(weights_path),
+            "--out",
+            str(out_root),
+            "--n-sample",
+            "1",
+            "--n-step",
+            "1",
+            "--n-cycle",
+            "1",
+            "--n-queries",
+            "2",
+            "--n-keys",
+            "4",
+        ]
+    )
+
+    stdout = capsys.readouterr().out
+    assert "missing_seeds: resolved random fallback seed 12345" in stdout
+    assert "empty_seeds: resolved random fallback seed 54321" in stdout
+    assert draw_bounds == [(1, 65536), (1, 65536)]
+    assert featurized_seeds == [("missing_seeds", 12345), ("empty_seeds", 54321)]
+    assert predicted_seeds == [12345, 54321]
+    for job_name, drawn_seed in (("missing_seeds", 12345), ("empty_seeds", 54321)):
+        record_path = out_root / job_name / f"seed_{drawn_seed}" / "seed.json"
+        assert record_path.is_file()
+        assert json.loads(record_path.read_text(encoding="utf-8")) == {
+            "job_name": job_name,
+            "seed": drawn_seed,
+            "seed_source": "random",
+        }

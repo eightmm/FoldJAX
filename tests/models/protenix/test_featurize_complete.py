@@ -1437,3 +1437,147 @@ def test_explicit_assets_reach_the_ccd_and_template_lookups_without_the_environm
     assert seen[0]["mmcif_dir"] == tmp_path / "mmcif"
     featurize_impl._assemble_chain_templates([chain])
     assert seen[1]["mmcif_dir"] is None
+
+
+def test_use_msa_false_emits_single_row_query_profile_and_skips_msa_io(
+    tmp_path: Path,
+) -> None:
+    job = {
+        "name": "mini_esm_no_msa",
+        "sequences": [
+            {
+                "proteinChain": {
+                    "sequence": "ACD",
+                    "count": 1,
+                    "unpairedMsaPath": str(tmp_path / "missing_protein.a3m"),
+                    "pairedMsaPath": str(tmp_path / "missing_paired.a3m"),
+                }
+            },
+            {
+                "rnaSequence": {
+                    "sequence": "AU",
+                    "count": 1,
+                    "unpairedMsaPath": str(tmp_path / "missing_rna.a3m"),
+                }
+            },
+            _ligand("CO"),
+        ],
+    }
+    features = featurize_protein_json(
+        job,
+        n_queries=2,
+        n_keys=4,
+        use_rna_msa=True,
+        use_msa=False,
+    )
+    restype = np.asarray(features["restype"])
+    assert np.asarray(features["msa"]).shape == (1, restype.shape[0])
+    np.testing.assert_array_equal(
+        np.asarray(features["msa"])[0], np.argmax(restype, axis=-1)
+    )
+    np.testing.assert_allclose(np.asarray(features["profile"]), restype, atol=1e-6)
+    np.testing.assert_array_equal(np.asarray(features["deletion_mean"]), 0.0)
+    np.testing.assert_array_equal(np.asarray(features["has_deletion"]), 0.0)
+    np.testing.assert_array_equal(np.asarray(features["deletion_value"]), 0.0)
+
+
+def test_empty_inline_msa_takes_precedence_over_path_and_legacy_dir(
+    tmp_path: Path,
+) -> None:
+    existing_a3m = tmp_path / "unpaired.a3m"
+    existing_a3m.write_text(">query\nAC\n>h1\nAG\n>h2\nGC\n", encoding="utf-8")
+
+    features = featurize_protein_json(
+        _job(
+            {
+                "proteinChain": {
+                    "sequence": "AC",
+                    "count": 1,
+                    "unpairedMsa": "",
+                    "unpairedMsaPath": str(existing_a3m),
+                    "pairedMsa": "",
+                    "pairedMsaPath": str(tmp_path / "missing_paired.a3m"),
+                }
+            }
+        ),
+        n_queries=2,
+        n_keys=4,
+    )
+    assert np.asarray(features["msa"]).shape == (2, 2)
+    np.testing.assert_array_equal(np.asarray(features["msa"]), [[0, 4], [0, 4]])
+
+    with pytest.raises(ValueError, match="unpairedMsa must be a string"):
+        featurize_protein_json(
+            _job({"proteinChain": {"sequence": "A", "count": 1, "unpairedMsa": 7}}),
+            n_queries=2,
+            n_keys=4,
+        )
+
+
+def test_file_ligand_strips_hydrogens_before_indexing_and_removes_isotopic_h(
+    tmp_path: Path,
+) -> None:
+    rdkit_chem = pytest.importorskip("rdkit.Chem")
+    from rdkit.Chem import AllChem
+
+    mol = rdkit_chem.AddHs(rdkit_chem.MolFromSmiles("CCO"))
+    assert AllChem.EmbedMolecule(mol, randomSeed=7) == 0
+    h_indices = [a.GetIdx() for a in mol.GetAtoms() if a.GetAtomicNum() == 1]
+    heavy_indices = [a.GetIdx() for a in mol.GetAtoms() if a.GetAtomicNum() > 1]
+    reordered = rdkit_chem.RenumberAtoms(
+        mol, h_indices[:2] + heavy_indices + h_indices[2:]
+    )
+    sdf_path = tmp_path / "h_first.sdf"
+    writer = rdkit_chem.SDWriter(str(sdf_path))
+    writer.write(reordered)
+    writer.close()
+
+    features = featurize_protein_json(
+        _job(
+            {"proteinChain": {"sequence": "AC", "count": 1}},
+            {"ligand": {"ligand": f"FILE_{sdf_path}", "count": 1}},
+            covalent_bonds=[
+                {
+                    "entity1": 1,
+                    "copy1": 1,
+                    "position1": 2,
+                    "atom1": "SG",
+                    "entity2": 2,
+                    "copy2": 1,
+                    "position2": 1,
+                    "atom2": 0,
+                }
+            ],
+        ),
+        n_queries=2,
+        n_keys=4,
+    )
+    lig_mask = np.asarray(features["atom_entity_id"]) == 2
+    assert np.asarray(features["output_atom_name"])[lig_mask].tolist() == [
+        "C1",
+        "C2",
+        "O1",
+    ]
+    np.testing.assert_array_equal(
+        np.asarray(features["atom_input_index"])[lig_mask], [0, 1, 2]
+    )
+    bonded_pair = np.asarray(features["covalent_atom_indices"])[0]
+    bonded_names = set(np.asarray(features["output_atom_name"])[bonded_pair].tolist())
+    assert bonded_names == {"SG", "C1"}
+
+    deuterated = featurize_protein_json(
+        _job(_ligand("[2H]C([2H])([2H])O")),
+        n_queries=2,
+        n_keys=4,
+    )
+    assert np.asarray(deuterated["output_atom_name"]).tolist() == ["C1", "O1"]
+
+    hydride = featurize_protein_json(
+        _job(_ligand("[H-].[Na+]")),
+        n_queries=2,
+        n_keys=4,
+    )
+    assert np.asarray(hydride["output_atom_name"]).tolist() == ["NA1"]
+
+    with pytest.raises(ValueError, match="no heavy atoms"):
+        featurize_protein_json(_job(_ligand("[2H][2H]")), n_queries=2, n_keys=4)

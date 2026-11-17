@@ -1536,7 +1536,6 @@ def confidence_scores_from_logits(
                     token_pair_pae,
                     chain_asym_id,
                     token_has_frame,
-                    contact_probs,
                     n_chain=n_chain,
                     token_mask=token_mask,
                     chain_mask=chain_mask,

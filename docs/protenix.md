@@ -17,7 +17,7 @@ foldjax predict --model protenix --input job.yaml --msa auto
 | `released` (default) | `protenix_base_default_v1.0.0` | the 368M base model, 2021-09-30 training cutoff (the cutoff benchmarks against AlphaFold 3 need) |
 | `base-20250630` | `protenix_base_20250630_v1.0.0` | the same architecture trained to a 2025-06-30 cutoff; upstream recommends it for practical use |
 | `v2` | `protenix-v2.pt`, **supplied by you** | Protenix v2, 464M parameters ([below](#protenix-v2)) |
-| `mini-esm-v0.5.0`, `mini-ism-v0.5.0` | `protenix_mini_{esm,ism}_v0.5.0` | small models conditioned on an ESM2-3B or ISM language model, staged beside them; upstream's 5-step, 4-cycle sampler |
+| `mini-esm-v0.5.0`, `mini-ism-v0.5.0` | `protenix_mini_{esm,ism}_v0.5.0` | small models conditioned on an ESM2-3B or ISM language model, staged beside them; upstream's 5-step, 4-cycle sampler with MSA inputs disabled by default |
 | `base-constraint-v0.5.0` | `protenix_base_constraint_v0.5.0` | the base model with pocket, contact, substructure and atom-contact constraint embedders: the checkpoint that reads constraints |
 | `mini-default-v0.5.0`, `tiny-default-v0.5.0` | `protenix_{mini,tiny}_default_v0.5.0` | small models without a language model, on the 5-step, 4-cycle sampler |
 
@@ -56,8 +56,8 @@ v2 costs up to about twice the base model's memory at large sizes
 | knob | default |
 |---|---|
 | samples / steps / recycles | 5 / 200 / 10 for the base models; the small models run upstream's 5 steps and 4 recycles |
-| MSA | up to 16,384 rows; every recycle reads a fresh random subset of them, as upstream does |
-| seed | 101, upstream's default |
+| MSA | up to 16,384 rows (every recycle reads a fresh random subset, as upstream does); `mini-esm-v0.5.0` and `mini-ism-v0.5.0` ignore alignments and substitute upstream's single-row query profile |
+| seed | 101 on `foldjax predict`; `protenix-jax-predict` uses each job's `modelSeeds` when `--seed`/`--seeds` is omitted and falls back to `[101]` |
 | precision | bfloat16 trunk; the confidence head bfloat16 at every size |
 
 Upstream keeps the confidence head float32 up to 2,560 tokens;
@@ -77,7 +77,10 @@ Managed runs carry fixed-shape per-recycle keys and a runtime dropout flag, so
 either coin outcome reuses the same executable for a fixed shape and rate.
 Raw keys follow the active JAX PRNG implementation, including RBG's key width.
 The disabled branch draws no dropout masks and leaves the pair update unchanged;
-the enabled branch preserves the existing seeded draws and padding prefix.
+the enabled branch preserves the existing seeded draws and padding prefix (using
+in-graph prefix masking under partitionable `threefry2x32`, and host-drawn
+unpadded pair masks padded to the target shape under non-partitionable Threefry
+or alternative PRNG implementations such as `rbg`).
 `--option full_depth_msa=true` reads every MSA row in every recycle instead
 of a random subset ([cli.md](cli.md#--msa-seed-protenix)).
 
@@ -119,6 +122,35 @@ of a random subset ([cli.md](cli.md#--msa-seed-protenix)).
   that embedder is reported as stale; `foldjax weights fetch --model protenix
   --profile base-constraint-v0.5.0` rebuilds it.
 - **Native only**: ligands read from a file need a native Protenix job.
+- **Mini language-model profiles and MSAs.** Upstream configures
+  `protenix_mini_esm_v0.5.0` and `protenix_mini_ism_v0.5.0` with MSA usage off
+  (`configs_model_type.py:281,314`), so `protenix-jax-predict` skips MSA reading
+  on those two checkpoints and emits upstream's one-row query-only dummy MSA
+  even when an input JSON carries `unpairedMsa`, `pairedMsa`, `*MsaPath` or a
+  legacy `msa` directory; pass `--msa single` on `foldjax predict` with those
+  profiles to skip external MSA search up front as well.
+- **Polymer modifications and terminal caps.** Inline polymer `modifications`
+  require a CCD component with a canonical linking polymer type (`protein`,
+  `dna` or `rna`). Non-polymer terminal caps such as `CCD_ACE` and `CCD_NME` are
+  refused inline; represent them as separate `ligand` entities joined to the
+  terminal residue via `covalent_bonds`.
+
+## Upstream behavioural notes
+
+- **Native CLI `modelSeeds`.** `protenix-jax-predict` honours each job's own
+  `modelSeeds` when `--seed` and `--seeds` are omitted (falling back to `[101]`),
+  whereas upstream sets `use_seeds_in_json` off by default and, when enabled,
+  reads only the first job's `modelSeeds`.
+- **Lenient input normalization and edge-case fixes.** The featurizer truncates
+  or gap-pads an A3M whose first aligned row differs in ungapped length from the
+  query sequence (upstream raises), and accepts 0-based numeric atom indices in
+  `covalent_bonds` on `CCD_` ligands as well as `FILE_`/SMILES ligands (with
+  SMILES ligands also accepting explicit nonzero atom-map numbers; upstream
+  requires atom names on CCD entities). In confidence scoring,
+  `chain_pair_pae` preserves a finite score when flat index `0` is the sole
+  valid pair in a chain pair (upstream's `any()` check on flat indices returns
+  `NaN`), and sample ranking breaks identical `ranking_score` ties
+  deterministically in ascending sample index order (`stable` sort).
 
 ## Options worth knowing
 

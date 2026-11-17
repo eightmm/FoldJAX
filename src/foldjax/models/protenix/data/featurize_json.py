@@ -325,6 +325,7 @@ def featurize_protein_json(
     seed: int | None = None,
     center_reference: bool = True,
     augment_reference: bool = True,
+    use_msa: bool = True,
     use_rna_msa: bool = False,
     use_template: bool = False,
     assets: FeaturizerAssets | None = None,
@@ -358,6 +359,7 @@ def featurize_protein_json(
             seed=seed,
             center_reference=center_reference,
             augment_reference=augment_reference,
+            use_msa=use_msa,
             use_rna_msa=use_rna_msa,
             use_template=use_template,
         )
@@ -373,6 +375,7 @@ def _featurize_protein_json(
     seed: int | None,
     center_reference: bool,
     augment_reference: bool,
+    use_msa: bool,
     use_rna_msa: bool,
     use_template: bool,
 ) -> dict[str, Any]:
@@ -400,7 +403,11 @@ def _featurize_protein_json(
     if max_msa_depth <= 0:
         raise ValueError("max_msa_depth must be positive")
     chains = _expand_chains(
-        job, base_dir=base_dir, use_rna_msa=use_rna_msa, use_template=use_template
+        job,
+        base_dir=base_dir,
+        use_msa=use_msa,
+        use_rna_msa=use_rna_msa,
+        use_template=use_template,
     )
     chemistry_rng = random.Random(_resolve_featurization_seed(job, seed))
     _remove_polymer_link_leaving_groups(chains, rng=chemistry_rng)
@@ -537,9 +544,15 @@ def _featurize_protein_json(
         sym_id=sym_id,
         token_index=token_index,
     )
-    msa, deletion_matrix, assembled_profile, assembled_deletion_mean = (
-        _assemble_msa_features(chains, max_msa_depth=max_msa_depth)
-    )
+    if use_msa:
+        msa, deletion_matrix, assembled_profile, assembled_deletion_mean = (
+            _assemble_msa_features(chains, max_msa_depth=max_msa_depth)
+        )
+    else:
+        msa = np.argmax(restype, axis=-1)[None, :].astype(np.int64)
+        deletion_matrix = np.zeros_like(msa, dtype=np.float32)
+        assembled_profile = restype.copy()
+        assembled_deletion_mean = np.zeros_like(deletion_mean)
     profile[:] = assembled_profile
     deletion_mean[:] = assembled_deletion_mean
     template_features = _assemble_chain_templates(chains)
@@ -811,6 +824,7 @@ def _expand_chains(
     job: dict[str, Any],
     *,
     base_dir: str | Path | None,
+    use_msa: bool = True,
     use_rna_msa: bool = False,
     use_template: bool = False,
 ) -> list[dict[str, Any]]:
@@ -826,11 +840,18 @@ def _expand_chains(
         (kind,) = entry.keys()
         if kind == "proteinChain":
             built = _build_protein_chain(
-                entry[kind], base_dir=base_dir, use_template=use_template
+                entry[kind],
+                base_dir=base_dir,
+                use_msa=use_msa,
+                use_template=use_template,
             )
         elif kind in ("dnaSequence", "rnaSequence"):
             built = _build_nucleic_chain(
-                entry[kind], kind=kind, base_dir=base_dir, use_rna_msa=use_rna_msa
+                entry[kind],
+                kind=kind,
+                base_dir=base_dir,
+                use_msa=use_msa,
+                use_rna_msa=use_rna_msa,
             )
         elif kind in ("ligand", "ion"):
             built = _build_ligand_chain(entry[kind], kind=kind, base_dir=base_dir)
@@ -898,6 +919,7 @@ def _build_protein_chain(
     chain: dict[str, Any],
     *,
     base_dir: str | Path | None,
+    use_msa: bool = True,
     use_template: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(chain, dict):
@@ -928,7 +950,9 @@ def _build_protein_chain(
         entries[pos - 1] = _modified_ccd_component(code)
         codes[pos - 1] = code
         modified[pos - 1] = 1
-    paired_a3m, unpaired_a3m = _read_chain_a3m(chain, base_dir=base_dir)
+    paired_a3m, unpaired_a3m = (
+        _read_chain_a3m(chain, base_dir=base_dir) if use_msa else ("", "")
+    )
     count = int(chain.get("count", 1))
     if count <= 0:
         raise ValueError("proteinChain count must be positive")
@@ -998,6 +1022,7 @@ def _build_nucleic_chain(
     *,
     kind: str,
     base_dir: str | Path | None,
+    use_msa: bool = True,
     use_rna_msa: bool = False,
 ) -> dict[str, Any]:
     """Build a DNA/RNA chain (one per-residue token like protein)."""
@@ -1035,7 +1060,7 @@ def _build_nucleic_chain(
     ids = info.get("id")
     _validate_ids(ids, count, kind)
     unpaired_a3m = ""
-    if kind == "rnaSequence" and not use_rna_msa:
+    if kind == "rnaSequence" and use_msa and not use_rna_msa:
         if info.get("unpairedMsa") or info.get("unpairedMsaPath"):
             warnings.warn(
                 "an rnaSequence unpairedMsa/unpairedMsaPath is ignored unless "
@@ -1045,9 +1070,13 @@ def _build_nucleic_chain(
                 RuntimeWarning,
                 stacklevel=2,
             )
-    elif kind == "rnaSequence":
-        unpaired_a3m = info.get("unpairedMsa") or ""
-        if not unpaired_a3m and info.get("unpairedMsaPath"):
+    elif kind == "rnaSequence" and use_msa:
+        inline_rna_msa = info.get("unpairedMsa")
+        if inline_rna_msa is not None:
+            if not isinstance(inline_rna_msa, str):
+                raise ValueError("rnaSequence unpairedMsa must be a string")
+            unpaired_a3m = inline_rna_msa
+        elif info.get("unpairedMsaPath"):
             unpaired_a3m = _resolve_path(
                 info["unpairedMsaPath"], base_dir=base_dir
             ).read_text(encoding="utf-8")
@@ -1417,19 +1446,21 @@ def _read_chain_a3m(
 ) -> tuple[str, str]:
     """Read paired/unpaired A3M for a protein chain (inline or precomputed)."""
 
-    def _resolve(inline_key: str, path_key: str) -> str:
+    def _resolve(inline_key: str, path_key: str) -> str | None:
         inline = chain.get(inline_key)
-        if inline:
+        if inline is not None:
+            if not isinstance(inline, str):
+                raise ValueError(f"proteinChain {inline_key} must be a string")
             return inline
         path = chain.get(path_key)
         if path:
             return _resolve_path(path, base_dir=base_dir).read_text(encoding="utf-8")
-        return ""
+        return None
 
     paired = _resolve("pairedMsa", "pairedMsaPath")
     unpaired = _resolve("unpairedMsa", "unpairedMsaPath")
     legacy = chain.get("msa")
-    if legacy is not None and not paired and not unpaired:
+    if legacy is not None and paired is None and unpaired is None:
         if not isinstance(legacy, dict):
             raise ValueError("deprecated protein msa field must be an object")
         unknown = set(legacy) - {"precomputed_msa_dir", "pairing_db"}
@@ -1454,7 +1485,7 @@ def _read_chain_a3m(
             paired = paired_path.read_text(encoding="utf-8")
         if unpaired_path.is_file():
             unpaired = unpaired_path.read_text(encoding="utf-8")
-    return paired, unpaired
+    return paired or "", unpaired or ""
 
 
 def _species_id(description: str) -> str:
@@ -2431,14 +2462,14 @@ def _rdkit_ligand_entry(
             raise FileNotFoundError(f"ligand file does not exist: {path}")
         suffix = path.suffix.lower()
         if suffix == ".mol":
-            mol = Chem.MolFromMolFile(str(path), sanitize=True, removeHs=False)
+            mol = Chem.MolFromMolFile(str(path), sanitize=True, removeHs=True)
         elif suffix == ".sdf":
-            supplier = Chem.SDMolSupplier(str(path), sanitize=True, removeHs=False)
+            supplier = Chem.SDMolSupplier(str(path), sanitize=True, removeHs=True)
             mol = next(iter(supplier), None)
         elif suffix == ".pdb":
-            mol = Chem.MolFromPDBFile(str(path), sanitize=True, removeHs=False)
+            mol = Chem.MolFromPDBFile(str(path), sanitize=True, removeHs=True)
         elif suffix == ".mol2":
-            mol = Chem.MolFromMol2File(str(path), sanitize=True, removeHs=False)
+            mol = Chem.MolFromMol2File(str(path), sanitize=True, removeHs=True)
         else:
             raise ValueError(
                 f"unsupported ligand file type {suffix!r}; expected PDB/SDF/MOL/MOL2"
@@ -2461,20 +2492,35 @@ def _rdkit_ligand_entry(
         if status != 0:
             raise ValueError(f"3D conformer generation failed for SMILES: {ligand!r}")
 
-    # Preserve the user's heavy-atom index/map through hydrogen removal.
+    mol = Chem.RemoveHs(mol, sanitize=True)
+    # Assign heavy-atom input indices after standard hydrogen removal, matching
+    # upstream's `removeHs=True` file reader and `AddHs` SMILES order.
     for atom in mol.GetAtoms():
         atom.SetIntProp("_input_index", atom.GetIdx())
-    mol = Chem.RemoveHs(mol, sanitize=True)
     Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
     conf = mol.GetConformer()
-    coords = np.asarray(conf.GetPositions(), dtype=np.float32)
+    all_coords = np.asarray(conf.GetPositions(), dtype=np.float32)
+    # Upstream filters `atom_array.element != "H"`, dropping isotopic and
+    # isolated hydrogens that `Chem.RemoveHs` leaves behind.
+    heavy_indices = [
+        atom.GetIdx()
+        for atom in mol.GetAtoms()
+        if atom.GetAtomicNum() != 1 and atom.GetSymbol().upper() != "H"
+    ]
+    if not heavy_indices:
+        raise ValueError(f"ligand contains no heavy atoms: {ligand!r}")
+    old_to_new = {
+        old_idx: new_idx for new_idx, old_idx in enumerate(heavy_indices)
+    }
+    coords = all_coords[heavy_indices]
     element_counts: dict[str, int] = {}
     names = []
     elements = []
     charges = []
     input_indices = []
     stereo = []
-    for atom in mol.GetAtoms():
+    for old_idx in heavy_indices:
+        atom = mol.GetAtomWithIdx(old_idx)
         elem = atom.GetSymbol().upper()
         element_counts[elem] = element_counts.get(elem, 0) + 1
         names.append(f"{elem}{element_counts[elem]}")
@@ -2486,10 +2532,17 @@ def _rdkit_ligand_entry(
             else atom.GetIntProp("_input_index")
         )
         stereo.append(int(atom.GetChiralTag()))
-    bonds = np.asarray(
-        [(bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()) for bond in mol.GetBonds()],
-        dtype=np.int64,
-    ).reshape((-1, 2))
+    kept_bonds = []
+    kept_orders = []
+    kept_stereos = []
+    for bond in mol.GetBonds():
+        begin = bond.GetBeginAtomIdx()
+        end = bond.GetEndAtomIdx()
+        if begin in old_to_new and end in old_to_new:
+            kept_bonds.append((old_to_new[begin], old_to_new[end]))
+            kept_orders.append(bond.GetBondTypeAsDouble())
+            kept_stereos.append(int(bond.GetStereo()))
+    bonds = np.asarray(kept_bonds, dtype=np.int64).reshape((-1, 2))
     return {
         "names": np.asarray(names),
         "coord": coords,
@@ -2497,13 +2550,8 @@ def _rdkit_ligand_entry(
         "mask": np.ones((len(names),), dtype=np.float32),
         "elem": np.asarray(elements),
         "bonds": bonds,
-        "bond_order": np.asarray(
-            [bond.GetBondTypeAsDouble() for bond in mol.GetBonds()],
-            dtype=np.float32,
-        ),
-        "bond_stereo": np.asarray(
-            [int(bond.GetStereo()) for bond in mol.GetBonds()], dtype=np.int64
-        ),
+        "bond_order": np.asarray(kept_orders, dtype=np.float32),
+        "bond_stereo": np.asarray(kept_stereos, dtype=np.int64),
         "input_index": np.asarray(input_indices, dtype=np.int64),
         "stereo": np.asarray(stereo, dtype=np.int64),
         "code": "UNL",

@@ -516,3 +516,154 @@ def test_opendde_trunk_requests_its_own_msa_ordering() -> None:
         "\n    )", 1
     )[0]
     assert "msa_stack_first=True" in trunk_call
+
+
+def test_single_token_multisample_confidence_preserves_pair_shapes_and_tie_ranks(
+    tmp_path, monkeypatch
+) -> None:
+    import gemmi
+
+    from foldjax.models.opendde.data.featurize_json import featurize_opendde_json
+    from foldjax.models.protenix.data.output import write_protenix_outputs
+
+    monkeypatch.delenv("PROTENIX_TRIANGLE_BACKEND", raising=False)
+    monkeypatch.delenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", raising=False)
+
+    raw_features = featurize_opendde_json(
+        {"sequences": [{"proteinChain": {"sequence": "G"}}]},
+        n_queries=2,
+        n_keys=4,
+        augment_reference=False,
+    )
+    n_atom = int(np.asarray(raw_features["atom_to_token_idx"]).shape[0])
+    num_samples = 5
+    coordinates = jnp.stack(
+        [
+            jnp.full((n_atom, 3), float(sample_idx), dtype=jnp.float32)
+            for sample_idx in range(num_samples)
+        ],
+        axis=0,
+    )
+    features = {
+        key: (
+            jnp.asarray(val)
+            if isinstance(val, np.ndarray) and val.dtype.kind in {"f", "i", "u", "b"}
+            else val
+        )
+        for key, val in raw_features.items()
+    }
+    params = OpenDDEInferenceParams(
+        input_embedder=object(),
+        pairformer_output=object(),
+        structural_expander=object(),
+        structural_refiner=object(),
+        diffusion=SimpleNamespace(
+            conditioning=SimpleNamespace(relpe=object()),
+            atom_encoder=object(),
+        ),
+        distogram=object(),
+        confidence=object(),
+    )
+
+    monkeypatch.setattr(
+        model_impl,
+        "input_feature_embedder",
+        lambda *_a, **_k: jnp.ones((1, 4), dtype=jnp.float32),
+    )
+    monkeypatch.setattr(
+        model_impl,
+        "pairformer_output_from_s_inputs",
+        lambda *_a, **_k: (
+            jnp.ones((1, 4), dtype=jnp.float32),
+            jnp.ones((1, 4), dtype=jnp.float32),
+            jnp.ones((1, 1, 3), dtype=jnp.float32),
+        ),
+    )
+    monkeypatch.setattr(
+        model_impl,
+        "structural_token_expand",
+        lambda *_a, **_k: (
+            jnp.ones((1, 4), dtype=jnp.float32),
+            jnp.ones((1, 4), dtype=jnp.float32),
+            jnp.ones((1, 1, 3), dtype=jnp.float32),
+            {"structural_pair_attn_bias": jnp.zeros((1, 1), dtype=jnp.float32)},
+        ),
+    )
+    monkeypatch.setattr(
+        model_impl,
+        "structural_refiner_stack",
+        lambda s, z, *_a, **_k: (s, z),
+    )
+    monkeypatch.setattr(
+        model_impl,
+        "relative_position_encoding_from_features",
+        lambda *_a, **_k: jnp.zeros((1, 1, 2), dtype=jnp.float32),
+    )
+    monkeypatch.setattr(
+        model_impl,
+        "diffusion_conditioning_prepare_cache",
+        lambda *_a, **_k: jnp.zeros((1, 1, 2), dtype=jnp.float32),
+    )
+    monkeypatch.setattr(
+        model_impl,
+        "atom_attention_encoder_prepare_diffusion_cache",
+        lambda *_a, **_k: (object(), object()),
+    )
+    monkeypatch.setattr(
+        model_impl,
+        "diffusion_module_forward",
+        lambda *_a, **_k: jnp.zeros((1, n_atom, 3), dtype=jnp.float32),
+    )
+    monkeypatch.setattr(model_impl, "sample_diffusion", lambda *_a, **_k: coordinates)
+    monkeypatch.setattr(
+        model_impl,
+        "distogram_head",
+        lambda *_a, **_k: jnp.zeros((1, 1, 96), dtype=jnp.float32),
+    )
+    monkeypatch.setattr(
+        model_impl,
+        "confidence_head",
+        lambda *_a, **_k: {
+            "plddt": jnp.zeros((1, n_atom, 50), dtype=jnp.float32),
+            "pae": jnp.zeros((1, 1, 1, 64), dtype=jnp.float32),
+            "pde": jnp.zeros((1, 1, 1, 64), dtype=jnp.float32),
+            "resolved": jnp.zeros((1, n_atom, 2), dtype=jnp.float32),
+        },
+    )
+
+    out = model_impl.opendde_infer_static(
+        features,
+        params,
+        jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+        key=None,
+        num_samples=num_samples,
+        n_chain=1,
+        run_confidence=True,
+        run_confidence_scores=True,
+        return_confidence_details=True,
+        return_confidence_logits=True,
+    )
+
+    assert out["contact_probs"].shape == (1, 1)
+    assert out["distogram_logits"].shape == (1, 1, 96)
+    assert out["token_pair_pae"].shape == (num_samples, 1, 1)
+    assert out["token_pair_pde"].shape == (num_samples, 1, 1)
+    assert out["summary_ranking_score"].shape == (num_samples,)
+    assert np.unique(np.asarray(out["summary_ranking_score"])).size == 1
+
+    paths = write_protenix_outputs(
+        tmp_path,
+        job_name="one_gly",
+        seed=7,
+        output=out,
+        features=raw_features,
+        atom_to_token=raw_features["atom_to_token_idx"],
+        model="opendde",
+        include_raw=True,
+    )
+    assert paths
+    pred_dir = tmp_path / "one_gly" / "seed_7" / "predictions"
+    for rank in range(num_samples):
+        structure = gemmi.read_structure(str(pred_dir / f"one_gly_sample_{rank}.cif"))
+        first_atom = next(iter(structure[0].all())).atom
+        assert first_atom.pos.x == pytest.approx(float(rank))

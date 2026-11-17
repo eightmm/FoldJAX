@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 
 from foldjax.models._cp import shard_pair_rows
-from foldjax.models._random import masked_prefix_draw
+from foldjax.models._random import masked_prefix_draw, supports_masked_prefix_draw
 from foldjax.models.protenix.models.primitives.primitives import (
     LayerNormParams,
     LinearParams,
@@ -124,6 +124,12 @@ def recycle_embeddings(
     if pair_dropout_key is not None:
         if pair_dropout_keep_mask is not None:
             raise ValueError("pair dropout mask and key are mutually exclusive")
+        if pair_dropout_valid_mask is not None and not supports_masked_prefix_draw():
+            raise ValueError(
+                "pair_dropout_valid_mask requires "
+                "jax_default_prng_impl='threefry2x32' and "
+                "jax_threefry_partitionable=True"
+            )
         key_shape = jax.random.key_data(jax.random.key(0)).shape
         if pair_dropout_key.shape != key_shape or pair_dropout_key.dtype != jnp.uint32:
             raise ValueError(
@@ -163,9 +169,21 @@ def recycle_embeddings(
             raise ValueError("pair dropout keep mask must be boolean")
         if not 0 <= pair_dropout_rate < 1:
             raise ValueError("pair dropout rate must be in [0, 1)")
-        # BF16 intermediates must not round the reciprocal before scaling.
-        scaled = z_update.astype(jnp.float32) * (1.0 / (1.0 - pair_dropout_rate))
-        z_update = jnp.where(pair_dropout_keep_mask, scaled, 0).astype(z_update.dtype)
+
+        def apply_mask_dropout(update):
+            # BF16 intermediates must not round the reciprocal before scaling.
+            scaled = update.astype(jnp.float32) * (1.0 / (1.0 - pair_dropout_rate))
+            return jnp.where(pair_dropout_keep_mask, scaled, 0).astype(update.dtype)
+
+        if pair_dropout_enabled is None:
+            z_update = apply_mask_dropout(z_update)
+        else:
+            enabled = jnp.asarray(pair_dropout_enabled)
+            if enabled.shape != () or enabled.dtype != jnp.bool_:
+                raise ValueError("pair dropout flag must be a scalar boolean")
+            z_update = jax.lax.cond(
+                enabled, apply_mask_dropout, lambda update: update, z_update
+            )
     z_out = z_init + z_update
     s_out = s_init + linear(layer_norm(s, params.layernorm_s), params.linear_s)
     return s_out, z_out
@@ -269,11 +287,21 @@ def pairformer_output_from_s_inputs(
 
     s = jnp.zeros_like(s_init)
     z = jnp.zeros_like(z_init)
-    if pair_dropout_enabled is not None and cycle_pair_dropout_keys is None:
-        raise ValueError("runtime pair dropout flag requires per-cycle keys")
+    if (
+        pair_dropout_enabled is not None
+        and cycle_pair_dropout_keys is None
+        and cycle_pair_dropout_keep_masks is None
+    ):
+        raise ValueError("runtime pair dropout flag requires per-cycle keys or masks")
     if cycle_pair_dropout_keys is not None:
         if cycle_pair_dropout_keep_masks is not None:
             raise ValueError("dropout masks and keys are mutually exclusive")
+        if pair_dropout_valid_mask is not None and not supports_masked_prefix_draw():
+            raise ValueError(
+                "pair_dropout_valid_mask requires "
+                "jax_default_prng_impl='threefry2x32' and "
+                "jax_threefry_partitionable=True"
+            )
         key_shape = jax.random.key_data(jax.random.key(0)).shape
         if (
             cycle_pair_dropout_keys.shape != (num_recycles, *key_shape)
@@ -352,21 +380,25 @@ def pairformer_output_from_s_inputs(
             ),
             msa_features,
         )
-        dropout_kwargs = (
-            {}
-            if pair_keep_mask is None
-            else {
-                "pair_dropout_keep_mask": pair_keep_mask,
-                "pair_dropout_rate": pair_dropout_rate,
-            }
-        )
-        if pair_dropout_enabled is not None:
+        if pair_dropout_enabled is not None and cycle_pair_dropout_keys is not None:
             dropout_kwargs = {
                 "pair_dropout_key": pair_keep_mask,
                 "pair_dropout_enabled": pair_dropout_enabled,
                 "pair_dropout_rate": pair_dropout_rate,
                 "pair_dropout_valid_mask": pair_dropout_valid_mask,
             }
+        elif pair_keep_mask is not None:
+            dropout_kwargs = {
+                "pair_dropout_keep_mask": pair_keep_mask,
+                "pair_dropout_rate": pair_dropout_rate,
+                **(
+                    {}
+                    if pair_dropout_enabled is None
+                    else {"pair_dropout_enabled": pair_dropout_enabled}
+                ),
+            }
+        else:
+            dropout_kwargs = {}
         s, z = recycle_embeddings(
             s_init,
             z_init,
