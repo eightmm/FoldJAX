@@ -209,12 +209,18 @@ def _np(x):
 
 
 def _scatter_mean_coords(coords, com_index, n_out):
-    """Scatter-reduce mean of coords (..., n, 3) into (..., n_out, 3)."""
+    """Scatter-reduce "mean" of coords (..., n, 3) into (..., n_out, 3).
+
+    Mirrors upstream's ``torch.zeros(...).scatter_reduce(..., "mean")``
+    (``potentials.py:32-44,98-110``). ``include_self`` keeps its default there,
+    so the zero the reduction starts from is averaged in as one more element:
+    the divisor is the atom count plus one and the result is not the centre of
+    mass. That is upstream's convention and is reproduced, not corrected.
+    """
     idx = jnp.asarray(np.asarray(com_index))
     out = segment_sum(coords, idx, n_out, axis=-2)
     counts = segment_sum(jnp.ones(idx.shape, dtype=coords.dtype), idx, n_out)
-    counts = jnp.where(counts == 0, 1.0, counts)
-    return out / counts[:, None]
+    return out / (counts[:, None] + 1.0)
 
 
 def _scatter_sum_atoms(grad_atom_shape, flat_index, prod, dtype):
@@ -342,6 +348,13 @@ class Potential(ABC):
             prod = prod.sum(axis=tuple(range(1, prod.ndim - 2)))
 
         flat_index = index.reshape(-1)  # (n_terms * n_interactions,)
+        # Several forced templates leave `prod` one block per template while
+        # the index names one. Upstream hands that oversized source to
+        # `scatter_reduce`, which reads only as many leading entries as the
+        # index has (`potentials.py:172-190`), so only the first template's
+        # block reaches the atoms. An indexed add needs equal lengths, so the
+        # same entries are taken here; every other potential is unchanged.
+        prod = prod[..., : flat_index.shape[0], :]
         grad_atom = _scatter_sum_atoms(coords.shape, flat_index, prod, coords.dtype)
 
         if com_index is not None:
@@ -526,12 +539,14 @@ class ReferencePotential(Potential):
     def compute_variable(
         self, coords, index, ref_coords=None, ref_mask=None, compute_gradient=False
     ):
-        idx = jnp.asarray(np.asarray(index))
-        sel = coords[:, idx]  # (b, 1, n, 3) since index has leading dim
-        sel = sel[:, 0] if idx.ndim == 2 else sel
         ref_coords = jnp.asarray(np.asarray(ref_coords)).astype(jnp.float32)
         ref_mask_j = jnp.asarray(np.asarray(ref_mask)).astype(jnp.float32)
-        coords_sel = coords[:, idx[0]] if idx.ndim == 2 else coords[:, idx]
+        # `index` is [1, n], so this is [samples, 1, n, 3]. Upstream keeps that
+        # singleton axis (`potentials.py:282-301`): against references
+        # [templates, n, 3] it broadcasts to every sample aligned with every
+        # forced template, [samples, templates, n, 3]. Dropping it paired
+        # sample i with template i, or failed, once there were several.
+        coords_sel = coords[:, jnp.asarray(np.asarray(index))]
         aligned = _weighted_rigid_align(
             ref_coords, coords_sel.astype(jnp.float32), ref_mask_j, ref_mask_j
         )

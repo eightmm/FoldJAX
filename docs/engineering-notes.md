@@ -1047,14 +1047,20 @@ candidate divergences of which **none survived refutation** -- one of them
 measuring `corr(s) = corr(z) = 1.00000000` for the 64-layer pairformer on the
 real checkpoint at production shape.
 
-The cause was not in the arithmetic at all. `boltz predict` overrides its own
-`MSAModuleArgs` default and passes `subsample_msa=True`, so `MSAModule.forward`
-draws a fresh `torch.randperm(n_msa)[:1024]` **on every forward pass** -- eleven
-recycles see eleven different slices and ensemble over the whole alignment. The
-port subsampled to the same depth but always took the top 1,024, and took the
-same 1,024 again every pass. Its docstring described this as following
-AlphaFold 3's deterministic truncation, which is defensible in isolation and is
-not what Boltz-2 computes.
+The cause was not in the arithmetic at all. With subsampling on,
+`MSAModule.forward` draws a fresh `torch.randperm(n_msa)[:1024]` **on every
+forward pass** -- eleven recycles see eleven different slices and ensemble over
+the whole alignment. The port subsampled to the same depth but always took the
+top 1,024, and took the same 1,024 again every pass. Its docstring described
+this as following AlphaFold 3's deterministic truncation, which is defensible
+in isolation and is not what Boltz-2 computes.
+
+Subsampling is not what `boltz predict` runs by default, as this note first
+said. `--subsample_msa` is a click flag (`main.py:1021-1025`), which defaults
+to False whatever the `subsample_msa: bool = True` in the Python signature says
+(`main.py:1076`), so upstream subsamples only when the flag is given and the
+port's `subsample_msa` defaults to `false` to match. What this section settles
+is which rows the two read once it is on.
 
 | 132 tokens, 20 samples | min | max | mean |
 |---|---|---|---|

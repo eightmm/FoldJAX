@@ -26,7 +26,7 @@ the weights and passed to the featurizer automatically.
 | knob | default |
 |---|---|
 | samples / steps / recycles | 1 / 200 / 3, upstream's `boltz predict` defaults |
-| MSA depth | up to 16,384 rows (the featurizer's cap) |
+| MSA depth | each alignment file is read to 8,192 rows and the featurizer keeps at most 16,384; every kept row reaches the trunk (no subsampling, as upstream) |
 | seed | none upstream, so FoldJAX draws one, prints it and records it |
 | precision | bfloat16 trunk with a bfloat16 pair residual; float32 matmuls at `high` |
 
@@ -128,3 +128,35 @@ upstream are recorded per stage in
 [model-versions.md](model-versions.md#stage-level-parity-current); speed and
 memory against upstream in [benchmark.md](benchmark.md). The porting record is
 [ports/boltz2/](ports/boltz2/README.md), history rather than instructions.
+
+### Where the port differs from upstream on purpose
+
+- **Ligand confidence frames, equal distances.** A ligand atom's frame is
+  built from its two nearest atoms in the same chain. Upstream orders them
+  with `torch.sort` (`model/loss/confidence.py:539-569`), which is not stable,
+  so which of two equidistant atoms it takes is not defined. The port takes
+  the lower atom index, compiled or not and on every backend
+  (`tests/models/boltz2/test_confidence_frames.py` holds it to that). Exact
+  ties need exactly symmetric coordinates, which sampled structures rarely have.
+- **Structure file names.** The port's own writer
+  (`foldjax.models.boltz2.api.predict(write_fmt=...)`) names several samples
+  `<id>_model_<rank>` by confidence rank, as upstream's writer does
+  (`data/write/writer.py:73-76,158-159`), and returns them in draw order with
+  each draw's rank in `out_path_ranks`. Equal scores keep draw order, where
+  upstream's `torch.argsort` leaves it undefined, and a single sample is
+  written as `<id>` without the `_model_0` upstream appends. `foldjax predict`
+  then moves every file into the common layout, whose `sample-<nn>` is the
+  diffusion sample index and never a rank ([outputs.md](outputs.md)).
+
+Two upstream conventions in the steering potentials (`use_potentials=true`)
+look like errors and are reproduced as they are, because the target is
+upstream's numbers:
+
+- The symmetric-chain potential's chain centre divides by the atom count plus
+  one, not the atom count: `scatter_reduce(..., "mean")` on a zero tensor
+  averages that zero in (`model/potentials/potentials.py:32-44`).
+- With several forced templates every sample is scored against every
+  template, but the gradient that reaches the atoms carries only the first
+  forced template's direction, weighted by all templates' derivatives:
+  upstream scatters one block per template through an index that names one
+  (`potentials.py:181-193`).

@@ -191,6 +191,69 @@ def test_msa_rows_of_the_wrong_length_is_rejected(
         )
 
 
+@pytest.mark.parametrize("cap", [24, 32], ids=["depth==cap", "depth<cap"])
+def test_msa_rows_are_replayed_when_the_alignment_fits_the_cap(
+    checkpoint_state: dict[str, torch.Tensor], cap: int
+) -> None:
+    """Upstream selects whenever subsampling is on, whatever the depth.
+
+    ``MSAModule.forward`` draws ``torch.randperm(depth)[:cap]`` with no depth
+    test (``trunkv2.py:630-634``), so a replayed draw has to be honored for an
+    alignment at the cap and under it too. The module sums over rows, which
+    would hide a reordering, so these rows repeat some and drop others: only
+    a module that gathers exactly them matches.
+    """
+
+    depth = 24
+    params = map_msa_module_state_dict(checkpoint_state, PREFIX, num_layers=2)
+    z, emb, feats_torch = _msa_inputs(msa_rows=depth)
+    feats = _jax_feats(feats_torch)
+    z_jax, emb_jax = jnp.asarray(z.numpy()), jnp.asarray(emb.numpy())
+    rows = jnp.asarray(np.repeat(np.arange(0, depth, 2), 2)[::-1], dtype=jnp.int32)
+    assert rows.size == min(depth, cap)
+
+    actual = msa_module_forward(
+        params,
+        z_jax,
+        emb_jax,
+        feats,
+        subsample_msa=True,
+        num_subsampled_msa=cap,
+        msa_key=jax.random.PRNGKey(0),
+        msa_rows=rows,
+    )
+    gathered = dict(feats)
+    for key in ("msa", "has_deletion", "deletion_value", "msa_paired", "msa_mask"):
+        gathered[key] = jnp.take(feats[key], rows, axis=1)
+    expected = msa_module_forward(params, z_jax, emb_jax, gathered)
+    untouched = msa_module_forward(params, z_jax, emb_jax, feats)
+
+    np.testing.assert_allclose(np.asarray(actual), np.asarray(expected), atol=2e-5)
+    assert not np.allclose(np.asarray(actual), np.asarray(untouched), atol=1e-4)
+
+
+@pytest.mark.parametrize("width", [23, 32])
+def test_msa_rows_must_match_a_shallow_alignment(
+    checkpoint_state: dict[str, torch.Tensor], width: int
+) -> None:
+    """Under the cap the replayed draw is as wide as the alignment, not the cap."""
+
+    params = map_msa_module_state_dict(checkpoint_state, PREFIX, num_layers=2)
+    z, emb, feats_torch = _msa_inputs(msa_rows=24)
+    feats = _jax_feats(feats_torch)
+
+    with pytest.raises(ValueError, match="msa_rows"):
+        msa_module_forward(
+            params,
+            jnp.asarray(z.numpy()),
+            jnp.asarray(emb.numpy()),
+            feats,
+            subsample_msa=True,
+            num_subsampled_msa=32,
+            msa_rows=jnp.arange(width, dtype=jnp.int32) % 24,
+        )
+
+
 def test_pair_weighted_averaging_preserves_bfloat16_activation_dtype() -> None:
     rng = np.random.default_rng(0)
     c_m, c_z, heads, c_h = 8, 12, 4, 3

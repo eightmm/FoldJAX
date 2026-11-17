@@ -188,6 +188,69 @@ def test_symmetric_chain_com():
     )
 
 
+def _symmetric_chain_case(chain_sizes, pairs, coords):
+    """One token per atom; chain ``c`` owns ``chain_sizes[c]`` consecutive atoms."""
+    asym = np.repeat(np.arange(len(chain_sizes)), chain_sizes)
+    feats = dict(
+        atom_to_token=np.eye(asym.size, dtype=np.float32)[None],
+        asym_id=asym.astype(np.float32)[None],
+        atom_pad_mask=np.ones((1, asym.size), dtype=np.float32),
+        symmetric_chain_index=np.asarray(pairs, dtype=np.int64).T[None],
+    )
+    return np.asarray(coords, dtype=np.float32), feats
+
+
+def _two_chains_inside_the_buffer():
+    coords = np.zeros((B, 4, 3), dtype=np.float32)
+    coords[:, 2:, 0] = 1.2
+    return _symmetric_chain_case([2, 2], [(0, 1)], coords)
+
+
+def _unequal_chains():
+    rng = np.random.default_rng(11)
+    return _symmetric_chain_case(
+        [2, 3, 5], [(0, 1), (1, 2), (0, 2)], rng.standard_normal((3, 10, 3)) * 0.4
+    )
+
+
+def test_symmetric_chain_com_counts_the_zero_it_starts_from():
+    """Upstream's chain centre divides by the atom count plus one.
+
+    ``torch.zeros(...).scatter_reduce(..., "mean")`` leaves ``include_self`` at
+    its default, so the zero it starts from is averaged in. Two 2-atom chains
+    at x = 0 and x = 1.2 are therefore measured 0.8 apart rather than 1.2, and
+    a 1.0 buffer charges them 0.2 where their centres of mass would be free.
+    """
+    coords, feats = _two_chains_inside_the_buffer()
+    params = dict(buffer=1.0)
+    jpot = P.SymmetricChainCOMPotential(params)
+    jparams = jpot.compute_parameters(0.5)
+
+    energy = np.asarray(jpot.compute(jnp.asarray(coords), feats, jparams))
+    np.testing.assert_allclose(energy, np.full(B, 0.2), rtol=0, atol=1e-6)
+    gradient = np.asarray(jpot.compute_gradient(jnp.asarray(coords), feats, jparams))
+    # Pushed apart along x, every atom by its chain's whole gradient.
+    np.testing.assert_allclose(gradient[:, :2], [[[1.0, 0.0, 0.0]] * 2] * B)
+    np.testing.assert_allclose(gradient[:, 2:], [[[-1.0, 0.0, 0.0]] * 2] * B)
+    _compare(jpot, TP.SymmetricChainCOMPotential(params), coords, feats)
+
+
+def test_symmetric_chain_com_with_unequal_chains():
+    """Chains of 2, 3 and 5 atoms, close enough that every pair is charged.
+
+    The count-plus-one divisor shrinks each centre by a different factor, so
+    unequal chains tell it apart from a centre of mass in every pair.
+    """
+    coords, feats = _unequal_chains()
+    params = dict(buffer=1.0)
+    jpot = P.SymmetricChainCOMPotential(params)
+    jparams = jpot.compute_parameters(0.5)
+
+    energy = np.asarray(jpot.compute(jnp.asarray(coords), feats, jparams))
+    assert (energy > 0).all()
+    _compare(jpot, TP.SymmetricChainCOMPotential(params), coords, feats)
+
+
 def test_stereo_bond():
     n = 10
     idx = np.stack([RNG.permutation(n)[:4] for _ in range(5)], axis=1).astype(np.int64)
@@ -247,33 +310,70 @@ def test_contact():
     )
 
 
-def test_template_reference():
-    n_tok = 6
-    n_atoms = 6
-    # one forced template
-    t2r = np.eye(n_atoms, dtype=np.float32)[None]  # token i -> atom i
-    a2t = np.eye(n_atoms, dtype=np.float32)[None]
-    mask = np.ones((1, n_tok), dtype=np.float32)
-    cb = RNG.standard_normal((1, n_tok, 3)).astype(np.float32)
-    feats = {
-        "template_mask_cb": mask,
-        "template_force": np.array([True]),
-        "template_cb": cb,
-        "atom_pad_mask": np.ones((1, n_atoms), dtype=np.float32),
-        "token_to_rep_atom": t2r,
-        "atom_to_token": a2t,
-        "token_index": np.arange(n_tok, dtype=np.float32)[None],
-        "template_force_threshold": np.array([2.0], dtype=np.float32),
-    }
-    coords = _coords(n_atoms)
-    jpot = P.TemplateReferencePotential({})
-    tpot = TP.TemplateReferencePotential({})
-    # weighted_rigid_align via SVD: relax slightly
+def _template_case(samples, templates):
+    """Coordinates and features with ``templates`` forced templates.
+
+    Laid out as the featurizer does: a batch axis of one, then the template
+    axis. One template that is not forced sits among the forced ones, every
+    template masks two tokens of its own and carries its own threshold, and a
+    token's representative atom is not the atom of the same number.
+    """
+    rng = np.random.default_rng(100 + 10 * samples + templates)
+    n_tok, n_atoms, total = 8, 10, templates + 1
+    force = np.ones(total, dtype=bool)
+    force[1] = False
+    mask = np.ones((total, n_tok), dtype=np.float32)
+    for row in range(total):
+        mask[row, rng.choice(n_tok, size=2, replace=False)] = 0.0
+    token_to_rep_atom = np.zeros((1, n_tok, n_atoms), dtype=np.float32)
+    token_to_rep_atom[0, np.arange(n_tok), rng.permutation(n_atoms)[:n_tok]] = 1.0
+    atom_to_token = np.zeros((1, n_atoms, n_tok), dtype=np.float32)
+    atom_to_token[0, np.arange(n_atoms), np.arange(n_atoms) % n_tok] = 1.0
+    feats = dict(
+        template_mask_cb=mask[None],
+        template_force=force[None],
+        template_cb=(rng.standard_normal((1, total, n_tok, 3)) * 3.0).astype(
+            np.float32
+        ),
+        template_force_threshold=rng.uniform(0.5, 2.5, size=(1, total)).astype(
+            np.float32
+        ),
+        atom_pad_mask=np.ones((1, n_atoms), dtype=np.float32),
+        token_to_rep_atom=token_to_rep_atom,
+        atom_to_token=atom_to_token,
+        token_index=np.arange(n_tok, dtype=np.float32)[None],
+    )
+    coords = (rng.standard_normal((samples, n_atoms, 3)) * 3.0).astype(np.float32)
+    return coords, feats
+
+
+@pytest.mark.parametrize("samples", [1, 2, 3])
+@pytest.mark.parametrize("templates", [1, 2, 3])
+def test_template_reference(samples, templates):
+    """Every sample is scored against every forced template.
+
+    Upstream indexes ``coords[:, index]`` with a ``[1, n]`` index, and the
+    singleton axis that leaves broadcasts samples against templates
+    (``potentials.py:282-301``). Its gradient then scatters a source holding
+    one block per template through an index that names one block, which reads
+    the first: both are upstream's behaviour and both are compared here.
+    """
+    coords, feats = _template_case(samples, templates)
+    jpot = P.TemplateReferencePotential(dict())
+    tpot = TP.TemplateReferencePotential(dict())
     jparams = jpot.compute_parameters(0.5)
     tparams = tpot.compute_parameters(0.5)
+
     te = tpot.compute(_t(coords).float(), _feats_torch(feats), tparams).numpy()
     je = np.asarray(jpot.compute(jnp.asarray(coords), feats, jparams))
+    assert je.shape == (samples,)
+    # Some tokens must sit outside their bound or nothing is being compared.
+    assert (te > 0).all()
+    # weighted_rigid_align via SVD: relax slightly
     np.testing.assert_allclose(je, te, rtol=1e-3, atol=1e-3)
+
     tg = tpot.compute_gradient(_t(coords).float(), _feats_torch(feats), tparams).numpy()
     jg = np.asarray(jpot.compute_gradient(jnp.asarray(coords), feats, jparams))
+    assert jg.shape == coords.shape
+    assert np.abs(tg).max() > 0
     np.testing.assert_allclose(jg, tg, rtol=1e-3, atol=1e-3)

@@ -240,3 +240,35 @@ def test_a_direct_transition_refuses_the_fused_glu_under_a_mesh() -> None:
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "BOLTZ2_GLU_POINT_OF_USE_OK" in completed.stdout, completed.stdout
+
+
+@pytest.mark.parametrize("use_scan", [False, True])
+@pytest.mark.parametrize("glu_backend", ["xla", "tokamax"])
+def test_the_pairformer_stack_hands_every_layer_the_glu_backend(
+    monkeypatch, use_scan: bool, glu_backend: str
+) -> None:
+    """Unrolled or scanned, a layer runs the kernel the stack was asked for."""
+
+    import foldjax.models.boltz2.models.trunk_blocks.pairformer as pairformer
+
+    seen = []
+
+    def fake_layer(layer_params, s, z, mask, pair_mask, **kwargs):
+        seen.append(kwargs.get("glu_backend"))
+        return s, z
+
+    monkeypatch.setattr(pairformer, "pairformer_layer_forward", fake_layer)
+    layers = [dict(weight=jnp.zeros((1,))), dict(weight=jnp.ones((1,)))]
+
+    pairformer.pairformer_module_forward(
+        dict(layers=layers),
+        jnp.zeros((1, 2, 3)),
+        jnp.zeros((1, 2, 2, 3)),
+        jnp.ones((1, 2)),
+        jnp.ones((1, 2, 2)),
+        use_scan=use_scan,
+        glu_backend=glu_backend,
+    )
+
+    # The unrolled stack calls once per layer, the scan traces its body once.
+    assert seen == [glu_backend] * (1 if use_scan else len(layers))

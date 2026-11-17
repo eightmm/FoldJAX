@@ -891,6 +891,99 @@ def test_api_rejects_nonpositive_diffusion_samples(tmp_path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("score", "samples", "expected"),
+    [
+        # Draw 1 scores highest, then draw 2, then draw 0.
+        ([0.2, 0.9, 0.5], 3, [2, 0, 1]),
+        # Equal scores keep draw order.
+        ([0.5, 0.9, 0.5, 0.9], 4, [2, 0, 3, 1]),
+        # A score that is not a number ranks first, as in upstream.
+        ([float("nan"), 0.1, 0.3], 3, [0, 2, 1]),
+        ([0.4], 1, [0]),
+        ([], 0, []),
+        # No confidence summary, or one that does not hold one value per
+        # sample: upstream's writer falls back to draw order, and so does this.
+        (None, 3, [0, 1, 2]),
+        ([0.2, 0.9], 3, [0, 1, 2]),
+        ([[0.2, 0.9, 0.5]], 3, [2, 0, 1]),
+    ],
+)
+def test_model_ranks_follow_upstreams_writer(score, samples, expected) -> None:
+    out = dict() if score is None else dict(confidence_score=np.asarray(score))
+
+    assert api._model_ranks(out, samples) == expected
+
+
+@pytest.mark.parametrize("scored", [True, False])
+def test_structure_files_are_named_by_confidence_rank(
+    tmp_path, monkeypatch, scored: bool
+) -> None:
+    """Upstream names a sample's file by its rank (``writer.py:73-76,158-159``).
+
+    Draw 1 has the highest confidence here, so its structure is ``_model_0``.
+    The returned list still runs in draw order, because that is what pairs a
+    file with ``coords[i]`` for everything downstream; without a confidence
+    summary the rank is the draw, as it is upstream.
+    """
+
+    feats = _fake_features(affinity=False)
+    monkeypatch.setattr(api, "featurize", lambda **kwargs: (feats, "job", tmp_path))
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.bridge.native.load_params",
+        lambda path: dict(trunk=dict()),
+    )
+
+    def fake_predict(params, model_feats, key, **kwargs):
+        atoms = model_feats["atom_pad_mask"].shape[-1]
+        tokens = model_feats["token_pad_mask"].shape[-1]
+        out = dict(
+            # Sample i sits at x = i, so a file's contents name its draw.
+            sample_atom_coords=jnp.broadcast_to(
+                jnp.arange(3.0)[:, None, None], (3, atoms, 3)
+            ),
+            plddt=jnp.ones((3, tokens)),
+            iptm=jnp.ones((3,)),
+        )
+        if scored:
+            out["confidence_score"] = jnp.asarray([0.2, 0.9, 0.5])
+        return out
+
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.models.predict.boltz2_predict", fake_predict
+    )
+    written = dict()
+
+    def fake_write(*, coords, out_path, **kwargs):
+        written[out_path.name] = float(np.asarray(coords)[0, 0])
+        out_path.write_text("structure")
+        return out_path
+
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.data.write.structure.write_prediction", fake_write
+    )
+
+    result = api.predict(
+        seq=["AC"],
+        weights=tmp_path / "boltz2_conf",
+        mols=tmp_path,
+        out_dir=tmp_path / "out",
+        num_steps=1,
+        num_samples=3,
+        write_fmt="cif",
+    )
+
+    ranks = [2, 0, 1] if scored else [0, 1, 2]
+    assert result["out_path_ranks"] == ranks
+    assert [path.name for path in result["out_paths"]] == [
+        f"job_model_{rank}.cif" for rank in ranks
+    ]
+    # Draw order: entry i is the file that holds sample i.
+    assert [written[path.name] for path in result["out_paths"]] == [0.0, 1.0, 2.0]
+    assert written["job_model_0.cif"] == (1.0 if scored else 0.0)
+    assert sorted(written) == [f"job_model_{rank}.cif" for rank in range(3)]
+
+
 @pytest.mark.parametrize("stop_after", ["inputs", "trunk"])
 def test_stop_after_trunk_crops_and_saves_representations(
     tmp_path, monkeypatch, stop_after

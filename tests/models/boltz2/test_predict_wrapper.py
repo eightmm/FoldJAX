@@ -679,6 +679,75 @@ def test_predict_runs_complete_affinity_ensemble_on_best_sample(monkeypatch) -> 
         assert np.all(np.asarray(z)[:, :, 2] == 0)
 
 
+@pytest.mark.parametrize("compute_dtype", [jnp.bfloat16, jnp.float32])
+def test_affinity_reembedding_runs_at_the_trunk_precision(
+    monkeypatch, compute_dtype
+) -> None:
+    """Upstream re-embeds under the trunk's autocast (`models/boltz2.py:627`).
+
+    So the affinity re-embedding must be handed the very parameters the trunk
+    ran with: narrowed Linear kernels under the released mixed policy, with the
+    float32 islands the trunk keeps.
+    """
+
+    seen = dict()
+    embedder = dict(
+        kernel=jnp.ones((2, 2), dtype=jnp.float32),
+        atom_encoder=dict(kernel=jnp.ones((2, 2), dtype=jnp.float32)),
+    )
+
+    def fake_trunk(trunk_params, *args, **kwargs):
+        seen["trunk"] = trunk_params["input_embedder"]
+        return dict(
+            s_inputs=jnp.zeros((1, 2, 3)),
+            s=jnp.zeros((1, 2, 3)),
+            z=jnp.zeros((1, 2, 2, 4)),
+        )
+
+    def fake_input_embedder(embedder_params, feats, *, affinity, **kwargs):
+        assert affinity is True
+        seen["affinity"] = embedder_params
+        return jnp.zeros((1, 2, 3))
+
+    monkeypatch.setattr(predict_module, "boltz2_trunk_forward", fake_trunk)
+    monkeypatch.setattr(
+        predict_module,
+        "boltz2_sample_forward",
+        lambda *args, **kwargs: dict(sample_atom_coords=jnp.zeros((1, 3, 3))),
+    )
+    monkeypatch.setattr(predict_module, "input_embedder_forward", fake_input_embedder)
+    monkeypatch.setattr(
+        predict_module,
+        "affinity_module_forward",
+        lambda *args, **kwargs: dict(
+            affinity_pred_value=jnp.asarray([[1.0]]),
+            affinity_logits_binary=jnp.asarray([[0.0]]),
+        ),
+    )
+
+    predict_module.boltz2_predict(
+        dict(trunk=dict(input_embedder=embedder)),
+        dict(
+            token_pad_mask=jnp.ones((1, 2)),
+            mol_type=jnp.asarray([[0, 3]]),
+            affinity_token_mask=jnp.asarray([[0, 1]]),
+        ),
+        jax.random.PRNGKey(0),
+        run_confidence=False,
+        run_distogram=False,
+        compute_dtype=compute_dtype,
+        attention_backend="xla",
+        affinity_params=dict(
+            ensemble=False, mw_correction=False, modules=[dict(marker=1.0)]
+        ),
+    )
+
+    assert seen["affinity"]["kernel"].dtype == seen["trunk"]["kernel"].dtype
+    assert seen["affinity"]["kernel"].dtype == compute_dtype
+    # An island the trunk leaves float32 stays float32 here too.
+    assert seen["affinity"]["atom_encoder"]["kernel"].dtype == jnp.float32
+
+
 @pytest.fixture(scope="module")
 def params():
     if not (WEIGHTS.with_suffix(".safetensors").exists() or

@@ -1055,18 +1055,9 @@ def boltz2_sample_forward(
                 )
 
             if do_resample:
-                n_groups = resample_weights.shape[0]
                 n_draw = num_particles if step_idx < num_sampling_steps - 1 else 1
                 key, rkey = jax.random.split(key)
-                draws = jax.random.categorical(
-                    rkey,
-                    jnp.log(resample_weights),
-                    axis=1,
-                    shape=(n_groups, n_draw),
-                )
-                resample_indices = (
-                    draws + num_particles * jnp.arange(n_groups)[:, None]
-                ).reshape(-1)
+                resample_indices = _fk_resample_indices(rkey, resample_weights, n_draw)
                 atom_coords = atom_coords[resample_indices]
                 atom_coords_noisy = atom_coords_noisy[resample_indices]
                 atom_mask = atom_mask[resample_indices]
@@ -1107,6 +1098,35 @@ def _fk_energy_increment(
         # zero behaviour) when the first actual resample occurs after step 0.
         return energy - energy
     return previous_energy - energy
+
+
+def _fk_resample_indices(
+    key: jax.Array, resample_weights: jnp.ndarray, n_draw: int
+) -> jnp.ndarray:
+    """Draw ``n_draw`` particles for every sample, as flat particle indices.
+
+    ``resample_weights`` is ``[samples, particles]`` and upstream draws each
+    row on its own (``torch.multinomial``, ``diffusionv2.py:482-494``). One
+    ``jax.random.categorical`` call asked for ``shape=(samples, n_draw)`` does
+    not: it lines the sample axis of the logits up with the *draw* axis, which
+    raises unless the two are equal and, when they are, hands every sample one
+    draw from each sample's weights. So each row is drawn separately. A single
+    sample keeps the caller's key, and with it the draws it always made.
+    """
+
+    n_groups, num_particles = resample_weights.shape
+    logits = jnp.log(resample_weights)
+    group_keys = (key,) if n_groups == 1 else jax.random.split(key, n_groups)
+    draws = jnp.concatenate(
+        [
+            jax.random.categorical(
+                group_key, logits[group : group + 1], axis=1, shape=(1, n_draw)
+            )
+            for group, group_key in enumerate(group_keys)
+        ],
+        axis=0,
+    )
+    return (draws + num_particles * jnp.arange(n_groups)[:, None]).reshape(-1)
 
 
 #: Every contraction that carries atom coordinates -- the per-step augmentation
@@ -1270,9 +1290,10 @@ def boltz2_trunk_forward(
     """Run the non-template Boltz-2 trunk in eval mode.
 
     ``msa_rows`` is the per-pass MSA subsample injection point, shape
-    ``[recycling_steps + 1, num_subsampled_msa]``; it overrides ``msa_key`` so
-    a parity harness can replay the row draws upstream made. ``None``
-    (default) is inert.
+    ``[recycling_steps + 1, min(msa depth, num_subsampled_msa)]``; it
+    overrides ``msa_key`` so a parity harness can replay the row draws
+    upstream made, at any alignment depth once ``subsample_msa`` is on.
+    ``None`` (default) is inert.
 
     OPT-IN multi-device sharding. With ``mesh=None`` (DEFAULT) no sharding
     constraints are emitted and the path is bit-identical to before. When

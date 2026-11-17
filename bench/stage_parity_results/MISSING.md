@@ -114,8 +114,12 @@ afresh with `jax.clear_caches()` on both sides; OpenDDE `models/model.py`
   each port's shipped kernels, dtype profile and matmul-precision pin, records
   what the process realised in each row's `condition`, and writes to
   `bench/stage_parity_results_gpu/` (the Slurm suite
-  `foldjax-bench/stage-parity-gpu/` runs it). This bullet closes when that
-  directory holds a run.
+  `foldjax-bench/stage-parity-gpu/` runs it). For Boltz-2 that directory holds
+  a run: `bench/stage_parity_results_gpu/boltz2.json` records S1-S6 as
+  measured on an RTX PRO 6000 Blackwell (commit `df8c174`), so its
+  port-vs-native residuals are read there and the Boltz-2 rows in this
+  directory remain the CPU-vs-GPU number. The bullet stays open only for a
+  port without a run in that directory.
 * **AlphaFold 3 -- no intermediate stages.** The `alphafold3` row compares two
   complete CPU runs (DeepMind's `run_alphafold.py` v3.0.4 and FoldJAX's
   vendored AF3, whose `alphafold3` package differs from DeepMind's in 9 of 86

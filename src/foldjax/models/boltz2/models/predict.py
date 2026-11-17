@@ -581,8 +581,12 @@ def boltz2_predict(
         else:
             best_idx = jnp.asarray(0, dtype=jnp.int32)
         coords_affinity = jnp.take(sample_atom_coords, best_idx, axis=0)[None, None]
+        # Upstream re-embeds inside the trunk's bf16-mixed autocast and only
+        # then turns autocast off for the affinity modules
+        # (`models/boltz2.py:627,629`), so this takes the trunk's cast
+        # parameters, float32 islands included, rather than the float32 tree.
         affinity_s_inputs = input_embedder_forward(
-            params["trunk"]["input_embedder"],
+            trunk_params["input_embedder"],
             feats,
             eps=eps,
             attention_backend=attention_backend,

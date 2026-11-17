@@ -53,10 +53,18 @@ low-precision inference — selectable per backend without changing weights.
   cuEquivariance JAX profile is **1.41× faster** and uses **2.25 GiB less peak
   allocation** than upstream torch. MSA is subsampled to 1024 by both
   frameworks, so it is not a cross-framework differentiator.
-- MSA subsampling: boltz-jax takes the **first 1024** rows (deterministic);
-  upstream torch takes a **random** 1024 (`randperm`, unseeded). Identical fold,
-  but exact coordinates can't bit-match at MSA depth > 1024 by construction. Use
-  `subsample_msa=False` or cap MSA ≤ 1024 for bit-level cross-framework tests.
+- MSA subsampling is off by default in both implementations. (The benchmark
+  note above says both subsampled; how that run was launched has not been
+  re-checked.) Upstream's `--subsample_msa` is a click flag, which defaults
+  to False whatever the `subsample_msa: bool = True`
+  in its Python signature says (`main.py:1021-1025,1076`); the port's
+  `subsample_msa` defaults to `false`. Without it every parsed row reaches the
+  trunk: each alignment file is read to 8,192 rows and the featurizer keeps at
+  most 16,384. With it on, both redraw `min(depth, 1024)` rows on **every**
+  trunk pass -- upstream with an unseeded `torch.randperm`, the port from the
+  run's key -- so the two read different rows and exact coordinates cannot
+  match unless a parity harness replays upstream's draws through `msa_rows`.
+  Only a direct module call that passes no key takes the first rows.
 
 ## Current FoldJAX quickstart
 
@@ -179,7 +187,7 @@ The CUDA 13 install defaults both triangle kernels to Torch-compatible cuEq;
 
 | Knob | Options | Notes |
 |------|---------|-------|
-| `--compute-dtype` | `bfloat16` (default) / `float32` | bf16-mixed — trunk bf16, diffusion and confidence an fp32 island — is what upstream's predict path runs (`main.py:1262`). At 1,003 tokens over an 8,192-row alignment, five samples of the released schedule: 65.0 s against 87.3 s warm, 10,218 MiB against 13,035 MiB peak, TM to the deposited structure 0.9931 against 0.9932. Reported pLDDT is ~0.002 lower, four times fp32's own run-to-run scatter and not matched by anything in the structures. fp16 is range-unstable in the sampler |
+| `--compute-dtype` | `bfloat16` (default) / `float32` | bf16-mixed — trunk and confidence bf16 with their fp32 islands, diffusion fp32 — is what upstream's predict path runs (`main.py:1262`). At 1,003 tokens over an 8,192-row alignment, five samples of the released schedule: 65.0 s against 87.3 s warm, 10,218 MiB against 13,035 MiB peak, TM to the deposited structure 0.9931 against 0.9932. Reported pLDDT is ~0.002 lower, four times fp32's own run-to-run scatter and not matched by anything in the structures. fp16 is range-unstable in the sampler |
 | `--diffusion-samples` | integer | generate multiple structures in one call; confidence runs sequentially when >1 to cap peak VRAM |
 | `--compile-cache` | dir (default on) | eligible readable XLA executables may be reused across processes; missing or rejected entries recompile |
 | `--feature-cache` | dir (default on) | memoize features by input digest and seed (the seed draws the `ref_pos` conformer augmentation); cache hit is bit-identical and skips featurization |

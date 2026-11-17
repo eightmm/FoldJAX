@@ -172,8 +172,11 @@ def msa_module_forward(
     ``use_scan=False`` (default) unrolls the layer stack in Python (lower steady
     latency). ``use_scan=True`` runs the stack via ``lax.scan`` (faster compile).
 
-    ``subsample_msa`` caps the MSA depth at ``num_subsampled_msa`` (default
-    1024). ``MSAModuleArgs`` defaults it to False and `boltz predict` declares
+    ``subsample_msa`` selects ``min(depth, num_subsampled_msa)`` rows (default
+    cap 1024). The selection runs whenever it is on, as upstream's
+    ``torch.randperm(depth)[:num_subsampled_msa]`` does (``trunkv2.py:630-634``):
+    an alignment at or under the cap keeps every row and is only reordered.
+    ``MSAModuleArgs`` defaults it to False and `boltz predict` declares
     ``--subsample_msa`` as a click flag, which defaults to False whatever the
     Python signature says -- so upstream subsamples only when that flag is
     given.
@@ -194,31 +197,34 @@ def msa_module_forward(
     The MSA carry ``m`` is not pinned; see ``msa_layer_forward``.
 
     ``msa_rows`` overrides the draw with explicit row indices and takes
-    precedence over ``msa_key``. It exists so a matched-tape parity harness can
-    hand this module the very permutation upstream drew: without it the two
-    trunks read different alignment rows and their coordinates cannot agree no
-    matter how well the sampler is matched. ``None`` (default) is inert.
+    precedence over ``msa_key``; it must name exactly the
+    ``min(depth, num_subsampled_msa)`` rows upstream's draw holds. It exists so
+    a matched-tape parity harness can hand this module the very permutation
+    upstream drew: without it the two trunks read different alignment rows and
+    their coordinates cannot agree no matter how well the sampler is matched.
+    ``None`` (default) is inert.
     """
 
-    # Subsample MSA depth (axis 1) to num_subsampled_msa, matching Boltz CLI's
-    # inference-time cap; take the first rows (deterministic, query-first order).
     msa_d = feats["msa"]
     has_del = feats["has_deletion"]
     del_val = feats["deletion_value"]
     msa_paired = feats["msa_paired"]
     msa_mask = feats["msa_mask"]
-    if subsample_msa and msa_d.shape[1] > num_subsampled_msa:
+    if subsample_msa:
+        # Not gated on depth > cap: a shallow alignment is still selected, so
+        # a replayed permutation is honored (and checked) at every depth.
+        selected_depth = min(msa_d.shape[1], num_subsampled_msa)
         if msa_rows is not None:
             rows = jnp.asarray(msa_rows, dtype=jnp.int32)
-            if rows.ndim != 1 or rows.shape[0] != num_subsampled_msa:
+            if rows.ndim != 1 or rows.shape[0] != selected_depth:
                 raise ValueError(
-                    f"msa_rows must be {num_subsampled_msa} row indices, got "
+                    f"msa_rows must be {selected_depth} row indices, got "
                     f"shape {rows.shape}"
                 )
         elif msa_key is None:
-            rows = jnp.arange(num_subsampled_msa)
+            rows = jnp.arange(selected_depth)
         else:
-            rows = jax.random.permutation(msa_key, msa_d.shape[1])[:num_subsampled_msa]
+            rows = jax.random.permutation(msa_key, msa_d.shape[1])[:selected_depth]
         msa_d = jnp.take(msa_d, rows, axis=1)
         has_del = jnp.take(has_del, rows, axis=1)
         del_val = jnp.take(del_val, rows, axis=1)

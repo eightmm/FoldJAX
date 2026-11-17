@@ -79,6 +79,7 @@ def pairformer_module_forward(
                 matmul_precision=matmul_precision,
                 attention_backend=attention_backend,
                 triangle_backend=triangle_backend,
+                glu_backend=glu_backend,
                 pair_residual_dtype=pair_residual_dtype,
             )
         return s, z

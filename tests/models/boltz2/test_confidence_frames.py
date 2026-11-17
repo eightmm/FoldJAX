@@ -408,3 +408,47 @@ def test_representative_rows_remove_the_dense_atom_square_from_cpu_hlo() -> None
     legacy_temp = legacy_lowered.compile().memory_analysis().temp_size_in_bytes
     assert compact_temp * 4 < legacy_temp
     assert "chlo.top_k" in compact_hlo
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_equidistant_atoms_are_taken_in_atom_index_order(compiled: bool) -> None:
+    """Among equal distances the lower atom index wins: the port's own rule.
+
+    Upstream orders a ligand atom's neighbours with ``torch.sort``
+    (``loss/confidence.py:539-569``), which is not stable, so which of two
+    equidistant atoms enters a frame is whatever that sort happens to return.
+    The port resolves the tie by atom index instead, on every backend and
+    compiled or not. ``docs/boltz2.md`` records this as a deviation; this test
+    is what holds the port to it.
+    """
+
+    coords = jnp.asarray(
+        [
+            [
+                [
+                    [0.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                    [0.0, 1.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [-1.0, 0.0, 0.0],
+                    [2.0, 0.0, 0.0],
+                ]
+            ]
+        ],
+        dtype=jnp.float32,
+    )
+    asym_id_atom = jnp.zeros((1, 6), dtype=jnp.float32)
+    atom_pad_mask = jnp.ones((1, 6), dtype=jnp.float32)
+    token_to_rep_atom = jnp.eye(6, dtype=jnp.float32)[jnp.asarray([0, 3, 4])][None]
+
+    nearest = jax.jit(_nearest_nonpolymer_frames) if compiled else (
+        _nearest_nonpolymer_frames
+    )
+    actual = nearest(coords, asym_id_atom, atom_pad_mask, token_to_rep_atom)
+
+    # Atom 0: atoms 1-4 all at 1.0, so 1 then 2. Atom 3: atoms 0 and 5 both at
+    # 1.0, so 0 then 5. Atom 4: atom 0 at 1.0, then 1 before 2, both at sqrt(2).
+    # Frames are stored (nearest, self, second nearest).
+    np.testing.assert_array_equal(
+        actual, np.asarray([[[[1, 0, 2], [0, 3, 5], [0, 4, 1]]]])
+    )

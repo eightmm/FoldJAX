@@ -770,9 +770,12 @@ def predict(
     seed: int = 0,
     # Upstream's predict path is `Trainer(..., precision="bf16-mixed")`
     # (`main.py:1262`), so float32 was this port inventing a setting Boltz-2
-    # does not ship. The trunk runs in this dtype; the diffusion and confidence
-    # modules stay float32 either way, which is the same split upstream's
-    # autocast draws. Measured at 1,003 tokens over an 8,192-row alignment,
+    # does not ship. The trunk and the confidence module run in this dtype,
+    # with the float32 islands upstream's autocast leaves inside them; the
+    # diffusion module stays float32 either way, because upstream samples
+    # under `autocast(enabled=False)` (`models/boltz2.py:533`) and runs the
+    # confidence module inside autocast (`:588`). Measured at 1,003 tokens
+    # over an 8,192-row alignment,
     # five samples of the released schedule: 87.3 s -> 65.0 s warm, 13,035 ->
     # 10,218 MiB peak, and against the deposited structure TM 0.9932 -> 0.9931,
     # the two crossing in both directions per sample. Passing "float32"
@@ -944,7 +947,11 @@ def predict(
     sibling ``boltz2_aff`` bundle unless ``affinity_weights`` is explicit.
     Returns a dict with ``coords`` (n_atom, 3), ``plddt``, ``record_id``,
     ``raw`` (full model output), and ``out_path`` (if ``write_fmt`` is
-    "pdb"/"cif"). Defaults match the Boltz-2 reference.
+    "pdb"/"cif"). Several samples return ``out_paths`` instead, one file per
+    diffusion sample in draw order and each named ``<id>_model_<rank>`` by its
+    confidence rank as upstream's writer names it, with ``out_path_ranks``
+    giving every draw's rank (see ``_model_ranks``). Defaults match the
+    Boltz-2 reference.
 
     ``diffusion_compute_dtype`` and ``diffusion_attention_backend`` are
     opt-in experiment knobs scoped to the diffusion score model, which
@@ -1987,9 +1994,13 @@ def predict(
 
         dest = Path(out_dir) if out_dir is not None else struct_dir.parent
         dest.mkdir(parents=True, exist_ok=True)
+        # The list stays in draw order -- `out_paths[i]` is sample `i`, which
+        # is what the common layer pairs with `coords[i]` -- and only the
+        # number in the file name is the rank, as upstream's writer names it.
+        ranks = _model_ranks(public_out, num_samples)
         paths = []
         for model_idx in range(num_samples):
-            suffix = "" if num_samples == 1 else f"_model_{model_idx}"
+            suffix = "" if num_samples == 1 else f"_model_{ranks[model_idx]}"
             out_path = dest / f"{record_id}{suffix}.{write_fmt}"
             paths.append(
                 write_prediction(
@@ -2005,7 +2016,31 @@ def predict(
             result["out_path"] = paths[0]
         else:
             result["out_paths"] = paths
+            result["out_path_ranks"] = ranks
     return result
+
+
+def _model_ranks(out: Mapping[str, Any], num_samples: int) -> list[int]:
+    """The rank upstream's writer puts in each diffusion sample's file name.
+
+    ``BoltzWriter`` names sample ``i`` ``<id>_model_<rank of i>``, ranking by
+    ``confidence_score`` descending, and by draw order when there is no
+    confidence summary (``data/write/writer.py:73-79,158-159``). Entry ``i``
+    is the rank of draw ``i``. Equal scores keep draw order, which upstream's
+    ``torch.argsort`` leaves undefined; a score that does not hold one value
+    per sample cannot rank them, and falls back to draw order as well.
+    """
+
+    score = out.get("confidence_score")
+    if score is None:
+        return list(range(num_samples))
+    flat = np.asarray(score, dtype=np.float64).reshape(-1)
+    if flat.size != num_samples:
+        return list(range(num_samples))
+    ranks = np.empty(num_samples, dtype=np.int64)
+    key = np.where(np.isnan(flat), -np.inf, -flat)  # NaN first, as torch.argsort
+    ranks[np.argsort(key, kind="stable")] = np.arange(num_samples)
+    return [int(rank) for rank in ranks]
 
 
 def _affinity_input_sample(out: Mapping[str, Any]) -> int:

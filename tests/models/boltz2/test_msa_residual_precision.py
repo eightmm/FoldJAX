@@ -71,3 +71,94 @@ def test_msa_stack_can_carry_promoted_residual(monkeypatch, scanned):
 
     result = jax.jit(fn)(params, jnp.ones((1, 3, 3, 2)), jnp.ones((1, 3, 2)), feats)
     np.testing.assert_array_equal(result, np.ones((1, 3, 3, 2)))
+
+
+def _selected_rows(monkeypatch, depth, **kwargs):
+    """The alignment rows the first MSA layer is handed, in order."""
+
+    seen = []
+
+    def layer(p, z, m, token_mask, msa_mask, **_kwargs):
+        seen.append(np.asarray(msa_mask)[0, :, 0].astype(np.int64) - 1)
+        return z, m
+
+    monkeypatch.setattr(msa, "msa_layer_forward", layer)
+    params = dict(
+        msa_proj=dict(kernel=jnp.zeros((36, 4))),
+        s_proj=dict(kernel=jnp.zeros((2, 4))),
+        layers=[dict(index=jnp.asarray(0))],
+    )
+    feats = dict(
+        msa=jnp.zeros((1, depth, 3), jnp.int32),
+        has_deletion=jnp.zeros((1, depth, 3)),
+        deletion_value=jnp.zeros((1, depth, 3)),
+        msa_paired=jnp.zeros((1, depth, 3)),
+        # Row r is marked r + 1, so the mask a layer sees names its rows.
+        msa_mask=jnp.broadcast_to(
+            jnp.arange(1.0, depth + 1.0)[None, :, None], (1, depth, 3)
+        ),
+        token_pad_mask=jnp.ones((1, 3)),
+    )
+    msa.msa_module_forward(
+        params,
+        jnp.ones((1, 3, 3, 2)),
+        jnp.ones((1, 3, 2)),
+        feats,
+        use_scan=False,
+        **kwargs,
+    )
+    return seen[0]
+
+
+@pytest.mark.parametrize("depth", [6, 4, 3, 1])
+def test_msa_subsampling_selects_at_every_depth(monkeypatch, depth):
+    """Upstream draws ``randperm(depth)[:cap]`` whenever subsampling is on.
+
+    ``trunkv2.py:630-634`` has no depth test, so an alignment at the cap or
+    under it is still permuted and a replayed draw is ``min(depth, cap)`` wide.
+    """
+
+    cap = 4
+    width = min(depth, cap)
+    on = dict(subsample_msa=True, num_subsampled_msa=cap)
+
+    replay = np.arange(depth)[::-1][:width]
+    np.testing.assert_array_equal(
+        _selected_rows(
+            monkeypatch,
+            depth,
+            msa_rows=replay,
+            msa_key=jax.random.key(0),
+            **on,
+        ),
+        replay,
+    )
+
+    key = jax.random.key(3)
+    drawn = _selected_rows(monkeypatch, depth, msa_key=key, **on)
+    np.testing.assert_array_equal(
+        drawn, np.asarray(jax.random.permutation(key, depth))[:width]
+    )
+    assert len(set(drawn.tolist())) == width
+
+    np.testing.assert_array_equal(
+        _selected_rows(monkeypatch, depth, **on), np.arange(width)
+    )
+    # Off, neither a key nor replayed rows select anything.
+    np.testing.assert_array_equal(
+        _selected_rows(monkeypatch, depth, msa_rows=replay, msa_key=key),
+        np.arange(depth),
+    )
+
+
+@pytest.mark.parametrize("depth", [6, 4, 3])
+@pytest.mark.parametrize("extra", [-1, 1])
+def test_replayed_msa_rows_must_match_the_selected_width(monkeypatch, depth, extra):
+    cap = 4
+    on = dict(subsample_msa=True, num_subsampled_msa=cap)
+    wrong = np.zeros(min(depth, cap) + extra, dtype=np.int64)
+
+    with pytest.raises(ValueError, match="msa_rows"):
+        _selected_rows(monkeypatch, depth, msa_rows=wrong, **on)
+    with pytest.raises(ValueError, match="msa_rows"):
+        _selected_rows(monkeypatch, depth, msa_rows=wrong[None], **on)
