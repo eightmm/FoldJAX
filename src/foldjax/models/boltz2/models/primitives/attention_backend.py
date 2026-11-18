@@ -64,7 +64,10 @@ def tokamax_dot_product_attention(
     (currently Mosaic GPU, Triton, then XLA) and advances only when a candidate
     is unsupported.  It is not a shape-performance decision.  The explicit
     ``backend="triton"`` spelling pins ``implementation="triton"`` and fails
-    loudly when that kernel cannot run; it never silently becomes XLA.
+    loudly when that kernel cannot run; it never silently becomes XLA.  For
+    ``float32`` inputs at ``highest`` matmul precision, ragged sequence axes
+    are padded to tokamax's Triton tile multiple with masked suffix positions
+    and sliced back to the input query length.
     """
 
     if backend not in ("tokamax", "triton"):
@@ -92,14 +95,23 @@ def tokamax_dot_product_attention(
         flags.FLAGS(["foldjax.models.boltz2"], known_only=True)
 
     from foldjax import _pallas_gpu
+    from foldjax.models._tokamax_attention import (
+        pad_attention_to_block,
+        should_pad_attention_to_block,
+    )
 
     _pallas_gpu.install()
-    key_mask = mask[:, None, None, :].astype(bool)
-    empty = ~jnp.any(key_mask, axis=-1, keepdims=True)
+    col_mask = mask[:, None, None, :].astype(bool)
+    empty = ~jnp.any(col_mask, axis=-1, keepdims=True)
     # Fused kernels are allowed to assume that every batch has at least one
     # valid key. Give empty batches a harmless temporary key so the kernel
     # never forms an all-masked softmax, then restore the public zero contract.
-    safe_mask = key_mask.at[..., 0].set(key_mask[..., 0] | empty[..., 0])
+    safe_mask = col_mask.at[..., 0].set(col_mask[..., 0] | empty[..., 0])
+    orig_q: int | None = None
+    if should_pad_attention_to_block(q):
+        q, k, v, bias, safe_mask, orig_q = pad_attention_to_block(
+            q, k, v, bias, safe_mask
+        )
     out = tokamax.dot_product_attention(
         q,
         k,
@@ -109,5 +121,7 @@ def tokamax_dot_product_attention(
         scale=scale,
         implementation=implementation,
     ).astype(v.dtype)
+    if orig_q is not None and out.shape[-3] != orig_q:
+        out = out[..., :orig_q, :, :]
     return jnp.where(empty, jnp.zeros_like(out), out)
 

@@ -514,6 +514,22 @@ unless it says so here, in its own paragraph.
   `alignment statistics (wait)` stage only when that wait is real. A failure
   reading one alignment still becomes that file's `error` record; values and
   record shape are unchanged.
+- **Boltz-2 and Protenix pad ragged sequence axes inside `tokamax` fused
+  attention for `float32` inputs at `highest` matmul precision.** A GPU kernel
+  profile on Boltz-2 at 1,003 tokens (`float32` at `highest` matmul precision,
+  padding off) showed Tokamax's `pallas_flash_attention` (`block_q` and
+  `block_k` both 64) taking 15.4 ms per call at 1,003 against 2.6 ms at 1,024
+  -- 61 s of the run's 63 s gap -- with 1,003 not a multiple of 64. For
+  `float32` queries under `highest` matmul precision, both ports'
+  `tokamax.dot_product_attention` wrappers now pad ragged query and key lengths
+  to the Triton tile multiple (`16`, `32` or `64`), mask the padded suffix
+  positions and slice the padded query rows off the output, while `bfloat16`
+  and default/TF32 runs leave their operands unpadded because they have no
+  ragged-tile penalty and measured slower with the pad. Default `bfloat16`/TF32
+  runs and already-aligned calls (`1,024`, `2,304`, ..., and the `32 x 128`
+  atom windows) compile and execute identically to before; ragged exact-shape
+  runs (`--no-padding`) in `float32` at `highest` matmul precision match their
+  earlier outputs up to floating-point summation order rather than bit for bit.
 - **`raw_output.npz` is written uncompressed** (OpenDDE `--option
   include_raw=true`, Protenix `--option output_format=both` or `npz`).
   Confidence logits barely compress: at 1,003 tokens on OpenDDE that archive

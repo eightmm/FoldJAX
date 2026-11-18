@@ -691,3 +691,268 @@ def test_both_backend_options_reach_the_tokamax_sites(monkeypatch) -> None:
     assert reached == explicit, (
         "the released diffusion default did not reach the tokamax sites"
     )
+
+
+@pytest.mark.parametrize("seq_len", [37, 70])
+@pytest.mark.parametrize("with_mask", [False, True])
+def test_protenix_tokamax_ragged_padding_matches_unpadded_with_none_and_explicit_masks(
+    monkeypatch, seq_len: int, with_mask: bool
+) -> None:
+    import tokamax
+
+    from foldjax.models.protenix.models.primitives import attention_tokamax
+
+    monkeypatch.setattr(attention_tokamax, "_WARNED_FLOAT32", True)
+    rng = np.random.default_rng(200 + seq_len + int(with_mask))
+    batch, heads, dim = 2, 4, 16
+    q_np = rng.normal(size=(batch, seq_len, heads, dim))
+    k_np = rng.normal(size=(batch, seq_len, heads, dim))
+    v_np = rng.normal(size=(batch, seq_len, heads, dim))
+    # Broadcast across batch (size 1) and heads (size 1).
+    bias_np = rng.normal(size=(1, 1, seq_len, seq_len)) * 0.25
+
+    if with_mask:
+        raw_mask = rng.random((batch, 1, seq_len, seq_len)) > 0.3
+        raw_mask[:, :, :, 0] = True
+        # Row 0 of batch 1 is completely masked to exercise empty-row widening.
+        raw_mask[1, 0, 0, :] = False
+        mask_in = jnp.asarray(raw_mask, dtype=bool)
+        ref_mask = mask_in | ~jnp.any(mask_in, axis=-1, keepdims=True)
+    else:
+        mask_in = None
+        ref_mask = None
+
+    real_dpa = tokamax.dot_product_attention
+    seen: list[
+        tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...], np.ndarray | None]
+    ] = []
+
+    def spy_dpa(qa, ka, va, *, bias=None, mask=None, scale=None, implementation=None):
+        del implementation
+        seen.append(
+            (
+                tuple(qa.shape),
+                tuple(ka.shape),
+                tuple(bias.shape),
+                None if mask is None else np.asarray(mask),
+            )
+        )
+        return real_dpa(
+            qa, ka, va, bias=bias, mask=mask, scale=scale, implementation="xla"
+        )
+
+    q_f32 = jnp.asarray(q_np, dtype=jnp.float32)
+    k_f32 = jnp.asarray(k_np, dtype=jnp.float32)
+    v_f32 = jnp.asarray(v_np, dtype=jnp.float32)
+    bias_f32 = jnp.asarray(bias_np, dtype=jnp.float32)
+    q_bf16 = jnp.asarray(q_np, dtype=jnp.bfloat16)
+    k_bf16 = jnp.asarray(k_np, dtype=jnp.bfloat16)
+    v_bf16 = jnp.asarray(v_np, dtype=jnp.bfloat16)
+    bias_bf16 = jnp.asarray(bias_np, dtype=jnp.bfloat16)
+
+    def unpadded_expected(qa, ka, va, ba):
+        return real_dpa(
+            qa, ka, va, bias=ba, mask=ref_mask, scale=1.0, implementation="xla"
+        ).astype(va.dtype)
+
+    with jax.default_matmul_precision("highest"):
+        expected_f32_highest = unpadded_expected(q_f32, k_f32, v_f32, bias_f32)
+    expected_f32_default = unpadded_expected(q_f32, k_f32, v_f32, bias_f32)
+    expected_bf16 = unpadded_expected(q_bf16, k_bf16, v_bf16, bias_bf16)
+
+    monkeypatch.setattr(tokamax, "dot_product_attention", spy_dpa)
+
+    # (a) bf16 (any precision) and float32 at default/high precision do NOT pad.
+    no_pad_cases = [
+        (q_bf16, k_bf16, v_bf16, bias_bf16, None, expected_bf16),
+        (q_bf16, k_bf16, v_bf16, bias_bf16, "highest", expected_bf16),
+        (q_f32, k_f32, v_f32, bias_f32, None, expected_f32_default),
+        (q_f32, k_f32, v_f32, bias_f32, "default", expected_f32_default),
+        (q_f32, k_f32, v_f32, bias_f32, "high", expected_f32_default),
+    ]
+    for qa, ka, va, ba, policy, exp in no_pad_cases:
+        seen.clear()
+        if policy is None:
+            out_unpadded = attention_tokamax.tokamax_attention(
+                qa, ka, va, bias=ba, mask=mask_in, implementation="xla"
+            )
+        else:
+            with jax.default_matmul_precision(policy):
+                out_unpadded = attention_tokamax.tokamax_attention(
+                    qa, ka, va, bias=ba, mask=mask_in, implementation="xla"
+                )
+        assert len(seen) == 1
+        q_seen, k_seen, bias_seen, mask_seen = seen[0]
+        assert q_seen == (batch, seq_len, heads, dim)
+        assert k_seen == (batch, seq_len, heads, dim)
+        assert bias_seen == (1, 1, seq_len, seq_len)
+        if not with_mask:
+            assert mask_seen is None
+        else:
+            assert mask_seen is not None
+            assert mask_seen.shape == (batch, 1, seq_len, seq_len)
+        assert out_unpadded.shape == (batch, seq_len, heads, dim)
+        assert out_unpadded.dtype == qa.dtype
+        np.testing.assert_array_equal(
+            np.asarray(out_unpadded, dtype=np.float32),
+            np.asarray(exp, dtype=np.float32),
+        )
+
+    # (b) float32 at highest precision pads ragged lengths and matches XLA ref.
+    seen.clear()
+    with jax.default_matmul_precision("highest"):
+        actual = attention_tokamax.tokamax_attention(
+            q_f32, k_f32, v_f32, bias=bias_f32, mask=mask_in, implementation="xla"
+        )
+
+    expected_padded = 64 if seq_len == 37 else 128
+    assert len(seen) == 1
+    q_seen, k_seen, bias_seen, mask_seen = seen[0]
+    assert q_seen == (batch, expected_padded, heads, dim)
+    assert k_seen == (batch, expected_padded, heads, dim)
+    assert bias_seen == (1, 1, expected_padded, expected_padded)
+    assert mask_seen is not None
+    if not with_mask:
+        assert mask_seen.shape == (1, 1, 1, expected_padded)
+        assert mask_seen[..., :seq_len].all()
+    assert not mask_seen[..., seq_len:].any()
+    assert actual.shape == (batch, seq_len, heads, dim)
+    assert actual.dtype == jnp.float32
+    assert bool(jnp.isfinite(actual).all())
+    np.testing.assert_allclose(
+        np.asarray(actual, dtype=np.float32),
+        np.asarray(expected_f32_highest, dtype=np.float32),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
+
+def test_protenix_tokamax_aligned_is_noop_and_padded_queries_never_leak(
+    monkeypatch,
+) -> None:
+    import tokamax
+
+    from foldjax.models.protenix.models.primitives import attention_tokamax
+
+    monkeypatch.setattr(attention_tokamax, "_WARNED_FLOAT32", True)
+    real_dpa = tokamax.dot_product_attention
+    seen: list[tuple[tuple[int, ...], tuple[int, ...], object, object]] = []
+
+    def spy_aligned(qa, ka, va, *, bias=None, mask=None, scale=None, **kwargs):
+        del kwargs
+        seen.append(
+            (
+                tuple(qa.shape),
+                tuple(ka.shape),
+                None if bias is None else tuple(bias.shape),
+                mask,
+            )
+        )
+        return real_dpa(
+            qa, ka, va, bias=bias, mask=mask, scale=scale, implementation="xla"
+        )
+
+    monkeypatch.setattr(tokamax, "dot_product_attention", spy_aligned)
+    with jax.default_matmul_precision("highest"):
+        for n_q, n_k in [(16, 16), (32, 128), (64, 64), (1024, 1024)]:
+            q = jnp.ones((1, n_q, 2, 4), dtype=jnp.float32)
+            k = jnp.ones((1, n_k, 2, 4), dtype=jnp.float32)
+            bias = jnp.zeros((1, 2, n_q, n_k), dtype=jnp.float32)
+            seen.clear()
+            out = attention_tokamax.tokamax_attention(
+                q, k, k, bias=bias, mask=None, implementation="xla"
+            )
+            assert seen == [((1, n_q, 2, 4), (1, n_k, 2, 4), (1, 2, n_q, n_k), None)]
+            assert out.shape == (1, n_q, 2, 4)
+
+        # Aligned query (16) with ragged cols (37): pads cols to 64, no query slice.
+        seen.clear()
+        q16 = jnp.ones((1, 16, 2, 4), dtype=jnp.float32)
+        k37 = jnp.ones((1, 37, 2, 4), dtype=jnp.float32)
+        b_rect = jnp.zeros((1, 2, 16, 37), dtype=jnp.float32)
+        out_rect = attention_tokamax.tokamax_attention(
+            q16, k37, k37, bias=b_rect, mask=None, implementation="xla"
+        )
+        assert len(seen) == 1
+        assert seen[0][:3] == ((1, 16, 2, 4), (1, 64, 2, 4), (1, 2, 16, 64))
+        assert out_rect.shape == (1, 16, 2, 4)
+
+    def unpadded_ref(qa, ka, va, ba):
+        return real_dpa(
+            qa, ka, va, bias=ba, mask=None, scale=1.0, implementation="xla"
+        ).astype(va.dtype)
+
+    q64 = jnp.ones((1, 64, 2, 4), dtype=jnp.float32)
+    b64 = jnp.zeros((1, 2, 64, 64), dtype=jnp.float32)
+    with jax.default_matmul_precision("highest"):
+        wrapped_jaxpr = jax.make_jaxpr(
+            lambda qa, ka, va, ba: attention_tokamax.tokamax_attention(
+                qa, ka, va, bias=ba, mask=None, implementation="xla"
+            )
+        )(q64, q64, q64, b64)
+        ref_jaxpr = jax.make_jaxpr(unpadded_ref)(q64, q64, q64, b64)
+    primitives = [eqn.primitive.name for eqn in wrapped_jaxpr.jaxpr.eqns]
+    assert "pad" not in primitives
+    assert "slice" not in primitives
+    assert primitives == [eqn.primitive.name for eqn in ref_jaxpr.jaxpr.eqns]
+
+    q37_bf16 = jnp.ones((1, 37, 2, 4), dtype=jnp.bfloat16)
+    b37_bf16 = jnp.zeros((1, 2, 37, 37), dtype=jnp.bfloat16)
+    with jax.default_matmul_precision("high"):
+        bf16_jaxpr = jax.make_jaxpr(
+            lambda qa, ka, va, ba: attention_tokamax.tokamax_attention(
+                qa, ka, va, bias=ba, mask=None, implementation="xla"
+            )
+        )(q37_bf16, q37_bf16, q37_bf16, b37_bf16)
+        bf16_ref_jaxpr = jax.make_jaxpr(unpadded_ref)(
+            q37_bf16, q37_bf16, q37_bf16, b37_bf16
+        )
+    bf16_primitives = [eqn.primitive.name for eqn in bf16_jaxpr.jaxpr.eqns]
+    assert "pad" not in bf16_primitives
+    assert "slice" not in bf16_primitives
+    assert bf16_primitives == [eqn.primitive.name for eqn in bf16_ref_jaxpr.jaxpr.eqns]
+
+    def poison_padded_queries(qa, ka, va, **kwargs):
+        del ka, kwargs
+        assert qa.shape[-3] == 64
+        clean = jnp.full(
+            qa.shape[:-3] + (37, qa.shape[-2], va.shape[-1]), 2.0, va.dtype
+        )
+        poison = jnp.full(
+            qa.shape[:-3] + (27, qa.shape[-2], va.shape[-1]), jnp.nan, va.dtype
+        )
+        return jnp.concatenate([clean, poison], axis=-3)
+
+    monkeypatch.setattr(tokamax, "dot_product_attention", poison_padded_queries)
+    q37 = jnp.ones((2, 37, 2, 4), dtype=jnp.float32)
+    with jax.default_matmul_precision("highest"):
+        out37 = attention_tokamax.tokamax_attention(
+            q37, q37, q37, bias=None, mask=None, implementation="xla"
+        )
+    assert out37.shape == (2, 37, 2, 4)
+    assert bool(jnp.isfinite(out37).all())
+    np.testing.assert_array_equal(
+        np.asarray(out37, dtype=np.float32),
+        np.full((2, 37, 2, 4), 2.0, dtype=np.float32),
+    )
+
+    traced_q_lens: list[int] = []
+
+    def trace_spy(qa, ka, va, *, bias=None, mask=None, scale=None, **kwargs):
+        del kwargs
+        traced_q_lens.append(qa.shape[-3])
+        return real_dpa(
+            qa, ka, va, bias=bias, mask=mask, scale=scale, implementation="xla"
+        )
+
+    monkeypatch.setattr(tokamax, "dot_product_attention", trace_spy)
+    jitted = jax.jit(
+        lambda qa, ka, va: attention_tokamax.tokamax_attention(
+            qa, ka, va, bias=None, mask=None, implementation="xla"
+        )
+    )
+    with jax.default_matmul_precision("high"):
+        assert jitted(q37, q37, q37).shape == (2, 37, 2, 4)
+    with jax.default_matmul_precision("highest"):
+        assert jitted(q37, q37, q37).shape == (2, 37, 2, 4)
+    assert traced_q_lens == [37, 64]

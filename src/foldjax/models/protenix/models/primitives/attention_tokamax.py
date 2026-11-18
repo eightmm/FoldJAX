@@ -70,7 +70,10 @@ def tokamax_attention(
     ``bias`` and ``mask`` are ``[*#B, #H, #T, #S]`` and may broadcast on every
     axis. ``q`` is already scaled. Dtypes are passed through untouched: the
     kernel pays off in bfloat16, and an upcast here would both hide that and
-    change what the port computes.
+    change what the port computes. For ``float32`` inputs at ``highest`` matmul
+    precision, ragged sequence axes are padded to tokamax's Triton tile
+    multiple with masked suffix positions and sliced back to the input query
+    length.
 
     A query row with no valid key is widened to accept every key rather than
     left as an all-masked softmax, because a fused kernel is entitled to return
@@ -98,6 +101,10 @@ def tokamax_attention(
         flags.FLAGS(["foldjax.models.protenix"], known_only=True)
 
     from foldjax import _pallas_gpu
+    from foldjax.models._tokamax_attention import (
+        pad_attention_to_block,
+        should_pad_attention_to_block,
+    )
 
     _pallas_gpu.install()
     if q.dtype == jnp.float32:
@@ -107,7 +114,10 @@ def tokamax_attention(
         mask = jnp.asarray(mask, dtype=bool)
         mask = mask | ~jnp.any(mask, axis=-1, keepdims=True)
 
-    return tokamax.dot_product_attention(
+    orig_q: int | None = None
+    if should_pad_attention_to_block(q):
+        q, k, v, bias, mask, orig_q = pad_attention_to_block(q, k, v, bias, mask)
+    out = tokamax.dot_product_attention(
         q,
         k,
         v,
@@ -118,6 +128,9 @@ def tokamax_attention(
             TOKAMAX_IMPLEMENTATION if implementation is None else implementation
         ),
     ).astype(v.dtype)
+    if orig_q is not None and out.shape[-3] != orig_q:
+        out = out[..., :orig_q, :, :]
+    return out
 
 
 def _warn_float32_inputs() -> None:
