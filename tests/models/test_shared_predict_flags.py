@@ -426,10 +426,13 @@ def test_attention_backend_choices_are_pinned_per_port(
             else "xla_jit"
         )
         assert spec["default"] == expected_default
-        assert spec["choices"] == _ATTENTION_BACKEND_CHOICES[port], (
-            port,
-            option_strings,
+        # OpenDDE offers tokamax at the denoiser only, as an opt-in.
+        expected_choices = _ATTENTION_BACKEND_CHOICES[port] + (
+            ("tokamax",)
+            if port == "opendde" and dest == "diffusion_attention_backend"
+            else ()
         )
+        assert spec["choices"] == expected_choices, (port, option_strings)
 
 
 @pytest.mark.parametrize(("port", "main", "_expected_order"), _PORTS)

@@ -78,7 +78,16 @@ def main(
     )
     _predict_flags.add_msa_depth(parser)
     _predict_flags.add_deterministic_ops(parser)
-    _predict_flags.add_attention_backends(parser)
+    parser.add_argument(
+        "--diffusion-attention-backend",
+        choices=("xla", "xla_jit", "xla_sdpa", "tokamax"),
+        default="xla_jit",
+    )
+    parser.add_argument(
+        "--trunk-single-attention-backend",
+        choices=("xla", "xla_jit", "xla_sdpa"),
+        default="xla_jit",
+    )
     parser.add_argument(
         "--structural-single-attention-backend",
         choices=("xla", "xla_jit", "xla_sdpa"),

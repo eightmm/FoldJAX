@@ -719,6 +719,18 @@ def _run(
 
         guidance_config = upstream_guidance_config()
         print("TFG enabled: using the eager, non-scan diffusion sampler")
+    if (
+        guidance_config is not None
+        and guidance_config.get("enable")
+        and config.diffusion_attention_backend == "tokamax"
+    ):
+        # The guided sampler is eager, and an eager `pallas_call` binds a fresh
+        # `jit` per call, so tokamax compiles once per denoiser attention
+        # (`models/protenix/runner.py`). The adapter refuses this combination in
+        # `backends/opendde.py`; this fallback covers direct native-CLI calls
+        # only.
+        config = config._replace(diffusion_attention_backend="xla_jit")
+        print("TFG enabled: diffusion attention runs xla_jit, not tokamax")
     # Handed to the featurizer for this run, not exported: the environment is
     # process-wide, and this runner also runs in-process under FoldJAX, where
     # an export outlived the run and reached every later prediction.

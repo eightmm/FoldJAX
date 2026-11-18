@@ -1764,9 +1764,15 @@ Triton (sm120 here), so a device that cannot run it raises instead of quietly
 running XLA under the tokamax name. A requested query chunk size does not
 reach a kernel that takes the whole query axis and is reported as unused, and
 an explicitly requested `tokamax` is refused under context parallelism (the
-omitted default resolves to `xla_jit` there). OpenDDE reaches the same two
-sites through Protenix's
-primitives but does not offer the value: it has not been measured there.
+omitted default resolves to `xla_jit` there). OpenDDE offers it at the
+diffusion site only, as an opt-in (`--option
+diffusion_attention_backend=tokamax`; its default stays `xla_jit`), where one
+value covers the token and both atom attentions. At 1,003 tokens on one RTX
+PRO 6000 it cut the warm prediction from 130.8 to 120.3 s at default
+precision and from 230.6 to 219.2 s in float32 with raw outputs, at unchanged
+peak memory; the float32 coordinates moved by at most 0.03 Å CA RMSD. Under
+`use_tfg_guidance` OpenDDE refuses it, because the eager guided sampler would
+recompile the kernel on every call.
 
 ### The 2-D ring's tile kernel (`--option triangle_attention_ring_kernel`)
 

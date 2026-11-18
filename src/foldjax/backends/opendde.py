@@ -248,7 +248,10 @@ _OPTION_SPECS: dict[
     "cp_devices": (_integer_option, None),
     "cp_layout": (_text_option, ("auto", "1d", "2d")),
     "deterministic_ops": (_text_option, ("off", "on")),
-    "diffusion_attention_backend": (_text_option, ("xla", "xla_jit", "xla_sdpa")),
+    "diffusion_attention_backend": (
+        _text_option,
+        ("xla", "xla_jit", "xla_sdpa", "tokamax"),
+    ),
     "diffusion_chunk_size": (_integer_option, None),
     "diffusion_dtype": (_text_option, ("fp32", "bf16")),
     "kalign_binary": (_path_option, None),
@@ -311,6 +314,23 @@ class _NativeInvocation(NamedTuple):
     cp_devices: int
     cp_layout: str
     matmul_precision: Callable[[], AbstractContextManager[None]]
+
+
+def _refuse_guided_tokamax(options: dict[str, object]) -> None:
+    """Refuse tokamax under `use_tfg_guidance` rather than fall back from it.
+
+    The released default is already `xla_jit`, so only an explicit request
+    reaches `tokamax`, and the eager guided sampler would recompile its fused
+    attention on every call. The runner's own fallback serves direct
+    native-CLI calls only.
+    """
+    if str(options.get("diffusion_attention_backend", "")).strip().lower() == "tokamax":
+        raise ValueError(
+            "use_tfg_guidance runs the eager guided sampler, where "
+            "diffusion_attention_backend=tokamax recompiles tokamax's "
+            "fused attention on every call; omit the option or pass "
+            "--option diffusion_attention_backend=xla_jit"
+        )
 
 
 class OpenDDEBackend(ManagedCcdSession, Backend):
@@ -415,6 +435,7 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
                     "use_tfg_guidance runs the eager guided sampler, which "
                     "context parallelism cannot partition"
                 )
+            _refuse_guided_tokamax(options)
 
     def padding_conflict(self, request: PredictionRequest) -> str | None:
         # The refusal in `validate_request` below.
@@ -526,6 +547,12 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
         """
 
         options = self.apply_sampling(request)
+        # `predict` reaches here without `validate_request`.
+        # Read the way the configuration below will read it.
+        if _boolean_option(
+            "use_tfg_guidance", options.get("use_tfg_guidance", False)
+        ):
+            _refuse_guided_tokamax(options)
         # Out before the leftover-option check below: carried by the scope, not
         # by argv.
         matmul_precision = self.matmul_precision(options)

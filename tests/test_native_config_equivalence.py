@@ -304,6 +304,7 @@ _OPENDDE_REQUESTS: dict[str, dict[str, Any]] = {
             "cp_devices": "4",
             "max_msa_depth": "2048",
             "n_queries": "16",
+            "memory_budget_gib": "12.5",
         }
     },
     "paths-as-text": {"options": {"components_cif": "/tmp/components-as-text.cif"}},

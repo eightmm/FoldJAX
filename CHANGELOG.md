@@ -22,6 +22,11 @@ unless it says so here, in its own paragraph.
   `raw_output.npz`); AlphaFold 3 and Boltz-2 already write theirs. Passing a
   name together with its other spelling, or two old names for one setting, is
   an error. Defaults, output files and run records are unchanged.
+- **OpenDDE `diffusion_attention_backend=tokamax`**, an opt-in for the
+  denoiser's token and atom attention (default unchanged, `xla_jit`). At
+  1,003 tokens the warm prediction took 0.92x the time at default precision
+  and 0.95x in float32 with raw outputs, at the same peak memory. Refused
+  together with `use_tfg_guidance`.
 - **`--cache-dir` on the Protenix and OpenDDE native predict CLIs and
   `--no-cache` on Protenix's**, as aliases of `--compile-cache` and
   `--no-compile-cache`.
