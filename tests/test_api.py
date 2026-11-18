@@ -1274,6 +1274,11 @@ def test_request_rejects_a_negative_seed(tmp_path: Path) -> None:
         ("num_samples", False),
         ("num_steps", 20.5),
         ("num_recycles", "3"),
+        ("trunk_passes", ""),
+        ("trunk_passes", "4"),
+        ("trunk_passes", 1.5),
+        ("trunk_passes", True),
+        ("trunk_passes", False),
         ("max_msa_depth", 64.5),
     ],
 )
@@ -1284,17 +1289,37 @@ def test_request_rejects_values_that_are_not_integers(
         _request(tmp_path, **{field: value})
 
 
+@pytest.mark.parametrize("passes", [0, -1])
+def test_request_rejects_nonpositive_trunk_passes(
+    tmp_path: Path, passes: int
+) -> None:
+    with pytest.raises(ValueError, match="trunk_passes must be at least 1"):
+        _request(tmp_path, trunk_passes=passes)
+
+
+@pytest.mark.parametrize(("passes", "recycles"), [(4, 3), (1, 0)])
+def test_request_rejects_trunk_passes_and_num_recycles_together(
+    tmp_path: Path, passes: int, recycles: int
+) -> None:
+    with pytest.raises(
+        ValueError, match=r"(?=.*trunk_passes)(?=.*num_recycles)"
+    ):
+        _request(tmp_path, trunk_passes=passes, num_recycles=recycles)
+
+
 def test_request_normalizes_numpy_integer_knobs_for_json(tmp_path: Path) -> None:
     request = _request(
         tmp_path,
         seed=np.int64(4),
         num_seeds=np.int32(2),
         num_steps=np.int64(20),
+        trunk_passes=np.int64(4),
     )
 
     assert request.seed == 4 and type(request.seed) is int
     assert request.num_seeds == 2 and type(request.num_seeds) is int
     assert request.num_steps == 20 and type(request.num_steps) is int
+    assert request.trunk_passes == 4 and type(request.trunk_passes) is int
     json.dumps({"seeds": request.resolved_seeds, "sampling": request.sampling})
 
 
@@ -2218,3 +2243,188 @@ def test_a_step_aside_at_admission_is_recorded_as_the_padding_that_ran(
         "per_seed": [{"disabled_by": "memory admission"}, padded["padding"]]
     }
     assert combined["shape_profile"] == {"per_seed": [None, padded["shape_profile"]]}
+
+
+def _recording_real_backend(
+    model: str, seen: dict[str, tuple[PredictionRequest, dict]]
+):
+    from foldjax.registry import get_backend
+
+    base = type(get_backend(model))
+
+    class Recording(base):  # type: ignore[misc, valid-type]
+        def predict(self, request: PredictionRequest) -> PredictionResult:
+            seen[self.name] = (request, self.apply_sampling(request))
+            return PredictionResult(
+                model=self.name,
+                samples=(
+                    PredictionSample(
+                        seed=request.seed,
+                        coordinates=((0.0, 0.0, 0.0),),
+                        scores={"plddt": 80.0, "ptm": 0.8},
+                    ),
+                ),
+                output_dir=request.output_dir,
+                shape_profile=shape_profile(request),
+            )
+
+    return Recording
+
+
+@pytest.mark.parametrize("passes", [1, 4])
+@pytest.mark.parametrize("model", foldjax.available_models())
+def test_predict_resolves_trunk_passes_for_each_backend_and_manifest(
+    tmp_path: Path, model: str, passes: int
+) -> None:
+    from foldjax.manifest import MANIFEST_NAME
+
+    job = tmp_path / "job.json"
+    job.write_text(
+        json.dumps({"entities": [{"type": "protein", "id": "A", "sequence": "ACD"}]})
+    )
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    seen: dict[str, tuple[PredictionRequest, dict]] = {}
+    output = tmp_path / "out"
+    request = PredictionRequest(
+        model=model,
+        input=job,
+        weights=weights,
+        output_dir=output,
+        seed=5,
+        msa="single",
+        trunk_passes=passes,
+        use_compile_cache=False,
+    )
+    resolved = foldjax.resolve_request(request)
+    assert foldjax.resolve_request(resolved) == resolved
+
+    with backend_override(model, _recording_real_backend(model, seen)):
+        foldjax.predict(request)
+
+    received, applied = seen[model]
+    expected_recycles = passes if model in {"protenix", "opendde"} else passes - 1
+    expected_native = (
+        passes if model in {"protenix", "opendde", "openfold3"} else passes - 1
+    )
+    assert received.trunk_passes is None
+    assert received.num_recycles == expected_recycles
+    assert applied["num_recycles"] == expected_native
+
+    manifest = json.loads((output / MANIFEST_NAME).read_text())
+    assert manifest["sampling"] == {"num_recycles": expected_recycles}
+    assert "trunk_passes" not in manifest
+
+
+def test_legacy_num_recycles_reaches_backends_unchanged(tmp_path: Path) -> None:
+    job = tmp_path / "job.json"
+    job.write_text(
+        json.dumps({"entities": [{"type": "protein", "id": "A", "sequence": "ACD"}]})
+    )
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    seen: dict[str, tuple[PredictionRequest, dict]] = {}
+
+    for model, recycles, expected_native in (
+        ("boltz2", 3, 3),
+        ("protenix", 10, 10),
+        ("openfold3", 3, 4),
+    ):
+        with backend_override(model, _recording_real_backend(model, seen)):
+            foldjax.predict(
+                PredictionRequest(
+                    model=model,
+                    input=job,
+                    weights=weights,
+                    output_dir=tmp_path / f"out-{model}",
+                    seed=5,
+                    msa="single",
+                    num_recycles=recycles,
+                    use_compile_cache=False,
+                )
+            )
+        received, applied = seen[model]
+        assert received.trunk_passes is None
+        assert received.num_recycles == recycles
+        assert applied["num_recycles"] == expected_native
+
+
+@pytest.mark.parametrize("passes", [1, 4])
+def test_multi_model_request_resolves_trunk_passes_per_model(
+    tmp_path: Path, monkeypatch, passes: int
+) -> None:
+    from contextlib import ExitStack
+
+    job = tmp_path / "job.json"
+    job.write_text(
+        json.dumps({"entities": [{"type": "protein", "id": "A", "sequence": "ACD"}]})
+    )
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    monkeypatch.setattr(
+        "foldjax.assets.resolve_weights", lambda *args, **kwargs: weights
+    )
+    models = foldjax.available_models()
+    request = PredictionRequest(
+        models=models,
+        input=job,
+        output_dir=tmp_path / "batch",
+        seed=5,
+        msa="single",
+        trunk_passes=passes,
+        use_compile_cache=False,
+    )
+    resolved = foldjax.resolve_requests(request)
+    assert {
+        item.model: (item.num_recycles, item.trunk_passes) for item in resolved
+    } == {
+        model: (passes if model in {"protenix", "opendde"} else passes - 1, None)
+        for model in models
+    }
+
+    seen: dict[str, tuple[PredictionRequest, dict]] = {}
+    with ExitStack() as stack:
+        for model in models:
+            stack.enter_context(
+                backend_override(model, _recording_real_backend(model, seen))
+            )
+        foldjax.predict(request)
+
+    assert {model: req.num_recycles for model, (req, _) in seen.items()} == {
+        model: (passes if model in {"protenix", "opendde"} else passes - 1)
+        for model in models
+    }
+
+
+def test_preset_checks_resolved_trunk_passes(tmp_path: Path) -> None:
+    job = tmp_path / "job.json"
+    job.write_text('[{"sequences": []}]')
+    weights = tmp_path / "mini.jax"
+    weights.write_bytes(b"weights")
+
+    matching = foldjax.resolve_request(
+        PredictionRequest(
+            model="protenix",
+            input=job,
+            weights=weights,
+            profile="mini-esm-v0.5.0",
+            preset="fast",
+            trunk_passes=4,
+            use_compile_cache=False,
+        )
+    )
+    assert matching.trunk_passes is None
+    assert matching.num_recycles == 4
+
+    with pytest.raises(ValueError, match="preset 'fast' sets num_recycles=4"):
+        foldjax.resolve_request(
+            PredictionRequest(
+                model="protenix",
+                input=job,
+                weights=weights,
+                profile="mini-esm-v0.5.0",
+                preset="fast",
+                trunk_passes=5,
+                use_compile_cache=False,
+            )
+        )

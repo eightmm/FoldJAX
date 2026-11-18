@@ -18,7 +18,7 @@ result = predict(
         # Sampling, in one vocabulary. None keeps that backend's default.
         num_samples=5,
         num_steps=200,
-        num_recycles=10,
+        num_recycles=10,           # or trunk_passes=10 for model-uniform total passes
         max_msa_depth=8192,
         # Shape normalization, on by default (standard buckets); `padding=False`
         # runs exact shapes, and pinning axes defines one exact serving/cache
@@ -358,6 +358,12 @@ OpenFold3's three recycles are the neutral spelling. `apply_sampling`
 translates that to the four executed trunk cycles its `InferenceConfig`
 stores, so the backend's `_RELEASED_COMPILE_DEFAULTS` reads `4` for the same
 released schedule.
+
+`trunk_passes=P` (`P >= 1`, mutually exclusive with `num_recycles`) gives one
+unit across all six models: total main-trunk evaluations including the first.
+`resolve_request` and `resolve_requests` convert it per model to `num_recycles`
+(`P - 1` for AlphaFold 3, Boltz-2, ESMFold2 and OpenFold3; `P` for Protenix
+and OpenDDE), leaving `request.sampling` and run manifests unchanged.
 
 ESMFold2's row is not a typo: its released `config.json` asks for 32 samples
 off a 14-step schedule. Clipping at `sigma = 256` leaves 11 schedule values,

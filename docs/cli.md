@@ -47,6 +47,14 @@ See [recycling defaults](token-padding-profiles.md#recycling-defaults) for the
 model-specific settings, paper evidence and actual trunk pass counts. OpenFold3 translates the
 common additional-recycle count to its internal total count (3 to 4).
 
+`--trunk-passes N` (`N >= 1`) sets total main-trunk evaluations including the
+first, with the same meaning for every model (`predict`, `plan`, `cache warm`
+and `cache verify`). Request resolution converts it per model to
+`num_recycles` (`N - 1` for AlphaFold 3, Boltz-2, ESMFold2 and OpenFold3; `N`
+for Protenix and OpenDDE), so manifests, plans, resume checks and compile
+caches continue to record `num_recycles`. Passing both `--trunk-passes` and
+`--num-recycles` is an error.
+
 Protenix's and OpenDDE's native CLIs kept their old flags as aliases:
 `--n-sample`, `--n-step`, `--n-cycle` and `--max-msa-rows` still work and mean
 what they always meant.
@@ -334,7 +342,7 @@ preset is refused with the reason: AlphaFold 3, Boltz-2, OpenDDE and the
 Protenix base/v2 checkpoints publish only their full schedule, OpenFold3's
 presets do not touch steps or recycles, and ESMFold2's fast option is a
 separate checkpoint (ESMFold2-Fast). A preset together with a different
-`--num-steps`/`--num-recycles` is refused.
+`--num-steps`, `--num-recycles` or `--trunk-passes` is refused.
 
 **ModelCIF confidence records.** Every structure FoldJAX writes carries the
 ModelCIF `_ma_qa_metric` pLDDT records -- `global` (the common summary's

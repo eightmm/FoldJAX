@@ -12,6 +12,13 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **`trunk_passes` / `--trunk-passes` on the common request and CLI.** It
+  counts main-trunk evaluations including the first, with the same meaning
+  for every model; `num_recycles` keeps its per-model meaning (additional
+  passes on AlphaFold 3, Boltz-2, ESMFold2 and OpenFold3, total passes on
+  Protenix and OpenDDE). Request resolution converts `trunk_passes` to that
+  model's `num_recycles`, so plans, manifests, resume checks and compile
+  caches are unchanged. Setting both is an error.
 - **`--option pocket_sampling=select`: a FoldJAX-only pocket route on all
   six models.** A common job's pocket constraint could be read by Boltz-2,
   OpenFold3 and the Protenix constraint checkpoint and was refused by
@@ -544,9 +551,12 @@ unless it says so here, in its own paragraph.
   kernel call FoldJAX makes (triangle attention with and without masked
   columns, fused triangle multiplication, Boltz-2's mixed-precision
   multiplication and the transposed layer norm, at 256 to 3,012 tokens) gave
-  bit-identical outputs under both versions, and timings stayed within the
-  run-to-run spread except triangle attention at 1,024 tokens (4-5% slower on
-  a 3 ms call). `bench/cueq_upgrade_check.py` reruns the comparison.
+  bit-identical outputs under both versions. Float32 triangle attention got
+  faster with length (0.95x the 0.11.1 time at 2,100 tokens and 0.93x at
+  3,012, against a 0.2% repeat spread); bfloat16 triangle attention and both
+  multiplications stayed within the spread, except bfloat16 triangle attention
+  at 1,024 tokens (2-5% slower on a 3 ms call).
+  `bench/cueq_upgrade_check.py` reruns the comparison.
 - **Boltz-2, Protenix and ESMFold2 compile for repeatable results by
   default.** An omitted `deterministic` now runs as `on` on those three models
   and as `off` on OpenDDE, OpenFold3 and AlphaFold 3

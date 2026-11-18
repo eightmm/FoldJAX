@@ -14,6 +14,7 @@ from foldjax import api
 from foldjax.job import Job
 from foldjax.registry import capabilities, get_backend, normalize_model_name
 from foldjax.schema import (
+    _ADDITIONAL_RECYCLES,
     DEFAULT_PADDING,
     MSA_POLICIES,
     TEMPLATE_POLICIES,
@@ -26,10 +27,6 @@ from foldjax.schema import (
     _strict_integer,
     padding_record,
 )
-
-# The old request interface remains compatible. This interface always counts
-# total evaluations; these adapters expose additional recycles on that request.
-_ADDITIONAL_RECYCLES = frozenset({"alphafold3", "boltz2", "esmfold2", "openfold3"})
 
 
 @dataclass(frozen=True, slots=True)

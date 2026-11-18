@@ -29,12 +29,25 @@ def input_files(tmp_path):
 @pytest.mark.parametrize("model", foldjax.available_models())
 @pytest.mark.parametrize("passes", [1, 4])
 def test_total_passes_translate_to_existing_request_contract(tmp_path, model, passes):
+    assert foldjax.model._ADDITIONAL_RECYCLES is foldjax.schema._ADDITIONAL_RECYCLES
     handle = get_model(
         model, weights=tmp_path / "weights", config=ModelConfig(trunk_passes=passes)
     )
     request = handle.plan(tmp_path / "job.json")
     expected = passes if model in {"protenix", "opendde"} else passes - 1
+    assert request.trunk_passes is None
     assert request.num_recycles == expected
+    direct = foldjax.resolve_request(
+        PredictionRequest(
+            model=model,
+            input=tmp_path / "job.json",
+            weights=tmp_path / "weights",
+            trunk_passes=passes,
+        ),
+        draw_seeds=False,
+    )
+    assert direct.trunk_passes is None
+    assert direct.num_recycles == expected
     native = get_backend(model).apply_sampling(request)["num_recycles"]
     assert native == (
         passes if model in {"protenix", "opendde", "openfold3"} else passes - 1

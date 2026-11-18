@@ -72,7 +72,8 @@ settings fail instead of silently becoming common settings.
 
 Unset `ModelConfig` fields retain the selected **FoldJAX model/checkpoint**
 defaults, including the agreed [recycling policy](recycling-defaults.md).
-They do not restore every publisher CLI default. `trunk_passes=P` always requests
+They do not restore every publisher CLI default. `trunk_passes=P` (in
+`ModelConfig`, `PredictionRequest`, or CLI `--trunk-passes P`) always requests
 P total main-trunk evaluations, including the initial evaluation:
 
 | Backend | Compatible `PredictionRequest.num_recycles` |
@@ -98,7 +99,8 @@ prints that resolution for a concrete request as `sampling` and
 `sampling_source` (see [the CLI](cli.md#what-foldjax-plan-prints)).
 
 The existing `predict(PredictionRequest(...))` API remains available with its
-established counting and padding policy. The new handle writes
+established `num_recycles` counting and padding policy, and also accepts
+`trunk_passes=P` with the same per-model translation. The new handle writes
 `model_config.json` alongside the existing run manifest and exposes the same
 record through `result.configuration`. It records requested values and adapter
 bindings. `adapter_value` means a translated option, which may include FoldJAX

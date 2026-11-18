@@ -115,6 +115,10 @@ SEED_SOURCES = ("user", "upstream", "random", "job", "foldjax")
 #: ``randomSeed``, a C ``int``.
 RANDOM_SEED_BOUND = 2**31
 
+#: Models whose neutral ``num_recycles`` counts additional passes after the
+#: initial trunk evaluation; the remaining models count total trunk passes.
+_ADDITIONAL_RECYCLES = frozenset({"alphafold3", "boltz2", "esmfold2", "openfold3"})
+
 
 class PredictionError(RuntimeError):
     """A requested prediction could not produce a usable result."""
@@ -626,7 +630,8 @@ class PredictionRequest:
     # actually want when they say "run it five times": the seed values
     # themselves carry no meaning, only that they differ.
     num_seeds: int | None = None
-    # Model-neutral sampling knobs. None means "keep this backend's default".
+    # Model-neutral sampling knobs. None means "keep this backend's default";
+    # see also `trunk_passes`, which counts total trunk passes on every model.
     num_samples: int | None = None
     num_steps: int | None = None
     num_recycles: int | None = None
@@ -721,6 +726,11 @@ class PredictionRequest:
     # as the run's ``padding`` block; meaningless, and cleared, while padding
     # is on.
     padding_disabled_by: str | None = None
+    # Total main-trunk evaluations including the first, with the same meaning
+    # for every model. Appended to preserve the positional layout; mutually
+    # exclusive with `num_recycles` and resolved per model into `num_recycles`
+    # by `foldjax.resolve_request`.
+    trunk_passes: int | None = None
 
     def __post_init__(self) -> None:
         padding = _normalize_padding(self.padding)
@@ -923,7 +933,13 @@ class PredictionRequest:
             object.__setattr__(self, "num_seeds", num_seeds)
             if self.seeds is not None:
                 raise ValueError("seeds and num_seeds were both set; pass one of them")
-        for name in ("num_samples", "num_steps", "num_recycles", "max_msa_depth"):
+        for name in (
+            "num_samples",
+            "num_steps",
+            "num_recycles",
+            "trunk_passes",
+            "max_msa_depth",
+        ):
             value = getattr(self, name)
             if value is not None:
                 object.__setattr__(
@@ -933,6 +949,10 @@ class PredictionRequest:
                         value, name=name, minimum=0 if name == "num_recycles" else 1
                     ),
                 )
+        if self.trunk_passes is not None and self.num_recycles is not None:
+            raise ValueError(
+                "trunk_passes and num_recycles were both set; pass one of them"
+            )
 
     @property
     def resolved_models(self) -> tuple[str, ...]:

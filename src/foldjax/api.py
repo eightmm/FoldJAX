@@ -71,6 +71,7 @@ from foldjax.pocket_selection import requested as pocket_selection_requested
 from foldjax.registry import get_backend
 from foldjax.result_validation import _sample_index, _validate_result
 from foldjax.schema import (
+    _ADDITIONAL_RECYCLES,
     DEFAULT_SEEDS,
     JOB_DOCUMENT_SUFFIXES,
     JOB_SEEDS,
@@ -254,6 +255,13 @@ def resolve_request(
             "use resolve_requests() to inspect plural runs or predict() to execute them"
         )
     backend = get_backend(request.model)
+    if request.trunk_passes is not None:
+        request = dataclasses.replace(
+            request,
+            num_recycles=request.trunk_passes
+            - int(backend.name in _ADDITIONAL_RECYCLES),
+            trunk_passes=None,
+        )
     updates: dict[str, Any] = {}
 
     if request.model != backend.name:

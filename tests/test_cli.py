@@ -1434,3 +1434,291 @@ def test_predict_reclaims_pages_and_discovery_preserves_the_host_policy(
     _reached_predict(tmp_path, monkeypatch)
     capsys.readouterr()
     assert _managed_memory._RECLAIM_AT_RELEASE is True
+
+
+def _cli_recording_backend(model: str, seen: dict[str, tuple[object, dict]]):
+    from foldjax.registry import get_backend
+    from foldjax.schema import PredictionResult, PredictionSample
+
+    base = type(get_backend(model))
+
+    class Recording(base):  # type: ignore[misc, valid-type]
+        def predict(self, request):
+            seen[self.name] = (request, self.apply_sampling(request))
+            return PredictionResult(
+                model=self.name,
+                samples=(
+                    PredictionSample(
+                        seed=request.seed,
+                        coordinates=((0.0, 0.0, 0.0),),
+                        scores={"plddt": 80.0, "ptm": 0.8},
+                    ),
+                ),
+                output_dir=request.output_dir,
+                shape_profile=(
+                    None
+                    if request.padding is None
+                    else {
+                        "actual": {"tokens": 3},
+                        "target": {"tokens": 128},
+                        "changed": True,
+                    }
+                ),
+            )
+
+    return Recording
+
+
+@pytest.mark.parametrize("passes", [1, 4])
+@pytest.mark.parametrize(
+    "model",
+    ("alphafold3", "boltz2", "esmfold2", "openfold3", "protenix", "opendde"),
+)
+def test_cli_trunk_passes_resolves_per_model_in_predict(
+    tmp_path: Path, capsys, model: str, passes: int
+) -> None:
+    from foldjax.registry import backend_override
+
+    job = tmp_path / "job.json"
+    job.write_text(
+        json.dumps({"entities": [{"type": "protein", "id": "A", "sequence": "ACD"}]})
+    )
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    seen: dict[str, tuple[object, dict]] = {}
+    with backend_override(model, _cli_recording_backend(model, seen)):
+        assert (
+            main(
+                [
+                    "predict",
+                    "--model",
+                    model,
+                    "--input",
+                    str(job),
+                    "--weights",
+                    str(weights),
+                    "--output-dir",
+                    str(tmp_path / "out"),
+                    "--seed",
+                    "3",
+                    "--msa",
+                    "single",
+                    "--trunk-passes",
+                    str(passes),
+                    "--no-cache",
+                ]
+            )
+            == 0
+        )
+    capsys.readouterr()
+    received, applied = seen[model]
+    expected = passes if model in {"protenix", "opendde"} else passes - 1
+    expected_native = (
+        passes if model in {"protenix", "opendde", "openfold3"} else passes - 1
+    )
+    assert received.trunk_passes is None
+    assert received.num_recycles == expected
+    assert applied["num_recycles"] == expected_native
+
+
+def test_cli_legacy_num_recycles_stays_unchanged(tmp_path: Path, capsys) -> None:
+    from foldjax.registry import backend_override
+
+    job = tmp_path / "job.json"
+    job.write_text(
+        json.dumps({"entities": [{"type": "protein", "id": "A", "sequence": "ACD"}]})
+    )
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    seen: dict[str, tuple[object, dict]] = {}
+    for model, recycles in (("boltz2", 3), ("protenix", 10)):
+        with backend_override(model, _cli_recording_backend(model, seen)):
+            assert (
+                main(
+                    [
+                        "predict",
+                        "--model",
+                        model,
+                        "--input",
+                        str(job),
+                        "--weights",
+                        str(weights),
+                        "--output-dir",
+                        str(tmp_path / f"out-{model}"),
+                        "--seed",
+                        "3",
+                        "--msa",
+                        "single",
+                        "--num-recycles",
+                        str(recycles),
+                        "--no-cache",
+                    ]
+                )
+                == 0
+            )
+        capsys.readouterr()
+        received, applied = seen[model]
+        assert received.trunk_passes is None
+        assert received.num_recycles == recycles
+        assert applied["num_recycles"] == recycles
+
+
+def test_cli_multi_model_plan_and_cache_warm_accept_trunk_passes(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from foldjax import assets, warmup
+    from foldjax.cache import CacheSnapshot
+    from foldjax.cli import _parser
+    from foldjax.warmup import CacheWarmResult
+
+    with pytest.raises(SystemExit):
+        _parser().parse_args(["predict", "--help"])
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "--trunk-passes N" in help_text
+    assert "total trunk evaluations including the first" in help_text
+
+    job = tmp_path / "job.json"
+    job.write_text(
+        json.dumps({"entities": [{"type": "protein", "id": "A", "sequence": "ACD"}]})
+    )
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    monkeypatch.setattr(assets, "resolve_weights", lambda *args, **kwargs: weights)
+
+    assert (
+        main(
+            [
+                "plan",
+                "--model",
+                "boltz2",
+                "protenix",
+                "openfold3",
+                "--input",
+                str(job),
+                "--msa",
+                "single",
+                "--trunk-passes",
+                "4",
+                "--no-cache",
+            ]
+        )
+        == 0
+    )
+    planned = json.loads(capsys.readouterr().out)
+    assert {row["model"]: row["sampling"]["num_recycles"] for row in planned} == {
+        "boltz2": 3,
+        "protenix": 4,
+        "openfold3": 3,
+    }
+    assert all(row["sampling_source"]["num_recycles"] == "request" for row in planned)
+
+    warmed: list[tuple[str, int | None, int | None]] = []
+
+    def fake_warm_resolved(request, *, keep_output, output_root):
+        del keep_output, output_root
+        warmed.append((request.model, request.num_recycles, request.trunk_passes))
+        return CacheWarmResult(
+            model=request.model,
+            input=request.input,
+            weights=request.weights,
+            cache_dir=tmp_path / "cache" / request.model,
+            seed=1,
+            seconds=0.1,
+            before=CacheSnapshot(files=0, bytes=0),
+            after=CacheSnapshot(files=1, bytes=10),
+            samples=1,
+        )
+
+    monkeypatch.setattr(warmup, "_warm_resolved", fake_warm_resolved)
+    assert (
+        main(
+            [
+                "cache",
+                "warm",
+                "--isolation",
+                "in-process",
+                "--model",
+                "boltz2",
+                "protenix",
+                "--input",
+                str(job),
+                "--msa",
+                "single",
+                "--cache-dir",
+                str(tmp_path / "cache"),
+                "--trunk-passes",
+                "4",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert warmed == [("boltz2", 3, None), ("protenix", 4, None)]
+
+
+@pytest.mark.parametrize(
+    "subcommand",
+    [
+        ("predict",),
+        ("plan",),
+        ("cache", "warm"),
+    ],
+)
+@pytest.mark.parametrize(("passes", "recycles"), [(4, 3), (1, 0)])
+def test_cli_rejects_trunk_passes_and_num_recycles_together(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    subcommand: tuple[str, ...],
+    passes: int,
+    recycles: int,
+) -> None:
+    job = tmp_path / "job.json"
+    job.write_text("{}")
+    argv = [
+        *subcommand,
+        "--model",
+        "boltz2",
+        "--input",
+        str(job),
+        "--trunk-passes",
+        str(passes),
+        "--num-recycles",
+        str(recycles),
+    ]
+    with pytest.raises(
+        ValueError, match=r"(?=.*--trunk-passes)(?=.*--num-recycles)"
+    ):
+        main(argv)
+
+    monkeypatch.setattr(sys, "argv", ["foldjax", *argv])
+    with pytest.raises(SystemExit) as exit_info:
+        entrypoint()
+    assert exit_info.value.code == 2
+    err = capsys.readouterr().err
+    assert "--trunk-passes" in err and "--num-recycles" in err
+
+
+@pytest.mark.parametrize("raw", ["0", "-1"])
+def test_cli_rejects_nonpositive_trunk_passes(tmp_path: Path, raw: str) -> None:
+    job = tmp_path / "job.json"
+    job.write_text("{}")
+    with pytest.raises(ValueError, match="trunk_passes must be at least 1"):
+        main(["plan", "--model", "boltz2", "--input", str(job), "--trunk-passes", raw])
+
+
+@pytest.mark.parametrize("raw", ["", "abc", "1.5"])
+def test_cli_rejects_malformed_trunk_passes(
+    tmp_path: Path, capsys, raw: str
+) -> None:
+    from foldjax.cli import _parser
+
+    job = tmp_path / "job.json"
+    job.write_text("{}")
+    with pytest.raises(SystemExit) as exit_info:
+        _parser().parse_args(
+            ["plan", "--model", "boltz2", "--input", str(job), "--trunk-passes", raw]
+        )
+    err = capsys.readouterr().err
+    assert exit_info.value.code == 2
+    assert "argument --trunk-passes: invalid int value" in err

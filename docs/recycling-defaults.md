@@ -33,7 +33,10 @@ recycle options take precedence. Their effective counts remain in compile
 profiles: omitted and explicitly equal requests share a namespace, while former
 release defaults remain separate. Native low-level model APIs and checkpoint
 files retain their publisher defaults. Other Protenix variants retain their
-variant-specific policy (mini/tiny: 4).
+variant-specific policy (mini/tiny: 4). `PredictionRequest(trunk_passes=P)`
+and CLI `--trunk-passes P` (`P >= 1`, mutually exclusive with `num_recycles`)
+accept the "Executed main trunk passes" count directly on every model and
+resolve per model into `num_recycles`.
 
 ## Primary evidence and differences in counting
 

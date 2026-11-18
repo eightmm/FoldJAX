@@ -203,3 +203,60 @@ def test_the_released_esmfold2_numbers_are_the_managed_checkpoints() -> None:
     assert esmfold2._checkpoint_sampling(config.parent) == dict(
         esmfold2._RELEASED_CHECKPOINT_SAMPLING
     )
+
+
+@pytest.mark.parametrize(
+    ("model", "passes", "expected_recycles", "expected_native"),
+    [
+        ("alphafold3", 1, 0, 0),
+        ("alphafold3", 4, 3, 3),
+        ("boltz2", 1, 0, 0),
+        ("boltz2", 4, 3, 3),
+        ("esmfold2", 1, 0, 0),
+        ("esmfold2", 4, 3, 3),
+        ("openfold3", 1, 0, 1),
+        ("openfold3", 4, 3, 4),
+        ("protenix", 1, 1, 1),
+        ("protenix", 4, 4, 4),
+        ("opendde", 1, 1, 1),
+        ("opendde", 4, 4, 4),
+    ],
+)
+def test_trunk_passes_resolves_to_backend_recycles_for_every_model(
+    tmp_path: Path,
+    model: str,
+    passes: int,
+    expected_recycles: int,
+    expected_native: int,
+) -> None:
+    from foldjax.api import resolve_request
+
+    job = tmp_path / "job.json"
+    job.write_text(
+        json.dumps({"entities": [{"type": "protein", "id": "A", "sequence": "ACD"}]}),
+        encoding="utf-8",
+    )
+    weights = tmp_path / f"{model}-weights"
+    weights.mkdir()
+    resolved = resolve_request(
+        PredictionRequest(
+            model=model,
+            input=job,
+            weights=weights,
+            output_dir=tmp_path / "out",
+            seed=1,
+            msa="single",
+            trunk_passes=passes,
+            use_compile_cache=False,
+        )
+    )
+    assert resolved.trunk_passes is None
+    assert resolved.num_recycles == expected_recycles
+    assert resolved.sampling == {"num_recycles": expected_recycles}
+
+    backend = get_backend(model)
+    assert backend.apply_sampling(resolved)["num_recycles"] == expected_native
+    assert backend.sampling_resolution(resolved)["num_recycles"] == (
+        expected_recycles,
+        "request",
+    )

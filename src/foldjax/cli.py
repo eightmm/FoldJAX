@@ -323,6 +323,13 @@ def _add_predict_arguments(
         "(also with --padding and cache warm)",
     )
     sampling.add_argument(
+        "--trunk-passes",
+        type=int,
+        metavar="N",
+        help="total trunk evaluations including the first, same meaning for "
+        "every model; mutually exclusive with --num-recycles",
+    )
+    sampling.add_argument(
         "--max-msa-depth",
         type=int,
         help="cap how many MSA rows the model keeps. The trunk holds a "
@@ -1082,6 +1089,13 @@ def _request(
     fixed_msa = getattr(args, "fixed_msa", None)
     auxiliary_profile = getattr(args, "opendde_padding_profile", None)
     no_padding = _padding_disabled(args)
+    if (
+        getattr(args, "trunk_passes", None) is not None
+        and getattr(args, "num_recycles", None) is not None
+    ):
+        raise ValueError(
+            "--trunk-passes and --num-recycles are mutually exclusive; pass one of them"
+        )
     if auxiliary_profile is not None:
         from foldjax._opendde_padding import COMPACT_PROFILE
 
@@ -1171,6 +1185,7 @@ def _request(
         num_samples=args.num_samples,
         num_steps=args.num_steps,
         num_recycles=args.num_recycles,
+        trunk_passes=getattr(args, "trunk_passes", None),
         max_msa_depth=args.max_msa_depth,
         cache_dir=args.cache_dir,
         use_compile_cache=not getattr(args, "no_cache", False),
@@ -2299,6 +2314,13 @@ def _run_plan(args: argparse.Namespace) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if (
+        getattr(args, "trunk_passes", None) is not None
+        and getattr(args, "num_recycles", None) is not None
+    ):
+        raise ValueError(
+            "--trunk-passes and --num-recycles are mutually exclusive; pass one of them"
+        )
     # Importing or embedding the CLI for discovery/plan commands must not
     # change the host's future JAX allocator. Prediction is the only command
     # that owns a model process and therefore the only one that applies it.
