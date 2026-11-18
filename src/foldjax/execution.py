@@ -276,17 +276,29 @@ def normalize(options: dict[str, Any], *, native: set[str]) -> dict[str, Any]:
     under itself when the caller meant the native one. The two agree on value
     either way; the distinction matters for the warning, not the result.
     """
-    out: dict[str, Any] = {}
-    for key, value in options.items():
+    seen_aliases: dict[str, str] = {}
+    for key in options:
         neutral = ALIASES.get(key)
         if neutral is None or key in native:
-            out[key] = value
             continue
         if neutral in options:
             raise ValueError(
                 f"{key!r} and {neutral!r} were both set; {key!r} is the old "
                 f"name for {neutral!r}, so pass one of them"
             )
+        previous = seen_aliases.get(neutral)
+        if previous is not None:
+            raise ValueError(
+                f"{previous!r} and {key!r} were both set; both are old names "
+                f"for {neutral!r}, so pass one of them"
+            )
+        seen_aliases[neutral] = key
+    out: dict[str, Any] = {}
+    for key, value in options.items():
+        neutral = ALIASES.get(key)
+        if neutral is None or key in native:
+            out[key] = value
+            continue
         warnings.warn(
             f"{key!r} is the old name for {neutral!r} and still works; the "
             "neutral name is the documented one and means the same thing on "

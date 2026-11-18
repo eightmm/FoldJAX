@@ -906,6 +906,7 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         }
     )
     sampling_options = SAMPLING_OPTIONS
+    confidence_outputs_full = {"output_format": "both"}
     boolean_options = frozenset(
         {
             "cp_atom_windows",

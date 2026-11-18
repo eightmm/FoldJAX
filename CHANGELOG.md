@@ -12,6 +12,16 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **Shared option names and `confidence_outputs`.** Boltz-2 also accepts
+  `diffusion_dtype`, `token_q_chunk_size` and `triangle_att_q_chunk_size`, the
+  names Protenix and OpenDDE use, for its `diffusion_compute_dtype`,
+  `token_attention_chunk` and `triangle_attention_q_chunk`.
+  `--option confidence_outputs=full` asks every model for its full confidence
+  output: expected errors on ESMFold2 and OpenFold3, `output_format=both` on
+  Protenix and `include_raw=true` on OpenDDE (both also write
+  `raw_output.npz`); AlphaFold 3 and Boltz-2 already write theirs. Passing a
+  name together with its other spelling, or two old names for one setting, is
+  an error. Defaults, output files and run records are unchanged.
 - **`trunk_passes` / `--trunk-passes` on the common request and CLI.** It
   counts main-trunk evaluations including the first, with the same meaning
   for every model; `num_recycles` keeps its per-model meaning (additional

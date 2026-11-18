@@ -322,6 +322,7 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
     padding_axes = ("tokens", "atoms", "msa", "structural_tokens")
     native_options = frozenset(_CLI_OPTIONS | {"include_raw"})
     sampling_options = SAMPLING_OPTIONS
+    confidence_outputs_full = {"include_raw": True}
     boolean_options = frozenset(
         {
             "cp_atom_windows",

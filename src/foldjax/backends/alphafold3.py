@@ -1049,6 +1049,7 @@ class AlphaFold3Backend(Backend):
     # made AlphaFold 3 the one backend that could not be held to the same
     # schedule as the others, and so could not be benchmarked against them.
     sampling_options = SAMPLING_OPTIONS
+    confidence_outputs_full: dict[str, Any] = {}
     boolean_options = frozenset(
         {
             "fix_standalone_glycans",

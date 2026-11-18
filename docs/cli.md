@@ -80,6 +80,29 @@ without `--json` and `--shard`). Seeds fan out the same way — `--seeds 0 1 2` 
 --num-seeds 3`) runs the job once per seed into `seed_<n>` directories and
 returns every structure together.
 
+### Shared `--option` names and `confidence_outputs`
+
+Three Boltz-2 options also accept the canonical names Protenix and OpenDDE use
+natively, rewriting to Boltz-2's native names in `Backend.canonical_options`
+(passing both spellings is an error):
+
+| canonical `--option` key | Boltz-2 native name | notes |
+|---|---|---|
+| `diffusion_dtype` | `diffusion_compute_dtype` | accepts `float32`/`fp32`/`f32` and `bfloat16`/`bf16` |
+| `token_q_chunk_size` | `token_attention_chunk` | diffusion token-attention query block |
+| `triangle_att_q_chunk_size` | `triangle_attention_q_chunk` | triangle-attention query block |
+
+`--option confidence_outputs=model|full` selects confidence arrays across all
+six models (`model`, the default, changes nothing; `full` is rejected with
+`--stop-after inputs|trunk` or when combined with the mapped native option):
+
+| model | `confidence_outputs=full` sets | effect |
+|---|---|---|
+| `alphafold3`, `boltz2` | nothing extra | uses the model's existing confidence outputs (Boltz-2 logits stay opt-in) |
+| `esmfold2`, `openfold3` | `return_expected_errors` to `true` | keeps expected PAE and PDE matrices (`all_arrays` stays separate on OpenFold3) |
+| `protenix` | `output_format` to `both` | writes native summary and decoded PAE, PDE and contact probabilities in `confidence_full.npz`, plus the raw logits in `raw_output.npz` (about 3 GB at 1,000 tokens; also rejected with `--output-format` in `cli_args`) |
+| `opendde` | `include_raw` to `true` | writes decoded PAE, PDE and contact probabilities in `confidence_full.npz`, plus the raw logits in `raw_output.npz` (about 3 GB at 1,000 tokens) |
+
 An omitted `--seed` follows each model's upstream: Protenix 101, OpenFold3 42,
 and for OpenDDE and AlphaFold 3 every entry of a native job's `modelSeeds`.
 Boltz-2, ESMFold2, and OpenDDE or AlphaFold 3 on a job without `modelSeeds`

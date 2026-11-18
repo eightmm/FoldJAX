@@ -646,6 +646,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
     # loop* rather than cutting the alignment once, which is the same policy
     # Boltz-2 uses and the opposite of a head-of-file cut.
     sampling_options = SAMPLING_OPTIONS
+    confidence_outputs_full: dict[str, Any] = {"return_expected_errors": True}
     boolean_options = frozenset(
         {
             "full_depth_msa",

@@ -51,6 +51,9 @@ SAMPLING_OPTIONS: dict[str, str] = {
     "max_msa_depth": "max_msa_depth",
 }
 
+CONFIDENCE_OUTPUTS = "confidence_outputs"
+CONFIDENCE_OUTPUTS_VALUES: tuple[str, ...] = ("model", "full")
+
 #: The values `glu_backend` accepts, spelled here rather than imported from
 #: :data:`foldjax.models._glu.GLU_BACKENDS`.
 #:
@@ -194,6 +197,83 @@ class Backend(ABC):
     #: the validation authority used before any model runtime is imported.
     padding_axes: tuple[str, ...] = ()
 
+    #: Cross-model canonical option name -> this backend's native option name.
+    #: Renamed in `canonical_options` before width/switch spelling so manifests,
+    #: resume identity and compile-cache profiles keep native names.
+    option_aliases: dict[str, str] = {}
+
+    #: Native options that ``confidence_outputs="full"`` sets on this backend;
+    #: ``"model"`` (or omitting the option) sets nothing.
+    confidence_outputs_full: dict[str, Any] = {}
+
+    @classmethod
+    def _apply_option_aliases(
+        cls, options: Mapping[str, Any], *, model: str
+    ) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        seen_native: dict[str, str] = {}
+        for key, value in options.items():
+            native = cls.option_aliases.get(key)
+            if native is None:
+                out[key] = value
+                continue
+            if native in options:
+                raise ValueError(
+                    f"{key!r} and the native option {native!r} were both set "
+                    f"for {model}; pass one of them"
+                )
+            previous = seen_native.get(native)
+            if previous is not None:
+                raise ValueError(
+                    f"{previous!r} and {key!r} were both set for {model}; "
+                    "pass one of them"
+                )
+            seen_native[native] = key
+            out[native] = value
+        return out
+
+    @classmethod
+    def _expand_confidence_outputs(
+        cls, options: dict[str, Any], *, model: str
+    ) -> dict[str, Any]:
+        if CONFIDENCE_OUTPUTS not in options:
+            return options
+        out = dict(options)
+        mode = out.pop(CONFIDENCE_OUTPUTS)
+        if not isinstance(mode, str) or mode not in CONFIDENCE_OUTPUTS_VALUES:
+            raise ValueError(
+                f"{CONFIDENCE_OUTPUTS} must be one of "
+                f"{CONFIDENCE_OUTPUTS_VALUES}, got {mode!r}"
+            )
+        if mode == "model":
+            return out
+        if "output_format" in cls.confidence_outputs_full:
+            cli_args = out.get("cli_args")
+            if isinstance(cli_args, Sequence) and not isinstance(
+                cli_args, (str, bytes, bytearray)
+            ):
+                for argument in cli_args:
+                    if not isinstance(argument, str):
+                        continue
+                    flag = argument.split("=", 1)[0]
+                    if flag == "--output-format" or (
+                        flag.startswith("--output-")
+                        and "--output-format".startswith(flag)
+                    ):
+                        raise ValueError(
+                            f"{CONFIDENCE_OUTPUTS}='full' and cli_args "
+                            "'--output-format' were both set for "
+                            f"{model}; pass one of them"
+                        )
+        for native_key in cls.confidence_outputs_full:
+            if native_key in out:
+                raise ValueError(
+                    f"{CONFIDENCE_OUTPUTS}='full' and the native option "
+                    f"{native_key!r} were both set for {model}; pass one of them"
+                )
+        out.update(cls.confidence_outputs_full)
+        return out
+
     @classmethod
     def canonical_options(cls, options: Mapping[str, Any]) -> dict[str, Any]:
         """``options`` in this backend's own names and spellings.
@@ -205,11 +285,16 @@ class Backend(ABC):
         option this backend cannot express. A classmethod, because it reads
         only the class's tables and resume must not construct a backend.
         """
+        model = getattr(cls, "name", cls.__name__)
+        aliased = cls._expand_confidence_outputs(
+            cls._apply_option_aliases(options, model=model),
+            model=model,
+        )
         return execution.translate(
             execution.spell_booleans(
                 execution.spell_dtypes(
                     execution.normalize(
-                        dict(options),
+                        aliased,
                         native={name for name, _ in cls.execution_options.values()},
                     ),
                     cls.execution_options,
@@ -217,7 +302,7 @@ class Backend(ABC):
                 cls.boolean_options,
             ),
             cls.execution_options,
-            model=getattr(cls, "name", cls.__name__),
+            model=model,
         )
 
     def apply_sampling(self, request: PredictionRequest) -> dict[str, Any]:
@@ -228,6 +313,15 @@ class Backend(ABC):
         change how many structures come back without changing the exit code.
         """
         options = self.canonical_options(request.options)
+        if (
+            request.options.get(CONFIDENCE_OUTPUTS) == "full"
+            and request.stop_after in {"inputs", "trunk"}
+        ):
+            raise ValueError(
+                f"{CONFIDENCE_OUTPUTS}='full' cannot be combined with "
+                f"stop_after={request.stop_after!r}, which stops before the "
+                "confidence heads run"
+            )
         for knob, value in request.sampling.items():
             native = self.sampling_options.get(knob)
             if native is None:
@@ -477,6 +571,7 @@ class Backend(ABC):
             return
         generated = set(self.sampling_options.values())
         generated.update(native for native, _values in self.execution_options.values())
+        generated.update(self.option_aliases.values())
         unsupported = sorted(set(options) - generated - set(self.native_options))
         if unsupported:
             raise ValueError(

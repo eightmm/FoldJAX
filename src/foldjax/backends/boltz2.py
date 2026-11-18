@@ -852,6 +852,12 @@ class Boltz2Backend(Backend):
         }
     )
     sampling_options = SAMPLING_OPTIONS
+    option_aliases: dict[str, str] = {
+        "diffusion_dtype": "diffusion_compute_dtype",
+        "token_q_chunk_size": "token_attention_chunk",
+        "triangle_att_q_chunk_size": "triangle_attention_q_chunk",
+    }
+    confidence_outputs_full: dict[str, Any] = {}
     boolean_options = frozenset(
         {
             "affinity_mw_correction",

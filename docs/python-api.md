@@ -160,6 +160,26 @@ output_format=both` on Protenix add decoded PAE, PDE and contact
 probabilities to `confidence_full.npz`. These are native option names passed
 through `--option`, not FoldJAX flags of their own.
 
+### Shared option names and `confidence_outputs`
+
+Boltz-2 also accepts the canonical option names Protenix and OpenDDE use
+natively, translated to Boltz-2's native names in `Backend.canonical_options`
+(passing both names raises `ValueError`):
+
+- `diffusion_dtype` -> `diffusion_compute_dtype` (`float32`/`fp32`/`f32` or `bfloat16`/`bf16`)
+- `token_q_chunk_size` -> `token_attention_chunk`
+- `triangle_att_q_chunk_size` -> `triangle_attention_q_chunk`
+
+`options={"confidence_outputs": "model" | "full"}` selects confidence arrays on
+all six models (`"model"` is the omitted default; `"full"` raises `ValueError`
+with `stop_after` `"inputs"` or `"trunk"` or when combined with the mapped
+native option):
+
+- `alphafold3`, `boltz2`: no extra option set (uses the existing confidence path; Boltz-2 `return_confidence_logits` remains opt-in).
+- `esmfold2`, `openfold3`: sets `return_expected_errors` to `True` (expected PAE/PDE matrices; OpenFold3 `all_arrays` remains separate).
+- `protenix`: sets `output_format` to `"both"` (adds decoded PAE, PDE and contact probabilities to `confidence_full.npz` and writes the raw logits to `raw_output.npz`; also rejected when `cli_args` passes `--output-format`).
+- `opendde`: sets `include_raw` to `True` (adds decoded PAE, PDE and contact probabilities to `confidence_full.npz` and writes the raw logits to `raw_output.npz`).
+
 `foldjax.output.best_sample(result)` names the top-ranked sample of one run,
 and is what fills the manifest's `best` block, the `foldjax predict` summary
 table and `foldjax show`. It is a pointer -- score name, value, seed, sample

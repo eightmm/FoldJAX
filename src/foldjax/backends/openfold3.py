@@ -466,6 +466,7 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
     # already carries upstream's own 1024; the knob narrows a setting the model
     # has rather than imposing one it lacks.
     sampling_options = SAMPLING_OPTIONS
+    confidence_outputs_full: dict[str, Any] = {"return_expected_errors": True}
     boolean_options = frozenset(
         {
             "all_arrays",
