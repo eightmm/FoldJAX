@@ -22,6 +22,9 @@ unless it says so here, in its own paragraph.
   `raw_output.npz`); AlphaFold 3 and Boltz-2 already write theirs. Passing a
   name together with its other spelling, or two old names for one setting, is
   an error. Defaults, output files and run records are unchanged.
+- **`--cache-dir` on the Protenix and OpenDDE native predict CLIs and
+  `--no-cache` on Protenix's**, as aliases of `--compile-cache` and
+  `--no-compile-cache`.
 - **`trunk_passes` / `--trunk-passes` on the common request and CLI.** It
   counts main-trunk evaluations including the first, with the same meaning
   for every model; `num_recycles` keeps its per-model meaning (additional

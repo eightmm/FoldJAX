@@ -387,6 +387,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cpu-only", action="store_true")
     parser.add_argument(
         "--compile-cache",
+        "--cache-dir",
         type=Path,
         default=Path("outputs/compile_cache"),
         help="Persistent XLA compilation cache dir (compile-time only, "
@@ -394,6 +395,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--no-compile-cache",
+        "--no-cache",
         action="store_true",
         help="Disable the persistent compilation cache.",
     )

@@ -210,7 +210,7 @@ def main(
         ),
     )
     parser.add_argument("--cpu-only", action="store_true")
-    parser.add_argument("--compile-cache", type=Path)
+    parser.add_argument("--compile-cache", "--cache-dir", type=Path)
     parser.add_argument(
         "--components-cif",
         type=Path,
