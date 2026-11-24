@@ -15,7 +15,9 @@ that matter here, all checked by the parity tests beside this file:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from math import prod
 
 import jax
@@ -40,6 +42,42 @@ from foldjax.models._cp import cp_layout as _cp_layout
 from foldjax.models.esmfold2.models.primitives import layer_norm, linear, swiglu
 
 Params = Mapping[str, jnp.ndarray]
+
+#: Values every ESMFold2 triangle-multiplication entry point accepts.
+TRIANGLE_BACKENDS = ("xla", "cueq")
+
+# Whole-model compilation resolves `triangle_backend` before selecting a bounded
+# JIT owner, then pins that value while its graph is traced so every pair stack
+# (`folding_trunk`, `lm_encoder`, `msa_encoder`, `parcae_coda`, and a bfloat16
+# `confidence_head.folding_trunk`) sees the choice without changing intermediate
+# module signatures. An explicit keyword argument at any `trunk.py` entry point
+# still takes precedence over this ambient pin.
+_PINNED_TRIANGLE_BACKEND: ContextVar[str | None] = ContextVar(
+    "esmfold2_triangle_backend", default=None
+)
+
+
+def _resolve_triangle_backend(backend: str | None = None) -> str:
+    resolved = _PINNED_TRIANGLE_BACKEND.get() if backend is None else backend
+    if resolved is None:
+        return "xla"
+    if not isinstance(resolved, str) or resolved not in TRIANGLE_BACKENDS:
+        raise ValueError(
+            f"triangle_backend must be one of {TRIANGLE_BACKENDS}; got {resolved!r}"
+        )
+    return resolved
+
+
+@contextmanager
+def _triangle_backend_scope(backend: str) -> Iterator[None]:
+    """Pin one already-resolved triangle backend for a whole-model trace."""
+
+    checked = _resolve_triangle_backend(backend)
+    previous = _PINNED_TRIANGLE_BACKEND.set(checked)
+    try:
+        yield
+    finally:
+        _PINNED_TRIANGLE_BACKEND.reset(previous)
 
 
 def _cannon_contract(
@@ -874,6 +912,103 @@ def _autocast_transition(x, params, prefix, residual, eps):
     ]
 
 
+def _cueq_triangle(
+    pair: jnp.ndarray,
+    params: Params,
+    prefix: str,
+    *,
+    outgoing: bool,
+    mask: jnp.ndarray | None,
+    eps: float,
+) -> jnp.ndarray:
+    """Run cuEquivariance's fused update on ESMFold2's packed `proj_bundle`.
+
+    `proj_bundle` packs `[left | right | gate_left | gate_right]` along its
+    output axis (`[4 * c_h, c_z]`), so rows `[:2 * c_h]` and `[2 * c_h:]` are
+    already cuEquivariance's stacked `p_in` and `g_in` weights in `[left |
+    right]` order. Linear weights and optional biases are cast to `pair.dtype`
+    (matching native autocast's BF16 GEMM operands and cuEquivariance's AOT
+    cache keys), while `norm_start` and `norm_mix` keep their stored precision
+    for the kernel's FP32 affine reduction.
+    """
+    from foldjax.models._cueq import fused_triangle_multiplication
+
+    batch, rows, columns, _ = pair.shape
+    operand_dtype = pair.dtype
+    if jnp.dtype(operand_dtype) not in (
+        jnp.dtype(jnp.bfloat16),
+        jnp.dtype(jnp.float32),
+    ):
+        raise ValueError(
+            "cuEquivariance triangle multiplication requires bfloat16 or "
+            f"float32 pair operands; got {operand_dtype}"
+        )
+    engine = f"{prefix}._engine" if prefix else "_engine"
+    norm_in_weight = params.get(f"{engine}.norm_start.weight")
+    norm_in_bias = params.get(f"{engine}.norm_start.bias")
+    norm_out_weight = params.get(f"{engine}.norm_mix.weight")
+    norm_out_bias = params.get(f"{engine}.norm_mix.bias")
+    missing = [
+        name
+        for name, value in (
+            ("norm_start.weight", norm_in_weight),
+            ("norm_start.bias", norm_in_bias),
+            ("norm_mix.weight", norm_out_weight),
+            ("norm_mix.bias", norm_out_bias),
+        )
+        if value is None
+    ]
+    if missing:
+        raise ValueError(
+            f"triangle_backend='cueq' requires affine layer norms; missing {missing}"
+        )
+    bundle_weight = params[f"{engine}.proj_bundle.weight"]
+    half = bundle_weight.shape[0] // 2
+    bundle_bias = params.get(f"{engine}.proj_bundle.bias")
+
+    def cast_linear(
+        weight: jnp.ndarray, bias: jnp.ndarray | None
+    ) -> tuple[jnp.ndarray, jnp.ndarray | None]:
+        return (
+            weight.astype(operand_dtype),
+            None if bias is None else bias.astype(operand_dtype),
+        )
+
+    p_in = cast_linear(
+        bundle_weight[:half],
+        None if bundle_bias is None else bundle_bias[:half],
+    )
+    g_in = cast_linear(
+        bundle_weight[half:],
+        None if bundle_bias is None else bundle_bias[half:],
+    )
+    p_out = cast_linear(
+        params[f"{engine}.proj_emit.weight"],
+        params.get(f"{engine}.proj_emit.bias"),
+    )
+    g_out = cast_linear(
+        params[f"{engine}.proj_gate.weight"],
+        params.get(f"{engine}.proj_gate.bias"),
+    )
+    pair_mask = (
+        jnp.ones((batch, rows, columns), dtype=operand_dtype)
+        if mask is None
+        else jnp.broadcast_to(mask, (batch, rows, columns)).astype(operand_dtype)
+    )
+    return fused_triangle_multiplication(
+        pair,
+        direction="outgoing" if outgoing else "incoming",
+        mask=pair_mask,
+        norm_in=(norm_in_weight, norm_in_bias),
+        p_in=p_in,
+        g_in=g_in,
+        norm_out=(norm_out_weight, norm_out_bias),
+        p_out=p_out,
+        g_out=g_out,
+        eps=eps,
+    )
+
+
 def triangle_multiplicative(
     pair: jnp.ndarray,
     params: Params,
@@ -884,6 +1019,7 @@ def triangle_multiplicative(
     eps: float = 1e-5,
     native_autocast: bool = False,
     workspace: LentBuffers | None = None,
+    triangle_backend: str | None = None,
 ) -> jnp.ndarray:
     """`TriangleMultiplicativeBlock`, reference path.
 
@@ -909,6 +1045,7 @@ def triangle_multiplicative(
         eps=eps,
         native_autocast=native_autocast,
         workspace=None if workspace is None else workspace.buffers,
+        triangle_backend=triangle_backend,
     )
     # Only what this call actually wrote: a call with nothing to roll never
     # touched the lent pair, which is therefore still the dead one the next
@@ -928,6 +1065,7 @@ def _triangle_multiplicative(
     eps: float,
     native_autocast: bool,
     workspace,
+    triangle_backend: str | None = None,
 ):
     """`triangle_multiplicative`, returning the block-loop buffers beside it.
 
@@ -940,6 +1078,28 @@ def _triangle_multiplicative(
     nothing to roll). The residual add stays on the caller's side on every
     route; see `_autocast_triangle_streamed` for what folding it in cost.
     """
+    resolved_backend = _resolve_triangle_backend(triangle_backend)
+    if resolved_backend == "cueq":
+        if cp_mesh() is not None:
+            raise ValueError(
+                "context parallelism requires triangle_backend='xla'; "
+                "cuEquivariance triangle multiplication cannot be partitioned"
+            )
+        # Under `native_autocast=True`, the four trunk-region pair stacks
+        # (`folding_trunk`, `lm_encoder`, `msa_encoder`, `parcae_coda`) carry
+        # bfloat16 `pair` (and `confidence_head.folding_trunk` does too when
+        # `confidence_dtype='bfloat16'`). When `confidence_dtype='float32'`,
+        # `confidence_head.folding_trunk` hands `native_autocast=True` a
+        # float32 `pair` expecting FP32 norm/residual and BF16 GEMMs; the
+        # homogeneous cuEquivariance entry point would run float32 GEMMs there
+        # instead, so that mixed-AMP confidence call keeps `_autocast_triangle`.
+        if not native_autocast or jnp.dtype(pair.dtype) == jnp.dtype(jnp.bfloat16):
+            return (
+                _cueq_triangle(
+                    pair, params, prefix, outgoing=outgoing, mask=mask, eps=eps
+                ),
+                workspace,
+            )
     if native_autocast:
         return _autocast_triangle(
             pair, params, prefix, outgoing, mask, eps, workspace
@@ -1143,6 +1303,7 @@ def pair_update_block(
     *,
     mask: jnp.ndarray | None = None,
     native_autocast: bool = False,
+    triangle_backend: str | None = None,
 ) -> jnp.ndarray:
     """One `PairUpdateBlock`: two triangle updates then a transition.
 
@@ -1165,6 +1326,7 @@ def pair_update_block(
         prefix,
         mask=mask,
         native_autocast=native_autocast,
+        triangle_backend=triangle_backend,
     )[0]
 
 
@@ -1176,6 +1338,7 @@ def _pair_update_block(
     *,
     mask: jnp.ndarray | None,
     native_autocast: bool,
+    triangle_backend: str | None = None,
 ):
     """`pair_update_block`, returning the operand workspace beside the pair."""
 
@@ -1194,6 +1357,7 @@ def _pair_update_block(
         eps=1e-5,
         native_autocast=native_autocast,
         workspace=workspace,
+        triangle_backend=triangle_backend,
     )
     pair = pair + update
     update, workspace = _triangle_multiplicative(
@@ -1205,6 +1369,7 @@ def _pair_update_block(
         eps=1e-5,
         native_autocast=native_autocast,
         workspace=workspace,
+        triangle_backend=triangle_backend,
     )
     pair = pair + update
     return shard_pair_rows(
@@ -1260,7 +1425,9 @@ class LentBuffers:
         self.buffers = buffers
 
 
-def _streamed_workspace(pair, params, engine, lent=None):
+def _streamed_workspace(
+    pair, params, engine, lent=None, *, triangle_backend: str | None = None
+):
     """The two buffers the trunk's streamed block loops write into, or `None`.
 
     `None` wherever those loops would not be loops -- under a mesh, where the
@@ -1292,6 +1459,13 @@ def _streamed_workspace(pair, params, engine, lent=None):
     a buffer -- one to four calls read 736, 992, 1,248 and 1,504 MiB
     unthreaded and 736 at every count threaded.
     """
+    resolved_backend = _resolve_triangle_backend(triangle_backend)
+    if (
+        resolved_backend == "cueq"
+        and cp_mesh() is None
+        and jnp.dtype(pair.dtype) == jnp.dtype(jnp.bfloat16)
+    ):
+        return None
     weight = params.get(f"{engine}.proj_bundle.weight")
     if (
         weight is None
@@ -1309,7 +1483,14 @@ def _streamed_workspace(pair, params, engine, lent=None):
     return tuple(jnp.zeros(shape, dtype) for shape, dtype in wanted)
 
 
-def trunk_workspace(pair, params, prefix="", *, native_autocast):
+def trunk_workspace(
+    pair,
+    params,
+    prefix="",
+    *,
+    native_autocast,
+    triangle_backend: str | None = None,
+):
     """What `folding_trunk` would lend its own loops, for a caller to lend it.
 
     The trunk allocates its workspace at its first layer, which is inside the
@@ -1319,10 +1500,16 @@ def trunk_workspace(pair, params, prefix="", *, native_autocast):
     before the scan, and carries it -- so the body's loops start from a value
     the enclosing program defines and every chain merges into one allocation.
     """
+    resolved_backend = _resolve_triangle_backend(triangle_backend)
     if not native_autocast:
         return None
     dot = f"{prefix}." if prefix else ""
-    return _streamed_workspace(pair, params, f"{dot}blocks.0.tri_mul_out._engine")
+    return _streamed_workspace(
+        pair,
+        params,
+        f"{dot}blocks.0.tri_mul_out._engine",
+        triangle_backend=resolved_backend,
+    )
 
 
 def folding_trunk(
@@ -1334,6 +1521,7 @@ def folding_trunk(
     mask: jnp.ndarray | None = None,
     native_autocast: bool = False,
     workspace: LentBuffers | None = None,
+    triangle_backend: str | None = None,
 ) -> jnp.ndarray:
     """`FoldingTrunk`: `n_layers` blocks in sequence, no output norm.
 
@@ -1346,6 +1534,7 @@ def folding_trunk(
     allocates are its alone, which is what every caller outside this model's
     own stack gets and what this function did before the slot existed.
     """
+    resolved_backend = _resolve_triangle_backend(triangle_backend)
     dot = f"{prefix}." if prefix else ""
     # Two buffers down the whole stack, or none. Each layer's streamed
     # contraction assembles its whole operand and its pair update into the
@@ -1360,6 +1549,7 @@ def folding_trunk(
             params,
             f"{dot}blocks.0.tri_mul_out._engine",
             None if workspace is None else workspace.buffers,
+            triangle_backend=resolved_backend,
         )
         if native_autocast
         else None
@@ -1372,6 +1562,7 @@ def folding_trunk(
             f"{dot}blocks.{index}",
             mask=mask,
             native_autocast=native_autocast,
+            triangle_backend=resolved_backend,
         )
     # Only what this call actually wrote: a call with nothing to roll never
     # touched the lent pair, which is therefore still the dead one the next

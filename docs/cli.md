@@ -2082,6 +2082,31 @@ silent no-op -- because a kernel is offered on the port whose numbers were
 measured. OpenDDE is the natural next port to measure: the arena that
 motivated the blocking in the first place is OpenDDE's.
 
+### cuEquivariance triangle multiplication (`--option triangle_backend=cueq`, ESMFold2)
+
+ESMFold2's pair trunk runs its triangle multiplication in XLA by default, under
+upstream's bfloat16 autocast and streamed in 64-row blocks above 64 tokens.
+`--option triangle_backend=cueq` (or the shared `--option
+triangle_kernel=cueq`) runs cuEquivariance's fused kernel instead, the one
+Boltz-2, Protenix and OpenFold3 already use, on every pair stack, taking the
+bfloat16 pair the autocast trunk carries. A float32 confidence head
+(`confidence_dtype=float32`) keeps the XLA route: there the kernel would run in
+float32, where one update was slower than the XLA route (147 ms against 140 ms
+at 2,048 tokens). The option is refused with context parallelism and off a GPU, and
+`triangle_backend=xla` names the same executable an omitted option does. The
+kernel rounds differently from upstream's bfloat16 GEMMs, which is why it is an
+opt-in rather than the default. Memory admission treats it as an unmeasured
+alternative: the fitted limits warn instead of refusing.
+
+One triangle update at 2,048 tokens took 74.5 ms against 140 ms for the XLA
+route at the same compiled footprint, and it was closer to a float32
+reference (mean absolute difference 0.0024 against 0.0029). End to end at
+1,003 tokens on one RTX PRO 6000 Blackwell, the warm prediction took 69.05 s
+against 76.36 s (0.90x), at the same peak memory (18,426 MiB). Against the
+default it moved CA atoms by at most 0.025 Å RMSD after superposition
+(CA-lDDT 1.0), inside the 0.064 Å two separate compiles of the default
+program differ by.
+
 ### Pallas pair kernels (GPU default: Boltz-2 and OpenFold3 both, Protenix the multiplication)
 
 Two Pallas-Triton kernels in `foldjax.models._pallas_pair` replace

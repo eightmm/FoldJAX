@@ -27,6 +27,11 @@ unless it says so here, in its own paragraph.
   1,003 tokens the warm prediction took 0.92x the time at default precision
   and 0.95x in float32 with raw outputs, at the same peak memory. Refused
   together with `use_tfg_guidance`.
+- **ESMFold2 `triangle_backend=cueq`** (also `triangle_kernel=cueq`), an
+  opt-in for cuEquivariance's fused triangle multiplication in the pair trunk
+  (default unchanged, `xla`). At 1,003 tokens the warm prediction took 0.90x
+  the time at the same peak memory, with CA RMSD to the default at most
+  0.025 Å. Refused with context parallelism and off a GPU.
 - **`--cache-dir` on the Protenix and OpenDDE native predict CLIs and
   `--no-cache` on Protenix's**, as aliases of `--compile-cache` and
   `--no-compile-cache`.

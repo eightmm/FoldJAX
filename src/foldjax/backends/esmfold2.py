@@ -172,6 +172,9 @@ _FIXED_COMPILE_DEFAULTS = {
     # The unfused transition is what every released number describes, and the
     # value is independent of the checkpoint: no `config.json` key reaches it.
     "glu_backend": "xla",
+    # The XLA triangle multiplication is what every released number describes,
+    # and no `config.json` key reaches it either.
+    "triangle_backend": "xla",
     "rigid_align_backend": "svd",
     # A float32 confidence re-embedding is what every released number
     # describes, it is upstream's own width, and no `config.json` key reaches
@@ -258,6 +261,56 @@ def _checked_glu_backend(value: object) -> str:
             "ESMFold2 has none; use xla or tokamax"
         )
     return str(value)
+
+
+#: The values `triangle_backend` accepts, spelled here to keep planning free of
+#: the model runtime; a drift test pins this tuple to `models.trunk.TRIANGLE_BACKENDS`.
+_TRIANGLE_BACKENDS = ("xla", "cueq")
+
+
+def _checked_triangle_backend(value: object) -> str:
+    """Reject a misspelled triangle backend before anything is loaded."""
+
+    if not isinstance(value, str) or value not in _TRIANGLE_BACKENDS:
+        raise ValueError(
+            "triangle_backend must be one of "
+            f"{', '.join(_TRIANGLE_BACKENDS)}; got {value!r}"
+        )
+    return value
+
+
+def _strict_cp_devices(value: object) -> int:
+    """Return the integer device count when readable, or 1 for non-numbers."""
+
+    if isinstance(value, bool):
+        return 1
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 1
+
+
+def _gpu_process() -> bool:
+    """Whether this process's selected JAX device is a GPU (imports JAX)."""
+
+    from foldjax.models._pallas_pair import gpu_process
+
+    return gpu_process()
+
+
+def _refuse_gpu_only_kernels(options: Mapping[str, Any]) -> None:
+    """Refuse a spelled `cueq` triangle backend off a GPU while planning."""
+
+    if options.get("triangle_backend") != "cueq" or _gpu_process():
+        return
+    from foldjax._gpu import default_device
+
+    raise ValueError(
+        "triangle_backend='cueq' runs cuEquivariance's fused triangle "
+        "multiplication, which needs a GPU, and the selected JAX device uses "
+        f"platform {default_device().platform!r}; omit the option or pass "
+        "--option triangle_backend=xla"
+    )
 
 
 def _checked_cp_layout(value: object, *, devices: object = 1) -> str:
@@ -617,6 +670,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             # rather than a neutral knob: no other port spells a GLU choice
             # the neutral vocabulary could rename, and Boltz-2's is native too.
             "glu_backend",
+            "triangle_backend",
             "rigid_align_backend",
             # Changes only host-orchestrated ESMC state storage, preserving
             # the structure graph's input ABI and layer-combination arithmetic.
@@ -666,6 +720,10 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
     execution_options: dict[str, tuple[str, dict[str, Any]]] = {
         **MATMUL_PRECISION_OPTION,
         **DETERMINISTIC_API_OPTION,
+        "triangle_kernel": (
+            "triangle_backend",
+            {"auto": "xla", "cueq": "cueq", "xla": "xla"},
+        ),
     }
     compile_options = (
         "num_samples",
@@ -698,6 +756,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # traced against, so a fused run must not be answered out of the
         # default executable's cache entry.
         "glu_backend",
+        "triangle_backend",
         "rigid_align_backend",
         # Traced into the confidence head's re-embedding, so a narrowed run
         # must not be answered out of the float32 executable's cache entry.
@@ -1223,6 +1282,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             devices=options.get("cp_devices", 1),
         )
         glu_backend = _checked_glu_backend(options.get("glu_backend", "xla"))
+        triangle_backend = _checked_triangle_backend(
+            options.get("triangle_backend", "xla")
+        )
         _checked_rigid_align_backend(options.get("rigid_align_backend", "svd"))
         _checked_lm_state_storage(options.get("lm_state_storage", "stack"))
         # Refused here as well as in the port: this runs before the 939 MB
@@ -1234,6 +1296,15 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                 "context parallelism requires glu_backend='xla'; a fused GLU "
                 "cannot be partitioned"
             )
+        if (
+            triangle_backend != "xla"
+            and _strict_cp_devices(options.get("cp_devices", 1)) > 1
+        ):
+            raise ValueError(
+                "context parallelism requires triangle_backend='xla'; "
+                "cuEquivariance triangle multiplication cannot be partitioned"
+            )
+        _refuse_gpu_only_kernels({"triangle_backend": triangle_backend})
         # Refused early for the spelling only. Unlike `glu_backend` there is
         # no context-parallel restriction to add: this narrows arithmetic
         # under a sharding constraint rather than introducing a custom call
@@ -1388,6 +1459,20 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # nobody requested into the recorded overrides.
         if "glu_backend" in options:
             overrides["glu_backend"] = _checked_glu_backend(options.pop("glu_backend"))
+        if "triangle_backend" in options:
+            triangle_backend = _checked_triangle_backend(
+                options.pop("triangle_backend")
+            )
+            if (
+                triangle_backend != "xla"
+                and _strict_cp_devices(options.get("cp_devices", 1)) > 1
+            ):
+                raise ValueError(
+                    "context parallelism requires triangle_backend='xla'; "
+                    "cuEquivariance triangle multiplication cannot be partitioned"
+                )
+            _refuse_gpu_only_kernels({"triangle_backend": triangle_backend})
+            overrides["triangle_backend"] = triangle_backend
         if "rigid_align_backend" in options:
             overrides["rigid_align_backend"] = _checked_rigid_align_backend(
                 options.pop("rigid_align_backend")
@@ -1636,6 +1721,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                         glu_backend=overrides.get(
                             "glu_backend", settings.diffusion.glu_backend
                         ),
+                        triangle_backend=overrides.get("triangle_backend", "xla"),
                         rigid_align_backend=overrides.get(
                             "rigid_align_backend",
                             settings.diffusion.rigid_align_backend,

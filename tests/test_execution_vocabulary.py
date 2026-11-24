@@ -55,6 +55,9 @@ def test_one_kernel_spelling_reaches_every_model_that_has_one(request_with) -> N
     assert get_backend("boltz2").apply_sampling(request_with(triangle_kernel="cueq"))[
         "triangle_backend"
     ] == "cueq"
+    assert get_backend("esmfold2").apply_sampling(request_with(triangle_kernel="cueq"))[
+        "triangle_backend"
+    ] == "cueq"
     assert get_backend("protenix").apply_sampling(request_with(triangle_kernel="cueq"))[
         "trunk_triangle_attention_backend"
     ] == "cueq_jit"
@@ -200,6 +203,20 @@ def test_protenix_auto_is_the_omitted_kernel(request_with) -> None:
     ) != protenix.cache_profile(request_with())
 
 
+def test_esmfold2_auto_is_the_omitted_kernel(request_with) -> None:
+    """`auto` selects ESMFold2's released `xla` route and its cache namespace."""
+    esmfold2 = get_backend("esmfold2")
+    auto = request_with(triangle_kernel="auto")
+    xla = request_with(triangle_kernel="xla")
+    omitted = request_with()
+    assert esmfold2.apply_sampling(auto)["triangle_backend"] == "xla"
+    assert esmfold2.cache_profile(auto) == esmfold2.cache_profile(omitted)
+    assert esmfold2.cache_profile(xla) == esmfold2.cache_profile(omitted)
+    assert esmfold2.cache_profile(
+        request_with(triangle_kernel="cueq")
+    ) != esmfold2.cache_profile(omitted)
+
+
 @pytest.mark.parametrize("cp_devices", [1, 4])
 @pytest.mark.parametrize("gpu", [False, True])
 def test_openfold3_auto_is_the_omitted_kernel(
@@ -234,7 +251,7 @@ def test_cueq_pallas_is_requestable_where_a_port_runs_it(request_with) -> None:
         ]
         == "cueq-pallas"
     )
-    for model in ("boltz2", "protenix"):
+    for model in ("boltz2", "esmfold2", "protenix"):
         with pytest.raises(
             ValueError, match=f"{model} does not support triangle_kernel='cueq-pallas'"
         ):

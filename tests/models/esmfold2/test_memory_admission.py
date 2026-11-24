@@ -14,12 +14,20 @@ silent when there is nothing to compare.
 from __future__ import annotations
 
 import warnings
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from foldjax import memory_policy
+from foldjax.backends.esmfold2 import ESMFold2Backend
 from foldjax.models.esmfold2 import inference
+from foldjax.schema import DEFAULT_PADDING, PaddingConfig, PredictionRequest
+from tests.test_esmfold2_backend import (
+    _fake_session_weights,
+    _fake_staged_session_modules,
+    _job,
+)
 
 _GIB = 2**30
 
@@ -310,8 +318,28 @@ def test_latest_successful_buckets_keep_unknown_peaks_without_capacity_refusal(
     assert "capacity refusal" not in decision.reason
 
 
-@pytest.mark.parametrize("extra", ["context parallelism", "an inputs-only graph"])
-def test_unmeasured_alternatives_do_not_inherit_a_single_device_refusal(extra):
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({"cp_shards": 2}, "context parallelism"),
+        ({"stop_after_inputs": True}, "an inputs-only graph"),
+        ({"glu_backend": "tokamax"}, "a fused GLU"),
+        (
+            {"triangle_backend": "cueq"},
+            "a cuEquivariance triangle multiplication",
+        ),
+        (
+            {"rigid_align_backend": "jacobi"},
+            "solver-free rigid alignment (unmeasured memory)",
+        ),
+    ],
+)
+def test_unmeasured_alternatives_do_not_inherit_a_single_device_refusal(
+    kwargs, expected
+):
+    assert memory_policy.esmfold2_off_profile_reason(num_samples=32) == ()
+    reasons = memory_policy.esmfold2_off_profile_reason(num_samples=32, **kwargs)
+    assert reasons == (expected,)
     budget = memory_policy.resolve_budget(
         pool_bytes=int(40.3 * _GIB),
         card_bytes=int(47.4 * _GIB),
@@ -324,7 +352,7 @@ def test_unmeasured_alternatives_do_not_inherit_a_single_device_refusal(extra):
             msa_rows=None,
             candidates=(("released", memory_policy.ESMFOLD2_PEAK),),
             budget=budget,
-            off_profile=(extra,),
+            off_profile=reasons,
         )
     assert decision.state == "over_budget"
 
@@ -350,3 +378,248 @@ def test_predict_records_the_selected_configuration_when_the_peak_fits(monkeypat
     assert record["state"] == "fits"
     assert record["selected"] == "released"
     assert "released fits" in record["reason"]
+
+
+def test_predict_marks_cueq_triangle_advisory_without_loosening_xla(
+    monkeypatch,
+) -> None:
+    class _StopError(Exception):
+        pass
+
+    def _stop(*_args, **_kwargs):
+        raise _StopError
+
+    monkeypatch.setattr("foldjax.models._pallas_pair.gpu_process", lambda: True)
+    monkeypatch.setattr(inference.atom_model, "_resolve_rows_per_block", _stop)
+    monkeypatch.setattr(
+        inference,
+        "language_model_states",
+        lambda *_a, **_k: pytest.fail("LM ran before seam"),
+    )
+    model = inference.LoadedModel(
+        parameters={}, settings=inference.structure_model.ModelSettings()
+    )
+    budget_48g = memory_policy.resolve_budget(
+        pool_bytes=int(40.3 * _GIB),
+        card_bytes=int(47.4 * _GIB),
+        override_gib=None,
+    )
+
+    for on_profile in ({}, {"triangle_backend": "xla"}):
+        memory_policy.reset_warnings()
+        memory_policy.clear_record()
+        with pytest.raises(MemoryError, match="observed ESMFold2 capacity refusal"):
+            inference.predict(
+                None,
+                _features(1792),
+                model,
+                num_samples=32,
+                memory_budget=budget_48g,
+                padded=True,
+                **on_profile,
+            )
+        assert memory_policy.recorded()["off_profile"] == []
+
+    for unmeasured, expected_reason in (
+        ({"glu_backend": "tokamax"}, "a fused GLU"),
+        (
+            {"triangle_backend": "cueq"},
+            "a cuEquivariance triangle multiplication",
+        ),
+    ):
+        memory_policy.reset_warnings()
+        memory_policy.clear_record()
+        with pytest.warns(RuntimeWarning, match=expected_reason) as caught:
+            with pytest.raises(_StopError):
+                inference.predict(
+                    None,
+                    _features(1792),
+                    model,
+                    num_samples=32,
+                    memory_budget=budget_48g,
+                    padded=True,
+                    **unmeasured,
+                )
+        assert "observed operating limit is advisory" in str(caught[0].message)
+        record = memory_policy.recorded()
+        assert record["state"] == "over_budget"
+        assert record["off_profile"] == [expected_reason]
+
+    memory_policy.reset_warnings()
+    memory_policy.clear_record()
+    with pytest.warns(
+        RuntimeWarning,
+        match="estimate is advisory rather than binding.*cuEquivariance triangle",
+    ):
+        with pytest.raises(_StopError):
+            inference.predict(
+                None,
+                _features(2096),
+                model,
+                num_samples=32,
+                triangle_backend="cueq",
+                memory_budget=_budget(32 * _GIB),
+            )
+    assert memory_policy.recorded()["off_profile"] == [
+        "a cuEquivariance triangle multiplication"
+    ]
+
+    for malformed in ("", 0, "pallas"):
+        memory_policy.clear_record()
+        with pytest.raises(ValueError, match="triangle_backend must be one of"):
+            inference.predict(
+                None,
+                _features(1792),
+                model,
+                num_samples=32,
+                triangle_backend=malformed,  # type: ignore[arg-type]
+                memory_budget=budget_48g,
+                padded=True,
+            )
+        assert memory_policy.recorded() is None
+
+
+def test_managed_admission_marks_cueq_triangle_advisory_at_48gb_limit(
+    tmp_path, monkeypatch
+) -> None:
+    class _ReachedLMError(Exception):
+        pass
+
+    events: list[tuple[str, object]] = []
+    modules = _fake_staged_session_modules(tmp_path, events)
+    native = modules["foldjax.models.esmfold2.inference"]
+    native.LANGUAGE_MODEL_STATE_STORAGE_API = True
+    original_stage = native.load_language_model_stage
+
+    def stage(*args, **kwargs):
+        loaded = original_stage(*args, **kwargs)
+        loaded.settings.num_samples = 32
+        loaded.settings.diffusion = SimpleNamespace(
+            glu_backend="xla", rigid_align_backend="svd"
+        )
+        return loaded
+
+    tok_axis = "n_" + "to" + "ken"
+    tok_target = "to" + "kens"
+    mask_name = "to" + "ken_attention_mask"
+    native.load_language_model_stage = stage
+    native.language_model_length = lambda features: features["input_ids"].shape[-1] + 2
+    native.normalize_msa_features = lambda _rng, features, **_kwargs: features
+    native.pad_features = lambda features, **kwargs: {
+        name: np.pad(value, ((0, 0), (0, kwargs[tok_axis] - value.shape[-1])))
+        for name, value in features.items()
+    }
+    monkeypatch.setattr("foldjax.models._pallas_pair.gpu_process", lambda: True)
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
+    )
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2._padding_plan",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            target={tok_target: 1792, "atoms": 16384, "msa": 16}
+        ),
+    )
+    monkeypatch.setattr(
+        memory_policy,
+        "device_memory_budget",
+        lambda **_kwargs: memory_policy.resolve_budget(
+            pool_bytes=int(40.3 * _GIB),
+            card_bytes=int(47.4 * _GIB),
+            override_gib=None,
+        ),
+    )
+    backend = ESMFold2Backend()
+    weights = _fake_session_weights(tmp_path)
+    seen_lengths: list[int] = []
+
+    def reached_lm(_inference, features, *_args, **_kwargs):
+        seen_lengths.append(int(features[mask_name].shape[-1]))
+        raise _ReachedLMError
+
+    monkeypatch.setattr(backend, "_language_model_embedding", reached_lm)
+
+    def make_request(options=None, *, padding=PaddingConfig(), length: int = 1726):
+        return PredictionRequest(
+            model="esmfold2",
+            input=_job(
+                tmp_path / f"in_{length}",
+                [{"type": "protein", "id": ["A"], "sequence": "A" * length}],
+            ),
+            weights=weights,
+            output_dir=tmp_path / "out",
+            padding=padding,
+            options=options or {},
+        )
+
+    for on_profile in ({}, {"triangle_backend": "xla"}):
+        memory_policy.reset_warnings()
+        memory_policy.clear_record()
+        req = make_request(on_profile)
+        with backend.session((req,)):
+            with pytest.raises(MemoryError, match="observed ESMFold2 capacity refusal"):
+                backend.predict(req)
+        assert seen_lengths == []
+        assert memory_policy.recorded()["off_profile"] == []
+
+    for unmeasured, expected_reason in (
+        ({"glu_backend": "tokamax"}, "a fused GLU"),
+        (
+            {"triangle_backend": "cueq"},
+            "a cuEquivariance triangle multiplication",
+        ),
+        (
+            {"triangle_kernel": "cueq"},
+            "a cuEquivariance triangle multiplication",
+        ),
+    ):
+        memory_policy.reset_warnings()
+        memory_policy.clear_record()
+        seen_lengths.clear()
+        req = make_request(unmeasured)
+        with backend.session((req,)):
+            with pytest.warns(RuntimeWarning, match=expected_reason) as caught:
+                with pytest.raises(_ReachedLMError):
+                    backend.predict(req)
+        assert "observed operating limit is advisory" in str(caught[0].message)
+        assert seen_lengths == [1792]
+        record = memory_policy.recorded()
+        assert record["state"] == "over_budget"
+        assert record["off_profile"] == [expected_reason]
+
+    memory_policy.reset_warnings()
+    memory_policy.clear_record()
+    seen_lengths.clear()
+    implicit_req = make_request({"triangle_backend": "cueq"}, padding=DEFAULT_PADDING)
+    with backend.session((implicit_req,)):
+        with pytest.warns(
+            RuntimeWarning, match="a cuEquivariance triangle multiplication"
+        ):
+            with pytest.raises(_ReachedLMError):
+                backend.predict(implicit_req)
+    assert seen_lengths == [1792]
+
+    for options, refuses in (
+        ({"triangle_backend": "xla"}, True),
+        ({"triangle_backend": "cueq"}, False),
+    ):
+        memory_policy.reset_warnings()
+        memory_policy.clear_record()
+        seen_lengths.clear()
+        exact_req = make_request(options, padding=False, length=1792)
+        with backend.session((exact_req,)):
+            if refuses:
+                with pytest.raises(
+                    MemoryError, match="observed ESMFold2 capacity refusal"
+                ):
+                    backend.predict(exact_req)
+                assert seen_lengths == []
+            else:
+                with pytest.raises(_ReachedLMError):
+                    backend.predict(exact_req)
+                assert seen_lengths == [1792]
+
+    memory_policy.clear_record()
+    bad_req = make_request({"triangle_backend": ""})
+    with pytest.raises(ValueError, match="triangle_backend must be one of"):
+        backend.predict(bad_req)
+    assert memory_policy.recorded() is None

@@ -55,8 +55,10 @@ from foldjax.models.esmfold2.data import features as featurisation
 from foldjax.models.esmfold2.models import atom as atom_model
 from foldjax.models.esmfold2.models import esmc as esmc_model
 from foldjax.models.esmfold2.models import model as structure_model
+from foldjax.models.esmfold2.models import trunk as trunk_model
 from foldjax.models.esmfold2.models.model import CONFIDENCE_DTYPES
 from foldjax.models.esmfold2.models.segments import MAX_ATOMS_PER_TOKEN
+from foldjax.models.esmfold2.models.trunk import TRIANGLE_BACKENDS
 from foldjax.padding import square_grid_auto_layout
 
 #: Where `assets.py` stages the language model beside the structure weights.
@@ -783,6 +785,10 @@ def predict(
     #: Which implementation the diffusion token transformer's packed SwiGLU
     #: takes. `None` leaves the checkpoint's value, which is `"xla"`.
     glu_backend: str | None = None,
+    #: Which implementation the pair trunk's triangle multiplication takes.
+    #: `None` leaves the released `"xla"` route; `"cueq"` selects
+    #: cuEquivariance's fused bfloat16 update on a single GPU.
+    triangle_backend: str | None = None,
     #: Experimental solver-free alignment. SVD remains the default until
     #: real-weight, tape-fixed accuracy and memory measurements admit Jacobi.
     rigid_align_backend: str | None = None,
@@ -877,6 +883,18 @@ def predict(
     if glu_backend is not None and glu_backend not in GLU_BACKENDS:
         msg = f"glu backend must be one of {GLU_BACKENDS}; got {glu_backend!r}"
         raise ValueError(msg)
+    if (
+        triangle_backend is not None
+        and (
+            not isinstance(triangle_backend, str)
+            or triangle_backend not in TRIANGLE_BACKENDS
+        )
+    ):
+        msg = (
+            f"triangle_backend must be one of {TRIANGLE_BACKENDS}; "
+            f"got {triangle_backend!r}"
+        )
+        raise ValueError(msg)
     if rigid_align_backend is not None and rigid_align_backend not in ("svd", "jacobi"):
         raise ValueError("rigid_align_backend must be one of svd, jacobi")
     # This port has no triangle attention -- its 2-D ring is Cannon's, for the
@@ -898,10 +916,28 @@ def predict(
             "context parallelism requires glu_backend='xla'; a fused GLU "
             "cannot be partitioned"
         )
+    if cp_shards > 1 and triangle_backend not in (None, "xla"):
+        raise ValueError(
+            "context parallelism requires triangle_backend='xla'; "
+            "cuEquivariance triangle multiplication cannot be partitioned"
+        )
+    if triangle_backend == "cueq":
+        from foldjax.models._pallas_pair import gpu_process
+
+        if not gpu_process():
+            from foldjax._gpu import default_device
+
+            raise ValueError(
+                "triangle_backend='cueq' runs cuEquivariance's fused triangle "
+                "multiplication, which needs a GPU, and the selected JAX "
+                f"device uses platform {default_device().platform!r}; omit the "
+                "option or pass --option triangle_backend=xla"
+            )
     # Resolved before anything is traced, and carried resolved from here on:
     # the alias decides which program is built, so the executable's static
     # topology has to be what runs rather than what was spelled.
     resolved_cp_layout = _resolve_cp_layout(cp_layout, cp_shards)
+    resolved_triangle_backend = "xla" if triangle_backend is None else triangle_backend
     settings = structure_model.with_overrides(
         model.settings,
         num_recycles=num_recycles,
@@ -961,6 +997,10 @@ def predict(
                         (
                             "a fused GLU",
                             settings.diffusion.glu_backend != "xla",
+                        ),
+                        (
+                            "a cuEquivariance triangle multiplication",
+                            resolved_triangle_backend != "xla",
                         ),
                         (
                             "solver-free rigid alignment (unmeasured memory)",
@@ -1069,6 +1109,11 @@ def predict(
     layout_kwargs = (
         {} if resolved_cp_layout == "1d" else {"cp_layout": resolved_cp_layout}
     )
+    triangle_kwargs = (
+        {}
+        if resolved_triangle_backend == "xla"
+        else {"triangle_backend": resolved_triangle_backend}
+    )
     runner = (
         compiled_predict(
             settings, score_capacity, preserve_prefix_rng, cp_shards,
@@ -1076,6 +1121,7 @@ def predict(
             compact_token_bond_encoding, return_distogram_logits,
             compact_lm_input, atom_rows_per_block,
             **layout_kwargs,
+            **triangle_kwargs,
             **policy_kwargs,
             **auxiliary_output_kwargs,
         )
@@ -1120,6 +1166,7 @@ def predict(
             compact_lm_input,
             atom_rows_per_block,
             **layout_kwargs,
+            **triangle_kwargs,
             **auxiliary_output_kwargs,
         )
     if _lower_only:
@@ -1150,9 +1197,23 @@ def _run(
     atom_rows_per_block: int | None = None,
     *,
     cp_layout: str = "1d",
+    triangle_backend: str = "xla",
     return_auxiliary_outputs: bool = True,
     stop_after_inputs: bool = False,
 ) -> dict[str, jnp.ndarray]:
+    if (
+        not isinstance(triangle_backend, str)
+        or triangle_backend not in TRIANGLE_BACKENDS
+    ):
+        raise ValueError(
+            f"triangle_backend must be one of {TRIANGLE_BACKENDS}; "
+            f"got {triangle_backend!r}"
+        )
+    if cp_shards > 1 and triangle_backend != "xla":
+        raise ValueError(
+            "context parallelism requires triangle_backend='xla'; "
+            "cuEquivariance triangle multiplication cannot be partitioned"
+        )
     if cp_shards != _active_cp_shards():
         raise RuntimeError(
             f"cp_shards={cp_shards} but the active context-parallel mesh has "
@@ -1175,7 +1236,10 @@ def _run(
         tape_overrides = dict(features.pop("_padded_random_tapes"))
     else:
         tape_overrides = {}
-    with atom_model._atom_rows_per_block_scope(resolved_atom_rows):
+    with (
+        atom_model._atom_rows_per_block_scope(resolved_atom_rows),
+        trunk_model._triangle_backend_scope(triangle_backend),
+    ):
         return structure_model.predict(
             key,
             features,
@@ -1209,6 +1273,7 @@ _COMPILED_PREDICT_STATIC_ARGNAMES = (
     "compact_lm_input",
     "atom_rows_per_block",
     "cp_layout",
+    "triangle_backend",
     "return_auxiliary_outputs",
     "stop_after_inputs",
 )
@@ -1265,6 +1330,7 @@ def _compiled_predict_factory(
     atom_rows_per_block: int = atom_model.ATOM_ROWS_PER_BLOCK,
     *,
     cp_layout: str = "1d",
+    triangle_backend: str = "xla",
     return_auxiliary_outputs: bool = True,
     stop_after_inputs: bool = False,
     deterministic: bool = False,
@@ -1282,6 +1348,7 @@ def _compiled_predict_factory(
         compact_lm_input,
         atom_rows_per_block,
         cp_layout,
+        triangle_backend,
         return_auxiliary_outputs,
         stop_after_inputs,
     )
@@ -1302,6 +1369,7 @@ def compiled_predict(
     atom_rows_per_block: int | None = None,
     *,
     cp_layout: str = "1d",
+    triangle_backend: str = "xla",
     return_auxiliary_outputs: bool = True,
     stop_after_inputs: bool = False,
     deterministic: bool = False,
@@ -1326,6 +1394,14 @@ def compiled_predict(
     preserve the historical callable-identity API without retaining an
     unbounded executable set.
     """
+    if (
+        not isinstance(triangle_backend, str)
+        or triangle_backend not in TRIANGLE_BACKENDS
+    ):
+        raise ValueError(
+            f"triangle_backend must be one of {TRIANGLE_BACKENDS}; "
+            f"got {triangle_backend!r}"
+        )
     atom_rows_per_block = atom_model._resolve_rows_per_block(atom_rows_per_block)
     identity = (
         settings,
@@ -1349,6 +1425,8 @@ def compiled_predict(
     # on the cache entry and the executable it always had.
     if cp_layout != "1d":
         policy["cp_layout"] = cp_layout
+    if triangle_backend != "xla":
+        policy["triangle_backend"] = triangle_backend
     if stop_after_inputs:
         return _compiled_predict_factory(
             *identity, return_auxiliary_outputs=return_auxiliary_outputs,
