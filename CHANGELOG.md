@@ -29,11 +29,11 @@ unless it says so here, in its own paragraph.
   together with `use_tfg_guidance`.
 - **ESMFold2 `triangle_backend=cueq`** (also `triangle_kernel=cueq`), an
   opt-in for cuEquivariance's fused triangle multiplication in the pair trunk
-  (default unchanged, `xla`). At 1,003 tokens the warm prediction took 0.90x
-  the time at the same peak memory, with CA RMSD to the default at most
-  0.025 Å; at 2,096 tokens (exact shape) it took 0.70x the time at 0.93x the
-  peak memory, with CA RMSD at most 0.042 Å. Refused with context parallelism
-  and off a GPU.
+  (default unchanged, `xla`). With cuEquivariance 0.13.0, at 1,003 tokens the
+  warm prediction took 0.90x the time at the same peak memory, and at 2,096
+  tokens (exact shape) 0.70x the time at 0.93x the peak memory; CA RMSD to the
+  default was at most 0.042 Å at both. Refused with context parallelism and off
+  a GPU.
 - **`--cache-dir` on the Protenix and OpenDDE native predict CLIs and
   `--no-cache` on Protenix's**, as aliases of `--compile-cache` and
   `--no-compile-cache`.
