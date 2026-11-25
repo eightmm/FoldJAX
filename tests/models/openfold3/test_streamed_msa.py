@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import gc
+import weakref
 from typing import NamedTuple
 
 import jax
@@ -217,3 +219,36 @@ def test_streamed_owner_shares_chain_counts_and_partitions_cache_scope(
             cache_scope=str(tmp_path / scope),
         )(jax.random.key(0), batch, TinyParams(jnp.asarray(0.5)))
     assert len(traces) == 6
+
+
+def test_initial_pair_state_is_released_before_finish(stage_probe, monkeypatch):
+    probe = streaming.initialize_trunk
+    states = []
+    alive_at_finish = []
+
+    def initialize(batch, params, **kwargs):
+        s_input, s_init, z_init = probe(batch, params, **kwargs)
+        # Uncompiled stages hand this very object to the scheduler.
+        z_init = np.array(z_init)
+        states.append(weakref.ref(z_init))
+        return s_input, s_init, z_init
+
+    def finish(key, batch, params, config, table, *, trunk_output, **kwargs):
+        gc.collect()
+        alive_at_finish.append(states[0]() is not None)
+        return trunk_output
+
+    monkeypatch.setattr(streaming, "initialize_trunk", initialize)
+    monkeypatch.setattr(streaming.inf, "_predict_from_trunk", finish)
+    batch = prepare_msa_cycle_features(
+        _varied_msa_features(rows=3, tokens=2),
+        8,
+        num_recycles=4,
+        rng=np.random.default_rng(8),
+    )
+    config = _config(n_token=2, msa_depth=8, num_recycles=4)
+    streaming.compile_streamed_predict(config, _table(), compiled=False)(
+        jax.random.key(0), batch, TinyParams(jnp.asarray(0.5))
+    )
+
+    assert alive_at_finish == [False]

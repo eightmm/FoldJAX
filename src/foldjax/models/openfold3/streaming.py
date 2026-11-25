@@ -191,6 +191,9 @@ class _StreamedGraph:
             jax.block_until_ready(carry)
             current = following
         output = (initial[0], *carry)
+        # Only ``s_input`` outlives the cycles: release ``z_init`` before
+        # ``finish`` allocates its arena.
+        del initial, carry, current
         return self.finish(
             key, common, params, table, output, tape, mask, augmentation, chain_count
         )

@@ -204,6 +204,7 @@ def trunk_cycle(
         eps=eps,
         chunk_size=chunk_size,
         glu_backend=glu_backend,
+        scan_prefix=True,
     )
 
     s = s_init + linear(layer_norm(s, params.layer_norm_s, eps=eps), params.linear_s)

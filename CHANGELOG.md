@@ -1127,6 +1127,26 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **OpenFold3 needs less device memory for its MSA module, above all under
+  default padding.** The last MSA block skips the MSA update, so the four-block
+  stack could not be scanned and ran unrolled; in the padded route's standalone
+  trunk-cycle program XLA then allocated every block's row-chunk buffers at
+  once. In the trunk the stack now scans its longest homogeneous prefix and
+  unrolls only the rest, and the streamed route releases the initial pair state
+  before the diffusion and confidence program allocates. Compiled at 4,352
+  tokens, the padded route's standalone trunk cycle fell from 61.2 to 33.1 GiB
+  of temporary memory, and the exact-shape route's fused recycling trunk from
+  42.2 to 37.6 GiB. A prefix whose blocks
+  differ in parameter dtype, or that would change the activations' shape, dtype
+  or weak type, still runs unrolled; `msa_module_stack` called directly keeps
+  the previous behaviour unless `scan_prefix=True`. The scanned blocks compute
+  the same arithmetic but compile to a different program, so bfloat16 results
+  can change by rounding. On the 118-token 1URN stage-parity capture the float32
+  trunk's relative RMS against upstream stayed at 5.587e-4 for the pair
+  representation (single: 6.263e-5 to 6.262e-5), and the shipped bfloat16
+  trunk's pair error on GPU moved from 1.793e-2 to 1.784e-2. At 1,003
+  tokens under default padding with `deterministic=on`, structures and
+  confidence arrays were byte-identical to the previous commit's.
 - **OpenFold3 returns its ligand-aware chain-pair ipTM
   (`chain_pair_iptm_bespoke`) again.** The backend's feature filter dropped
   the `is_ligand` token flag on its way to the model, so every multimer run
