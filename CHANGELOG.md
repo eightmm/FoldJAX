@@ -31,7 +31,9 @@ unless it says so here, in its own paragraph.
   opt-in for cuEquivariance's fused triangle multiplication in the pair trunk
   (default unchanged, `xla`). At 1,003 tokens the warm prediction took 0.90x
   the time at the same peak memory, with CA RMSD to the default at most
-  0.025 Å. Refused with context parallelism and off a GPU.
+  0.025 Å; at 2,096 tokens (exact shape) it took 0.70x the time at 0.93x the
+  peak memory, with CA RMSD at most 0.042 Å. Refused with context parallelism
+  and off a GPU.
 - **`--cache-dir` on the Protenix and OpenDDE native predict CLIs and
   `--no-cache` on Protenix's**, as aliases of `--compile-cache` and
   `--no-compile-cache`.

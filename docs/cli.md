@@ -2105,7 +2105,10 @@ reference (mean absolute difference 0.0024 against 0.0029). End to end at
 against 76.36 s (0.90x), at the same peak memory (18,426 MiB). Against the
 default it moved CA atoms by at most 0.025 Å RMSD after superposition
 (CA-lDDT 1.0), inside the 0.064 Å two separate compiles of the default
-program differ by.
+program differ by. At 2,096 tokens, run at exact shape because the default
+padding to 2,304 tokens does not fit the 96 GB card, the warm prediction took
+230.4 s against 327.8 s (0.70x) and peak memory fell from 35,103 to 32,518 MiB.
+CA RMSD to the default was at most 0.042 Å over the five samples (CA-lDDT 1.0).
 
 ### Pallas pair kernels (GPU default: Boltz-2 and OpenFold3 both, Protenix the multiplication)
 
