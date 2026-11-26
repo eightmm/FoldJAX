@@ -101,25 +101,41 @@ class PredictionConfig(NamedTuple):
     structural_triangle_att_row_chunk_size: int | None = None
     #: Precompute per-block token pair bias once outside the sampler. Memory
     #: cost: ``n_blocks * H * S^2 * itemsize`` (~5.2 GiB at 24 blocks, 16 heads,
-    #: ``S = 1,902`` in fp32). Default ``False``.
+    #: ``S = 1,902`` in fp32). The native default is ``False``; an omitted
+    #: ``foldjax predict`` option realises
+    #: ``backends.opendde.realised_diffusion_pair_bias_cache``.
     diffusion_pair_bias_cache: bool = False
 
 
 #: What :func:`_exceeds_profile` names for the pair-bias cache.
 PAIR_BIAS_CACHE_PROFILE = "the diffusion pair-bias cache"
 
+#: The largest compiled structural token count at which the pair-bias cache
+#: was measured not to raise the peak: on one RTX PRO 6000, five samples, the
+#: peak was unchanged at 1,920 (19,347 MiB) and 4,040 (77,196 MiB) padded
+#: structural tokens.
+PAIR_BIAS_CACHE_MEASURED_STRUCTURAL_TOKENS = 4040
 
-def _exceeds_profile(config: PredictionConfig, *, padded: bool) -> tuple[str, ...]:
+
+def _exceeds_profile(
+    config: PredictionConfig, *, padded: bool, n_structural: int
+) -> tuple[str, ...]:
     """What about this run needs *more* memory than the fitted laws describe.
 
     Serving padding: both laws were fitted unpadded. The pair-bias cache: its
-    per-block biases stay live through the sampler, and no law was fitted
-    with them, so with it on a law that clears the budget is a lower bound.
-    The fp32 trunk is not here: it has its own fitted law.
+    per-block biases stay live through the sampler and no law was fitted with
+    them, so above the structural token count
+    (`n_structural`, the shape the run compiles) where it was measured, a law
+    that clears the budget is a lower bound. The fp32 trunk is not here: it
+    has its own fitted law.
     """
+    cache_unmeasured = (
+        config.diffusion_pair_bias_cache
+        and n_structural > PAIR_BIAS_CACHE_MEASURED_STRUCTURAL_TOKENS
+    )
     return (
         *((memory_policy.SERVING_PADDING,) if padded else ()),
-        *((PAIR_BIAS_CACHE_PROFILE,) if config.diffusion_pair_bias_cache else ()),
+        *((PAIR_BIAS_CACHE_PROFILE,) if cache_unmeasured else ()),
     )
 
 
@@ -1110,7 +1126,13 @@ def _run(
                             ),
                             off_profile=off_profile,
                             exceeds_profile=_exceeds_profile(
-                                config, padded=padding is not None
+                                config,
+                                padded=padding is not None,
+                                n_structural=(
+                                    n_structural
+                                    if padded_structural is None
+                                    else padded_structural
+                                ),
                             ),
                             token_label="structural tokens",
                             exact=(

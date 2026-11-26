@@ -555,6 +555,18 @@ unless it says so here, in its own paragraph.
   moved by at most 0.003 Å and the same-index CA residual between the two
   routes was 0.016-0.060 Å, the size by which two processes running the same
   code already differ on this port.
+- **OpenDDE computes its diffusion-transformer pair bias once per prediction
+  by default on a serial GPU.** An omitted `diffusion_pair_bias_cache` now
+  realises `true` on a serial unguided GPU process -- with the efficient pair
+  fusion the cache requires -- and stays `false` under context parallelism,
+  under `use_tfg_guidance`, off a GPU and on `opendde-jax-predict`; the
+  compile-cache namespace and the native argv record the realised value. On
+  one RTX PRO 6000 on top of tokamax diffusion attention, five samples, warm:
+  1,003 tokens 0.847x wall and 1,993 tokens 0.854x wall, device peak unchanged
+  at both. Per-chain CA RMSD to the deposited structures moved by at most
+  0.002 Å and the same-index CA residual was 0.004-0.062 Å, the cross-process
+  floor with `deterministic=off`. Above the 4,040 padded structural tokens
+  measured, the memory check treats a fitting estimate as a lower bound.
 - **Boltz-2's sampler computes its single conditioning once per structure,
   not once per sample.** When every sample shares one structure's trunk
   outputs and a single noise level, the single conditioner runs at width one

@@ -3336,7 +3336,9 @@ def run_opendde(
     # this replay runs the tape through the eager sampler, where a
     # `pallas_call` binds a fresh `jit` per attention call -- why the runner
     # already sends eager TFG runs to `xla_jit` -- so the row keeps `xla_jit`
-    # and says so.
+    # and says so. The GPU rows do run the diffusion pair-bias cache that an
+    # omitted option realises there (`realised_diffusion_pair_bias_cache`),
+    # with the efficient fusion the runner pairs it with.
     if DEVICE == "cpu":
         attention_options: dict[str, Any] = {
             "diffusion_attention_backend": "xla",
@@ -3354,7 +3356,14 @@ def run_opendde(
         )
         confidence_dtype_record = "float32 (native skip_amp.confidence_head=true)"
     else:
-        attention_options = {}
+        from foldjax.backends.opendde import realised_diffusion_pair_bias_cache
+
+        pair_bias_cache = bool(realised_diffusion_pair_bias_cache(None))
+        attention_options = (
+            {"diffusion_pair_bias_cache": True, "use_diffusion_efficient_fusion": True}
+            if pair_bias_cache
+            else {}
+        )
         dtype_options = {
             "trunk_dtype": jnp.bfloat16,
             "confidence_dtype": jnp.bfloat16,
@@ -3362,6 +3371,7 @@ def run_opendde(
         kernel_record = (
             "port defaults: single/diffusion attention xla_jit (eager tape "
             "replay; serial-GPU predict runs tokamax diffusion attention), "
+            f"diffusion pair-bias cache {'on' if pair_bias_cache else 'off'}, "
             "triangle "
             "attention cueq_jit, triangle multiplication xla on the narrow trunk "
             "(_with_cueq_triangle_defaults)"
@@ -3741,7 +3751,13 @@ def run_opendde(
                 run_confidence=run_confidence,
                 stop_after_trunk=stop_after_trunk,
                 cycle_msa_features=cycle_msa,
-                **attention_options,
+                # S5 injects the native coordinates in place of the sampler,
+                # so a pair-bias cache would be built for nothing and timed.
+                **{
+                    name: value
+                    for name, value in attention_options.items()
+                    if not (run_confidence and name == "diffusion_pair_bias_cache")
+                },
                 **dtype_options,
                 init_noise=jnp.asarray(tape["init_noise"]),
                 step_noises=tuple(

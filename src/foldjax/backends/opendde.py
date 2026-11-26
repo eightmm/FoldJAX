@@ -52,11 +52,9 @@ _CLI_OPTIONS = {
     "diffusion_attention_backend",
     "diffusion_chunk_size",
     "diffusion_dtype",
-    # Opt-in measurement candidate (default false): precompute every
-    # DiffusionTransformer block's additive token pair bias once before the
-    # sampler instead of projecting the pair tensor at every denoising step.
-    # Memory cost: n_blocks * H * S^2 * itemsize (~5.2 GiB at 24 blocks,
-    # 16 heads, S=1,902 in fp32).
+    # Precompute every DiffusionTransformer block's additive token pair bias
+    # once before the sampler instead of projecting the pair tensor at every
+    # denoising step. An omitted value realises `realised_diffusion_pair_bias_cache`.
     "diffusion_pair_bias_cache",
     "kalign_binary",
     "max_msa_depth",
@@ -115,6 +113,9 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     # and `cache_profile` records that word -- see
     # `realised_diffusion_attention_backend`.
     "diffusion_attention_backend": "xla_jit",
+    # Likewise the parser's default and what an omitted option realises
+    # everywhere but a serial unguided GPU process, where it realises `True`
+    # -- see `realised_diffusion_pair_bias_cache`.
     "diffusion_pair_bias_cache": False,
     "trunk_single_attention_backend": "xla_jit",
     "structural_single_attention_backend": "xla_jit",
@@ -417,6 +418,28 @@ def realised_diffusion_attention_backend(
     )
 
 
+def realised_diffusion_pair_bias_cache(
+    value: object,
+    *,
+    cp_devices: object = 1,
+    use_tfg_guidance: object = False,
+) -> object:
+    """The OpenDDE ``diffusion_pair_bias_cache`` this run realises.
+
+    An explicit value is returned unchanged, so validation refuses it as
+    written. An omitted value (``None``) resolves to ``True`` on a serial
+    unguided GPU process -- 0.847x warm wall at 1,003 tokens and 0.854x at
+    1,993 tokens on one RTX PRO 6000, peak unchanged -- and to ``False``
+    under context parallelism and ``use_tfg_guidance``, where the cache is
+    refused, and off a GPU, where it was never measured.
+    """
+    if value is not None:
+        return value
+    if _strict_cp_devices(cp_devices) > 1 or _is_tfg_enabled(use_tfg_guidance):
+        return False
+    return _gpu_process()
+
+
 def _refuse_guided_tokamax(options: dict[str, object]) -> None:
     """Refuse an explicit tokamax under `use_tfg_guidance`.
 
@@ -612,6 +635,12 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
                     use_tfg_guidance=options.get("use_tfg_guidance", False),
                 )
             )
+        if "diffusion_pair_bias_cache" not in profile:
+            profile["diffusion_pair_bias_cache"] = realised_diffusion_pair_bias_cache(
+                None,
+                cp_devices=options.get("cp_devices", 1),
+                use_tfg_guidance=options.get("use_tfg_guidance", False),
+            )
         self._strip_released_defaults(profile, _RELEASED_COMPILE_DEFAULTS)
         self._strip_released_defaults(profile, {"cp_layout": "1d"})
         resolved_cp_layout = square_grid_cp_layout(options)
@@ -736,6 +765,18 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
                 != _PARSER_DEFAULTS["diffusion_attention_backend"]
             ):
                 options["diffusion_attention_backend"] = realised_diffusion_attention
+        # The pair-bias cache follows the same rule.
+        if "diffusion_pair_bias_cache" not in options:
+            realised_pair_bias_cache = realised_diffusion_pair_bias_cache(
+                None,
+                cp_devices=cp_devices,
+                use_tfg_guidance=options.get("use_tfg_guidance", False),
+            )
+            if (
+                realised_pair_bias_cache
+                != _PARSER_DEFAULTS["diffusion_pair_bias_cache"]
+            ):
+                options["diffusion_pair_bias_cache"] = realised_pair_bias_cache
         native_options: dict[str, object] = {}
         for key in sorted(_CLI_OPTIONS):
             if key in options:

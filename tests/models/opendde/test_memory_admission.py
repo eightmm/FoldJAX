@@ -556,16 +556,32 @@ def test_the_step_aside_is_decided_per_job_in_one_call(pool, monkeypatch, tmp_pa
 
 
 @pytest.mark.parametrize("padded", [False, True])
-def test_pair_bias_cache_makes_a_fitting_estimate_a_lower_bound(pool, padded):
-    """The cache's live biases were never in a fitted law: `unknown`, not `fits`."""
-    config = predict_runner.PredictionConfig(
+def test_pair_bias_cache_makes_an_unmeasured_size_a_lower_bound(pool, padded):
+    """Above the measured 4,040 structural tokens the cache's live biases are in
+    no fitted law, so a fitting estimate is `unknown`; at or below it, it fits."""
+    on = predict_runner.PredictionConfig(
         **{**_PARSER_DEFAULTS, "diffusion_pair_bias_cache": True}
     )
-    names = predict_runner._exceeds_profile(config, padded=padded)
-    assert predict_runner.PAIR_BIAS_CACHE_PROFILE in names
-    assert (memory_policy.SERVING_PADDING in names) is padded
-    with pytest.warns(RuntimeWarning):
-        decision = _admit(N_ST_1003, BF16, exceeds_profile=names)
-    assert decision.state == "unknown"
     off = predict_runner.PredictionConfig(**_PARSER_DEFAULTS)
-    assert predict_runner._exceeds_profile(off, padded=False) == ()
+    measured = predict_runner.PAIR_BIAS_CACHE_MEASURED_STRUCTURAL_TOKENS
+    padding_name = (memory_policy.SERVING_PADDING,) if padded else ()
+    for n_st in (N_ST_1003, measured):
+        assert (
+            predict_runner._exceeds_profile(on, padded=padded, n_structural=n_st)
+            == padding_name
+        )
+    above = predict_runner._exceeds_profile(
+        on, padded=padded, n_structural=measured + 1
+    )
+    assert above == (*padding_name, predict_runner.PAIR_BIAS_CACHE_PROFILE)
+    assert (
+        predict_runner._exceeds_profile(off, padded=padded, n_structural=measured + 1)
+        == padding_name
+    )
+    if not padded:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert _admit(N_ST_1003, BF16, exceeds_profile=()).state == "fits"
+        with pytest.warns(RuntimeWarning):
+            decision = _admit(N_ST_1003, BF16, exceeds_profile=above)
+        assert decision.state == "unknown"

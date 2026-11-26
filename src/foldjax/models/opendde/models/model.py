@@ -414,6 +414,10 @@ def _guard_pair_bias_cache(kwargs: Mapping[str, Any], cp: int) -> None:
     """
     if not kwargs.get("diffusion_pair_bias_cache", False):
         return
+    if not kwargs.get("use_diffusion_efficient_fusion", False):
+        raise ValueError(
+            "diffusion_pair_bias_cache requires use_diffusion_efficient_fusion=True"
+        )
     if cp > 1:
         raise ValueError(
             "diffusion_pair_bias_cache is not supported under context "
@@ -784,11 +788,14 @@ def opendde_infer_static(
     #: (projected normalized pair + structural pair bias + token padding mask
     #: bias) once before the diffusion sampler instead of projecting
     #: ``transformer_z`` inside every block at every denoising step.
-    #: Opt-in measurement candidate, default ``False``.
+    #: Direct/native callers default to ``False``; ``foldjax predict`` enables
+    #: it by default on a serial, unguided GPU process via
+    #: ``backends.opendde.realised_diffusion_pair_bias_cache`` (paired with
+    #: ``use_diffusion_efficient_fusion=True`` in ``runner._predict``).
     #:
     #: Memory cost: ``n_blocks * token_heads * n_structural_token**2 * itemsize``
-    #: bytes held live across sampling (24 blocks, 16 heads, ``S = 1,902`` in
-    #: float32 is about 5.2 GiB). Requires
+    #: bytes held live across sampling (peak equal to uncached up to 4,040
+    #: structural tokens on one RTX PRO 6000). Requires
     #: ``use_diffusion_efficient_fusion=True``, single-device execution
     #: (``cp_shards == 1``), and no active TFG guidance.
     diffusion_pair_bias_cache: bool = False,

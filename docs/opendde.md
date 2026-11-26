@@ -37,6 +37,7 @@ never substituted implicitly.
 | seed | a native job's `modelSeeds`; when `--seed` and `modelSeeds` are absent or empty, both `foldjax predict` and `opendde-jax-predict` draw one integer in `1..65536` per job (matching upstream) and record it (`run.json` and `seed_<seed>/seed.json`) |
 | precision | bfloat16 trunk and bfloat16 confidence Pairformer |
 | diffusion attention | `tokamax` fused attention on a serial GPU (`foldjax predict`); `xla_jit` under context parallelism, under `use_tfg_guidance`, off a GPU, and on `opendde-jax-predict` |
+| diffusion pair-bias cache | on for a serial unguided GPU (`foldjax predict`); off under context parallelism, under `use_tfg_guidance`, off a GPU, and on `opendde-jax-predict` |
 
 Upstream runs float32: `--option dtype=float32 --option confidence_dtype=fp32`
 reproduces it. The float32 trunk costs about twice the peak memory of the
@@ -53,6 +54,20 @@ unchanged to 1e-3). Use `--option diffusion_attention_backend=xla_jit` to
 restore the blocked XLA path on a serial GPU; under context parallelism,
 `use_tfg_guidance`, or off a GPU an omitted option resolves to `xla_jit`, while
 an explicit `tokamax` keeps its refusal under context parallelism and
+`use_tfg_guidance`.
+
+On a serial unguided GPU, omitting `diffusion_pair_bias_cache` computes every
+diffusion-transformer block's token pair bias once per prediction instead of
+at every denoising step, with the efficient pair fusion the cache requires
+(measured on one RTX PRO 6000 on top of tokamax attention, five samples, warm:
+1,003 tokens 119.7 -> 101.4 s, 0.847x; 1,993 tokens 581.0 -> 496.2 s, 0.854x;
+device peak unchanged at both; per-chain deposited CA RMSD unchanged to
+1e-3 and the same-index CA residual 0.004-0.062 Å, the cross-process floor
+with `deterministic=off`). The cached biases take `24 x 16 x S^2 x 4` bytes
+for S structural tokens; above the 4,040 padded structural tokens measured,
+the memory check treats a fitting estimate as a lower bound. Use
+`--option diffusion_pair_bias_cache=false` to project per step on a serial
+GPU; an explicit `true` keeps its refusal under context parallelism and
 `use_tfg_guidance`.
 
 ## Inputs

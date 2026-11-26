@@ -2171,6 +2171,7 @@ What an omitted setting runs, and how to name either side:
 | pair transitions | Protenix | `xla` (released) | `xla` | released already; `--option glu_backend=pallas` opts in |
 | pair transitions | OpenFold3 | `glu_backend=pallas` | `xla` | `--option glu_backend=xla` |
 | diffusion attention | OpenDDE | `tokamax` (serial) | `xla_jit` | `--option diffusion_attention_backend=xla_jit` |
+| diffusion pair bias | OpenDDE | once per prediction (serial, unguided) | every step | `--option diffusion_pair_bias_cache=false` |
 
 `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=pallas`,
 `PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=pallas`,

@@ -1030,18 +1030,30 @@ def test_refusals_and_malformed_inputs_across_layers(
             guidance_config={"enable": True},
             **static_kw,
         )
-    # The compiled entry refuses CP and TFG on concrete values, before any
-    # feature validation, mesh replication or tracing.
+    # The compiled entry refuses efficient-fusion-off, CP, and TFG on concrete
+    # values, before any feature validation, mesh replication or tracing.
     for refused, match in (
-        ({"cp_shards": 2}, "not supported under context parallelism"),
-        ({"guidance_config": {"enable": True}}, "not supported with TFG guidance"),
+        (
+            {"use_diffusion_efficient_fusion": False},
+            "use_diffusion_efficient_fusion=True",
+        ),
+        (
+            {"use_diffusion_efficient_fusion": True, "cp_shards": 2},
+            "not supported under context parallelism",
+        ),
+        (
+            {
+                "use_diffusion_efficient_fusion": True,
+                "guidance_config": {"enable": True},
+            },
+            "not supported with TFG guidance",
+        ),
     ):
         with pytest.raises(ValueError, match=match):
             opendde_model.opendde_infer_compiled(
                 {},
                 None,
                 schedule,
-                use_diffusion_efficient_fusion=True,
                 diffusion_pair_bias_cache=True,
                 **refused,
                 **static_kw,
@@ -1054,7 +1066,10 @@ def test_refusals_and_malformed_inputs_across_layers(
 def test_backend_option_defaults_false_and_true_forwards_flag(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Default is False with unchanged cache namespace; True forwards the flag."""
+    """Off-GPU default is False with unchanged cache namespace; True forwards."""
+    # Off a GPU an omitted pair-bias cache realises the released False; serial
+    # GPU resolution to True is covered in its own test below.
+    monkeypatch.setattr(backend_impl, "_gpu_process", lambda: False)
     backend = OpenDDEBackend()
     assert backend_impl._RELEASED_COMPILE_DEFAULTS["diffusion_pair_bias_cache"] is False
     assert backend_impl._PARSER_DEFAULTS["diffusion_pair_bias_cache"] is False
@@ -1216,3 +1231,269 @@ def test_compiled_pool_identity_separates_pair_bias_cache_arms() -> None:
         args, {**base, "diffusion_pair_bias_cache": True}
     )
     assert id_off != id_on
+
+
+def _stub_full_backend_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Stub I/O and model entries so OpenDDEBackend.predict runs end-to-end on CPU."""
+    infer_calls: list[tuple[str, dict[str, Any]]] = []
+    job = {"name": "tiny", "modelSeeds": [101], "sequences": []}
+    monkeypatch.setattr(opendde_runner, "_load_jobs", lambda _p: [job])
+    monkeypatch.setattr(
+        opendde_runner,
+        "_featurize",
+        lambda *_a, **_k: {"restype": np.zeros((2, 32), dtype=np.float32)},
+    )
+    monkeypatch.setattr(
+        opendde_runner,
+        "_load_prepared_params",
+        lambda _p, _d: inference_params(),
+    )
+    monkeypatch.setattr(
+        "foldjax.models.protenix.data.geometry.prepare_tfg_features",
+        lambda raw, **_k: {**raw, "geometry_unsupported": False},
+    )
+    monkeypatch.setattr(
+        opendde_model,
+        "opendde_infer_compiled",
+        lambda _f, _p, _s, **kw: (
+            infer_calls.append(("compiled", dict(kw)))
+            or {"coordinate": np.zeros((1, 3, 3), dtype=np.float32)}
+        ),
+    )
+    monkeypatch.setattr(
+        opendde_model,
+        "opendde_infer_static",
+        lambda _f, _p, _s, **kw: (
+            infer_calls.append(("static", dict(kw)))
+            or {"coordinate": np.zeros((1, 3, 3), dtype=np.float32)}
+        ),
+    )
+    monkeypatch.setattr(opendde_runner, "_score", lambda out, *_a, **_k: dict(out))
+
+    def fake_write(root: Path, **kw: Any) -> list[Path]:
+        pred_dir = root / kw["job_name"] / "predictions"
+        pred_dir.mkdir(parents=True, exist_ok=True)
+        cif = pred_dir / "tiny_sample_0.cif"
+        cif.write_text("data_x\n", encoding="utf-8")
+        (pred_dir / "tiny_summary_confidences_0.json").write_text(
+            json.dumps({"ranking_score": 0.9}), encoding="utf-8"
+        )
+        return [cif]
+
+    monkeypatch.setattr(opendde_runner, "_write", fake_write)
+    return infer_calls
+
+
+def test_realised_diffusion_pair_bias_cache_resolver_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resolver table: GPU/CPU x CP x TFG x explicit."""
+    # Serial unguided GPU -> True.
+    monkeypatch.setattr(backend_impl, "_gpu_process", lambda: True)
+    assert backend_impl.realised_diffusion_pair_bias_cache(None) is True
+    for cp_serial in (1, "1", np.int64(1)):
+        assert (
+            backend_impl.realised_diffusion_pair_bias_cache(None, cp_devices=cp_serial)
+            is True
+        )
+    for tfg_off in (False, "false", " FALSE ", np.bool_(False)):
+        assert (
+            backend_impl.realised_diffusion_pair_bias_cache(
+                None, use_tfg_guidance=tfg_off
+            )
+            is True
+        )
+
+    # Off a GPU (CPU / TPU) -> False.
+    monkeypatch.setattr(backend_impl, "_gpu_process", lambda: False)
+    assert backend_impl.realised_diffusion_pair_bias_cache(None) is False
+
+    # Under CP, TFG, or any explicit value, _gpu_process is never probed.
+    monkeypatch.setattr(
+        backend_impl,
+        "_gpu_process",
+        lambda: (_ for _ in ()).throw(AssertionError("device probed unexpectedly")),
+    )
+    for cp_non_serial in (2, "2", 4, np.int64(2)):
+        assert (
+            backend_impl.realised_diffusion_pair_bias_cache(
+                None, cp_devices=cp_non_serial
+            )
+            is False
+        )
+    for tfg_on in (True, "true", " TRUE ", np.bool_(True)):
+        assert (
+            backend_impl.realised_diffusion_pair_bias_cache(
+                None, use_tfg_guidance=tfg_on
+            )
+            is False
+        )
+    # Any explicit value is returned unchanged.
+    for explicit in (True, False, "true", "false", "malformed", 0, ""):
+        assert backend_impl.realised_diffusion_pair_bias_cache(explicit) is explicit
+
+
+def test_omitted_pair_bias_cache_resolves_true_on_serial_gpu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Serial unguided GPU resolves omitted -> True across profile, argv, predict."""
+    from tests._parser_capture import capture_parser
+
+    monkeypatch.setattr(backend_impl, "_gpu_process", lambda: True)
+    backend = OpenDDEBackend()
+    omitted = _request(
+        tmp_path / "gpu-omitted", num_samples=1, num_steps=2, num_recycles=1
+    )
+    explicit_true = dataclasses.replace(
+        omitted,
+        output_dir=tmp_path / "gpu-true",
+        options={**omitted.options, "diffusion_pair_bias_cache": True},
+    )
+    explicit_false = dataclasses.replace(
+        omitted,
+        output_dir=tmp_path / "gpu-false",
+        options={**omitted.options, "diffusion_pair_bias_cache": False},
+    )
+
+    # Cache profile records True and aliases explicit True; explicit False stays
+    # stripped and distinct.
+    omitted_profile = backend.cache_profile(omitted)
+    assert omitted_profile["diffusion_pair_bias_cache"] is True
+    assert omitted_profile == backend.cache_profile(explicit_true)
+    assert resolve_cache_dir(omitted, backend) == resolve_cache_dir(
+        explicit_true, backend
+    )
+    assert "diffusion_pair_bias_cache" not in backend.cache_profile(explicit_false)
+    assert resolve_cache_dir(omitted, backend) != resolve_cache_dir(
+        explicit_false, backend
+    )
+
+    # Invocation renders `--diffusion-pair-bias-cache True` matching the native
+    # parser namespace.
+    invocation = backend._native_invocation(omitted)
+    assert invocation.config_fields["diffusion_pair_bias_cache"] is True
+    assert (
+        invocation.argv[invocation.argv.index("--diffusion-pair-bias-cache") + 1]
+        == "True"
+    )
+    parsed = capture_parser(opendde_cli.main).parse_args(invocation.argv)
+    assert parsed.diffusion_pair_bias_cache is True
+
+    # Full backend.predict -> runner.run_prediction -> opendde_infer_compiled
+    # enables both the cache and use_diffusion_efficient_fusion=True.
+    infer_calls = _stub_full_backend_run(monkeypatch)
+    result = backend.predict(omitted)
+    argv = list(result.raw["argv"])
+    assert argv[argv.index("--diffusion-pair-bias-cache") + 1] == "True"
+    assert infer_calls[-1][0] == "compiled"
+    assert infer_calls[-1][1]["diffusion_pair_bias_cache"] is True
+    assert infer_calls[-1][1]["use_diffusion_efficient_fusion"] is True
+
+    # Explicit False on a serial GPU disables the cache without forcing fusion.
+    false_result = backend.predict(explicit_false)
+    false_argv = list(false_result.raw["argv"])
+    assert false_argv[false_argv.index("--diffusion-pair-bias-cache") + 1] == "False"
+    assert infer_calls[-1][0] == "compiled"
+    assert infer_calls[-1][1]["diffusion_pair_bias_cache"] is False
+    assert "use_diffusion_efficient_fusion" not in infer_calls[-1][1]
+
+    # Native opendde-jax-predict CLI keeps False even on a GPU process.
+    cli_pred, cli_infer = _run_cli_to_infer(tmp_path / "cli-gpu-default", monkeypatch)
+    assert cli_pred[0]["diffusion_pair_bias_cache"] is False
+    assert cli_infer[0][0] == "compiled"
+    assert cli_infer[0][1]["diffusion_pair_bias_cache"] is False
+    assert "use_diffusion_efficient_fusion" not in cli_infer[0][1]
+
+
+def test_omitted_pair_bias_cache_stays_false_under_cp_tfg_and_off_gpu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Omitted stays False under CP, TFG, and off-GPU; explicit True refuses."""
+    backend = OpenDDEBackend()
+    infer_calls = _stub_full_backend_run(monkeypatch)
+
+    # 1. Off a GPU (CPU): omitted resolves False and aliases explicit False.
+    monkeypatch.setattr(backend_impl, "_gpu_process", lambda: False)
+    cpu_omitted = _request(
+        tmp_path / "cpu-omitted", num_samples=1, num_steps=2, num_recycles=1
+    )
+    cpu_false = dataclasses.replace(
+        cpu_omitted,
+        options={**cpu_omitted.options, "diffusion_pair_bias_cache": False},
+    )
+    assert "diffusion_pair_bias_cache" not in backend.cache_profile(cpu_omitted)
+    assert resolve_cache_dir(cpu_omitted, backend) == resolve_cache_dir(
+        cpu_false, backend
+    )
+    cpu_res = backend.predict(cpu_omitted)
+    assert "--diffusion-pair-bias-cache" not in cpu_res.raw["argv"]
+    assert infer_calls[-1][0] == "compiled"
+    assert infer_calls[-1][1]["diffusion_pair_bias_cache"] is False
+    assert "use_diffusion_efficient_fusion" not in infer_calls[-1][1]
+
+    # 2. On a GPU under CP: omitted -> False (not refused); explicit True refuses.
+    monkeypatch.setattr(backend_impl, "_gpu_process", lambda: True)
+    cp_omitted = _request(
+        tmp_path / "gpu-cp-omitted",
+        cp_devices=2,
+        num_samples=1,
+        num_steps=2,
+        num_recycles=1,
+    )
+    cp_false = dataclasses.replace(
+        cp_omitted,
+        options={**cp_omitted.options, "diffusion_pair_bias_cache": False},
+    )
+    cp_true = dataclasses.replace(
+        cp_omitted,
+        options={**cp_omitted.options, "diffusion_pair_bias_cache": True},
+    )
+    assert "diffusion_pair_bias_cache" not in backend.cache_profile(cp_omitted)
+    assert resolve_cache_dir(cp_omitted, backend) == resolve_cache_dir(
+        cp_false, backend
+    )
+    cp_res = backend.predict(cp_omitted)
+    assert "--diffusion-pair-bias-cache" not in cp_res.raw["argv"]
+    assert infer_calls[-1][0] == "compiled"
+    assert infer_calls[-1][1]["diffusion_pair_bias_cache"] is False
+    for fn in (
+        backend.validate_request,
+        backend.cache_profile,
+        backend._native_invocation,
+    ):
+        with pytest.raises(ValueError, match="not supported under context parallelism"):
+            fn(cp_true)
+
+    # 3. On a GPU under TFG: omitted -> False (not refused); explicit True refuses.
+    tfg_omitted = _request(
+        tmp_path / "gpu-tfg-omitted",
+        use_tfg_guidance=True,
+        num_samples=1,
+        num_steps=2,
+        num_recycles=1,
+    )
+    tfg_false = dataclasses.replace(
+        tfg_omitted,
+        options={**tfg_omitted.options, "diffusion_pair_bias_cache": False},
+    )
+    tfg_true = dataclasses.replace(
+        tfg_omitted,
+        options={**tfg_omitted.options, "diffusion_pair_bias_cache": True},
+    )
+    assert "diffusion_pair_bias_cache" not in backend.cache_profile(tfg_omitted)
+    assert resolve_cache_dir(tfg_omitted, backend) == resolve_cache_dir(
+        tfg_false, backend
+    )
+    tfg_res = backend.predict(tfg_omitted)
+    assert "--diffusion-pair-bias-cache" not in tfg_res.raw["argv"]
+    assert infer_calls[-1][0] == "static"
+    assert infer_calls[-1][1]["diffusion_pair_bias_cache"] is False
+    for fn in (
+        backend.validate_request,
+        backend.cache_profile,
+        backend._native_invocation,
+    ):
+        with pytest.raises(ValueError, match="not supported with use_tfg_guidance"):
+            fn(tfg_true)

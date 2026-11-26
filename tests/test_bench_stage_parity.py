@@ -701,3 +701,107 @@ def test_boltz2_s5_program_compiles_like_predict(monkeypatch) -> None:
     assert program._cache_size() == 1
     assert seen["chain_ids"] == (0, 1)
     assert (seen["multiplicity"], seen["chunk_size"]) == (1, 128)
+
+
+def test_run_opendde_gpu_enables_realised_pair_bias_cache_and_cpu_leaves_it_off(
+    tmp_path, monkeypatch
+) -> None:
+    """`run_opendde` resolves the pair-bias cache via the shared backend resolver."""
+    from types import SimpleNamespace
+
+    import jax
+
+    from foldjax.backends import opendde as opendde_backend
+    from foldjax.models.opendde import postprocess as opendde_postprocess
+    from foldjax.models.opendde.bridge import weights_io as opendde_weights
+    from foldjax.models.opendde.models import model as opendde_model
+    from tests.parity import test_opendde as opendde_parity
+
+    capture = tmp_path / "capture"
+    capture.mkdir()
+    n_atom = 4
+    n_tok = 2
+    np.savez(
+        capture / "native-identity.npz",
+        output_atom_name=np.array(["CA", "CA", "CA", "CA"]),
+        output_atom_element=np.array(["C", "C", "C", "C"]),
+    )
+    np.savez(
+        capture / "tape.npz",
+        noise_schedule=np.array([1.0, 0.0], np.float32),
+        init_noise=np.zeros((1, n_atom, 3), np.float32),
+        step_noises=np.zeros((1, 1, n_atom, 3), np.float32),
+        rotations=np.broadcast_to(np.eye(3, dtype=np.float32), (1, 1, 3, 3)).copy(),
+        translations=np.zeros((1, 1, 3), np.float32),
+    )
+    np.savez(
+        capture / "raw.npz",
+        plddt=np.zeros((1, n_atom, 50), np.float32),
+        pae=np.zeros((1, n_tok, n_tok, 64), np.float32),
+        pde=np.zeros((1, n_tok, n_tok, 64), np.float32),
+        **{
+            "full_data.0.atom_plddt": np.zeros((n_atom,), np.float32),
+            "full_data.0.token_pair_pae": np.zeros((n_tok, n_tok), np.float32),
+            "summary_confidence.0.ptm": np.float32(0.5),
+        },
+    )
+    coords = np.array(
+        [[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]],
+        np.float32,
+    )
+    case = SimpleNamespace(
+        path=lambda name: capture / name,
+        assert_tripwire=lambda _tw: None,
+    )
+    monkeypatch.setattr(sp, "fixture_case", lambda *_a, **_k: case)
+    monkeypatch.setattr(opendde_parity, "observed_tripwire", lambda: {})
+    monkeypatch.setattr(opendde_parity, "load_features", lambda _c: {})
+    monkeypatch.setattr(opendde_parity, "load_cycle_msa", lambda _c: ({"x": 1},))
+    monkeypatch.setattr(opendde_parity, "weights_path", lambda: tmp_path / "w.jax")
+    monkeypatch.setattr(opendde_parity, "native_coordinates", lambda _c: coords)
+    monkeypatch.setattr(opendde_parity, "entity_rmsds", lambda *_a: {"A": 0.0})
+    monkeypatch.setattr(opendde_weights, "load_native_weights", lambda _p: "fp32")
+    monkeypatch.setattr(
+        opendde_weights, "_load_prepared_native_weights", lambda _p, _d: "bf16"
+    )
+    monkeypatch.setattr(opendde_model, "cast_confidence_params", lambda p, _d: p)
+    monkeypatch.setattr(
+        opendde_postprocess,
+        "opendde_confidence_scores",
+        lambda *_a, **_k: {
+            "atom_plddt": np.zeros((1, n_atom), np.float32),
+            "token_pair_pae": np.zeros((1, n_tok, n_tok), np.float32),
+            "ptm": np.array([0.5], np.float32),
+        },
+    )
+
+    seen_calls: list[dict[str, object]] = []
+
+    def fake_infer(*_args, **kwargs):
+        seen_calls.append(dict(kwargs))
+        return {
+            "coordinate": coords,
+            "plddt_logits": np.zeros((1, n_atom, 50), np.float32),
+            "pae_logits": np.zeros((1, n_tok, n_tok, 64), np.float32),
+            "pde_logits": np.zeros((1, n_tok, n_tok, 64), np.float32),
+        }
+
+    monkeypatch.setattr(opendde_model, "opendde_infer_static", fake_infer)
+
+    # GPU branch: resolves through realised_diffusion_pair_bias_cache -> True.
+    monkeypatch.setattr(sp, "DEVICE", "gpu")
+    monkeypatch.setattr(jax, "devices", lambda: [type("D", (), {"device_kind": "k"})()])
+    monkeypatch.setattr(opendde_backend, "_gpu_process", lambda: True)
+    gpu_results = sp.run_opendde(capture, {"S6"})
+    assert gpu_results["S6"]["status"] == "measured"
+    assert seen_calls[-1]["diffusion_pair_bias_cache"] is True
+    assert seen_calls[-1]["use_diffusion_efficient_fusion"] is True
+    assert "diffusion pair-bias cache on" in gpu_results["S6"]["condition"]["kernels"]
+
+    # CPU branch: parity arm leaves pair-bias cache off.
+    monkeypatch.setattr(sp, "DEVICE", "cpu")
+    monkeypatch.setattr(opendde_backend, "_gpu_process", lambda: False)
+    cpu_results = sp.run_opendde(capture, {"S6"})
+    assert cpu_results["S6"]["status"] == "measured"
+    assert not seen_calls[-1].get("diffusion_pair_bias_cache")
+    assert not seen_calls[-1].get("use_diffusion_efficient_fusion")
