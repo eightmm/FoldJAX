@@ -380,6 +380,57 @@ def test_the_runner_admits_the_padded_shape_before_padding(
         assert seen == {}
         assert memory_policy.padding_disabled_by() is None
 
+        # Per-job admission cache key must include residue-dependent per-sample
+        # output bytes: at 2,000 structural tokens, 12 samples, raw outputs,
+        # 28 GiB pool ceiling (48 GB class), 1,050 residues (26.53 GiB) admits
+        # and a following 1,300-residue job (28.52 GiB) must still be refused.
+        from foldjax import oom
+
+        monkeypatch.setattr(
+            oom,
+            "device_budget",
+            lambda: (28 * 2**30, int(47.4 * 2**30)),
+        )
+        two_jobs = [
+            {"name": "small_res", "modelSeeds": [101]},
+            {"name": "large_res", "modelSeeds": [101]},
+        ]
+        residues_by_job = {"small_res": 1050, "large_res": 1300}
+
+        def _featurize_two(item, **_kw):
+            n_res = residues_by_job[item["name"]]
+            feat = _features(2000, n_residue=n_res)
+            feat["asym_id"] = np.zeros((n_res,), dtype=np.int64)
+            return feat
+
+        predicted_residues: list[int] = []
+
+        def _record_predict(model_features, *_args, **_kwargs):
+            predicted_residues.append(int(model_features["restype"].shape[-1]))
+            return {}
+
+        monkeypatch.setattr(predict_runner, "_load_jobs", lambda _path: two_jobs)
+        monkeypatch.setattr(predict_runner, "_featurize", _featurize_two)
+        monkeypatch.setattr(predict_runner, "_predict", _record_predict)
+        monkeypatch.setattr(predict_runner, "_score", lambda *_a, **_kw: {})
+        monkeypatch.setattr(
+            predict_runner, "_write", lambda *_a, **_kw: [tmp_path / "out" / "stub"]
+        )
+        raw_fields = dict(fields)
+        raw_fields.update(
+            num_samples=12,
+            include_raw=True,
+            stop_after="full",
+        )
+        raw_config = predict_runner.PredictionConfig(**raw_fields)
+        with pytest.raises(MemoryError, match="--num-samples"):
+            predict_runner.run_prediction(
+                raw_config,
+                padding=None,
+                _prepared_params_loader=lambda *_args: object(),
+            )
+        assert predicted_residues == [1050]
+
 
 def test_the_step_aside_is_decided_per_job_in_one_call(pool, monkeypatch, tmp_path):
     """Three jobs, 2,000 -> 4,040 -> 2,000 structural tokens, in one call. The

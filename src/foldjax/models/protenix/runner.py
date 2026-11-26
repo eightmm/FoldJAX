@@ -967,12 +967,26 @@ def _run(
     # Serving padding needs *more* than the law, which was fitted unpadded: a
     # refusal still binds, and a "fits" is recorded as unknown.
     exceeds_profile = ("serving padding",) if padding_config is not None else ()
+    wants_raw_outputs = config.output_format in ("npz", "both")
     for job in jobs:
         job_features = job["features"]
         msa = job_features.get("msa")
+        job_tokens = int(job_features["restype"].shape[-2])
+        per_sample_bytes = (
+            0
+            if (config.stop_after != "full" or config.no_confidence or job_tokens <= 0)
+            else memory_policy.per_sample_resident_output_bytes(
+                "protenix",
+                job_tokens,
+                return_confidence_logits=wants_raw_outputs,
+                return_confidence_details=(
+                    wants_raw_outputs and not config.no_confidence_scores
+                ),
+            )
+        )
         memory_policy.admit(
             model="protenix",
-            n_token=int(job_features["restype"].shape[-2]),
+            n_token=job_tokens,
             msa_rows=None if msa is None else int(msa.shape[-2]),
             candidates=(("released", memory_policy.PROTENIX_PEAK),),
             budget=memory_budget,
@@ -984,6 +998,8 @@ def _run(
             ),
             off_profile=off_profile,
             exceeds_profile=exceeds_profile,
+            num_samples=config.num_samples,
+            per_sample_output_bytes=per_sample_bytes,
         )
 
     # ESM/ISM conditioning is fully materialised in each job's compact

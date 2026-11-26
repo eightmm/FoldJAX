@@ -546,6 +546,16 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Memory admission refuses a `--num-samples` above the validated range when
+  even a lower bound cannot fit.** The peak laws were fitted at five samples
+  (ESMFold2 through 32), so a larger count used to make every refusal
+  advisory. Above that range admission now adds the sample-stacked pair
+  outputs each extra sample keeps on the device until the program returns
+  (for example `pae` and `pde`, plus the binned logits when they are
+  requested) to the estimate admission already uses; when that sum exceeds
+  the threshold the run is refused before compilation. Managed default
+  padding still steps aside to the exact shape first. `foldjax plan` is unchanged. Counts
+  inside the validated range, and the fitted laws themselves, are unchanged.
 - **OpenFold3 keeps the diffusion pair conditioning one sample wide.** The
   sample-shared pair's layer norms, bias projections and atom-pair block
   gather run once per denoising step instead of once per sample, and broadcast

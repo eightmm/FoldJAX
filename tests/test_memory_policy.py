@@ -1395,6 +1395,62 @@ def test_the_measured_opendde_size_is_admitted_and_its_neighbours_are_not() -> N
         assert OPENDDE_BF16_PEAK.measured_upper(neighbour) is None
         assert _decide(OPENDDE_BF16_PEAK, neighbour, pool).state == "over_budget"
 
+    # Sample-count lower bound respects the measured-size override at 4,040
+    # structural / 2,096 residue tokens rather than computing from law.estimate.
+    per_raw = memory_policy.per_sample_resident_output_bytes(
+        "opendde",
+        2096,
+        return_confidence_logits=True,
+        return_confidence_details=True,
+    )
+    bound_6 = memory_policy.sample_count_lower_bound(
+        OPENDDE_BF16_PEAK, 4040, num_samples=6, per_sample_output_bytes=per_raw
+    )
+    assert bound_6 is not None
+    assert bound_6.base_bytes == OPENDDE_BF16_PEAK.measured_upper(4040)
+    assert round(bound_6.lower_bytes / _GIB, 2) == 78.93
+    # Against an 80 GiB threshold: 78.93 GiB admits at 6 samples, 81.06 GiB
+    # refuses at 7 samples, and neighbours without a
+    # measured override still refuse at 6 samples.
+    budget_80_thresh = _budget(
+        math.ceil(80 * _GIB / memory_policy.ADMISSION_FRACTION),
+        card=96 * _GIB,
+    )
+    admitted_6 = memory_policy.admit(
+        model="opendde",
+        n_token=4040,
+        msa_rows=None,
+        candidates=(("bf16 trunk", OPENDDE_BF16_PEAK),),
+        budget=budget_80_thresh,
+        off_profile=memory_policy.off_profile_reason(num_samples=6),
+        num_samples=6,
+        per_sample_output_bytes=per_raw,
+    )
+    assert admitted_6.state == "fits"
+    with pytest.raises(MemoryError, match="lower --num-samples or use a larger card"):
+        memory_policy.admit(
+            model="opendde",
+            n_token=4040,
+            msa_rows=None,
+            candidates=(("bf16 trunk", OPENDDE_BF16_PEAK),),
+            budget=budget_80_thresh,
+            off_profile=memory_policy.off_profile_reason(num_samples=7),
+            num_samples=7,
+            per_sample_output_bytes=per_raw,
+        )
+    for neighbour in (4039, 4041):
+        with pytest.raises(MemoryError, match="--num-samples"):
+            memory_policy.admit(
+                model="opendde",
+                n_token=neighbour,
+                msa_rows=None,
+                candidates=(("bf16 trunk", OPENDDE_BF16_PEAK),),
+                budget=budget_80_thresh,
+                off_profile=memory_policy.off_profile_reason(num_samples=6),
+                num_samples=6,
+                per_sample_output_bytes=per_raw,
+            )
+
 
 #: The 91,779,760,128-byte pool of the measured 5DEI run (threshold 76.9 GiB).
 _OPENDDE_POOL = 91_779_760_128
@@ -1992,3 +2048,626 @@ def test_the_manifest_round_trips_an_opendde_decision(tmp_path: Path) -> None:
         }
     ]
     assert json.loads(json.dumps(block, sort_keys=True)) == block
+
+
+# --------------------------------------------------------------------------
+# Sample-count lower bound above the validated sample range
+# --------------------------------------------------------------------------
+
+
+def test_per_sample_resident_output_bytes_matches_port_contracts() -> None:
+    """Default managed outputs and opt-in logits match each port's JIT outputs."""
+    n = 1000
+    pair = 4 * n * n
+    # Boltz-2, OpenFold3, ESMFold2 return expected PAE + PDE [S, N, N] f32 by default.
+    assert memory_policy.per_sample_resident_output_bytes("boltz2", n) == 2 * pair
+    assert memory_policy.per_sample_resident_output_bytes("openfold3", n) == 2 * pair
+    assert memory_policy.per_sample_resident_output_bytes("esmfold2", n) == 2 * pair
+    # Protenix and OpenDDE reduce inside the per-sample map in default managed mode.
+    assert memory_policy.per_sample_resident_output_bytes("protenix", n) == 0
+    assert memory_policy.per_sample_resident_output_bytes("opendde", n) == 0
+    # AlphaFold 3 returns four f32 [S, N, N] matrices.
+    assert memory_policy.per_sample_resident_output_bytes("alphafold3", n) == 4 * pair
+
+    # Opt-in bin logits (64 bins each, float32) and opt-out expected errors.
+    assert (
+        memory_policy.per_sample_resident_output_bytes(
+            "boltz2", n, return_confidence_logits=True
+        )
+        == (2 + 128) * pair
+    )
+    assert (
+        memory_policy.per_sample_resident_output_bytes(
+            "openfold3", n, return_expected_errors=False
+        )
+        == 0
+    )
+    assert (
+        memory_policy.per_sample_resident_output_bytes(
+            "openfold3",
+            n,
+            return_expected_errors=True,
+            returned_pair_logits=("pae_logits",),
+        )
+        == (2 + 64) * pair
+    )
+    assert (
+        memory_policy.per_sample_resident_output_bytes(
+            "openfold3",
+            n,
+            return_expected_errors=True,
+            returned_pair_logits=("pae_logits", "pde_logits", "distogram_logits"),
+        )
+        == (2 + 128) * pair
+    )
+    assert (
+        memory_policy.per_sample_resident_output_bytes(
+            "esmfold2", n, return_expected_errors=False
+        )
+        == 0
+    )
+    assert (
+        memory_policy.per_sample_resident_output_bytes(
+            "esmfold2",
+            n,
+            return_expected_errors=False,
+            return_confidence_logits=True,
+        )
+        == (2 + 128) * pair
+    )
+    assert (
+        memory_policy.per_sample_resident_output_bytes(
+            "protenix",
+            n,
+            return_confidence_logits=True,
+            return_confidence_details=True,
+        )
+        == (2 + 128) * pair
+    )
+    assert (
+        memory_policy.per_sample_resident_output_bytes(
+            "opendde",
+            n,
+            return_confidence_logits=True,
+            return_confidence_details=False,
+        )
+        == 128 * pair
+    )
+
+    # Edge and malformed inputs.
+    for bad_n in (0, -1, True):
+        with pytest.raises(ValueError, match="n_token"):
+            memory_policy.per_sample_resident_output_bytes("boltz2", bad_n)
+    with pytest.raises(ValueError, match="unknown model"):
+        memory_policy.per_sample_resident_output_bytes("unknown_port", 1000)
+
+
+def test_sample_count_lower_bound_edges_and_malformed_inputs() -> None:
+    """Only runs strictly above the validated range with positive per-sample bytes."""
+    per = memory_policy.per_sample_resident_output_bytes("boltz2", 3000)
+    assert (
+        memory_policy.sample_count_lower_bound(
+            BOLTZ2_PEAK, 3000, num_samples=1, per_sample_output_bytes=per
+        )
+        is None
+    )
+    assert (
+        memory_policy.sample_count_lower_bound(
+            BOLTZ2_PEAK, 3000, num_samples=5, per_sample_output_bytes=per
+        )
+        is None
+    )
+    assert (
+        memory_policy.sample_count_lower_bound(
+            BOLTZ2_PEAK, 3000, num_samples=100, per_sample_output_bytes=0
+        )
+        is None
+    )
+    # Below fitted domain (including OpenFold3's admits_from band) never binds.
+    assert (
+        memory_policy.sample_count_lower_bound(
+            OPENFOLD3_CHUNKED_PEAK,
+            1000,
+            num_samples=100,
+            per_sample_output_bytes=memory_policy.per_sample_resident_output_bytes(
+                "openfold3", 1000
+            ),
+        )
+        is None
+    )
+    # Missing required MSA rows for Protenix yields None.
+    assert (
+        memory_policy.sample_count_lower_bound(
+            PROTENIX_PEAK,
+            2096,
+            num_samples=100,
+            per_sample_output_bytes=8 * 2096 * 2096,
+            msa_rows=None,
+        )
+        is None
+    )
+    # ESMFold2 is validated through 32; 32 -> None, 33 -> lower bound.
+    esm_per = memory_policy.per_sample_resident_output_bytes("esmfold2", 3000)
+    assert (
+        memory_policy.sample_count_lower_bound(
+            ESMFOLD2_PEAK, 3000, num_samples=32, per_sample_output_bytes=esm_per
+        )
+        is None
+    )
+    esm_33 = memory_policy.sample_count_lower_bound(
+        ESMFOLD2_PEAK, 3000, num_samples=33, per_sample_output_bytes=esm_per
+    )
+    assert esm_33 is not None
+    assert esm_33.base_bytes == ESMFOLD2_PEAK.estimate(3000)
+    assert esm_33.lower_bytes == ESMFOLD2_PEAK.estimate(3000) + (33 - 5) * esm_per
+
+    # Exact threshold equality and clearing-count boundary.
+    bound = memory_policy.sample_count_lower_bound(
+        BOLTZ2_PEAK, 3000, num_samples=200, per_sample_output_bytes=per
+    )
+    assert bound is not None
+    assert bound.base_bytes == BOLTZ2_PEAK.estimate(3000)
+    assert bound.extra_bytes == 195 * per
+    assert bound.lower_bytes == bound.base_bytes + 195 * per
+
+    # Exact boundary on resolve_memory_policy: lower == threshold fits,
+    # lower > threshold refuses.
+    exact_budget = math.ceil(bound.lower_bytes / memory_policy.ADMISSION_FRACTION)
+    while int(exact_budget * memory_policy.ADMISSION_FRACTION) > bound.lower_bytes:
+        exact_budget -= 1
+    assert int(exact_budget * memory_policy.ADMISSION_FRACTION) == bound.lower_bytes
+    at = resolve_memory_policy(
+        model="boltz2",
+        n_token=3000,
+        msa_rows=None,
+        budget_bytes=exact_budget,
+        candidates=(("released", BOLTZ2_PEAK),),
+        num_samples=200,
+        per_sample_output_bytes=per,
+    )
+    assert at.state == "fits"
+    assert not at.sample_lower_bound_exceeded
+    below = resolve_memory_policy(
+        model="boltz2",
+        n_token=3000,
+        msa_rows=None,
+        budget_bytes=exact_budget - 1,
+        candidates=(("released", BOLTZ2_PEAK),),
+        num_samples=200,
+        per_sample_output_bytes=per,
+    )
+    assert below.state == "over_budget"
+    assert below.sample_lower_bound_exceeded
+    assert "lower --num-samples or use a larger card" in below.reason
+
+    # Malformed inputs.
+    for bad_s in (0, -5, True):
+        with pytest.raises(ValueError, match="num_samples"):
+            memory_policy.sample_count_lower_bound(
+                BOLTZ2_PEAK, 3000, num_samples=bad_s, per_sample_output_bytes=per
+            )
+    for bad_bytes in (-1, True):
+        with pytest.raises(ValueError, match="per_sample_output_bytes"):
+            memory_policy.sample_count_lower_bound(
+                BOLTZ2_PEAK, 3000, num_samples=10, per_sample_output_bytes=bad_bytes
+            )
+
+
+@pytest.mark.parametrize(
+    ("model", "law"),
+    [
+        ("boltz2", BOLTZ2_PEAK),
+        ("openfold3", OPENFOLD3_CHUNKED_PEAK),
+    ],
+)
+@pytest.mark.parametrize("n_token", [1000, 3000])
+@pytest.mark.parametrize("budget_gib", [24, 48, 96])
+@pytest.mark.parametrize("num_samples", [1, 5, 25, 100])
+def test_sample_count_matrix_for_boltz2_and_openfold3(
+    model: str, law, n_token: int, budget_gib: int, num_samples: int
+) -> None:
+    """S in {1, 5, 25, 100} x {24, 48, 96} GiB x N in {1000, 3000}.
+
+    - S <= 5 decisions are unchanged from the baseline (no sample bound).
+    - S = 100 at N = 3,000 on 24 GiB is refused with --num-samples named.
+    - S = 25 at N = 1,000 on 96 GiB is admitted.
+    """
+    budget = _budget(budget_gib * _GIB, card=budget_gib * _GIB)
+    per = memory_policy.per_sample_resident_output_bytes(model, n_token)
+    off = memory_policy.off_profile_reason(num_samples=num_samples)
+
+    if num_samples <= 5:
+        baseline_exc: type[Exception] | None = None
+        baseline_state: str | None = None
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
+                baseline_state = memory_policy.admit(
+                    model=model,
+                    n_token=n_token,
+                    msa_rows=None,
+                    candidates=(("released", law),),
+                    budget=budget,
+                    off_profile=off,
+                ).state
+            except MemoryError:
+                baseline_exc = MemoryError
+        memory_policy.reset_warnings()
+        memory_policy.clear_record()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            if baseline_exc is not None:
+                with pytest.raises(MemoryError):
+                    memory_policy.admit(
+                        model=model,
+                        n_token=n_token,
+                        msa_rows=None,
+                        candidates=(("released", law),),
+                        budget=budget,
+                        off_profile=off,
+                        num_samples=num_samples,
+                        per_sample_output_bytes=per,
+                    )
+            else:
+                decision = memory_policy.admit(
+                    model=model,
+                    n_token=n_token,
+                    msa_rows=None,
+                    candidates=(("released", law),),
+                    budget=budget,
+                    off_profile=off,
+                    num_samples=num_samples,
+                    per_sample_output_bytes=per,
+                )
+                assert decision.state == baseline_state
+        return
+
+    threshold = int(budget_gib * _GIB * memory_policy.ADMISSION_FRACTION)
+    bound = memory_policy.sample_count_lower_bound(
+        law, n_token, num_samples=num_samples, per_sample_output_bytes=per
+    )
+    expect_refusal = bound is not None and bound.lower_bytes > threshold
+
+    if n_token == 3000 and budget_gib == 24 and num_samples == 100:
+        assert expect_refusal
+    if n_token == 1000 and budget_gib == 96 and num_samples == 25:
+        assert not expect_refusal
+
+    if expect_refusal:
+        with pytest.raises(MemoryError) as error:
+            memory_policy.admit(
+                model=model,
+                n_token=n_token,
+                msa_rows=None,
+                candidates=(("released", law),),
+                budget=budget,
+                off_profile=off,
+                num_samples=num_samples,
+                per_sample_output_bytes=per,
+            )
+        message = str(error.value)
+        assert "--num-samples" in message
+        assert "advisory rather than binding" not in message
+        record = memory_policy.recorded()
+        assert record is not None
+        assert record["state"] == "over_budget"
+        assert record["off_profile"] == list(off)
+        # Warn mode proceeds with a RuntimeWarning instead of raising.
+        with pytest.warns(RuntimeWarning, match="Running anyway"):
+            warned = memory_policy.admit(
+                model=model,
+                n_token=n_token,
+                msa_rows=None,
+                candidates=(("released", law),),
+                budget=budget,
+                mode="warn",
+                off_profile=off,
+                num_samples=num_samples,
+                per_sample_output_bytes=per,
+            )
+        assert warned.state == "over_budget"
+    else:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            decision = memory_policy.admit(
+                model=model,
+                n_token=n_token,
+                msa_rows=None,
+                candidates=(("released", law),),
+                budget=budget,
+                off_profile=off,
+                num_samples=num_samples,
+                per_sample_output_bytes=per,
+            )
+        assert decision.state in {"fits", "unknown"}
+
+
+def test_sample_lower_bound_refuses_when_5_sample_law_fits() -> None:
+    """At 3,000 tokens on 48 GiB Boltz-2 fits at 5 samples (31.2 <= 43.2 GiB),
+    but 200 samples push the resident PAE+PDE lower bound to 43.4 GiB > 43.2."""
+    budget = _budget(48 * _GIB, card=48 * _GIB)
+    per = memory_policy.per_sample_resident_output_bytes("boltz2", 3000)
+    # 5 samples fits silently.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert (
+            memory_policy.admit(
+                model="boltz2",
+                n_token=3000,
+                msa_rows=None,
+                candidates=(("released", BOLTZ2_PEAK),),
+                budget=budget,
+                num_samples=5,
+                per_sample_output_bytes=per,
+            ).state
+            == "fits"
+        )
+    # 200 samples refuses and names the exact smaller count (196) that clears 43.2 GiB.
+    with pytest.raises(MemoryError) as error:
+        memory_policy.admit(
+            model="boltz2",
+            n_token=3000,
+            msa_rows=None,
+            candidates=(("released", BOLTZ2_PEAK),),
+            budget=budget,
+            off_profile=memory_policy.off_profile_reason(num_samples=200),
+            num_samples=200,
+            per_sample_output_bytes=per,
+        )
+    message = str(error.value)
+    assert "lower --num-samples or use a larger card" in message
+    assert "43.2 GiB threshold" in message
+    # 196 samples clears the lower bound and is admitted.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        cleared = memory_policy.admit(
+            model="boltz2",
+            n_token=3000,
+            msa_rows=None,
+            candidates=(("released", BOLTZ2_PEAK),),
+            budget=budget,
+            off_profile=memory_policy.off_profile_reason(num_samples=196),
+            num_samples=196,
+            per_sample_output_bytes=per,
+        )
+    assert cleared.state == "fits"
+
+
+def test_sample_lower_bound_keeps_non_sample_off_profile_advisory_and_handles_gap() -> (
+    None
+):
+    """Other off-profile reasons (e.g. CP) still keep refusal advisory; when
+    lower(S) <= threshold < upper(N) the upper-bound miss stays advisory too."""
+    per = memory_policy.per_sample_resident_output_bytes("boltz2", 3000)
+    # With context parallelism, the single-device baseline is advisory.
+    with pytest.warns(RuntimeWarning, match="advisory rather than binding"):
+        decision = memory_policy.admit(
+            model="boltz2",
+            n_token=3000,
+            msa_rows=None,
+            candidates=(("released", BOLTZ2_PEAK),),
+            budget=_budget(24 * _GIB, card=24 * _GIB),
+            off_profile=memory_policy.off_profile_reason(
+                num_samples=100, extras=("context parallelism",)
+            ),
+            num_samples=100,
+            per_sample_output_bytes=per,
+        )
+    assert decision.state == "over_budget"
+
+    # Gap between central estimate and upper bound: lower(6) <= threshold < upper(3000).
+    threshold = BOLTZ2_PEAK.estimate(3000) + 2 * per
+    assert threshold < BOLTZ2_PEAK.upper(3000)
+    budget_bytes = math.ceil(threshold / memory_policy.ADMISSION_FRACTION)
+    with pytest.warns(RuntimeWarning, match="advisory rather than binding"):
+        gap = memory_policy.admit(
+            model="boltz2",
+            n_token=3000,
+            msa_rows=None,
+            candidates=(("released", BOLTZ2_PEAK),),
+            budget=_budget(budget_bytes),
+            off_profile=memory_policy.off_profile_reason(num_samples=6),
+            num_samples=6,
+            per_sample_output_bytes=per,
+        )
+    assert gap.state == "over_budget"
+    assert not gap.sample_lower_bound_exceeded
+
+
+def test_openfold3_released_config_wires_sample_count_lower_bound() -> None:
+    """OpenFold3's released_config refuses S=100 at N=3,000 on 24 GiB and admits
+    S=25 at N=1,000 on 96 GiB, and honours return_expected_errors=False."""
+    tight_24 = _budget(24 * _GIB, card=24 * _GIB)
+    roomy_96 = _budget(96 * _GIB, card=96 * _GIB)
+    # S = 100 at N = 3,000 on 24 GiB -> refused!
+    with pytest.raises(MemoryError, match="--num-samples"):
+        inference.released_config(
+            n_token=3000,
+            n_atom=3000 * 24,
+            num_samples=100,
+            memory_budget=tight_24,
+            max_array_bytes=0,
+        )
+    # With return_expected_errors=False and max_array_bytes=0, no S x N^2 survives ->
+    # per_sample_output_bytes == 0 -> advisory warning rather than refusal.
+    with pytest.warns(RuntimeWarning, match="advisory rather than binding"):
+        inference.released_config(
+            n_token=3000,
+            n_atom=3000 * 24,
+            num_samples=100,
+            memory_budget=tight_24,
+            max_array_bytes=0,
+            return_expected_errors=False,
+        )
+    # S = 25 at N = 1,000 on 96 GiB -> admitted silently.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        cfg = inference.released_config(
+            n_token=1000,
+            n_atom=1000 * 24,
+            num_samples=25,
+            memory_budget=roomy_96,
+            max_array_bytes=0,
+        )
+    assert cfg.num_samples == 25
+    # With diffusion_chunk_size explicitly set (off-profile extra), stays advisory.
+    with pytest.warns(RuntimeWarning, match="advisory rather than binding"):
+        inference.released_config(
+            n_token=3000,
+            n_atom=3000 * 24,
+            num_samples=100,
+            memory_budget=tight_24,
+            max_array_bytes=0,
+            diffusion_chunk_size=1,
+        )
+    # Under OpenFold3's native default array cap (4 GiB) the per-sample bytes
+    # change with the count, so the refusal names no clearing count.
+    tight_cap_budget = _budget(int(5.125 * _GIB), card=96 * _GIB)
+    with pytest.raises(MemoryError) as cap_error:
+        inference.released_config(
+            n_token=1003,
+            n_atom=1003 * 24,
+            num_samples=100,
+            memory_budget=tight_cap_budget,
+        )
+    cap_message = str(cap_error.value)
+    assert "lower --num-samples or use a larger card" in cap_message
+    assert "or fewer" not in cap_message
+
+def test_sample_lower_bound_padding_step_aside_and_protenix_zero_term() -> None:
+    """Default padding steps aside when only the padded shape crosses lower(S);
+    Protenix default (per_sample == 0) is unaffected."""
+    budget = _budget(48 * _GIB, card=48 * _GIB)
+    # At 196 samples, exact 3,000 tokens clears 43.2 GiB while padded 3,072 refuses.
+    padded_per = memory_policy.per_sample_resident_output_bytes("boltz2", 3072)
+    exact_per = memory_policy.per_sample_resident_output_bytes("boltz2", 3000)
+    with pytest.warns(UserWarning, match="uses the exact input shapes"):
+        decision = memory_policy.admit(
+            model="boltz2",
+            n_token=3072,
+            msa_rows=None,
+            candidates=(("released", BOLTZ2_PEAK),),
+            budget=budget,
+            off_profile=memory_policy.off_profile_reason(num_samples=196),
+            exceeds_profile=(memory_policy.SERVING_PADDING,),
+            exact=memory_policy.ExactShape(
+                3000, implicit=True, per_sample_output_bytes=exact_per
+            ),
+            num_samples=196,
+            per_sample_output_bytes=padded_per,
+        )
+    assert decision.padding_stepped_aside
+    assert decision.state == "fits"
+    assert memory_policy.recorded()["n_token"] == 3000
+
+    # OpenDDE pads residue tokens behind an unchanged structural count: the
+    # exact shape differs only in its resident outputs and must still be tried.
+    padded_raw = memory_policy.per_sample_resident_output_bytes(
+        "opendde", 1280, return_confidence_logits=True, return_confidence_details=True
+    )
+    exact_raw = memory_policy.per_sample_resident_output_bytes(
+        "opendde", 1050, return_confidence_logits=True, return_confidence_details=True
+    )
+    padded_bound = memory_policy.sample_count_lower_bound(
+        OPENDDE_BF16_PEAK, 2048, num_samples=12, per_sample_output_bytes=padded_raw
+    )
+    exact_bound = memory_policy.sample_count_lower_bound(
+        OPENDDE_BF16_PEAK, 2048, num_samples=12, per_sample_output_bytes=exact_raw
+    )
+    assert padded_bound is not None and exact_bound is not None
+    threshold = max(
+        OPENDDE_BF16_PEAK.upper(2048),
+        (padded_bound.lower_bytes + exact_bound.lower_bytes) // 2,
+    )
+    assert exact_bound.lower_bytes <= threshold < padded_bound.lower_bytes
+    residue_budget = _budget(
+        math.ceil(threshold / memory_policy.ADMISSION_FRACTION) + 1, card=96 * _GIB
+    )
+    with pytest.warns(UserWarning, match="uses the exact input shapes"):
+        residue = memory_policy.admit(
+            model="opendde",
+            n_token=2048,
+            msa_rows=None,
+            candidates=(("bf16 trunk", OPENDDE_BF16_PEAK),),
+            budget=residue_budget,
+            off_profile=memory_policy.off_profile_reason(num_samples=12),
+            exceeds_profile=(memory_policy.SERVING_PADDING,),
+            exact=memory_policy.ExactShape(
+                2048, implicit=True, per_sample_output_bytes=exact_raw
+            ),
+            num_samples=12,
+            per_sample_output_bytes=padded_raw,
+        )
+    assert residue.padding_stepped_aside
+    assert not residue.sample_lower_bound_exceeded
+
+    # Protenix default managed mode has per_sample == 0 -> unchanged (advisory only).
+    assert memory_policy.per_sample_resident_output_bytes("protenix", 3000) == 0
+    with pytest.warns(RuntimeWarning, match="advisory rather than binding"):
+        memory_policy.admit(
+            model="protenix",
+            n_token=3000,
+            msa_rows=4096,
+            candidates=(("released", PROTENIX_PEAK),),
+            budget=_budget(24 * _GIB, card=24 * _GIB),
+            off_profile=memory_policy.off_profile_reason(num_samples=100),
+            num_samples=100,
+            per_sample_output_bytes=0,
+        )
+
+
+def test_manifest_schema_unchanged_under_sample_lower_bound() -> None:
+    """The recorded manifest dict keeps its exact existing key set."""
+    budget = _budget(48 * _GIB, card=48 * _GIB)
+    memory_policy.admit(
+        model="boltz2",
+        n_token=3000,
+        msa_rows=None,
+        candidates=(("released", BOLTZ2_PEAK),),
+        budget=budget,
+    )
+    baseline_keys = set(memory_policy.recorded())
+    per = memory_policy.per_sample_resident_output_bytes("boltz2", 3000)
+    with pytest.raises(MemoryError):
+        memory_policy.admit(
+            model="boltz2",
+            n_token=3000,
+            msa_rows=None,
+            candidates=(("released", BOLTZ2_PEAK),),
+            budget=budget,
+            off_profile=memory_policy.off_profile_reason(num_samples=200),
+            num_samples=200,
+            per_sample_output_bytes=per,
+        )
+    refused_record = memory_policy.recorded()
+    assert refused_record is not None
+    assert set(refused_record) == baseline_keys
+    assert json.loads(json.dumps(refused_record, sort_keys=True)) == refused_record
+
+
+def test_esmfold2_predict_wires_sample_count_lower_bound(monkeypatch) -> None:
+    """ESMFold2 refuses S=100 at N=3,000 on 76 GiB before running ESMC."""
+    import numpy as np
+
+    from foldjax.models.esmfold2 import inference as esm_inference
+
+    def _never(*_args, **_kwargs):
+        raise AssertionError("ESMFold2 reached post-admission code after refusal")
+
+    monkeypatch.setattr(esm_inference.atom_model, "_resolve_rows_per_block", _never)
+    monkeypatch.setattr(esm_inference, "language_model_states", _never)
+    model = esm_inference.LoadedModel(
+        parameters={}, settings=esm_inference.structure_model.ModelSettings()
+    )
+    features = {
+        "token_attention_mask": np.ones((1, 3000), dtype=bool),
+        "asym_id": np.zeros((1, 3000), dtype=np.int64),
+    }
+    with pytest.raises(MemoryError, match="--num-samples"):
+        esm_inference.predict(
+            None,
+            features,
+            model,
+            num_samples=100,
+            memory_budget=_budget(76 * _GIB, card=96 * _GIB),
+        )

@@ -684,6 +684,29 @@ def non_protein_reason(tokens: int | str) -> str:
     )
 
 
+def _sample_off_profile_reason(
+    num_samples: int, samples_validated: int | None = None
+) -> str | None:
+    """Why ``num_samples`` lies outside the law's validated sample range."""
+    high = CALIBRATED_NUM_SAMPLES if samples_validated is None else samples_validated
+    if high < CALIBRATED_NUM_SAMPLES:
+        raise ValueError(
+            "samples_validated cannot be below the count the laws were fitted "
+            f"at ({CALIBRATED_NUM_SAMPLES}); got {samples_validated!r}"
+        )
+    if CALIBRATED_NUM_SAMPLES <= num_samples <= high:
+        return None
+    fitted = (
+        str(CALIBRATED_NUM_SAMPLES)
+        if high == CALIBRATED_NUM_SAMPLES
+        else f"{CALIBRATED_NUM_SAMPLES}-{high}"
+    )
+    return (
+        f"{num_samples} sample{'' if num_samples == 1 else 's'} rather "
+        f"than the {fitted} the law was fitted at"
+    )
+
+
 def off_profile_reason(
     *,
     num_samples: int,
@@ -707,25 +730,198 @@ def off_profile_reason(
     profile everywhere, including there: that is the direction in which the
     estimate reads high.
     """
-    high = CALIBRATED_NUM_SAMPLES if samples_validated is None else samples_validated
-    if high < CALIBRATED_NUM_SAMPLES:
-        raise ValueError(
-            "samples_validated cannot be below the count the laws were fitted "
-            f"at ({CALIBRATED_NUM_SAMPLES}); got {samples_validated!r}"
-        )
     reasons = []
-    if not CALIBRATED_NUM_SAMPLES <= num_samples <= high:
-        fitted = (
-            str(CALIBRATED_NUM_SAMPLES)
-            if high == CALIBRATED_NUM_SAMPLES
-            else f"{CALIBRATED_NUM_SAMPLES}-{high}"
-        )
-        reasons.append(
-            f"{num_samples} sample{'' if num_samples == 1 else 's'} rather "
-            f"than the {fitted} the law was fitted at"
-        )
+    sample_reason = _sample_off_profile_reason(num_samples, samples_validated)
+    if sample_reason is not None:
+        reasons.append(sample_reason)
     reasons.extend(extras)
     return tuple(reasons)
+
+
+_F32_BYTES = 4
+_PAIR_LOGIT_BINS = 64
+
+
+def per_sample_resident_output_bytes(
+    model: str,
+    n_token: int,
+    *,
+    return_expected_errors: bool | None = None,
+    return_confidence_logits: bool = False,
+    return_confidence_details: bool | None = None,
+    returned_pair_logits: Sequence[str] | None = None,
+) -> int:
+    """Bytes per sample of S x N^2 outputs resident on device until JIT return.
+
+    Counts only sample-stacked quadratic outputs returned from each port's
+    compiled graph in the active output mode:
+
+    - ``boltz2``: expected ``pae`` and ``pde`` float32 ``[S, N, N]`` (``8 * N^2``),
+      plus ``pae_logits`` and ``pde_logits`` float32 ``[S, N, N, 64]``
+      (``+512 * N^2``) when ``return_confidence_logits=True``.
+    - ``openfold3``: expected ``pae`` and ``pde`` float32 ``[S, N, N]``
+      (``8 * N^2``) when ``return_expected_errors`` is enabled (the default),
+      plus ``pae_logits`` / ``pde_logits`` (``256 * N^2`` each) when present in
+      ``returned_pair_logits`` (or both when ``return_confidence_logits=True``
+      and ``returned_pair_logits`` is omitted).
+    - ``esmfold2``: expected ``pae`` and ``pde`` float32 ``[S, N, N]``
+      (``8 * N^2``) when ``return_expected_errors`` (default) or
+      ``return_confidence_logits`` is enabled, plus ``pae_logits`` and
+      ``pde_logits`` (``+512 * N^2``) when ``return_confidence_logits=True``.
+    - ``protenix`` and ``opendde``: ``0`` in default managed-summary mode
+      (confidence logits and pair details are reduced inside the per-sample
+      ``lax.map``); ``+512 * N^2`` when ``return_confidence_logits=True`` and
+      ``+8 * N^2`` when ``return_confidence_details=True``. For ``opendde``,
+      ``n_token`` must be the residue token count that its confidence head runs
+      on, not the expanded structural token count.
+    - ``alphafold3``: four float32 ``[S, N, N]`` matrices (``full_pae``,
+      ``full_pde``, ``tmscore_adjusted_pae_global``,
+      ``tmscore_adjusted_pae_interface`` -> ``16 * N^2``).
+    """
+    if isinstance(n_token, bool) or not isinstance(n_token, int) or n_token <= 0:
+        raise ValueError(f"n_token must be a positive integer; got {n_token!r}")
+    pair_bytes = _F32_BYTES * n_token * n_token
+    if model == "boltz2":
+        matrices = 2
+        logit_heads = 2 if return_confidence_logits else 0
+    elif model == "openfold3":
+        expected = (
+            True if return_expected_errors is None else bool(return_expected_errors)
+        )
+        matrices = 2 if expected else 0
+        if returned_pair_logits is not None:
+            names = set(returned_pair_logits)
+            logit_heads = int("pae_logits" in names) + int("pde_logits" in names)
+        else:
+            logit_heads = 2 if return_confidence_logits else 0
+    elif model == "esmfold2":
+        expected = (
+            True if return_expected_errors is None else bool(return_expected_errors)
+        )
+        matrices = 2 if (expected or return_confidence_logits) else 0
+        logit_heads = 2 if return_confidence_logits else 0
+    elif model in {"protenix", "opendde"}:
+        details = (
+            False
+            if return_confidence_details is None
+            else bool(return_confidence_details)
+        )
+        matrices = 2 if details else 0
+        logit_heads = 2 if return_confidence_logits else 0
+    elif model == "alphafold3":
+        matrices = 4
+        logit_heads = 0
+    else:
+        raise ValueError(f"unknown model for per-sample output sizing: {model!r}")
+    return (matrices + logit_heads * _PAIR_LOGIT_BINS) * pair_bytes
+
+
+@dataclass(frozen=True, slots=True)
+class SampleLowerBound:
+    """Lower bound on peak device memory for runs above the validated sample range."""
+
+    base_bytes: int
+    extra_bytes: int
+    lower_bytes: int
+    num_samples: int
+    calibrated_samples: int
+    per_sample_bytes: int
+
+
+def _validate_sample_bound_args(
+    num_samples: int | None, per_sample_output_bytes: int
+) -> None:
+    if num_samples is not None and (
+        isinstance(num_samples, bool)
+        or not isinstance(num_samples, int)
+        or num_samples < 1
+    ):
+        raise ValueError(
+            f"num_samples must be a positive integer; got {num_samples!r}"
+        )
+    if (
+        isinstance(per_sample_output_bytes, bool)
+        or not isinstance(per_sample_output_bytes, int)
+        or per_sample_output_bytes < 0
+    ):
+        raise ValueError(
+            "per_sample_output_bytes must be a non-negative integer; "
+            f"got {per_sample_output_bytes!r}"
+        )
+
+
+def sample_count_lower_bound(
+    law: PeakLaw,
+    n_token: int,
+    *,
+    num_samples: int,
+    per_sample_output_bytes: int,
+    msa_rows: int | None = None,
+) -> SampleLowerBound | None:
+    """Lower bound ``base + (S - S_cal) * per_sample`` above validated S.
+
+    ``base`` uses ``law.measured_upper(n_token)`` when the size carries a
+    measured override (matching :meth:`PeakLaw.upper`) and ``law.estimate``
+    otherwise. Returns ``None`` when ``num_samples`` is inside or below the
+    port's validated sample range, when ``per_sample_output_bytes`` is zero,
+    or when ``law`` does not cover ``n_token`` (or lacks required
+    ``msa_rows``).
+    """
+    _validate_sample_bound_args(num_samples, per_sample_output_bytes)
+    validated_high = SAMPLES_VALIDATED.get(law.model, CALIBRATED_NUM_SAMPLES)
+    if num_samples <= validated_high or per_sample_output_bytes == 0:
+        return None
+    if not law.covers(n_token):
+        return None
+    if law.needs_msa_rows and msa_rows is None:
+        return None
+    measured = law.measured_upper(n_token)
+    base = measured if measured is not None else law.estimate(n_token, msa_rows)
+    extra = (num_samples - CALIBRATED_NUM_SAMPLES) * per_sample_output_bytes
+    return SampleLowerBound(
+        base_bytes=base,
+        extra_bytes=extra,
+        lower_bytes=base + extra,
+        num_samples=num_samples,
+        calibrated_samples=CALIBRATED_NUM_SAMPLES,
+        per_sample_bytes=per_sample_output_bytes,
+    )
+
+
+def _size_label(value: int) -> str:
+    if value < _GIB:
+        return f"{value / _MIB:.1f} MiB"
+    return _gib(value)
+
+
+def _sample_lower_bound_lever(
+    bound: SampleLowerBound, threshold_bytes: int
+) -> str:
+    # No count is suggested: which smaller count is admitted depends on the
+    # upper estimate inside the validated range, observed-capacity refusals
+    # and output modes that change with the count, none of which this bound
+    # models.
+    if threshold_bytes < bound.base_bytes:
+        return (
+            f"the calibrated {bound.calibrated_samples}-sample estimate "
+            f"({_gib(bound.base_bytes)}) already exceeds it, so lowering "
+            "--num-samples alone will not fit; use a larger card"
+        )
+    return "lower --num-samples or use a larger card"
+
+def _sample_lower_bound_reason(
+    model: str, bound: SampleLowerBound, threshold_bytes: int
+) -> str:
+    delta = bound.num_samples - bound.calibrated_samples
+    return (
+        f"sample-count lower bound for {model} at {bound.num_samples} samples "
+        f"exceeds the {_gib(threshold_bytes)} threshold: "
+        f"{_gib(bound.lower_bytes)} lower bound "
+        f"({_gib(bound.base_bytes)} calibrated {bound.calibrated_samples}-sample "
+        f"estimate + {delta} extra samples x {_size_label(bound.per_sample_bytes)} "
+        f"resident outputs = +{_gib(bound.extra_bytes)}); "
+        f"{_sample_lower_bound_lever(bound, threshold_bytes)}"
+    )
 
 
 def esmfold2_off_profile_reason(
@@ -799,6 +995,9 @@ class MemoryDecision:
     #: refused, or could not estimate, and answered for the exact shape instead
     #: (:class:`ExactShape`); the port then runs unpadded.
     padding_stepped_aside: bool = False
+    #: True when ``state == "over_budget"`` came from the above-validated-range
+    #: sample-count lower bound rather than the calibrated upper estimate.
+    sample_lower_bound_exceeded: bool = False
 
 
 #: What ``serving padding`` is called in every port's ``exceeds_profile``.
@@ -824,6 +1023,7 @@ class ExactShape:
     n_token: int
     msa_rows: int | None = None
     implicit: bool = False
+    per_sample_output_bytes: int | None = None
 
 
 #: What a run's ``padding_disabled_by`` records when the default padding
@@ -886,6 +1086,8 @@ def resolve_memory_policy(
     budget_bytes: int | None,
     candidates: Sequence[tuple[str, PeakLaw]],
     card_bytes: int | None = None,
+    num_samples: int | None = None,
+    per_sample_output_bytes: int = 0,
 ) -> MemoryDecision:
     """Say whether a configuration's upper estimate fits the budget.
 
@@ -897,6 +1099,11 @@ def resolve_memory_policy(
     configuration it is about to run -- so the result is a verdict on that
     configuration rather than a choice between several, and the sequence is
     what carries that one estimate into the manifest under its own name.
+
+    For runs strictly above a port's validated sample range with positive
+    ``per_sample_output_bytes``, if every candidate's sample-count lower bound
+    (:func:`sample_count_lower_bound`) exceeds the threshold, the state is
+    ``over_budget`` with ``sample_lower_bound_exceeded=True``.
 
     The state is ``unknown``, and the caller must proceed, whenever the
     comparison cannot be made: no budget, a token count outside any
@@ -911,12 +1118,52 @@ def resolve_memory_policy(
             raise ValueError(
                 f"candidate {name!r} carries a {law.model} law, not {model}"
             )
+    _validate_sample_bound_args(num_samples, per_sample_output_bytes)
 
     threshold = (
         None
         if budget_bytes is None
         else _threshold(budget_bytes, model=model, card_bytes=card_bytes)
     )
+    if (
+        num_samples is not None
+        and per_sample_output_bytes > 0
+        and threshold is not None
+    ):
+        bounds = [
+            sample_count_lower_bound(
+                law,
+                n_token,
+                num_samples=num_samples,
+                per_sample_output_bytes=per_sample_output_bytes,
+                msa_rows=msa_rows,
+            )
+            for _name, law in candidates
+        ]
+        if all(bound is not None for bound in bounds) and all(
+            bound.lower_bytes > threshold for bound in bounds if bound is not None
+        ):
+            bound_estimates = tuple(
+                CandidateEstimate(
+                    name=name,
+                    estimate_bytes=bound.lower_bytes,
+                    upper_bytes=bound.lower_bytes,
+                    fits=False,
+                )
+                for (name, _law), bound in zip(candidates, bounds, strict=True)
+                if bound is not None
+            )
+            first_bound = bounds[0]
+            assert first_bound is not None
+            return MemoryDecision(
+                state="over_budget",
+                selected=None,
+                estimates=bound_estimates,
+                threshold=threshold,
+                reason=_sample_lower_bound_reason(model, first_bound, threshold),
+                sample_lower_bound_exceeded=True,
+            )
+
     if model == "esmfold2":
         refusal = observed_capacity(
             model, n_token, budget_bytes, card_bytes=card_bytes
@@ -1519,6 +1766,28 @@ def _refuses(decision: MemoryDecision, mode: str, off_profile: Sequence[str]) ->
     return decision.state == "over_budget" and mode == "refuse" and not off_profile
 
 
+def _effective_off_profile(
+    decision: MemoryDecision,
+    *,
+    model: str,
+    num_samples: int | None,
+    off_profile: Sequence[str],
+) -> tuple[str, ...]:
+    """``off_profile`` reasons that still downgrade a refusal to advisory.
+
+    When a run is above the validated sample range and its sample-count lower
+    bound exceeds the threshold, the above-range sample-count reason itself
+    does not make the refusal advisory; any other off-profile reason (such as
+    context parallelism or a chunked diffusion axis) still does.
+    """
+    if not decision.sample_lower_bound_exceeded or num_samples is None:
+        return tuple(off_profile)
+    sample_reason = _sample_off_profile_reason(
+        num_samples, SAMPLES_VALIDATED.get(model)
+    )
+    return tuple(reason for reason in off_profile if reason != sample_reason)
+
+
 def admit(
     *,
     model: str,
@@ -1532,6 +1801,8 @@ def admit(
     token_label: str = "tokens",
     exceeds_profile: Sequence[str] = (),
     exact: ExactShape | None = None,
+    num_samples: int | None = None,
+    per_sample_output_bytes: int = 0,
 ) -> MemoryDecision:
     """Resolve, record and enforce in one call: what a port's wiring needs.
 
@@ -1557,6 +1828,11 @@ def admit(
         budget_bytes=budget.budget_bytes,
         candidates=candidates,
         card_bytes=budget.card_bytes,
+        num_samples=num_samples,
+        per_sample_output_bytes=per_sample_output_bytes,
+    )
+    enforce_off_profile = _effective_off_profile(
+        decision, model=model, num_samples=num_samples, off_profile=off_profile
     )
     stepped_aside = False
     if exact is not None:
@@ -1569,11 +1845,19 @@ def admit(
             if exact.msa_rows is not None
             else ""
         )
-        refused = _refuses(decision, mode, off_profile)
+        refused = _refuses(decision, mode, enforce_off_profile)
         # Outside every fitted range (or missing the row count a law needs);
         # every other ``unknown`` carries an estimate.
         unestimated = decision.state == "unknown" and not decision.estimates
-        if shape != exact_shape and (refused or unestimated):
+        exact_per_sample = (
+            per_sample_output_bytes
+            if exact.per_sample_output_bytes is None
+            else exact.per_sample_output_bytes
+        )
+        # OpenDDE pads residue tokens that its structural count does not show,
+        # so equal shape strings can still carry different resident outputs.
+        differs = shape != exact_shape or exact_per_sample != per_sample_output_bytes
+        if differs and (refused or unestimated):
             unpadded = resolve_memory_policy(
                 model=model,
                 n_token=exact.n_token,
@@ -1581,9 +1865,14 @@ def admit(
                 budget_bytes=budget.budget_bytes,
                 candidates=candidates,
                 card_bytes=budget.card_bytes,
+                num_samples=num_samples,
+                per_sample_output_bytes=exact_per_sample,
+            )
+            unpadded_off_profile = _effective_off_profile(
+                unpadded, model=model, num_samples=num_samples, off_profile=off_profile
             )
             step_aside = None
-            if refused and not _refuses(unpadded, mode, off_profile):
+            if refused and not _refuses(unpadded, mode, unpadded_off_profile):
                 if exact.implicit:
                     step_aside = (
                         f"padding to {shape} would be refused ({decision.reason})"
@@ -1599,7 +1888,7 @@ def admit(
                     step_aside = (
                         f"padding to {shape} has no memory estimate ({decision.reason})"
                     )
-                elif _refuses(unpadded, mode, off_profile):
+                elif _refuses(unpadded, mode, unpadded_off_profile):
                     # The padded run needs at least what the exact one does,
                     # so a shape nobody fitted inherits the exact refusal
                     # rather than running unchecked into the allocator.
@@ -1610,6 +1899,7 @@ def admit(
                             "memory estimate and needs at least as much"
                         ),
                     )
+                    enforce_off_profile = unpadded_off_profile
                     n_token, msa_rows = exact.n_token, exact.msa_rows
             if step_aside is not None:
                 warnings.warn(
@@ -1628,6 +1918,7 @@ def admit(
                 _PADDING_STEP_ASIDE.set(PADDING_STEP_ASIDE)
                 stepped_aside = True
                 decision = unpadded
+                enforce_off_profile = unpadded_off_profile
                 n_token, msa_rows = exact.n_token, exact.msa_rows
                 # The run is unpadded now, so the law is no longer a lower
                 # bound on that account.
@@ -1664,7 +1955,7 @@ def admit(
         budget=budget,
         mode=mode,
         levers=levers,
-        off_profile=off_profile,
+        off_profile=enforce_off_profile,
         token_label=token_label,
         exceeds_profile=exceeds_profile,
     )

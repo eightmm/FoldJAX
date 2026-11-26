@@ -1784,9 +1784,49 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                     # padding. Without a readable ceiling nothing is refused,
                     # so there is nothing for the padding to step aside from.
                     if overrides["memory_budget"].budget_bytes is not None:
+                        exact_tokens = int(
+                            np.asarray(
+                                model_features["token_attention_mask"]
+                            ).shape[-1]
+                        )
+                        padded_tokens = padding_plan.target["tokens"]
+                        resolved_num_samples = overrides.get(
+                            "num_samples", model.settings.num_samples
+                        )
+                        return_expected = overrides.get(
+                            "return_expected_errors",
+                            getattr(model.settings, "return_expected_errors", True),
+                        )
+                        return_logits = getattr(
+                            model.settings, "return_confidence_logits", False
+                        )
+                        no_confidence_outputs = request.stop_after in (
+                            "inputs",
+                            "trunk",
+                        )
+                        padded_per_sample = (
+                            0
+                            if no_confidence_outputs or padded_tokens <= 0
+                            else memory_policy.per_sample_resident_output_bytes(
+                                "esmfold2",
+                                padded_tokens,
+                                return_expected_errors=return_expected,
+                                return_confidence_logits=return_logits,
+                            )
+                        )
+                        exact_per_sample = (
+                            0
+                            if no_confidence_outputs or exact_tokens <= 0
+                            else memory_policy.per_sample_resident_output_bytes(
+                                "esmfold2",
+                                exact_tokens,
+                                return_expected_errors=return_expected,
+                                return_confidence_logits=return_logits,
+                            )
+                        )
                         decision = memory_policy.admit(
                             model="esmfold2",
-                            n_token=padding_plan.target["tokens"],
+                            n_token=padded_tokens,
                             msa_rows=None,
                             candidates=(("released", memory_policy.ESMFOLD2_PEAK),),
                             budget=overrides["memory_budget"],
@@ -1795,13 +1835,12 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                             off_profile=off_profile_reasons(),
                             exceeds_profile=(memory_policy.SERVING_PADDING,),
                             exact=memory_policy.ExactShape(
-                                int(
-                                    np.asarray(
-                                        model_features["token_attention_mask"]
-                                    ).shape[-1]
-                                ),
+                                exact_tokens,
                                 implicit=request.padding.implicit,
+                                per_sample_output_bytes=exact_per_sample,
                             ),
+                            num_samples=resolved_num_samples,
+                            per_sample_output_bytes=padded_per_sample,
                         )
                         if decision.padding_stepped_aside:
                             padding_plan = None

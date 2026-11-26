@@ -959,9 +959,20 @@ def predict(
         # count that decides whether the estimate binds is resolved there --
         # it comes off the checkpoint (`num_diffusion_samples`), not off a
         # default here.
+        n_token = int(np.asarray(features["token_attention_mask"]).shape[-1])
+        per_sample_bytes = (
+            0
+            if (stop_after_inputs or stop_after_trunk or n_token <= 0)
+            else memory_policy.per_sample_resident_output_bytes(
+                "esmfold2",
+                n_token,
+                return_expected_errors=settings.return_expected_errors,
+                return_confidence_logits=settings.return_confidence_logits,
+            )
+        )
         memory_policy.admit(
             model="esmfold2",
-            n_token=int(np.asarray(features["token_attention_mask"]).shape[-1]),
+            n_token=n_token,
             msa_rows=None,
             candidates=(("released", memory_policy.ESMFOLD2_PEAK),),
             budget=memory_budget,
@@ -1011,6 +1022,8 @@ def predict(
                 ),
             ),
             exceeds_profile=("serving padding",) if padded else (),
+            num_samples=settings.num_samples,
+            per_sample_output_bytes=per_sample_bytes,
         )
     # Resolve the process-wide escape hatch before choosing a bounded JIT
     # owner. The same integer is passed into the graph and pins every atom

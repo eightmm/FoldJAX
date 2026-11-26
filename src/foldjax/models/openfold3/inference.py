@@ -15,7 +15,7 @@ import functools
 import threading
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, NamedTuple
 
 import jax
@@ -618,6 +618,8 @@ def resolve_pair_chunk_size(
     off_profile: Sequence[str] = (),
     exceeds_profile: Sequence[str] = (),
     exact: memory_policy.ExactShape | None = None,
+    num_samples: int | None = None,
+    per_sample_output_bytes: int = 0,
 ) -> int | None:
     """Block the pair-stack row loop, and admit the run that will do it.
 
@@ -674,6 +676,8 @@ def resolve_pair_chunk_size(
             off_profile=off_profile,
             exceeds_profile=exceeds_profile,
             exact=exact,
+            num_samples=num_samples,
+            per_sample_output_bytes=per_sample_output_bytes,
         )
     return _blocked_width(n_token)
 
@@ -2139,12 +2143,57 @@ def released_config(
     # realized width and never a sentinel. `memory_budget` no longer changes
     # it; what it does is admit the run, which is why it is read here, where
     # the sample count and the stages that put the law off profile are known.
+    returned_pair_logits = plan_returned_pair_logits(
+        n_token=n_token,
+        num_samples=num_samples,
+        max_bytes=max_array_bytes,
+    )
+    per_sample_bytes = (
+        0
+        if (stop_after_trunk or stop_after_inputs or n_token <= 0)
+        else memory_policy.per_sample_resident_output_bytes(
+            "openfold3",
+            n_token,
+            return_expected_errors=return_expected_errors,
+            returned_pair_logits=returned_pair_logits,
+        )
+    )
+    resolved_exact_shape = exact_shape
+    if (
+        resolved_exact_shape is not None
+        and resolved_exact_shape.per_sample_output_bytes is None
+    ):
+        exact_returned = plan_returned_pair_logits(
+            n_token=resolved_exact_shape.n_token,
+            num_samples=num_samples,
+            max_bytes=max_array_bytes,
+        )
+        exact_per_sample = (
+            0
+            if (
+                stop_after_trunk
+                or stop_after_inputs
+                or resolved_exact_shape.n_token <= 0
+            )
+            else memory_policy.per_sample_resident_output_bytes(
+                "openfold3",
+                resolved_exact_shape.n_token,
+                return_expected_errors=return_expected_errors,
+                returned_pair_logits=exact_returned,
+            )
+        )
+        resolved_exact_shape = replace(
+            resolved_exact_shape,
+            per_sample_output_bytes=exact_per_sample,
+        )
     resolved_chunk: int | None = (
         resolve_pair_chunk_size(
             n_token,
             budget=memory_budget,
             mode=memory_check,
-            exact=exact_shape,
+            exact=resolved_exact_shape,
+            num_samples=num_samples,
+            per_sample_output_bytes=per_sample_bytes,
             off_profile=memory_policy.off_profile_reason(
                 num_samples=num_samples,
                 # Each of these leaves the run *below* the configuration the
@@ -2237,11 +2286,7 @@ def released_config(
     return InferenceConfig(
         n_token=n_token,
         n_atom=n_atom,
-        returned_pair_logits=plan_returned_pair_logits(
-            n_token=n_token,
-            num_samples=num_samples,
-            max_bytes=max_array_bytes,
-        ),
+        returned_pair_logits=returned_pair_logits,
         n_query=32,
         n_key=128,
         atom_heads=4,

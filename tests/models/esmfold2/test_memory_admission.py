@@ -623,3 +623,55 @@ def test_managed_admission_marks_cueq_triangle_advisory_at_48gb_limit(
     with pytest.raises(ValueError, match="triangle_backend must be one of"):
         backend.predict(bad_req)
     assert memory_policy.recorded() is None
+
+    # Default padding steps aside when the sample-count lower bound refuses
+    # only the padded bucket: at 100 samples on a 48 GiB budget (43.2 GiB
+    # threshold), 2,304 padded tokens (44.52 GiB) exceeds the threshold while
+    # the exact 2,096 tokens (37.31 GiB) clears.
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2._padding_plan",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            target={tok_target: 2304, "atoms": 16384, "msa": 16}
+        ),
+    )
+    monkeypatch.setattr(
+        memory_policy,
+        "device_memory_budget",
+        lambda **_kwargs: memory_policy.resolve_budget(
+            pool_bytes=96 * _GIB,
+            card_bytes=96 * _GIB,
+            override_gib=48.0,
+        ),
+    )
+    memory_policy.reset_warnings()
+    memory_policy.clear_record()
+    seen_lengths.clear()
+    step_aside_req = make_request(
+        {"num_samples": 100, "memory_budget_gib": 48.0},
+        padding=DEFAULT_PADDING,
+        length=2096,
+    )
+    with backend.session((step_aside_req,)):
+        with pytest.warns(UserWarning, match="uses the exact input shapes"):
+            with pytest.raises(_ReachedLMError):
+                backend.predict(step_aside_req)
+    assert seen_lengths == [2096]
+    assert memory_policy.padding_disabled_by() == memory_policy.PADDING_STEP_ASIDE
+    assert memory_policy.recorded()["n_token"] == 2096
+
+    # Explicit padding refuses the 2,304 bucket before running ESMC, naming
+    # both --num-samples and --no-padding for the exact 2,096 shape.
+    memory_policy.reset_warnings()
+    memory_policy.clear_record()
+    seen_lengths.clear()
+    explicit_sample_req = make_request(
+        {"num_samples": 100, "memory_budget_gib": 48.0},
+        padding=PaddingConfig(),
+        length=2096,
+    )
+    with backend.session((explicit_sample_req,)):
+        with pytest.raises(MemoryError, match="--num-samples") as err:
+            backend.predict(explicit_sample_req)
+    assert "--no-padding (padding=False) runs the exact 2096 tokens" in str(err.value)
+    assert seen_lengths == []
+    assert memory_policy.padding_disabled_by() is None

@@ -1019,7 +1019,64 @@ def _run(
                         _, padded_structural = opendde_padding_targets(
                             model_features, padding
                         )
-                    shape = (n_structural, padded_structural)
+                    return_logits = (
+                        config.include_raw or "asym_id" not in model_features
+                    )
+                    return_details = (
+                        config.include_raw and "asym_id" in model_features
+                    )
+                    per_sample_bytes = 0
+                    exact_per_sample_bytes = 0
+                    if config.stop_after == "full" and (
+                        return_logits or return_details
+                    ):
+                        import numpy as np
+
+                        restype = model_features.get("restype")
+                        if restype is not None:
+                            arr = np.asarray(restype)
+                            if arr.ndim == 2 and arr.shape[0] == 1:
+                                exact_residue = int(arr.shape[1])
+                            elif arr.ndim == 2 and arr.shape[-1] == 32:
+                                exact_residue = int(arr.shape[0])
+                            elif arr.ndim >= 2:
+                                exact_residue = int(arr.shape[-1])
+                            else:
+                                exact_residue = (
+                                    int(arr.shape[0]) if arr.ndim == 1 else 0
+                                )
+                        else:
+                            exact_residue = 0
+                        if exact_residue > 0:
+                            compiled_residue = exact_residue
+                            if padding is not None:
+                                from foldjax.padding import resolve_axis
+
+                                compiled_residue = resolve_axis(
+                                    exact_residue, padding, "tokens"
+                                )
+                            per_sample_bytes = (
+                                memory_policy.per_sample_resident_output_bytes(
+                                    "opendde",
+                                    compiled_residue,
+                                    return_confidence_logits=return_logits,
+                                    return_confidence_details=return_details,
+                                )
+                            )
+                            exact_per_sample_bytes = (
+                                memory_policy.per_sample_resident_output_bytes(
+                                    "opendde",
+                                    exact_residue,
+                                    return_confidence_logits=return_logits,
+                                    return_confidence_details=return_details,
+                                )
+                            )
+                    shape = (
+                        n_structural,
+                        padded_structural,
+                        per_sample_bytes,
+                        exact_per_sample_bytes,
+                    )
                     if shape not in admitted:
                         bf16_trunk = trunk_dtype is not None
                         decision = memory_policy.admit(
@@ -1049,9 +1106,13 @@ def _run(
                                 None
                                 if padding is None
                                 else memory_policy.ExactShape(
-                                    n_structural, implicit=padding.implicit
+                                    n_structural,
+                                    implicit=padding.implicit,
+                                    per_sample_output_bytes=exact_per_sample_bytes,
                                 )
                             ),
+                            num_samples=config.num_samples,
+                            per_sample_output_bytes=per_sample_bytes,
                         )
                         admitted[shape] = decision.padding_stepped_aside
                     # This job's verdict, whether admission ran for it or an

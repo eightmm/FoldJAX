@@ -1323,11 +1323,30 @@ def predict(
     # the check above them would mean hoisting the plan resolution over the
     # feature-selection compaction it reads, which is a larger change than the
     # seconds it would save on a refusal.
+    compiled_tokens = (
+        original_tokens if padding_plan is None else padding_plan.target["tokens"]
+    )
+    per_sample_bytes = (
+        0
+        if stop_after != "full"
+        else memory_policy.per_sample_resident_output_bytes(
+            "boltz2",
+            compiled_tokens,
+            return_confidence_logits=return_confidence_logits,
+        )
+    )
+    exact_per_sample_bytes = (
+        0
+        if stop_after != "full"
+        else memory_policy.per_sample_resident_output_bytes(
+            "boltz2",
+            original_tokens,
+            return_confidence_logits=return_confidence_logits,
+        )
+    )
     decision = memory_policy.admit(
         model="boltz2",
-        n_token=(
-            original_tokens if padding_plan is None else padding_plan.target["tokens"]
-        ),
+        n_token=compiled_tokens,
         msa_rows=None,
         candidates=(("released", memory_policy.BOLTZ2_PEAK),),
         budget=memory_policy.device_memory_budget(override_gib=memory_budget_gib),
@@ -1374,8 +1393,14 @@ def predict(
         exact=(
             None
             if padding is None
-            else memory_policy.ExactShape(original_tokens, implicit=padding.implicit)
+            else memory_policy.ExactShape(
+                original_tokens,
+                implicit=padding.implicit,
+                per_sample_output_bytes=exact_per_sample_bytes,
+            )
         ),
+        num_samples=num_samples,
+        per_sample_output_bytes=per_sample_bytes,
     )
     if decision.padding_stepped_aside:
         padding = None
