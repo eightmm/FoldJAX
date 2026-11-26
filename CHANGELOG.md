@@ -546,6 +546,19 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **ESMFold2 bins the confidence head's representative distances with a
+  binary search.** The index was a compare-and-sum over the 38 distance
+  boundaries, which XLA compiled into one reduce kernel over 128 x 128
+  output tiles that spilled 133 KB of registers per thread. At 2,304 padded
+  tokens (the 2,096-token case under default padding) that kernel's local
+  memory no longer fit beside the preallocated pool, and the launch failed
+  with out of memory while the pool itself held 1.1 GiB. For equal distances
+  the search returns the same indices, edges included, and a NaN distance
+  keeps bin 0 as before; the case now runs under default padding. The
+  distances themselves are now computed in a different kernel: at 1,003
+  tokens the coordinates and four of five samples' confidence files were
+  byte-identical, and one sample's confidence moved by at most 0.008 atom
+  pLDDT and 0.10 of PAE, at the same time and peak.
 - **Memory admission refuses a `--num-samples` above the validated range when
   even a lower bound cannot fit.** The peak laws were fitted at five samples
   (ESMFold2 through 32), so a larger count used to make every refusal

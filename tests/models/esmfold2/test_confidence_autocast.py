@@ -1,5 +1,6 @@
 """Confidence's non-fused autocast must retain the FP32 residual stream."""
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -62,3 +63,26 @@ def test_confidence_trunk_preserves_native_residual_and_affine(monkeypatch, dtyp
             trunk_dtype=dtype,
         )
     assert params["folding_trunk.blocks.0.norm.weight"] is weight
+
+
+def test_distance_bins_match_the_compare_and_sum():
+    boundaries = jnp.linspace(3.25, 50.75, 38, dtype=jnp.float32)
+    edges = np.asarray(boundaries)
+    distances = jnp.asarray(
+        np.concatenate(
+            [
+                np.random.default_rng(0).uniform(0.0, 60.0, 4096),
+                edges,
+                np.nextafter(edges, np.float32(0.0)),
+                np.nextafter(edges, np.float32(100.0)),
+                [0.0, np.inf, -np.inf, np.nan],
+            ]
+        ).astype(np.float32)
+    )
+    expected = jnp.sum(distances[..., None] > boundaries, axis=-1)
+    got = heads._distance_bins(distances, boundaries)
+    assert got.dtype == expected.dtype
+    np.testing.assert_array_equal(got, expected)
+    with jax.enable_x64(True):
+        wide = jnp.sum(distances[..., None] > boundaries, axis=-1)
+        assert heads._distance_bins(distances, boundaries).dtype == wide.dtype

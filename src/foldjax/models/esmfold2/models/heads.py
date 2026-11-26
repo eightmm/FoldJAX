@@ -157,6 +157,23 @@ def _as(x: jnp.ndarray, narrow: bool) -> jnp.ndarray:
     return x.astype(jnp.bfloat16 if narrow else jnp.float32)
 
 
+def _distance_bins(distances: jnp.ndarray, boundaries: jnp.ndarray) -> jnp.ndarray:
+    """Count the sorted ``boundaries`` below each distance.
+
+    A binary search rather than a compare-and-sum over every boundary: XLA
+    tiled that reduction 128 x 128 outputs at a time and spilled 133 KB of
+    registers per thread, and at 2,304 padded tokens the kernel's local
+    memory no longer fit beside the preallocated pool. The indices are
+    equal, edges included, and in the default integer dtype a boolean sum
+    returns; a NaN distance, which no boundary is below, keeps bin 0.
+    """
+    return jnp.where(
+        jnp.isnan(distances),
+        0,
+        jnp.searchsorted(boundaries, distances, side="left", method="scan_unrolled"),
+    ).astype(jax.dtypes.canonicalize_dtype(int))
+
+
 def confidence_head(
     s_inputs: jnp.ndarray,
     z: jnp.ndarray,
@@ -311,7 +328,7 @@ def confidence_head(
     # them, and the bin index. `confidence_dtype` stops short of all three.
     rep_distances = jnp.sqrt(jnp.sum(offsets * offsets, axis=-1) + 1e-12)
     boundaries = params[f"{dot}boundaries"]
-    bins = jnp.sum(rep_distances[..., None] > boundaries, axis=-1)
+    bins = _distance_bins(rep_distances, boundaries)
     # AlphaFold 3's `distogram_feat_project` in role but a gather rather than
     # a projection, so it narrows as storage. The table is `[39, 256]` and the
     # result is quadratic, which is the side that matters.
