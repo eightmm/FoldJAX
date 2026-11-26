@@ -8,6 +8,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._binning import distance_bins
 from foldjax.models.boltz2.models.diffusion.atom import (
     _repeat_index,
     gather_rep_atoms_to_tokens,
@@ -67,7 +68,7 @@ def affinity_module_forward(
     d = jnp.sqrt(jnp.maximum(d2, 0.0))
 
     boundaries = params["boundaries"]
-    distogram_idx = jnp.sum(d[..., None] > boundaries, axis=-1)
+    distogram_idx = distance_bins(d, boundaries)
     distogram = params["dist_bin_pairwise_embed"][distogram_idx]
 
     z = z + pairwise_conditioning_forward(

@@ -17,6 +17,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax.models._binning import distance_bins
 from foldjax.models._cp import cp_mesh, shard_pair_rows
 from foldjax.models._cp_atom import replicate_atoms
 from foldjax.models.boltz2.models.diffusion.atom import (
@@ -210,7 +211,7 @@ def confidence_module_forward(
         x_pred_repr = x_pred_repr.astype(compute_dtype).astype(jnp.float32)
     d = _cdist(x_pred_repr, x_pred_repr)
     boundaries = params["boundaries"]
-    distogram = jnp.sum(d[..., None] > boundaries, axis=-1).astype(jnp.int32)
+    distogram = distance_bins(d, boundaries).astype(jnp.int32)
     distogram = params["dist_bin_pairwise_embed"][distogram]
     # Born sharded under context parallelism: the head's z assembly above
     # (relpos, bonds, outer sums, distogram) otherwise materializes whole on

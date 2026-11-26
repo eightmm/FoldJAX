@@ -12,6 +12,7 @@ from collections.abc import Mapping
 
 import jax.numpy as jnp
 
+from foldjax.models._binning import distance_bins
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives._common import linear as _linear
 from foldjax.models.boltz2.models.trunk_blocks.pairformer_noseq import (
@@ -89,7 +90,7 @@ def template_module_forward(
         )
     )
     boundaries = jnp.linspace(min_dist, max_dist, num_bins - 1, dtype=jnp.float32)
-    distogram_idx = jnp.sum(cb_dists[..., None] > boundaries, axis=-1)
+    distogram_idx = distance_bins(cb_dists, boundaries)
     distogram = jnp.eye(num_bins, dtype=z.dtype)[distogram_idx]
 
     # Per-frame unit vectors (fp32). Match torch axis placement exactly:

@@ -17,6 +17,7 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
+from foldjax.models._binning import open_interval_bin
 from foldjax.models._cp import shard_pair_rows
 from foldjax.models.openfold3.models.atomize import max_atom_per_token_masked_select
 from foldjax.models.openfold3.models.pairformer import (
@@ -192,16 +193,10 @@ def _project_distance_bins(
     upper = jnp.concatenate([squared[1:], jnp.asarray([inf], dtype=dtype)])
 
     # ``side="left"`` makes an exact internal edge point at the preceding bin;
-    # the strict comparisons below then reject it, matching the two comparisons
-    # in the dense one-hot expression.  NaN, infinity, and the open final bound
-    # are rejected by those same comparisons.
-    index = jnp.searchsorted(squared, squared_distance, side="left") - 1
-    safe_index = jnp.clip(index, 0, no_bin - 1)
-    valid = (
-        (index >= 0)
-        & (squared_distance > squared[safe_index])
-        & (squared_distance < upper[safe_index])
-    )
+    # the strict comparisons inside ``open_interval_bin`` then reject it,
+    # matching the two comparisons in the dense one-hot expression.  NaN,
+    # infinity, and the open final bound are rejected by those same comparisons.
+    safe_index, valid = open_interval_bin(squared_distance, squared, upper)
 
     table = jnp.swapaxes(weight, -1, -2)
     selected = jnp.take(table, safe_index, axis=0)

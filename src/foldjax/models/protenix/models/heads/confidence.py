@@ -9,6 +9,7 @@ import jax.nn as jnn
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax.models._binning import open_interval_bin
 from foldjax.models._cp import cp_shards as _active_cp_shards
 from foldjax.models._cp import shard_pair_rows
 from foldjax.models.protenix.models.primitives.primitives import (
@@ -1646,13 +1647,7 @@ def _compact_confidence_bin_projection(
 
     lower = params.lower_bins
     upper = params.upper_bins
-    index = jnp.searchsorted(lower, distance, side="left") - 1
-    safe_index = jnp.clip(index, 0, lower.shape[0] - 1)
-    valid = (
-        (index >= 0)
-        & (distance > lower[safe_index])
-        & (distance < upper[safe_index])
-    )
+    safe_index, valid = open_interval_bin(distance, lower, upper)
 
     # ``linear`` stores weights as [out, in].  A dense dot over a one-hot row
     # selects this same [out] row, while its multi-term reduction canonicalises
