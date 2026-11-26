@@ -552,6 +552,14 @@ unless it says so here, in its own paragraph.
   projection rounds differently on the GPU: per-chain CA RMSD to the deposited
   structures moved by at most 0.002 Å and the same-index CA residual between
   the two routes was 0.004-0.051 Å.
+- **ESMFold2 projects its token-transformer pair bias once per prediction and
+  writes the pair-transition norm in bfloat16.** The twelve per-block pair
+  biases are computed from the conditioned pair before the sampler loop (when
+  they take no more bytes than the pair they replace; serial runs only)
+  instead of at every denoiser step, and the pair-transition LayerNorm emits
+  the bfloat16 its projection reads. On one RTX PRO 6000, five samples, warm:
+  1,003 tokens 0.94x wall and 2,096 tokens 0.92x wall, at the same peak (-72
+  MiB at 2,096 tokens); coordinates were bit-identical at both sizes.
 - **OpenDDE runs its diffusion attention on tokamax
   (`diffusion_attention_backend=tokamax`) by default on a serial GPU.** An
   omitted option now realises `tokamax` on a single unguided GPU process and

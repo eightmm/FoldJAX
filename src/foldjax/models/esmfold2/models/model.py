@@ -1793,28 +1793,6 @@ def predict(
             f"has batch {batch}"
         )
 
-    cache = diffusion.build_cache(
-        features["ref_pos"],
-        features["ref_charge"],
-        atom_mask,
-        element_one_hot,
-        chars_one_hot,
-        features["ref_space_uid"],
-        atom_to_token,
-        z,
-        rel_pos,
-        params,
-        "structure_head.diffusion_module",
-        settings=settings.diffusion,
-        # The atom-level entries are repeated to `batch * num_samples` here.
-        # Sequencing narrows them to one rollout, which is the other half of
-        # the saving: a batched cache would keep a factor the mapped denoiser
-        # cannot use.
-        num_samples=1 if sequential_samples else n_samples,
-        n_tokens=n_tokens,
-        trunk_dtype=compute,
-    )
-
     def draw(sample_key):
         return diffusion.sample(
             sample_key,
@@ -1858,6 +1836,34 @@ def predict(
             )
             if name in return_representations
         }
+
+    cache = diffusion.build_cache(
+        features["ref_pos"],
+        features["ref_charge"],
+        atom_mask,
+        element_one_hot,
+        chars_one_hot,
+        features["ref_space_uid"],
+        atom_to_token,
+        z,
+        rel_pos,
+        params,
+        "structure_head.diffusion_module",
+        settings=settings.diffusion,
+        # The atom-level entries are repeated to `batch * num_samples` here.
+        # Sequencing narrows them to one rollout, which is the other half of
+        # the saving: a batched cache would keep a factor the mapped denoiser
+        # cannot use.
+        num_samples=1 if sequential_samples else n_samples,
+        n_tokens=n_tokens,
+        trunk_dtype=compute,
+    )
+    cache = diffusion.with_token_pair_biases(
+        cache,
+        params,
+        "structure_head.diffusion_module",
+        settings=settings.diffusion,
+    )
 
     # Every device runs the whole sampler on its own copy, so the region
     # contains no collective. The sibling ports' context-parallel runs went

@@ -27,7 +27,7 @@ written through the identity `t_hat = sigma (1 + g)` as
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 import jax
@@ -119,24 +119,80 @@ class DiffusionCache:
     `inference_cache`; the sampler here builds it once and closes over it, which
     is the same arithmetic and keeps the scanned step function small.
 
-    The atom-level entries are already repeated to `batch * samples`; `pair` is
-    not, because it is the largest tensor in the model and the attention adds
+    The atom-level entries are already repeated to `batch * samples`;
+    `pair_bias` (and optional legacy `pair`) is not, because the quadratic
+    pair tensors are the largest arrays in the model and the attention adds
     its bias against a folded view rather than a repeated one.
+
+    `with_token_pair_biases` turns one prediction's cache into the form that
+    holds each token-transformer block's `[B, L, L, H]` bias in place of the
+    `[B, L, L, c_z]` conditioned pair (`pair=None`).
     """
 
     atom_conditioning: jnp.ndarray
     cos: jnp.ndarray
     sin: jnp.ndarray
-    pair: jnp.ndarray
+    pair: jnp.ndarray | None
     atom_to_token: jnp.ndarray
     atom_mask: jnp.ndarray
     n_tokens: int
+    pair_bias: tuple[jnp.ndarray, ...] | None = None
+
+
+def token_pair_biases(
+    pair: jnp.ndarray,
+    params: Params,
+    prefix: str = "",
+    *,
+    n_blocks: int,
+    eps: float = 1e-5,
+) -> tuple[jnp.ndarray, ...]:
+    """Precompute each token-transformer block's pair bias outside the scan.
+
+    Every block reads the same loop-invariant conditioned pair and runs the
+    same `layer_norm` + `pair_bias_proj` on every denoiser step. Computing
+    them once here lets the `[B, L, L, c_z]` conditioned pair die before the
+    sampler loop starts and retains only the `n_blocks` `[B, L, L, n_heads]`
+    bias tensors, sharded by rows under context parallelism.
+
+    `optimization_barrier` on `pair` keeps the fusion boundary between
+    `condition_pair` and the block LayerNorms that the `lax.scan` loop
+    boundary enforced. The biases can still round differently from the
+    per-step projection (GEMM shapes change), so treat it as rounding-class:
+    on one RTX PRO 6000 the jitted serial prediction was bitwise equal at
+    1,003 and 2,096 tokens, while an earlier measurement at 1,993 tokens moved
+    the same-index CA residual by at most 0.09 A (per-chain CA RMSD within
+    0.003 A).
+    """
+    pair_array = jnp.asarray(pair)
+    if pair_array.ndim != 4:
+        raise ValueError(
+            "token_pair_biases expects rank-4 pair [B, L, L, C]; "
+            f"got shape {pair_array.shape}"
+        )
+    if n_blocks <= 0:
+        return ()
+    pair_array = jax.lax.optimization_barrier(pair_array)
+    dot = f"{prefix}." if prefix else ""
+    biases: list[jnp.ndarray] = []
+    for index in range(n_blocks):
+        block = f"{dot}attn_blocks.{index}"
+        normed = layer_norm(
+            pair_array,
+            params[f"{block}.pair_norm.weight"],
+            params[f"{block}.pair_norm.bias"],
+            eps=eps,
+        )
+        biases.append(
+            shard_pair_rows(linear(normed, params, f"{block}.pair_bias_proj"))
+        )
+    return tuple(biases)
 
 
 def attention_pair_bias(
     a: jnp.ndarray,
     s: jnp.ndarray | None,
-    z: jnp.ndarray,
+    z: jnp.ndarray | None,
     params: Params,
     prefix: str = "",
     *,
@@ -144,6 +200,7 @@ def attention_pair_bias(
     mask: jnp.ndarray | None = None,
     num_samples: int = 1,
     eps: float = 1e-5,
+    pair_bias: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """`AttentionPairBias`.
 
@@ -189,7 +246,13 @@ def attention_pair_bias(
         folded = base.reshape(term.shape[0], -1, n_queries, n_keys, n_heads)
         return (folded + term[:, None]).reshape(batch, n_queries, n_keys, n_heads)
 
-    if z.ndim == 4:
+    if pair_bias is not None:
+        # The projection the rank-4 `z` branch below makes, computed once by
+        # `with_token_pair_biases`; it broadcasts against the heads as that does.
+        bias = pair_bias
+    elif z is None:
+        raise ValueError("attention_pair_bias requires either z or pair_bias")
+    elif z.ndim == 4:
         pair = layer_norm(
             z, params[f"{dot}pair_norm.weight"], params[f"{dot}pair_norm.bias"], eps=eps
         )
@@ -278,7 +341,7 @@ def conditioned_transition_block(
 def diffusion_transformer(
     a: jnp.ndarray,
     s: jnp.ndarray | None,
-    z: jnp.ndarray,
+    z: jnp.ndarray | None,
     params: Params,
     prefix: str = "",
     *,
@@ -287,8 +350,13 @@ def diffusion_transformer(
     mask: jnp.ndarray | None = None,
     num_samples: int = 1,
     glu_backend: str = "xla",
+    pair_bias: Sequence[jnp.ndarray] | None = None,
 ) -> jnp.ndarray:
     """`DiffusionTransformer`: attention and transition, both residual."""
+    if pair_bias is not None and len(pair_bias) != max(n_blocks, 0):
+        raise ValueError(
+            f"pair_bias has {len(pair_bias)} entries; expected {n_blocks}"
+        )
     dot = f"{prefix}." if prefix else ""
     for index in range(n_blocks):
         a = a + attention_pair_bias(
@@ -300,6 +368,7 @@ def diffusion_transformer(
             n_heads=n_heads,
             mask=mask,
             num_samples=num_samples,
+            pair_bias=None if pair_bias is None else pair_bias[index],
         )
         a = a + conditioned_transition_block(
             a,
@@ -625,6 +694,57 @@ def build_cache(
     )
 
 
+def with_token_pair_biases(
+    cache: DiffusionCache,
+    params: Params,
+    prefix: str = "",
+    *,
+    settings: DiffusionSettings,
+) -> DiffusionCache:
+    """One prediction's cache with its token-block pair biases computed once.
+
+    The returned cache holds each block's projection in place of the
+    conditioned pair, so it is tied to these `params` and this block count;
+    `build_cache` itself still returns the reusable `pair` form. Serial only,
+    and only with every block's projection present: under context parallelism
+    the per-step projection keeps its sharded rounding, a partial parameter
+    tree keeps failing where it always did, and a block stack whose biases
+    outnumber the pair channels keeps the narrower pair.
+    """
+    if (
+        not isinstance(cache, DiffusionCache)
+        or cache.pair is None
+        or cache.pair_bias is not None
+        or cp_mesh() is not None
+    ):
+        return cache
+    dot = f"{prefix}." if prefix else ""
+    token_prefix = f"{dot}token_transformer"
+    if not all(
+        f"{token_prefix}.attn_blocks.{index}.{name}" in params
+        for index in range(settings.token_n_blocks)
+        for name in ("pair_norm.weight", "pair_norm.bias", "pair_bias_proj.weight")
+    ):
+        return cache
+    def project(pair: jnp.ndarray) -> tuple[jnp.ndarray, ...]:
+        return token_pair_biases(
+            pair, params, token_prefix, n_blocks=settings.token_n_blocks
+        )
+
+    # Kept only when the biases it retains take no more bytes than the pair
+    # they replace (12 x 16 = 192 of 256 channels at the released widths, in
+    # the same dtype), so the sampler retains no more than the per-step path;
+    # the one-time projection's temporaries are a GPU peak question, measured
+    # at 1,000-3,000 tokens.
+    retained = sum(
+        math.prod(bias.shape) * jnp.dtype(bias.dtype).itemsize
+        for bias in jax.eval_shape(project, cache.pair)
+    )
+    if retained > math.prod(cache.pair.shape) * jnp.dtype(cache.pair.dtype).itemsize:
+        return cache
+    return replace(cache, pair=None, pair_bias=project(cache.pair))
+
+
 def diffusion_module(
     x_noisy: jnp.ndarray,
     t_hat: jnp.ndarray,
@@ -699,6 +819,7 @@ def diffusion_module(
         mask=token_mask,
         num_samples=num_samples,
         glu_backend=settings.glu_backend,
+        pair_bias=cache.pair_bias,
     )
     tokens = layer_norm(
         tokens, params[f"{dot}token_norm.weight"], params[f"{dot}token_norm.bias"]
@@ -1464,5 +1585,7 @@ __all__ = [
     "quaternion_to_rotation",
     "sample",
     "settings_from_config",
+    "token_pair_biases",
     "weighted_rigid_align",
+    "with_token_pair_biases",
 ]
