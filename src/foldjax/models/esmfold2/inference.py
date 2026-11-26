@@ -24,6 +24,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from foldjax import memory_policy, progress
+from foldjax.backends.esmfold2 import realised_triangle_backend
 from foldjax.models import _capture
 from foldjax.models._chain_profile import chain_capacity
 from foldjax.models._compile_policy import (
@@ -786,8 +787,9 @@ def predict(
     #: takes. `None` leaves the checkpoint's value, which is `"xla"`.
     glu_backend: str | None = None,
     #: Which implementation the pair trunk's triangle multiplication takes.
-    #: `None` leaves the released `"xla"` route; `"cueq"` selects
-    #: cuEquivariance's fused bfloat16 update on a single GPU.
+    #: `None` realises `"cueq"` on a serial GPU process and `"xla"` otherwise
+    #: (CPU, TPU, or context parallelism); `"xla"` restores upstream's
+    #: bfloat16 GEMM route on a GPU.
     triangle_backend: str | None = None,
     #: Experimental solver-free alignment. SVD remains the default until
     #: real-weight, tape-fixed accuracy and memory measurements admit Jacobi.
@@ -937,7 +939,11 @@ def predict(
     # the alias decides which program is built, so the executable's static
     # topology has to be what runs rather than what was spelled.
     resolved_cp_layout = _resolve_cp_layout(cp_layout, cp_shards)
-    resolved_triangle_backend = "xla" if triangle_backend is None else triangle_backend
+    resolved_triangle_backend = realised_triangle_backend(
+        triangle_backend,
+        cp_devices=cp_shards,
+        trunk_dtype=str(model.settings.trunk_dtype),
+    )
     settings = structure_model.with_overrides(
         model.settings,
         num_recycles=num_recycles,
@@ -1008,10 +1014,6 @@ def predict(
                         (
                             "a fused GLU",
                             settings.diffusion.glu_backend != "xla",
-                        ),
-                        (
-                            "a cuEquivariance triangle multiplication",
-                            resolved_triangle_backend != "xla",
                         ),
                         (
                             "solver-free rigid alignment (unmeasured memory)",

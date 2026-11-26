@@ -35,13 +35,11 @@ unless it says so here, in its own paragraph.
   1,003 tokens the warm prediction took 0.92x the time at default precision
   and 0.95x in float32 with raw outputs, at the same peak memory. Refused
   together with `use_tfg_guidance`.
-- **ESMFold2 `triangle_backend=cueq`** (also `triangle_kernel=cueq`), an
-  opt-in for cuEquivariance's fused triangle multiplication in the pair trunk
-  (default unchanged, `xla`). With cuEquivariance 0.13.0, at 1,003 tokens the
-  warm prediction took 0.90x the time at the same peak memory, and at 2,096
-  tokens (exact shape) 0.70x the time at 0.93x the peak memory; CA RMSD to the
-  default was at most 0.042 Å at both. Refused with context parallelism and off
-  a GPU.
+- **ESMFold2 `triangle_backend`** (also `triangle_kernel`), selecting
+  cuEquivariance's fused triangle multiplication (`cueq`) or upstream's
+  bfloat16 GEMM route (`xla`) in the pair trunk. An omitted option runs `cueq`
+  on a serial GPU; see Changed for the default and its measurements. Explicit
+  `cueq` is refused with context parallelism and off a GPU.
 - **`--cache-dir` on the Protenix and OpenDDE native predict CLIs and
   `--no-cache` on Protenix's**, as aliases of `--compile-cache` and
   `--no-compile-cache`.
@@ -546,6 +544,22 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **ESMFold2 runs cuEquivariance triangle multiplication
+  (`triangle_backend=cueq`) by default on a serial GPU.** An omitted
+  `triangle_backend` now realises `cueq` on a single-GPU process and keeps
+  `xla` on CPU, TPU and context-parallel runs; `--option triangle_backend=xla`
+  restores upstream's bfloat16 GEMM route on a GPU, and explicit `cueq` remains
+  refused off a GPU and under context parallelism. On a serial GPU an omitted
+  option shares the compilation namespace and executable of explicit
+  `triangle_backend=cueq`, a float32 confidence head keeps the XLA route, and
+  memory admission stays binding: the fitted law, measured on the XLA route,
+  bounds the fused kernel's equal or lower peak. On one RTX PRO 6000
+  Blackwell, warm prediction at 1,003 tokens took 66.1 s against 73.7 s at
+  the same 14,780 MiB peak, and at 2,096 tokens padded to 2,304 it took
+  264.3 s against 367.7 s with the peak falling from 39,574 to 35,491 MiB.
+  Per-chain CA RMSD to the deposited structures moved by at most 0.0006 A at
+  1,003 tokens and 0.0054 A at 2,096 over the five samples, and each sample
+  stayed within 0.06 A CA RMSD of its counterpart on the XLA route.
 - **ESMFold2 bins the confidence head's representative distances with a
   binary search.** The index was a compare-and-sum over the 38 distance
   boundaries, which XLA compiled into one reduce kernel over 128 x 128

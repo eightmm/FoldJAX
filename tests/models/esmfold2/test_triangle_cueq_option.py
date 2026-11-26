@@ -1,4 +1,4 @@
-"""Opt-in cuEquivariance triangle multiplication for ESMFold2's pair stacks."""
+"""cuEquivariance triangle multiplication for ESMFold2's pair stacks."""
 
 from __future__ import annotations
 
@@ -333,7 +333,9 @@ def test_adapter_options_neutral_mapping_and_refusals(
         **kw,  # type: ignore[arg-type]
     )
 
-    for neutral, expected in (("auto", "xla"), ("xla", "xla"), ("cueq", "cueq")):
+    # `auto` passes nothing: it realises what an omitted option does.
+    assert "triangle_backend" not in backend.apply_sampling(req(triangle_kernel="auto"))
+    for neutral, expected in (("xla", "xla"), ("cueq", "cueq")):
         assert (
             backend.apply_sampling(req(triangle_kernel=neutral))["triangle_backend"]
             == expected
@@ -342,11 +344,12 @@ def test_adapter_options_neutral_mapping_and_refusals(
         ValueError, match="does not support triangle_kernel='cueq-full'"
     ):
         backend.apply_sampling(req(triangle_kernel="cueq-full"))
-    for bad in ("", "auto", 0, True):
+    for bad in ("", "auto", 0, True, None):
         with pytest.raises(ValueError, match="triangle_backend must be one of"):
             backend.validate_native_options({"triangle_backend": bad})
-        with pytest.raises(ValueError, match="triangle_backend must be one of"):
-            pred(triangle_backend=bad)
+        if bad is not None:
+            with pytest.raises(ValueError, match="triangle_backend must be one of"):
+                pred(triangle_backend=bad)
 
     monkeypatch.setattr("foldjax.models._pallas_pair.gpu_process", lambda: False)
     with pytest.raises(ValueError, match="needs a GPU") as excinfo:
@@ -355,12 +358,21 @@ def test_adapter_options_neutral_mapping_and_refusals(
     with pytest.raises(ValueError, match="needs a GPU"):
         pred(triangle_backend="cueq")
 
+    seen_cpu, res_cpu = _stub_prediction(tmp_path / "cpu", monkeypatch, {})
+    assert "triangle_backend" not in seen_cpu
+    assert "triangle_backend" not in res_cpu.raw["overrides"]
+
     monkeypatch.setattr(
         backend_module,
         "_gpu_process",
         lambda: (_ for _ in ()).throw(AssertionError("device touched")),
     )
-    for safe_opts in ({}, {"triangle_backend": "xla"}, {"triangle_kernel": "auto"}):
+    for safe_opts in (
+        {},
+        {"cp_devices": 2},
+        {"triangle_backend": "xla"},
+        {"triangle_kernel": "auto"},
+    ):
         backend.validate_request(req(**safe_opts))
 
     monkeypatch.setattr(backend_module, "_gpu_process", lambda: True)
@@ -368,7 +380,17 @@ def test_adapter_options_neutral_mapping_and_refusals(
     assert backend_module._strict_cp_devices(True) == 1
     assert backend_module._strict_cp_devices("bad") == 1
     assert backend_module._strict_cp_devices("2") == 2
+    assert backend_module.realised_triangle_backend(None) == "cueq"
+    assert backend_module.realised_triangle_backend(None, cp_devices=1) == "cueq"
+    assert backend_module.realised_triangle_backend(None, cp_devices=2) == "xla"
+    # A float32 trunk keeps XLA: the fused kernel would run float32 GEMMs there.
+    assert (
+        backend_module.realised_triangle_backend(None, trunk_dtype="float32") == "xla"
+    )
+    assert backend_module.realised_triangle_backend("xla", cp_devices=1) == "xla"
+    assert backend_module.realised_triangle_backend("cueq", cp_devices=2) == "cueq"
     backend.validate_native_options({"triangle_backend": "cueq", "cp_devices": 1})
+    backend.validate_request(req(cp_devices=2))
     with pytest.raises(ValueError, match="cp_devices must be positive"):
         backend.predict(req(triangle_backend="cueq", cp_devices=0))
     with pytest.raises(ValueError, match="cannot be partitioned"):
@@ -377,8 +399,30 @@ def test_adapter_options_neutral_mapping_and_refusals(
         pred(cp_shards=2, triangle_backend="cueq")
 
     seen_d, res_d = _stub_prediction(tmp_path / "d", monkeypatch, {})
-    assert "triangle_backend" not in seen_d
-    assert "triangle_backend" not in res_d.raw["overrides"]
+    assert (
+        seen_d["triangle_backend"]
+        == res_d.raw["overrides"]["triangle_backend"]
+        == "cueq"
+    )
+    seen_s, res_s = _stub_prediction(tmp_path / "s", monkeypatch, {"cp_devices": 1})
+    assert (
+        seen_s["triangle_backend"]
+        == res_s.raw["overrides"]["triangle_backend"]
+        == "cueq"
+    )
+    seen_cp, res_cp = _stub_prediction(
+        tmp_path / "cp", monkeypatch, {"cp_devices": 2}
+    )
+    assert "triangle_backend" not in seen_cp
+    assert "triangle_backend" not in res_cp.raw["overrides"]
+    seen_x, res_x = _stub_prediction(
+        tmp_path / "x", monkeypatch, {"triangle_backend": "xla"}
+    )
+    assert (
+        seen_x["triangle_backend"]
+        == res_x.raw["overrides"]["triangle_backend"]
+        == "xla"
+    )
     seen_c, res_c = _stub_prediction(
         tmp_path / "c", monkeypatch, {"triangle_kernel": "cueq"}
     )
@@ -394,13 +438,31 @@ def test_cache_profile_and_compiled_predict_namespace_identity(
 ) -> None:
     backend = ESMFold2Backend()
     prof = lambda **opts: backend.cache_profile(_request(tmp_path, **opts))  # noqa: E731
-    omitted_prof, cueq_prof = prof(), prof(triangle_backend="cueq")
-    assert "triangle_backend" not in omitted_prof
-    assert omitted_prof == prof(triangle_backend="xla") == prof(triangle_kernel="auto")
-    assert cueq_prof == prof(triangle_kernel="cueq") != omitted_prof
-    assert cueq_prof["triangle_backend"] == "cueq"
 
+    # CPU / non-GPU: omitted realises xla and aliases explicit xla.
+    monkeypatch.setattr("foldjax.models._pallas_pair.gpu_process", lambda: False)
+    assert backend_module.realised_triangle_backend(None) == "xla"
+    omitted_cpu, cueq_cpu = prof(), prof(triangle_backend="cueq")
+    assert "triangle_backend" not in omitted_cpu
+    assert omitted_cpu == prof(triangle_backend="xla") == prof(triangle_kernel="auto")
+    assert cueq_cpu == prof(triangle_kernel="cueq") != omitted_cpu
+    assert cueq_cpu["triangle_backend"] == "cueq"
+
+    # Serial GPU: omitted realises cueq and aliases explicit cueq; xla is separate.
     monkeypatch.setattr("foldjax.models._pallas_pair.gpu_process", lambda: True)
+    omitted_gpu = prof()
+    cueq_gpu = prof(triangle_backend="cueq")
+    xla_gpu = prof(triangle_backend="xla")
+    assert omitted_gpu["triangle_backend"] == "cueq"
+    assert omitted_gpu == cueq_gpu == prof(triangle_kernel="cueq") == prof(cp_devices=1)
+    assert xla_gpu != omitted_gpu
+    assert "triangle_backend" not in xla_gpu
+    # Context-parallel GPU: omitted realises xla and aliases explicit xla.
+    cp_omitted_gpu = prof(cp_devices=2)
+    assert "triangle_backend" not in cp_omitted_gpu
+    assert cp_omitted_gpu == prof(cp_devices=2, triangle_backend="xla")
+    assert prof(cp_devices=2, triangle_backend="cueq")["triangle_backend"] == "cueq"
+
     features = build_features([("AG", "A", 0, 0)])
     settings = dataclasses.replace(
         structure_model.ModelSettings(), trunk_n_layers=0, coda_n_layers=0
@@ -438,16 +500,38 @@ def test_cache_profile_and_compiled_predict_namespace_identity(
         )
 
     try:
-        out_omitted = run_pred()
-        out_xla = run_pred(triangle_backend="xla")
-        jax.block_until_ready((out_omitted, out_xla))
-        assert traces == ["xla"] and pool._entry_count() == 1  # noqa: SLF001
-        np.testing.assert_array_equal(out_omitted["probe"], out_xla["probe"])
+        # GPU serial: omitted and explicit cueq share one executable; xla is a second.
+        out_omitted_gpu = run_pred()
+        out_cueq_gpu = run_pred(triangle_backend="cueq")
+        jax.block_until_ready((out_omitted_gpu, out_cueq_gpu))
+        assert traces == ["cueq"] and pool._entry_count() == 1  # noqa: SLF001
+        assert int(out_omitted_gpu["probe"][0, 0]) == 1
+        np.testing.assert_array_equal(out_omitted_gpu["probe"], out_cueq_gpu["probe"])
 
-        out_cueq = run_pred(triangle_backend="cueq")
-        jax.block_until_ready(out_cueq)
-        assert traces == ["xla", "cueq"] and pool._entry_count() == 2  # noqa: SLF001
-        assert int(out_cueq["probe"][0, 0]) == 1
+        out_xla_gpu = run_pred(triangle_backend="xla")
+        jax.block_until_ready(out_xla_gpu)
+        assert traces == ["cueq", "xla"] and pool._entry_count() == 2  # noqa: SLF001
+        assert int(out_xla_gpu["probe"][0, 0]) == 0
+
+        # CPU: omitted shares the xla executable without recompiling.
+        monkeypatch.setattr("foldjax.models._pallas_pair.gpu_process", lambda: False)
+        out_omitted_cpu = run_pred()
+        jax.block_until_ready(out_omitted_cpu)
+        assert traces == ["cueq", "xla"] and pool._entry_count() == 2  # noqa: SLF001
+        np.testing.assert_array_equal(out_omitted_cpu["probe"], out_xla_gpu["probe"])
+
+        # GPU + CP: omitted resolves to xla without refusal.
+        monkeypatch.setattr("foldjax.models._pallas_pair.gpu_process", lambda: True)
+        seen_cp_backend: list[str] = []
+
+        def fake_compiled_predict(*_args: Any, **kwargs: Any):
+            seen_cp_backend.append(kwargs.get("triangle_backend", "xla"))
+            raise RuntimeError("reached compiled_predict")
+
+        monkeypatch.setattr(inference, "compiled_predict", fake_compiled_predict)
+        with pytest.raises(RuntimeError, match="reached compiled_predict"):
+            run_pred(cp_shards=2)
+        assert seen_cp_backend == ["xla"]
     finally:
         pool.clear_cache()
         inference._compiled_predict_factory.cache_clear()

@@ -931,7 +931,6 @@ def esmfold2_off_profile_reason(
     stop_after_inputs: bool = False,
     lm_state_storage: str = "stack",
     glu_backend: str = "xla",
-    triangle_backend: str = "xla",
     rigid_align_backend: str = "svd",
 ) -> tuple[str, ...]:
     """Mirror native inference's released-path guard before managed LM staging.
@@ -955,10 +954,6 @@ def esmfold2_off_profile_reason(
                     lm_state_storage != "stack",
                 ),
                 ("a fused GLU", glu_backend != "xla"),
-                (
-                    "a cuEquivariance triangle multiplication",
-                    triangle_backend != "xla",
-                ),
                 (
                     "solver-free rigid alignment (unmeasured memory)",
                     rigid_align_backend != "svd",

@@ -203,18 +203,25 @@ def test_protenix_auto_is_the_omitted_kernel(request_with) -> None:
     ) != protenix.cache_profile(request_with())
 
 
-def test_esmfold2_auto_is_the_omitted_kernel(request_with) -> None:
-    """`auto` selects ESMFold2's released `xla` route and its cache namespace."""
+@pytest.mark.parametrize("gpu", [False, True])
+def test_esmfold2_auto_is_the_omitted_kernel(
+    request_with, monkeypatch, gpu: bool
+) -> None:
+    """`auto` passes nothing, so it names what an omitted option realises:
+    `cueq` on a serial GPU, the released `xla` elsewhere."""
+    from foldjax.models import _pallas_pair
+
+    monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: gpu)
     esmfold2 = get_backend("esmfold2")
     auto = request_with(triangle_kernel="auto")
     xla = request_with(triangle_kernel="xla")
+    cueq = request_with(triangle_kernel="cueq")
     omitted = request_with()
-    assert esmfold2.apply_sampling(auto)["triangle_backend"] == "xla"
+    assert "triangle_backend" not in esmfold2.apply_sampling(auto)
     assert esmfold2.cache_profile(auto) == esmfold2.cache_profile(omitted)
-    assert esmfold2.cache_profile(xla) == esmfold2.cache_profile(omitted)
-    assert esmfold2.cache_profile(
-        request_with(triangle_kernel="cueq")
-    ) != esmfold2.cache_profile(omitted)
+    same, other = (cueq, xla) if gpu else (xla, cueq)
+    assert esmfold2.cache_profile(same) == esmfold2.cache_profile(omitted)
+    assert esmfold2.cache_profile(other) != esmfold2.cache_profile(omitted)
 
 
 @pytest.mark.parametrize("cp_devices", [1, 4])

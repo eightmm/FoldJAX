@@ -54,7 +54,7 @@ from foldjax.backends.base import (
     square_grid_cp_layout,
     validate_memory_policy_options,
 )
-from foldjax.execution import DETERMINISTIC_API_OPTION
+from foldjax.execution import BACKEND_DEFAULT, DETERMINISTIC_API_OPTION
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
 from foldjax.models._chain_profile import chain_capacity
@@ -173,8 +173,10 @@ _FIXED_COMPILE_DEFAULTS = {
     # The unfused transition is what every released number describes, and the
     # value is independent of the checkpoint: no `config.json` key reaches it.
     "glu_backend": "xla",
-    # The XLA triangle multiplication is what every released number describes,
-    # and no `config.json` key reaches it either.
+    # The released XLA triangle multiplication, and what an omitted option
+    # still realises off a GPU and under context parallelism. On a serial GPU
+    # process an omitted option realises `cueq` instead and `cache_profile`
+    # records that word -- see `realised_triangle_backend`.
     "triangle_backend": "xla",
     "rigid_align_backend": "svd",
     # A float32 confidence re-embedding is what every released number
@@ -297,6 +299,29 @@ def _gpu_process() -> bool:
     from foldjax.models._pallas_pair import gpu_process
 
     return gpu_process()
+
+
+def realised_triangle_backend(
+    value: object,
+    *,
+    cp_devices: object = 1,
+    trunk_dtype: str = "bfloat16",
+) -> Any:
+    """The ESMFold2 ``triangle_backend`` this run realises, spelled or omitted.
+
+    An explicit value is returned unchanged so callers validate and refuse it
+    as written, and malformed values keep their own cache namespace. An
+    omitted value (``None``) realises ``"cueq"`` on a serial GPU process with
+    the released bfloat16 trunk, and ``"xla"`` everywhere else (CPU, TPU, any
+    context-parallel run, or a float32 trunk, where the fused kernel would run
+    float32 GEMMs that were never measured).
+    """
+
+    if value is not None:
+        return value
+    if _strict_cp_devices(cp_devices) > 1 or trunk_dtype != "bfloat16":
+        return "xla"
+    return "cueq" if _gpu_process() else "xla"
 
 
 def _refuse_gpu_only_kernels(options: Mapping[str, Any]) -> None:
@@ -741,7 +766,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         **DETERMINISTIC_API_OPTION,
         "triangle_kernel": (
             "triangle_backend",
-            {"auto": "xla", "cueq": "cueq", "xla": "xla"},
+            # `auto` passes nothing, so it realises what an omitted option
+            # does: `cueq` on a serial GPU, `xla` elsewhere.
+            {"auto": BACKEND_DEFAULT, "cueq": "cueq", "xla": "xla"},
         ),
     }
     compile_options = (
@@ -1263,6 +1290,14 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             value = profile.get(name)
             if isinstance(value, int) and not isinstance(value, bool):
                 profile[name] = float(value)
+        # Resolve before stripping `_FIXED_COMPILE_DEFAULTS`: on a serial GPU an
+        # omitted option realises `cueq` (recorded, matching explicit `cueq`),
+        # while explicit `xla` and off-GPU / context-parallel omissions realise
+        # `xla` and strip to the historical absent entry.
+        profile["triangle_backend"] = realised_triangle_backend(
+            profile.get("triangle_backend"),
+            cp_devices=profile.get("cp_devices", 1),
+        )
         compile_defaults = dict(_FIXED_COMPILE_DEFAULTS)
         if request.weights is not None:
             status, ckpt_lm_mask_pct = _checkpoint_lm_mask_pct(Path(request.weights))
@@ -1301,9 +1336,6 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             devices=options.get("cp_devices", 1),
         )
         glu_backend = _checked_glu_backend(options.get("glu_backend", "xla"))
-        triangle_backend = _checked_triangle_backend(
-            options.get("triangle_backend", "xla")
-        )
         _checked_rigid_align_backend(options.get("rigid_align_backend", "svd"))
         _checked_lm_state_storage(options.get("lm_state_storage", "stack"))
         # Refused here as well as in the port: this runs before the 939 MB
@@ -1315,15 +1347,17 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                 "context parallelism requires glu_backend='xla'; a fused GLU "
                 "cannot be partitioned"
             )
-        if (
-            triangle_backend != "xla"
-            and _strict_cp_devices(options.get("cp_devices", 1)) > 1
-        ):
-            raise ValueError(
-                "context parallelism requires triangle_backend='xla'; "
-                "cuEquivariance triangle multiplication cannot be partitioned"
-            )
-        _refuse_gpu_only_kernels({"triangle_backend": triangle_backend})
+        if "triangle_backend" in options:
+            triangle_backend = _checked_triangle_backend(options["triangle_backend"])
+            if (
+                triangle_backend != "xla"
+                and _strict_cp_devices(options.get("cp_devices", 1)) > 1
+            ):
+                raise ValueError(
+                    "context parallelism requires triangle_backend='xla'; "
+                    "cuEquivariance triangle multiplication cannot be partitioned"
+                )
+            _refuse_gpu_only_kernels({"triangle_backend": triangle_backend})
         # Refused early for the spelling only. Unlike `glu_backend` there is
         # no context-parallel restriction to add: this narrows arithmetic
         # under a sharding constraint rather than introducing a custom call
@@ -1492,6 +1526,12 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                 )
             _refuse_gpu_only_kernels({"triangle_backend": triangle_backend})
             overrides["triangle_backend"] = triangle_backend
+        else:
+            realised_triangle = realised_triangle_backend(
+                None, cp_devices=options.get("cp_devices", 1)
+            )
+            if realised_triangle != "xla":
+                overrides["triangle_backend"] = realised_triangle
         if "rigid_align_backend" in options:
             overrides["rigid_align_backend"] = _checked_rigid_align_backend(
                 options.pop("rigid_align_backend")
@@ -1731,6 +1771,8 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                 def off_profile_reasons() -> tuple[str, ...]:
                     # What `inference.predict` will say puts this run below the
                     # fitted profile, read off the same resolved settings.
+                    # `triangle_backend` stays on-profile: the fitted law
+                    # upper-bounds `cueq`, matching `inference.predict`.
                     settings = model.settings
                     return memory_policy.esmfold2_off_profile_reason(
                         num_samples=overrides.get("num_samples", settings.num_samples),
@@ -1740,7 +1782,6 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                         glu_backend=overrides.get(
                             "glu_backend", settings.diffusion.glu_backend
                         ),
-                        triangle_backend=overrides.get("triangle_backend", "xla"),
                         rigid_align_backend=overrides.get(
                             "rigid_align_backend",
                             settings.diffusion.rigid_align_backend,

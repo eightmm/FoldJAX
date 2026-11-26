@@ -325,10 +325,6 @@ def test_latest_successful_buckets_keep_unknown_peaks_without_capacity_refusal(
         ({"stop_after_inputs": True}, "an inputs-only graph"),
         ({"glu_backend": "tokamax"}, "a fused GLU"),
         (
-            {"triangle_backend": "cueq"},
-            "a cuEquivariance triangle multiplication",
-        ),
-        (
             {"rigid_align_backend": "jacobi"},
             "solver-free rigid alignment (unmeasured memory)",
         ),
@@ -405,7 +401,7 @@ def test_predict_marks_cueq_triangle_advisory_without_loosening_xla(
         override_gib=None,
     )
 
-    for on_profile in ({}, {"triangle_backend": "xla"}):
+    for on_profile in ({}, {"triangle_backend": "xla"}, {"triangle_backend": "cueq"}):
         memory_policy.reset_warnings()
         memory_policy.clear_record()
         with pytest.raises(MemoryError, match="observed ESMFold2 capacity refusal"):
@@ -420,13 +416,7 @@ def test_predict_marks_cueq_triangle_advisory_without_loosening_xla(
             )
         assert memory_policy.recorded()["off_profile"] == []
 
-    for unmeasured, expected_reason in (
-        ({"glu_backend": "tokamax"}, "a fused GLU"),
-        (
-            {"triangle_backend": "cueq"},
-            "a cuEquivariance triangle multiplication",
-        ),
-    ):
+    for unmeasured, expected_reason in (({"glu_backend": "tokamax"}, "a fused GLU"),):
         memory_policy.reset_warnings()
         memory_policy.clear_record()
         with pytest.warns(RuntimeWarning, match=expected_reason) as caught:
@@ -445,24 +435,19 @@ def test_predict_marks_cueq_triangle_advisory_without_loosening_xla(
         assert record["state"] == "over_budget"
         assert record["off_profile"] == [expected_reason]
 
-    memory_policy.reset_warnings()
-    memory_policy.clear_record()
-    with pytest.warns(
-        RuntimeWarning,
-        match="estimate is advisory rather than binding.*cuEquivariance triangle",
-    ):
-        with pytest.raises(_StopError):
+    for on_profile in ({}, {"triangle_backend": "cueq"}):
+        memory_policy.reset_warnings()
+        memory_policy.clear_record()
+        with pytest.raises(MemoryError, match="2096 tokens"):
             inference.predict(
                 None,
                 _features(2096),
                 model,
                 num_samples=32,
-                triangle_backend="cueq",
                 memory_budget=_budget(32 * _GIB),
+                **on_profile,
             )
-    assert memory_policy.recorded()["off_profile"] == [
-        "a cuEquivariance triangle multiplication"
-    ]
+        assert memory_policy.recorded()["off_profile"] == []
 
     for malformed in ("", 0, "pallas"):
         memory_policy.clear_record()
@@ -551,7 +536,12 @@ def test_managed_admission_marks_cueq_triangle_advisory_at_48gb_limit(
             options=options or {},
         )
 
-    for on_profile in ({}, {"triangle_backend": "xla"}):
+    for on_profile in (
+        {},
+        {"triangle_backend": "xla"},
+        {"triangle_backend": "cueq"},
+        {"triangle_kernel": "cueq"},
+    ):
         memory_policy.reset_warnings()
         memory_policy.clear_record()
         req = make_request(on_profile)
@@ -561,17 +551,7 @@ def test_managed_admission_marks_cueq_triangle_advisory_at_48gb_limit(
         assert seen_lengths == []
         assert memory_policy.recorded()["off_profile"] == []
 
-    for unmeasured, expected_reason in (
-        ({"glu_backend": "tokamax"}, "a fused GLU"),
-        (
-            {"triangle_backend": "cueq"},
-            "a cuEquivariance triangle multiplication",
-        ),
-        (
-            {"triangle_kernel": "cueq"},
-            "a cuEquivariance triangle multiplication",
-        ),
-    ):
+    for unmeasured, expected_reason in (({"glu_backend": "tokamax"}, "a fused GLU"),):
         memory_policy.reset_warnings()
         memory_policy.clear_record()
         seen_lengths.clear()
@@ -586,37 +566,30 @@ def test_managed_admission_marks_cueq_triangle_advisory_at_48gb_limit(
         assert record["state"] == "over_budget"
         assert record["off_profile"] == [expected_reason]
 
-    memory_policy.reset_warnings()
-    memory_policy.clear_record()
-    seen_lengths.clear()
-    implicit_req = make_request({"triangle_backend": "cueq"}, padding=DEFAULT_PADDING)
-    with backend.session((implicit_req,)):
-        with pytest.warns(
-            RuntimeWarning, match="a cuEquivariance triangle multiplication"
-        ):
-            with pytest.raises(_ReachedLMError):
-                backend.predict(implicit_req)
-    assert seen_lengths == [1792]
+    for options in ({}, {"triangle_backend": "cueq"}):
+        memory_policy.reset_warnings()
+        memory_policy.clear_record()
+        seen_lengths.clear()
+        implicit_req = make_request(options, padding=DEFAULT_PADDING)
+        with backend.session((implicit_req,)):
+            with pytest.warns(UserWarning, match="exact input shapes"):
+                with pytest.raises(_ReachedLMError):
+                    backend.predict(implicit_req)
+        assert seen_lengths == [1726]
+        assert memory_policy.recorded()["off_profile"] == []
 
-    for options, refuses in (
-        ({"triangle_backend": "xla"}, True),
-        ({"triangle_backend": "cueq"}, False),
-    ):
+    for options in ({}, {"triangle_backend": "xla"}, {"triangle_backend": "cueq"}):
         memory_policy.reset_warnings()
         memory_policy.clear_record()
         seen_lengths.clear()
         exact_req = make_request(options, padding=False, length=1792)
         with backend.session((exact_req,)):
-            if refuses:
-                with pytest.raises(
-                    MemoryError, match="observed ESMFold2 capacity refusal"
-                ):
-                    backend.predict(exact_req)
-                assert seen_lengths == []
-            else:
-                with pytest.raises(_ReachedLMError):
-                    backend.predict(exact_req)
-                assert seen_lengths == [1792]
+            with pytest.raises(
+                MemoryError, match="observed ESMFold2 capacity refusal"
+            ):
+                backend.predict(exact_req)
+            assert seen_lengths == []
+            assert memory_policy.recorded()["off_profile"] == []
 
     memory_policy.clear_record()
     bad_req = make_request({"triangle_backend": ""})

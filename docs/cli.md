@@ -2084,33 +2084,42 @@ motivated the blocking in the first place is OpenDDE's.
 
 ### cuEquivariance triangle multiplication (`--option triangle_backend=cueq`, ESMFold2)
 
-ESMFold2's pair trunk runs its triangle multiplication in XLA by default, under
-upstream's bfloat16 autocast and streamed in 64-row blocks above 64 tokens.
-`--option triangle_backend=cueq` (or the shared `--option
-triangle_kernel=cueq`) runs cuEquivariance's fused kernel instead, the one
-Boltz-2, Protenix and OpenFold3 already use, on every pair stack, taking the
-bfloat16 pair the autocast trunk carries. A float32 confidence head
-(`confidence_dtype=float32`) keeps the XLA route: there the kernel would run in
-float32, where one update was slower than the XLA route (147 ms against 140 ms
-at 2,048 tokens). The option is refused with context parallelism and off a GPU, and
-`triangle_backend=xla` names the same executable an omitted option does. The
-kernel rounds differently from upstream's bfloat16 GEMMs, which is why it is an
-opt-in rather than the default. Memory admission treats it as an unmeasured
-alternative: the fitted limits warn instead of refusing.
+On a serial GPU process, an omitted `triangle_backend` runs cuEquivariance's
+fused triangle multiplication (`cueq`), the kernel Boltz-2, Protenix and
+OpenFold3 already use, on every pair stack taking the bfloat16 pair the
+autocast trunk carries. `--option triangle_backend=xla` (or `--option
+triangle_kernel=xla`) restores upstream's bfloat16 GEMM route, streamed in
+64-row blocks above 64 tokens. A CPU, TPU or context-parallel run, and a
+direct `inference.predict` call on a float32 trunk, keep XLA when the option
+is omitted; explicit `--option triangle_backend=cueq` (or
+`--option triangle_kernel=cueq`) is refused with context parallelism and off a
+GPU. On a serial GPU, omitting the option and passing `triangle_backend=cueq`
+select the same compilation namespace and executable, while
+`triangle_backend=xla` selects a separate one; off a GPU and under context
+parallelism, omitting the option and passing `triangle_backend=xla` name the
+same executable. A float32 confidence head (`confidence_dtype=float32`) keeps
+the XLA route: there the kernel would run in float32, where one update was
+slower than the XLA route (147 ms against 140 ms at 2,048 tokens).
 
-One triangle update at 2,048 tokens took 74.5 ms against 140 ms for the XLA
-route at the same compiled footprint, and it was closer to a float32
-reference (mean absolute difference 0.0024 against 0.0029). End to end at
-1,003 tokens on one RTX PRO 6000 Blackwell with cuEquivariance 0.13.0, the
-warm prediction took 66.66 s against 74.19 s (0.90x), at the same peak memory
-(18,426 MiB). Against the default it moved CA atoms by at most 0.042 Å RMSD
-after superposition over the five samples (CA-lDDT at least 0.9999), inside
-the 0.064 Å two separate compiles of the default program differ by. At 2,096
-tokens, run at exact shape because the default padding to 2,304 tokens does
-not fit the 96 GB card, the warm prediction took 229.96 s against 328.57 s
-(0.70x) and peak memory fell from 35,103 to 32,518 MiB, with CA RMSD to the
-default at most 0.042 Å (CA-lDDT 1.0). cuEquivariance 0.11.1 gave the same
-coordinates at both lengths.
+The kernel rounds differently from upstream's bfloat16 GEMMs, so this is a
+declared departure, made under the accuracy-equivalence rule. One triangle
+update at 2,048 tokens took 74.5 ms against 140 ms for the XLA route at the
+same compiled footprint, and it was closer to a float32 reference (mean
+absolute difference 0.0024 against 0.0029). End to end on one RTX PRO 6000
+Blackwell with cuEquivariance 0.13.0, against the XLA route on the same code:
+
+| tokens | XLA warm (s) | `cueq` warm (s) | XLA peak (MiB) | `cueq` peak (MiB) | deposited per-chain CA RMSD, largest change (A) | same-index CA RMSD (A) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1,003 | 73.7 | 66.1 | 14,780 | 14,780 | 0.0006 | 0.010-0.057 |
+| 2,096, padded to 2,304 | 367.7 | 264.3 | 39,574 | 35,491 | 0.0054 | 0.008-0.051 |
+
+Two separate compiles of the XLA route in separate jobs gave byte-identical
+structures at 1,003 tokens, so the same-index column is the kernel's own
+effect, not run-to-run noise; it is a tenth of the 0.2 A by which the five
+samples' deposited RMSDs differ from one another. Cold runs moved the same
+way (2,304 tokens: 409.2 s / 39,574 MiB against 298.2 s / 35,491 MiB).
+cuEquivariance 0.11.1 gave the same coordinates as 0.13.0 at 1,003 and 2,096
+tokens.
 
 ### Pallas pair kernels (GPU default: Boltz-2 and OpenFold3 both, Protenix the multiplication)
 
@@ -2148,6 +2157,7 @@ What an omitted setting runs, and how to name either side:
 | --- | --- | --- | --- | --- |
 | triangle multiplication | Boltz-2 | `pallas` | `cueq` | `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=cueq` (or `xla`) |
 | triangle multiplication | Protenix | `pallas` | `cueq` | `PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=cueq` (or `xla`) |
+| triangle multiplication | ESMFold2 | `cueq` | `xla` | `--option triangle_backend=xla` |
 | triangle kernel | OpenFold3 | `cueq-pallas` | `cueq-full` | `--option triangle_kernel=cueq-full` or `OPENFOLD3_TRIANGLE_BACKEND=cueq-full` |
 | pair transitions | Boltz-2 | `glu_backend=pallas` | `tokamax` | `--option glu_backend=tokamax` (or `xla`) |
 | pair transitions | Protenix | `xla` (released) | `xla` | released already; `--option glu_backend=pallas` opts in |
