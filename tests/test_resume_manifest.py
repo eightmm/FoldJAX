@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 import foldjax
-from foldjax import execution, progress
+from foldjax import execution, manifest, progress
 from foldjax.backends.base import Backend
 from foldjax.backends.boltz2 import Boltz2Backend
 from foldjax.manifest import MANIFEST_NAME
@@ -605,6 +605,71 @@ def test_changed_request_identity_forces_a_rerun(
     assert resumed.skipped == ()
     (refusal,) = _refusals(resume_messages)
     assert refusal.endswith(f": {_IDENTITY_REASONS[identity]}; running it again")
+
+
+def test_a_run_on_another_device_platform_forces_a_rerun(
+    tmp_path: Path, monkeypatch, resume_messages: io.StringIO
+) -> None:
+    """Omitted options can resolve by device, so the platform is identity too."""
+    calls: list[tuple[str, str, int]] = []
+    request = _request(tmp_path)
+    with _backends(calls):
+        foldjax.predict(request)
+        monkeypatch.setattr(
+            manifest, "_selected_platform", lambda _request: "another-platform"
+        )
+        resumed = foldjax.predict_batch(dataclasses.replace(request, resume=True))
+
+    assert len(calls) == 2
+    assert resumed.skipped == ()
+    (refusal,) = _refusals(resume_messages)
+    assert refusal.endswith(": the device platform differs; running it again")
+
+
+def test_the_resume_platform_is_the_one_the_request_selects(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """AlphaFold 3 can name its own platform; resume reads that, not the ambient."""
+    import types
+
+    from foldjax import _gpu
+
+    seen: list[object] = []
+
+    def fake_default_device(request=None):
+        seen.append(request)
+        platform = "cpu" if request is not None else "gpu"
+        return types.SimpleNamespace(platform=platform)
+
+    monkeypatch.setattr(_gpu, "default_device", fake_default_device)
+    request = dataclasses.replace(
+        _request(tmp_path), model="alphafold3", options={"platform": "cpu"}
+    )
+    assert manifest._selected_platform(request) == "cpu"
+    assert seen == [request]
+
+
+@pytest.mark.parametrize("runtime", ["missing", None, "cpu", ["cpu"], {}])
+def test_a_manifest_without_a_usable_runtime_record_forces_a_rerun(
+    tmp_path: Path, runtime: object, resume_messages: io.StringIO
+) -> None:
+    calls: list[tuple[str, str, int]] = []
+    request = _request(tmp_path)
+    with _backends(calls):
+        foldjax.predict(request)
+        path = request.output_dir / MANIFEST_NAME
+        document = json.loads(path.read_text())
+        if runtime == "missing":
+            del document["runtime"]
+        else:
+            document["runtime"] = runtime
+        path.write_text(json.dumps(document))
+        resumed = foldjax.predict_batch(dataclasses.replace(request, resume=True))
+
+    assert len(calls) == 2
+    assert resumed.skipped == ()
+    (refusal,) = _refusals(resume_messages)
+    assert refusal.endswith(": the device platform differs; running it again")
 
 
 def test_an_input_that_resolves_to_another_file_forces_a_rerun(

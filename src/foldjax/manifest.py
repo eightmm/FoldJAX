@@ -1415,6 +1415,14 @@ def request_mismatch(
             ),
             "the options differ",
         ),
+        # An omitted option can resolve by device (ESMFold2's triangle
+        # kernel), so equal options do not name the run a CPU and a GPU
+        # process would each make. Manifests without a runtime
+        # record cannot show theirs and rerun.
+        (
+            _exact_value(_recorded_platform(document), _selected_platform(request)),
+            "the device platform differs",
+        ),
         (
             _exact_value(document["padding"], expected_padding)
             # The default padding stepped aside at admission on that run; this
@@ -1444,6 +1452,19 @@ def request_mismatch(
         if not matched:
             return reason
     return None
+
+
+def _recorded_platform(document: Mapping[str, Any]) -> str | None:
+    """The platform a manifest ran on, None when its runtime record is unusable."""
+    runtime = document.get("runtime")
+    return runtime.get("platform") if isinstance(runtime, Mapping) else None
+
+
+def _selected_platform(request: PredictionRequest) -> str:
+    """The platform this request runs on (AlphaFold 3 can name its own)."""
+    from foldjax._gpu import default_device
+
+    return default_device(request).platform
 
 
 def _pairing_record(request: PredictionRequest) -> dict[str, Any] | None:

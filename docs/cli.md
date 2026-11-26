@@ -159,7 +159,8 @@ name>`, resumes and fails per job, and `plan`, `foldjax_run.json` and
 
 `--resume` skips a run only when its finished `foldjax_run.json` matches the
 exact request, input, checkpoint and referenced-local-asset stat/tree
-identities, and the persisted structure/representation artifacts. Any relevant
+identities, the device platform it ran on (CPU or GPU: an omitted option such
+as ESMFold2's triangle kernel resolves by device), and the persisted structure/representation artifacts. Any relevant
 metadata or directory-tree change triggers a conservative rerun; FoldJAX does
 not reread large checkpoint or asset payloads merely to write or check a
 manifest. Checkpoint trees containing symlinks or special entries are likewise

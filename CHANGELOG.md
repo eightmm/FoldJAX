@@ -1205,6 +1205,11 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **`--resume` reruns a run made on another device platform.** An omitted
+  option can resolve by device (ESMFold2's triangle kernel), so a CPU run's
+  manifest matched a GPU request whose fresh run would compute differently.
+  The manifest's recorded runtime platform is now part of the resume
+  identity, and a manifest without one reruns.
 - **OpenFold3 needs less device memory for its MSA module, above all under
   default padding.** The last MSA block skips the MSA update, so the four-block
   stack could not be scanned and ran unrolled; in the padded route's standalone
