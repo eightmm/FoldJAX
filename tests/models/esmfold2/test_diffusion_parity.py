@@ -97,7 +97,7 @@ def test_the_pair_bias_is_shared_across_diffusion_samples() -> None:
     z = _normal((1, N_TOKENS, N_TOKENS, D_PAIR), 6)
 
     folded = diffusion.attention_pair_bias(
-        a, s, z, params, n_heads=N_HEADS, num_samples=2
+        a, s, z, params, n_heads=N_HEADS
     )
     repeated = diffusion.attention_pair_bias(
         a, s, np.repeat(z, 2, axis=0), params, n_heads=N_HEADS

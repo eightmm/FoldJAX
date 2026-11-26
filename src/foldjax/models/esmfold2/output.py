@@ -336,11 +336,7 @@ def write_prediction_outputs(
     coords = require_finite_coordinates(cropped["sample_atom_coords"], model="ESMFold2")
     if coords.ndim == 2:
         coords = coords[None]
-    per_atom = (
-        _numpy(cropped["plddt_per_atom"])
-        if "plddt_per_atom" in cropped
-        else None
-    )
+    per_atom = cropped.get("plddt_per_atom")
 
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
@@ -363,16 +359,8 @@ def write_prediction_outputs(
         structures.append(path)
 
     index_maps = _confidence_index(features, n_atom=coords.shape[1])
-    # Each array crosses to the host once, not once per sample.
-    confidence_source = {
-        name: _numpy(cropped[name])
-        for name in ("plddt", "plddt_per_atom", "pae", "pde", "pair_chains_iptm")
-        if name in cropped
-    }
     for index, path in enumerate(structures):
-        _write_confidence_arrays(
-            path, confidence_source, index, coords.shape[0], index_maps
-        )
+        _write_confidence_arrays(path, cropped, index, coords.shape[0], index_maps)
 
     scores = sample_scores(cropped)
     summary = {

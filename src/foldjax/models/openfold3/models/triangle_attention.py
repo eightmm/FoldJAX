@@ -49,41 +49,23 @@ from foldjax.models.openfold3.models.triangle import permute_final_dims
 
 
 def _default_backend() -> str:
-    """Which kernel to use, from ``OPENFOLD3_TRIANGLE_BACKEND``.
+    """Resolve the triangle-attention backend from ``OPENFOLD3_TRIANGLE_BACKEND``.
 
-    Defaults to the fused cuEquivariance kernel, which is what the other three
-    AF3-family ports here already run. This is a deliberate step away from
-    upstream's *default* -- ``Attention.__init__`` takes
-    ``use_cueq_triangle_kernels`` and ships it ``False`` -- but not away from
-    upstream's code: it is one of the three fused paths upstream offers. Measured
-    on this port, one sample, warm cache:
+    Defaults to ``"cueq"`` (upstream ships ``use_cueq_triangle_kernels=False``).
+    Measured warm on this port with one sample, ``"cueq"`` cut 1,003-token
+    wall/peak from 80.8 to 58.0 s and 22.13 to 10.17 GiB, and 3,012-token wall
+    from 1,134 to 934 s at a flat 62.5 GiB peak: there the blocked XLA path had
+    already cut the score tensor to 58 rows and a dozen pair-sized buffers set
+    the peak. Mean pLDDT/pTM moved by about +0.0014/+0.0012.
 
-    ============  ==================  =================
-    tokens        peak                time
-    ============  ==================  =================
-    1003          22.13 -> 10.17 GiB  80.8 -> 58.0 s
-    3012          62.47 -> 62.49 GiB  1134 -> 934 s
-    ============  ==================  =================
-
-    The memory win is size-dependent and disappears at 3012, where the XLA path
-    already blocks the score tensor to 58 rows and the peak is set by a dozen
-    pair-sized buffers instead. The time win holds at both. Nothing measured
-    worse.
-
-    Confidence moves by about +0.0014 mean pLDDT and +0.0012 pTM, consistent with
-    the kernel's accumulation order and its TF32 matmuls -- and TF32 is what
-    upstream runs too (``set_float32_matmul_precision("high")``), so the fused
-    path is arguably the closer match on that axis rather than the further one.
-
-    ``OPENFOLD3_TRIANGLE_BACKEND=xla`` restores the blocked path -- on a machine
-    without the cuEquivariance wheel, or to reproduce a number taken before this
-    changed. There is no automatic fallback, for the reason the Protenix port
-    gives: a backend that silently changes kernel when a wheel is missing means
-    two machines running two different programs under one setting.
-
-    Read here rather than threaded through the config so the switch reaches every
-    triangle attention in the model, including the ones inside the template stack
-    and the confidence head, without six signatures growing an argument.
+    ``OPENFOLD3_TRIANGLE_BACKEND=xla`` selects the blocked XLA path for every
+    call that does not pass ``backend`` explicitly, except on a 2-D
+    context-parallel mesh, where the grid scope picks ring or gather attention.
+    There is no silent fallback
+    when cuEquivariance is absent, so one setting never runs different programs
+    across machines. Read here so every triangle attention (Pairformer, template
+    stack, confidence head) honors the switch without threading an extra
+    argument through intermediate signatures.
     """
     return os.environ.get("OPENFOLD3_TRIANGLE_BACKEND", "cueq").lower()
 
@@ -160,9 +142,13 @@ def triangle_attention(
             go. See :func:`_chunked_attention` for why this is exact.
         backend: ``"xla"`` builds the score tensor and blocks it by ``chunk_size``;
             ``"cueq"`` calls the fused cuEquivariance kernel, which never forms it
-            and therefore ignores ``chunk_size``. Upstream has the same choice --
-            ``Attention`` takes ``use_cueq_triangle_kernels`` -- and defaults it off,
-            which is why this does too.
+            and therefore ignores ``chunk_size``. An explicit value wins over the
+            environment. ``None`` takes ``OPENFOLD3_TRIANGLE_BACKEND`` when it is
+            set; otherwise it is ``"cueq"`` serially and ``"xla"`` under a
+            context-parallel mesh. On a 2-D context-parallel mesh the grid scope
+            chooses ring or gather attention instead; both narrow a positive
+            ``chunk_size`` to their memory-budget query block, take that block
+            when it is ``None``, and run one block when it is not positive.
 
     Returns:
         ``[..., I, J, C_in]`` update. Upstream returns the update only.

@@ -51,8 +51,6 @@ RNA_UNK_RES_TYPE = 27
 DNA_RESIDUE_TO_RES_TYPE = {"DA": 28, "DG": 29, "DC": 30, "DT": 31}
 DNA_UNK_RES_TYPE = 32
 
-GAP_RES_TYPE = 32
-
 # =============================================================================
 # Vocabularies
 # =============================================================================
@@ -121,46 +119,7 @@ ESM_PROTEIN_VOCAB = {
 DNA_RNA_LIGAND_INPUT_ID = 24
 
 # MSA tokens
-MSA_PAD_TOKEN_ID = 0
 MSA_GAP_TOKEN_ID = 1  # Gap/insertion token for MSA
-
-# res_type int -> CCD component ID (for conformer lookup)
-RES_TYPE_TO_CCD = {
-    # Proteins (2-22)
-    2: "ALA",
-    3: "ARG",
-    4: "ASN",
-    5: "ASP",
-    6: "CYS",
-    7: "GLN",
-    8: "GLU",
-    9: "GLY",
-    10: "HIS",
-    11: "ILE",
-    12: "LEU",
-    13: "LYS",
-    14: "MET",
-    15: "PHE",
-    16: "PRO",
-    17: "SER",
-    18: "THR",
-    19: "TRP",
-    20: "TYR",
-    21: "VAL",
-    22: "UNK",
-    # RNA (23-27)
-    23: "A",
-    24: "G",
-    25: "C",
-    26: "U",
-    27: "N",
-    # DNA (28-32)
-    28: "DA",
-    29: "DG",
-    30: "DC",
-    31: "DT",
-    32: "DN",
-}
 
 # =============================================================================
 # Charged atoms at physiological pH

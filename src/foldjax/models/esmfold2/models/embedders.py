@@ -140,14 +140,10 @@ def msa_encoder_block(
     submodules, so their keys are *absent* from the checkpoint rather than
     present and unused, and asking for them would raise.
 
-    `workspace` is the `trunk.LentBuffers` slot the folding trunk's block
-    loops write into. This block's two triangle updates are the same streamed
-    contraction, so handing them the same two destinations is what keeps the
-    MSA encoder from assembling its own: without one, `_assemble_row_blocks`
-    falls back to separate slices and a `concatenate`, which its own
-    measurement puts at 3.88 full-width arrays against 1.00 threaded. The
-    blocks are the same blocks either way -- only where they are written
-    changes -- so nothing here rounds differently.
+    `workspace` is the `trunk.LentBuffers` slot shared with the folding trunk's
+    streamed triangle updates; without one, `_assemble_row_blocks` falls back
+    to separate slices and `concatenate`. Only buffer ownership changes, not
+    rounding.
     """
     dot = f"{prefix}." if prefix else ""
     # This block updates the pair outside `pair_update_block`, so it carries
@@ -229,18 +225,11 @@ def msa_encoder(
     the caller -- upstream zeroes `msa_one_hot` against the mask before the
     call and relies on that here.
 
-    `workspace` is the same `trunk.LentBuffers` slot the four `folding_trunk`
-    calls thread between them. This stack's eight triangle updates are the
-    fifth site that runs the streamed contraction on a pair of this model's
-    own width, and it was the one call the slot never reached: without a
-    buffer to write into, each of its block loops stays a set of separate
-    slices and a `concatenate`, which is what put 33 live row blocks plus
-    their assembled result in the GPU peak set beside the trunk's own two
-    buffers. Lent the trunk's, the whole stack writes into those two.
-
-    Without a slot this is the function it was, instruction for instruction:
-    the rolled loop is not an improvement a caller gets for free, because a
-    destination it had to allocate costs more than the slices it replaces.
+    `workspace` is the `trunk.LentBuffers` slot threaded from `folding_trunk`
+    so this stack's triangle updates write into the trunk's two destinations
+    rather than building separate row slices. Without a slot, the block loops
+    stay unthreaded (allocating a dedicated colocated `while` buffer here is
+    not free).
     """
     dot = f"{prefix}." if prefix else ""
     features = jnp.concatenate(
@@ -258,22 +247,10 @@ def msa_encoder(
     token_mask = msa_mask[:, :, 0].astype(bool)
     pair_mask = (token_mask[:, :, None] & token_mask[:, None, :]).astype(pair.dtype)
 
-    # One pair of destinations for the whole stack, allocated here rather than
-    # at the first block's loop: a `while`'s initial value, loop parameter and
-    # result are one colocated allocation XLA never lets another value reuse,
-    # and starting from the caller's -- dead by the time this runs -- is what
-    # merges this stack's chain into the trunk's instead of beginning another
-    # (`trunk._assemble_row_blocks`, `trunk._streamed_workspace`).
-    #
-    # Only when a slot was lent. `folding_trunk` makes its own pair whether or
-    # not it was given one, because it is the stack the buffers were sized for
-    # and every one of its layers writes into them; this stack is four blocks
-    # with an outer product and a weighted average between them, and a pair it
-    # allocated for itself measured *worse* than the separate slices -- 898.8
-    # MiB of arena against 806.4 on two blocks at 254 tokens, a loop's
-    # destination being an allocation nothing may reuse. Lent the trunk's
-    # there is no allocation to pay for, so the threading is the caller's
-    # decision and a caller without one gets the program this always had.
+    # Thread the caller's `LentBuffers` slot when supplied so this stack reuses
+    # the trunk's colocated `while` destinations (`trunk._assemble_row_blocks`).
+    # Do not allocate a fresh pair here: a dedicated non-reusable `while` buffer
+    # for four MSA blocks costs more than separate slices.
     lent = (
         None
         if workspace is None or native_opm_params is None

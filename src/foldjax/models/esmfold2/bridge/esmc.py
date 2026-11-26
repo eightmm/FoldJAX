@@ -165,9 +165,7 @@ class _CastBatches:
     ``ndarray.astype`` applies (ml_dtypes' round-to-nearest-even for
     bfloat16); the work is only split into slices of one tensor, so the
     narrowed array is bitwise the one ``get_tensor(name).astype(dtype)``
-    returned. What goes is the single-threaded cast and the full-width
-    per-tensor copy ``get_tensor`` made first: 29.6 s of the 25.4 GB
-    checkpoint's load on 8 cores, against 2.1 s here.
+    returned, without the single-threaded cast or full-width host copy.
     """
 
     def __init__(self, shard: Path, target: Any, extents: dict) -> None:

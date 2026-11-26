@@ -56,7 +56,7 @@ def test_loop_tape_rejects_unproved_prefix_combination():
         )
 
 
-def test_taped_eager_driver_consumes_same_steps_as_scan(monkeypatch):
+def test_taped_scan_driver_consumes_steps_in_order(monkeypatch):
     run, tape = _fixture(monkeypatch)
     seen = []
 
@@ -71,21 +71,27 @@ def test_taped_eager_driver_consumes_same_steps_as_scan(monkeypatch):
         x, previous, key, representation = carry
         return (x + draws[2], previous, key, representation), None
 
-    # Test driver indexing, not the unrelated SVD/fusion rounding difference
-    # between CPU eager and scan evaluation of the denoiser.
     monkeypatch.setattr(m.diffusion, "_step", observe)
     scanned = run(jax.random.key(0), **tape)
     jax.block_until_ready(scanned)
-    scanned_steps = list(seen)
-    seen.clear()
-    eager = run(jax.random.key(0), early_exit_rmsd=0.0, **tape)
-    jax.block_until_ready(eager)
-    for left, right in zip(scanned, eager, strict=True):
-        np.testing.assert_array_equal(left, right)
-    assert len(seen) == len(scanned_steps) == 3
-    for left, right in zip(scanned_steps, seen, strict=True):
-        for a, b in zip(left, right, strict=True):
-            np.testing.assert_array_equal(a, b)
+
+    settings = m.diffusion.DiffusionSettings(num_steps=3, c_token=2, noise_scale=1.003)
+    schedule = m.diffusion.noise_schedule(settings)
+    gammas = np.where(schedule > settings.gamma_min, settings.gamma_0, 0.0)
+    expected_steps = np.stack(
+        [schedule[:-1], schedule[1:], gammas[1:]], axis=-1
+    ).astype(np.float32)
+    expected_x = float(schedule[0]) * tape["diffusion_initial_normal"]
+    for churn in tape["diffusion_churn_normals"]:
+        expected_x = expected_x + churn
+    np.testing.assert_array_equal(scanned[0], expected_x)
+    np.testing.assert_array_equal(scanned[1], jnp.zeros((1, 2, 2), dtype=jnp.float32))
+    assert len(seen) == 3
+    for index, (step, quat) in enumerate(seen):
+        np.testing.assert_array_equal(step, expected_steps[index])
+        np.testing.assert_array_equal(
+            quat, np.asarray(tape["diffusion_rotation_quaternions"][index])
+        )
 
 
 @pytest.mark.parametrize(

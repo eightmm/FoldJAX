@@ -243,14 +243,10 @@ def confidence_head(
     sample loop hands one iteration's buffers to the next.
     """
     dot = f"{prefix}." if prefix else ""
-    # AlphaFold 3 casts the pair and single activations at
-    # `confidence_head.py:121-127`, runs the whole re-embedding Pairformer
-    # narrow, and returns to float32 at `:163` before the distogram-error
-    # logits and at `:244` before pLDDT. This reproduces that boundary. The
-    # head produces scores and never coordinates, so no narrowing inside it
-    # can move the structure; Protenix measured the same change at 3,012
-    # tokens as bitwise-identical coordinates, at most 0.0099 of atom pLDDT
-    # and at most 1.9e-4 of chain pTM/ipTM.
+    # AlphaFold 3 casts pair and single activations at `confidence_head.py:121-127`,
+    # runs the re-embedding Pairformer narrow, and returns to float32 before the
+    # error logits (`:163`) and pLDDT (`:244`). This head produces scores only,
+    # never coordinates.
     narrow = jnp.dtype(confidence_dtype) == jnp.bfloat16
     if narrow:
         # `_autocast_linear` narrows both operands and accumulates float32,
@@ -333,20 +329,10 @@ def confidence_head(
     # a projection, so it narrows as storage. The table is `[39, 256]` and the
     # result is quadratic, which is the side that matters.
     dist_bin_embed = _as(params[f"{dot}dist_bin_pairwise_embed.weight"], narrow)
-    # Born sharded under context parallelism, before the head's own trunk:
-    # `spread` just repeated it once per sample.
-    #
-    # Under the default this is a full-width float32 value that stays live
-    # across the whole of the head's own trunk, because it is both that
-    # trunk's input and the left operand of the residual below -- 4,290 MiB at
-    # 2,096 tokens, the largest single tenant of the measured peak. It is not
-    # narrowable to bfloat16 storage the way `z` above is: `folding_trunk`
-    # under `native_autocast` returns its input's width from every norm, so a
-    # bfloat16 pair carries a bfloat16 residual stream through every block,
-    # and the residual add below would then round its left operand too.
-    # Neither is bit-identical, which is what makes narrowing it an opt-in
-    # (`confidence_dtype="bfloat16"`, the `narrow` arm above) rather than a
-    # storage change like the boundary in `model.predict`.
+    # Born sharded under context parallelism. Stays float32 by default because
+    # `folding_trunk` under `native_autocast` returns its input dtype from every
+    # norm, so narrowing here changes the residual stream and is opt-in via
+    # `confidence_dtype="bfloat16"`.
     pair = shard_pair_rows(pair + dist_bin_embed[bins])
 
     pair_mask = mask[:, :, None] * mask[:, None, :]
@@ -378,11 +364,9 @@ def confidence_head(
     # under a float32 `trunk_dtype`, the cast below is what the pair meets, so
     # the option narrows the re-embedding there and leaves the trunk as it was.
     #
-    # AlphaFold 3's `:163` is the `astype` on the trunk *result*: it is what
-    # returns the sum to float32 whatever width the accumulator arrived at,
-    # so no second cast is needed on the left operand. Measured, not assumed
-    # -- `test_the_output_heads_stay_float32_under_the_option` reads the dtype
-    # that actually reaches `row_attention_pooling`.
+    # AlphaFold 3's `:163` is the `astype(jnp.float32)` on the trunk result,
+    # which promotes the sum back to float32 for `row_attention_pooling` and all
+    # output heads regardless of `confidence_dtype`.
     pair = pair + folding_trunk(
         pair if native_autocast else pair.astype(trunk_dtype),
         trunk_params,

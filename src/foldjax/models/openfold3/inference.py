@@ -786,24 +786,13 @@ def resolve_diffusion_chunk_size(
 def _per_sample_confidence(config: InferenceConfig) -> bool:
     """Whether to run the confidence re-embedding one sample at a time.
 
-    The default cutoff of zero serializes every multi-sample request: a real
-    490-token, five-sample A/B measured 9,045.3 -> 4,263.5 MiB with unchanged
-    wall time (33.25 -> 33.39 s), so retaining the released short-target batch
-    no longer buys throughput and costs 4.7 GiB. Positive values remain token
-    thresholds, with the existing safety guard still serializing requests above
-    the released five-sample width. ``None`` remains the explicit always-batched
-    escape hatch for direct callers.
-
-    Measured on a real 966-token target with the released weights, the per-sample
-    branch is not a trade: it is **bitwise identical** on coordinates, pTM and the PAE
-    logits (pLDDT differs by 1.8e-7, one float32 bit) and **3.7x faster** -- 69.5 s
-    against 255.1 s. Holding five pair representations at once costs more in memory
-    traffic than it wins in parallelism at that size, so upstream's cutoff is a
-    throughput setting as much as a memory one.
-
-    Keeping the comparison here, rather than treating every integer as a boolean
-    switch, preserves the public numeric cutoff contract for tuned direct calls
-    without reviving the unbounded high-sample confidence graph.
+    A ``per_sample_token_cutoff`` of ``0`` (default) serializes every
+    multi-sample call (see ``docs/openfold3.md``); positive values preserve a
+    token threshold while still serializing above ``DIFFUSION_CHUNK_SIZE``, and
+    ``None`` opts into always-batched execution. Measured at 966 tokens,
+    per-sample execution is bitwise identical on coordinates, pTM, and PAE
+    logits (1.8e-7 max pLDDT diff) and 3.7x faster (69.5 vs 255.1 s) by
+    avoiding five concurrent pair tensors.
     """
     cutoff = config.per_sample_token_cutoff
     return (
@@ -822,39 +811,21 @@ def _sink_pae_metrics(config: InferenceConfig) -> bool:
 
 
 def _expand_samples(value: jnp.ndarray, num_samples: int) -> jnp.ndarray:
-    """Give ``value`` a leading sample axis of ``num_samples``, without copying.
+    """Broadcast a leading axis of size 1 to ``num_samples`` without copying.
 
-    ``broadcast_to`` rather than ``repeat``: for a leading axis of 1 the two produce
-    the same value, but ``repeat`` materializes ``num_samples`` copies while a
-    broadcast is a view XLA can fuse into whatever reads it. On pair-sized tensors
-    the difference is gigabytes -- ``[5, 2076, 2076, 128]`` in float32 is 5.1 GiB.
-
-    Anything without a leading axis of 1 is returned unchanged, so scalar features
-    and already-expanded tensors pass through.
+    Uses ``broadcast_to`` rather than ``repeat`` so XLA fuses the view instead
+    of materializing ``num_samples`` pair-sized copies; scalars and tensors
+    whose leading axis is not 1 pass through unchanged.
     """
     if jnp.ndim(value) == 0 or jnp.shape(value)[0] != 1:
         return value
     return jnp.broadcast_to(value, (num_samples, *jnp.shape(value)[1:]))
 
 
-#: Matmul precision the port runs under, matching what upstream sets for itself:
-#: ``torch.set_float32_matmul_precision("high")`` in
-#: ``openfold3/entry_points/import_utils.py:33``. Torch's "high" is TF32 on
-#: NVIDIA, and JAX spells the same thing "high".
-#:
-#: This was ``"highest"`` -- true float32 -- until 2026-08-10, on the reasoning
-#: that TF32 "silently costs ~3 decimal digits per matmul". It does, and it costs
-#: upstream the same, which is the part the reasoning missed: a port that is more
-#: precise than the model it ports is not more faithful, it is running a
-#: different configuration and paying for the privilege. Measured at 1,003 tokens
-#: over the released schedule, TF32 against the float32 pin: **-15% warm** (96.9
-#: -> 82.0 s), no change in peak memory, CA RMSD 0.011 A against a 0.005 A floor
-#: from running the same program twice, confidence inside that same rerun spread
-#: on both pLDDT and pTM, and TM 0.9937 against the deposited structure either
-#: way.
-#:
-#: Deliberate ``Precision.HIGHEST`` pins elsewhere are unaffected; they exist
-#: precisely because this is not HIGHEST.
+#: Matmul precision matching upstream's ``torch.set_float32_matmul_precision("high")``
+#: (TF32 on NVIDIA, ``openfold3/entry_points/import_utils.py:33``; see
+#: ``docs/ports/openfold3/README.md``). Explicit ``Precision.HIGHEST`` pins
+#: elsewhere remain unaffected.
 _MATMUL_PRECISION = "high"
 
 

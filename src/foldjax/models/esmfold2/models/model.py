@@ -108,212 +108,46 @@ class ModelSettings:
     num_recycles: int = 20
     num_samples: int = 8
     #: Run the confidence head one structure at a time instead of batching
-    #: every sample through it. On by default: the released 32-sample
-    #: configuration cannot run without it, because at `False` this head builds
-    #: `bf16[32, L^2, 2048]` -- 122.8 GiB against a 95.6 GiB device. This note
-    #: used to say "off by default", and was correct until that flip.
+    #: every sample through it. On by default: batching adds a sample axis to
+    #: every intermediate of the head's `folding_trunk` (`[S, L, L, 4*c_z]`),
+    #: exceeding device memory at the released 32 samples.
     #:
-    #: Worth asking for near a memory limit, though not because it divides
-    #: the peak: this head's own term is `num_samples * L^2 * 4*c_z`, and
-    #: that is the term this option divides -- but the *peak* is a
-    #: folding-trunk arena with no sample axis in it, as the
-    #: `structure_sample_sequential` note below says at length. Measured at
-    #: 1,003 tokens with five samples on
-    #: a 96 GB card at the released schedule, peak falls 56.0 to 30.2 GiB and
-    #: the arena 35.99 to 11.31, with warm time unchanged -- 28.3-28.6 s
-    #: either way. Read that 45% as a property of that measurement rather than
-    #: of the option: the arena is quadratic and this divides only its
-    #: confidence-head share, so the fraction moves with length and with
-    #: sample count. Coordinates are bit-identical
-    #: across all five samples; the only visible difference is up to 1e-5 of
-    #: pLDDT, which a float32 control collapses to 3.6e-7, so it is bfloat16
-    #: reduction-order rounding from the changed matmul shapes rather than
-    #: anything about the samples.
-    #:
-    #: It does not raise the size this model can reach. Sequencing divides
-    #: only the head's share of a quadratic arena -- 3.18x here, not the 5x
-    #: the sample count suggests -- and dividing a quadratic by a constant
-    #: buys its square root in reachable length, about 1.8x. 2,096 tokens
-    #: still does not fit on a 96 GB card, and the failure is a named tensor
-    #: rather than an inference: the allocator asks for 17,994,612,736 bytes,
-    #: which is `bf16[1, 2096, 2096, 2048]` byte for byte -- one sample's
-    #: packed pair transition, on top of 64.6 GiB already resident. Batched,
-    #: that single buffer would have been five times as large.
-    #:
-    #: **Everything above was measured at five samples. The release ships
-    #: thirty-two, and at thirty-two the batched path does not run at all.**
-    #: That inverts the decision, so the default is now on.
-    #:
-    #: The head runs its own `folding_trunk` over the spread pair
-    #: (`heads.py`), and batching puts a sample axis on every one of that
-    #: trunk's intermediates. At 1,003 residues and 32 samples, measured as
-    #: the allocator's own failing requests:
-    #:
-    #:     bf16[32, L^2,  512]    30.701 GiB
-    #:     bf16[32, L^2, 1024]    61.402 GiB
-    #:     bf16[32, L^2, 2048]   122.804 GiB   <- 27.2 GiB past the card
-    #:     f32 pae+pde logits     15.350 GiB
-    #:
-    #: The largest single intermediate needs 122.8 GiB on a 95.6 GiB device,
-    #: so this is a capacity impossibility rather than a fragmentation one and
-    #: no allocator setting reaches it -- confirmed by failing under both
-    #: preallocation on and off, at different points, for the same reason.
-    #: Sequencing divides every one of those by the sample count, giving an
-    #: 11,312 MiB arena that has run to completion four times.
-    #:
-    #: So the justification is not that this saves memory. It is that the
-    #: released configuration is arithmetically impossible without it. The
-    #: saving is a consequence.
-    #:
-    #: The earlier note that this "does not raise the size this model can
-    #: reach" stands for the length axis and is beside the point here: what
-    #: was out of reach is the released *sample count* at a length the model
-    #: otherwise handles.
-    #:
-    #: `lax.map` reorders execution and not arithmetic -- `spread` is a
-    #: `jnp.repeat` and no operation in the head crosses the sample axis, so
-    #: every reduction there is over bins, tokens or atoms. The 1e-5 of pLDDT
-    #: is bfloat16 reduction-order rounding from the changed matmul shapes,
-    #: and it was never a reason to prefer a configuration that cannot run.
-    #:
-    #: Protenix carries the same switch and defaults it on
-    #: (`models/protenix/models/model.py`) -- corroboration, not the argument.
-    #:
-    #: One exposure a reader should know about. Rebuilding the batched result
-    #: from the mapped one keys on a size-1 second axis: a leaf with one is
-    #: squeezed onto it, a leaf without one keeps its first copy. That is
-    #: correct for all seventeen leaves this head returns today, checked
-    #: shape by shape. It is not future-proof -- a new sample-independent
-    #: output whose second axis happened to be size one would be collapsed
-    #: silently rather than loudly. Protenix's copy of the rule carries the
-    #: same exposure.
+    #: `lax.map` reorders execution without changing coordinates; confidence
+    #: scores can differ slightly due to bfloat16 matmul reduction order.
+    #: Note: rebuilding the batched result squeezes leaves with a size-1 second
+    #: axis and keeps the first copy otherwise; any new sample-independent
+    #: output with a size-1 second axis would be collapsed silently.
     confidence_sample_sequential: bool = True
-    #: Denoise the diffusion samples one at a time instead of together.
-    #:
-    #: The sibling of the flag above, one stage earlier, and off rather than
-    #: on for a reason that is about evidence and not about taste.
-    #:
-    #: What it divides: the diffusion token transformer's attention logits,
-    #: `float32[batch * samples, tokens, tokens, heads]`, rebuilt inside every
-    #: block of every denoiser call. At the released 16 heads and 3,012
-    #: tokens that is 2.7 GiB at five samples and 17.3 GiB at thirty-two.
-    #: `TRUNK_PREFIXES` excludes the diffusion stack from `trunk_dtype`, so
-    #: those logits are float32 and stay float32. The blocked atom attention
-    #: carries the sample axis too but is linear in atoms rather than
-    #: quadratic in tokens, so this one tensor is most of what sequencing the
-    #: structure head can save.
-    #:
-    #: What it does not divide, and the reason this is off: the *trunk* has no
-    #: sample axis in this port at all. `run_loops` and `folding_trunk` return
-    #: `[batch, tokens, tokens, d_pair]`, and `num_samples` first appears at
-    #: `diffusion.build_cache`. The measured 45 GiB peak at 2,096 residues and
-    #: the 3,012-residue failure are trunk pair tensors, so a caller running
-    #: the released five-sample schedule should not expect this option to move
-    #: them. Turning it on for that is not a small win, it is no win.
-    #:
-    #: Cost: the denoiser is entered `batch * samples` times per step instead
-    #: of once, so the per-call work shrinks by that factor and the launch
-    #: count grows by it. The arithmetic is the same arithmetic on a narrower
-    #: array, which is not bitwise -- a reduction at one row may order itself
-    #: differently than at thirty-two.
-    #:
-    #: `confidence_sample_sequential` is independent of this and stays on:
-    #: they narrow two different stages, and either may be set without the
-    #: other.
+    #: Denoise diffusion samples one at a time instead of together. Off by
+    #: default: narrows the diffusion token transformer's float32 attention
+    #: logits (`[batch * samples, tokens, tokens, heads]`) and atom cache, but
+    #: does not narrow the pair trunk (which has no sample axis). Trades one
+    #: batched launch for `batch * samples` per-step launches and may change
+    #: reduction order; independent of `confidence_sample_sequential`.
     structure_sample_sequential: bool = False
-    #: Return the confidence head's full-bin logits and the PAE/PDE matrices.
-    #: False by default, mirroring Boltz-2's flag of the same name and default
-    #: -- that argument was had once already on the other port and this is the
-    #: same problem, not a different one.
-    #:
-    #: Nothing reads them. `write_prediction_outputs` consumes three arrays and
-    #: four scalars (`sample_atom_coords`, `plddt_per_atom`, `plddt`, and
-    #: `SAMPLE_SCORES`); the backend takes its scores from that writer's
-    #: summary; `representations` offers only `single` and `pair`; and `raw`
-    #: carries overrides, language-model presence and padding. There is no path
-    #: by which a caller receives them.
-    #:
-    #: They are not free to carry. Measured entry outputs at 1,003 tokens were
-    #: 2,748 MiB at 5 samples and 16,264 MiB at 32 -- against 2,745 and 16,261
-    #: MiB of these arrays computed from their shapes, so they are the whole
-    #: term. `pae_logits` and `pde_logits` are `[S, L, L, 64]` float32 and are
-    #: 15.36 GiB of the 15.88 at the released 32 samples: quadratic in tokens
-    #: and linear in samples.
-    #:
-    #: The saving comes from their not being *entry outputs of the compiled
-    #: program*, which XLA cannot eliminate however unread they are. Dropping
-    #: them from the returned dict after the fact would save exactly nothing,
-    #: which is why this is a static setting and not a caller-side filter.
-    #:
-    #: `pae` and `pde` are derived matrices rather than raw logits, and in
-    #: tools of this family a PAE matrix is something users actively want. That
-    #: they are unread here may describe a missing output feature rather than
-    #: pure waste -- so this flag is how you turn them back on, and PAE from
-    #: ESMFold2 is one argument away rather than unsupported.
-    #:
-    #: `distogram_logits` is deliberately NOT under this flag: it is 245 MiB
-    #: and flat in sample count, and `test_model_parity` reads it. Excluding it
-    #: keeps 98% of the saving without touching a test that cannot run here.
+    #: Return the confidence head's full-bin logits (`plddt_logits`,
+    #: `pae_logits`, `pde_logits`, `resolved_logits`) and `pae`/`pde`. False by
+    #: default so unused `[S, L, L, 64]` float32 tensors are not entry outputs
+    #: of the compiled program (XLA cannot elide program outputs).
+    #: `distogram_logits` is excluded from this flag.
     return_confidence_logits: bool = False
-    #: Keep the expected `pae` and `pde` matrices, `[S, L, L]` float32 in
-    #: angstroms, when `return_confidence_logits` is off. They are 1/32 of the
-    #: two 64-bin logit arrays that flag withholds: `2 * S * L^2 * 4` bytes,
-    #: 2.2 GiB at 3,012 tokens and the checkpoint's 32 samples (0.35 GiB at
-    #: five), against this port's fitted 3,012-token peak of 67.7 GiB
-    #: (`memory_policy.ESMFOLD2_PEAK`) -- 3.2% derived, not yet measured. The
-    #: head computes them either way; this only decides whether they are entry
-    #: outputs of the compiled program, so coordinates and scores are
-    #: untouched. On by default because a PAE matrix is what users of this
-    #: model family read.
+    #: Keep the expected `pae` and `pde` matrices (`[S, L, L]` float32, in
+    #: angstroms) as compiled program outputs when `return_confidence_logits`
+    #: is off. The head computes them either way; this only controls whether
+    #: they remain entry outputs.
     return_expected_errors: bool = True
     #: FoldJAX compute policy, not a blanket upstream parameter dtype.
-    #: The pinned native source has separate CUDA BF16 autocast regions for
-    #: language-model execution, confidence and diffusion pair conditioning.
-    #: Their FP32 residual/norm exceptions must survive operand narrowing.
-    #: Setting this field to FP32 also changes the latter two regions here;
-    #: it is therefore not a pure native trunk-only precision control.
-    #: Historical timing/rounded-score agreement does not establish current
-    #: fixed-tape structure or raw-confidence parity; see the dated native
-    #: tape and MSA-entry observer reports for the outstanding gates.
+    #: Upstream has separate CUDA BF16 autocast regions for language-model
+    #: execution, confidence, and diffusion pair conditioning, keeping FP32
+    #: residual/norm exceptions. Setting this to float32 also widens the latter
+    #: two regions here.
     trunk_dtype: str = "bfloat16"
-    #: The confidence head's re-embedding width, opt-in and independent of
-    #: `trunk_dtype`. `"float32"` is the released default and changes nothing.
-    #:
-    #: `trunk_dtype` already reaches the *inside* of this head: its own
-    #: `folding_trunk` reopens upstream's autocast the way upstream does, so
-    #: that stack runs with bfloat16 Linear operands under either value. What
-    #: stays float32 is the re-embedding in front of it -- the five `s_to_z*`
-    #: projections, the distance-bin gather -- and the residual stream those
-    #: feed. This field narrows that, following AlphaFold 3's boundary
-    #: exactly: narrow re-embedding, float32 output heads
-    #: (`confidence_head.py:121-127`, `:163`, `:244`).
-    #:
-    #: **float32 is upstream's own width, not an accidental island.**
-    #: Upstream's `ConfidenceHead.forward` runs outside every autocast region
-    #: (`modeling_esmfold2.py:172-221`; the model-level bf16 context at `:936`
-    #: closes at `:1030`, before the head is called at `:1061`), and the only
-    #: autocast inside the head wraps its `folding_trunk` alone at `:223`,
-    #: taking a float32 pair and returning `pair.add_(pair_delta.float())`.
-    #: The bfloat16 Linear operands already inside the head's trunk are what
-    #: `:223` gives under either value of this field.
-    #:
-    #: **Measured, and it buys nothing alone.** GPU rows 1111/1112 against the
-    #: released default: at 1,003 tokens wall 155.16 -> 160.92 s and peak
-    #: 14,733.3 -> 14,733.3 MiB; at 2,096 tokens wall 450.88 -> 450.05 s and
-    #: peak 46,041.8 -> 46,042.3 MiB. The arm fires -- the 2,096-token peak
-    #: moves 0.5 MiB -- and moves nothing else, because this port's peak is a
-    #: folding-trunk arena the confidence head has no term in. So this is a
-    #: knob for combination arms, not a recommendation on its own.
-    #:
-    #: It is still the safest dtype change this port offers, because the
-    #: confidence head makes scores and never coordinates. Nothing inside it
-    #: can move the structure. Protenix measured the equivalent narrowing at
-    #: 3,012 tokens: coordinates bitwise unchanged, atom pLDDT moved at most
-    #: 0.0099, chain pTM and ipTM at most 1.9e-4, PAE means at most 0.005.
-    #:
-    #: Independent of `confidence_sample_sequential`. That option maps the
-    #: head over the sample axis; this is a trace-time constant inside the
-    #: mapped body, so the two compose without interacting.
+    #: Confidence head re-embedding width, opt-in and independent of
+    #: `trunk_dtype` and `confidence_sample_sequential`. `"float32"` matches
+    #: upstream (`ConfidenceHead.forward` runs outside autocast except for its
+    #: inner `folding_trunk`). `"bfloat16"` narrows the re-embedding up to the
+    #: head's trunk (following AlphaFold 3's boundary) while keeping norms,
+    #: distances, masks, and all output heads in float32; affects scores only.
     confidence_dtype: str = "float32"
     lm_mask_pct: float = 0.0
     inputs_spatial_rope_base_frequency: float = 20.0
@@ -1229,31 +1063,11 @@ def _masked_one_hot_totals(
 ) -> jnp.ndarray:
     """Per-token residue-type counts, over blocks of alignment rows.
 
-    The MSA profile needs only the sum of the one-hot over the depth axis, and
-    the expansion in between is 33 times the alignment: at 2,096 tokens and
-    13,280 rows it is the largest tensor the input stage builds. Summing it in
-    blocks of rows and accumulating is **bit-identical**, not merely exact.
-    Both the one-hot and `msa_attention_mask` are 0.0/1.0 -- the featurizer
-    emits the mask as `bool` (`data/features.py:505`) and the per-loop column
-    masking happens later, on its own copy -- so every partial sum is a whole
-    number no larger than the alignment depth, which float32 represents
-    exactly. Exact integers add in any order to the same bits.
-
-    This is the one blocked stage here whose reduction runs *along* the
-    blocked axis, so the loop carries a running total rather than a
-    destination -- which is also why it may be a loop at all while the pair
-    stack's assembling stages may not. A `while`'s initial value, parameter
-    and result are one colocated allocation XLA never lets another value
-    reuse (`trunk._assemble_row_blocks`); here that allocation holds
-    `[B, N, 33]` float32, 277 KiB at 2,096 tokens and one of them in the
-    program, against the alignment's own one-hot at 33 times the alignment.
-
-    The rolled form starts the total at zero where the unrolled one started
-    it at the first block: the partial sums are sums of products of 0.0 and
-    1.0, so none of them is negative and none is a negative zero, and
-    `0.0 + x` is `x` bit for bit. The trailing block is added after the loop,
-    which is where the unrolled order had it, so the real rows are summed in
-    the order they were.
+    The MSA profile needs only the sum of the one-hot over the depth axis,
+    avoiding materialising a 33x-wider `[B, depth, N, 33]` tensor. Summing in
+    row blocks is **bit-identical** because both one-hot and mask are 0.0/1.0
+    (exact integers in float32). The `while` carry holds only `[B, N, 33]`
+    float32, and the trailing block runs after the loop to preserve order.
     """
     depth = msa.shape[1]
 
@@ -1758,23 +1572,12 @@ def predict(
         native_autocast=native_pair_autocast,
         workspace=workspace,
     )
-    # Upstream's `z = z.float()`, which closes the autocast region. Everything
-    # after this -- the distogram head, the sampler, the confidence head -- is
-    # float32, bar the two sub-regions that open their own bfloat16 block.
-    #
-    # The arithmetic is float32; the *storage* of the two quadratic tensors is
-    # not. Widening bfloat16 is exact, so a float32 tensor built here by
-    # `astype` holds only bfloat16-representable values: every consumer that
-    # widens before its own first float32 operation computes bit-identically
-    # from bfloat16 storage, and each one below does (`_distogram_logits`
-    # widens both addends, `diffusion._condition_pair_body` widens inside its
-    # row block, `heads.confidence_head` widens into its entry norm and its
-    # `_as`). Built here instead, the float32 copy is what the diffusion and
-    # confidence loops *carry*: the trunk pair and the relative position
-    # encoding were two full-width float32 buffers co-live at the measured
-    # 2,096-token peak, 4,290 MiB each there and 8.85 GB each at 3,012
-    # tokens. A float32 `trunk_dtype` leaves all three already wide, so this
-    # is the released bfloat16 path's saving and no other path's change.
+    # Upstream's `z = z.float()` closes the autocast region, but widening
+    # bfloat16 is exact so `z` stays stored in `trunk_dtype` here and each
+    # downstream consumer widens before its first float32 op (`_distogram_logits`,
+    # `diffusion._condition_pair_body`, `heads.confidence_head`), avoiding
+    # co-live float32 copies of the pair and relative-position tensors across
+    # the diffusion and confidence loops.
     z = shard_pair_rows(z)
     x_inputs = x_inputs.astype(jnp.float32)
 

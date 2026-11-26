@@ -100,10 +100,8 @@ def _cannon_contract(
     The local einsum is deliberately the *same* one the dense path uses, once
     per direction. Cannon permutes whole tiles; it does not change what the axes
     inside a tile mean, so a tile of ``a`` is still indexed ``[i, k]`` for
-    outgoing and ``[k, i]`` for incoming. Rewriting the step as a canonical
-    ``[i,k] @ [k,j]`` matmul is the tempting error and it is wrong in both
-    directions -- measured elsewhere in this tree at 15.9 (outgoing) and 12.3
-    (incoming) on values of order one.
+    outgoing and ``[k, i]`` for incoming (a canonical ``[i,k] @ [k,j]`` matmul is
+    wrong in both directions).
 
     The result is float32, which is what ``preferred_element_type`` gives the
     serial and one-dimensional einsums this replaces; the native-autocast
@@ -302,46 +300,20 @@ def _assemble_row_blocks(block, n_rows, rows, axis, into):
     blocks stay separate slices assembled by `concatenate`: see below for why
     that is the better of the two rather than a missing case.
 
-    The loop is a `fori_loop` and not a Python `for`. Unrolled, each block was
-    traced and compiled separately: at 2,096 tokens and 64 rows that is 33
-    copies of the body per call site per layer, which is where this port's
-    trunk program reached 969,694 HLO lines and an hour of GPU compile.
-    Rolled, the body is traced once.
+    The loop is a `fori_loop` rather than an unrolled Python `for` so the block
+    body is traced once instead of once per block per layer.
 
-    Being given the buffer is what makes the loop free, and it is why this
-    takes `into` rather than allocating a destination. A `while`'s initial
-    value, loop parameter and result are one *colocated* allocation, and XLA
-    never lets another value reuse one: a loop given a fresh `jnp.zeros`
-    destination therefore costs a full-width buffer that lives for the whole
-    program, measured here at one 2,145 MiB buffer per loop -- five loops a
-    layer, 10,730 MiB a layer, against the 1,573 MiB a layer the separate
-    slices and their `concatenate` cost, whose destination XLA reuses. Handed
-    a buffer whose own definition is another such loop's dead result, the
-    colocated sets merge and every loop in the chain shares one allocation:
-    measured on six chained stages at 1.00 full-width arrays, against 7.00
-    when each allocates its own and 3.88 for the separate slices.
+    `into` is passed by the caller rather than allocated here because a `while`'s
+    initial value, loop parameter, and result form a single colocated XLA
+    allocation that no other value can reuse. Passing a dead buffer from a
+    previous rolled loop merges the colocated sets so every loop in the chain
+    shares one allocation; when `into is None`, separate slices plus
+    `concatenate` allow XLA to reuse the destination buffer.
 
-    One caller here hands it the value it is rewriting -- the pair transition
-    writes its blocks back into the rows of `x` they were read from -- and the
-    streamed contraction's two stages are handed buffers `folding_trunk`
-    threads from one call to the next for exactly this. The sharded prologue's
-    three assembled operands and the outer product's projection have neither
-    and keep the separate slices.
-
-    A trailing block is shorter whenever `rows` does not divide the axis, and
-    a rolled loop has one shape; it is therefore traced once more, after the
-    loop, at its own size -- two bodies rather than one, and never more,
-    whatever the token count.
-
-    The loop is taken only where the blocked axis is the device's own
-    (`blocks_are_local`). Under a mesh, outside a `shard_map` body, it is a
-    globally sharded axis, and a block of one is a slice the partitioner can
-    only serve by moving data -- the 104 `all-to-all`s `_cp_pair_transition`
-    measured. Rolling it would replace those static slices with a traced
-    index into that axis and a partitioned update chain writing back into it,
-    neither of which is cheaper and neither of which this port has a
-    measurement for. Those callers keep the separate slices and the
-    `concatenate` they had, which is also the arm the tests compare against.
+    A trailing block shorter than `rows` is traced once after the loop. The
+    loop is taken only when `blocks_are_local()`; under a mesh outside
+    `shard_map`, slicing a globally sharded axis triggers collectives, so those
+    callers stay on separate slices plus `concatenate`.
     """
     n_full, tail = divmod(n_rows, rows)
     # Two blocks are not worth a loop, and one is not a block: a one-trip
@@ -696,39 +668,19 @@ def _autocast_triangle_streamed(pair, params, engine, outgoing, mask, eps, works
         outgoing  out[i, j] = sum_k left[i, k] * right[j, k]
         incoming  out[i, j] = sum_k left[k, i] * right[k, j]
 
-    Cutting the output on `i` for the outgoing direction and on `j` for the
-    incoming one is what makes the *same* slice of the pair serve both the
-    operand that is cut and the output gate the epilogue multiplies by -- so
-    each block costs one `norm_start` rather than two, and the whole operand
-    is `right` outgoing and `left` incoming. That is the only full-width
-    operand this arrangement builds, and the pair update it returns is the
-    only other full-width value in it: `left`/`right`/`output_gate` assembled
-    whole and the contraction's own concatenated destination were four, and at
-    2,096 tokens each of those is 2,145 MiB.
+    Cutting the output on `i` for outgoing and on `j` for incoming lets one
+    pair slice serve both the cut operand and the epilogue's output gate (one
+    `norm_start` per block), keeping only the un-cut operand and the returned
+    pair update at full width instead of all four full-width intermediates.
 
-    The epilogue is elementwise in the two token axes like the prologue, so it
-    runs on the block too and the emitted pair update is written straight into
-    the result. Nothing here reduces over a cut axis; the block is a choice of
-    shapes, and the GEMM tiling it reaches is the reason the tests assert a
-    bfloat16 ULP rather than bit equality.
+    The epilogue is elementwise in the two token axes, so it runs per block;
+    because GEMM tilings differ from the unblocked form, outputs match to a
+    bfloat16 ULP rather than bit-for-bit.
 
-    Both block loops are `fori_loop`s writing into `workspace`, a pair of
-    buffers threaded down the trunk: the whole operand's, and the update's.
-    A loop that allocates its own destination keeps a full-width buffer for
-    the whole program (`_assemble_row_blocks`), and handing it the previous
-    call's -- dead by the time this one starts, the operand once its
-    contraction is done and the update once the caller has added it -- is
-    what makes every loop in the stack share two allocations rather than two
-    per call. Both are returned beside the result for the next call. Without
-    a workspace -- any caller outside the trunk's own stack -- the blocks
-    stay separate slices.
-
-    The residual add stays where upstream and every other route put it, on
-    the caller's side. Folding it in here so that the blocks could be written
-    back into the pair was measured: it changes no arithmetic, but it moves
-    where XLA rounds, and the 1UBQ CPU parity residual went from 0.0258 A to
-    0.0470 A against a 0.03 A tolerance. The threaded destination buys the
-    same allocation without touching the add.
+    Both block loops write into `workspace` (two buffers threaded down the
+    trunk so every rolled loop shares two colocated XLA allocations). Without
+    a workspace, blocks stay separate slices. The residual add remains on the
+    caller's side to preserve rounding behaviour.
     """
     rows = _AUTOCAST_ROWS
     axis = 1 if outgoing else 2
@@ -1217,22 +1169,11 @@ def _cp_pair_transition(
 ) -> jnp.ndarray:
     """Row-block the transition on each device's own tile of a pair tensor.
 
-    `w12` widens `[..., C]` to `[..., 2 * hidden]` and the split halves plus
-    their product are live at once, so `primitives.swiglu` blocks a leading
-    axis once the widened form passes its budget -- and the axis it picks on a
-    pair tensor is the token rows. Under the square grid those rows are
-    sharded, and a block of them is a slice of a sharded axis: the partitioner
-    cannot serve it without moving data. Measured on the two-layer CPU fixture
-    at twelve tokens on a 2x2 mesh, with the budget lowered so the block
-    fires, the partitioned trunk carried 104 `all-to-all`s that the unblocked
-    program has none of.
-
-    The block therefore has to be taken inside the shard, the way
-    `_cannon_contract` above takes the contraction. Every operation in the
-    transition is elementwise in the two token axes and contracts only over
-    channels, so a device's tile is the whole computation for its own rows and
-    columns: no collective, and the arithmetic per element is the arithmetic
-    the unblocked sharded program did.
+    `primitives.swiglu` blocks a leading axis once its widened form exceeds the
+    budget, which on a pair tensor is the token-row axis. Under the 2-D grid
+    those rows are sharded, so slicing outside `shard_map` forces collectives;
+    running inside `shard_map` blocks each device's local tile with no
+    collective and identical per-element arithmetic.
 
     The row mesh is deliberately left alone. Its block is a slice of the
     sharded rows too, but the one-dimensional program is what every recorded
@@ -1440,24 +1381,12 @@ def _streamed_workspace(
     starting from the previous call's -- dead by then -- that the whole chain
     shares two of them instead of two each.
 
-    `lent` is a pair another call is finished with, and it is returned
-    unchanged wherever it is the shape and dtype this one writes: that is what
-    makes the chain span `folding_trunk` calls rather than begin at each. The
-    check is not a formality -- the confidence head's pair carries a sample
-    axis whenever `confidence_sample_sequential` is off, and a lent pair from
-    the trunk is then the wrong buffer, so this allocates rather than
-    silently reshaping one stage's destination into another's.
-
-    This model makes four `folding_trunk` calls -- the LM encoder and the
-    trunk inside the recycle body, the parcae coda, the confidence head --
-    and each began its own chain before `LentBuffers` existed, so the program
-    held eight full-width buffers rather than two. The law is two pair widths
-    per unthreaded call, flat in the layer count, measured on chains of
-    native-autocast trunks at 512 tokens: four two-layer calls read 378 MiB
-    of arena against the 1,218 the unrolled blocks cost and four six-layer
-    calls 381 against 2,755, and at this model's own 256 channels -- 128 MiB
-    a buffer -- one to four calls read 736, 992, 1,248 and 1,504 MiB
-    unthreaded and 736 at every count threaded.
+    `lent` is a pair another call is finished with, and is returned unchanged
+    whenever its shape and dtype match (the confidence head's pair carries a
+    sample axis when `confidence_sample_sequential` is off, so mismatched
+    shapes allocate instead of reshaping). Threading `LentBuffers` across the
+    four `folding_trunk` calls lets them share two colocated buffers instead of
+    allocating two per call.
     """
     resolved_backend = _resolve_triangle_backend(triangle_backend)
     if (
@@ -1618,17 +1547,10 @@ def outer_product_mean(
     mask = msa_mask.astype(a.dtype)
     valid = jnp.maximum(jnp.einsum("bim,bjm->bij", mask, mask)[..., None], 1.0)
 
-    # The outer product is `[B, N, N, c, d]` and the projection immediately
-    # narrows it to `[B, N, N, C_z]`, so building it whole allocates `c * d /
-    # C_z` times the result -- at this model's widths, `32 * 32 / 256` = four
-    # times over, and 1,965 MiB at 1,003 tokens in bfloat16, which XLA's arena
-    # accounting named four of. Projecting inside the block is what keeps the
-    # `c * d` tensor from ever existing at full width; it is the arrangement
-    # OpenFold3's own `outer_product_mean` already uses, for the same reason.
-    #
-    # Rows of `i` are independent -- the contraction is over `m` -- so this is
-    # exact. The division stays outside, after the projection, because that
-    # order is what scales `Wout`'s bias and is the released arrangement.
+    # Project each row block before assembling so the `[B, N, N, c, d]` outer
+    # product never exists at full width. Rows of `i` are independent (contraction
+    # is over `m`), so this is exact; division stays outside after projection to
+    # scale `Wout`'s bias as in upstream.
     def project(rows: jnp.ndarray) -> jnp.ndarray:
         block = jnp.einsum("bimc,bjmd->bijcd", rows, b)
         block = block.reshape(block.shape[:-2] + (half * half,))

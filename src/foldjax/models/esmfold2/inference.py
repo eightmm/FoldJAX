@@ -119,10 +119,46 @@ def esmc_directory(weights: str | Path) -> Path:
 
 
 def _load_esmc(directory: Path, dtype: str | None) -> Mapping[str, jnp.ndarray]:
-    # Timed on its own: 25.4 GB read and narrowed per process is the case for
-    # an on-disk bfloat16 copy, and `cost.breakdown` is where that is decided.
     with progress.part("language model weight load"):
         return esmc_checkpoint.load_parameters(directory, dtype=dtype)
+
+
+def _weights_directory(weights: str | Path) -> Path:
+    path = Path(weights)
+    return path.parent if path.is_file() else path
+
+
+def _load_with_esmc(
+    weights: Path,
+    parameters: Mapping[str, jnp.ndarray],
+    settings: structure_model.ModelSettings,
+    *,
+    esmc: str | Path | None,
+    esmc_dtype: str | None,
+    esmc_autocast_bfloat16: bool | None,
+    missing_esmc_suffix: str,
+) -> LoadedModel:
+    directory = Path(esmc) if esmc is not None else esmc_directory(weights)
+    if not directory.exists():
+        raise FileNotFoundError(
+            f"ESMC-6B is not at {directory}. ESMFold2 folds the "
+            "representations of a 6B protein language model that upstream "
+            "distributes separately (25.4 GB); fetch it with "
+            f"foldjax weights fetch --model esmfold2{missing_esmc_suffix}"
+        )
+    return LoadedModel(
+        parameters=parameters,
+        settings=settings,
+        esmc_parameters=_load_esmc(directory, esmc_dtype),
+        esmc_settings=replace(
+            esmc_checkpoint.load_settings(directory),
+            autocast_bfloat16=(
+                esmc_dtype == "bfloat16"
+                if esmc_autocast_bfloat16 is None
+                else esmc_autocast_bfloat16
+            ),
+        ),
+    )
 
 
 def load(
@@ -153,37 +189,23 @@ def load(
     Turning it off skips the load entirely -- it does not merely tolerate an
     absence, which would make the flag mean different things on two machines.
     """
-    weights = Path(weights)
-    if weights.is_file():
-        weights = weights.parent
+    weights = _weights_directory(weights)
     settings = structure_checkpoint.load_settings(weights)
     parameters = structure_checkpoint.load_parameters(weights, dtype=dtype)
 
     if not language_model:
         return LoadedModel(parameters=parameters, settings=settings)
 
-    directory = Path(esmc) if esmc is not None else esmc_directory(weights)
-    if not directory.exists():
-        raise FileNotFoundError(
-            f"ESMC-6B is not at {directory}. ESMFold2 folds the "
-            "representations of a 6B protein language model that upstream "
-            "distributes separately (25.4 GB); fetch it with "
-            "foldjax weights fetch --model esmfold2, or pass "
-            "language_model=False to run the "
+    return _load_with_esmc(
+        weights,
+        parameters,
+        settings,
+        esmc=esmc,
+        esmc_dtype=esmc_dtype,
+        esmc_autocast_bfloat16=esmc_autocast_bfloat16,
+        missing_esmc_suffix=(
+            ", or pass language_model=False to run the "
             "structure network without it -- which is not the released model."
-        )
-
-    return LoadedModel(
-        parameters=parameters,
-        settings=settings,
-        esmc_parameters=_load_esmc(directory, esmc_dtype),
-        esmc_settings=replace(
-            esmc_checkpoint.load_settings(directory),
-            autocast_bfloat16=(
-                esmc_dtype == "bfloat16"
-                if esmc_autocast_bfloat16 is None
-                else esmc_autocast_bfloat16
-            ),
         ),
     )
 
@@ -286,9 +308,7 @@ def load_language_model_stage(
     overlap on device.
     """
 
-    weights = Path(weights)
-    if weights.is_file():
-        weights = weights.parent
+    weights = _weights_directory(weights)
     settings = structure_checkpoint.load_settings(weights)
     names = (
         *_LANGUAGE_MODEL_EMBEDDING_REQUIRED_PARAMETERS,
@@ -311,26 +331,14 @@ def load_language_model_stage(
             f"projection parameters: {', '.join(missing)}"
         )
 
-    directory = Path(esmc) if esmc is not None else esmc_directory(weights)
-    if not directory.exists():
-        raise FileNotFoundError(
-            f"ESMC-6B is not at {directory}. ESMFold2 folds the "
-            "representations of a 6B protein language model that upstream "
-            "distributes separately (25.4 GB); fetch it with "
-            "foldjax weights fetch --model esmfold2."
-        )
-    return LoadedModel(
-        parameters=parameters,
-        settings=settings,
-        esmc_parameters=_load_esmc(directory, esmc_dtype),
-        esmc_settings=replace(
-            esmc_checkpoint.load_settings(directory),
-            autocast_bfloat16=(
-                esmc_dtype == "bfloat16"
-                if esmc_autocast_bfloat16 is None
-                else esmc_autocast_bfloat16
-            ),
-        ),
+    return _load_with_esmc(
+        weights,
+        parameters,
+        settings,
+        esmc=esmc,
+        esmc_dtype=esmc_dtype,
+        esmc_autocast_bfloat16=esmc_autocast_bfloat16,
+        missing_esmc_suffix=".",
     )
 
 
@@ -397,8 +405,7 @@ def _language_model_embedding_from_states(
         ),
     )
     # Spell the policy only when asked so the default owner's lru_cache key
-    # stays the two-positional key it always had (the review of 8451ffe found
-    # the unconditional third positional made every off call a fresh entry).
+    # stays two-positional.
     return _compiled_language_model_embedding(
         str(model.settings.trunk_dtype),
         signature,
@@ -746,26 +753,13 @@ def padded_random_tapes(
 def _resolve_cp_layout(layout: str, n_devices: int) -> str:
     """Resolve ESMFold2's context-parallel layout alias.
 
-    ``auto`` is the square grid on a perfect-square device count and the row
-    mesh on every other one (:func:`foldjax.padding.square_grid_auto_layout`),
-    the same rule OpenDDE, Boltz-2 and OpenFold3 resolve and the rule this
-    port's adapter resolves on the host for the same request.
-
-    What held this on rows was that the grid had no GPU measurement here.
-    It has one, and unlike the other three ports it is not a slower program
-    bought for a ceiling -- it is the only arm that finishes. On the four-card
-    deployment node (4 x 96 GiB, 2x2) a 3,012-token target, where a serial run
-    exhausts 96 GiB, completes both benchmark passes in the grid in 30 minutes
-    -- 772 s and 23,430 MiB per device for five structures -- while the 1-D
-    layout on the same four cards did not finish a single pass in one to two
-    hours, at 3,012 tokens or at 4,100. The mechanism is this trunk's own: the
-    language-model encoder's pair stack keeps a dense einsum and an all-reduce
-    under the row mesh, which the Cannon schedule replaces with half-width
-    tiles. `docs/context_parallel.md` carries the rest of the record.
-
-    An explicit ``"2d"`` on a count the grid cannot use is refused by the
-    shared resolver, and ``auto`` never reaches that refusal, because it only
-    ever names the grid on a count that has one.
+    ``auto`` selects the square grid on a perfect-square device count above
+    one and the row mesh otherwise (:func:`foldjax.padding.square_grid_auto_layout`),
+    matching OpenDDE, Boltz-2, OpenFold3, and the host adapter. Under the 2-D
+    grid the language-model encoder's pair stack uses the Cannon schedule
+    rather than the 1-D row mesh's dense einsum and all-reduce (see
+    `docs/context_parallel.md`). An explicit ``"2d"`` on a non-square count is
+    refused by the shared resolver.
     """
 
     return resolve_cp_layout(layout, n_devices, auto=square_grid_auto_layout(n_devices))
@@ -960,7 +954,7 @@ def predict(
     )
     if memory_budget is not None:
         # Before the language model, which is the expensive thing a refusal
-        # is worth skipping: ESMC is a 3B encoder and runs before the graph
+        # is worth skipping: ESMC is a 6B encoder and runs before the graph
         # this estimate is about. After `with_overrides`, because the sample
         # count that decides whether the estimate binds is resolved there --
         # it comes off the checkpoint (`num_diffusion_samples`), not off a
@@ -986,10 +980,8 @@ def predict(
             levers=(memory_policy.ESMFOLD2_CP_DEVICES_LEVER,),
             off_profile=memory_policy.off_profile_reason(
                 num_samples=settings.num_samples,
-                # Measured, not assumed: 46,041.8 MiB at 5 samples against
-                # 46,284.8 at the released 32, at 2,096 tokens. Treating the
-                # released count as off profile would mean a refusal that
-                # never fires on a default run.
+                # The released sample count is validated on-profile so default
+                # runs are admitted normally.
                 samples_validated=memory_policy.SAMPLES_VALIDATED["esmfold2"],
                 extras=tuple(
                     reason

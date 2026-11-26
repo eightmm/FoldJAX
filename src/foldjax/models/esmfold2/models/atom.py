@@ -62,23 +62,8 @@ def _adaln(x, scale, shift, eps, native_autocast):
 #: q/k arrive in BF16. Non-autocast policies require their own native check.
 FLOAT32_EPS = float(jnp.finfo(jnp.float32).eps)
 
-#: Query rows per block in the windowed attention. The block reads
-#: `rows_per_block + 2 * half_window` keys, so a smaller block wastes less of
-#: what it reads (1.98x at 128 against 2.98x at 256, for `half_window=64`) and
-#: pays for it in scan steps and smaller matmuls.
-#:
-#: **Measured, it is neither a memory knob nor a time one.** At 1,003 residues
-#: and 32 samples, 128 and 256 give the same arena to the MiB and the same peak
-#: to three decimals (24.460 GiB), and their times differ by 0.17 s -- 0.4%,
-#: against run-to-run spreads of 0.60 and 2.10 s, so the arms overlap. Less
-#: wasted arithmetic and fewer scan steps evidently cancel, or both sit under
-#: the noise. An earlier version of this comment called it "a time knob, not a
-#: memory one"; that was inference from the arithmetic and the timing does not
-#: support it.
-#:
-#: So 256 is the default because nothing distinguishes it, not because it won.
-#: The environment override exists as an escape hatch for a size nobody has
-#: measured, and it should not be reached for expecting a result here.
+#: Query rows per block in windowed attention (reads
+#: `rows_per_block + 2 * half_window` keys per block).
 ATOM_ROWS_PER_BLOCK = 256
 
 ATOM_ATTENTION_BACKENDS = frozenset({"dense", "blocked"})
@@ -104,38 +89,12 @@ def _atom_rows_per_block_scope(rows_per_block: int) -> Iterator[None]:
 
 
 def _atom_attention_backend() -> str:
-    """Return the configured atom-attention backend.
+    """Return the configured atom-attention backend (`blocked` or `dense`).
 
-    `dense` builds the whole `[batch, heads, atoms, atoms]` score matrix and
-    masks a band 129 wide out of it. `blocked` walks the query rows in blocks
-    and never materialises more than one block's scores: at 1,003 residues and
-    the released 32 samples that is 35,945 -> 11,312 MiB, 68.5%.
-
-    **The default is `blocked`, and it was `dense` until the two were timed.**
-    That was the right default to set at the time and the wrong one to keep:
-    it was set pending a measurement, and the measurement arrived. Shipped
-    settings, shipped allocator, 1,003 residues, 32 samples, three timed runs
-    per arm with arms alternating and warmups discarded:
-
-        dense    49.30 s  +-0.20   48.516 GiB
-        blk256   46.73 s  +-0.60   24.460 GiB
-        blk128   46.90 s  +-2.10   24.460 GiB
-
-    Blocked wins both axes: 5.2% faster and 24.056 GiB smaller. The time
-    separation is clean rather than marginal -- the slowest blocked run beats
-    the fastest dense one, so no pairing of individual runs reverses it -- and
-    the clock control points the conservative way, since dense held the
-    *highest* mean SM clock (1749 against 1711) and still lost. The card
-    favoured the loser, so the margin understates.
-
-    The worry that motivated the cautious default was real and did not
-    materialise: the blocked form trades one large matmul for 31 scanned small
-    ones, so its cost should grow where its memory win shrinks. It may still,
-    at a size nobody has run; it does not at the released one.
-
-    There is no `auto`. A mode that picked a path from a probe would put two
-    machines on two kernels under one name, which is the failure this
-    repository keeps paying for.
+    `blocked` (the default) walks query rows in blocks without materialising
+    the full `[batch, heads, atoms, atoms]` score matrix; `dense` builds and
+    masks the full matrix. There is no `auto` mode so the kernel does not vary
+    silently across machines.
     """
     backend = os.environ.get("ESMFOLD2_ATOM_ATTENTION_BACKEND", "blocked").lower()
     if backend not in ATOM_ATTENTION_BACKENDS:
@@ -273,12 +232,7 @@ def build_3d_rope(
         freqs = jnp.pad(freqs, ((0, 0), (0, 0), (0, half - freqs.shape[-1])))
     if native_autocast:
         freqs = _stored(freqs).astype(jnp.float32)
-    # Tables are always BF16; under autocast the phases were already BF16.
-    # Returning float32 tables here promoted `q` and `k` inside the rotary, so
-    # a bfloat16 caller got float32 back out of the attention block. That is a
-    # separate defect from the missing q/k/v cast below: this one decides the
-    # dtype the block *returns*, that one decides the dtype the scores are
-    # *computed* at.
+    # Tables stay BF16 so applying RoPE does not promote BF16 q/k to float32.
     return jnp.cos(freqs).astype(jnp.bfloat16), jnp.sin(freqs).astype(jnp.bfloat16)
 
 
@@ -309,31 +263,22 @@ def _windowed_attention(
 ) -> jnp.ndarray:
     """Sliding-window attention that never materialises the full score matrix.
 
-    The dense path builds `[batch, heads, atoms, atoms]` and then throws away
-    everything outside a band 129 wide. At the released 32 samples and 7,776
-    atoms that tensor is 14,762 MiB, twice over with its softmax, against a
-    35,945 MiB arena. This walks the query rows in blocks instead, so only one
-    block's scores exist at a time.
+    Walks query rows in blocks so only one block's `[batch, heads, rows, keys]`
+    score matrix exists at a time instead of `[batch, heads, atoms, atoms]`.
 
-    **Exactness rests on `atom_attention_mask` being a prefix**, which it is:
-    `features.py` has a single writer and sets `mask[index] = True` for every
-    real atom in order. That makes `rank[i] == i` throughout the valid region,
-    so the window in packed rank -- which is what the model means -- coincides
-    with a window in raw index, and a slice of `rows_per_block + 2 *
-    half_window` keys provably contains every key a query in the block may
-    attend to. The mask inside the block is still computed from `rank`, so if
-    that precondition ever breaks the block masks correctly over the keys it
-    holds rather than silently changing the semantics.
-
-    Upstream leans on the same packing: its fast path is `flash_attn_varlen`
-    with `cu_seqlens`, and it keeps a dense fallback for when that is
-    unavailable. `swa_attention` keeps one for the same reason.
+    **Exactness rests on `atom_attention_mask` being a prefix**, which both
+    featurizers emit (`inference.predict` checks this invariant and falls back
+    to `rows_per_block=0` otherwise). When valid atoms form a prefix,
+    `rank[i] == i` throughout the valid region, so a window in packed rank
+    coincides with a window in raw index and a slice of `rows_per_block + 2 *
+    half_window` keys contains every key a query in the block may attend to.
+    The mask inside the block is still computed from `rank`.
 
     `dynamic_slice` clamps an out-of-range start rather than truncating, which
-    *shifts* the window. That is safe here and the clamp is written out rather
-    than left to the primitive, because the mask has to be built against the
-    indices actually taken: at the low edge the needed keys are `[0, R + h)`
-    and at the high edge `[bR - h, atoms)`, both inside a slice of this width.
+    *shifts* the window. The clamp is written out explicitly here because the
+    mask must be built against the indices actually taken: at the low edge the
+    needed keys are `[0, R + h)` and at the high edge `[bR - h, atoms)`, both
+    inside a slice of this width.
     """
     batch, length, n_heads, head_dim = q.shape
     keys_per_block = rows_per_block + 2 * half_window
@@ -435,23 +380,10 @@ def swa_attention(
     q = apply_rotary_3d(q, cos, sin, native_autocast=native_autocast)
     k = apply_rotary_3d(k, cos, sin, native_autocast=native_autocast)
 
-    # Upstream casts the attention inputs to bfloat16 here unconditionally
-    # (`modeling_esmfold2_common.py:573-575`) and restores the entering dtype
-    # after the context (`:632`). Both halves are needed, and this port had
-    # neither.
-    #
-    # `trunk_dtype` does not reach this module: `TRUNK_PREFIXES` scopes it to
-    # the trunk and deliberately excludes the diffusion stack, so `Wqkv` runs
-    # float32 @ float32 and `q` is float32 before the rotary is ever applied.
-    # The scores inherit that -- `f32[128, 7776, 7776]` is 29,524 MiB at the
-    # released 32 samples and 7776 atoms, and the softmax of it is another,
-    # together 90% of the whole temp arena.
-    #
-    # Both paths match upstream's FlashAttention / SDPA precision: narrowed
-    # BF16 operands with FP32 score accumulation, softmax and context
-    # accumulation, stored back to BF16 before restoring `input_dtype`. This
-    # does not promise the same reduction order as Torch's selected fused SDPA
-    # kernel. At most 129 keys are allowed.
+    # Upstream narrows attention inputs to bfloat16 (`modeling_esmfold2_common.py:573`)
+    # and restores `input_dtype` after context (`:632`), with FP32 score/context
+    # accumulation and softmax (stored back to BF16 before restoring `input_dtype`).
+    # Reduction order may still differ from Torch's fused SDPA kernel.
     input_dtype = q.dtype
     if input_dtype not in (jnp.float16, jnp.bfloat16):
         q = q.astype(jnp.bfloat16)

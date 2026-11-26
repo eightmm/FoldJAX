@@ -10,8 +10,8 @@ The store is lazy twice over. The file is opened only when a job first asks for
 chemistry, and even then no molecule is built until a component is looked up:
 every entry of the publisher pickle is ``Mol(blob)`` followed by
 ``__setstate__(({},))``, so the load records those arguments and replays the
-same two calls for the handful of components a job names. Building all
-~50,000 molecules took ~3.6 s and freeing them another ~1.3 s per process.
+same two calls for the handful of components a job names, avoiding eagerly
+building and freeing all ~50,000 RDKit molecules on load.
 """
 
 from __future__ import annotations
@@ -26,8 +26,6 @@ from threading import RLock
 from typing import Any
 
 import numpy as np
-
-from foldjax.models.esmfold2.data.all_atom_constants import RES_TYPE_TO_CCD
 
 BIOHUB_CCD_SHA256 = (
     "9ff44b1927c6b9198e38ffe0928706827a09a350c15530beeeabebfa88038fc5"
@@ -260,14 +258,6 @@ class CCDStore:
     ) -> np.ndarray | None:
         conformer = self.conformer(component)
         return None if conformer is None else conformer.get(atom_name)
-
-    def residue_position(self, res_type: int, atom_name: str) -> np.ndarray | None:
-        component = RES_TYPE_TO_CCD.get(int(res_type))
-        return (
-            None
-            if component is None
-            else self.idealized_position(component, atom_name)
-        )
 
     def atoms(self, component: str) -> list[tuple[str, str, int]] | None:
         """Included ``(name, element, formal_charge)`` atoms in CCD order."""

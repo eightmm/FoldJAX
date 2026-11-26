@@ -16,12 +16,11 @@ dataclass says zero -- so the settings always come from the file.
 from __future__ import annotations
 
 import json
-from collections.abc import Collection, Mapping
+from collections.abc import Collection
 from pathlib import Path
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from safetensors import safe_open
 
 from foldjax.models.esmfold2.models.model import ModelSettings, settings_from_config
@@ -73,37 +72,10 @@ def load_parameters(
     return parameters
 
 
-def missing_parameters(
-    parameters: Mapping[str, object], required: Mapping[str, object]
-) -> list[str]:
-    """Keys a run would ask for and the checkpoint does not have.
-
-    Used by the loader's own test rather than at run time: a missing key raises
-    where it is read, which names the module, and that is the more useful
-    failure. This exists so the test can report all of them at once.
-    """
-    return sorted(name for name in required if name not in parameters)
-
-
-def parameter_report(directory: str | Path) -> dict[str, object]:
-    """A summary of what is in the file, for `foldjax weights` and for humans."""
-    counts: dict[str, int] = {}
-    total = 0
-    with safe_open(Path(directory, WEIGHTS_NAME), framework="numpy") as handle:
-        for name in handle.keys():  # noqa: SIM118
-            slice_ = handle.get_slice(name)
-            size = int(np.prod(slice_.get_shape())) if slice_.get_shape() else 1
-            total += size
-            counts[name.split(".", 1)[0]] = counts.get(name.split(".", 1)[0], 0) + size
-    return {"parameters": total, "by_module": dict(sorted(counts.items()))}
-
-
 __all__ = [
     "CONFIG_NAME",
     "WEIGHTS_NAME",
     "load_config",
     "load_parameters",
     "load_settings",
-    "missing_parameters",
-    "parameter_report",
 ]

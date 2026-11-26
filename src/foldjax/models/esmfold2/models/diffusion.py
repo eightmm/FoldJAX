@@ -157,12 +157,8 @@ def token_pair_biases(
 
     `optimization_barrier` on `pair` keeps the fusion boundary between
     `condition_pair` and the block LayerNorms that the `lax.scan` loop
-    boundary enforced. The biases can still round differently from the
-    per-step projection (GEMM shapes change), so treat it as rounding-class:
-    on one RTX PRO 6000 the jitted serial prediction was bitwise equal at
-    1,003 and 2,096 tokens, while an earlier measurement at 1,993 tokens moved
-    the same-index CA residual by at most 0.09 A (per-chain CA RMSD within
-    0.003 A).
+    boundary enforced. Because GEMM shapes change, the biases are rounding-class
+    equivalent rather than guaranteed bit-identical to the per-step projection.
     """
     pair_array = jnp.asarray(pair)
     if pair_array.ndim != 4:
@@ -198,7 +194,6 @@ def attention_pair_bias(
     *,
     n_heads: int,
     mask: jnp.ndarray | None = None,
-    num_samples: int = 1,
     eps: float = 1e-5,
     pair_bias: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
@@ -240,7 +235,7 @@ def attention_pair_bias(
     logits = jnp.einsum("bihd,bjhd->bijh", query, key) * (head_dim**-0.5)
 
     def add_over_samples(base: jnp.ndarray, term: jnp.ndarray) -> jnp.ndarray:
-        """Add a term whose batch axis may be `num_samples` times shorter."""
+        """Add a term whose batch axis divides `batch`."""
         if term.shape[0] == batch:
             return base + term
         folded = base.reshape(term.shape[0], -1, n_queries, n_keys, n_heads)
@@ -348,7 +343,6 @@ def diffusion_transformer(
     n_blocks: int,
     n_heads: int,
     mask: jnp.ndarray | None = None,
-    num_samples: int = 1,
     glu_backend: str = "xla",
     pair_bias: Sequence[jnp.ndarray] | None = None,
 ) -> jnp.ndarray:
@@ -367,7 +361,6 @@ def diffusion_transformer(
             f"{dot}attn_blocks.{index}",
             n_heads=n_heads,
             mask=mask,
-            num_samples=num_samples,
             pair_bias=None if pair_bias is None else pair_bias[index],
         )
         a = a + conditioned_transition_block(
@@ -461,21 +454,16 @@ def condition_pair(
     Upstream caches it across the whole sampling run for that reason; it is
     separate here so a caller cannot accidentally recompute it per step.
 
-    **Blocked by rows above a byte budget.** Unblocked this stage held four
-    full-width pair tensors at once -- the trunk pair, the relative position
-    encoding, the `2 * C` float32 concatenation of the two, and that
-    concatenation's normalisation -- which is 51.9 GiB at 3,012 tokens, of
-    which the last two are pure intermediates. `_condition_pair_body` is
-    row-local, so blocking it removes them and leaves only the inputs and the
-    result. Exact arithmetic, not bit-identical: the blocked shapes reach
-    different GEMM tilings.
+    **Blocked by rows above a byte budget.** Unblocked, this stage holds the
+    `2 * C` float32 concatenation and its normalisation at full width alongside
+    the inputs and result. `_condition_pair_body` is row-local, so blocking it
+    avoids materialising those intermediates at full width. Exact arithmetic,
+    not bit-identical: the blocked shapes reach different GEMM tilings.
 
     Under a mesh the block is taken inside a `shard_map`, on the rows the
-    device already holds. A block of a *sharded* row axis is a slice the
-    partitioner can only serve by moving data, which is what
-    `trunk._cp_pair_transition` measured 104 `all-to-all`s for; a block at
-    least as wide as the local tile divides nothing, so the request is
-    dropped rather than relocated and the sharded program is left as it was.
+    device already holds, so slicing a sharded row axis does not force
+    collectives; a block at least as wide as the local tile divides nothing, so
+    the request is dropped and the sharded program is left as it was.
     """
     dot = f"{prefix}." if prefix else ""
     settings = {"trunk_dtype": trunk_dtype}
@@ -733,9 +721,7 @@ def with_token_pair_biases(
 
     # Kept only when the biases it retains take no more bytes than the pair
     # they replace (12 x 16 = 192 of 256 channels at the released widths, in
-    # the same dtype), so the sampler retains no more than the per-step path;
-    # the one-time projection's temporaries are a GPU peak question, measured
-    # at 1,000-3,000 tokens.
+    # the same dtype), so the sampler retains no more than the per-step path.
     retained = sum(
         math.prod(bias.shape) * jnp.dtype(bias.dtype).itemsize
         for bias in jax.eval_shape(project, cache.pair)
@@ -817,7 +803,6 @@ def diffusion_module(
         n_blocks=settings.token_n_blocks,
         n_heads=settings.token_n_heads,
         mask=token_mask,
-        num_samples=num_samples,
         glu_backend=settings.glu_backend,
         pair_bias=cache.pair_bias,
     )
@@ -1150,7 +1135,7 @@ def _step(
     preserve_prefix_rng: bool = False,
     draws: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray] | None = None,
 ) -> tuple[tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray], None]:
-    """One denoise-align-step, shared by the scanned and the eager driver.
+    """One denoise-align-step for `sample`'s `lax.scan`.
 
     `step` is `(sigma_from, sigma_to, gamma)`; under `lax.scan` all three are
     tracers, which is what makes the churn identity necessary rather than
@@ -1266,7 +1251,6 @@ def sample(
     settings: DiffusionSettings,
     token_mask: jnp.ndarray | None = None,
     num_samples: int = 1,
-    early_exit_rmsd: float | None = None,
     preserve_prefix_rng: bool = False,
     diffusion_initial_normal: jnp.ndarray | None = None,
     diffusion_rotation_quaternions: jnp.ndarray | None = None,
@@ -1276,11 +1260,7 @@ def sample(
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Algorithm 18, returning `(sample_atom_coords, token_repr)`.
 
-    The default path is a `lax.scan` over the schedule. `early_exit_rmsd` --
-    upstream's convergence break, which its own forward never enables --
-    compares two consecutive predictions and stops, which is a host-side
-    branch on a traced value; asking for it runs the same step function in a
-    Python loop instead, and the result cannot be jitted.
+    Runs as a `lax.scan` over the noise schedule.
 
     `sample_sequential` denoises the `batch * num_samples` rollouts one at a
     time. It expects `cache` built at one sample, because the atom-level
@@ -1415,45 +1395,15 @@ def sample(
         jnp.zeros((batch, n_tokens, c_token), dtype=jnp.float32),
     )
 
-    if early_exit_rmsd is None:
-        scan_steps = jnp.asarray(steps, dtype=jnp.float32)
-        if taped:
-            scan_steps = (
-                scan_steps,
-                diffusion_rotation_quaternions,
-                diffusion_translations,
-                diffusion_churn_normals,
-            )
-        carry, _ = jax.lax.scan(run, carry, scan_steps)
-        return carry[0], carry[3]
-
-    for index in range(steps.shape[0]):
-        previous = carry[1]
-        step = jnp.asarray(steps[index], dtype=jnp.float32)
-        if taped:
-            step = (
-                step,
-                diffusion_rotation_quaternions[index],
-                diffusion_translations[index],
-                diffusion_churn_normals[index],
-            )
-        carry, _ = run(carry, step)
-        x_denoised, token_repr = carry[1], carry[3]
-        if index >= 1:
-            aligned = weighted_rigid_align(
-                previous,
-                x_denoised,
-                atom_mask,
-                atom_mask,
-                backend=settings.rigid_align_backend,
-            )
-            difference = (x_denoised - aligned) * atom_mask[..., None]
-            rmsd = jnp.sqrt(
-                jnp.sum(difference**2, axis=(-1, -2))
-                / jnp.clip(jnp.sum(atom_mask, axis=-1), min=1.0)
-            )
-            if float(jnp.max(rmsd)) < early_exit_rmsd:
-                return x_denoised, token_repr
+    scan_steps = jnp.asarray(steps, dtype=jnp.float32)
+    if taped:
+        scan_steps = (
+            scan_steps,
+            diffusion_rotation_quaternions,
+            diffusion_translations,
+            diffusion_churn_normals,
+        )
+    carry, _ = jax.lax.scan(run, carry, scan_steps)
     return carry[0], carry[3]
 
 
