@@ -238,6 +238,12 @@ whole is quicker by a hair and costs far more memory for it — at 2,096 tokens
 wall time for 6,195 MiB against 4,317 — and at 4,100 and 4,888 tokens only the
 blocked arm has completed at all.
 
+One block in that loop ignores the width: on a serial run whose pair transition
+resolves to the fused Pallas GLU, the transition tiles rows inside its kernel and
+never builds the widened intermediate, so it runs whole whatever the width;
+the XLA and tokamax transitions, and every context-parallel run, keep the
+row blocks.
+
 `--option pair_chunk_size=0` is the explicit spelling for the unblocked loop,
 at any size; any other integer pins that width. Omitted and explicit stay
 distinguishable at both layers that carry the choice. The compiled program's

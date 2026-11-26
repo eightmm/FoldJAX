@@ -854,3 +854,198 @@ def test_composed_inference_sink_matches_returned_logits_control(
 def test_ranking_contract_identifies_unprotected_near_ties() -> None:
     scores = np.asarray([0.5, 0.5 + 1.5 * MAX_CONFIDENCE_DELTA])
     assert abs(scores[1] - scores[0]) <= 2 * MAX_CONFIDENCE_DELTA
+
+
+@pytest.mark.parametrize(
+    ("returned_pair_logits", "cutoff", "use_padded_chains"),
+    # Only the sunk route shares one softmax; the padded-chain routes keep
+    # their expected error inside the sample map, where it was bit-exact.
+    [((), 0, False)],
+    ids=["serial-sink"],
+)
+def test_pae_softmax_is_reused_across_expected_error_and_compact_metrics(
+    monkeypatch, returned_pair_logits, cutoff, use_padded_chains
+) -> None:
+    """PAE logits are softmaxed once and shared between PAE error and pTM/ipTM."""
+    batch, params = _install_tiny_predict(monkeypatch)
+    config = _tiny_inference_config(
+        per_sample_token_cutoff=cutoff,
+        returned_pair_logits=returned_pair_logits,
+    )._replace(return_expected_errors=True)
+    n_chain = (
+        inference._PaddedChains(jnp.asarray(3, jnp.int32), 4)
+        if use_padded_chains
+        else 3
+    )
+
+    # Give PAE logits a distinct bin count from PDE/distogram so we can count
+    # PAE softmax invocations unambiguously.
+    pae_bins = 48
+    config = config._replace(pae_bins=pae_bins)
+
+    def fake_pae_48(pair, _params):
+        bins = jnp.arange(pae_bins, dtype=pair.dtype)
+        return pair[..., :1] + bins / 23.0
+
+    monkeypatch.setattr(inference, "predicted_aligned_error_head", fake_pae_48)
+
+    pae_softmax_calls = 0
+    original_softmax = jax.nn.softmax
+
+    def counted_softmax(value, axis=-1):
+        nonlocal pae_softmax_calls
+        if value.shape[-1] == pae_bins:
+            pae_softmax_calls += 1
+        return original_softmax(value, axis=axis)
+
+    monkeypatch.setattr(jax.nn, "softmax", counted_softmax)
+
+    run = jax.jit(
+        lambda key, data: inference.predict(
+            key, data, params, config, None, n_chain=n_chain
+        )
+    )
+    actual = run(jax.random.key(7), batch)
+    assert pae_softmax_calls == 1
+
+    # Compare bit-identically against jitted runs without PAE error sharing:
+    # `return_expected_errors=False` evaluates only the compact metrics, and
+    # `_expected_pair_error` evaluates expected PAE directly from `pae_logits`.
+    without_errors = jax.jit(
+        lambda key, data: inference.predict(
+            key,
+            data,
+            params,
+            config._replace(return_expected_errors=False),
+            None,
+            n_chain=n_chain,
+        )
+    )(jax.random.key(7), batch)
+    pae_logits = jax.jit(
+        lambda key, data: inference.predict(
+            key,
+            data,
+            params,
+            config._replace(
+                returned_pair_logits=("pae_logits",),
+                return_expected_errors=False,
+            ),
+            None,
+            n_chain=n_chain,
+        ).pae_logits
+    )(jax.random.key(7), batch)
+    expected_pae = jax.jit(
+        lambda x: inference._expected_pair_error(x, bin_max=config.pae_bin_max)
+    )(pae_logits)
+
+    assert np.asarray(actual.pae).tobytes() == np.asarray(expected_pae).tobytes()
+    for name in ("ptm", "iptm", "chain_pair_iptm", "chain_ptm"):
+        assert (
+            np.asarray(getattr(actual, name)).tobytes()
+            == np.asarray(getattr(without_errors, name)).tobytes()
+        ), name
+
+
+def test_bfloat16_pae_keeps_separate_float32_expected_error_softmax(
+    monkeypatch,
+) -> None:
+    """When PAE logits are bfloat16, expected error still takes float32 softmax."""
+    batch, params = _install_tiny_predict(monkeypatch)
+    pae_bins = 48
+    config = _tiny_inference_config(
+        per_sample_token_cutoff=0,
+        returned_pair_logits=(),
+    )._replace(pae_bins=pae_bins, return_expected_errors=True)
+
+    def fake_pae_bf16(pair, _params):
+        bins = jnp.arange(pae_bins, dtype=jnp.float32)
+        return (pair[..., :1] + bins / 23.0).astype(jnp.bfloat16)
+
+    monkeypatch.setattr(inference, "predicted_aligned_error_head", fake_pae_bf16)
+
+    dtypes: list[jnp.dtype] = []
+    original_softmax = jax.nn.softmax
+
+    def observe_softmax(value, axis=-1):
+        if value.shape[-1] == pae_bins:
+            dtypes.append(value.dtype)
+        return original_softmax(value, axis=axis)
+
+    monkeypatch.setattr(jax.nn, "softmax", observe_softmax)
+
+    result = jax.jit(
+        lambda key, data: inference.predict(key, data, params, config, None, n_chain=3)
+    )(jax.random.key(9), batch)
+    assert dtypes == [jnp.bfloat16, jnp.float32]
+    assert result.pae.dtype == jnp.float32
+
+
+def test_precomputed_pae_probabilities_validate_shape_and_dtype() -> None:
+    logits = jnp.zeros((1, 4, 4, 8), dtype=jnp.float32)
+    probs = jax.nn.softmax(logits, axis=-1)
+    frames = jnp.ones((1, 4), dtype=bool)
+    mask = jnp.ones(4, dtype=bool)
+    asym = jnp.zeros(4, dtype=jnp.int32)
+
+    np.testing.assert_array_equal(
+        np.asarray(
+            inference._expected_pair_error(logits, bin_max=32.0, probabilities=probs)
+        ),
+        np.asarray(inference._expected_pair_error(logits, bin_max=32.0)),
+    )
+    for got, ref in zip(
+        inference._compact_confidence_metrics_from_pae(
+            logits,
+            frames,
+            mask,
+            asym,
+            n_chain=1,
+            bin_min=0.0,
+            bin_max=32.0,
+            no_bins=8,
+            probabilities=probs,
+        ),
+        inference._compact_confidence_metrics_from_pae(
+            logits, frames, mask, asym, n_chain=1, bin_min=0.0, bin_max=32.0, no_bins=8
+        ),
+        strict=True,
+    ):
+        if ref is None:
+            assert got is None
+        else:
+            np.testing.assert_array_equal(np.asarray(got), np.asarray(ref))
+
+    with pytest.raises(ValueError, match="shape"):
+        inference._expected_pair_error(
+            logits,
+            bin_max=32.0,
+            probabilities=jnp.zeros((1, 4, 4, 4), dtype=jnp.float32),
+        )
+    with pytest.raises(ValueError, match="float32"):
+        inference._expected_pair_error(
+            logits, bin_max=32.0, probabilities=probs.astype(jnp.bfloat16)
+        )
+    with pytest.raises(ValueError, match="shape and dtype"):
+        inference._compact_confidence_metrics_from_pae(
+            logits,
+            frames,
+            mask,
+            asym,
+            n_chain=1,
+            bin_min=0.0,
+            bin_max=32.0,
+            no_bins=8,
+            probabilities=jnp.zeros((1, 4, 4, 4), dtype=jnp.float32),
+        )
+    with pytest.raises(ValueError, match="shape and dtype"):
+        inference._compact_confidence_metrics_from_pae(
+            logits,
+            frames,
+            mask,
+            asym,
+            n_chain=1,
+            bin_min=0.0,
+            bin_max=32.0,
+            no_bins=8,
+            probabilities=probs.astype(jnp.bfloat16),
+        )

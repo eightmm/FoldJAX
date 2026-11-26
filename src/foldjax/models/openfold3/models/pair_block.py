@@ -22,6 +22,7 @@ from jax.sharding import PartitionSpec
 
 from foldjax._openfold3_compile import resolve_triangle_kernel
 from foldjax.models._cp import cp_grid, cp_mesh, pair_spec, shard_pair_rows
+from foldjax.models._glu import site_backend
 from foldjax.models.openfold3.models.primitives import (
     SwiGLUTransitionParams,
     swiglu_transition,
@@ -225,8 +226,19 @@ def _pair_transition(
     mesh = cp_mesh()
     settings = {"eps": eps, "glu_backend": glu_backend}
     if mesh is None:
+        # The fused Pallas transition tiles rows internally and never
+        # materialises the widened ``[N, N, 4 * C_z]`` hidden tensor; skipping
+        # the outer row-chunk wrapper removes its pad/moveaxis/slice copies
+        # without changing the kernel's tile arithmetic. XLA and tokamax still
+        # materialise the widened hidden tensor before ``linear_out`` and stay
+        # chunked.
+        effective_chunk = (
+            None
+            if site_backend(glu_backend, released="xla", width=z.shape[-1]) == "pallas"
+            else chunk_size
+        )
         return _swiglu_row_blocks(
-            params, z, pair_mask, chunk_size=chunk_size, **settings
+            params, z, pair_mask, chunk_size=effective_chunk, **settings
         )
 
     rows, columns = cp_grid()

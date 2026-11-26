@@ -265,3 +265,166 @@ def test_a_zero_width_applies_the_function_once() -> None:
         result = map_row_chunks(body, pair, chunk_size=width)
         np.testing.assert_array_equal(np.asarray(result), np.asarray(pair) * 2)
         assert calls == [6], width
+
+
+def _pallas_transition_params(
+    rng: np.random.Generator, channels: int, dtype: jnp.dtype
+) -> SwiGLUTransitionParams:
+    def weight(out_dim: int, in_dim: int) -> LinearParams:
+        values = rng.normal(size=(out_dim, in_dim)) / np.sqrt(in_dim)
+        return LinearParams(weight=jnp.asarray(values, dtype=dtype), bias=None)
+
+    return SwiGLUTransitionParams(
+        layer_norm=LayerNormParams(
+            weight=jnp.asarray(1.0 + 0.1 * rng.normal(size=channels), jnp.float32),
+            bias=jnp.asarray(0.1 * rng.normal(size=channels), jnp.float32),
+        ),
+        swiglu=SwiGLUParams(
+            linear_a=weight(4 * channels, channels),
+            linear_b=weight(4 * channels, channels),
+        ),
+        linear_out=weight(channels, 4 * channels),
+    )
+
+
+@pytest.mark.parametrize(
+    ("n_token", "channels", "chunk_size", "dtype", "masked"),
+    [
+        (130, 32, 128, jnp.bfloat16, True),
+        (130, 32, 128, jnp.float32, True),
+        (130, 32, 128, jnp.bfloat16, False),
+        (130, 128, 128, jnp.bfloat16, True),
+        (19, 32, 0, jnp.bfloat16, True),
+        (19, 32, 19, jnp.bfloat16, True),
+    ],
+)
+def test_pallas_pair_transition_skips_row_chunks_bit_identically(
+    monkeypatch,
+    n_token: int,
+    channels: int,
+    chunk_size: int,
+    dtype: jnp.dtype,
+    masked: bool,
+) -> None:
+    """Serial Pallas pair transition skips ``map_row_chunks`` with 0.0 diff."""
+    from foldjax.models import _pallas_pair
+    from foldjax.models.openfold3.models.pair_block import (
+        _pair_transition,
+        _swiglu_row_blocks,
+    )
+
+    monkeypatch.setattr(_pallas_pair, "INTERPRET", True)
+    rng = np.random.default_rng(17)
+    params = _pallas_transition_params(rng, channels, dtype)
+    z = jnp.asarray(rng.normal(size=(1, n_token, n_token, channels)), dtype=dtype)
+    mask = (
+        jnp.asarray(rng.random((1, n_token, n_token)) > 0.25, dtype=dtype)
+        if masked
+        else None
+    )
+
+    seen_shapes: list[tuple[int, ...]] = []
+    original = _pallas_pair.transition
+
+    def counted(x, *args, **kwargs):
+        seen_shapes.append(tuple(x.shape))
+        return original(x, *args, **kwargs)
+
+    monkeypatch.setattr(_pallas_pair, "transition", counted)
+
+    def run_pair_transition(pair, pair_mask):
+        return _pair_transition(
+            pair,
+            params,
+            pair_mask=pair_mask,
+            eps=1e-5,
+            glu_backend="pallas",
+            chunk_size=chunk_size,
+        )
+
+    def run_chunked(pair, pair_mask):
+        return _swiglu_row_blocks(
+            params,
+            pair,
+            pair_mask,
+            eps=1e-5,
+            glu_backend="pallas",
+            chunk_size=chunk_size,
+        )
+
+    lowered_direct = jax.jit(run_pair_transition).lower(z, mask)
+    assert seen_shapes == [(1, n_token, n_token, channels)]
+    direct_hlo = lowered_direct.as_text()
+
+    actual = lowered_direct.compile()(z, mask)
+    seen_shapes.clear()
+    lowered_chunked = jax.jit(run_chunked).lower(z, mask)
+    if 0 < chunk_size < n_token:
+        assert seen_shapes == [(1, chunk_size, n_token, channels)]
+        blocks = -(-n_token // chunk_size)
+        dtype_name = "bf16" if dtype == jnp.bfloat16 else "f32"
+        restacked = f"tensor<{blocks}x1x{chunk_size}x{n_token}x{channels}x{dtype_name}>"
+        assert restacked not in direct_hlo
+        assert restacked in lowered_chunked.as_text()
+    expected = lowered_chunked.compile()(z, mask)
+
+    actual_np = np.asarray(actual)
+    expected_np = np.asarray(expected)
+    max_diff = float(
+        np.max(np.abs(actual_np.astype(np.float32) - expected_np.astype(np.float32)))
+    )
+    assert max_diff == 0.0
+    assert actual_np.tobytes() == expected_np.tobytes()
+
+
+@pytest.mark.parametrize(
+    ("glu_backend", "channels"),
+    [("xla", 32), ("tokamax", 32), ("pallas", 144)],
+    ids=["xla", "tokamax", "pallas-overwide"],
+)
+def test_non_pallas_and_overwide_pair_transitions_stay_chunked(
+    monkeypatch, glu_backend: str, channels: int
+) -> None:
+    """XLA, tokamax, and widths above ``TRANSITION_MAX_WIDTH`` remain row-chunked."""
+    import tokamax
+
+    from foldjax.models.openfold3.models.pair_block import _pair_transition
+
+    if glu_backend == "tokamax":
+        original = tokamax.gated_linear_unit
+        monkeypatch.setattr(
+            tokamax,
+            "gated_linear_unit",
+            lambda *args, **kwargs: original(
+                *args, **{**kwargs, "implementation": "xla"}
+            ),
+        )
+
+    rng = np.random.default_rng(23)
+    params = _pallas_transition_params(rng, channels, jnp.float32)
+    z = jnp.asarray(rng.normal(size=(1, 9, 9, channels)), jnp.float32)
+    mask = jnp.ones((1, 9, 9), jnp.float32)
+
+    lowered = jax.jit(
+        lambda pair, pair_mask: _pair_transition(
+            pair,
+            params,
+            pair_mask=pair_mask,
+            eps=1e-5,
+            glu_backend=glu_backend,
+            chunk_size=4,
+        )
+    ).lower(z, mask)
+    hlo = lowered.as_text()
+    assert "stablehlo.pad" in hlo
+    assert "stablehlo.while" in hlo
+
+    with pytest.raises(ValueError, match="must be one of"):
+        _pair_transition(
+            z,
+            params,
+            pair_mask=mask,
+            eps=1e-5,
+            glu_backend="triton",
+            chunk_size=4,
+        )

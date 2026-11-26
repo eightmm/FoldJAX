@@ -1125,6 +1125,7 @@ def _compact_confidence_metrics_from_pae(
     bin_max: float,
     no_bins: int,
     return_chain_ptm: bool = False,
+    probabilities: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, ...]:
     """Reduce one confidence sample without returning its quadratic PAE logits.
 
@@ -1137,7 +1138,17 @@ def _compact_confidence_metrics_from_pae(
     Returns ``(ptm, iptm, chain_pair)``, and per-chain pTM as a fourth element
     with ``return_chain_ptm`` (None when ``n_chain`` is unknown).
     """
-    probabilities = jax.nn.softmax(pae_logits, axis=-1)
+    if probabilities is None:
+        probabilities = jax.nn.softmax(pae_logits, axis=-1)
+    elif (
+        probabilities.shape != pae_logits.shape
+        or probabilities.dtype != pae_logits.dtype
+    ):
+        raise ValueError(
+            "probabilities must match pae_logits shape and dtype; "
+            f"got {probabilities.shape}/{probabilities.dtype} and "
+            f"{pae_logits.shape}/{pae_logits.dtype}"
+        )
     # ``jax.nn.softmax`` defines NaN, any +Inf, and an all--Inf row as an
     # undefined distribution. Some GPU softmax lowerings do not preserve that
     # non-finite class when the sample axis is sunk inside ``lax.map``. Track it
@@ -1265,18 +1276,35 @@ DISTOGRAM_BIN_MAX = 22.0
 CONTACT_DISTANCE = 8.0
 
 
-def _expected_pair_error(logits: jnp.ndarray, *, bin_max: float) -> jnp.ndarray:
+def _expected_pair_error(
+    logits: jnp.ndarray,
+    *,
+    bin_max: float,
+    probabilities: jnp.ndarray | None = None,
+) -> jnp.ndarray:
     """Upstream ``probs_to_expected_error(softmax(logits))`` over ``0..bin_max``.
 
     Taken in float32 whatever the head's dtype: a bfloat16 expectation over a
     32 A range would round to an eighth of an angstrom.
     """
-    logits = logits.astype(jnp.float32)
+    if probabilities is None:
+        logits = logits.astype(jnp.float32)
+        probabilities = jax.nn.softmax(logits, axis=-1)
+    elif probabilities.shape != logits.shape:
+        raise ValueError(
+            "probabilities must match logits shape; "
+            f"got {probabilities.shape} and {logits.shape}"
+        )
+    elif probabilities.dtype != jnp.float32:
+        raise ValueError(
+            "expected pair error probabilities must be float32; "
+            f"got {probabilities.dtype}"
+        )
     return probs_to_expected_error(
-        jax.nn.softmax(logits, axis=-1),
+        probabilities,
         bin_min=0.0,
         bin_max=bin_max,
-        no_bins=logits.shape[-1],
+        no_bins=probabilities.shape[-1],
     )
 
 
@@ -1832,6 +1860,8 @@ def _predict_from_trunk(
         x_pred: jnp.ndarray,
         mask: jnp.ndarray,
         pair_mask: jnp.ndarray,
+        *,
+        compute_pae_error: bool = True,
     ):
         """Re-embed geometry and read the two pair heads off it.
 
@@ -1872,7 +1902,9 @@ def _predict_from_trunk(
         # only `[N, N]` per sample crosses the map, never the 64 bins.
         errors_one = (
             (
-                _expected_pair_error(pae_one, bin_max=config.pae_bin_max),
+                _expected_pair_error(pae_one, bin_max=config.pae_bin_max)
+                if compute_pae_error
+                else None,
                 _expected_pair_error(pde_one, bin_max=PDE_BIN_MAX),
             )
             if return_errors
@@ -1899,7 +1931,9 @@ def _predict_from_trunk(
                 one[0][None],
                 one[1][None],
                 pair_mask_1,
+                compute_pae_error=False,
             )
+            pae_probs = jax.nn.softmax(pae_one, axis=-1)
             metrics_one = _compact_confidence_metrics_from_pae(
                 pae_one,
                 one[2][None],
@@ -1907,8 +1941,20 @@ def _predict_from_trunk(
                 asym_id,
                 n_chain=n_chain,
                 return_chain_ptm=True,
+                probabilities=pae_probs,
                 **ptm_kwargs,
             )
+            if errors_one is not None:
+                errors_one = (
+                    _expected_pair_error(
+                        pae_one,
+                        bin_max=config.pae_bin_max,
+                        probabilities=(
+                            pae_probs if pae_one.dtype == jnp.float32 else None
+                        ),
+                    ),
+                    errors_one[1],
+                )
             return jax.tree.map(
                 lambda leaf: leaf[0], (s_one, metrics_one, pde_one, errors_one)
             )
