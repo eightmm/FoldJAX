@@ -544,6 +544,38 @@ def test_compact_pair_bias_matches_a_sample_repeated_bias_bitwise(
     assert float(jnp.max(jnp.abs(reference - wrong))) > 1e-4
 
 
+@pytest.mark.parametrize("use_scan", [False, True])
+def test_singleton_conditioning_still_broadcasts_over_the_activation_batch(
+    use_scan: bool,
+) -> None:
+    # A width-1 `s` against a wider activation batch, at the default
+    # multiplicity, broadcast before the s-term alignment and still must.
+    rows, width, dim, heads, layers = 2, 4, 8, 2, 3
+    params = _bias_scan_params(layers, dim, heads)
+    rng = np.random.default_rng(20261127)
+    a = jnp.asarray(rng.normal(size=(rows, width, dim)), jnp.float32)
+    s = jnp.asarray(rng.normal(size=(1, width, dim)), jnp.float32)
+    bias = jnp.asarray(rng.normal(size=(rows, width, width, layers * heads)))
+    bias = bias.astype(jnp.float32)
+    mask = jnp.ones((rows, width), jnp.float32)
+
+    def run(s_arg):
+        return diffusion_transformer_forward(
+            params,
+            a=a,
+            s=s_arg,
+            bias=bias,
+            mask=mask,
+            to_keys=None,
+            multiplicity=1,
+            use_scan=use_scan,
+        )
+
+    expected = np.asarray(run(jnp.repeat(s, rows, axis=0)))
+    for fn in (run, jax.jit(run)):
+        np.testing.assert_allclose(np.asarray(fn(s)), expected, rtol=0.0, atol=1e-6)
+
+
 def test_compact_pair_bias_shrinks_the_scan_operand() -> None:
     # The scan carries every layer's bias at once, so the sample axis must not
     # reach it: the repeat is what the merging reshape would make un-bitcastable.
@@ -803,3 +835,549 @@ def test_eager_and_lazy_token_bias_have_distinct_lowered_compile_keys() -> None:
     eager_lowered = lower(eager_choice)
     assert lazy_lowered.as_text() != eager_lowered.as_text()
     assert lowered_cache_key(lazy_lowered) != lowered_cache_key(eager_lowered)
+
+
+def _width1_score_case(
+    *,
+    multiplicity: int,
+    batch: int = 1,
+    token_layers: int = 2,
+    score_compute_dtype: jnp.dtype | None = None,
+):
+    """Build a multi-layer, non-zero-transition score case with distinct samples."""
+
+    native = _native_params()
+    inputs = _model_inputs()
+    rng = np.random.default_rng(20261127)
+
+    def draw(*shape: int, scale: float = 0.08) -> jnp.ndarray:
+        return jnp.asarray(rng.normal(scale=scale, size=shape), dtype=jnp.float32)
+
+    single_dim = native["score_model"]["a_norm"]["scale"].shape[0]
+    hidden_dim = 2 * single_dim
+    transitions = [
+        {
+            "norm": {
+                "scale": jnp.ones((single_dim,), dtype=jnp.float32),
+                "bias": draw(single_dim, scale=0.02),
+            },
+            "fc1": {"kernel": draw(single_dim, hidden_dim)},
+            "fc2": {"kernel": draw(single_dim, hidden_dim)},
+            "fc3": {"kernel": draw(hidden_dim, single_dim)},
+        }
+        for _ in range(2)
+    ]
+
+    def scale_tree(node, factor: float):
+        if isinstance(node, dict):
+            return {k: scale_tree(v, factor) for k, v in node.items()}
+        if isinstance(node, list):
+            return [scale_tree(v, factor) for v in node]
+        if isinstance(node, int):
+            return node
+        return node * factor
+
+    token_layer_template = native["score_model"]["token_transformer"]["layers"][0]
+    token_proj_template = native["diffusion_conditioning"]["token_trans_proj_z"][0]
+    score_params = {
+        **native["score_model"],
+        "single_conditioner": {
+            **native["score_model"]["single_conditioner"],
+            "transitions": transitions,
+        },
+        "token_transformer": {
+            "layers": [
+                scale_tree(token_layer_template, 1.0 + 0.25 * i)
+                for i in range(token_layers)
+            ]
+        },
+    }
+    if score_compute_dtype is not None:
+        score_params = trunk_impl._cast_score_params(score_params, score_compute_dtype)
+
+    cond_params = {
+        **native["diffusion_conditioning"],
+        "token_trans_proj_z": [
+            scale_tree(token_proj_template, 1.0 + 0.15 * i)
+            for i in range(token_layers)
+        ],
+    }
+
+    s_inputs = inputs["s_inputs"]
+    s_trunk = inputs["s_trunk"]
+    z_trunk = inputs["z_trunk"]
+    relp = inputs["relative_position_encoding"]
+    feats = dict(inputs["feats"])
+    if batch > 1:
+        s_inputs = jnp.concatenate(
+            [s_inputs + draw(*s_inputs.shape, scale=0.05) for _ in range(batch)],
+            axis=0,
+        )
+        s_trunk = jnp.concatenate(
+            [s_trunk + draw(*s_trunk.shape, scale=0.05) for _ in range(batch)],
+            axis=0,
+        )
+        z_trunk = jnp.concatenate(
+            [z_trunk + draw(*z_trunk.shape, scale=0.02) for _ in range(batch)],
+            axis=0,
+        )
+        relp = jnp.repeat(relp, batch, axis=0)
+        feats = {k: jnp.repeat(v, batch, axis=0) for k, v in feats.items()}
+
+    conditioning = diffusion_conditioning_forward(
+        cond_params,
+        s_trunk=s_trunk,
+        z_trunk=z_trunk,
+        relative_position_encoding=relp,
+        feats=feats,
+        token_layers=token_layers,
+        lazy_token_trans_bias=False,
+        bias_dtype=score_compute_dtype,
+    )
+    # Give every sample distinct coordinates so sample-broadcast errors are visible.
+    r_noisy = jnp.repeat(inputs["r_noisy"], batch * multiplicity, axis=0) + draw(
+        batch * multiplicity, *inputs["r_noisy"].shape[1:], scale=0.15
+    )
+    times_compact = jnp.asarray(
+        [0.17 + 0.23 * b for b in range(batch)], dtype=jnp.float32
+    )
+    times_expanded = jnp.repeat(times_compact, multiplicity, axis=0)
+    return {
+        "score_params": score_params,
+        "s_inputs": s_inputs,
+        "s_trunk": s_trunk,
+        "r_noisy": r_noisy,
+        "times_compact": times_compact,
+        "times_expanded": times_expanded,
+        "feats": feats,
+        "conditioning": conditioning,
+        "token_layers": token_layers,
+    }
+
+
+def _historical_width_m_score_forward(
+    params,
+    *,
+    s_inputs: jnp.ndarray,
+    s_trunk: jnp.ndarray,
+    r_noisy: jnp.ndarray,
+    times: jnp.ndarray,
+    feats,
+    diffusion_conditioning,
+    multiplicity: int,
+    use_scan: bool,
+    token_layers: int,
+    score_compute_dtype: jnp.dtype | None = None,
+    eps: float = 1e-5,
+) -> jnp.ndarray:
+    """Explicit historical width-M single-conditioning reference path."""
+
+    from foldjax.models.boltz2.models.diffusion.atom import (
+        atom_attention_decoder_forward,
+        atom_attention_encoder_forward,
+    )
+    from foldjax.models.boltz2.models.primitives._common import (
+        layer_norm as _layer_norm,
+    )
+    from foldjax.models.boltz2.models.primitives._common import linear as _linear
+    from foldjax.models.boltz2.models.trunk_blocks.conditioning import (
+        single_conditioning_forward,
+    )
+
+    residual_dtype = r_noisy.dtype
+    bias_dtype = (
+        residual_dtype
+        if score_compute_dtype is None
+        else jnp.dtype(score_compute_dtype)
+    )
+    s, _ = single_conditioning_forward(
+        params["single_conditioner"],
+        times,
+        jnp.repeat(s_trunk, multiplicity, axis=0),
+        jnp.repeat(s_inputs, multiplicity, axis=0),
+        eps=eps,
+    )
+    if score_compute_dtype is not None:
+        s = s.astype(residual_dtype)
+
+    atom_to_token_idx = diffusion_conditioning.get("atom_to_token_idx")
+    a, q_skip, c_skip = atom_attention_encoder_forward(
+        params["atom_attention_encoder"],
+        feats=feats,
+        q=diffusion_conditioning["q"].astype(residual_dtype),
+        c=diffusion_conditioning["c"].astype(residual_dtype),
+        atom_enc_bias=diffusion_conditioning["atom_enc_bias"].astype(bias_dtype),
+        to_keys=diffusion_conditioning["to_keys"],
+        r=r_noisy,
+        multiplicity=multiplicity,
+        eps=eps,
+        atom_to_token_idx=atom_to_token_idx,
+        atom_to_token_plan=diffusion_conditioning.get("atom_to_token_plan"),
+    )
+
+    s_to_a = params["s_to_a_linear"]
+    a = a + _linear(
+        _layer_norm(s, s_to_a["norm"]["scale"], s_to_a["norm"]["bias"], eps),
+        s_to_a["linear"]["kernel"],
+    )
+
+    mask = jnp.repeat(feats["token_pad_mask"], multiplicity, axis=0)
+    token_bias = diffusion_conditioning.get("token_trans_bias")
+    bias_precision = diffusion_conditioning.get("token_trans_bias_precision")
+    a = diffusion_transformer_forward(
+        params["token_transformer"],
+        a=a,
+        s=s,
+        bias=token_bias,
+        mask=mask.astype(jnp.float32),
+        multiplicity=multiplicity,
+        eps=eps,
+        use_scan=use_scan,
+        layer_limit=token_layers,
+        bias_params=diffusion_conditioning.get("token_trans_bias_params"),
+        bias_input=diffusion_conditioning.get("token_trans_bias_input"),
+        bias_normed_input=diffusion_conditioning.get("token_trans_bias_normed_input"),
+        bias_compute_dtype=None if bias_precision is None else bias_precision.dtype,
+        bias_out_dtype=None if score_compute_dtype is None else bias_dtype,
+        bias_layer_dtype=None if token_bias is None else bias_dtype,
+    )
+    a_norm = params["a_norm"]
+    a = _layer_norm(a, a_norm["scale"], a_norm["bias"], eps)
+    return atom_attention_decoder_forward(
+        params["atom_attention_decoder"],
+        a=a,
+        q=q_skip,
+        c=c_skip,
+        atom_dec_bias=diffusion_conditioning["atom_dec_bias"].astype(bias_dtype),
+        feats=feats,
+        to_keys=diffusion_conditioning["to_keys"],
+        multiplicity=multiplicity,
+        eps=eps,
+        atom_to_token_idx=atom_to_token_idx,
+    )
+
+
+@pytest.mark.parametrize("jit_mode", [False, True])
+@pytest.mark.parametrize("use_scan", [False, True])
+@pytest.mark.parametrize("multiplicity", [1, 5])
+def test_width1_single_conditioning_matches_historical_width_m(
+    jit_mode: bool,
+    use_scan: bool,
+    multiplicity: int,
+) -> None:
+    """Width-1 single conditioning reproduces width-M within FP32 GEMM rounding."""
+
+    case = _width1_score_case(multiplicity=multiplicity, batch=1, token_layers=2)
+
+    def run_actual(times_arg, s_trunk_arg):
+        return diffusion_score_model_forward(
+            case["score_params"],
+            s_inputs=case["s_inputs"],
+            s_trunk=s_trunk_arg,
+            r_noisy=case["r_noisy"],
+            times=times_arg,
+            feats=case["feats"],
+            diffusion_conditioning=case["conditioning"],
+            multiplicity=multiplicity,
+            use_scan=use_scan,
+            token_layers=case["token_layers"],
+        )
+
+    def run_reference(times_arg, s_trunk_arg):
+        return _historical_width_m_score_forward(
+            case["score_params"],
+            s_inputs=case["s_inputs"],
+            s_trunk=s_trunk_arg,
+            r_noisy=case["r_noisy"],
+            times=times_arg,
+            feats=case["feats"],
+            diffusion_conditioning=case["conditioning"],
+            multiplicity=multiplicity,
+            use_scan=use_scan,
+            token_layers=case["token_layers"],
+        )
+
+    actual_fn = jax.jit(run_actual) if jit_mode else run_actual
+    ref_fn = jax.jit(run_reference) if jit_mode else run_reference
+
+    reference = np.asarray(ref_fn(case["times_expanded"], case["s_trunk"]))
+    actual_from_expanded = np.asarray(
+        actual_fn(case["times_expanded"], case["s_trunk"])
+    )
+    actual_from_compact = np.asarray(actual_fn(case["times_compact"], case["s_trunk"]))
+
+    assert actual_from_compact.shape == reference.shape
+    # Per-sample times keep the historical path exactly.
+    np.testing.assert_array_equal(
+        actual_from_expanded.view(np.uint32),
+        reference.view(np.uint32),
+    )
+    if multiplicity == 1:
+        np.testing.assert_array_equal(
+            actual_from_compact.view(np.uint32),
+            reference.view(np.uint32),
+        )
+    else:
+        np.testing.assert_allclose(actual_from_compact, reference, rtol=0.0, atol=1e-6)
+
+    # Confirm the single-conditioning path actively contributes to the output.
+    perturbed = np.asarray(
+        actual_fn(case["times_compact"], case["s_trunk"] + jnp.float32(1.0))
+    )
+    assert float(np.max(np.abs(actual_from_compact - perturbed))) > 1e-4
+
+
+@pytest.mark.parametrize("jit_mode", [False, True])
+@pytest.mark.parametrize("use_scan", [False, True])
+def test_width1_single_conditioning_supports_multi_structure_batch_and_bf16(
+    jit_mode: bool,
+    use_scan: bool,
+) -> None:
+    """B>1 keeps the historical path; BF16 score kernels stay aligned with width-M."""
+
+    batch_case = _width1_score_case(multiplicity=3, batch=2, token_layers=2)
+
+    def run_batch_actual(times_arg):
+        return diffusion_score_model_forward(
+            batch_case["score_params"],
+            s_inputs=batch_case["s_inputs"],
+            s_trunk=batch_case["s_trunk"],
+            r_noisy=batch_case["r_noisy"],
+            times=times_arg,
+            feats=batch_case["feats"],
+            diffusion_conditioning=batch_case["conditioning"],
+            multiplicity=3,
+            use_scan=use_scan,
+            token_layers=batch_case["token_layers"],
+        )
+
+    def run_batch_ref(times_arg):
+        return _historical_width_m_score_forward(
+            batch_case["score_params"],
+            s_inputs=batch_case["s_inputs"],
+            s_trunk=batch_case["s_trunk"],
+            r_noisy=batch_case["r_noisy"],
+            times=times_arg,
+            feats=batch_case["feats"],
+            diffusion_conditioning=batch_case["conditioning"],
+            multiplicity=3,
+            use_scan=use_scan,
+            token_layers=batch_case["token_layers"],
+        )
+
+    batch_actual_fn = jax.jit(run_batch_actual) if jit_mode else run_batch_actual
+    batch_ref_fn = jax.jit(run_batch_ref) if jit_mode else run_batch_ref
+    batch_ref = np.asarray(batch_ref_fn(batch_case["times_expanded"]))
+    batch_expanded = np.asarray(batch_actual_fn(batch_case["times_expanded"]))
+    # More than one structure keeps the historical path exactly.
+    np.testing.assert_array_equal(
+        batch_expanded.view(np.uint32), batch_ref.view(np.uint32)
+    )
+
+    bf16_case = _width1_score_case(
+        multiplicity=5,
+        batch=1,
+        token_layers=2,
+        score_compute_dtype=jnp.bfloat16,
+    )
+
+    def run_bf16_actual():
+        return diffusion_score_model_forward(
+            bf16_case["score_params"],
+            s_inputs=bf16_case["s_inputs"],
+            s_trunk=bf16_case["s_trunk"],
+            r_noisy=bf16_case["r_noisy"],
+            times=bf16_case["times_compact"],
+            feats=bf16_case["feats"],
+            diffusion_conditioning=bf16_case["conditioning"],
+            multiplicity=5,
+            use_scan=use_scan,
+            token_layers=bf16_case["token_layers"],
+            score_compute_dtype=jnp.bfloat16,
+        )
+
+    def run_bf16_ref():
+        return _historical_width_m_score_forward(
+            bf16_case["score_params"],
+            s_inputs=bf16_case["s_inputs"],
+            s_trunk=bf16_case["s_trunk"],
+            r_noisy=bf16_case["r_noisy"],
+            times=bf16_case["times_expanded"],
+            feats=bf16_case["feats"],
+            diffusion_conditioning=bf16_case["conditioning"],
+            multiplicity=5,
+            use_scan=use_scan,
+            token_layers=bf16_case["token_layers"],
+            score_compute_dtype=jnp.bfloat16,
+        )
+
+    bf16_actual_fn = jax.jit(run_bf16_actual) if jit_mode else run_bf16_actual
+    bf16_ref_fn = jax.jit(run_bf16_ref) if jit_mode else run_bf16_ref
+    bf16_actual = np.asarray(bf16_actual_fn())
+    bf16_ref = np.asarray(bf16_ref_fn())
+    assert bf16_actual.dtype == np.float32
+    np.testing.assert_allclose(bf16_actual, bf16_ref, rtol=0.0, atol=5e-3)
+
+
+def test_width1_single_conditioning_keeps_single_path_and_scan_terms_at_width_1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Single conditioning and token-transformer AdaLN terms stay width-1 at M=5."""
+
+    from foldjax.models.boltz2.models.diffusion import diffusion as diffusion_impl
+
+    multiplicity = 5
+    token_layers = 2
+    case = _width1_score_case(
+        multiplicity=multiplicity, batch=1, token_layers=token_layers
+    )
+    n_tokens = case["feats"]["token_pad_mask"].shape[1]
+    single_dim = case["score_params"]["a_norm"]["scale"].shape[0]
+
+    seen_single: list[tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]] = []
+    real_single = diffusion_impl.single_conditioning_forward
+
+    def spy_single(params, times, s_trunk, s_inputs, **kwargs):
+        seen_single.append((times.shape, s_trunk.shape, s_inputs.shape))
+        return real_single(params, times, s_trunk, s_inputs, **kwargs)
+
+    seen_dt: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
+    real_dt = diffusion_impl.diffusion_transformer_forward
+
+    def spy_dt(*args, **kwargs):
+        seen_dt.append((kwargs["a"].shape, kwargs["s"].shape))
+        return real_dt(*args, **kwargs)
+
+    monkeypatch.setattr(diffusion_impl, "single_conditioning_forward", spy_single)
+    monkeypatch.setattr(diffusion_impl, "diffusion_transformer_forward", spy_dt)
+
+    jaxpr = jax.make_jaxpr(
+        lambda r_noisy, times: diffusion_score_model_forward(
+            case["score_params"],
+            s_inputs=case["s_inputs"],
+            s_trunk=case["s_trunk"],
+            r_noisy=r_noisy,
+            times=times,
+            feats=case["feats"],
+            diffusion_conditioning=case["conditioning"],
+            multiplicity=multiplicity,
+            use_scan=True,
+            token_layers=token_layers,
+        )
+    )(case["r_noisy"], case["times_compact"])
+
+    assert seen_single == [
+        (
+            (1,),
+            (1, n_tokens, case["s_trunk"].shape[-1]),
+            (1, n_tokens, case["s_inputs"].shape[-1]),
+        )
+    ]
+    assert seen_dt == [
+        ((multiplicity, n_tokens, single_dim), (1, n_tokens, single_dim))
+    ]
+
+    token_scans = [
+        eqn
+        for eqn in jaxpr.jaxpr.eqns
+        if eqn.primitive.name == "scan"
+        and any(
+            v.aval.ndim == 5 and v.aval.shape[2:4] == (n_tokens, n_tokens)
+            for v in eqn.invars
+        )
+    ]
+    assert len(token_scans) == 1
+    scan = token_scans[0]
+    s_term_operands = [
+        v
+        for v in scan.invars
+        if v.aval.ndim == 4
+        and v.aval.shape[0] == token_layers
+        and v.aval.shape[2:] == (n_tokens, single_dim)
+    ]
+    assert len(s_term_operands) == 6
+    assert all(
+        v.aval.shape == (token_layers, 1, n_tokens, single_dim)
+        for v in s_term_operands
+    )
+
+
+def test_width1_single_conditioning_edge_and_error_contracts() -> None:
+    """Only one structure with one-entry times changes path; the rest is historical."""
+
+    def outcome(fn, **kwargs):
+        try:
+            return np.asarray(fn(**kwargs))
+        except Exception as error:  # noqa: BLE001 - compared by type below
+            return type(error)
+
+    def assert_historical(case, *, multiplicity, **overrides):
+        kwargs = {
+            "s_inputs": case["s_inputs"],
+            "s_trunk": case["s_trunk"],
+            "r_noisy": case["r_noisy"],
+            "times": case["times_compact"],
+            "feats": case["feats"],
+            "diffusion_conditioning": case["conditioning"],
+            "multiplicity": multiplicity,
+            "use_scan": True,
+            "token_layers": case["token_layers"],
+        }
+        kwargs.update(overrides)
+        expected = outcome(
+            lambda **kw: _historical_width_m_score_forward(case["score_params"], **kw),
+            **kwargs,
+        )
+        actual = outcome(
+            lambda **kw: diffusion_score_model_forward(case["score_params"], **kw),
+            **kwargs,
+        )
+        if isinstance(expected, type):
+            assert actual is expected
+        else:
+            np.testing.assert_array_equal(
+                actual.view(np.uint32), expected.view(np.uint32)
+            )
+
+    # Width-1 conditioning beside two activation rows with distinct times, at
+    # the default multiplicity, takes the historical path.
+    single = _width1_score_case(multiplicity=1, batch=1, token_layers=1)
+    assert_historical(
+        single,
+        multiplicity=1,
+        r_noisy=jnp.repeat(single["r_noisy"], 2, axis=0),
+        times=jnp.asarray([0.2, 0.7], dtype=jnp.float32),
+    )
+    # A scalar times, a mismatched s_inputs batch, and coordinates that do not
+    # match batch * multiplicity keep the historical result or error.
+    assert_historical(single, multiplicity=1, times=jnp.float32(0.2))
+    assert_historical(single, multiplicity=1, times=0.2)
+    # Rank-2 and scalar conditioning keep the historical result or error.
+    triple_rank2 = _width1_score_case(multiplicity=3, batch=1, token_layers=1)
+    assert_historical(
+        triple_rank2,
+        multiplicity=3,
+        s_trunk=triple_rank2["s_trunk"][:, 0, :],
+        s_inputs=triple_rank2["s_inputs"][:, 0, :],
+    )
+    assert_historical(single, multiplicity=1, s_inputs=jnp.float32(0.0))
+    # Unequal conditioning token counts, a non-int multiplicity, and a missing
+    # conditioner with no s_inputs keep the historical result or error.
+    assert_historical(
+        triple_rank2, multiplicity=3, s_inputs=triple_rank2["s_inputs"][:, :-1, :]
+    )
+    assert_historical(triple_rank2, multiplicity=np.int64(3))
+    missing = dict(triple_rank2, score_params={
+        k: v for k, v in triple_rank2["score_params"].items()
+        if k != "single_conditioner"
+    })
+    assert_historical(missing, multiplicity=3, s_inputs=None)
+    assert_historical(
+        single, multiplicity=1, s_inputs=jnp.repeat(single["s_inputs"], 2, axis=0)
+    )
+    triple = _width1_score_case(multiplicity=3, batch=1, token_layers=1)
+    assert_historical(
+        triple,
+        multiplicity=3,
+        r_noisy=jnp.repeat(triple["r_noisy"], 2, axis=0),
+    )

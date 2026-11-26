@@ -543,6 +543,15 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Boltz-2's sampler computes its single conditioning once per structure,
+  not once per sample.** When every sample shares one structure's trunk
+  outputs and a single noise level, the single conditioner runs at width one
+  and broadcasts instead of repeating `s_trunk` and `s_inputs` per sample. On
+  one RTX PRO 6000, five samples, warm: 1,003 tokens 0.97x wall at the same
+  peak; 3,012 tokens equal wall with peak 32,254 -> 31,098 MiB. The narrower
+  projection rounds differently on the GPU: per-chain CA RMSD to the deposited
+  structures moved by at most 0.002 Å and the same-index CA residual between
+  the two routes was 0.004-0.051 Å.
 - **OpenDDE runs its diffusion attention on tokamax
   (`diffusion_attention_backend=tokamax`) by default on a serial GPU.** An
   omitted option now realises `tokamax` on a single unguided GPU process and

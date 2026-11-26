@@ -27,6 +27,38 @@ from foldjax.models.boltz2.models.trunk_blocks.conditioning import (
 Params = Mapping[str, object]
 
 
+def one_structure_conditioning(
+    s_trunk: object, s_inputs: object, r_noisy: object, multiplicity: int
+) -> bool:
+    """Whether one structure's ``multiplicity`` samples meet ``[1, N, C]`` inputs.
+
+    That layout lets the single side run at width 1 and broadcast against the
+    per-sample activations, which the transformer layers already accept. Any
+    other shape, rank or type keeps the per-sample path, so its results and
+    errors stay as they were.
+    """
+
+    def shape(x: object) -> tuple[int, ...] | None:
+        value = getattr(x, "shape", None)
+        return tuple(value) if value is not None else None
+
+    if type(multiplicity) is not int or multiplicity < 1:
+        return False
+    trunk, inputs, noisy = shape(s_trunk), shape(s_inputs), shape(r_noisy)
+    return (
+        trunk is not None
+        and inputs is not None
+        and noisy is not None
+        and len(trunk) == 3
+        and len(inputs) == 3
+        and trunk[0] == 1
+        and inputs[0] == 1
+        and trunk[1] == inputs[1]
+        and len(noisy) >= 1
+        and noisy[0] == multiplicity
+    )
+
+
 def diffusion_score_model_forward(
     params: Params,
     s_inputs: jnp.ndarray,
@@ -48,6 +80,12 @@ def diffusion_score_model_forward(
 ) -> jnp.ndarray:
     """Run Boltz DiffusionModule.forward using precomputed conditioning.
 
+    A one-entry ``times`` beside one structure's ``multiplicity`` samples gives
+    every sample the same noise level, so ``single_conditioner``,
+    ``s_to_a_linear`` and the token transformer's AdaLN ``s``-terms run at
+    width 1 and broadcast against the per-sample activations. Any other
+    layout, a per-sample ``times`` included, keeps the per-sample path.
+
     ``score_compute_dtype`` is the opt-in low-precision diffusion knob.
     ``None`` is the released behaviour: every activation follows ``r_noisy``,
     which is also what the unreleased custom low-precision score weights want.
@@ -60,6 +98,10 @@ def diffusion_score_model_forward(
     logits either way.
     """
 
+    per_structure = getattr(times, "shape", None) == (
+        1,
+    ) and one_structure_conditioning(s_trunk, s_inputs, r_noisy, multiplicity)
+
     residual_dtype = r_noisy.dtype
     bias_dtype = (
         residual_dtype
@@ -69,8 +111,8 @@ def diffusion_score_model_forward(
     s, _ = single_conditioning_forward(
         params["single_conditioner"],
         times,
-        jnp.repeat(s_trunk, multiplicity, axis=0),
-        jnp.repeat(s_inputs, multiplicity, axis=0),
+        s_trunk if per_structure else jnp.repeat(s_trunk, multiplicity, axis=0),
+        s_inputs if per_structure else jnp.repeat(s_inputs, multiplicity, axis=0),
         eps=eps,
     )
     if score_compute_dtype is not None:

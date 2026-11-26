@@ -19,6 +19,7 @@ from foldjax.models.boltz2.models.diffusion.atom import (
 from foldjax.models.boltz2.models.diffusion.diffusion import (
     conditioned_diffusion_score_forward,
     diffusion_score_model_forward,
+    one_structure_conditioning,
 )
 from foldjax.models.boltz2.models.diffusion.diffusion_conditioning import (
     diffusion_conditioning_forward,
@@ -1719,8 +1720,13 @@ def _preconditioned_score_forward(
         # which the knob leaves fp32, at full width. `times` is still narrowed
         # inside the fourier projection, as autocast would.
         activation_dtype = r_noisy.dtype
+    # Every sample shares `sigma`, so one structure's samples take one entry
+    # and the score model runs its single conditioning once.
+    one_structure = one_structure_conditioning(
+        s_trunk, s_inputs, r_noisy, multiplicity
+    )
     times = jnp.full(
-        (r_noisy.shape[0],),
+        (1 if one_structure else r_noisy.shape[0],),
         jnp.log(sigma / sigma_data) * 0.25,
         dtype=activation_dtype,
     )
