@@ -310,9 +310,14 @@ def sample_diffusion(
 
 #: Largest per-block token pair-bias cache, in bytes, that
 #: ``sample_diffusion_with_module`` builds once before the sampler (24 blocks x
-#: 16 heads x S^2 float32: about 2,364 tokens). Above it every step projects
-#: the pair again.
-_DIFFUSION_PAIR_BIAS_CACHE_MAX_BYTES = 8 * 1024**3
+#: 16 heads x S^2 float32: about 3,344 tokens). Above it every step projects
+#: the pair again. At 3,012 tokens the 13 GiB cache left the device peak within
+#: 36 MiB, because the trunk sets it.
+_DIFFUSION_PAIR_BIAS_CACHE_MAX_BYTES = 16 * 1024**3
+
+#: Cap for the unscanned build, which stacks 24 separately materialised biases
+#: and so briefly holds the cache twice.
+_UNSCANNED_PAIR_BIAS_CACHE_MAX_BYTES = 8 * 1024**3
 
 
 def _guidance_enabled(guidance_config: Any) -> bool:
@@ -422,10 +427,10 @@ def sample_diffusion_with_module(
                 token_padding_mask,
             )
             cache = jax.eval_shape(build, *args)
-            if (
-                math.prod(cache.shape) * cache.dtype.itemsize
-                <= _DIFFUSION_PAIR_BIAS_CACHE_MAX_BYTES
-            ):
+            cap = _DIFFUSION_PAIR_BIAS_CACHE_MAX_BYTES
+            if not use_scan:
+                cap = min(cap, _UNSCANNED_PAIR_BIAS_CACHE_MAX_BYTES)
+            if math.prod(cache.shape) * cache.dtype.itemsize <= cap:
                 precomputed_pair_bias = build(*args)
                 transformer_z = None
 

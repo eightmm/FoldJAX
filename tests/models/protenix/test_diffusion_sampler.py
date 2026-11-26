@@ -855,6 +855,21 @@ def test_pair_bias_cache_gate_refuses_cap_cp_unfused_and_guidance(
         )
         assert all(call.get("transformer_z") is None for call in forward_calls)
 
+    # The unrolled build holds the cache twice, so its tighter cap binds there
+    # and only there.
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            protenix_diffusion, "_DIFFUSION_PAIR_BIAS_CACHE_MAX_BYTES", exact_bytes
+        )
+        mp.setattr(
+            protenix_diffusion, "_UNSCANNED_PAIR_BIAS_CACHE_MAX_BYTES", exact_bytes - 1
+        )
+        builds.clear()
+        run_sampler()
+        assert len(builds) == 0
+        run_sampler(use_scan=True)
+        assert len(builds) == 1
+
     # One byte over the cap, zero, and negative caps: refused, uncached path intact.
     for cap in (exact_bytes - 1, 0, -1):
         with monkeypatch.context() as mp:
