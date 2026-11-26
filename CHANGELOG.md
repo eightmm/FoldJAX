@@ -543,6 +543,15 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Protenix computes its diffusion-transformer pair bias once per
+  prediction, not once per denoiser step.** With efficient fusion on, a serial
+  run without guidance builds every block's token pair bias once before the
+  sampler and hands it to each step, as long as the cache (`24 x 16 x S^2 x 4`
+  bytes for S tokens) fits 8 GiB, about 2,364 tokens. Context parallelism,
+  TFG guidance, a separately jitted eager denoiser and larger inputs keep the
+  per-step projection. On one RTX PRO 6000, five samples, warm: 1,003 tokens
+  45.3 -> 40.3 s (0.889x) and 1,993 tokens 195.3 -> 167.6 s (0.858x), device
+  peak +4 and +20 MiB, coordinates bitwise identical at both.
 - **OpenFold3 computes its step-invariant atom conditioning once per
   prediction, not once per denoiser step.** On a serial run the reference atom
   embedding, the atom-pair conditioning and the encoder and decoder atom pair

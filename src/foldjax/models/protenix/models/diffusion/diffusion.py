@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import NamedTuple
+import math
+from collections.abc import Mapping, Sequence
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -18,6 +19,7 @@ from foldjax.models.protenix.models.diffusion.atom import (
 )
 from foldjax.models.protenix.models.diffusion.transformer import (
     DiffusionTransformerStackParams,
+    build_diffusion_pair_bias_cache,
     diffusion_transformer_stack,
 )
 from foldjax.models.protenix.models.primitives.primitives import (
@@ -306,6 +308,25 @@ def sample_diffusion(
     return jnp.concatenate(outputs, axis=-3)
 
 
+#: Largest per-block token pair-bias cache, in bytes, that
+#: ``sample_diffusion_with_module`` builds once before the sampler (24 blocks x
+#: 16 heads x S^2 float32: about 2,364 tokens). Above it every step projects
+#: the pair again.
+_DIFFUSION_PAIR_BIAS_CACHE_MAX_BYTES = 8 * 1024**3
+
+
+def _guidance_enabled(guidance_config: Any) -> bool:
+    """Whether TFG guidance is on, counting a traced flag as on."""
+    if guidance_config is None:
+        return False
+    enabled = (
+        guidance_config.get("enable", False)
+        if isinstance(guidance_config, Mapping)
+        else getattr(guidance_config, "enable", False)
+    )
+    return isinstance(enabled, jax.core.Tracer) or bool(enabled)
+
+
 def sample_diffusion_with_module(
     input_feature_dict: dict[str, jnp.ndarray | dict[str, jnp.ndarray]],
     s_inputs: jnp.ndarray,
@@ -368,11 +389,45 @@ def sample_diffusion_with_module(
     n_atom = int(atom_to_token_idx.shape[-1])
     n_token = int(s_inputs.shape[-2])
     transformer_z = None
+    precomputed_pair_bias = None
     if use_efficient_fusion and pair_z is not None:
         transformer_z = layer_norm(
             jnp.expand_dims(pair_z, axis=-4).astype(jnp.float32),
             LayerNormParams(),
         )
+        # The cache is the per-step path's own bias, built once: serial only
+        # (the builder has no row sharding), never under guidance, never into
+        # a separately jitted denoiser (a closed-over concrete cache would be
+        # lowered as a constant), and only while it fits the cap.
+        if (
+            cp_mesh() is None
+            and not use_denoiser_jit
+            and not _guidance_enabled(guidance_config)
+        ):
+
+            def build(z, stack, extra, mask):
+                return build_diffusion_pair_bias_cache(
+                    z,
+                    stack,
+                    extra_attn_bias=extra,
+                    sequence_mask=mask,
+                    z_is_normalized=True,
+                    use_scan=use_scan,
+                )
+
+            args = (
+                transformer_z,
+                params.diffusion_transformer,
+                extra_attn_bias,
+                token_padding_mask,
+            )
+            cache = jax.eval_shape(build, *args)
+            if (
+                math.prod(cache.shape) * cache.dtype.itemsize
+                <= _DIFFUSION_PAIR_BIAS_CACHE_MAX_BYTES
+            ):
+                precomputed_pair_bias = build(*args)
+                transformer_z = None
 
     def denoise_fn(x_noisy: jnp.ndarray, t_hat: jnp.ndarray) -> jnp.ndarray:
         """One evaluation of the denoising network at the sampler's boundary.
@@ -413,8 +468,15 @@ def sample_diffusion_with_module(
             pair_z=pair_z,
             p_lm=p_lm,
             c_l=c_l,
-            extra_attn_bias=extra_attn_bias,
+            extra_attn_bias=(
+                None if precomputed_pair_bias is not None else extra_attn_bias
+            ),
             transformer_z=transformer_z,
+            **(
+                {}
+                if precomputed_pair_bias is None
+                else {"precomputed_pair_bias": precomputed_pair_bias}
+            ),
             n_token=n_token,
             atom_encoder_heads=atom_encoder_heads,
             token_heads=token_heads,
