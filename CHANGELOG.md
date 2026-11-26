@@ -560,6 +560,14 @@ unless it says so here, in its own paragraph.
   the bfloat16 its projection reads. On one RTX PRO 6000, five samples, warm:
   1,003 tokens 0.94x wall and 2,096 tokens 0.92x wall, at the same peak (-72
   MiB at 2,096 tokens); coordinates were bit-identical at both sizes.
+- **OpenFold3 runs its fused Pallas pair transition without the outer row
+  chunks.** The fused kernel tiles rows itself, so the outer chunk wrapper
+  only added pad and slice copies; the XLA and tokamax transitions, which
+  materialise the widened hidden tensor, stay chunked. The per-sample PAE
+  metrics also reuse one softmax of float32 logits when the PAE logits are not
+  returned. On one RTX PRO 6000, five samples, warm: peak 3,668 -> 3,412 MiB at
+  1,003 tokens and 13,432 -> 12,136 MiB at 2,096 tokens, wall unchanged;
+  coordinates were bit-identical under `deterministic=on`.
 - **OpenDDE runs its diffusion attention on tokamax
   (`diffusion_attention_backend=tokamax`) by default on a serial GPU.** An
   omitted option now realises `tokamax` on a single unguided GPU process and

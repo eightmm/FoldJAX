@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, NamedTuple
 
 import jax
@@ -213,13 +213,19 @@ _PADDED_MODEL_FEATURES = _PADDED_MODEL_FEATURES.union({ZERO_TEMPLATE_GEOMETRY_MA
 
 def _restore_ref_atom_category_one_hot(
     features: Mapping[str, Any],
+    *,
+    output_dtype: Any = jnp.float32,
+    port: str = "Protenix",
+    allow_batch: bool = False,
+    pass_through_when_absent: bool = True,
+    validator: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> Mapping[str, Any]:
-    """Restore private uint8 categories to the historical float32 pair.
+    """Restore private uint8 categories to the historical dense one-hot pair.
 
     Dense public arrays remain authoritative and strip any stale private
-    provenance.  Private values are host-validated by
-    :func:`protenix_infer_compiled`; the trace-safe shape and dtype checks here
-    also protect direct calls to the private graph entry.
+    provenance.  Private values are host-validated by the compiled entry; the
+    trace-safe shape and dtype checks here also protect direct calls to the
+    private graph entry.
     """
 
     has_element = "ref_element" in features
@@ -240,42 +246,55 @@ def _restore_ref_atom_category_one_hot(
         if name not in features
     ]
     if missing:
-        # Keep the ordinary dense-path failure at its historical consumer when
-        # no private provenance was supplied at all.
-        if len(missing) == len(COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES):
-            return features
+        if pass_through_when_absent:
+            # Keep the ordinary dense-path failure at its historical consumer when
+            # no private provenance was supplied at all.
+            if len(missing) == len(COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES):
+                return features
+            raise KeyError(
+                f"{port} input has incomplete private compact ref atom categories; "
+                "missing " + ", ".join(missing)
+            )
         raise KeyError(
-            "Protenix input has incomplete private compact ref atom categories; "
-            "missing " + ", ".join(missing)
+            f"{port} input needs dense ref atom categories or complete private "
+            "compact categories; missing " + ", ".join(missing)
         )
 
     private_values = tuple(
         features[name] for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES
     )
     if not any(isinstance(value, jax.core.Tracer) for value in private_values):
-        validate_compact_ref_atom_categories(features)
+        (validate_compact_ref_atom_categories if validator is None else validator)(
+            features
+        )
     marker = jnp.asarray(features[COMPACT_REF_ATOM_CATEGORIES_MARKER])
     element_ids = jnp.asarray(features[COMPACT_REF_ELEMENT_IDS])
     char_ids = jnp.asarray(features[COMPACT_REF_ATOM_NAME_CHAR_IDS])
     if marker.shape != () or marker.dtype != jnp.dtype(jnp.uint8):
         raise ValueError(
-            "Protenix compact ref atom category marker must be scalar uint8"
+            f"{port} compact ref atom category marker must be scalar uint8"
         )
     if element_ids.dtype != jnp.dtype(jnp.uint8):
-        raise ValueError("Protenix compact ref element IDs must have dtype uint8")
+        raise ValueError(f"{port} compact ref element IDs must have dtype uint8")
     if char_ids.dtype != jnp.dtype(jnp.uint8):
-        raise ValueError("Protenix compact ref atom-name IDs must have dtype uint8")
-    if element_ids.ndim != 1 or char_ids.shape != (element_ids.shape[0], 4):
+        raise ValueError(f"{port} compact ref atom-name IDs must have dtype uint8")
+    if allow_batch:
+        if element_ids.ndim < 1 or char_ids.shape != (*element_ids.shape, 4):
+            raise ValueError(
+                f"{port} compact ref atom category IDs must have shapes [..., A] "
+                "and [..., A, 4]"
+            )
+    elif element_ids.ndim != 1 or char_ids.shape != (element_ids.shape[0], 4):
         raise ValueError(
-            "Protenix compact ref atom category IDs must have shapes [A] and [A, 4]"
+            f"{port} compact ref atom category IDs must have shapes [A] and [A, 4]"
         )
 
     out = dict(features)
     out["ref_element"] = jax.nn.one_hot(
-        element_ids.astype(jnp.int32), 128, dtype=jnp.float32
+        element_ids.astype(jnp.int32), 128, dtype=output_dtype
     )
     out["ref_atom_name_chars"] = jax.nn.one_hot(
-        char_ids.astype(jnp.int32), 64, dtype=jnp.float32
+        char_ids.astype(jnp.int32), 64, dtype=output_dtype
     )
     for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES:
         out.pop(name, None)

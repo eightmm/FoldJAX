@@ -41,10 +41,7 @@ from foldjax.models._graph import (
 )
 from foldjax.models._jit_pool import BoundedJitPool
 from foldjax.models.opendde.data.compact_categories import (
-    COMPACT_REF_ATOM_CATEGORIES_MARKER,
     COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES,
-    COMPACT_REF_ATOM_NAME_CHAR_IDS,
-    COMPACT_REF_ELEMENT_IDS,
     validate_compact_ref_atom_categories,
 )
 from foldjax.models.opendde.models.diffusion_conditioning import (
@@ -76,6 +73,9 @@ from foldjax.models.protenix.models.heads.confidence import (
 from foldjax.models.protenix.models.heads.head import DistogramParams, distogram_head
 from foldjax.models.protenix.models.input_precision import (
     native_confidence_autocast_params,
+)
+from foldjax.models.protenix.models.model import (
+    _restore_ref_atom_category_one_hot as _restore_protenix_ref_atom_category_one_hot,
 )
 from foldjax.models.protenix.models.primitives.primitives import (
     AutocastLinearParams,
@@ -608,72 +608,16 @@ def _validate_static_structural_features(
 def _restore_ref_atom_category_one_hot(
     features: Mapping[str, Any],
 ) -> Mapping[str, Any]:
-    """Restore private uint8 categories to the historical dense int64 pair.
+    """Restore private uint8 categories to the historical dense int64 pair."""
 
-    This runs at the model boundary, immediately before the existing trunk and
-    atom projections. Dense arrays have priority and discard any stale private
-    provenance.  The compiled wrapper value-validates private arrays on host;
-    here shape/dtype checks remain trace-safe for JIT and direct static calls.
-    """
-
-    has_element = "ref_element" in features
-    has_chars = "ref_atom_name_chars" in features
-    if has_element or has_chars:
-        if not any(
-            name in features for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES
-        ):
-            return features
-        out = dict(features)
-        for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES:
-            out.pop(name, None)
-        return out
-
-    out = dict(features)
-
-    missing = [
-        name
-        for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES
-        if name not in features
-    ]
-    if missing:
-        raise KeyError(
-            "OpenDDE input needs dense ref atom categories or complete private "
-            "compact categories; missing " + ", ".join(missing)
-        )
-    # Direct eager callers do not pass through `opendde_infer_compiled`'s host
-    # boundary, so give them the same value-level malformed-provenance error.
-    # Inside the compiled graph these are tracers and the wrapper has already
-    # performed this check before tracing.
-    private_values = tuple(
-        features[name] for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES
+    return _restore_protenix_ref_atom_category_one_hot(
+        features,
+        output_dtype=jnp.int64,
+        port="OpenDDE",
+        allow_batch=True,
+        pass_through_when_absent=False,
+        validator=validate_compact_ref_atom_categories,
     )
-    if not any(isinstance(value, jax.core.Tracer) for value in private_values):
-        validate_compact_ref_atom_categories(features)
-    marker = jnp.asarray(features[COMPACT_REF_ATOM_CATEGORIES_MARKER])
-    element_ids = jnp.asarray(features[COMPACT_REF_ELEMENT_IDS])
-    char_ids = jnp.asarray(features[COMPACT_REF_ATOM_NAME_CHAR_IDS])
-    if marker.shape != () or marker.dtype != jnp.dtype(jnp.uint8):
-        raise ValueError(
-            "OpenDDE compact ref atom category marker must be scalar uint8"
-        )
-    if element_ids.dtype != jnp.dtype(jnp.uint8):
-        raise ValueError("OpenDDE compact ref element IDs must have dtype uint8")
-    if char_ids.dtype != jnp.dtype(jnp.uint8):
-        raise ValueError("OpenDDE compact ref atom-name IDs must have dtype uint8")
-    if element_ids.ndim < 1 or char_ids.shape != (*element_ids.shape, 4):
-        raise ValueError(
-            "OpenDDE compact ref atom category IDs must have shapes [..., A] "
-            "and [..., A, 4]"
-        )
-    out["ref_element"] = jax.nn.one_hot(
-        element_ids.astype(jnp.int32), 128, dtype=jnp.int64
-    )
-    out["ref_atom_name_chars"] = jax.nn.one_hot(
-        char_ids.astype(jnp.int32), 64, dtype=jnp.int64
-    )
-    for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES:
-        out.pop(name, None)
-    return out
 
 
 def prepare_structural_features(
