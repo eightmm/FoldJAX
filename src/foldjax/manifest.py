@@ -1416,9 +1416,9 @@ def request_mismatch(
             "the options differ",
         ),
         # An omitted option can resolve by device (ESMFold2's triangle
-        # kernel), so equal options do not name the run a CPU and a GPU
-        # process would each make. Manifests without a runtime
-        # record cannot show theirs and rerun.
+        # kernel, OpenDDE's diffusion attention), so equal options do not
+        # name the run a CPU and a GPU process would each make. Manifests
+        # without a runtime record cannot show theirs and rerun.
         (
             _exact_value(_recorded_platform(document), _selected_platform(request)),
             "the device platform differs",

@@ -21,6 +21,7 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import json
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -213,6 +214,8 @@ def test_defaults_stay_xla_jit_and_tokamax_reaches_runner_and_model(
             "import_module",
             lambda _name: native_module("opendde", record_run),
         )
+        # The off-GPU arm: an omitted option stays the historical xla_jit.
+        mp.setattr(backend_impl, "_gpu_process", lambda: False)
 
         omitted = _request(tmp_path)
         omitted_result = backend.predict(omitted)
@@ -740,6 +743,93 @@ def test_opendde_diffusion_tokamax_matches_xla_jit_for_token_and_atom_sites(
     np.testing.assert_array_equal(np.asarray(tok_out)[:, masked_atoms, :], 0.0)
 
 
+def test_float32_opendde_denoiser_on_tokamax_does_not_warn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The float32 default path stays quiet; a float32 Protenix call still warns."""
+    _tokamax_xla(monkeypatch)
+    fixture = _opendde_diffusion_fixture()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        out = _call_denoiser(fixture, attention_backend="tokamax", use_scan=False)
+    assert out.dtype == jnp.float32
+    assert attention_tokamax._WARNED_FLOAT32 is False
+
+    q = jnp.zeros((1, 4, 2, 8), jnp.float32)
+    with pytest.warns(UserWarning, match="float32 q/k/v"):
+        attention_tokamax.tokamax_attention(q, q, q)
+
+
+def test_float32_intent_does_not_reach_another_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    _tokamax_xla(monkeypatch)
+    q = jnp.zeros((1, 4, 2, 8), jnp.float32)
+    caught: list[warnings.WarningMessage] = []
+
+    def other_thread() -> None:
+        with warnings.catch_warnings(record=True) as seen:
+            warnings.simplefilter("always")
+            attention_tokamax.tokamax_attention(q, q, q)
+        caught.extend(seen)
+
+    with attention_tokamax.float32_intended():
+        thread = threading.Thread(target=other_thread)
+        thread.start()
+        thread.join()
+    assert any("float32 q/k/v" in str(w.message) for w in caught)
+
+
+def test_tokamax_drops_the_automatic_token_query_width_but_keeps_a_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from foldjax import execution
+    from foldjax.models.opendde.models import model
+
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        model, "opendde_infer_compiled", lambda *args, **kw: calls.append(kw)
+    )
+    features = {"restype": np.zeros((1200, 32), np.float32)}
+    settings = dict(
+        seed=0,
+        num_samples=1,
+        num_steps=1,
+        num_recycles=1,
+        n_queries=2,
+        n_keys=4,
+        trunk_single_attention_backend="xla_jit",
+        structural_single_attention_backend="xla_jit",
+        cycle_msa_features=(),
+    )
+    cases = (
+        ("xla_jit", None, "automatic"),
+        ("tokamax", None, None),
+        ("tokamax", 128, 128),
+    )
+    try:
+        for backend, pin, expected in cases:
+            execution.clear_chunking_record()
+            opendde_runner._predict(
+                features,
+                (),
+                diffusion_attention_backend=backend,
+                chunk_overrides={"token_q_chunk_size": pin},
+                **settings,
+            )
+            recorded = execution.recorded_chunking()["profiles"][0]["chunks"]
+            forwarded = calls[-1]["token_q_chunk_size"]
+            assert recorded["token_q_chunk_size"] == forwarded
+            if expected == "automatic":
+                assert forwarded is not None
+            else:
+                assert forwarded == expected
+    finally:
+        execution.clear_chunking_record()
+
+
 def test_extra_attn_bias_and_padding_masks_act_identically_on_tokamax(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1135,3 +1225,346 @@ def test_tokamax_is_refused_under_context_parallelism_on_opendde_denoiser(
     )
     with pytest.raises(SystemExit, match="not supported under context parallelism"):
         OpenDDEBackend().predict(request)
+
+
+# ----------------------------------------------------------------------- (e) --
+# Omitted-option resolution: tokamax on a serial unguided GPU, xla_jit elsewhere.
+
+
+def _stub_full_backend_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Stub I/O and model entries so OpenDDEBackend.predict runs end-to-end on CPU."""
+    infer_calls: list[tuple[str, dict[str, Any]]] = []
+    job = {"name": "tiny", "modelSeeds": [101], "sequences": []}
+    monkeypatch.setattr(opendde_runner, "_load_jobs", lambda _p: [job])
+    monkeypatch.setattr(
+        opendde_runner,
+        "_featurize",
+        lambda *_a, **_k: {"restype": np.zeros((2, 32), dtype=np.float32)},
+    )
+    monkeypatch.setattr(
+        opendde_runner,
+        "_load_prepared_params",
+        lambda _p, _d: inference_params(),
+    )
+    monkeypatch.setattr(
+        "foldjax.models.protenix.data.geometry.prepare_tfg_features",
+        lambda raw, **_k: {**raw, "geometry_unsupported": False},
+    )
+    monkeypatch.setattr(
+        opendde_model,
+        "opendde_infer_compiled",
+        lambda _f, _p, _s, **kw: (
+            infer_calls.append(("compiled", dict(kw)))
+            or {"coordinate": np.zeros((1, 3, 3), dtype=np.float32)}
+        ),
+    )
+    monkeypatch.setattr(
+        opendde_model,
+        "opendde_infer_static",
+        lambda _f, _p, _s, **kw: (
+            infer_calls.append(("static", dict(kw)))
+            or {"coordinate": np.zeros((1, 3, 3), dtype=np.float32)}
+        ),
+    )
+    monkeypatch.setattr(opendde_runner, "_score", lambda out, *_a, **_k: dict(out))
+
+    def fake_write(root: Path, **kw: Any) -> list[Path]:
+        pred_dir = root / kw["job_name"] / "predictions"
+        pred_dir.mkdir(parents=True, exist_ok=True)
+        cif = pred_dir / "tiny_sample_0.cif"
+        cif.write_text("data_x\n", encoding="utf-8")
+        (pred_dir / "tiny_summary_confidences_0.json").write_text(
+            json.dumps({"ranking_score": 0.9}), encoding="utf-8"
+        )
+        return [cif]
+
+    monkeypatch.setattr(opendde_runner, "_write", fake_write)
+    return infer_calls
+
+
+def test_omitted_diffusion_attention_resolves_to_tokamax_on_serial_gpu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Serial unguided GPU resolves omitted -> tokamax across profile, argv, predict."""
+    monkeypatch.setattr("foldjax.models._pallas_pair.gpu_process", lambda: True)
+    backend = OpenDDEBackend()
+    omitted = _request(
+        tmp_path / "gpu-omitted", num_samples=1, num_steps=2, num_recycles=1
+    )
+    explicit_tok = dataclasses.replace(
+        omitted,
+        output_dir=tmp_path / "gpu-tok",
+        options={**omitted.options, "diffusion_attention_backend": "tokamax"},
+    )
+    explicit_xla_jit = dataclasses.replace(
+        omitted,
+        output_dir=tmp_path / "gpu-xla-jit",
+        options={**omitted.options, "diffusion_attention_backend": "xla_jit"},
+    )
+    explicit_xla = dataclasses.replace(
+        omitted,
+        output_dir=tmp_path / "gpu-xla",
+        options={**omitted.options, "diffusion_attention_backend": "xla"},
+    )
+
+    assert backend_impl.realised_diffusion_attention_backend(None) == "tokamax"
+    assert (
+        backend_impl.realised_diffusion_attention_backend(None, cp_devices=1)
+        == "tokamax"
+    )
+    assert (
+        backend_impl.realised_diffusion_attention_backend(None, cp_devices="1")
+        == "tokamax"
+    )
+
+    # Cache profile records `tokamax` and aliases explicit `tokamax`;
+    # `xla_jit` stays distinct.
+    omitted_profile = backend.cache_profile(omitted)
+    assert omitted_profile["diffusion_attention_backend"] == "tokamax"
+    assert omitted_profile == backend.cache_profile(explicit_tok)
+    assert resolve_cache_dir(omitted, backend) == resolve_cache_dir(
+        explicit_tok, backend
+    )
+    assert "diffusion_attention_backend" not in backend.cache_profile(explicit_xla_jit)
+    assert resolve_cache_dir(omitted, backend) != resolve_cache_dir(
+        explicit_xla_jit, backend
+    )
+    assert resolve_cache_dir(omitted, backend) != resolve_cache_dir(
+        explicit_xla, backend
+    )
+
+    # Invocation renders `--diffusion-attention-backend tokamax` matching the
+    # native parser namespace.
+    invocation = backend._native_invocation(omitted)
+    assert invocation.config_fields["diffusion_attention_backend"] == "tokamax"
+    assert (
+        invocation.argv[invocation.argv.index("--diffusion-attention-backend") + 1]
+        == "tokamax"
+    )
+    parsed = capture_parser(opendde_cli.main).parse_args(invocation.argv)
+    assert parsed.diffusion_attention_backend == "tokamax"
+
+    # Full backend.predict -> runner.run_prediction -> opendde_infer_compiled.
+    infer_calls = _stub_full_backend_run(monkeypatch)
+    result = backend.predict(omitted)
+    assert "--diffusion-attention-backend" in result.raw["argv"]
+    assert infer_calls[-1][0] == "compiled"
+    assert infer_calls[-1][1]["diffusion_attention_backend"] == "tokamax"
+    assert infer_calls[-1][1]["trunk_single_attention_backend"] == "xla_jit"
+    assert infer_calls[-1][1]["structural_single_attention_backend"] == "xla_jit"
+
+    # Explicit xla_jit and xla pass through unchanged on a serial GPU.
+    for explicit_value in ("xla_jit", "xla", "xla_sdpa"):
+        req = dataclasses.replace(
+            omitted,
+            output_dir=tmp_path / f"gpu-explicit-{explicit_value}",
+            options={**omitted.options, "diffusion_attention_backend": explicit_value},
+        )
+        backend.predict(req)
+        assert infer_calls[-1][1]["diffusion_attention_backend"] == explicit_value
+
+    # Native CLI default stays xla_jit even on a GPU process.
+    cli_pred, cli_infer = _run_cli_to_infer(tmp_path / "cli-gpu-default", monkeypatch)
+    assert cli_pred[0]["diffusion_attention_backend"] == "xla_jit"
+    assert cli_infer[0][0] == "compiled"
+    assert cli_infer[0][1]["diffusion_attention_backend"] == "xla_jit"
+
+
+def test_omitted_diffusion_attention_stays_xla_jit_under_cp_tfg_and_off_gpu(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Omitted stays xla_jit under CP, TFG, and off-GPU; explicit refusals hold."""
+    backend = OpenDDEBackend()
+    infer_calls = _stub_full_backend_run(monkeypatch)
+
+    # 1. Off a GPU (CPU): omitted resolves to xla_jit and aliases explicit xla_jit.
+    monkeypatch.setattr("foldjax.models._pallas_pair.gpu_process", lambda: False)
+    cpu_omitted = _request(
+        tmp_path / "cpu-omitted", num_samples=1, num_steps=2, num_recycles=1
+    )
+    cpu_xla_jit = dataclasses.replace(
+        cpu_omitted,
+        options={**cpu_omitted.options, "diffusion_attention_backend": "xla_jit"},
+    )
+    assert backend_impl.realised_diffusion_attention_backend(None) == "xla_jit"
+    assert "diffusion_attention_backend" not in backend.cache_profile(cpu_omitted)
+    assert resolve_cache_dir(cpu_omitted, backend) == resolve_cache_dir(
+        cpu_xla_jit, backend
+    )
+    cpu_res = backend.predict(cpu_omitted)
+    assert "--diffusion-attention-backend" not in cpu_res.raw["argv"]
+    assert infer_calls[-1][0] == "compiled"
+    assert infer_calls[-1][1]["diffusion_attention_backend"] == "xla_jit"
+
+    # 2. Under CP or TFG (or with any explicit value), _gpu_process is not even probed.
+    monkeypatch.setattr(
+        backend_impl,
+        "_gpu_process",
+        lambda: (_ for _ in ()).throw(AssertionError("device probed unexpectedly")),
+    )
+    for cp_val in (2, "2", 4, np.int64(2)):
+        assert (
+            backend_impl.realised_diffusion_attention_backend(None, cp_devices=cp_val)
+            == "xla_jit"
+        )
+    for tfg_val in (True, "true", " TRUE ", np.bool_(True)):
+        assert (
+            backend_impl.realised_diffusion_attention_backend(
+                None, use_tfg_guidance=tfg_val
+            )
+            == "xla_jit"
+        )
+    for explicit_val in ("xla_jit", "xla", "xla_sdpa", "tokamax", "malformed", 0, ""):
+        assert (
+            backend_impl.realised_diffusion_attention_backend(explicit_val)
+            == explicit_val
+        )
+
+    # CP on GPU: omitted -> xla_jit (aliases explicit xla_jit, passes CP guard).
+    cp_omitted = _request(
+        tmp_path / "gpu-cp-omitted",
+        cp_devices=2,
+        num_samples=1,
+        num_steps=2,
+        num_recycles=1,
+    )
+    cp_xla_jit = dataclasses.replace(
+        cp_omitted,
+        options={**cp_omitted.options, "diffusion_attention_backend": "xla_jit"},
+    )
+    cp_tokamax = dataclasses.replace(
+        cp_omitted,
+        options={**cp_omitted.options, "diffusion_attention_backend": "tokamax"},
+    )
+    assert "diffusion_attention_backend" not in backend.cache_profile(cp_omitted)
+    assert resolve_cache_dir(cp_omitted, backend) == resolve_cache_dir(
+        cp_xla_jit, backend
+    )
+    assert backend.cache_profile(cp_tokamax)["diffusion_attention_backend"] == "tokamax"
+    assert resolve_cache_dir(cp_omitted, backend) != resolve_cache_dir(
+        cp_tokamax, backend
+    )
+    cp_res = backend.predict(cp_omitted)
+    assert "--diffusion-attention-backend" not in cp_res.raw["argv"]
+    assert infer_calls[-1][0] == "compiled"
+    assert infer_calls[-1][1]["diffusion_attention_backend"] == "xla_jit"
+
+    # Explicit tokamax under CP still reaches the runner unchanged and is refused.
+    assert (
+        backend._native_invocation(cp_tokamax).config_fields[
+            "diffusion_attention_backend"
+        ]
+        == "tokamax"
+    )
+
+    # TFG on GPU: omitted -> xla_jit (aliases explicit xla_jit, no fallback print).
+    tfg_omitted = _request(
+        tmp_path / "gpu-tfg-omitted",
+        use_tfg_guidance=True,
+        num_samples=1,
+        num_steps=2,
+        num_recycles=1,
+    )
+    tfg_xla_jit = dataclasses.replace(
+        tfg_omitted,
+        options={**tfg_omitted.options, "diffusion_attention_backend": "xla_jit"},
+    )
+    tfg_tokamax = dataclasses.replace(
+        tfg_omitted,
+        options={**tfg_omitted.options, "diffusion_attention_backend": "tokamax"},
+    )
+    assert "diffusion_attention_backend" not in backend.cache_profile(tfg_omitted)
+    assert resolve_cache_dir(tfg_omitted, backend) == resolve_cache_dir(
+        tfg_xla_jit, backend
+    )
+    capsys.readouterr()
+    tfg_res = backend.predict(tfg_omitted)
+    tfg_out = capsys.readouterr().out
+    assert "--diffusion-attention-backend" not in tfg_res.raw["argv"]
+    assert "diffusion attention runs xla_jit, not tokamax" not in tfg_out
+    assert infer_calls[-1][0] == "static"
+    assert infer_calls[-1][1]["diffusion_attention_backend"] == "xla_jit"
+
+    # Explicit tokamax under TFG keeps adapter refusal on GPU too.
+    for entry in (
+        backend.validate_request,
+        backend.cache_profile,
+        backend._native_invocation,
+        backend.predict,
+    ):
+        with pytest.raises(ValueError, match="diffusion_attention_backend=tokamax"):
+            entry(tfg_tokamax)
+
+
+def test_omitted_diffusion_attention_ignores_jax_disable_jit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A debugging switch the manifest does not record must not pick the kernel."""
+    import jax
+
+    monkeypatch.setattr(backend_impl, "_gpu_process", lambda: True)
+    assert backend_impl.realised_diffusion_attention_backend(None) == "tokamax"
+    with jax.disable_jit():
+        assert backend_impl.realised_diffusion_attention_backend(None) == "tokamax"
+
+
+def test_resolver_edge_and_malformed_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise empty, zero, limit, and malformed inputs on the shared resolver."""
+    monkeypatch.setattr(backend_impl, "_gpu_process", lambda: True)
+    backend = OpenDDEBackend()
+
+    # _strict_cp_devices edge cases: bool, zero, limit=1, >1, empty, float, malformed.
+    assert backend_impl._strict_cp_devices(0) == 0
+    assert backend_impl._strict_cp_devices(1) == 1
+    assert backend_impl._strict_cp_devices(2) == 2
+    assert backend_impl._strict_cp_devices("2") == 2
+    assert backend_impl._strict_cp_devices(True) == 1
+    assert backend_impl._strict_cp_devices(False) == 1
+    assert backend_impl._strict_cp_devices("") == 1
+    assert backend_impl._strict_cp_devices("bad") == 1
+    assert backend_impl._strict_cp_devices("2.5") == 1
+    assert backend_impl._strict_cp_devices(None) == 1
+
+    # _is_tfg_enabled edge cases: booleans, strings, numpy bool, empty, malformed.
+    assert backend_impl._is_tfg_enabled(True) is True
+    assert backend_impl._is_tfg_enabled(False) is False
+    assert backend_impl._is_tfg_enabled("true") is True
+    assert backend_impl._is_tfg_enabled(" TRUE ") is True
+    assert backend_impl._is_tfg_enabled("false") is False
+    assert backend_impl._is_tfg_enabled("") is False
+    assert backend_impl._is_tfg_enabled("maybe") is False
+    assert backend_impl._is_tfg_enabled(0) is False
+    assert backend_impl._is_tfg_enabled(1) is False
+    assert backend_impl._is_tfg_enabled(None) is False
+    assert backend_impl._is_tfg_enabled(np.bool_(True)) is True
+    assert backend_impl._is_tfg_enabled(np.bool_(False)) is False
+
+    # cp_devices=0 still hits the runner's failure exit rather than crashing.
+    with pytest.raises(SystemExit, match="cp-devices must be positive"):
+        backend.predict(_request(tmp_path / "cp-zero", cp_devices=0))
+
+    # Explicit None in options is never silently rewritten to tokamax/xla_jit.
+    explicit_none = _request(
+        tmp_path / "explicit-none", diffusion_attention_backend=None
+    )
+    assert backend.cache_profile(explicit_none)["diffusion_attention_backend"] is None
+    with pytest.raises(ValueError, match="diffusion_attention_backend must be"):
+        backend._native_invocation(explicit_none)
+
+    # Bitwise equality on the preserved XLA path (off-GPU omitted vs explicit xla_jit).
+    monkeypatch.setattr(backend_impl, "_gpu_process", lambda: False)
+    fixture = _opendde_diffusion_fixture(seed=73)
+    resolved_off_gpu = str(backend_impl.realised_diffusion_attention_backend(None))
+    assert resolved_off_gpu == "xla_jit"
+    out_resolved = _call_denoiser(fixture, attention_backend=resolved_off_gpu)
+    out_explicit = _call_denoiser(fixture, attention_backend="xla_jit")
+    max_diff = float(
+        np.max(np.abs(np.asarray(out_resolved) - np.asarray(out_explicit)))
+    )
+    assert max_diff == 0.0

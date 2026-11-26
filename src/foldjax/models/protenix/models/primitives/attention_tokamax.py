@@ -19,7 +19,10 @@ tests move to ``"xla"`` to exercise this same branch off a GPU.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import warnings
+from collections.abc import Iterator
 
 import jax.numpy as jnp
 
@@ -48,6 +51,9 @@ except Exception as error:  # pragma: no cover  # noqa: BLE001 - kept, re-raised
 TOKAMAX_IMPLEMENTATION = "triton"
 
 _WARNED_FLOAT32 = False
+_FLOAT32_INTENDED: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "tokamax_float32_intended", default=0
+)
 
 
 def tokamax_available() -> bool:
@@ -107,7 +113,7 @@ def tokamax_attention(
     )
 
     _pallas_gpu.install()
-    if q.dtype == jnp.float32:
+    if q.dtype == jnp.float32 and not _FLOAT32_INTENDED.get():
         _warn_float32_inputs()
 
     if mask is not None:
@@ -131,6 +137,22 @@ def tokamax_attention(
     if orig_q is not None and out.shape[-3] != orig_q:
         out = out[..., :orig_q, :, :]
     return out
+
+
+@contextlib.contextmanager
+def float32_intended() -> Iterator[None]:
+    """Trace a caller whose measured fast path is tokamax on float32.
+
+    OpenDDE's diffusion runs in float32 and is faster on tokamax there, so the
+    bfloat16 hint below would be wrong advice for it. The one-time latch is
+    left alone, so a later float32 Protenix run still hears it.
+    """
+
+    token = _FLOAT32_INTENDED.set(_FLOAT32_INTENDED.get() + 1)
+    try:
+        yield
+    finally:
+        _FLOAT32_INTENDED.reset(token)
 
 
 def _warn_float32_inputs() -> None:

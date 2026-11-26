@@ -30,10 +30,9 @@ unless it says so here, in its own paragraph.
   `raw_output.npz`); AlphaFold 3 and Boltz-2 already write theirs. Passing a
   name together with its other spelling, or two old names for one setting, is
   an error. Defaults, output files and run records are unchanged.
-- **OpenDDE `diffusion_attention_backend=tokamax`**, an opt-in for the
-  denoiser's token and atom attention (default unchanged, `xla_jit`). At
-  1,003 tokens the warm prediction took 0.92x the time at default precision
-  and 0.95x in float32 with raw outputs, at the same peak memory. Refused
+- **OpenDDE `diffusion_attention_backend=tokamax`**, tokamax's fused kernel
+  for the denoiser's token and atom attention. An omitted option runs it on a
+  serial GPU; see Changed for the default and its measurements. Refused
   together with `use_tfg_guidance`.
 - **ESMFold2 `triangle_backend`** (also `triangle_kernel`), selecting
   cuEquivariance's fused triangle multiplication (`cueq`) or upstream's
@@ -544,6 +543,20 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **OpenDDE runs its diffusion attention on tokamax
+  (`diffusion_attention_backend=tokamax`) by default on a serial GPU.** An
+  omitted option now realises `tokamax` on a single unguided GPU process and
+  keeps `xla_jit` on CPU, TPU, context-parallel and `use_tfg_guidance` runs;
+  `--option diffusion_attention_backend=xla_jit` restores the previous route.
+  The native predict CLI keeps `xla_jit`. Under tokamax the automatic token
+  query chunk is not applied (the kernel takes the whole query axis), and a
+  pinned `token_q_chunk_size` does not make an over-budget refusal advisory.
+  On one RTX PRO 6000, five samples, warm: 1,003 tokens 0.92x wall and 1,993
+  tokens 0.86x wall, both at the same peak; per-chain CA RMSD to the deposited
+  structures was unchanged and the same-index CA residual between the two
+  routes (0.005-0.006 Å at 1,993 tokens) matched the spread between two runs
+  of the same code, as OpenDDE's default is not deterministic across
+  processes.
 - **ESMFold2 runs cuEquivariance triangle multiplication
   (`triangle_backend=cueq`) by default on a serial GPU.** An omitted
   `triangle_backend` now realises `cueq` on a single-GPU process and keeps

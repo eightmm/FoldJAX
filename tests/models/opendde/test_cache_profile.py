@@ -95,6 +95,8 @@ def _request(tmp_path: Path, *, output: str = "out") -> PredictionRequest:
 def test_released_default_cache_aliases_reuse_one_bounded_native_owner(
     tmp_path: Path, monkeypatch
 ) -> None:
+    # Off a GPU an omitted diffusion attention realises the released xla_jit.
+    monkeypatch.setattr(backend_impl, "_gpu_process", lambda: False)
     omitted = _request(tmp_path)
     explicit = dataclasses.replace(
         omitted,

@@ -109,6 +109,11 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "max_msa_depth": 16384,
     "n_queries": 32,
     "n_keys": 128,
+    # The native parser's default, and what an omitted option still realises
+    # off a GPU, under context parallelism, and under `use_tfg_guidance`. On a
+    # serial unguided GPU process an omitted option realises `tokamax` instead
+    # and `cache_profile` records that word -- see
+    # `realised_diffusion_attention_backend`.
     "diffusion_attention_backend": "xla_jit",
     "diffusion_pair_bias_cache": False,
     "trunk_single_attention_backend": "xla_jit",
@@ -325,11 +330,99 @@ class _NativeInvocation(NamedTuple):
     matmul_precision: Callable[[], AbstractContextManager[None]]
 
 
-def _refuse_guided_tokamax(options: dict[str, object]) -> None:
-    """Refuse tokamax under `use_tfg_guidance` rather than fall back from it.
+#: What an omitted `diffusion_attention_backend` runs on a serial unguided GPU
+#: process: tokamax's fused kernel on OpenDDE's diffusion token and windowed
+#: atom attentions (0.921x warm wall at 1,003 tokens and 0.858x at 1,993 tokens
+#: on one RTX PRO 6000, peak unchanged).
+_SERIAL_GPU_DIFFUSION_ATTENTION_BACKEND = "tokamax"
 
-    The released default is already `xla_jit`, so only an explicit request
-    reaches `tokamax`, and the eager guided sampler would recompile its fused
+#: What an omitted `diffusion_attention_backend` runs when a context-parallel
+#: mesh is active: the blocked jitted XLA path, because tokamax's pair-bias
+#: attention carries no `shard_map` wrapper and `_reject_tokamax_under_cp`
+#: refuses it under a mesh.
+_CP_DIFFUSION_ATTENTION_BACKEND = "xla_jit"
+
+#: What an omitted `diffusion_attention_backend` runs off a GPU (CPU / TPU),
+#: where tokamax's fused Triton attention is not implemented.
+_OFF_GPU_ATTENTION_BACKEND = "xla_jit"
+
+#: What an omitted `diffusion_attention_backend` runs under `use_tfg_guidance`.
+#: The guided sampler is eager, and an eager `pallas_call` binds a fresh
+#: `jax.jit` closure on every call, recompiling tokamax per denoiser attention.
+_GUIDED_DIFFUSION_ATTENTION_BACKEND = "xla_jit"
+
+
+def _gpu_process() -> bool:
+    """Whether this process's default JAX backend is a GPU (imports JAX)."""
+    from foldjax.models._pallas_pair import gpu_process
+
+    return gpu_process()
+
+
+def _strict_cp_devices(value: object) -> int:
+    """The requested device count, or 1 when it is not an integer."""
+    if isinstance(value, bool):
+        return 1
+    try:
+        return int(str(value))
+    except ValueError:
+        return 1
+
+
+def _is_tfg_enabled(value: object) -> bool:
+    """Whether `use_tfg_guidance` enables guidance, without crashing on bad input."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    # Covers numpy.bool / numpy.bool_ without importing numpy; invalid
+    # spellings stay False here and are refused by validation.
+    value_type = type(value)
+    return (
+        value_type.__module__ == "numpy"
+        and value_type.__name__ in {"bool", "bool_"}
+        and bool(value)
+    )
+
+
+def realised_diffusion_attention_backend(
+    value: object,
+    *,
+    cp_devices: object = 1,
+    use_tfg_guidance: object = False,
+) -> object:
+    """The OpenDDE ``diffusion_attention_backend`` this run realises.
+
+    An explicit value (anything other than ``None``) is returned unchanged so
+    callers validate and refuse it as written, and malformed values keep their
+    own cache namespace without initializing JAX.
+
+    An omitted value (``None``) resolves to ``"tokamax"`` on a serial unguided
+    GPU process and to ``"xla_jit"`` everywhere else: under context parallelism
+    (``cp_devices > 1``), under ``use_tfg_guidance``, or off a GPU (CPU / TPU).
+    ``JAX_DISABLE_JIT`` does not change it: that debugging switch is not part
+    of the run identity a manifest records, and no other port's kernel
+    resolver reads it either, so it runs the kernel a compiled run would.
+    """
+    if value is not None:
+        return value
+    if _strict_cp_devices(cp_devices) > 1:
+        return _CP_DIFFUSION_ATTENTION_BACKEND
+    if _is_tfg_enabled(use_tfg_guidance):
+        return _GUIDED_DIFFUSION_ATTENTION_BACKEND
+    return (
+        _SERIAL_GPU_DIFFUSION_ATTENTION_BACKEND
+        if _gpu_process()
+        else _OFF_GPU_ATTENTION_BACKEND
+    )
+
+
+def _refuse_guided_tokamax(options: dict[str, object]) -> None:
+    """Refuse an explicit tokamax under `use_tfg_guidance`.
+
+    An omitted option resolves to `xla_jit` under guidance
+    (`realised_diffusion_attention_backend`), so only an explicit request
+    reaches `tokamax`, where the eager guided sampler would recompile its fused
     attention on every call. The runner's own fallback serves direct
     native-CLI calls only.
     """
@@ -506,6 +599,19 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
         profile = super().cache_profile(request)
         options = self.apply_sampling(request)
         self.validate_native_options(options)
+        # Resolve before stripping `_RELEASED_COMPILE_DEFAULTS`: on a serial
+        # unguided GPU an omitted option realises `tokamax` (recorded, matching
+        # explicit `tokamax`), while explicit `xla_jit` and off-GPU /
+        # context-parallel / guided omissions realise `xla_jit` and strip to
+        # the historical absent entry.
+        if "diffusion_attention_backend" not in profile:
+            profile["diffusion_attention_backend"] = (
+                realised_diffusion_attention_backend(
+                    None,
+                    cp_devices=options.get("cp_devices", 1),
+                    use_tfg_guidance=options.get("use_tfg_guidance", False),
+                )
+            )
         self._strip_released_defaults(profile, _RELEASED_COMPILE_DEFAULTS)
         self._strip_released_defaults(profile, {"cp_layout": "1d"})
         resolved_cp_layout = square_grid_cp_layout(options)
@@ -613,6 +719,23 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
         cp_layout = square_grid_cp_layout(options) or str(
             options.get("cp_layout", "auto")
         )
+        # An omitted diffusion attention backend is rendered only where it
+        # realises something other than the parser's own `xla_jit` default, so
+        # off-GPU, context-parallel and guided argv stay unchanged while a
+        # serial unguided GPU passes `--diffusion-attention-backend tokamax`
+        # into both `argv` and `config_fields`; `cache_profile` calls the same
+        # resolver.
+        if "diffusion_attention_backend" not in options:
+            realised_diffusion_attention = realised_diffusion_attention_backend(
+                None,
+                cp_devices=cp_devices,
+                use_tfg_guidance=options.get("use_tfg_guidance", False),
+            )
+            if (
+                realised_diffusion_attention
+                != _PARSER_DEFAULTS["diffusion_attention_backend"]
+            ):
+                options["diffusion_attention_backend"] = realised_diffusion_attention
         native_options: dict[str, object] = {}
         for key in sorted(_CLI_OPTIONS):
             if key in options:

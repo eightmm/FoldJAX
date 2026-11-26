@@ -247,7 +247,19 @@ def test_the_estimates_match_the_measured_peaks(pool):
         )
 
 
-def test_the_refusal_actually_comes_out_of_the_runner(pool, monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "pins",
+    [
+        {},
+        # tokamax takes the whole query axis, so a token query chunk pin there
+        # changes nothing and must not turn the refusal into advice.
+        {"diffusion_attention_backend": "tokamax", "token_q_chunk_size": 128},
+    ],
+    ids=["released", "tokamax-ignored-chunk-pin"],
+)
+def test_the_refusal_actually_comes_out_of_the_runner(
+    pool, monkeypatch, tmp_path, pins
+):
     """The laws being right is not the same as the call site firing.
 
     Everything above goes through `memory_policy.admit` directly. This one
@@ -292,6 +304,7 @@ def test_the_refusal_actually_comes_out_of_the_runner(pool, monkeypatch, tmp_pat
         trunk_dtype="bf16",
         confidence_dtype="fp32",
         diffusion_dtype="fp32",
+        **pins,
     )
     config = predict_runner.PredictionConfig(**fields)
 

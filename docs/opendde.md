@@ -36,11 +36,24 @@ never substituted implicitly.
 | MSA | up to 16,384 rows |
 | seed | a native job's `modelSeeds`; when `--seed` and `modelSeeds` are absent or empty, both `foldjax predict` and `opendde-jax-predict` draw one integer in `1..65536` per job (matching upstream) and record it (`run.json` and `seed_<seed>/seed.json`) |
 | precision | bfloat16 trunk and bfloat16 confidence Pairformer |
+| diffusion attention | `tokamax` fused attention on a serial GPU (`foldjax predict`); `xla_jit` under context parallelism, under `use_tfg_guidance`, off a GPU, and on `opendde-jax-predict` |
 
 Upstream runs float32: `--option dtype=float32 --option confidence_dtype=fp32`
 reproduces it. The float32 trunk costs about twice the peak memory of the
 default ([cli.md](cli.md#a-bfloat16-trunk---option-trunk_dtypebf16),
 [cli.md](cli.md#the-bfloat16-opendde-confidence-head---confidence-dtype)).
+
+On a serial GPU, omitting `diffusion_attention_backend` runs OpenDDE's
+diffusion token and windowed atom attentions on tokamax's fused kernel
+(measured on one RTX PRO 6000 vs `xla_jit`: 1,003 tokens warm 130.1 -> 119.8 s,
+0.921x; 1,993 tokens 676.4 -> 580.6 s, 0.858x; device peak unchanged at both;
+CA same-index residual 0.005-0.006 Å at 1,993 tokens, equal to the
+cross-process floor with `deterministic=off`, and per-chain deposited CA RMSD
+unchanged to 1e-3). Use `--option diffusion_attention_backend=xla_jit` to
+restore the blocked XLA path on a serial GPU; under context parallelism,
+`use_tfg_guidance`, or off a GPU an omitted option resolves to `xla_jit`, while
+an explicit `tokamax` keeps its refusal under context parallelism and
+`use_tfg_guidance`.
 
 ## Inputs
 
@@ -112,6 +125,7 @@ default ([cli.md](cli.md#a-bfloat16-trunk---option-trunk_dtypebf16),
 |---|---|---|
 | `include_raw=true` | `false` | also write PAE, PDE and contact probabilities to `confidence_full.npz` (and `predicted_aligned_error.json`) |
 | `dtype=float32`, `confidence_dtype=fp32` | bfloat16 | upstream's precision |
+| `diffusion_attention_backend=B` | `tokamax` (serial GPU) / `xla_jit` (CP, TFG, off-GPU) | attention kernel for the diffusion token and windowed atom attentions (`xla`, `xla_jit`, `xla_sdpa`, `tokamax`); explicit `tokamax` is refused under context parallelism and `use_tfg_guidance` |
 | `use_tfg_guidance=true` | `false` | upstream's training-free guidance, on Protenix's guidance port: geometry terms on ligands, ions and modified residues only, never on standard residues ([what it constrains](cli.md#upstream-run-options---option)); eager, so refused with explicit padding (the default padding steps aside for it), explicit `deterministic=on` (the default steps aside for it) and context parallelism, and about 12x the unguided wall time ([measured](cli.md#upstream-run-options---option)) |
 | `deterministic=on` | `off` | compile this run for repeatable reductions and fixed GEMM kernels, so two cold processes agree bit for bit; off by default here because the port's large GEMMs lose Triton under it: 1.34x the warm wall at 1,000 tokens (GPU-active time 1.40x), peak unchanged ([the measurement](cli.md#--option-deterministicon)) |
 | `cp_devices=N` | `1` | context parallelism over N GPUs: the only way this port has run 2,096 residues on one node's cards |

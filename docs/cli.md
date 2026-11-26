@@ -160,7 +160,8 @@ name>`, resumes and fails per job, and `plan`, `foldjax_run.json` and
 `--resume` skips a run only when its finished `foldjax_run.json` matches the
 exact request, input, checkpoint and referenced-local-asset stat/tree
 identities, the device platform it ran on (CPU or GPU: an omitted option such
-as ESMFold2's triangle kernel resolves by device), and the persisted structure/representation artifacts. Any relevant
+as ESMFold2's triangle kernel or OpenDDE's diffusion attention resolves by
+device), and the persisted structure/representation artifacts. Any relevant
 metadata or directory-tree change triggers a conservative rerun; FoldJAX does
 not reread large checkpoint or asset payloads merely to write or check a
 manifest. Checkpoint trees containing symlinks or special entries are likewise
@@ -881,8 +882,10 @@ outcome at the top -- 2,096 residues asked for an 87 GiB arena and died on a
 lever, a distributed run is outside the profile and is warned rather than
 refused: the laws are fitted on the serial arena, which a mesh splits, and a
 refusal must not stop the run that takes its own advice. So are an inputs-only
-graph and a pinned chunk width; a pinned `--trunk-dtype fp32` is not, because
-it needs more than the law says rather than less.
+graph and a pinned chunk width (except a token query chunk under tokamax
+diffusion attention, the serial GPU default, which takes the whole query axis
+and so changes nothing); a pinned `--trunk-dtype fp32` is not, because it
+needs more than the law says rather than less.
 This replaces the arena preflight OpenDDE used to print,
 which estimated the temp arena alone (about 91% of the peak) and could only
 warn.
@@ -1766,14 +1769,18 @@ running XLA under the tokamax name. A requested query chunk size does not
 reach a kernel that takes the whole query axis and is reported as unused, and
 an explicitly requested `tokamax` is refused under context parallelism (the
 omitted default resolves to `xla_jit` there). OpenDDE offers it at the
-diffusion site only, as an opt-in (`--option
-diffusion_attention_backend=tokamax`; its default stays `xla_jit`), where one
-value covers the token and both atom attentions. At 1,003 tokens on one RTX
-PRO 6000 it cut the warm prediction from 130.8 to 120.3 s at default
-precision and from 230.6 to 219.2 s in float32 with raw outputs, at unchanged
-peak memory; the float32 coordinates moved by at most 0.03 Å CA RMSD. Under
-`use_tfg_guidance` OpenDDE refuses it, because the eager guided sampler would
-recompile the kernel on every call.
+diffusion site only, where one value covers the token and both atom
+attentions, and `foldjax predict` runs it when the option is omitted on a
+serial GPU; under context parallelism, under `use_tfg_guidance` and off a GPU
+an omitted option runs `xla_jit`, and the native `opendde-jax-predict` keeps
+`xla_jit` as its default. On one RTX PRO 6000 the omitted default's warm
+prediction went from 130.1 to 119.8 s at 1,003 tokens and from 676.4 to
+580.6 s at 1,993, at unchanged peak memory; the same-index CA residual
+against `xla_jit` was 0.005-0.006 Å at 1,993 tokens, the spread two `xla_jit`
+processes show against each other (OpenDDE compiles with
+`deterministic=off`). Under `use_tfg_guidance` an explicit `tokamax` is
+refused, because the eager guided sampler would recompile the kernel on every
+call.
 
 ### The 2-D ring's tile kernel (`--option triangle_attention_ring_kernel`)
 
@@ -2163,6 +2170,7 @@ What an omitted setting runs, and how to name either side:
 | pair transitions | Boltz-2 | `glu_backend=pallas` | `tokamax` | `--option glu_backend=tokamax` (or `xla`) |
 | pair transitions | Protenix | `xla` (released) | `xla` | released already; `--option glu_backend=pallas` opts in |
 | pair transitions | OpenFold3 | `glu_backend=pallas` | `xla` | `--option glu_backend=xla` |
+| diffusion attention | OpenDDE | `tokamax` (serial) | `xla_jit` | `--option diffusion_attention_backend=xla_jit` |
 
 `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=pallas`,
 `PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=pallas`,

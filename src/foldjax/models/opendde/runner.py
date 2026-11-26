@@ -19,7 +19,7 @@ import random
 import tempfile
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -446,6 +446,13 @@ def _predict(
         extreme=PROTENIX_EXTREME_CHUNK_SIZE,
         **{k: v for k, v in (chunk_overrides or {}).items() if v is not None},
     )
+    if (
+        diffusion_attention_backend == "tokamax"
+        and (chunk_overrides or {}).get("token_q_chunk_size") is None
+    ):
+        # tokamax takes the whole query axis; an automatic width would only be
+        # recorded as if it bounded something and draw the ignored-pin warning.
+        chunks = replace(chunks, token_q_chunk_size=None)
     projection_chunks = {}
     if structural_triangle_att_row_chunk_size is not None:
         projection_chunks["structural_triangle_att_row_chunk_size"] = (
@@ -876,7 +883,11 @@ def _run(
                             config.triangle_mul_chunk_size,
                             config.triangle_att_q_chunk_size,
                             config.single_att_q_chunk_size,
-                            config.token_q_chunk_size,
+                            # tokamax takes the whole query axis, so this pin
+                            # changes nothing there and lifts no refusal.
+                            None
+                            if config.diffusion_attention_backend == "tokamax"
+                            else config.token_q_chunk_size,
                         )
                     ),
                 ),

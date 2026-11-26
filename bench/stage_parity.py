@@ -3330,6 +3330,13 @@ def run_opendde(
     # triangle attention, and the blocked `xla` triangle multiplication a
     # narrow trunk selects in `_with_cueq_triangle_defaults`). The CPU rows
     # keep the parity subset's float32 trunk and all-XLA attention.
+    #
+    # One departure from that profile: a serial-GPU `foldjax predict` realises
+    # tokamax diffusion attention (`realised_diffusion_attention_backend`), but
+    # this replay runs the tape through the eager sampler, where a
+    # `pallas_call` binds a fresh `jit` per attention call -- why the runner
+    # already sends eager TFG runs to `xla_jit` -- so the row keeps `xla_jit`
+    # and says so.
     if DEVICE == "cpu":
         attention_options: dict[str, Any] = {
             "diffusion_attention_backend": "xla",
@@ -3353,7 +3360,9 @@ def run_opendde(
             "confidence_dtype": jnp.bfloat16,
         }
         kernel_record = (
-            "port defaults: single/diffusion attention xla_jit, triangle "
+            "port defaults: single/diffusion attention xla_jit (eager tape "
+            "replay; serial-GPU predict runs tokamax diffusion attention), "
+            "triangle "
             "attention cueq_jit, triangle multiplication xla on the narrow trunk "
             "(_with_cueq_triangle_defaults)"
         )

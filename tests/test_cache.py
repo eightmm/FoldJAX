@@ -904,8 +904,12 @@ def test_boltz2_nondefault_compile_options_keep_distinct_namespaces(
 
 
 def test_opendde_released_defaults_share_the_omitted_cache_namespace(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import foldjax.backends.opendde as opendde_backend
+
+    # Off a GPU an omitted diffusion attention realises the released xla_jit.
+    monkeypatch.setattr(opendde_backend, "_gpu_process", lambda: False)
     backend = OpenDDEBackend()
     omitted = dataclasses.replace(_request(tmp_path), model="opendde")
     native = dataclasses.replace(
