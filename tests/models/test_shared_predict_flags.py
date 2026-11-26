@@ -349,6 +349,7 @@ _OPENDDE_FLAG_ORDER: tuple[str, ...] = (
     # which of them calls it what.
     "--memory-check", "--memory-budget-gib",
     "--structural-triangle-att-row-chunk-size",
+    "--diffusion-pair-bias-cache",
 )
 
 #: The fused gated linear unit is Protenix's alone. OpenDDE reaches the very
