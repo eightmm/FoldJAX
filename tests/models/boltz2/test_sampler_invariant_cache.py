@@ -595,3 +595,211 @@ def test_compact_pair_bias_shrinks_the_scan_operand() -> None:
     body = scan.params["jaxpr"]
     body = getattr(body, "jaxpr", body)
     assert "broadcast_in_dim" in {eqn.primitive.name for eqn in body.eqns}
+
+
+def test_eager_token_bias_casts_per_layer_inside_scan() -> None:
+    """Eager token-transformer bias stays compact across the layer scan.
+
+    The conditioning cache is stored in bfloat16 under the released mixed
+    trunk, and `diffusion_score_model_forward` must pass it into
+    `diffusion_transformer_forward` without widening the full `[1, N, N, L*H]`
+    tensor beforehand. The cast happens per layer inside the scan body.
+    """
+    native = _native_params()
+    inputs = _model_inputs()
+    conditioning = diffusion_conditioning_forward(
+        native["diffusion_conditioning"],
+        s_trunk=inputs["s_trunk"],
+        z_trunk=inputs["z_trunk"],
+        relative_position_encoding=inputs["relative_position_encoding"],
+        feats=inputs["feats"],
+        token_layers=1,
+        lazy_token_trans_bias=False,
+        compute_dtype=jnp.bfloat16,
+    )
+    assert conditioning["token_trans_bias"].dtype == jnp.bfloat16
+
+    jaxpr = jax.make_jaxpr(
+        lambda bias: diffusion_score_model_forward(
+            native["score_model"],
+            s_inputs=inputs["s_inputs"],
+            s_trunk=inputs["s_trunk"],
+            r_noisy=inputs["r_noisy"],
+            times=inputs["times"],
+            feats=inputs["feats"],
+            diffusion_conditioning={**conditioning, "token_trans_bias": bias},
+            multiplicity=1,
+            use_scan=True,
+            token_layers=1,
+        )
+    )(conditioning["token_trans_bias"])
+
+    # The token transformer is the scan whose rank-5 bias operand carries the
+    # token pair axes `(layers, 1, N, N, heads)` (N = token count).
+    n_token = inputs["feats"]["token_pad_mask"].shape[1]
+    token_scans = [
+        eqn
+        for eqn in jaxpr.jaxpr.eqns
+        if eqn.primitive.name == "scan"
+        and any(
+            v.aval.ndim == 5 and v.aval.shape[2:4] == (n_token, n_token)
+            for v in eqn.invars
+        )
+    ]
+    assert len(token_scans) == 1
+    scan = token_scans[0]
+    (operand,) = [
+        v
+        for v in scan.invars
+        if v.aval.ndim == 5 and v.aval.shape[2:4] == (n_token, n_token)
+    ]
+    assert operand.aval.dtype == jnp.bfloat16
+
+    producers = {v: eqn for eqn in jaxpr.jaxpr.eqns for v in eqn.outvars}
+    chain, cursor = [], operand
+    while cursor in producers:
+        eqn = producers[cursor]
+        chain.append(eqn.primitive.name)
+        cursor = eqn.invars[0]
+    assert set(chain) <= {"reshape", "transpose"}, chain
+    assert cursor is jaxpr.jaxpr.invars[0]
+
+    body = scan.params["jaxpr"]
+    body = getattr(body, "jaxpr", body)
+    converts = [
+        eqn
+        for eqn in body.eqns
+        if eqn.primitive.name == "convert_element_type"
+        and eqn.invars[0].aval.dtype == jnp.bfloat16
+        and eqn.outvars[0].aval.dtype == jnp.float32
+        and eqn.invars[0].aval.shape[-3:-1] == (n_token, n_token)
+    ]
+    assert converts
+
+    with pytest.raises(ValueError, match="bias_layer_dtype requires an explicit bias"):
+        diffusion_transformer_forward(
+            native["score_model"]["token_transformer"],
+            a=jnp.zeros((1, n_token, 8), dtype=jnp.float32),
+            s=jnp.zeros((1, n_token, 8), dtype=jnp.float32),
+            bias=None,
+            mask=jnp.ones((1, n_token), dtype=jnp.float32),
+            layer_limit=1,
+            bias_layer_dtype=jnp.float32,
+        )
+
+
+@pytest.mark.parametrize("compute_dtype", [jnp.bfloat16, jnp.float32])
+@pytest.mark.parametrize("use_scan", [True, False])
+def test_eager_per_layer_cast_matches_lazy_token_bias_bitwise_on_cpu(
+    monkeypatch: pytest.MonkeyPatch,
+    compute_dtype: jnp.dtype,
+    use_scan: bool,
+) -> None:
+    """Eager token-transformer bias with per-layer cast matches lazy on CPU."""
+    from foldjax.models.boltz2.models.diffusion import diffusion as diffusion_impl
+
+    native = _native_params()
+    inputs = _model_inputs()
+    params = {"trunk": {}, "conditioned_diffusion": native}
+    trunk = {
+        "s_inputs": inputs["s_inputs"],
+        "s": inputs["s_trunk"],
+        "z": inputs["z_trunk"],
+        "relative_position_encoding": inputs["relative_position_encoding"],
+    }
+    feats = dict(inputs["feats"])
+
+    seen_bias_calls: list[tuple[jnp.dtype | None, jnp.dtype | None]] = []
+    real_dt = diffusion_impl.diffusion_transformer_forward
+
+    def spy_dt(*args, **kwargs):
+        bias = kwargs.get("bias")
+        seen_bias_calls.append(
+            (None if bias is None else bias.dtype, kwargs.get("bias_layer_dtype"))
+        )
+        return real_dt(*args, **kwargs)
+
+    monkeypatch.setattr(diffusion_impl, "diffusion_transformer_forward", spy_dt)
+
+    def run(lazy: bool):
+        return trunk_impl.boltz2_sample_forward(
+            params,
+            feats,
+            jax.random.PRNGKey(0),
+            trunk=trunk,
+            num_sampling_steps=3,
+            multiplicity=2,
+            token_layers=1,
+            compute_dtype=compute_dtype,
+            use_scan=use_scan,
+            lazy_token_trans_bias=lazy,
+            augmentation=False,
+            alignment_reverse_diff=False,
+        )["sample_atom_coords"]
+
+    eager = np.asarray(jax.jit(lambda: run(False))())
+    assert seen_bias_calls and all(
+        call == (jnp.dtype(compute_dtype), jnp.dtype(jnp.float32))
+        for call in seen_bias_calls
+    )
+    seen_bias_calls.clear()
+    lazy = np.asarray(jax.jit(lambda: run(True))())
+    assert seen_bias_calls and all(call == (None, None) for call in seen_bias_calls)
+    assert eager.dtype == lazy.dtype == np.float32
+    np.testing.assert_array_equal(eager.view(np.uint32), lazy.view(np.uint32))
+
+
+def test_eager_and_lazy_token_bias_have_distinct_lowered_compile_keys() -> None:
+    """Lazy and eager token-bias programs never share a lowered cache entry."""
+    from foldjax import memory_policy
+    from foldjax.executable_cache_verify import lowered_cache_key
+    from foldjax.models.boltz2 import api as native_api
+
+    native = _native_params()
+    inputs = _model_inputs()
+    params = {"trunk": {}, "conditioned_diffusion": native}
+    trunk = {
+        "s_inputs": inputs["s_inputs"],
+        "s": inputs["s_trunk"],
+        "z": inputs["z_trunk"],
+        "relative_position_encoding": inputs["relative_position_encoding"],
+    }
+    feats = dict(inputs["feats"])
+    key = jax.random.PRNGKey(0)
+
+    lazy_choice = native_api._resolve_lazy_token_trans_bias(
+        3000,
+        budget=memory_policy.resolve_budget(
+            pool_bytes=24 * 2**30, card_bytes=24 * 2**30, override_gib=None
+        ),
+    )
+    eager_choice = native_api._resolve_lazy_token_trans_bias(
+        3000,
+        budget=memory_policy.resolve_budget(
+            pool_bytes=48 * 2**30, card_bytes=48 * 2**30, override_gib=None
+        ),
+    )
+    assert (lazy_choice, eager_choice) == (True, False)
+
+    def lower(lazy: bool):
+        return jax.jit(
+            lambda p, f, k, t: trunk_impl.boltz2_sample_forward(
+                p,
+                f,
+                k,
+                trunk=t,
+                num_sampling_steps=2,
+                multiplicity=1,
+                token_layers=1,
+                compute_dtype=jnp.bfloat16,
+                use_scan=True,
+                lazy_token_trans_bias=lazy,
+                augmentation=False,
+                alignment_reverse_diff=False,
+            )
+        ).lower(params, feats, key, trunk)
+
+    lazy_lowered = lower(lazy_choice)
+    eager_lowered = lower(eager_choice)
+    assert lazy_lowered.as_text() != eager_lowered.as_text()
+    assert lowered_cache_key(lazy_lowered) != lowered_cache_key(eager_lowered)

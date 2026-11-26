@@ -396,6 +396,7 @@ def diffusion_transformer_forward(
     precomputed_s_terms: tuple[jnp.ndarray, ...] | None = None,
     precomputed_s_terms_multiplicity: int = 1,
     precomputed_s_terms_num_windows: int | None = None,
+    bias_layer_dtype: jnp.dtype | None = None,
 ) -> jnp.ndarray:
     """Run a Boltz DiffusionTransformer stack.
 
@@ -429,6 +430,8 @@ def diffusion_transformer_forward(
     num_layers = len(layers)
     if bias_multiplicity != 1 and bias is None:
         raise ValueError("bias_multiplicity requires an explicit bias")
+    if bias_layer_dtype is not None and bias is None:
+        raise ValueError("bias_layer_dtype requires an explicit bias")
     if bias is None:
         if bias_params is None or (bias_input is None and bias_normed_input is None):
             msg = (
@@ -473,6 +476,8 @@ def diffusion_transformer_forward(
         )
 
     def expand_bias(layer_bias):
+        if bias_layer_dtype is not None:
+            layer_bias = layer_bias.astype(bias_layer_dtype)
         if bias_multiplicity == 1:
             return layer_bias
         if bias_num_windows is None:

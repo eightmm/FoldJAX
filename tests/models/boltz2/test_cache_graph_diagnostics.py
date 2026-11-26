@@ -306,3 +306,451 @@ def test_lower_only_refuses_eager_steering(tmp_path, monkeypatch):
             use_potentials=True,
             _lower_only=True,
         )
+
+
+_GIB = 2**30
+
+
+@pytest.mark.parametrize(
+    ("n_token", "budget_gib", "expected_lazy"),
+    [
+        # Below BOLTZ2_PEAK.domain_tokens (1003..4888) the gate is judged at the
+        # lower edge, which bounds both the law and the cache from above.
+        (200, 24, False),
+        (1000, 24, False),
+        (1000, 48, False),
+        (1000, 96, False),
+        # Lower covered edges (1,003 exact domain start, 1,024 standard bucket):
+        # upper (~9.0-9.1 GiB) + bf16 cache (~0.72-0.75 GiB) <= 21.6 GiB.
+        (1003, 24, False),
+        (1024, 24, False),
+        # 3,000 tokens: upper (~31.17 GiB) + bf16 cache (6.44 GiB) = 37.61 GiB.
+        # Thresholds: 21.6 GiB (24 GiB) -> lazy; 43.2 GiB (48 GiB) and
+        # 86.4 GiB (96 GiB) -> eager.
+        (3000, 24, True),
+        (3000, 48, False),
+        (3000, 96, False),
+        # Upper covered edge (4,888): upper (76.65 GiB) + cache (17.09 GiB) > 86.4 GiB.
+        (4888, 96, True),
+        # 5,000 tokens is above BOLTZ2_PEAK.domain_tokens (1003..4888): stays lazy.
+        (5000, 24, True),
+        (5000, 48, True),
+        (5000, 96, True),
+    ],
+)
+def test_token_trans_bias_gate_decisions_and_arithmetic(
+    n_token: int, budget_gib: int, expected_lazy: bool
+) -> None:
+    from foldjax.models.boltz2.bridge.export_weights import (
+        TOKEN_LAYERS,
+        TOKEN_TRANSFORMER_HEADS,
+    )
+
+    law = memory_policy.BOLTZ2_PEAK
+    budget = memory_policy.resolve_budget(
+        pool_bytes=budget_gib * _GIB,
+        card_bytes=budget_gib * _GIB,
+        override_gib=None,
+    )
+    gate_tokens = max(n_token, law.domain_tokens[0])
+    cache_bytes = native_api._token_trans_bias_cache_bytes(
+        gate_tokens, compute_dtype="bfloat16", diffusion_compute_dtype="float32"
+    )
+    assert cache_bytes == (
+        TOKEN_LAYERS * TOKEN_TRANSFORMER_HEADS * gate_tokens * gate_tokens * 2
+    )
+    threshold = memory_policy._threshold(
+        budget.budget_bytes, model="boltz2", card_bytes=budget.card_bytes
+    )
+    assert threshold == int(budget_gib * _GIB * memory_policy.ADMISSION_FRACTION)
+    expected_from_law = (not law.covers(gate_tokens)) or (
+        law.upper(gate_tokens) + cache_bytes > threshold
+    )
+    assert expected_from_law is expected_lazy
+    assert (
+        native_api._resolve_lazy_token_trans_bias(
+            n_token,
+            budget=budget,
+            cp_devices=1,
+            compute_dtype="bfloat16",
+            diffusion_compute_dtype="float32",
+        )
+        is expected_lazy
+    )
+
+
+def test_token_trans_bias_gate_edges_dtypes_and_failures() -> None:
+    import math
+
+    law = memory_policy.BOLTZ2_PEAK
+    budget_96 = memory_policy.resolve_budget(
+        pool_bytes=96 * _GIB, card_bytes=96 * _GIB, override_gib=None
+    )
+    no_budget = memory_policy.resolve_budget(
+        pool_bytes=None, card_bytes=None, override_gib=None
+    )
+
+    # No budget (CPU / unknown device) stays lazy.
+    assert native_api._resolve_lazy_token_trans_bias(3000, budget=None) is True
+    assert native_api._resolve_lazy_token_trans_bias(3000, budget=no_budget) is True
+    # A planning override on a host with no device stays lazy.
+    host_override = memory_policy.resolve_budget(
+        pool_bytes=None, card_bytes=None, override_gib=96.0
+    )
+    assert host_override.budget_bytes is not None
+    assert native_api._resolve_lazy_token_trans_bias(3000, budget=host_override) is True
+
+    # Context parallelism stays lazy even when single-device budget fits.
+    for cp_devices in (2, 4):
+        assert (
+            native_api._resolve_lazy_token_trans_bias(
+                3000, budget=budget_96, cp_devices=cp_devices
+            )
+            is True
+        )
+
+    # Exact threshold equality: equal to threshold is eager, 1 byte below is lazy.
+    cache_3k = native_api._token_trans_bias_cache_bytes(
+        3000, compute_dtype="bfloat16", diffusion_compute_dtype="float32"
+    )
+    required = law.upper(3000) + cache_3k
+    exact_budget = math.ceil(required / memory_policy.ADMISSION_FRACTION)
+    while (
+        memory_policy._threshold(exact_budget, model="boltz2") > required
+    ):
+        exact_budget -= 1
+    while (
+        memory_policy._threshold(exact_budget, model="boltz2") < required
+    ):
+        exact_budget += 1
+    assert memory_policy._threshold(exact_budget, model="boltz2") == required
+    assert (
+        native_api._resolve_lazy_token_trans_bias(
+            3000,
+            budget=memory_policy.MemoryBudget(
+                pool_bytes=exact_budget,
+                card_bytes=exact_budget,
+                override_bytes=None,
+                budget_bytes=exact_budget,
+                source="pool",
+            ),
+        )
+        is False
+    )
+    assert (
+        native_api._resolve_lazy_token_trans_bias(
+            3000,
+            budget=memory_policy.MemoryBudget(
+                pool_bytes=exact_budget - 1,
+                card_bytes=exact_budget - 1,
+                override_bytes=None,
+                budget_bytes=exact_budget - 1,
+                source="pool",
+            ),
+        )
+        is True
+    )
+
+    # FP32 trunk + FP32 diffusion stores float32 bias (4 bytes): doubles cache
+    # and flips 3,000 tokens on 48 GiB from eager (37.6 GiB) to lazy (44.0 GiB).
+    cache_3k_fp32 = native_api._token_trans_bias_cache_bytes(
+        3000, compute_dtype="float32", diffusion_compute_dtype="float32"
+    )
+    assert cache_3k_fp32 == 2 * cache_3k
+    budget_48 = memory_policy.resolve_budget(
+        pool_bytes=48 * _GIB, card_bytes=48 * _GIB, override_gib=None
+    )
+    assert (
+        native_api._resolve_lazy_token_trans_bias(
+            3000,
+            budget=budget_48,
+            compute_dtype="float32",
+            diffusion_compute_dtype="float32",
+        )
+        is True
+    )
+    # Memory a caller already holds beyond the weights comes out of the headroom.
+    assert native_api._resolve_lazy_token_trans_bias(3000, budget=budget_48) is False
+    assert (
+        native_api._resolve_lazy_token_trans_bias(
+            3000, budget=budget_48, held_bytes=17 * _GIB
+        )
+        is True
+    )
+    # CPU reports no allocator statistics, so nothing is held against the gate.
+    assert native_api._allocator_bytes_beyond_params(None) is None
+    # FP32 trunk + BF16 diffusion narrows the stored bias to bfloat16 (2 bytes).
+    assert (
+        native_api._token_trans_bias_cache_bytes(
+            3000, compute_dtype="float32", diffusion_compute_dtype="bfloat16"
+        )
+        == cache_3k
+    )
+
+    # Loaded params supply depth and heads (float32 compute bounds the width
+    # at float32); an empty list falls back to the released constants.
+    custom_params = {
+        "conditioned_diffusion": {
+            "diffusion_conditioning": {
+                "token_trans_proj_z": [
+                    {"linear": {"kernel": jnp.zeros((16, 8), dtype=jnp.bfloat16)}}
+                    for _ in range(6)
+                ]
+            }
+        }
+    }
+    assert (
+        native_api._token_trans_bias_cache_bytes(
+            100,
+            compute_dtype="float32",
+            diffusion_compute_dtype="float32",
+            params=custom_params,
+        )
+        == 6 * 8 * 100 * 100 * 4
+    )
+    empty_proj_params = {
+        "conditioned_diffusion": {
+            "diffusion_conditioning": {"token_trans_proj_z": []}
+        }
+    }
+    assert (
+        native_api._token_trans_bias_cache_bytes(3000, params=empty_proj_params)
+        == cache_3k
+    )
+    # The constants the gate holds a run to are the featurizer's and predict's.
+    import inspect
+
+    from foldjax.models.boltz2.data.featurize import UPSTREAM_PARSE_CAP
+
+    assert native_api._RELEASED_MSA_PARSE_CAP == UPSTREAM_PARSE_CAP
+    assert (
+        inspect.signature(native_api.predict).parameters["num_steps"].default
+        == native_api._RELEASED_SAMPLING_STEPS
+    )
+
+    # The native loader's stacked layout sizes the cache from the stack, so a
+    # deeper or wider checkpoint is not budgeted at the released constants.
+    from foldjax.models._stacking import StackedLayers
+
+    stacked_params = {
+        "conditioned_diffusion": {
+            "diffusion_conditioning": {
+                "token_trans_proj_z": StackedLayers.from_layers(
+                    {"linear": {"kernel": jnp.zeros((16, 20), dtype=jnp.bfloat16)}}
+                    for _ in range(30)
+                )
+            }
+        }
+    }
+    assert native_api._token_trans_bias_cache_bytes(
+        100, params=stacked_params
+    ) == (30 * 20 * 100 * 100 * 2)
+    # A projection that is present but cannot be sized keeps the bias lazy.
+    unsized_params = {
+        "conditioned_diffusion": {
+            "diffusion_conditioning": {"token_trans_proj_z": [{"linear": {}}]}
+        }
+    }
+    assert native_api._token_trans_bias_cache_bytes(100, params=unsized_params) is None
+    assert (
+        native_api._resolve_lazy_token_trans_bias(
+            1003, budget=budget_48, params=unsized_params
+        )
+        is True
+    )
+
+    # Malformed, zero, negative, and boolean inputs fail loudly.
+    for bad_tokens in (0, -1, True):
+        with pytest.raises(ValueError, match="n_token"):
+            native_api._token_trans_bias_cache_bytes(bad_tokens)
+        with pytest.raises(ValueError, match="n_token"):
+            native_api._resolve_lazy_token_trans_bias(bad_tokens, budget=budget_96)
+    for bad_cp in (0, -2, True):
+        with pytest.raises(ValueError, match="cp_devices"):
+            native_api._resolve_lazy_token_trans_bias(
+                3000, budget=budget_96, cp_devices=bad_cp
+            )
+    with pytest.raises(ValueError, match="compute_dtype"):
+        native_api._resolve_lazy_token_trans_bias(
+            3000, budget=budget_96, compute_dtype="float16"
+        )
+    with pytest.raises(ValueError, match="diffusion_compute_dtype"):
+        native_api._resolve_lazy_token_trans_bias(
+            3000, budget=budget_96, diffusion_compute_dtype="float16"
+        )
+    with pytest.raises(ValueError, match="budget_bytes"):
+        native_api._resolve_lazy_token_trans_bias(
+            3000,
+            budget=memory_policy.MemoryBudget(
+                pool_bytes=0,
+                card_bytes=0,
+                override_bytes=None,
+                budget_bytes=0,
+                source="pool",
+            ),
+        )
+
+
+def test_token_trans_bias_choice_splits_runner_identity_in_session(
+    tmp_path, monkeypatch
+) -> None:
+    """Lazy vs eager resolves per budget and never shares a retained JIT runner."""
+    runtime = (("runtime", "cpu"),)
+    lazy_id = native_api._runner_identity(
+        predict_function=test_token_trans_bias_choice_splits_runner_identity_in_session,
+        predict_kwargs={"lazy_token_trans_bias": True},
+        noise_mode="none",
+        runtime=runtime,
+    )
+    eager_id = native_api._runner_identity(
+        predict_function=test_token_trans_bias_choice_splits_runner_identity_in_session,
+        predict_kwargs={"lazy_token_trans_bias": False},
+        noise_mode="none",
+        runtime=runtime,
+    )
+    assert lazy_id != eager_id
+
+    request = _request(tmp_path)
+    counts, _ = _install_runtime(monkeypatch, tmp_path, n_token=3000)
+    monkeypatch.setattr(
+        memory_policy,
+        "device_memory_budget",
+        # No override stands for a host with no detected device, whatever
+        # card the test machine has.
+        lambda *, override_gib=None: memory_policy.resolve_budget(
+            pool_bytes=None,
+            card_bytes=None if override_gib is None else 96 * _GIB,
+            override_gib=override_gib,
+        ),
+    )
+    seen_lazy: list[bool] = []
+    original_predict = native_api.predict
+
+    def observe_predict(params, feats, key, **kwargs):
+        seen_lazy.append(kwargs["lazy_token_trans_bias"])
+        samples = kwargs["multiplicity"]
+        atoms = feats["atom_pad_mask"].shape[-1]
+        tokens = feats["token_pad_mask"].shape[-1]
+        return {
+            "sample_atom_coords": jnp.zeros((samples, atoms, 3)),
+            "plddt": jnp.ones((samples, tokens)),
+            "iptm": jnp.zeros((samples,)),
+        }
+
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.models.predict.boltz2_predict", observe_predict
+    )
+    backend = Boltz2Backend()
+    runner_entries = []
+    with backend.session((request,)):
+        for gib in (None, 24.0, 48.0, 96.0):
+            original_predict(
+                input=request.input,
+                weights=request.weights,
+                mols=request.options["mols"],
+                out_dir=tmp_path,
+                seed=0,
+                write_fmt=None,
+                memory_check="warn",
+                memory_budget_gib=gib,
+                _runtime=backend,
+            )
+            runner_entries.append(backend._runners["primary"])
+
+    # CPU/no-budget and 24 GiB both resolve lazy and share one runner; 48 GiB
+    # and 96 GiB both resolve eager and share a distinct second runner.
+    assert seen_lazy == [True, False]
+    assert runner_entries[0] is runner_entries[1]
+    assert runner_entries[2] is runner_entries[3]
+    assert runner_entries[1][0] != runner_entries[2][0]
+    assert runner_entries[1][1] is not runner_entries[2][1]
+    assert counts["calls"] == 4
+
+
+def test_token_trans_bias_stays_lazy_outside_the_fitted_profile(
+    tmp_path, monkeypatch
+) -> None:
+    request = _request(tmp_path)
+    _install_runtime(monkeypatch, tmp_path, n_token=3000)
+    monkeypatch.setattr(
+        memory_policy,
+        "device_memory_budget",
+        # No override stands for a host with no detected device, whatever
+        # card the test machine has.
+        lambda *, override_gib=None: memory_policy.resolve_budget(
+            pool_bytes=None,
+            card_bytes=None if override_gib is None else 96 * _GIB,
+            override_gib=override_gib,
+        ),
+    )
+    seen_lazy: list[bool] = []
+
+    def observe_predict(params, feats, key, **kwargs):
+        seen_lazy.append(kwargs["lazy_token_trans_bias"])
+        samples = kwargs["multiplicity"]
+        atoms = feats["atom_pad_mask"].shape[-1]
+        tokens = feats["token_pad_mask"].shape[-1]
+        return {
+            "sample_atom_coords": jnp.zeros((samples, atoms, 3)),
+            "plddt": jnp.ones((samples, tokens)),
+            "iptm": jnp.zeros((samples,)),
+        }
+
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.models.predict.boltz2_predict", observe_predict
+    )
+
+    def run(**overrides):
+        native_api.predict(
+            input=request.input,
+            weights=request.weights,
+            mols=request.options["mols"],
+            out_dir=tmp_path,
+            seed=0,
+            write_fmt=None,
+            memory_check="warn",
+            memory_budget_gib=96.0,
+            **overrides,
+        )
+
+    from foldjax.schema import PaddingConfig
+
+    run()
+    run(padding=PaddingConfig())
+    run(num_samples=memory_policy.CALIBRATED_NUM_SAMPLES + 1)
+    run(return_confidence_logits=True)
+    run(padding=PaddingConfig(tokens=3072))
+    # The law was fitted on the fused denoiser attention; the blocked path and
+    # a pinned chunk hold score tensors it never saw.
+    run(diffusion_attention_backend="xla")
+    run(token_attention_chunk=0)
+    run(triangle_backend="xla")
+    run(triangle_attention_q_chunk=0)
+    run(glu_backend="xla")
+    run(attention_backend="tokamax")
+    run(max_msa_depth=32768)
+    run(num_steps=5000)
+    monkeypatch.setenv("BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND", "xla")
+    run()
+    monkeypatch.delenv("BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND")
+    monkeypatch.setattr(native_api, "MATMUL_PRECISION", "highest")
+    run()
+    assert seen_lazy == [False, False, True, True, True] + [True] * 10
+
+
+def test_token_trans_bias_cache_bound_covers_mixed_projection_layers() -> None:
+    params = {
+        "conditioned_diffusion": {
+            "diffusion_conditioning": {
+                "token_trans_proj_z": [
+                    {"linear": {"kernel": jnp.zeros((8, 2), jnp.bfloat16)}},
+                    {"linear": {"kernel": jnp.zeros((8, 3), jnp.float32)}},
+                ]
+            }
+        }
+    }
+    cache = native_api._token_trans_bias_cache_bytes(
+        10, compute_dtype="float32", diffusion_compute_dtype="float32", params=params
+    )
+    # Concatenated in float32, two layers at most three channels wide.
+    assert cache == 2 * 3 * 10 * 10 * 4

@@ -601,6 +601,266 @@ def _runner_identity(
     )
 
 
+def _token_trans_bias_spec(
+    *,
+    compute_dtype: str,
+    diffusion_compute_dtype: str,
+    params: Mapping[str, Any] | None = None,
+) -> tuple[int, int, int] | None:
+    """Return ``(depth, heads, itemsize)`` of the eager token-transformer bias.
+
+    Reads depth and heads from ``params``'s ``token_trans_proj_z`` projection
+    (a layer list or the native loader's ``StackedLayers``) when present,
+    falling back to the released Boltz-2 constants in
+    ``bridge/export_weights.py`` only when it is absent or empty. ``None``
+    when a present projection cannot be sized. The stored dtype matches
+    ``boltz2_sample_forward`` -> ``diffusion_conditioning_forward`` ->
+    ``_projection_list_forward``.
+    """
+    if compute_dtype not in COMPUTE_DTYPES:
+        raise ValueError(
+            f"compute_dtype must be one of {COMPUTE_DTYPES}, got {compute_dtype!r}"
+        )
+    if diffusion_compute_dtype not in COMPUTE_DTYPES:
+        raise ValueError(
+            f"diffusion_compute_dtype must be one of {COMPUTE_DTYPES}, got "
+            f"{diffusion_compute_dtype!r}"
+        )
+
+    import jax.numpy as jnp
+
+    from foldjax.models._stacking import StackedLayers
+
+    token_proj = None
+    if isinstance(params, Mapping):
+        cond_diff = params.get("conditioned_diffusion")
+        if isinstance(cond_diff, Mapping):
+            diff_cond = cond_diff.get("diffusion_conditioning")
+            if isinstance(diff_cond, Mapping):
+                candidate = diff_cond.get("token_trans_proj_z")
+                if candidate is not None and not (
+                    isinstance(candidate, Sequence) and len(candidate) == 0
+                ):
+                    token_proj = candidate
+
+    if isinstance(token_proj, StackedLayers):
+        # The native loader stacks the layers: one kernel with a leading
+        # layer axis, every layer the same width.
+        stacked = token_proj.stacked
+        kernel = (
+            stacked.get("linear", {}).get("kernel")
+            if isinstance(stacked, Mapping)
+            and isinstance(stacked.get("linear"), Mapping)
+            else None
+        )
+        if not hasattr(kernel, "shape") or len(kernel.shape) < 2:
+            return None
+        depth = len(token_proj)
+        heads = int(kernel.shape[-1])
+    elif token_proj is not None:
+        if not isinstance(token_proj, Sequence) or isinstance(
+            token_proj, (str, bytes)
+        ):
+            return None
+        widths = [
+            int(layer["linear"]["kernel"].shape[-1])
+            for layer in token_proj
+            if isinstance(layer, Mapping)
+            and isinstance(layer.get("linear"), Mapping)
+            and hasattr(layer["linear"].get("kernel"), "shape")
+            and len(layer["linear"]["kernel"].shape) >= 1
+        ]
+        # A projection list the loader produced but this reader cannot size
+        # must not fall back to the released constants: a checkpoint with
+        # more layers or heads would be under-budgeted.
+        if len(widths) != len(token_proj):
+            return None
+        depth = len(token_proj)
+        # The widest layer bounds the concatenated channels.
+        heads = max(widths)
+
+    if token_proj is None:
+        from foldjax.models.boltz2.bridge.export_weights import (
+            TOKEN_LAYERS,
+            TOKEN_TRANSFORMER_HEADS,
+        )
+
+        depth = int(TOKEN_LAYERS)
+        heads = int(TOKEN_TRANSFORMER_HEADS)
+
+    # A narrowed compute dtype fixes the stored width. With both float32 the
+    # width follows the projection kernels, which may differ per layer and
+    # are concatenated into one array, so float32 is the bound.
+    if diffusion_compute_dtype != "float32":
+        stored_dtype = jnp.dtype(diffusion_compute_dtype)
+    elif compute_dtype != "float32":
+        stored_dtype = jnp.dtype(compute_dtype)
+    else:
+        stored_dtype = jnp.dtype(jnp.float32)
+
+    return depth, heads, int(stored_dtype.itemsize)
+
+
+def _token_trans_bias_cache_bytes(
+    n_token: int,
+    *,
+    compute_dtype: str = "bfloat16",
+    diffusion_compute_dtype: str = "float32",
+    params: Mapping[str, Any] | None = None,
+) -> int | None:
+    """Resident byte size of the eager token-transformer pair-bias cache.
+
+    ``None`` when the loaded projection cannot be sized.
+
+    ``_projection_list_forward`` builds ``(1, N, N, depth * heads)`` in the
+    conditioning output dtype; with per-layer casting in
+    ``diffusion_transformer_forward``, that cache stays in its stored width
+    across every denoising step.
+    """
+    if isinstance(n_token, bool) or not isinstance(n_token, int) or n_token <= 0:
+        raise ValueError(f"n_token must be a positive integer; got {n_token!r}")
+    spec = _token_trans_bias_spec(
+        compute_dtype=compute_dtype,
+        diffusion_compute_dtype=diffusion_compute_dtype,
+        params=params,
+    )
+    if spec is None:
+        return None
+    depth, heads, itemsize = spec
+    return depth * heads * n_token * n_token * itemsize
+
+
+#: The depth and schedule ``BOLTZ2_PEAK`` was fitted at: upstream's MSA parse
+#: cap (``data/featurize.py``) and ``predict``'s default 200 sampling steps.
+_RELEASED_MSA_PARSE_CAP = 8192
+_RELEASED_SAMPLING_STEPS = 200
+
+
+def _released_kernel_profile(
+    *,
+    attention_backend: str,
+    trunk_atom_attention_backend: str | None,
+    diffusion_attention_backend: str | None,
+    triangle_backend: str,
+    glu_backend: str,
+    token_attention_chunk: int | None,
+    triangle_attention_q_chunk: int | None,
+) -> bool:
+    """Whether a serial run uses the kernels and chunk rungs ``BOLTZ2_PEAK`` saw.
+
+    The fused GLU may realise either fused kernel (``tokamax`` is released,
+    ``pallas`` is what an omitted option realises on a GPU), and the triangle
+    multiplication either fused kernel; every other knob must be its released
+    value, and no chunk may be pinned.
+    """
+    from foldjax.models.boltz2.models.triangle.triangle import (
+        triangle_multiplication_backend,
+    )
+
+    return (
+        attention_backend == "xla"
+        and trunk_atom_attention_backend is None
+        and diffusion_attention_backend == "tokamax"
+        and triangle_backend == "cueq"
+        and glu_backend in ("tokamax", "pallas")
+        and triangle_multiplication_backend() in ("pallas", "cueq")
+        and token_attention_chunk is None
+        and triangle_attention_q_chunk is None
+    )
+
+
+def _resolve_lazy_token_trans_bias(
+    n_token: int,
+    *,
+    budget: memory_policy.MemoryBudget | None,
+    cp_devices: int = 1,
+    compute_dtype: str = "bfloat16",
+    diffusion_compute_dtype: str = "float32",
+    params: Mapping[str, Any] | None = None,
+    held_bytes: int | None = None,
+) -> bool:
+    """Resolve whether the diffusion token transformer computes pair bias lazily.
+
+    Returns ``False`` (eager, with per-layer cast) only when ALL hold:
+    - no context parallelism (``cp_devices == 1``);
+    - a device memory budget is known and ``memory_policy.BOLTZ2_PEAK`` covers
+      ``n_token`` or ``n_token`` is below its range (judged at the range's
+      lower edge);
+    - ``law.upper + cache_bytes <= threshold`` using admission's threshold
+      function (``memory_policy._threshold``).
+
+    ``held_bytes`` is allocator memory already in use beyond the weights
+    (arrays a long-lived caller retains); the fitted law never saw it, so it
+    comes out of the headroom.
+
+    Returns ``True`` (lazy) otherwise, including on CPU or unknown devices,
+    even under a planning override.
+    """
+    if (
+        isinstance(cp_devices, bool)
+        or not isinstance(cp_devices, int)
+        or cp_devices < 1
+    ):
+        raise ValueError(f"cp_devices must be a positive integer; got {cp_devices!r}")
+    if isinstance(n_token, bool) or not isinstance(n_token, int) or n_token <= 0:
+        raise ValueError(f"n_token must be a positive integer; got {n_token!r}")
+    if compute_dtype not in COMPUTE_DTYPES:
+        raise ValueError(
+            f"compute_dtype must be one of {COMPUTE_DTYPES}, got {compute_dtype!r}"
+        )
+    if diffusion_compute_dtype not in COMPUTE_DTYPES:
+        raise ValueError(
+            f"diffusion_compute_dtype must be one of {COMPUTE_DTYPES}, got "
+            f"{diffusion_compute_dtype!r}"
+        )
+    if cp_devices > 1:
+        return True
+    # A planning override makes the budget known on a host with no device
+    # (`card_bytes is None`), where the eager build's temporaries were never
+    # measured: stay lazy there.
+    if budget is None or budget.budget_bytes is None or budget.card_bytes is None:
+        return True
+    if isinstance(budget.budget_bytes, bool) or budget.budget_bytes <= 0:
+        raise ValueError(
+            f"budget_bytes must be positive; got {budget.budget_bytes!r}"
+        )
+    law = memory_policy.BOLTZ2_PEAK
+    # Below the fitted range the peak only falls with the token count, so the
+    # range's lower edge bounds both the law and the cache; above it nothing
+    # was measured and the cache is largest, so stay lazy.
+    gate_tokens = max(n_token, law.domain_tokens[0])
+    if not law.covers(gate_tokens):
+        return True
+    threshold = memory_policy._threshold(
+        budget.budget_bytes, model="boltz2", card_bytes=budget.card_bytes
+    )
+    cache_bytes = _token_trans_bias_cache_bytes(
+        gate_tokens,
+        compute_dtype=compute_dtype,
+        diffusion_compute_dtype=diffusion_compute_dtype,
+        params=params,
+    )
+    if cache_bytes is None:
+        return True
+    held = 0 if held_bytes is None else max(0, int(held_bytes))
+    return law.upper(gate_tokens) + cache_bytes + held > threshold
+
+
+def _allocator_bytes_beyond_params(params: Mapping[str, Any] | None) -> int | None:
+    """Allocator bytes in use now, less the weights the fitted law includes."""
+    import jax
+
+    from foldjax import oom
+
+    _, _, used = oom._pool_card_and_used(require_preallocated=False)
+    if used is None:
+        return None
+    weights = sum(
+        int(getattr(leaf, "nbytes", 0)) for leaf in jax.tree_util.tree_leaves(params)
+    )
+    return max(0, used - weights)
+
+
 def _record_prediction_chunking(
     feats: Mapping[str, Any], predict_kwargs: Mapping[str, Any]
 ) -> None:
@@ -1344,12 +1604,13 @@ def predict(
             return_confidence_logits=return_confidence_logits,
         )
     )
+    budget = memory_policy.device_memory_budget(override_gib=memory_budget_gib)
     decision = memory_policy.admit(
         model="boltz2",
         n_token=compiled_tokens,
         msa_rows=None,
         candidates=(("released", memory_policy.BOLTZ2_PEAK),),
-        budget=memory_policy.device_memory_budget(override_gib=memory_budget_gib),
+        budget=budget,
         mode=memory_check,
         off_profile=memory_policy.off_profile_reason(
             num_samples=num_samples,
@@ -1565,6 +1826,67 @@ def predict(
         # template was given. Whether they are real is a value question, so it
         # is answered here on concrete arrays rather than inside the jit.
         "use_template": bool(np.any(feats_np.get("template_mask", np.zeros(1)) != 0)),
+        # Budget-gated eager token-transformer pair bias (with per-layer cast).
+        # Static in `predict_kwargs` so lazy and eager graphs never share a
+        # retained runner or compile cache entry.
+        # Eager only inside the profile the peak law was fitted on, where the
+        # law plus the cache bounds the run (released kernels included). The
+        # standard padding grid is
+        # allowed, as the eager bias was measured on it; a pinned axis, or the
+        # opt-in confidence logits, can outgrow the law on its own.
+        "lazy_token_trans_bias": (
+            _resolve_lazy_token_trans_bias(
+                int(feats_np["token_pad_mask"].shape[-1]),
+                budget=budget,
+                cp_devices=cp_devices,
+                compute_dtype=compute_dtype,
+                diffusion_compute_dtype=diffusion_compute_dtype,
+                params=params,
+                held_bytes=_allocator_bytes_beyond_params(params),
+            )
+            if stop_after == "full"
+            and not steering_active
+            and num_samples <= memory_policy.CALIBRATED_NUM_SAMPLES
+            and resolved_pair_residual_dtype != "float32"
+            and resolved_matmul_precision(MATMUL_PRECISION) != "highest"
+            and not return_confidence_logits
+            # The law was fitted on the released kernels and chunk rungs. A
+            # blocked XLA attention, GLU or triangle path, or a pinned chunk,
+            # holds score and activation tensors the fused kernels never
+            # materialise, so the law plus the cache no longer bounds the run.
+            # Rows past the parse cap widen the MSA carry, and steps past the
+            # released schedule lengthen the noise tape a padded run may hold;
+            # the token-only law sees neither.
+            and (
+                max_msa_depth is None
+                or int(max_msa_depth) <= _RELEASED_MSA_PARSE_CAP
+            )
+            and int(num_steps) <= _RELEASED_SAMPLING_STEPS
+            and _released_kernel_profile(
+                attention_backend=attention_backend,
+                trunk_atom_attention_backend=trunk_atom_attention_backend,
+                diffusion_attention_backend=resolved_diffusion_attention_backend,
+                triangle_backend=triangle_backend,
+                glu_backend=glu_backend,
+                token_attention_chunk=token_attention_chunk,
+                triangle_attention_q_chunk=triangle_attention_q_chunk,
+            )
+            and (
+                padding is None
+                or all(
+                    getattr(padding, axis) is None
+                    for axis in (
+                        "tokens",
+                        "atoms",
+                        "msa",
+                        "templates",
+                        "structural_tokens",
+                        "language_model_tokens",
+                    )
+                )
+            )
+            else True
+        ),
     }
     primary_static = {
         "use_template": predict_kwargs["use_template"],
@@ -1828,6 +2150,8 @@ def predict(
                 if padding is not None
                 else predict_kwargs["use_template"]
             ),
+            # The eager bias was measured on the structure stage only.
+            "lazy_token_trans_bias": True,
         }
         affinity_static = {
             "use_template": affinity_kwargs["use_template"],

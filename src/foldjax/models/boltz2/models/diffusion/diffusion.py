@@ -114,7 +114,7 @@ def diffusion_score_model_forward(
         params["token_transformer"],
         a=a,
         s=s,
-        bias=None if token_bias is None else token_bias.astype(bias_dtype),
+        bias=token_bias,
         mask=mask.astype(jnp.float32),
         multiplicity=multiplicity,
         eps=eps,
@@ -127,6 +127,7 @@ def diffusion_score_model_forward(
         bias_normed_input=diffusion_conditioning.get("token_trans_bias_normed_input"),
         bias_compute_dtype=None if bias_precision is None else bias_precision.dtype,
         bias_out_dtype=None if score_compute_dtype is None else bias_dtype,
+        bias_layer_dtype=None if token_bias is None else bias_dtype,
     )
     a_norm = params["a_norm"]
     a = _layer_norm(a, a_norm["scale"], a_norm["bias"], eps)

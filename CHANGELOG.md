@@ -573,6 +573,23 @@ unless it says so here, in its own paragraph.
   tokens the coordinates and four of five samples' confidence files were
   byte-identical, and one sample's confidence moved by at most 0.008 atom
   pLDDT and 0.10 of PAE, at the same time and peak.
+- **Boltz-2 computes the diffusion token transformer's pair bias once when the
+  card can hold it.** The 24 layers' biases are projected before the sampler
+  and cast to the compute dtype one layer at a time, instead of being
+  recomputed at every denoising step. The bias cache (24 x 16 x N^2 values in
+  the stored dtype) is held only when the peak law's upper estimate plus the
+  cache, plus any allocator memory the process already holds beyond the
+  weights, fits under the admission threshold, and only for runs inside the
+  law's fitted profile (the standard padding grid, at most five samples, no
+  steering, the released kernels with no pinned chunk, the released MSA
+  parse cap and at most 200 sampling steps, no
+  `float32` pair stream, no `highest` matmul precision, no
+  confidence logits). Otherwise, on a host with no detected device (even
+  under a planning override), on an unknown device, under context
+  parallelism, above the fitted token range and in the affinity stage the
+  bias stays lazy. Measured on a 95 GiB card, five samples, warm:
+  1,000 tokens 0.94x wall at the same peak, 3,000 tokens 0.91x wall at
+  +1.1 GiB peak, with coordinates bitwise identical to the lazy bias.
 - **Memory admission refuses a `--num-samples` above the validated range when
   even a lower bound cannot fit.** The peak laws were fitted at five samples
   (ESMFold2 through 32), so a larger count used to make every refusal
