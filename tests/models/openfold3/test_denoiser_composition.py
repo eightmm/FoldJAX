@@ -949,3 +949,149 @@ def test_atom_cache_validation_and_edge_cases(monkeypatch) -> None:
             cp_atom_windows=True,
             cached_pair_bias=cache.dec_pair_bias,
         )
+
+
+def _token_dot_counts(hlo: str, width: int, n_token: int) -> tuple[int, int]:
+    """Count token-axis dots at ``[width, n_token, ...]`` and ``[1, n_token, ...]``."""
+    dots = [line for line in hlo.splitlines() if "dot(" in line]
+    return (
+        sum(f"[{width},{n_token}," in line for line in dots),
+        sum(f"[1,{n_token}," in line for line in dots),
+    )
+
+
+def test_denoiser_and_rollout_keep_single_one_sample_wide(monkeypatch) -> None:
+    """Width-1 ``si``/``si_trunk`` matches width-5 in denoiser and rollout HLO."""
+    from tests.models.openfold3 import atom_cp_fixtures as fx
+    from tests.models.openfold3.scripts import diffusion_chunk_cp_census as census
+
+    width = 5
+    keep_t1 = ("atom_to_token_index", "atom_mask", "token_mask", "num_atoms_per_token")
+    for dtype in (jnp.float32, jnp.bfloat16):
+        batch_w, batch_p1, xl, t, si_w, st_w, zij_1, _zw, params, kw, _ = (
+            _shared_pair_inputs(width=width, dtype=dtype, real_atoms=75)
+        )
+        batch_1 = {k: v[:1] for k, v in batch_w.items()}
+        batch_t1 = {k: (v[:1] if k in keep_t1 else v) for k, v in batch_w.items()}
+        si_1, st_1 = si_w[:1], st_w[:1]
+        cache = prepare_atom_diffusion_cache(
+            batch_1, st_1, zij_1, params, n_query=kw["n_query"], n_key=kw["n_key"]
+        )
+        for scan_blocks in (True, False):
+            with monkeypatch.context() as mp:
+                if not scan_blocks:
+                    mp.setattr(
+                        denoiser, "diffusion_transformer",
+                        functools.partial(diffusion_transformer, scan_blocks=False),
+                    )
+                run_c = jax.jit(
+                    lambda b, s, st: denoise(
+                        b, xl, t, s, st, zij_1, params, **kw, atom_cache=cache
+                    )
+                )
+                out_w = np.asarray(run_c(batch_p1, si_w, st_w))
+                out_1 = np.asarray(run_c(batch_t1, si_1, st_1))
+                np.testing.assert_array_equal(out_1, out_w)
+                assert not np.allclose(out_1[0], out_1[1])
+                np.testing.assert_array_equal(out_1[:, 75:], 0.0)
+                if dtype == jnp.float32 and scan_blocks:
+                    hw = run_c.lower(batch_p1, si_w, st_w).compiler_ir("hlo")
+                    h1 = run_c.lower(batch_t1, si_1, st_1).compiler_ir("hlo")
+                    assert _token_dot_counts(hw.as_hlo_text(), width, fx.N_TOKEN) == (
+                        16, 1
+                    )
+                    assert _token_dot_counts(h1.as_hlo_text(), width, fx.N_TOKEN) == (
+                        9, 8
+                    )
+                if scan_blocks:
+                    run_u = jax.jit(
+                        lambda b, s, st: denoise(b, xl, t, s, st, zij_1, params, **kw)
+                    )
+                    np.testing.assert_array_equal(
+                        np.asarray(run_u(batch_t1, si_1, st_1)),
+                        np.asarray(run_u(batch_p1, si_w, st_w)),
+                    )
+
+    batch, trunk_out = census._batch(), census._trunk_output()
+    stub_names = (
+        "token_representative_atoms", "token_frame_atoms", "pairformer_embedding",
+        "predicted_aligned_error_head", "predicted_distance_error_head",
+        "distogram_head", "atom_logit_head",
+    )
+    originals = {name: getattr(inference, name) for name in stub_names}
+    holder: dict[str, object] = {}
+    census._install_stubs(holder, census._relpos_dims(batch))
+    for name, orig in originals.items():
+        stub = getattr(inference, name)
+        setattr(inference, name, orig)
+        monkeypatch.setattr(inference, name, stub)
+    params = holder["params"]
+    params = params._replace(denoiser=prestack_layer_lists(params.denoiser))
+    cond_params, d_params = params.diffusion_conditioning, params.denoiser
+    cfg = census._config(devices=1, layout="1d")._replace(
+        num_samples=width, num_steps=3, diffusion_chunk_size=None,
+        cp_atom_windows=False, dtype="float32", confidence_dtype="float32",
+    )
+    si_ps = single_conditioning(
+        trunk_out[0], trunk_out[1], jnp.asarray([10.0, 8.0, 6.0, 4.0, 2.0]),
+        cond_params, sigma_data=cfg.sigma_data, token_mask=batch["token_mask"],
+    )
+    assert si_ps.shape == (width, census.N_TOKEN, census.C_S)
+    assert not np.allclose(np.asarray(si_ps[0]), np.asarray(si_ps[1]))
+
+    key = jax.random.key(29)
+    pred_fn = jax.jit(
+        lambda b, tr: inference._predict_from_trunk(
+            key, b, params, cfg, None, trunk_output=tr
+        ).coordinates
+    )
+    hlo = pred_fn.lower(batch, trunk_out).compiler_ir("hlo").as_hlo_text()
+    wide_dots, narrow_dots = _token_dot_counts(hlo, width, census.N_TOKEN)
+    assert wide_dots == 9 and narrow_dots >= 8
+    actual = np.asarray(pred_fn(batch, trunk_out))
+
+    sched = noise_schedule(
+        cfg.num_steps, sigma_data=cfg.sigma_data, s_max=cfg.s_max,
+        s_min=cfg.s_min, p=cfg.p,
+    )
+    exp = inference._expand_samples
+
+    def widened_rollout(b, tr):
+        si_in, si_tr, z = tr
+        zij = pair_conditioning(
+            b, z, cond_params, max_relative_idx=cfg.max_relative_idx,
+            max_relative_chain=cfg.max_relative_chain, token_mask=b["token_mask"],
+        )
+        cache = prepare_atom_diffusion_cache(
+            b, si_tr, zij, d_params, n_query=cfg.n_query, n_key=cfg.n_key
+        )
+
+        def wide_denoise(xl_noisy, t_step):
+            w = xl_noisy.shape[0]
+            si_w = exp(
+                single_conditioning(
+                    si_in, si_tr, t_step, cond_params,
+                    sigma_data=cfg.sigma_data, token_mask=b["token_mask"],
+                ), w,
+            )
+            keep = ("atom_to_token_index", "atom_mask")
+            b_w = {k: (v if k in keep else exp(v, w)) for k, v in b.items()}
+            return denoise(
+                b_w, xl_noisy, t_step, si_w, exp(si_tr, w), zij, d_params,
+                n_query=cfg.n_query, n_key=cfg.n_key, atom_heads=cfg.atom_heads,
+                token_heads=cfg.token_heads, n_token=cfg.n_token,
+                sigma_data=cfg.sigma_data, atom_cache=cache,
+            )
+
+        return sample_diffusion(
+            key, sched, (width, cfg.n_atom, 3), wide_denoise,
+            gamma_0=cfg.gamma_0, gamma_min=cfg.gamma_min,
+            noise_scale=cfg.noise_scale, step_scale=cfg.step_scale,
+            augment_fn=lambda k, xl: centre_random_augmentation(
+                k, xl, exp(b["atom_mask"], xl.shape[0])
+            ),
+        )
+
+    expected = np.asarray(jax.jit(widened_rollout)(batch, trunk_out))
+    np.testing.assert_array_equal(actual, expected)
+    assert not np.allclose(actual[0], actual[1])

@@ -68,11 +68,13 @@ def diffusion_transformer_block(
 
     Args:
         a: ``[..., N, C_token]`` activation.
-        s: ``[..., N, C_s]`` conditioning single representation.
-        z: ``[..., N, N, C_z]`` pair embedding.
+        s: ``[..., N, C_s]`` conditioning single representation. Its leading
+            sample axis may be 1 and broadcast against ``a``.
+        z: ``[..., N, N, C_z]`` pair embedding. Its leading sample axis may be
+            1 and broadcast against ``a``.
         params: mapped block parameters.
         no_heads: attention head count.
-        mask: ``[..., N]`` mask.
+        mask: ``[..., N]`` mask. Its leading sample axis may be 1.
         inf: masking constant.
         mask_transition: upstream's ``_mask_trans``.
         eps: layer norm epsilon.

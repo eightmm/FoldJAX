@@ -208,7 +208,11 @@ def _resolve_unit(glu_backend: str) -> str:
 def adaln(
     a: jnp.ndarray, s: jnp.ndarray, params: AdaLNParams, *, eps: float = 1e-5
 ) -> jnp.ndarray:
-    """Apply adaptive layer norm (AF3 Algorithm 26)."""
+    """Apply adaptive layer norm (AF3 Algorithm 26).
+
+    ``s`` may carry a leading sample axis of 1; its norm, gate and shift
+    projections then run once and broadcast against ``a``.
+    """
     a = layer_norm(a, params.layer_norm_a, eps=eps)
     s = layer_norm(s, params.layer_norm_s, eps=eps)
     gate = jax_sigmoid(linear(s, params.linear_g))
@@ -299,9 +303,11 @@ def conditioned_transition_block(
 
     Args:
         a: ``[..., N, C_a]`` activation to update.
-        s: ``[..., N, C_s]`` conditioning single representation.
+        s: ``[..., N, C_s]`` conditioning single representation. Its leading
+            sample axis may be 1 and broadcast against ``a``.
         params: mapped parameters.
-        mask: ``[..., N]`` mask; ``None`` means all ones.
+        mask: ``[..., N]`` mask; ``None`` means all ones. Its leading sample
+            axis may be 1.
         eps: layer norm epsilon.
         glu_backend: which gated-linear-unit path the SwiGLU takes.
 

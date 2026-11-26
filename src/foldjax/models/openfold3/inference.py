@@ -1788,26 +1788,33 @@ def _predict_from_trunk(
     def denoise_fn(xl_noisy: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
         # The single path is the only one that reads the noise level, so it is the
         # only one that has to be rebuilt per step. It is still sample-independent:
-        # ``t`` is one value per step, shared by every sample.
+        # ``t`` is one value per step, shared by every sample. Kept at its natural
+        # leading axis of 1 into ``denoise`` (alongside ``s_trunk`` and the
+        # token/atom masks) so every ``s``-only layer norm, projection, AdaLN
+        # scale/shift and output gate runs once per step rather than once per
+        # sample, broadcasting only where per-sample activations meet them.
         width = xl_noisy.shape[0]
-        si = _expand_samples(
-            single_conditioning(
-                s_input,
-                s_trunk,
-                t,
-                params.diffusion_conditioning,
-                sigma_data=config.sigma_data,
-                token_mask=batch["token_mask"],
-                glu_backend=config.glu_backend,
-            ),
-            width,
+        si = single_conditioning(
+            s_input,
+            s_trunk,
+            t,
+            params.diffusion_conditioning,
+            sigma_data=config.sigma_data,
+            token_mask=batch["token_mask"],
+            glu_backend=config.glu_backend,
         )
         extra = {} if atom_cache is None else {"atom_cache": atom_cache}
         return denoise(
             {
                 name: (
                     value
-                    if name in ("atom_to_token_index", "atom_mask")
+                    if name
+                    in (
+                        "atom_to_token_index",
+                        "atom_mask",
+                        "token_mask",
+                        "num_atoms_per_token",
+                    )
                     else _expand_samples(value, width)
                 )
                 for name, value in batch.items()
@@ -1815,7 +1822,7 @@ def _predict_from_trunk(
             xl_noisy,
             t,
             si,
-            _expand_samples(s_trunk, width),
+            s_trunk,
             shard_pair_rows(zij_base),
             params.denoiser,
             n_query=config.n_query,

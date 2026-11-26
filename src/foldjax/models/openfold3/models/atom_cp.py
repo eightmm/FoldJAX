@@ -407,6 +407,17 @@ class AtomBlockPlan:
             )
         n_token = int(token_mask.shape[-1])
         tokens_local = int(token_feat.shape[-2])
+        # A width-one trunk single may meet sample-width token or atom metadata.
+        leading = jnp.broadcast_shapes(
+            tuple(token_feat.shape[:-2]),
+            tuple(token_mask.shape[:-1]),
+            tuple(num_atoms_per_token.shape[:-1]),
+            tuple(atom_to_token_index.shape[:-1]),
+        )
+        if tuple(token_feat.shape[:-2]) != leading:
+            token_feat = jnp.broadcast_to(
+                token_feat, (*leading, *token_feat.shape[-2:])
+            )
         owner = jax.lax.axis_index(self.axis_name)
         mask_local = jax.lax.dynamic_slice_in_dim(
             jnp.broadcast_to(token_mask, (*token_feat.shape[:-2], n_token)),

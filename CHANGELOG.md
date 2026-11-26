@@ -564,6 +564,16 @@ unless it says so here, in its own paragraph.
   moved by at most 0.003 Å and the same-index CA residual between the two
   routes was 0.016-0.060 Å, the size by which two processes running the same
   code already differ on this port.
+- **OpenFold3 conditions its denoiser on a one-sample-wide single
+  representation.** The noise-conditioned single and the trunk single are
+  sample-independent, so they now enter the denoiser at width one and every
+  single-only layer norm, projection, AdaLN scale and gate in the 24
+  diffusion-transformer blocks runs once per step, broadcasting only where it
+  meets a per-sample activation. On one RTX PRO 6000, five samples, warm:
+  1,003 tokens 0.98x wall at the same peak; 3,012 tokens 0.99x wall with peak
+  22,503 -> 20,577 MiB. The narrower GEMMs round differently on the GPU:
+  per-chain CA RMSD to the deposited structures moved by at most 0.0012 Å and
+  the same-index CA residual between the two routes was 0.019-0.035 Å.
 - **OpenDDE computes its diffusion-transformer pair bias once per prediction
   by default on a serial GPU.** An omitted `diffusion_pair_bias_cache` now
   realises `true` on a serial unguided GPU process -- with the efficient pair

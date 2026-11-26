@@ -37,6 +37,7 @@ import re
 import sys
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 import foldjax.models.openfold3.models.atom_blocks as atom_blocks
@@ -245,6 +246,21 @@ def main() -> int:
         spmd = lowered.compile().as_text()
         distributed_hash = _fingerprint(hlo)
         jax.jit(plan_probe(True))(*plan_args)
+        # The sampler may hand the denoiser one-sample-wide singles next to
+        # sample-width token metadata.
+        # sample-width token metadata, or with a shared token mask next to
+        # sample-width atom owners.
+        singles = (case.si[:1], case.si_trunk[:1])
+        widened = [jnp.broadcast_to(x, (N_SAMPLE, *x.shape[1:])) for x in singles]
+        shared_mask = {**case.batch, "token_mask": case.batch["token_mask"][:1]}
+        narrow, wide, mixed = (
+            jax.device_get(compiled(batch, case.xl_noisy, case.t, *pair, case.zij))
+            for batch, pair in (
+                (case.batch, singles),
+                (case.batch, widened),
+                (shared_mask, singles),
+            )
+        )
 
     print(
         f"devices={devices} layout={layout} "
@@ -264,6 +280,17 @@ def main() -> int:
             np.asarray(reference[name], dtype=np.float64),
             np.asarray(got[name], dtype=np.float64),
         )
+
+    _report(
+        "step_width_one_single",
+        np.asarray(wide["step"], dtype=np.float64),
+        np.asarray(narrow["step"], dtype=np.float64),
+    )
+    _report(
+        "step_width_one_single_shared_mask",
+        np.asarray(wide["step"], dtype=np.float64),
+        np.asarray(mixed["step"], dtype=np.float64),
+    )
 
     low = hlo.lower()
     counts = {

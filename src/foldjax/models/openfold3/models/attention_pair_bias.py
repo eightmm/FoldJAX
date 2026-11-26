@@ -116,11 +116,14 @@ def ada_attention_pair_bias(
 
     Args:
         a: ``[..., N, C_q]`` activation.
-        s: ``[..., N, C_s]`` conditioning single representation.
-        z: ``[..., N, N, C_z]`` pair embedding.
+        s: ``[..., N, C_s]`` conditioning single representation. Its leading
+            sample axis may be 1 and broadcast against ``a``.
+        z: ``[..., N, N, C_z]`` pair embedding. Its leading sample axis may be
+            1 and broadcast against ``a``.
         params: mapped parameters.
         no_heads: attention head count.
-        mask: ``[..., N]`` mask; ``None`` means all ones.
+        mask: ``[..., N]`` mask; ``None`` means all ones. Its leading sample
+            axis may be 1.
         inf: masking constant.
         eps: layer norm epsilon.
 

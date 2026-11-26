@@ -181,8 +181,12 @@ def denoise(
         batch: feature mapping for the atom encoder/decoder, plus ``token_mask``.
         xl_noisy: ``[..., N_atom, 3]`` noisy coordinates.
         t: ``[...]`` noise level.
-        si: ``[..., N_token, C_s]`` conditioned single representation.
-        si_trunk: ``[..., N_token, C_s]`` trunk single representation.
+        si: ``[..., N_token, C_s]`` conditioned single representation. Its
+            leading sample axis may be 1 and broadcast against per-sample
+            activations.
+        si_trunk: ``[..., N_token, C_s]`` trunk single representation. Its
+            leading sample axis may be 1 and broadcast against per-sample
+            activations.
         zij: ``[..., N_token, N_token, C_z]`` conditioned pair representation.
             Its leading sample axis may be 1 and broadcast against per-sample
             activations.

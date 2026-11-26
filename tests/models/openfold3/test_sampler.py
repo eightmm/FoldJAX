@@ -455,3 +455,76 @@ def test_augmentation_tape_rejects_ambiguous_or_incomplete_arguments(bad):
         sample_diffusion(
             jax.random.key(0), _schedule(2), SHAPE, _identity_denoise, **options, **KW
         )
+
+
+@pytest.mark.parametrize(
+    ("route", "chunk", "expected_widths"),
+    [
+        ("serial", None, {5}),
+        ("chunked", 2, {1, 2}),
+        ("noise_mask", None, {5}),
+        ("noise_tape", None, {5}),
+        ("augmentation_tape", None, {5}),
+    ],
+)
+def test_sampler_routes_pass_width_one_single_conditioning(
+    monkeypatch, route: str, chunk: int | None, expected_widths: set[int]
+) -> None:
+    """Every ``_predict_from_trunk`` sampler route passes width-1 ``si``."""
+    from types import SimpleNamespace
+
+    from foldjax.models.openfold3 import inference
+
+    n_samples, n_steps, n_atom, n_tok = 5, 2, 4, 2
+    cfg = inference.released_config(
+        n_token=n_tok, n_atom=n_atom, num_samples=n_samples, num_steps=n_steps,
+        diffusion_chunk_size=chunk, msa_depth=None,
+    )
+    batch = {
+        "atom_mask": jnp.ones((1, n_atom)),
+        "atom_to_token_index": jnp.array([[0, 0, 1, 1]]),
+        "token_mask": jnp.ones((1, n_tok)),
+        "num_atoms_per_token": jnp.array([[2.0, 2.0]]),
+    }
+    single, pair = jnp.zeros((1, n_tok, 4)), jnp.zeros((1, n_tok, n_tok, 4))
+    seen: list[tuple[int, int, int, tuple[int, ...], int, int]] = []
+
+    class _DoneError(Exception):
+        pass
+
+    monkeypatch.setattr(inference, "pair_conditioning", lambda *a, **k: pair)
+    monkeypatch.setattr(inference, "single_conditioning", lambda *a, **k: single)
+    monkeypatch.setattr(
+        inference,
+        "denoise",
+        lambda b, x, t, si, st, _z, *a, **k: (
+            seen.append((
+                x.shape[0], si.shape[0], st.shape[0], t.shape,
+                b["token_mask"].shape[0], b["num_atoms_per_token"].shape[0],
+            ))
+            or x * 0.25
+        ),
+    )
+    monkeypatch.setattr(
+        inference, "distogram_head", lambda *a, **k: (_ for _ in ()).throw(_DoneError())
+    )
+    extra = {}
+    if route == "noise_mask":
+        extra["noise_mask"] = jnp.ones((n_samples, n_atom), dtype=bool)
+    elif route == "noise_tape":
+        extra["noise_tape"] = jnp.ones((n_steps + 1, n_samples, n_atom, 3))
+    elif route == "augmentation_tape":
+        q = jnp.broadcast_to(jnp.array([1.0, 0.0, 0.0, 0.0]), (n_steps, n_samples, 4))
+        extra["augmentation_tape"] = AugmentationTape(
+            q, jnp.zeros((n_steps, n_samples, 3))
+        )
+    params = SimpleNamespace(
+        trunk=None, diffusion_conditioning=None, denoiser=None, distogram_head=None
+    )
+    with pytest.raises(_DoneError):
+        inference._predict_from_trunk(
+            jax.random.key(5), batch, params, cfg, None,
+            trunk_output=(single, single, pair), **extra,
+        )
+    assert seen and {row[0] for row in seen} == expected_widths
+    assert all(row[1:] == (1, 1, (1,), 1, 1) for row in seen), seen
