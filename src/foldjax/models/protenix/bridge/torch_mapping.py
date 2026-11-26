@@ -1219,14 +1219,6 @@ def map_distogram_state_dict(
     )
 
 
-def state_dict_to_params(
-    state_dict: Mapping[str, Any],
-) -> ProtenixInferenceParams:
-    """Public alias: map a Protenix model state-dict to JAX inference params."""
-
-    return map_protenix_inference_state_dict(state_dict)
-
-
 def load_torch_checkpoint(path: str | Path) -> ProtenixInferenceParams:
     """Load a PyTorch Protenix checkpoint and convert to JAX params.
 

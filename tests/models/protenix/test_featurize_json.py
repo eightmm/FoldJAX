@@ -6,11 +6,12 @@ import numpy as np
 import pytest
 
 from foldjax.models.protenix.data.featurize_json import (
+    _group_indices_by_id,
+    _group_indices_by_unique_id,
     _msa_profile,
     featurize_protein_json,
     load_first_job,
     main,
-    parse_a3m_profile,
     parse_a3m_rows,
 )
 from foldjax.models.protenix.data.static_io import load_static_feature_npz
@@ -160,14 +161,26 @@ def test_single_atom_ion_has_no_reference_frame() -> None:
     np.testing.assert_array_equal(features["frame_atom_index"], [[-1, 0, -1]])
 
 
-def test_parse_a3m_profile_maps_insertions_and_ambiguous_codes() -> None:
-    profile, deletion_mean = parse_a3m_profile(
-        "ACD",
-        ">query\nACD\n>hit1\nAc-D\n>hit2\nAZJ\n",
+def test_featurize_json_a3m_profile_maps_insertions_and_ambiguous_codes() -> None:
+    features = featurize_protein_json(
+        {
+            "sequences": [
+                {
+                    "proteinChain": {
+                        "sequence": "ACDGG",
+                        "unpairedMsa": ">query\nACDGG\n>hit1\nAc-DGG\n>hit2\nAZJGG\n",
+                    }
+                }
+            ]
+        },
+        n_queries=2,
+        n_keys=4,
     )
+    profile = features["profile"]
+    deletion_mean = features["deletion_mean"]
 
-    assert profile.shape == (3, 32)
-    np.testing.assert_allclose(deletion_mean, [0.0, 1 / 3, 0.0])
+    assert profile.shape == (5, 32)
+    np.testing.assert_allclose(deletion_mean, [0.0, 1 / 3, 0.0, 0.0, 0.0])
     np.testing.assert_allclose(profile[0, 0], 1.0)
     np.testing.assert_allclose(profile[1, 4], 1 / 3)
     np.testing.assert_allclose(profile[1, 6], 1 / 3)
@@ -186,9 +199,48 @@ def test_parse_a3m_rows_matches_protenix_deletion_encoding() -> None:
     np.testing.assert_array_equal(deletion_matrix, [[0, 0], [0, 1]])
 
 
-def test_parse_a3m_profile_rejects_misaligned_rows() -> None:
+def test_parse_a3m_rows_rejects_misaligned_rows() -> None:
     with pytest.raises(ValueError, match="aligned length"):
-        parse_a3m_profile("ACD", ">query\nACD\n>bad\nAC\n")
+        parse_a3m_rows("ACD", ">query\nACD\n>bad\nAC\n")
+
+
+def test_group_indices_helpers_match_flatnonzero_with_empty_token() -> None:
+    # Multi-chain atom-to-token map with non-contiguous indices, an empty
+    # interior token (token 2), and an empty trailing token (token 5).
+    atom_to_token = np.asarray([0, 0, 1, 3, 1, 4, 3, 0, 4], dtype=np.int64)
+    n_token = 6
+    expected = [np.flatnonzero(atom_to_token == i) for i in range(n_token)]
+    actual = _group_indices_by_id(atom_to_token, n_token)
+    assert len(actual) == n_token
+    for got, want in zip(actual, expected, strict=True):
+        assert got.dtype == np.int64
+        np.testing.assert_array_equal(got, want)
+
+    # Edge cases: empty atoms, zero groups, negative/out-of-range IDs, invalid limit.
+    empty_groups = _group_indices_by_id(np.empty(0, dtype=np.int64), 3)
+    assert len(empty_groups) == 3
+    assert all(group.size == 0 and group.dtype == np.int64 for group in empty_groups)
+    assert _group_indices_by_id(atom_to_token, 0) == []
+    with_oob = np.asarray([-1, 2, 5, 0, 2], dtype=np.int64)
+    for got, want in zip(
+        _group_indices_by_id(with_oob, 3),
+        [np.flatnonzero(with_oob == i) for i in range(3)],
+        strict=True,
+    ):
+        np.testing.assert_array_equal(got, want)
+    with pytest.raises(ValueError, match="non-negative"):
+        _group_indices_by_id(atom_to_token, -1)
+
+    # Unique-ID grouping matches sorted np.unique + np.flatnonzero.
+    uids = np.asarray([10, 2, 10, 7, 2, 10], dtype=np.int64)
+    unique_ids, groups = _group_indices_by_unique_id(uids)
+    np.testing.assert_array_equal(unique_ids, np.unique(uids))
+    for uid, group in zip(unique_ids, groups, strict=True):
+        np.testing.assert_array_equal(group, np.flatnonzero(uids == uid))
+    empty_uids, empty_uid_groups = _group_indices_by_unique_id(
+        np.empty(0, dtype=np.int64)
+    )
+    assert empty_uids.size == 0 and empty_uid_groups == []
 
 
 def test_featurize_json_uses_msa_profile(tmp_path) -> None:

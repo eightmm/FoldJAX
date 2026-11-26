@@ -83,10 +83,6 @@ class ShapeCompGraphFeatures(NamedTuple):
     is_protein_token: jax.Array
 
 
-def _as_numpy(value: Any) -> np.ndarray:
-    return np.asarray(value)
-
-
 def _select_rep_atom_mask(
     features: Mapping[str, Any],
     atom_to_token_idx: np.ndarray,
@@ -111,7 +107,7 @@ def _select_rep_atom_mask(
     for key in candidates:
         if key not in features:
             continue
-        mask = _as_numpy(features[key]).astype(bool).reshape(-1)
+        mask = np.asarray(features[key]).astype(bool).reshape(-1)
         checked.append(key)
         if mask.shape[0] != atom_to_token_idx.shape[0]:
             continue
@@ -132,7 +128,7 @@ def _token_any(
     atom_to_token_idx: np.ndarray,
     n_token: int,
 ) -> np.ndarray:
-    flag = _as_numpy(features[name]).astype(np.float32).reshape(-1)
+    flag = np.asarray(features[name]).astype(np.float32).reshape(-1)
     summed = np.zeros(n_token, dtype=np.float32)
     np.add.at(summed, atom_to_token_idx, flag)
     return summed > 0.5
@@ -144,7 +140,7 @@ def _residue_protein_token_mask(
     n_token: int,
 ) -> np.ndarray:
     if "is_protein_token" in features:
-        candidate = _as_numpy(features["is_protein_token"]).reshape(-1)
+        candidate = np.asarray(features["is_protein_token"]).reshape(-1)
         if candidate.shape[0] == n_token:
             return candidate.astype(bool)
     atom_count = np.zeros(n_token, dtype=np.float32)
@@ -168,8 +164,8 @@ def resolve_shape_comp_token_features(
     """Resolve the token-level inputs, failing loudly on a mismatched space."""
 
     if n_token is None:
-        n_token = int(_as_numpy(features["token_index"]).reshape(-1).shape[0])
-    atom_to_token_idx = _as_numpy(features["atom_to_token_idx"]).astype(np.int64)
+        n_token = int(np.asarray(features["token_index"]).reshape(-1).shape[0])
+    atom_to_token_idx = np.asarray(features["atom_to_token_idx"]).astype(np.int64)
     atom_to_token_idx = atom_to_token_idx.reshape(-1)
     if atom_to_token_idx.size == 0:
         raise ValueError("shape complementarity requires at least one atom")
@@ -178,7 +174,7 @@ def resolve_shape_comp_token_features(
             "atom_to_token_idx does not match the active token space: "
             f"max+1={int(atom_to_token_idx.max()) + 1}, n_token={n_token}"
         )
-    token_asym_id = _as_numpy(features["asym_id"]).astype(np.int64).reshape(-1)
+    token_asym_id = np.asarray(features["asym_id"]).astype(np.int64).reshape(-1)
     if token_asym_id.shape[0] != n_token:
         raise ValueError(
             f"asym_id does not match the active token space: "
@@ -186,7 +182,7 @@ def resolve_shape_comp_token_features(
         )
 
     role = features.get("subtoken_role_id")
-    role_array = None if role is None else _as_numpy(role).reshape(-1)
+    role_array = None if role is None else np.asarray(role).reshape(-1)
     is_structural = role_array is not None and role_array.shape[0] == n_token
 
     rep_atom_mask = _select_rep_atom_mask(
@@ -201,9 +197,9 @@ def resolve_shape_comp_token_features(
         structural_protein = features.get("structural_is_protein_token")
         if (
             structural_protein is not None
-            and _as_numpy(structural_protein).reshape(-1).shape[0] == n_token
+            and np.asarray(structural_protein).reshape(-1).shape[0] == n_token
         ):
-            is_protein_token = _as_numpy(structural_protein).reshape(-1).astype(bool)
+            is_protein_token = np.asarray(structural_protein).reshape(-1).astype(bool)
         else:
             is_protein_token = (
                 token_role_id == STRUCTURAL_TOKEN_ROLES["protein_bb"]

@@ -335,6 +335,27 @@ def _bond_type(order: float) -> Chem.BondType:
     raise ValueError(f"unsupported RDKit bond order: {order}")
 
 
+def _apply_bond_stereos(mol: Chem.Mol, stereos: np.ndarray) -> None:
+    for bond, stereo in zip(mol.GetBonds(), stereos, strict=True):
+        stereo = int(stereo)
+        if stereo not in Chem.BondStereo.values or stereo == 0:
+            continue
+        begin, end = bond.GetBeginAtom(), bond.GetEndAtom()
+        begin_neighbors = sorted(
+            atom.GetIdx()
+            for atom in begin.GetNeighbors()
+            if atom.GetIdx() != end.GetIdx()
+        )
+        end_neighbors = sorted(
+            atom.GetIdx()
+            for atom in end.GetNeighbors()
+            if atom.GetIdx() != begin.GetIdx()
+        )
+        if begin_neighbors and end_neighbors:
+            bond.SetStereoAtoms(begin_neighbors[0], end_neighbors[0])
+            bond.SetStereo(Chem.BondStereo.values[stereo])
+
+
 def _reconstruct_rdkit_mol(
     features: Mapping[str, Any],
     atom_indices: np.ndarray,
@@ -384,24 +405,7 @@ def _reconstruct_rdkit_mol(
             bond.SetIsAromatic(True)
             bond.GetBeginAtom().SetIsAromatic(True)
             bond.GetEndAtom().SetIsAromatic(True)
-    for bond, stereo in zip(mol.GetBonds(), stereos, strict=True):
-        stereo = int(stereo)
-        if stereo not in Chem.BondStereo.values or stereo == 0:
-            continue
-        begin, end = bond.GetBeginAtom(), bond.GetEndAtom()
-        begin_neighbors = sorted(
-            atom.GetIdx()
-            for atom in begin.GetNeighbors()
-            if atom.GetIdx() != end.GetIdx()
-        )
-        end_neighbors = sorted(
-            atom.GetIdx()
-            for atom in end.GetNeighbors()
-            if atom.GetIdx() != begin.GetIdx()
-        )
-        if begin_neighbors and end_neighbors:
-            bond.SetStereoAtoms(begin_neighbors[0], end_neighbors[0])
-            bond.SetStereo(Chem.BondStereo.values[stereo])
+    _apply_bond_stereos(mol, stereos)
     conformer = Chem.Conformer(len(atom_indices))
     for local_idx, global_idx in enumerate(atom_indices):
         x, y, z = (float(value) for value in coordinates[global_idx])
@@ -411,24 +415,7 @@ def _reconstruct_rdkit_mol(
     Chem.AssignStereochemistry(mol, force=True, cleanIt=True)
     # Bond directions are not part of the static feature contract, so restore
     # the explicit RDKit stereo enum and its substituent atoms after cleaning.
-    for bond, stereo in zip(mol.GetBonds(), stereos, strict=True):
-        stereo = int(stereo)
-        if stereo not in Chem.BondStereo.values or stereo == 0:
-            continue
-        begin, end = bond.GetBeginAtom(), bond.GetEndAtom()
-        begin_neighbors = sorted(
-            atom.GetIdx()
-            for atom in begin.GetNeighbors()
-            if atom.GetIdx() != end.GetIdx()
-        )
-        end_neighbors = sorted(
-            atom.GetIdx()
-            for atom in end.GetNeighbors()
-            if atom.GetIdx() != begin.GetIdx()
-        )
-        if begin_neighbors and end_neighbors:
-            bond.SetStereoAtoms(begin_neighbors[0], end_neighbors[0])
-            bond.SetStereo(Chem.BondStereo.values[stereo])
+    _apply_bond_stereos(mol, stereos)
     Chem.GetSymmSSSR(mol)
     return mol
 

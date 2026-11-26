@@ -651,11 +651,6 @@ class JaxEsmProvider:
         return np.asarray(embedding, dtype=np.float32)
 
 
-# Compatibility for code that constructed the old provider by name.  It now
-# resolves to the JAX implementation and imports neither fair-esm nor torch.
-FairEsmProvider = JaxEsmProvider
-
-
 def add_esm_embeddings(
     features: Mapping[str, Any],
     job: Mapping[str, Any],
@@ -748,7 +743,6 @@ __all__ = [
     "EsmCheckpointError",
     "Esm2Config",
     "Esm2Weights",
-    "FairEsmProvider",
     "JaxEsmProvider",
     "add_esm_embeddings",
     "convert_esm2_checkpoint",

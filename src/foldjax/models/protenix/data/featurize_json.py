@@ -27,6 +27,12 @@ import gemmi
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from foldjax.models.protenix.data.output import (
+    _ELEMENTS as _PERIODIC_TABLE,
+)
+from foldjax.models.protenix.data.output import (
+    _chain_id as _default_chain_id,
+)
 from foldjax.models.protenix.data.static_io import save_static_feature_npz
 from foldjax.models.protenix.data.template_features import (
     assemble_template_features,
@@ -69,13 +75,6 @@ MSA_PROTEIN_INDEX = {
     "-": 31,
 }
 # Periodic table order used by torch ``get_all_elems`` (index == Z - 1).
-_PERIODIC_TABLE = (
-    "H HE LI BE B C N O F NE NA MG AL SI P S CL AR K CA SC TI V CR MN FE CO "
-    "NI CU ZN GA GE AS SE BR KR RB SR Y ZR NB MO TC RU RH PD AG CD IN SN SB "
-    "TE I XE CS BA LA CE PR ND PM SM EU GD TB DY HO ER TM YB LU HF TA W RE OS "
-    "IR PT AU HG TL PB BI PO AT RN FR RA AC TH PA U NP PU AM CM BK CF ES FM "
-    "MD NO LR RF DB SG BH HS MT DS RG CN NH FL MC LV TS OG"
-).split()
 ELEMENT_INDEX = {elem: i for i, elem in enumerate(_PERIODIC_TABLE)}
 for _i in range(119, 129):
     ELEMENT_INDEX[f"UNK_ELEM_{_i}"] = _i - 1
@@ -507,21 +506,23 @@ def _featurize_protein_json(
     atom_to_token = np.asarray(atom_to_token_idx, dtype=np.int64)
     ref_pos_arr = np.asarray(ref_pos, dtype=np.float32)
     ref_space_uid_arr = np.asarray(ref_space_uid, dtype=np.int64)
-    if center_reference:
-        for uid in np.unique(ref_space_uid_arr):
-            in_ref_space = ref_space_uid_arr == uid
-            ref_pos_arr[in_ref_space] -= ref_pos_arr[in_ref_space].mean(axis=0)
-    if augment_reference:
-        reference_rng = np.random.RandomState(_resolve_featurization_seed(job, seed))
-        for uid in np.unique(ref_space_uid_arr):
-            in_ref_space = ref_space_uid_arr == uid
-            # Native Protenix translates before rotating; OpenDDE opts out
-            # and applies its own rotate-then-translate augmentation.
-            translation = reference_rng.uniform(-1, 1, size=3)
-            rotation = Rotation.random(random_state=reference_rng).as_matrix()
-            ref_pos_arr[in_ref_space] = (
-                ref_pos_arr[in_ref_space] + translation
-            ) @ rotation.T
+    if center_reference or augment_reference:
+        _, ref_space_groups = _group_indices_by_unique_id(ref_space_uid_arr)
+        if center_reference:
+            for in_ref_space in ref_space_groups:
+                ref_pos_arr[in_ref_space] -= ref_pos_arr[in_ref_space].mean(axis=0)
+        if augment_reference:
+            reference_rng = np.random.RandomState(
+                _resolve_featurization_seed(job, seed)
+            )
+            for in_ref_space in ref_space_groups:
+                # Native Protenix translates before rotating; OpenDDE opts out
+                # and applies its own rotate-then-translate augmentation.
+                translation = reference_rng.uniform(-1, 1, size=3)
+                rotation = Rotation.random(random_state=reference_rng).as_matrix()
+                ref_pos_arr[in_ref_space] = (
+                    ref_pos_arr[in_ref_space] + translation
+                ) @ rotation.T
     has_frame, frame_atom_index = _reference_frames(
         atom_to_token,
         np.asarray(ref_atom_names),
@@ -663,6 +664,58 @@ def _featurize_protein_json(
     return out
 
 
+def _group_indices_by_id(
+    ids: np.ndarray,
+    n_groups: int,
+) -> list[np.ndarray]:
+    """Group ``0..len(ids)-1`` by integer ID in ``0..n_groups-1``.
+
+    Returns one ascending ``int64`` index array per group, identical to
+    ``[np.flatnonzero(ids == i) for i in range(n_groups)]``.
+    """
+
+    if n_groups < 0:
+        raise ValueError(f"n_groups must be non-negative; got {n_groups}")
+    if n_groups == 0:
+        return []
+    ids_arr = np.asarray(ids, dtype=np.int64)
+    if ids_arr.size == 0:
+        return [np.empty(0, dtype=np.int64) for _ in range(n_groups)]
+    if np.any((ids_arr < 0) | (ids_arr >= n_groups)):
+        valid = np.flatnonzero((ids_arr >= 0) & (ids_arr < n_groups))
+        if valid.size == 0:
+            return [np.empty(0, dtype=np.int64) for _ in range(n_groups)]
+        filtered = ids_arr[valid]
+        order = np.argsort(filtered, kind="stable")
+        sorted_ids = filtered[order]
+        sorted_indices = valid[order]
+    else:
+        order = np.argsort(ids_arr, kind="stable")
+        sorted_ids = ids_arr[order]
+        sorted_indices = order.astype(np.int64, copy=False)
+    splits = np.searchsorted(sorted_ids, np.arange(1, n_groups, dtype=np.int64))
+    return list(np.split(sorted_indices, splits))
+
+
+def _group_indices_by_unique_id(
+    ids: np.ndarray,
+) -> tuple[np.ndarray, list[np.ndarray]]:
+    """Group ``0..len(ids)-1`` by sorted unique integer ID.
+
+    Returns ``(unique_ids, groups)`` where each group matches
+    ``np.flatnonzero(ids == uid)`` for ``uid`` in ``unique_ids``.
+    """
+
+    ids_arr = np.asarray(ids, dtype=np.int64)
+    if ids_arr.size == 0:
+        return np.empty(0, dtype=np.int64), []
+    order = np.argsort(ids_arr, kind="stable").astype(np.int64, copy=False)
+    sorted_ids = ids_arr[order]
+    change = np.flatnonzero(sorted_ids[1:] != sorted_ids[:-1]) + 1
+    unique_ids = sorted_ids[np.concatenate(([0], change))]
+    return unique_ids, list(np.split(order, change))
+
+
 def _reference_frames(
     atom_to_token: np.ndarray,
     atom_names: np.ndarray,
@@ -676,8 +729,9 @@ def _reference_frames(
     n_token = len(standard_polymer)
     has_frame = np.zeros(n_token, dtype=np.int64)
     frames = np.full((n_token, 3), -1, dtype=np.int64)
-    for token in range(n_token):
-        atoms = np.flatnonzero(atom_to_token == token)
+    token_atoms = _group_indices_by_id(atom_to_token, n_token)
+    ref_space_groups: dict[int, np.ndarray] | None = None
+    for token, atoms in enumerate(token_atoms):
         if not atoms.size:
             raise ValueError(f"token {token} has no atoms")
         if standard_polymer[token] and len(atoms) > 1:
@@ -691,7 +745,12 @@ def _reference_frames(
             has_frame[token] = 1
             continue
         centre = int(atoms[0])
-        group = np.flatnonzero(ref_space_uid == ref_space_uid[centre])
+        if ref_space_groups is None:
+            uids, groups = _group_indices_by_unique_id(ref_space_uid)
+            ref_space_groups = {
+                int(uid): grp for uid, grp in zip(uids, groups, strict=True)
+            }
+        group = ref_space_groups[int(ref_space_uid[centre])]
         frames[token, 1] = centre
         if group.size < 3:
             continue
@@ -783,16 +842,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     save_static_feature_npz(args.out, features)
     print(f"wrote: {args.out}")
-
-
-def parse_a3m_profile(
-    query_sequence: str,
-    a3m: str,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Parse protein A3M content into Protenix profile and deletion mean."""
-
-    msa, deletion_matrix = parse_a3m_rows(query_sequence, a3m)
-    return _msa_profile(msa), deletion_matrix.mean(axis=0)
 
 
 def parse_a3m_rows(
@@ -1890,17 +1939,6 @@ def _assemble_msa_features(
         profile.astype(np.float32),
         deletion_mean.astype(np.float32),
     )
-
-
-def _default_chain_id(index: int) -> str:
-    """Return Excel-like chain IDs (A..Z, AA..), matching upstream ordering."""
-
-    value = index + 1
-    chars = []
-    while value:
-        value, remainder = divmod(value - 1, 26)
-        chars.append(chr(ord("A") + remainder))
-    return "".join(reversed(chars))
 
 
 def _validate_ids(ids: Any, count: int, kind: str) -> None:

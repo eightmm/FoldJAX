@@ -1015,8 +1015,10 @@ def _run(
                 padded_features = None
                 padding_plan = None
                 random_tapes: dict[str, Any] = {}
+                import numpy as np
+
                 n_chain = (
-                    int(__import__("numpy").max(model_features["asym_id"])) + 1
+                    int(np.max(model_features["asym_id"])) + 1
                     if "asym_id" in model_features
                     else None
                 )
@@ -1057,8 +1059,6 @@ def _run(
                     if config.stop_after == "full" and (
                         return_logits or return_details
                     ):
-                        import numpy as np
-
                         restype = model_features.get("restype")
                         if restype is not None:
                             arr = np.asarray(restype)

@@ -14,25 +14,23 @@ from typing import Any
 
 import numpy as np
 
-COMPACT_REF_ATOM_CATEGORIES_MARKER = "_foldjax_compact_ref_atom_categories"
-COMPACT_REF_ELEMENT_IDS = "_foldjax_compact_ref_element_ids"
-COMPACT_REF_ATOM_NAME_CHAR_IDS = "_foldjax_compact_ref_atom_name_char_ids"
-COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES = (
+from foldjax.models._feature_storage import (
     COMPACT_REF_ATOM_CATEGORIES_MARKER,
-    COMPACT_REF_ELEMENT_IDS,
+    COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES,
     COMPACT_REF_ATOM_NAME_CHAR_IDS,
+    COMPACT_REF_ATOM_NAME_CHAR_SENTINEL,
+    COMPACT_REF_ELEMENT_IDS,
+    COMPACT_REF_ELEMENT_SENTINEL,
 )
+from foldjax.models._feature_storage import (
+    compact_ref_atom_category_storage as _compact_ref_atom_category_storage,
+)
+from foldjax.models._feature_storage import (
+    validate_compact_ref_atom_categories as _validate_compact_ref_atom_categories,
+)
+from foldjax.models._output_features import _EXPLICIT_OUTPUT_ATOM_FIELDS
 
-_MARKER_VERSION = 1
-_ELEMENT_SENTINEL = 128
-_ATOM_NAME_CHAR_SENTINEL = 64
-_EXPLICIT_OUTPUT_ATOM_FIELDS = (
-    "output_atom_name",
-    "output_atom_element",
-    "output_atom_res_name",
-    "output_atom_chain_id",
-    "output_atom_res_id",
-)
+_PORT_LABEL = "Protenix"
 
 
 def compact_ref_atom_category_storage(features: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -46,71 +44,24 @@ def compact_ref_atom_category_storage(features: Mapping[str, Any]) -> Mapping[st
     back without changing their representation.
     """
 
-    dense_element = features.get("ref_element")
-    dense_chars = features.get("ref_atom_name_chars")
-    if dense_element is not None or dense_chars is not None:
-        out = dict(features)
-        for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES:
-            out.pop(name, None)
-        if _can_compact_dense_categories(dense_element, dense_chars):
-            element = np.asarray(dense_element)
-            chars = np.asarray(dense_chars)
-            del out["ref_element"]
-            del out["ref_atom_name_chars"]
-            out[COMPACT_REF_ATOM_CATEGORIES_MARKER] = np.asarray(
-                _MARKER_VERSION, dtype=np.uint8
-            )
-            out[COMPACT_REF_ELEMENT_IDS] = _one_hot_ids(element, _ELEMENT_SENTINEL)
-            out[COMPACT_REF_ATOM_NAME_CHAR_IDS] = _one_hot_ids(
-                chars, _ATOM_NAME_CHAR_SENTINEL
-            )
-        return out
-
-    if any(name in features for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES):
-        validate_compact_ref_atom_categories(features)
-    return features
+    return _compact_ref_atom_category_storage(
+        features,
+        dense_dtype=np.float32,
+        allow_batch=False,
+        port_label=_PORT_LABEL,
+        require_non_empty=True,
+    )
 
 
 def validate_compact_ref_atom_categories(features: Mapping[str, Any]) -> None:
     """Validate the private v1 form on concrete host arrays before tracing."""
 
-    if "ref_element" in features or "ref_atom_name_chars" in features:
-        return
-    present = {
-        name: name in features for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES
-    }
-    if not any(present.values()):
-        return
-    missing = [name for name, exists in present.items() if not exists]
-    if missing:
-        raise KeyError(
-            "Protenix compact ref atom categories are incomplete; missing "
-            + ", ".join(missing)
-        )
-
-    marker = np.asarray(features[COMPACT_REF_ATOM_CATEGORIES_MARKER])
-    element_ids = np.asarray(features[COMPACT_REF_ELEMENT_IDS])
-    char_ids = np.asarray(features[COMPACT_REF_ATOM_NAME_CHAR_IDS])
-    if marker.shape != () or marker.dtype != np.dtype(np.uint8):
-        raise ValueError(
-            "Protenix compact ref atom category marker must be scalar uint8"
-        )
-    if int(marker) != _MARKER_VERSION:
-        raise ValueError("Protenix compact ref atom category marker must be v1")
-    if element_ids.dtype != np.dtype(np.uint8):
-        raise ValueError("Protenix compact ref element IDs must have dtype uint8")
-    if char_ids.dtype != np.dtype(np.uint8):
-        raise ValueError("Protenix compact ref atom-name IDs must have dtype uint8")
-    if element_ids.ndim != 1 or char_ids.shape != (element_ids.shape[0], 4):
-        raise ValueError(
-            "Protenix compact ref atom category IDs must have shapes [A] and [A, 4]"
-        )
-    if element_ids.size == 0:
-        raise ValueError("Protenix compact ref atom category IDs must be non-empty")
-    if np.any(element_ids > _ELEMENT_SENTINEL):
-        raise ValueError("Protenix compact ref element IDs exceed sentinel 128")
-    if np.any(char_ids > _ATOM_NAME_CHAR_SENTINEL):
-        raise ValueError("Protenix compact ref atom-name IDs exceed sentinel 64")
+    _validate_compact_ref_atom_categories(
+        features,
+        allow_batch=False,
+        port_label=_PORT_LABEL,
+        require_non_empty=True,
+    )
 
 
 def drop_dense_categories_from_writer_snapshot(
@@ -134,8 +85,8 @@ def drop_dense_categories_from_writer_snapshot(
     if (
         element_shape is None
         or len(element_shape) != 2
-        or element_shape[1] != _ELEMENT_SENTINEL
-        or chars_shape != (element_shape[0], 4, _ATOM_NAME_CHAR_SENTINEL)
+        or element_shape[1] != COMPACT_REF_ELEMENT_SENTINEL
+        or chars_shape != (element_shape[0], 4, COMPACT_REF_ATOM_NAME_CHAR_SENTINEL)
     ):
         return features
     n_atom = int(element_shape[0])
@@ -148,39 +99,6 @@ def drop_dense_categories_from_writer_snapshot(
     del out["ref_element"]
     del out["ref_atom_name_chars"]
     return out
-
-
-def _can_compact_dense_categories(element: Any, chars: Any) -> bool:
-    if not isinstance(element, np.ndarray) or not isinstance(chars, np.ndarray):
-        return False
-    if (
-        element.dtype != np.dtype(np.float32)
-        or chars.dtype != np.dtype(np.float32)
-        or element.ndim != 2
-        or chars.shape != (element.shape[0], 4, _ATOM_NAME_CHAR_SENTINEL)
-        or element.shape[1] != _ELEMENT_SENTINEL
-        or element.shape[0] == 0
-    ):
-        return False
-    return _exact_one_hot_or_zero(element) and _exact_one_hot_or_zero(chars)
-
-
-def _exact_one_hot_or_zero(array: np.ndarray) -> bool:
-    if not np.all(np.isfinite(array)):
-        return False
-    if np.any(np.signbit(array[array == 0])):
-        return False
-    if not np.all((array == 0.0) | (array == 1.0)):
-        return False
-    return not np.any(np.sum(array, axis=-1, dtype=np.uint8) > 1)
-
-
-def _one_hot_ids(array: np.ndarray, sentinel: int) -> np.ndarray:
-    counts = np.sum(array, axis=-1, dtype=np.uint8)
-    ids = np.argmax(array, axis=-1).astype(np.uint8, copy=False)
-    ids = ids.copy()
-    ids[counts == 0] = sentinel
-    return ids
 
 
 __all__ = [

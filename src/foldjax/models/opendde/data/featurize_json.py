@@ -19,21 +19,14 @@ from typing import Any
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from foldjax.models.opendde.models.structural_tokens import STRUCTURAL_TOKEN_ROLES
 from foldjax.models.protenix.data.featurize_json import (
     FeaturizerAssets,
+    _group_indices_by_id,
+    _group_indices_by_unique_id,
     _local_atom_geometry,
     featurize_protein_json,
 )
-
-STRUCTURAL_TOKEN_ROLES = {
-    "atom": 0,
-    "protein_bb": 1,
-    "protein_sc": 2,
-    "dna_bb": 3,
-    "dna_base": 4,
-    "rna_bb": 5,
-    "rna_base": 6,
-}
 
 #: Fields OpenDDE's shipped inference defaults discard, and the flag that does
 #: it. `use_template=False` and `use_rna_msa=False`
@@ -436,8 +429,9 @@ def _prepare_reference_features(
     )
     random_state = np.random.RandomState(seed)
 
-    for uid in np.unique(ref_space_uid):
-        atom_indices = np.flatnonzero(ref_space_uid == uid)
+    for _uid, atom_indices in zip(
+        *_group_indices_by_unique_id(ref_space_uid), strict=True
+    ):
         code = str(residue_names[atom_indices[0]])
         names_key = f"{code}_names"
         use_standard_table = names_key in tables and not np.any(
@@ -571,7 +565,7 @@ def _add_open_dde_metadata(features: dict[str, Any]) -> dict[str, Any]:
     if np.any(~np.isin(restype_index, np.r_[0:31])):
         raise ValueError("unsupported residue-token restype in OpenDDE metadata")
 
-    parent_atoms = [np.flatnonzero(atom_to_parent == i) for i in range(n_parent)]
+    parent_atoms = _group_indices_by_id(atom_to_parent, n_parent)
     if any(atom_indices.size == 0 for atom_indices in parent_atoms):
         raise ValueError("every residue token must contain at least one atom")
 
@@ -579,6 +573,7 @@ def _add_open_dde_metadata(features: dict[str, Any]) -> dict[str, Any]:
     plddt_m_rep_atom_mask = np.zeros(n_atom, dtype=np.int64)
     has_frame = np.zeros(n_parent, dtype=np.int64)
     frame_atom_index = np.full((n_parent, 3), -1, dtype=np.int64)
+    ref_space_groups: dict[int, np.ndarray] | None = None
 
     for parent_idx, atom_indices in enumerate(parent_atoms):
         names = atom_names[atom_indices]
@@ -608,11 +603,17 @@ def _add_open_dde_metadata(features: dict[str, Any]) -> dict[str, Any]:
                     "ligand residue tokens must be atom-level (one atom per token)"
                 )
             centre = int(atom_indices[0])
+            if ref_space_groups is None:
+                uids, groups = _group_indices_by_unique_id(ref_space_uid)
+                ref_space_groups = {
+                    int(uid): group for uid, group in zip(uids, groups, strict=True)
+                }
             frame, frame_valid = _ligand_frame(
                 centre,
                 ref_pos=ref_pos,
                 ref_mask=ref_mask,
                 ref_space_uid=ref_space_uid,
+                ref_space_groups=ref_space_groups,
             )
             has_frame[parent_idx] = frame_valid
         pae_rep_atom_mask[centre] = 1
@@ -640,6 +641,7 @@ def _add_open_dde_metadata(features: dict[str, Any]) -> dict[str, Any]:
         ref_pos=ref_pos,
         ref_mask=ref_mask,
         ref_space_uid=ref_space_uid,
+        ref_space_groups=ref_space_groups,
         atom_to_parent=atom_to_parent,
         covalent_atom_indices=np.asarray(
             features.get("covalent_atom_indices", np.zeros((0, 2))),
@@ -680,6 +682,7 @@ def _structural_metadata(
     ref_pos: np.ndarray,
     ref_mask: np.ndarray,
     ref_space_uid: np.ndarray,
+    ref_space_groups: Mapping[int, np.ndarray] | None = None,
     atom_to_parent: np.ndarray,
     covalent_atom_indices: np.ndarray,
 ) -> dict[str, np.ndarray]:
@@ -756,11 +759,17 @@ def _structural_metadata(
             structural_frames[token_idx] = residue_frames[parent_idx]
             structural_has_frame[token_idx] = residue_has_frame[parent_idx]
         else:
+            if ref_space_groups is None:
+                uids, groups = _group_indices_by_unique_id(ref_space_uid)
+                ref_space_groups = {
+                    int(uid): group for uid, group in zip(uids, groups, strict=True)
+                }
             frame, valid = _ligand_frame(
                 centre,
                 ref_pos=ref_pos,
                 ref_mask=ref_mask,
                 ref_space_uid=ref_space_uid,
+                ref_space_groups=ref_space_groups,
             )
             structural_frames[token_idx] = frame
             structural_has_frame[token_idx] = valid
@@ -866,8 +875,14 @@ def _ligand_frame(
     ref_pos: np.ndarray,
     ref_mask: np.ndarray,
     ref_space_uid: np.ndarray,
+    ref_space_groups: Mapping[int, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, int]:
-    atom_ids = np.flatnonzero(ref_space_uid == ref_space_uid[centre])
+    uid = int(ref_space_uid[centre])
+    atom_ids = (
+        ref_space_groups[uid]
+        if ref_space_groups is not None
+        else np.flatnonzero(ref_space_uid == uid)
+    )
     if atom_ids.size < 3:
         return np.asarray([-1, centre, -1], dtype=np.int64), 0
     distances = np.linalg.norm(ref_pos[atom_ids] - ref_pos[centre], axis=-1)
