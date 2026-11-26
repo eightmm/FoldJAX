@@ -99,6 +99,28 @@ class PredictionConfig(NamedTuple):
     memory_check: str
     memory_budget_gib: float | None
     structural_triangle_att_row_chunk_size: int | None = None
+    #: Precompute per-block token pair bias once outside the sampler. Memory
+    #: cost: ``n_blocks * H * S^2 * itemsize`` (~5.2 GiB at 24 blocks, 16 heads,
+    #: ``S = 1,902`` in fp32). Default ``False``.
+    diffusion_pair_bias_cache: bool = False
+
+
+#: What :func:`_exceeds_profile` names for the pair-bias cache.
+PAIR_BIAS_CACHE_PROFILE = "the diffusion pair-bias cache"
+
+
+def _exceeds_profile(config: PredictionConfig, *, padded: bool) -> tuple[str, ...]:
+    """What about this run needs *more* memory than the fitted laws describe.
+
+    Serving padding: both laws were fitted unpadded. The pair-bias cache: its
+    per-block biases stay live through the sampler, and no law was fitted
+    with them, so with it on a law that clears the budget is a lower bound.
+    The fp32 trunk is not here: it has its own fitted law.
+    """
+    return (
+        *((memory_policy.SERVING_PADDING,) if padded else ()),
+        *((PAIR_BIAS_CACHE_PROFILE,) if config.diffusion_pair_bias_cache else ()),
+    )
 
 
 #: The featurizer's own candidate-row cap (`data/featurize_json.py`), resolved
@@ -270,6 +292,11 @@ def _predict(
     trunk_dtype: Any = None,
     confidence_dtype: Any = None,
     diffusion_autocast: bool = False,
+    #: Precompute every DiffusionTransformer block's additive token pair bias
+    #: once outside the sampler loop (opt-in, default ``False``). Memory cost:
+    #: ``n_blocks * H * S^2 * itemsize`` (~5.2 GiB at 24 blocks, 16 heads,
+    #: ``S = 1,902`` in fp32).
+    diffusion_pair_bias_cache: bool = False,
     # The summaries come out of the graph; the raw logits only when a raw dump
     # was asked for. `_score` passes precomputed summaries straight through.
     run_confidence_scores: bool = True,
@@ -465,6 +492,14 @@ def _predict(
         trunk_dtype=trunk_dtype,
         confidence_dtype=confidence_dtype,
         diffusion_autocast=diffusion_autocast,
+        **(
+            {
+                "diffusion_pair_bias_cache": True,
+                "use_diffusion_efficient_fusion": True,
+            }
+            if diffusion_pair_bias_cache
+            else {"diffusion_pair_bias_cache": False}
+        ),
         run_confidence_scores=run_confidence_scores,
         return_confidence_logits=return_confidence_logits,
         return_confidence_details=return_confidence_details,
@@ -731,6 +766,15 @@ def _run(
         # only.
         config = config._replace(diffusion_attention_backend="xla_jit")
         print("TFG enabled: diffusion attention runs xla_jit, not tokamax")
+    if config.diffusion_pair_bias_cache:
+        if config.cp_devices > 1:
+            raise SystemExit(
+                "diffusion-pair-bias-cache is not supported under context parallelism"
+            )
+        if guidance_config is not None and guidance_config.get("enable"):
+            raise SystemExit(
+                "diffusion-pair-bias-cache is not supported with TFG guidance"
+            )
     # Handed to the featurizer for this run, not exported: the environment is
     # process-wide, and this runner also runs in-process under FoldJAX, where
     # an export outlived the run and reached every later prediction.
@@ -997,14 +1041,8 @@ def _run(
                                 _BF16_TRUNK_LEVER if bf16_trunk else _FP32_TRUNK_LEVER,
                             ),
                             off_profile=off_profile,
-                            # Serving padding needs *more* than either law,
-                            # both fitted unpadded. The fp32 trunk is not
-                            # here: it has its own fitted law, so it is in
-                            # profile.
-                            exceeds_profile=(
-                                (memory_policy.SERVING_PADDING,)
-                                if padding is not None
-                                else ()
+                            exceeds_profile=_exceeds_profile(
+                                config, padded=padding is not None
                             ),
                             token_label="structural tokens",
                             exact=(
@@ -1144,6 +1182,7 @@ def _run(
                     trunk_dtype=trunk_dtype,
                     confidence_dtype=confidence_dtype,
                     diffusion_autocast=diffusion_autocast,
+                    diffusion_pair_bias_cache=config.diffusion_pair_bias_cache,
                     chunk_policy=config.chunk_policy,
                     chunk_overrides={
                         "diffusion_chunk_size": config.diffusion_chunk_size,

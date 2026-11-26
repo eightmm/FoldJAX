@@ -65,6 +65,9 @@ from foldjax.models.protenix.models.diffusion.atom import (
     atom_attention_encoder_prepare_diffusion_cache,
 )
 from foldjax.models.protenix.models.diffusion.diffusion import DiffusionModuleParams
+from foldjax.models.protenix.models.diffusion.transformer import (
+    build_diffusion_pair_bias_cache,
+)
 from foldjax.models.protenix.models.heads.confidence import (
     ConfidenceHeadParams,
     can_compact_confidence_distance_embedding,
@@ -77,6 +80,8 @@ from foldjax.models.protenix.models.input_precision import (
 from foldjax.models.protenix.models.primitives.primitives import (
     AutocastLinearParams,
     Fp32PrecisionLinearParams,
+    LayerNormParams,
+    layer_norm,
 )
 from foldjax.models.protenix.models.trunk_blocks.embedders import (
     InputFeatureEmbedderParams,
@@ -399,6 +404,31 @@ def _with_cueq_triangle_defaults(function):
                 os.environ.pop(name, None)
 
     return wrapped
+
+
+def _guard_pair_bias_cache(kwargs: Mapping[str, Any], cp: int) -> None:
+    """Refuse the pair-bias cache's unsupported modes on concrete values.
+
+    Before the mesh is entered, so a refused context-parallel call replicates
+    nothing, and before tracing, where the guidance ``enable`` flag is a tracer.
+    """
+    if not kwargs.get("diffusion_pair_bias_cache", False):
+        return
+    if cp > 1:
+        raise ValueError(
+            "diffusion_pair_bias_cache is not supported under context "
+            f"parallelism (cp_shards={cp})"
+        )
+    guidance = kwargs.get("guidance_config")
+    if guidance is None:
+        return
+    enabled = (
+        guidance.get("enable")
+        if isinstance(guidance, Mapping)
+        else getattr(guidance, "enable", False)
+    )
+    if bool(enabled):
+        raise ValueError("diffusion_pair_bias_cache is not supported with TFG guidance")
 
 
 def _validate_static_structural_features(
@@ -806,6 +836,18 @@ def opendde_infer_static(
     guidance_config: Mapping[str, Any] | None = None,
     guidance_features: Mapping[str, Any] | None = None,
     use_diffusion_efficient_fusion: bool = False,
+    #: Precompute every DiffusionTransformer block's additive token pair bias
+    #: (projected normalized pair + structural pair bias + token padding mask
+    #: bias) once before the diffusion sampler instead of projecting
+    #: ``transformer_z`` inside every block at every denoising step.
+    #: Opt-in measurement candidate, default ``False``.
+    #:
+    #: Memory cost: ``n_blocks * token_heads * n_structural_token**2 * itemsize``
+    #: bytes held live across sampling (24 blocks, 16 heads, ``S = 1,902`` in
+    #: float32 is about 5.2 GiB). Requires
+    #: ``use_diffusion_efficient_fusion=True``, single-device execution
+    #: (``cp_shards == 1``), and no active TFG guidance.
+    diffusion_pair_bias_cache: bool = False,
     diffusion_attention_backend: str = "xla_jit",
     trunk_single_attention_backend: str = "xla_jit",
     trunk_triangle_attention_backend: str | None = None,
@@ -923,6 +965,27 @@ def opendde_infer_static(
             "denoiser is deliberately deferred: run one device, or leave the "
             "denoising network FP32."
         )
+    if diffusion_pair_bias_cache:
+        if not use_diffusion_efficient_fusion:
+            raise ValueError(
+                "diffusion_pair_bias_cache requires use_diffusion_efficient_fusion=True"
+            )
+        if cp_shards != 1 or _active_cp_shards() != 1:
+            raise ValueError(
+                "diffusion_pair_bias_cache is not supported under context "
+                f"parallelism (cp_shards={cp_shards})"
+            )
+        # Under the compiled entry the guidance flag is a tracer; that entry
+        # refused TFG on concrete values (`_guard_pair_bias_cache`) already.
+        enabled = (
+            guidance_config.get("enable")
+            if isinstance(guidance_config, Mapping)
+            else getattr(guidance_config, "enable", False)
+        )
+        if not isinstance(enabled, jax.core.Tracer) and bool(enabled):
+            raise ValueError(
+                "diffusion_pair_bias_cache is not supported with TFG guidance"
+            )
     if cp_layout != (_active_cp_layout() or "1d"):
         raise RuntimeError(
             f"cp_layout={cp_layout!r} but the active mesh is {_active_cp_layout()!r}"
@@ -1187,6 +1250,21 @@ def opendde_infer_static(
         cp_atom_windows=distribute_atom_windows,
     )
 
+    precomputed_pair_bias = None
+    if diffusion_pair_bias_cache:
+        transformer_z = layer_norm(
+            jnp.expand_dims(pair_z, axis=-4).astype(jnp.float32),
+            LayerNormParams(),
+        )
+        precomputed_pair_bias = build_diffusion_pair_bias_cache(
+            transformer_z,
+            params.diffusion.diffusion_transformer,
+            extra_attn_bias=structural_pair_bias,
+            sequence_mask=structural_token_mask,
+            z_is_normalized=True,
+            use_scan=use_diffusion_scan,
+        )
+
     def denoise_fn(
         x_noisy: jnp.ndarray,
         t_hat_noise_level: jnp.ndarray,
@@ -1213,7 +1291,14 @@ def opendde_infer_static(
             pair_z=pair_z,
             p_lm=p_lm,
             c_l=c_l,
-            extra_attn_bias=structural_pair_bias,
+            extra_attn_bias=(
+                None if precomputed_pair_bias is not None else structural_pair_bias
+            ),
+            **(
+                {}
+                if precomputed_pair_bias is None
+                else {"precomputed_pair_bias": precomputed_pair_bias}
+            ),
             n_token=n_structural_token,
             atom_encoder_heads=atom_encoder_heads,
             token_heads=token_heads,
@@ -1456,6 +1541,7 @@ GRAPH_STATIC_ARGNAMES = (
     # Static: it sets how many rollout calls the graph contains, the same way
     # the query chunk sizes below set how many blocks each attention contains.
     "diffusion_chunk_size",
+    "diffusion_pair_bias_cache",
     "gamma0",
     "gamma_min",
     "input_atom_heads",
@@ -1579,6 +1665,7 @@ def opendde_infer_compiled(
     # Before anything else: the pool can hit without tracing the static
     # entry, whose own refusal would then never run.
     refuse_triangle_attention_grid("OpenDDE")
+    _guard_pair_bias_cache(kwargs, int(kwargs.get("cp_shards", 1)))
     # Do value-level private-provenance validation while feature leaves are
     # concrete.  Dense public arrays take precedence and remove stale private
     # keys before they can affect the JIT input tree/cache identity.

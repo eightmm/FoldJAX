@@ -52,6 +52,12 @@ _CLI_OPTIONS = {
     "diffusion_attention_backend",
     "diffusion_chunk_size",
     "diffusion_dtype",
+    # Opt-in measurement candidate (default false): precompute every
+    # DiffusionTransformer block's additive token pair bias once before the
+    # sampler instead of projecting the pair tensor at every denoising step.
+    # Memory cost: n_blocks * H * S^2 * itemsize (~5.2 GiB at 24 blocks,
+    # 16 heads, S=1,902 in fp32).
+    "diffusion_pair_bias_cache",
     "kalign_binary",
     "max_msa_depth",
     # Admission against this card's own reported ceiling. Members here because
@@ -104,6 +110,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "n_queries": 32,
     "n_keys": 128,
     "diffusion_attention_backend": "xla_jit",
+    "diffusion_pair_bias_cache": False,
     "trunk_single_attention_backend": "xla_jit",
     "structural_single_attention_backend": "xla_jit",
     "trunk_dtype": "bf16",
@@ -183,6 +190,7 @@ _PARSER_DEFAULTS: dict[str, object] = {
     "memory_check": "refuse",
     "memory_budget_gib": None,
     "structural_triangle_att_row_chunk_size": None,
+    "diffusion_pair_bias_cache": False,
 }
 
 
@@ -254,6 +262,7 @@ _OPTION_SPECS: dict[
     ),
     "diffusion_chunk_size": (_integer_option, None),
     "diffusion_dtype": (_text_option, ("fp32", "bf16")),
+    "diffusion_pair_bias_cache": (_boolean_option, None),
     "kalign_binary": (_path_option, None),
     "max_msa_depth": (_integer_option, None),
     "memory_budget_gib": (_number_option, None),
@@ -346,6 +355,7 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
     boolean_options = frozenset(
         {
             "cp_atom_windows",
+            "diffusion_pair_bias_cache",
             "include_raw",
             "use_rna_msa",
             "use_template",
@@ -420,9 +430,21 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
         _strict_boolean(options.get("use_template", False), name="use_template")
         _strict_boolean(options.get("use_rna_msa", False), name="use_rna_msa")
         _strict_boolean(options.get("cp_atom_windows", True), name="cp_atom_windows")
+        pair_bias_cache = _strict_boolean(
+            options.get("diffusion_pair_bias_cache", False),
+            name="diffusion_pair_bias_cache",
+        )
+        if pair_bias_cache and int(options.get("cp_devices", 1)) > 1:
+            raise ValueError(
+                "diffusion_pair_bias_cache is not supported under context parallelism"
+            )
         if _strict_boolean(
             options.get("use_tfg_guidance", False), name="use_tfg_guidance"
         ):
+            if pair_bias_cache:
+                raise ValueError(
+                    "diffusion_pair_bias_cache is not supported with use_tfg_guidance"
+                )
             # The runner's refusals, here too so `foldjax plan` reaches them:
             # the guided sampler is eager and unrolled.
             if options.get("deterministic_ops", "off") == "on":
@@ -628,6 +650,16 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
         # or an unknown representation name.
         for key, value in native_options.items():
             fields[key] = _option_field(key, value)
+        if fields["diffusion_pair_bias_cache"]:
+            if int(fields["cp_devices"]) > 1:
+                raise ValueError(
+                    "diffusion_pair_bias_cache is not supported under context "
+                    "parallelism"
+                )
+            if fields["use_tfg_guidance"]:
+                raise ValueError(
+                    "diffusion_pair_bias_cache is not supported with use_tfg_guidance"
+                )
         return _NativeInvocation(
             argv=argv,
             config_fields=fields,

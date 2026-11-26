@@ -60,6 +60,7 @@ from foldjax.models import _representations
 from foldjax.models._chain_profile import chain_capacity
 from foldjax.models._managed_memory import lease as managed_memory_lease
 from foldjax.padding import (
+    TOKEN_BUCKETS,
     PaddingPlan,
     cp_aligned_padding,
     resolve_axis,
@@ -578,7 +579,9 @@ def _padding_plan(
 
     if language_model_tokens is not None:
         # ESMC inserts BOS/EOS for each protein chain. At most T residues
-        # and T chains fit the token bucket, so 3*T also covers multimers.
+        # and T chains fit the token bucket, so 3*T covers every multimer;
+        # the capacity is the token-grid step at or above the packed length,
+        # within that bound, because the LM's activations scale with it.
         actual["language_model_tokens"] = language_model_tokens
         storage["language_model_tokens"] = language_model_tokens
         target["language_model_tokens"] = resolve_token_axis(
@@ -587,9 +590,25 @@ def _padding_plan(
             "language_model_tokens",
             minimum=language_model_tokens,
             token_target=target["tokens"],
-            fixed_size=3 * target["tokens"],
+            fixed_size=_language_model_capacity(
+                language_model_tokens, target["tokens"]
+            ),
         )
     return PaddingPlan(actual=actual, storage=storage, target=target)
+
+
+def _language_model_capacity(natural: int, token_target: int) -> int:
+    """The first token bucket holding ``natural`` LM tokens, at most ``3 * T``.
+
+    A fixed ``3 * T`` gave a 2,104-token LM input a 6,912-token program; at
+    1,000 residues the excess was 20% of the warm peak, for no change in wall
+    time. Inputs whose chain overhead differs still share a program unless it
+    carries them past a bucket boundary.
+    """
+    for bucket in TOKEN_BUCKETS:
+        if bucket >= natural:
+            return min(bucket, 3 * token_target)
+    return min(-(-natural // 256) * 256, 3 * token_target)
 
 
 def managed_asset_profile(options: Mapping[str, Any]) -> str:

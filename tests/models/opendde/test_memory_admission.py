@@ -489,3 +489,19 @@ def test_the_step_aside_is_decided_per_job_in_one_call(pool, monkeypatch, tmp_pa
         "per_run": [summary, step_aside, summary]
     }
     assert _shape_profile([step_aside, step_aside], padded=False) is None
+
+
+@pytest.mark.parametrize("padded", [False, True])
+def test_pair_bias_cache_makes_a_fitting_estimate_a_lower_bound(pool, padded):
+    """The cache's live biases were never in a fitted law: `unknown`, not `fits`."""
+    config = predict_runner.PredictionConfig(
+        **{**_PARSER_DEFAULTS, "diffusion_pair_bias_cache": True}
+    )
+    names = predict_runner._exceeds_profile(config, padded=padded)
+    assert predict_runner.PAIR_BIAS_CACHE_PROFILE in names
+    assert (memory_policy.SERVING_PADDING in names) is padded
+    with pytest.warns(RuntimeWarning):
+        decision = _admit(N_ST_1003, BF16, exceeds_profile=names)
+    assert decision.state == "unknown"
+    off = predict_runner.PredictionConfig(**_PARSER_DEFAULTS)
+    assert predict_runner._exceeds_profile(off, padded=False) == ()

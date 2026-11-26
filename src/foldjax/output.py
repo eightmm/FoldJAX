@@ -258,6 +258,43 @@ def _ensure_plddt_b_factors(
     return "filled"
 
 
+#: Largest hundredths count the PAE string table covers; every model's PAE scale
+#: is below 32 A, and anything outside the table takes the ``json.dumps`` path.
+_PAE_TABLE_HUNDREDTHS = 10_000
+
+
+#: ``repr(k / 100)`` for every ``k`` the table covers, built on first use.
+_PAE_TABLE: np.ndarray | None = None
+
+
+def _pae_row_text(row: np.ndarray) -> str:
+    """``json.dumps(row.tolist())`` for one row already rounded to hundredths.
+
+    ``np.round(x, 2)`` is ``rint(100 * x) / 100``, so each value is ``k / 100``
+    for an integer ``k`` and its JSON text is ``repr(k / 100)``. Looking those
+    strings up instead of converting 9 million floats one by one writes the
+    same bytes several times faster. A row holding any value the table does
+    not cover -- negative (including -0.0), non-finite or past the table --
+    goes through ``json.dumps``. Everything here is one row wide, so the
+    writer holds no more than the rounded matrix it already held.
+    """
+    global _PAE_TABLE
+    hundredths = np.rint(row * 100.0)
+    if not (
+        row.size
+        and np.isfinite(hundredths).all()
+        and not np.signbit(hundredths).any()
+        and hundredths.max() <= _PAE_TABLE_HUNDREDTHS
+        and np.array_equal(hundredths / 100.0, row)
+    ):
+        return json.dumps(row.tolist())
+    if _PAE_TABLE is None:
+        _PAE_TABLE = np.array(
+            [repr(k / 100) for k in range(_PAE_TABLE_HUNDREDTHS + 1)], dtype=object
+        )
+    return "[" + ", ".join(_PAE_TABLE[hundredths.astype(np.intp)]) + "]"
+
+
 def _write_pae_json(path: Path, pae: np.ndarray, *, maximum: float) -> None:
     """AlphaFold DB's PAE JSON: one object in a list, values to two decimals.
 
@@ -280,7 +317,7 @@ def _write_pae_json(path: Path, pae: np.ndarray, *, maximum: float) -> None:
             for index, row in enumerate(rows):
                 if index:
                     handle.write(",")
-                handle.write(json.dumps(row.tolist()))
+                handle.write(_pae_row_text(row))
             handle.write(f'], "max_predicted_aligned_error": {maximum}}}]')
         except BaseException:
             handle.close()

@@ -304,3 +304,31 @@ def test_interfaces_read_the_new_esmfold2_arrays_through_normalize(tmp_path) -> 
     exports = placed.samples[0].metadata["confidence_arrays"]["exports"]
     assert exports["pae_json"] == PAE_JSON
     assert exports["plddt_b_factor"] == "native"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [None, np.nan, -0.0, -0.004, -1.0, 150.0],
+    ids=["table", "nan", "zero-sign", "rounds-to-zero-sign", "negative", "past-table"],
+)
+def test_pae_json_bytes_match_one_json_dumps_per_row(tmp_path, extra) -> None:
+    """The string-table writer emits the bytes ``json.dumps`` writes, row by row."""
+    from foldjax import output
+
+    rng = np.random.default_rng(5)
+    pae = rng.uniform(0.0, 31.75, size=(37, 37))
+    # Values on the half-hundredth boundaries, where rounding is decided.
+    pae[0, :] = (np.arange(37) + 0.5) / 100.0
+    pae[1, :] = 31.75
+    if extra is not None:
+        pae[2, 3] = extra
+    pae = pae.astype(np.float32)
+    path = tmp_path / "pae.json"
+    output._write_pae_json(path, pae, maximum=31.75)
+    rows = np.round(np.asarray(pae, dtype=np.float64), 2)
+    expected = (
+        '[{"predicted_aligned_error": ['
+        + ",".join(json.dumps(row.tolist()) for row in rows)
+        + '], "max_predicted_aligned_error": 31.75}]'
+    )
+    assert path.read_text(encoding="utf-8") == expected

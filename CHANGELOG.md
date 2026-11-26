@@ -12,6 +12,14 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **OpenDDE `diffusion_pair_bias_cache`**, an opt-in (default `false`) that
+  computes every diffusion-transformer block's token pair bias once before
+  the sampler instead of at every denoising step. At 1,003 residues the warm
+  prediction took 0.86x the time in bfloat16 and 0.92x in float32, and at
+  1,350 residues 0.89x, at the same peak memory; the per-block biases stay
+  resident through sampling, so memory admission treats the fitted estimate
+  as a lower bound while it is on. Refused with context parallelism and
+  `use_tfg_guidance`.
 - **Shared option names and `confidence_outputs`.** Boltz-2 also accepts
   `diffusion_dtype`, `token_q_chunk_size` and `triangle_att_q_chunk_size`, the
   names Protenix and OpenDDE use, for its `diffusion_compute_dtype`,
@@ -538,6 +546,14 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **The PAE JSON is written from a string table.** Each rounded value's JSON
+  text is looked up rather than converted, one row at a time, so a 4,888-token
+  Boltz-2 sample's `predicted_aligned_error.json` is written in 0.65 s instead
+  of 3.3 s. The file's bytes are unchanged.
+- **ESMFold2 sizes the language model's padded capacity to the first token
+  bucket that holds the packed sequence**, at most three times the token
+  bucket as before, instead of always three times. At 1,003 residues the warm
+  peak fell from 18,426 to 14,780 MiB at the same wall time.
 - **Per-chain alignment depth and Neff (`foldjax.msa_stats`) are computed on a
   background thread.** Input preparation starts the calculation for the run
   manifest once the native input is written, so it overlaps weight loading,

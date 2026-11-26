@@ -160,7 +160,7 @@ _compiled_attention = jax.jit(
 def attention_pair_bias(
     a: jnp.ndarray,
     s: jnp.ndarray | None,
-    z: jnp.ndarray,
+    z: jnp.ndarray | None,
     params: AttentionPairBiasParams,
     *,
     num_heads: int,
@@ -168,11 +168,16 @@ def attention_pair_bias(
     attention_backend: str = "xla",
     z_is_normalized: bool = False,
     extra_attn_bias: jnp.ndarray | None = None,
+    precomputed_pair_bias: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Run standard global ``AttentionPairBias``.
 
     This implements the non-local path used by token Pairformer/Confidence
     blocks. Atom local attention is intentionally separate.
+
+    When ``precomputed_pair_bias`` is supplied, it is used directly as the full
+    additive attention bias (pair projection plus any extra and sequence-mask
+    bias) and the ``z`` normalization/projection path is skipped.
     """
 
     q = _apply_apb_norm(a, s, params.layernorm_a, params.has_s)
@@ -180,29 +185,54 @@ def attention_pair_bias(
         kv = _apply_apb_norm(q, s, params.layernorm_kv, params.has_s)
     else:
         kv = q
-    if z_is_normalized:
-        z_norm = z
-        if params.layernorm_z.weight is not None:
-            z_norm = z_norm * params.layernorm_z.weight
-        if params.layernorm_z.bias is not None:
-            z_norm = z_norm + params.layernorm_z.bias
+    if precomputed_pair_bias is None:
+        if z_is_normalized:
+            z_norm = z
+            if params.layernorm_z.weight is not None:
+                z_norm = z_norm * params.layernorm_z.weight
+            if params.layernorm_z.bias is not None:
+                z_norm = z_norm + params.layernorm_z.bias
+        else:
+            z_norm = layer_norm(z, params.layernorm_z)
+        bias = linear(z_norm, params.linear_z)
+        bias = jnp.moveaxis(bias, -1, -3)
+        if extra_attn_bias is not None:
+            if extra_attn_bias.shape[-2:] != bias.shape[-2:]:
+                raise ValueError(
+                    "extra attention bias pair axes must match projected pair bias: "
+                    f"{extra_attn_bias.shape[-2:]} != {bias.shape[-2:]}"
+                )
+            extra_attn_bias = jnp.asarray(extra_attn_bias, dtype=bias.dtype)
+            while extra_attn_bias.ndim < bias.ndim - 1:
+                extra_attn_bias = jnp.expand_dims(extra_attn_bias, axis=0)
+            if extra_attn_bias.ndim == bias.ndim - 1:
+                extra_attn_bias = jnp.expand_dims(extra_attn_bias, axis=-3)
+            bias = bias + extra_attn_bias
     else:
-        z_norm = layer_norm(z, params.layernorm_z)
-    bias = linear(z_norm, params.linear_z)
-    bias = jnp.moveaxis(bias, -1, -3)
-    if extra_attn_bias is not None:
-        if extra_attn_bias.shape[-2:] != bias.shape[-2:]:
+        if extra_attn_bias is not None:
             raise ValueError(
-                "extra attention bias pair axes must match projected pair bias: "
-                f"{extra_attn_bias.shape[-2:]} != {bias.shape[-2:]}"
+                "precomputed_pair_bias already carries additive bias; "
+                "extra_attn_bias must be None"
             )
-        extra_attn_bias = jnp.asarray(extra_attn_bias, dtype=bias.dtype)
-        while extra_attn_bias.ndim < bias.ndim - 1:
-            extra_attn_bias = jnp.expand_dims(extra_attn_bias, axis=0)
-        if extra_attn_bias.ndim == bias.ndim - 1:
-            extra_attn_bias = jnp.expand_dims(extra_attn_bias, axis=-3)
-        bias = bias + extra_attn_bias
+        if precomputed_pair_bias.ndim < 3:
+            raise ValueError(
+                "precomputed_pair_bias must have at least 3 axes [..., H, S, S]; "
+                f"got shape {tuple(precomputed_pair_bias.shape)}"
+            )
+        expected_trailing = (num_heads, a.shape[-2], a.shape[-2])
+        if tuple(precomputed_pair_bias.shape[-3:]) != expected_trailing:
+            raise ValueError(
+                "precomputed_pair_bias trailing shape must match "
+                f"(num_heads, S, S)={expected_trailing}; "
+                f"got {tuple(precomputed_pair_bias.shape)}"
+            )
+        bias = precomputed_pair_bias
     target_ndim = q.ndim + 1
+    if bias.ndim > target_ndim:
+        raise ValueError(
+            "attention pair bias rank exceeds target logits rank: "
+            f"{bias.ndim} > {target_ndim}"
+        )
     while bias.ndim < target_ndim:
         bias = jnp.expand_dims(bias, axis=bias.ndim - 3)
     out = attention(

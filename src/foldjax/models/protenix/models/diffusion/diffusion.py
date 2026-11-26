@@ -544,6 +544,7 @@ def diffusion_module_f_forward(
     c_l: jnp.ndarray | None = None,
     transformer_z: jnp.ndarray | None = None,
     extra_attn_bias: jnp.ndarray | None = None,
+    precomputed_pair_bias: jnp.ndarray | None = None,
     conditioned_single_s: jnp.ndarray | None = None,
     n_token: int,
     atom_encoder_heads: int,
@@ -592,15 +593,25 @@ def diffusion_module_f_forward(
     z_pair_sample = jnp.expand_dims(pair_z, axis=-4)
     if distributed_atoms:
         z_pair_sample = shard_pair_rows(z_pair_sample, row_axis=-3, col_axis=-2)
-    if transformer_z is None:
-        transformer_z = z_pair_sample.astype(jnp.float32)
-        if use_efficient_fusion:
-            transformer_z = layer_norm(transformer_z, LayerNormParams())
-    if distributed_atoms:
-        # The token transformer's per-block pair bias is a projection of this
-        # tensor, so constraining it here is what keeps `linear_z` reading a
-        # pair-sharded operand rather than a collected one.
-        transformer_z = shard_pair_rows(transformer_z, row_axis=-3, col_axis=-2)
+    if precomputed_pair_bias is not None:
+        if not use_efficient_fusion:
+            raise ValueError(
+                "precomputed_pair_bias requires use_efficient_fusion=True"
+            )
+        if cp_mesh() is not None:
+            raise ValueError(
+                "precomputed_pair_bias is not supported under context parallelism"
+            )
+    else:
+        if transformer_z is None:
+            transformer_z = z_pair_sample.astype(jnp.float32)
+            if use_efficient_fusion:
+                transformer_z = layer_norm(transformer_z, LayerNormParams())
+        if distributed_atoms:
+            # The token transformer's per-block pair bias is a projection of this
+            # tensor, so constraining it here is what keeps `linear_z` reading a
+            # pair-sharded operand rather than a collected one.
+            transformer_z = shard_pair_rows(transformer_z, row_axis=-3, col_axis=-2)
     a_token, q_skip, c_skip, p_skip = atom_attention_encoder(
         atom_to_token_idx,
         ref_pos,
@@ -640,7 +651,7 @@ def diffusion_module_f_forward(
     a_token = diffusion_transformer_stack(
         a_token.astype(jnp.float32),
         single_s.astype(jnp.float32),
-        transformer_z,
+        None if precomputed_pair_bias is not None else transformer_z,
         params.diffusion_transformer,
         num_heads=token_heads,
         use_scan=use_scan,
@@ -650,6 +661,11 @@ def diffusion_module_f_forward(
         z_is_normalized=use_efficient_fusion,
         extra_attn_bias=extra_attn_bias,
         sequence_mask=token_mask,
+        **(
+            {}
+            if precomputed_pair_bias is None
+            else {"precomputed_pair_bias": precomputed_pair_bias}
+        ),
     )
     a_token = layer_norm(a_token, params.layernorm_a)
     if distributed_atoms:
@@ -695,6 +711,7 @@ def diffusion_module_forward(
     c_l: jnp.ndarray | None = None,
     transformer_z: jnp.ndarray | None = None,
     extra_attn_bias: jnp.ndarray | None = None,
+    precomputed_pair_bias: jnp.ndarray | None = None,
     n_token: int,
     atom_encoder_heads: int,
     token_heads: int,
@@ -738,6 +755,7 @@ def diffusion_module_forward(
         c_l=c_l,
         transformer_z=transformer_z,
         extra_attn_bias=extra_attn_bias,
+        precomputed_pair_bias=precomputed_pair_bias,
         n_token=n_token,
         atom_encoder_heads=atom_encoder_heads,
         token_heads=token_heads,

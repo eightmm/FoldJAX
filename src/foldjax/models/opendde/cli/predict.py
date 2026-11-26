@@ -274,6 +274,17 @@ def main(
         help="experimental: project structural cuEq/Tokamax triangle attention "
         "in blocks of N outer rows; accuracy and GPU performance require validation",
     )
+    parser.add_argument(
+        "--diffusion-pair-bias-cache",
+        type=_boolean,
+        default=False,
+        help="experimental: precompute every DiffusionTransformer block's token "
+        "pair bias once before the sampler instead of projecting the pair "
+        "representation at every denoising step. Memory cost is "
+        "n_blocks * H * S^2 * itemsize (about 5.2 GiB at 24 blocks, 16 heads, "
+        "S=1,902 in fp32). Default false; unsupported under context parallelism "
+        "or TFG guidance",
+    )
     args = parser.parse_args(argv)
     args.max_msa_depth = _resolve_msa_depth(args.max_msa_depth)
     return run_prediction(

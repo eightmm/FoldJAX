@@ -99,7 +99,7 @@ def test_padding_plan_carries_real_storage_and_target_dimensions() -> None:
         # The stored atoms on the atom grid, not 24 per token (3,072).
         "atoms": 256,
         "msa": 1024,
-        "language_model_tokens": 384,
+        "language_model_tokens": 128,
     }
 
 
@@ -1141,3 +1141,16 @@ def test_prefix_rng_guards_unsupported_prng_and_backend_falls_back_to_tapes(
                 msa_depth=1,
                 lm_active=False,
             )
+
+
+@pytest.mark.parametrize(
+    ("natural", "token_target", "expected"),
+    [(11, 128, 128), (129, 128, 256), (2104, 2304, 2304), (2305, 2304, 2560),
+     (27, 9, 27), (8300, 2816, 8448)],
+)
+def test_lm_capacity_is_the_first_bucket_within_three_token_targets(
+    natural, token_target, expected
+) -> None:
+    from foldjax.backends.esmfold2 import _language_model_capacity
+
+    assert _language_model_capacity(natural, token_target) == expected
