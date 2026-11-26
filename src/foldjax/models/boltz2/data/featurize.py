@@ -178,8 +178,8 @@ def featurize_yaml(
         feats_file = cache_entry / "feats.npz"
         struct_dir = cache_entry / "structures"
         if feats_file.is_file() and struct_dir.is_dir():
-            loaded = np.load(feats_file)
-            feats_np = {k: loaded[k] for k in loaded.files}
+            with np.load(feats_file, allow_pickle=False) as loaded:
+                feats_np = {k: loaded[k] for k in loaded.files}
             return feats_np, None, struct_dir
 
     data = check_inputs(yaml_path)

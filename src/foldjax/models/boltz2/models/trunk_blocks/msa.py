@@ -169,8 +169,9 @@ def msa_module_forward(
 ) -> jnp.ndarray:
     """Run Boltz MSAModule.
 
-    ``use_scan=False`` (default) unrolls the layer stack in Python (lower steady
-    latency). ``use_scan=True`` runs the stack via ``lax.scan`` (faster compile).
+    ``use_scan=True`` (default) runs the layer stack via ``lax.scan`` (faster
+    compile). ``use_scan=False`` unrolls the layer stack in Python (lower steady
+    latency).
 
     ``subsample_msa`` selects ``min(depth, num_subsampled_msa)`` rows (default
     cap 1024). The selection runs whenever it is on, as upstream's

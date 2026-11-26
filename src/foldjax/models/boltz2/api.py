@@ -438,15 +438,7 @@ def _resolve_cp_layout(layout: str, cp_devices: int) -> str:
     side = math.isqrt(cp_devices)
     square = cp_devices > 1 and side * side == cp_devices
     if layout == "auto":
-        # The grid, on a square count. What held this on the 1-D mesh was that
-        # every published measurement had been taken there; on the four-card
-        # deployment node (4 x 96 GiB, 2x2) a 2,096-token 5DEI now runs at
-        # 16.6 GiB per device against 19.0 in the 1-D layout and 18.5 serial,
-        # with coordinates within 0.11 A of the serial run on one sample and
-        # the deposited RMSD unchanged to two decimals (0.44 0.43 0.42 0.47
-        # 0.43). The grid is the slower program -- 3.5x serial wall at this
-        # size -- and is chosen for the memory ceiling, which is what context
-        # parallelism exists for.
+        # Resolves to "2d" on square device counts > 1 and "1d" otherwise.
         return square_grid_auto_layout(cp_devices)
     if layout == "2d" and not square:
         raise ValueError(
@@ -1143,9 +1135,9 @@ def predict(
     #: How those devices are arranged. "1d" splits pair rows only; "2d" is
     #: Fold-CP's square grid, which splits both pair axes and runs the triangle
     #: multiplication as Cannon's algorithm, so no full-width operand is ever
-    #: built. "auto" (the default) stays on the 1-D layout until the square
-    #: grid has GPU evidence of its own; pass "2d" to ask for the grid, which
-    #: then requires a square `cp_devices`.
+    #: built. "auto" (the default) resolves to "2d" on a square `cp_devices`
+    #: greater than 1 (4, 9, 16, ...) and "1d" otherwise; pass "1d" or "2d" to
+    #: select a layout explicitly ("2d" requires a square `cp_devices`).
     cp_layout: str = "auto",
     #: Distribute Boltz-2 atom query windows over CP rows. The required atom
     #: and token alignment is padded automatically and cropped from outputs.
@@ -1411,8 +1403,13 @@ def predict(
         seed=seed,
     )
     # Read now, while `atom_to_token` is still the featurizer's dense map;
-    # the storage passes below compact it.
-    confidence_index = _confidence_index(feats_np, struct_dir / f"{record_id}.npz")
+    # the storage passes below compact it. Load the cleaned processed structure
+    # once and reuse it for both confidence indexing and per-sample writing.
+    structure_npz = struct_dir / f"{record_id}.npz"
+    cleaned_structure = _load_cleaned_structure(structure_npz)
+    confidence_index = _confidence_index(
+        feats_np, structure_npz, structure=cleaned_structure
+    )
 
     # Selected for the whole call by `_scoped_compile_cache`; the resolved
     # path is still part of the session identity below.
@@ -1490,7 +1487,8 @@ def predict(
         if not {"trunk", "affinity"} <= affinity_model_params.keys():
             raise ValueError(
                 "native affinity weights use the obsolete head-only format; "
-                "rerun scripts/setup.sh to export the complete affinity model"
+                "export the complete affinity model from the upstream "
+                "checkpoint with `boltz-jax-export-weights` and pass that bundle"
             )
 
     if steering_args is None and _carries_guidance_constraints(feats_np):
@@ -2353,12 +2351,13 @@ def predict(
             out_path = dest / f"{record_id}{suffix}.{write_fmt}"
             paths.append(
                 write_prediction(
-                    structure_npz=struct_dir / f"{record_id}.npz",
+                    structure_npz=structure_npz,
                     coords=coords_batched[model_idx],
                     atom_pad_mask=feats_np["atom_pad_mask"].reshape(-1),
                     out_path=out_path,
                     plddts=public_plddt_batched[model_idx],
                     fmt=write_fmt,
+                    structure=cleaned_structure,
                 )
             )
         if num_samples == 1:
@@ -2484,8 +2483,21 @@ def _select_present_chains(
     }
 
 
+def _load_cleaned_structure(structure_npz: Path) -> Any | None:
+    """Load and clean the processed ``StructureV2`` once, or return ``None``."""
+    try:
+        from foldjax.models.boltz2.data.types import StructureV2
+
+        return StructureV2.load(structure_npz).remove_invalid_chains()
+    except (OSError, KeyError, ValueError):
+        return None
+
+
 def _confidence_index(
-    feats: Mapping[str, Any], structure_npz: Path
+    feats: Mapping[str, Any],
+    structure_npz: Path,
+    *,
+    structure: Any | None = None,
 ) -> dict[str, np.ndarray]:
     """Host index maps that say which chain, residue and atoms a token is.
 
@@ -2516,14 +2528,17 @@ def _confidence_index(
         )
     asym = real("asym_id")[token_mask].astype(np.int64)
     try:
-        from foldjax.models.boltz2.data.types import StructureV2
-
-        chains = StructureV2.load(structure_npz).remove_invalid_chains().chains
-        names = {int(chain["asym_id"]): str(chain["name"]) for chain in chains}
-        index["token_chain_id"] = np.asarray([names[int(a)] for a in asym])
-        index["chain_id"] = np.asarray(
-            [names[int(a)] for a in _present_chain_labels(feats)]
+        resolved = (
+            _load_cleaned_structure(structure_npz) if structure is None else structure
         )
+        if resolved is not None:
+            names = {
+                int(chain["asym_id"]): str(chain["name"]) for chain in resolved.chains
+            }
+            index["token_chain_id"] = np.asarray([names[int(a)] for a in asym])
+            index["chain_id"] = np.asarray(
+                [names[int(a)] for a in _present_chain_labels(feats)]
+            )
     except (OSError, KeyError, ValueError):
         pass
     return index

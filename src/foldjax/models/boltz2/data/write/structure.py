@@ -25,6 +25,8 @@ def write_prediction(
     out_path: Path,
     plddts: np.ndarray | None = None,
     fmt: str = "pdb",
+    *,
+    structure: StructureV2 | None = None,
 ) -> Path:
     """Write a predicted structure to disk.
 
@@ -43,15 +45,19 @@ def write_prediction(
         Optional per-atom / per-token pLDDT, passed to the writer.
     fmt
         ``"pdb"`` or ``"cif"`` / ``"mmcif"``.
+    structure
+        Optional ``StructureV2`` already loaded from ``structure_npz``, to
+        avoid re-reading it once per sample.
 
     Returns
     -------
     Path
         The written file path.
     """
-    structure = StructureV2.load(structure_npz)
-
-    # Drop masked chains exactly like the reference writer.
+    if structure is None:
+        structure = StructureV2.load(structure_npz)
+    # Drop masked chains exactly like the reference writer; this also
+    # renumbers a supplied structure the way the archive path does.
     structure = structure.remove_invalid_chains()
 
     coords = np.asarray(coords)

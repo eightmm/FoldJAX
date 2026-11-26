@@ -10,83 +10,6 @@ chain_types = [
 ]
 chain_type_ids = {chain: i for i, chain in enumerate(chain_types)}
 
-out_types = [
-    "dna_protein",
-    "rna_protein",
-    "ligand_protein",
-    "dna_ligand",
-    "rna_ligand",
-    "intra_ligand",
-    "intra_dna",
-    "intra_rna",
-    "intra_protein",
-    "protein_protein",
-    "modified",
-]
-
-out_types_weights_af3 = {
-    "dna_protein": 10.0,
-    "rna_protein": 10.0,
-    "ligand_protein": 10.0,
-    "dna_ligand": 5.0,
-    "rna_ligand": 5.0,
-    "intra_ligand": 20.0,
-    "intra_dna": 4.0,
-    "intra_rna": 16.0,
-    "intra_protein": 20.0,
-    "protein_protein": 20.0,
-    "modified": 0.0,
-}
-
-out_types_weights = {
-    "dna_protein": 5.0,
-    "rna_protein": 5.0,
-    "ligand_protein": 20.0,
-    "dna_ligand": 2.0,
-    "rna_ligand": 2.0,
-    "intra_ligand": 20.0,
-    "intra_dna": 2.0,
-    "intra_rna": 8.0,
-    "intra_protein": 20.0,
-    "protein_protein": 20.0,
-    "modified": 0.0,
-}
-
-
-out_single_types = ["protein", "ligand", "dna", "rna"]
-
-clash_types = [
-    "dna_protein",
-    "rna_protein",
-    "ligand_protein",
-    "protein_protein",
-    "dna_ligand",
-    "rna_ligand",
-    "ligand_ligand",
-    "rna_dna",
-    "dna_dna",
-    "rna_rna",
-]
-
-chain_types_to_clash_type = {
-    frozenset(("PROTEIN", "DNA")): "dna_protein",
-    frozenset(("PROTEIN", "RNA")): "rna_protein",
-    frozenset(("PROTEIN", "NONPOLYMER")): "ligand_protein",
-    frozenset(("PROTEIN",)): "protein_protein",
-    frozenset(("NONPOLYMER", "DNA")): "dna_ligand",
-    frozenset(("NONPOLYMER", "RNA")): "rna_ligand",
-    frozenset(("NONPOLYMER",)): "ligand_ligand",
-    frozenset(("DNA", "RNA")): "rna_dna",
-    frozenset(("DNA",)): "dna_dna",
-    frozenset(("RNA",)): "rna_rna",
-}
-
-chain_type_to_out_single_type = {
-    "PROTEIN": "protein",
-    "DNA": "dna",
-    "RNA": "rna",
-    "NONPOLYMER": "ligand",
-}
 ####################################################################################################
 # RESIDUES & TOKENS
 ####################################################################################################
@@ -167,9 +90,6 @@ prot_letter_to_token = {
     "-": "-",
 }
 
-prot_token_to_letter = {v: k for k, v in prot_letter_to_token.items()}
-prot_token_to_letter["UNK"] = "X"
-
 rna_letter_to_token = {
     "A": "A",
     "G": "G",
@@ -177,7 +97,6 @@ rna_letter_to_token = {
     "U": "U",
     "N": "N",
 }
-rna_token_to_letter = {v: k for k, v in rna_letter_to_token.items()}
 
 dna_letter_to_token = {
     "A": "DA",
@@ -186,7 +105,6 @@ dna_letter_to_token = {
     "T": "DT",
     "N": "DN",
 }
-dna_token_to_letter = {v: k for k, v in dna_letter_to_token.items()}
 
 ####################################################################################################
 # ATOMS
@@ -205,20 +123,6 @@ chirality_types = [
 ]
 chirality_type_ids = {chirality: i for i, chirality in enumerate(chirality_types)}
 unk_chirality_type = "CHI_OTHER"
-
-hybridization_map = [
-    "S",
-    "SP",
-    "SP2",
-    "SP2D",
-    "SP3",
-    "SP3D",
-    "SP3D2",
-    "OTHER",
-    "UNSPECIFIED",
-]
-hybridization_type_ids = {hybrid: i for i, hybrid in enumerate(hybridization_map)}
-unk_hybridization_type = "UNSPECIFIED"
 
 # fmt: off
 ref_atoms = {
@@ -262,41 +166,6 @@ nucleic_backbone_atom_names = ["P", "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C
 
 protein_backbone_atom_index = {name: i for i, name in enumerate(protein_backbone_atom_names)}
 nucleic_backbone_atom_index = {name: i for i, name in enumerate(nucleic_backbone_atom_names)}
-
-ref_symmetries = {
-    "PAD": [],
-    "ALA": [],
-    "ARG": [],
-    "ASN": [],
-    "ASP": [[(6, 7), (7, 6)]],
-    "CYS": [],
-    "GLN": [],
-    "GLU": [[(7, 8), (8, 7)]],
-    "GLY": [],
-    "HIS": [],
-    "ILE": [],
-    "LEU": [],
-    "LYS": [],
-    "MET": [],
-    "PHE": [[(6, 7), (7, 6), (8, 9), (9, 8)]],
-    "PRO": [],
-    "SER": [],
-    "THR": [],
-    "TRP": [],
-    "TYR": [[(6, 7), (7, 6), (8, 9), (9, 8)]],
-    "VAL": [],
-    "A": [[(1, 2), (2, 1)]],
-    "G": [[(1, 2), (2, 1)]],
-    "C": [[(1, 2), (2, 1)]],
-    "U": [[(1, 2), (2, 1)]],
-    #"N": [[(1, 2), (2, 1)]],
-    "DA": [[(1, 2), (2, 1)]],
-    "DG": [[(1, 2), (2, 1)]],
-    "DC": [[(1, 2), (2, 1)]],
-    "DT": [[(1, 2), (2, 1)]],
-    #"DN": [[(1, 2), (2, 1)]]
-}
-
 
 res_to_center_atom = {
     "UNK": "CA",
@@ -383,7 +252,6 @@ res_to_disto_atom_id = {
 ####################################################################################################
 
 atom_interface_cutoff = 5.0
-interface_cutoff = 15.0
 
 bond_types = [
     "OTHER",
@@ -400,14 +268,6 @@ unk_bond_type = "OTHER"
 ####################################################################################################
 # Contacts
 ####################################################################################################
-
-
-pocket_contact_info = {
-    "UNSPECIFIED": 0,
-    "UNSELECTED": 1,
-    "POCKET": 2,
-    "BINDER": 3,
-}
 
 contact_conditioning_info = {
     "UNSPECIFIED": 0,
@@ -462,20 +322,6 @@ method_types_ids = {
     "FUTURE5": 11,
 }
 method_types_ids = {k.lower(): v for k, v in method_types_ids.items()}
-num_method_types = len(set(method_types_ids.values()))
-
-# Temperature
-temperature_bins = [(265, 280), (280, 295), (295, 310)]
-temperature_bins_ids = {temp: i for i, temp in enumerate(temperature_bins)}
-temperature_bins_ids["other"] = len(temperature_bins)
-num_temp_bins = len(temperature_bins_ids)
-
-
-# pH
-ph_bins = [(0, 6), (6, 8), (8, 14)]
-ph_bins_ids = {ph: i for i, ph in enumerate(ph_bins)}
-ph_bins_ids["other"] = len(ph_bins)
-num_ph_bins = len(ph_bins_ids)
 
 ####################################################################################################
 # VDW_RADII
@@ -497,153 +343,6 @@ vdw_radii = [
     2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0
 ]
 # fmt: on
-
-####################################################################################################
-# Excluded ligands
-####################################################################################################
-
-ligand_exclusion = {
-    "144",
-    "15P",
-    "1PE",
-    "2F2",
-    "2JC",
-    "3HR",
-    "3SY",
-    "7N5",
-    "7PE",
-    "9JE",
-    "AAE",
-    "ABA",
-    "ACE",
-    "ACN",
-    "ACT",
-    "ACY",
-    "AZI",
-    "BAM",
-    "BCN",
-    "BCT",
-    "BDN",
-    "BEN",
-    "BME",
-    "BO3",
-    "BTB",
-    "BTC",
-    "BU1",
-    "C8E",
-    "CAD",
-    "CAQ",
-    "CBM",
-    "CCN",
-    "CIT",
-    "CL",
-    "CLR",
-    "CM",
-    "CMO",
-    "CO3",
-    "CPT",
-    "CXS",
-    "D10",
-    "DEP",
-    "DIO",
-    "DMS",
-    "DN",
-    "DOD",
-    "DOX",
-    "EDO",
-    "EEE",
-    "EGL",
-    "EOH",
-    "EOX",
-    "EPE",
-    "ETF",
-    "FCY",
-    "FJO",
-    "FLC",
-    "FMT",
-    "FW5",
-    "GOL",
-    "GSH",
-    "GTT",
-    "GYF",
-    "HED",
-    "IHP",
-    "IHS",
-    "IMD",
-    "IOD",
-    "IPA",
-    "IPH",
-    "LDA",
-    "MB3",
-    "MEG",
-    "MES",
-    "MLA",
-    "MLI",
-    "MOH",
-    "MPD",
-    "MRD",
-    "MSE",
-    "MYR",
-    "N",
-    "NA",
-    "NH2",
-    "NH4",
-    "NHE",
-    "NO3",
-    "O4B",
-    "OHE",
-    "OLA",
-    "OLC",
-    "OMB",
-    "OME",
-    "OXA",
-    "P6G",
-    "PE3",
-    "PE4",
-    "PEG",
-    "PEO",
-    "PEP",
-    "PG0",
-    "PG4",
-    "PGE",
-    "PGR",
-    "PLM",
-    "PO4",
-    "POL",
-    "POP",
-    "PVO",
-    "SAR",
-    "SCN",
-    "SEO",
-    "SEP",
-    "SIN",
-    "SO4",
-    "SPD",
-    "SPM",
-    "SR",
-    "STE",
-    "STO",
-    "STU",
-    "TAR",
-    "TBU",
-    "TME",
-    "TPO",
-    "TRS",
-    "UNK",
-    "UNL",
-    "UNX",
-    "UPL",
-    "URE",
-}
-
-
-####################################################################################################
-# TEMPLATES
-####################################################################################################
-
-min_coverage_residues = 10
-min_coverage_fraction = 0.1
-
 
 ####################################################################################################
 # Ambiguous atoms

@@ -1288,7 +1288,7 @@ def boltz2_trunk_forward(
     #: `_resolve_pair_residual_dtype`.
     pair_residual_dtype: jnp.dtype | str | None = PAIR_RESIDUAL_DTYPE_DEFAULT,
 ) -> dict[str, jnp.ndarray]:
-    """Run the non-template Boltz-2 trunk in eval mode.
+    """Run the Boltz-2 trunk in eval mode.
 
     ``msa_rows`` is the per-pass MSA subsample injection point, shape
     ``[recycling_steps + 1, min(msa depth, num_subsampled_msa)]``; it
@@ -1316,9 +1316,8 @@ def boltz2_trunk_forward(
         real activation distribution across devices.
       - ``mesh`` size > 1 with ``shard_tokens=False``: replicated constraints
         are emitted (buffers placed on the mesh, layout-only distribution, no
-        partitioned reductions) -> BIT-EXACT vs the no-mesh path. Used by the
-        ``scripts/check_sharding.py`` parity gate to validate the sharding path
-        on 8 simulated CPU devices.
+        partitioned reductions) -> BIT-EXACT vs the no-mesh path. Used to
+        validate replicated sharding parity on simulated CPU devices.
     """
 
     # `--cp-devices` activates an ambient context-parallel mesh (see
@@ -1565,9 +1564,7 @@ def boltz2_trunk_forward(
         # conditioner, the confidence module and the affinity head keep the
         # FP32 pair they are released with, so nothing outside this function
         # changes dtype. The values are already BF16-rounded, so this recovers
-        # no precision -- it buys an audit boundary, and it costs one
-        # widening, which `boltz2_graph_sample_forward` was performing here
-        # anyway (as a no-op) for exactly the same reason.
+        # no precision -- it preserves the downstream FP32 boundary.
         "z": z if pair_residual_dtype is None else z.astype(jnp.float32),
         "relative_position_encoding": relative_position_encoding,
     }

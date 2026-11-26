@@ -280,14 +280,6 @@ def validate_compact_ref_atom_categories(features: Mapping[str, Any]) -> None:
     _check_shape(chars, None if atom is None else (*atom, 4), REF_ATOM_NAME_CHAR_IDS)
 
 
-def validate_compact_categories(features: Mapping[str, Any]) -> None:
-    """Validate every private category group present on concrete host arrays."""
-
-    validate_compact_contact_conditioning(features)
-    validate_compact_token_bonds(features)
-    validate_compact_ref_atom_categories(features)
-
-
 def compact_contact_conditioning_storage(
     features: Mapping[str, Any],
 ) -> Mapping[str, Any]:
@@ -386,7 +378,6 @@ __all__ = [
     "compact_contact_conditioning_storage",
     "compact_ref_atom_category_storage",
     "compact_token_bond_storage",
-    "validate_compact_categories",
     "validate_compact_contact_conditioning",
     "validate_compact_ref_atom_categories",
     "validate_compact_token_bonds",

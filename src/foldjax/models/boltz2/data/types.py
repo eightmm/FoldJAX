@@ -199,16 +199,16 @@ class Structure(NumpySerializable):
             The loaded structure.
 
         """
-        structure = np.load(path)
-        return cls(
-            atoms=structure["atoms"],
-            bonds=structure["bonds"],
-            residues=structure["residues"],
-            chains=structure["chains"],
-            connections=structure["connections"].astype(Connection),
-            interfaces=structure["interfaces"],
-            mask=structure["mask"],
-        )
+        with np.load(path, allow_pickle=False) as structure:
+            return cls(
+                atoms=structure["atoms"],
+                bonds=structure["bonds"],
+                residues=structure["residues"],
+                chains=structure["chains"],
+                connections=structure["connections"].astype(Connection),
+                interfaces=structure["interfaces"],
+                mask=structure["mask"],
+            )
 
     def remove_invalid_chains(self) -> "Structure":  # noqa: PLR0915
         """Remove invalid chains.
@@ -731,11 +731,6 @@ Token = [
     ("resolved_mask", np.dtype("?")),
     ("disto_mask", np.dtype("?")),
     ("cyclic_period", np.dtype("i4")),
-]
-
-TokenBond = [
-    ("token_1", np.dtype("i4")),
-    ("token_2", np.dtype("i4")),
 ]
 
 

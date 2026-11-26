@@ -290,13 +290,14 @@ def atom_encoder_forward(
         )
         if active:
             z_to_p_out = shard_pair_rows(z_to_p_out)
-            query_indices = atom_index[0].reshape(batch, num_windows, w)
-            query_valid = atom_index[1].reshape(batch, num_windows, w)
-            key_indices = jnp.squeeze(to_keys(atom_index[0][..., None]), axis=-1)
-            key_valid = jnp.squeeze(
-                to_keys(atom_index[1][..., None].astype(jnp.float32)),
-                axis=-1,
-            ).astype(bool)
+        query_indices = atom_index[0].reshape(batch, num_windows, w)
+        query_valid = atom_index[1].reshape(batch, num_windows, w)
+        key_indices = jnp.squeeze(to_keys(atom_index[0][..., None]), axis=-1)
+        key_valid = jnp.squeeze(
+            to_keys(atom_index[1][..., None].astype(jnp.float32)),
+            axis=-1,
+        ).astype(bool)
+        if active:
             p = p + gather_token_pairs_to_atom_windows_cp(
                 z_to_p_out,
                 query_indices,
@@ -305,13 +306,6 @@ def atom_encoder_forward(
                 key_valid,
             ).astype(p.dtype)
         else:
-            query_indices = atom_index[0].reshape(batch, num_windows, w)
-            query_valid = atom_index[1].reshape(batch, num_windows, w)
-            key_indices = jnp.squeeze(to_keys(atom_index[0][..., None]), axis=-1)
-            key_valid = jnp.squeeze(
-                to_keys(atom_index[1][..., None].astype(jnp.float32)),
-                axis=-1,
-            ).astype(bool)
             p = p + gather_token_pairs_to_atom_windows_indexed(
                 z_to_p_out,
                 (query_indices, query_valid),

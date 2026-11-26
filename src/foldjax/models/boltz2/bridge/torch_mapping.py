@@ -51,14 +51,7 @@ def map_transition_state_dict(
         f"{prefix}.fc2.weight",
         f"{prefix}.fc3.weight",
     )
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = (
-            "Missing required Transition state_dict keys "
-            f"for prefix {prefix!r}: {missing}"
-        )
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "Transition", prefix)
 
     return {
         "norm": {
@@ -87,14 +80,7 @@ def map_attention_pair_bias_state_dict(
         f"{prefix}.proj_z.1.weight",
         f"{prefix}.proj_o.weight",
     )
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = (
-            "Missing required AttentionPairBias state_dict keys "
-            f"for prefix {prefix!r}: {missing}"
-        )
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "AttentionPairBias", prefix)
 
     return {
         "proj_q": {
@@ -122,11 +108,7 @@ def map_adaln_state_dict(state_dict: Mapping[str, Any], prefix: str) -> AdaLNPar
         f"{prefix}.s_scale.bias",
         f"{prefix}.s_bias.weight",
     )
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = f"Missing required AdaLN state_dict keys for prefix {prefix!r}: {missing}"
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "AdaLN", prefix)
 
     return {
         "s_norm": {"scale": _to_jax_array(state_dict[f"{prefix}.s_norm.weight"])},
@@ -150,14 +132,7 @@ def map_conditioned_transition_block_state_dict(
         f"{prefix}.output_projection.0.weight",
         f"{prefix}.output_projection.0.bias",
     )
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = (
-            "Missing required ConditionedTransitionBlock state_dict keys "
-            f"for prefix {prefix!r}: {missing}"
-        )
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "ConditionedTransitionBlock", prefix)
 
     return {
         "adaln": map_adaln_state_dict(state_dict, f"{prefix}.adaln"),
@@ -192,14 +167,7 @@ def map_diffusion_transformer_layer_state_dict(
         f"{prefix}.output_projection_linear.weight",
         f"{prefix}.output_projection_linear.bias",
     )
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = (
-            "Missing required DiffusionTransformerLayer state_dict keys "
-            f"for prefix {prefix!r}: {missing}"
-        )
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "DiffusionTransformerLayer", prefix)
 
     params: DiffusionTransformerLayerParams = {
         "adaln": map_adaln_state_dict(state_dict, f"{prefix}.adaln"),
@@ -315,14 +283,7 @@ def map_atom_attention_encoder_state_dict(
     required_keys = (f"{prefix}.atom_to_token_trans.0.weight",)
     if structure_prediction:
         required_keys = (f"{prefix}.r_to_q_trans.weight", *required_keys)
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = (
-            "Missing required AtomAttentionEncoder state_dict keys "
-            f"for prefix {prefix!r}: {missing}"
-        )
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "AtomAttentionEncoder", prefix)
 
     params: AtomAttentionEncoderParams = {
         "atom_encoder": map_atom_transformer_state_dict(
@@ -358,14 +319,7 @@ def map_atom_attention_decoder_state_dict(
         f"{prefix}.atom_feat_to_atom_pos_update.0.bias",
         f"{prefix}.atom_feat_to_atom_pos_update.1.weight",
     )
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = (
-            "Missing required AtomAttentionDecoder state_dict keys "
-            f"for prefix {prefix!r}: {missing}"
-        )
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "AtomAttentionDecoder", prefix)
 
     return {
         "a_to_q_trans": {
@@ -425,14 +379,7 @@ def map_atom_encoder_state_dict(
             f"{prefix}.z_to_p_trans.1.weight",
             *required_keys[5:],
         )
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = (
-            "Missing required AtomEncoder state_dict keys "
-            f"for prefix {prefix!r}: {missing}"
-        )
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "AtomEncoder", prefix)
 
     params: AtomEncoderParams = {
         "embed_atom_features": {
@@ -525,14 +472,7 @@ def map_triangle_multiplication_state_dict(
         f"{prefix}.p_out.weight",
         f"{prefix}.g_out.weight",
     )
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = (
-            "Missing required TriangleMultiplication state_dict keys "
-            f"for prefix {prefix!r}: {missing}"
-        )
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "TriangleMultiplication", prefix)
 
     return {
         "norm_in": {
@@ -565,14 +505,7 @@ def map_triangle_attention_state_dict(
         f"{prefix}.mha.linear_o.weight",
         f"{prefix}.mha.linear_g.weight",
     )
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = (
-            "Missing required TriangleAttention state_dict keys "
-            f"for prefix {prefix!r}: {missing}"
-        )
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "TriangleAttention", prefix)
 
     return {
         "layer_norm": {
@@ -609,14 +542,7 @@ def map_pairformer_layer_state_dict(
         f"{prefix}.pre_norm_s.weight",
         f"{prefix}.pre_norm_s.bias",
     )
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = (
-            "Missing required PairformerLayer state_dict keys "
-            f"for prefix {prefix!r}: {missing}"
-        )
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "PairformerLayer", prefix)
 
     return {
         "pre_norm_s": {
@@ -689,14 +615,7 @@ def map_single_conditioning_state_dict(
         f"{prefix}.norm_fourier.bias",
         f"{prefix}.fourier_to_single.weight",
     )
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = (
-            "Missing required SingleConditioning state_dict keys "
-            f"for prefix {prefix!r}: {missing}"
-        )
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "SingleConditioning", prefix)
 
     transition_indices = _module_list_indices(
         state_dict, f"{prefix}.transitions", num_transitions
@@ -745,14 +664,7 @@ def map_pairwise_conditioning_state_dict(
         f"{prefix}.dim_pairwise_init_proj.0.bias",
         f"{prefix}.dim_pairwise_init_proj.1.weight",
     )
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = (
-            "Missing required PairwiseConditioning state_dict keys "
-            f"for prefix {prefix!r}: {missing}"
-        )
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "PairwiseConditioning", prefix)
 
     transition_indices = _module_list_indices(
         state_dict, f"{prefix}.transitions", num_transitions
@@ -796,14 +708,7 @@ def map_diffusion_score_model_state_dict(
         f"{prefix}.a_norm.weight",
         f"{prefix}.a_norm.bias",
     )
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = (
-            "Missing required DiffusionModule score_model state_dict keys "
-            f"for prefix {prefix!r}: {missing}"
-        )
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "DiffusionModule score_model", prefix)
 
     return {
         "single_conditioner": map_single_conditioning_state_dict(
@@ -931,11 +836,7 @@ def map_boltz2_trunk_state_dict(
         "s_recycle.weight",
         "z_recycle.weight",
     )
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = f"Missing required Boltz2 trunk state_dict keys: {missing}"
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "Boltz2 trunk")
 
     params: Boltz2TrunkParams = {
         "input_embedder": map_input_embedder_state_dict(state_dict),
@@ -1000,14 +901,7 @@ def map_contact_conditioning_state_dict(
         f"{prefix}.encoder.weight",
         f"{prefix}.encoder.bias",
     )
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = (
-            "Missing required ContactConditioning state_dict keys "
-            f"for prefix {prefix!r}: {missing}"
-        )
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "ContactConditioning", prefix)
     return {
         "encoding_unspecified": _to_jax_array(
             state_dict[f"{prefix}.encoding_unspecified"]
@@ -1049,14 +943,7 @@ def map_input_embedder_state_dict(
         f"{prefix}.cyclic_conditioning_init.weight",
         f"{prefix}.mol_type_conditioning_init.weight",
     )
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = (
-            "Missing required InputEmbedder state_dict keys "
-            f"for prefix {prefix!r}: {missing}"
-        )
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "InputEmbedder", prefix)
 
     return {
         "atom_encoder": map_atom_encoder_state_dict(
@@ -1124,14 +1011,7 @@ def map_pair_weighted_averaging_state_dict(
         f"{prefix}.proj_z.weight",
         f"{prefix}.proj_o.weight",
     )
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = (
-            "Missing required PairWeightedAveraging state_dict keys "
-            f"for prefix {prefix!r}: {missing}"
-        )
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "PairWeightedAveraging", prefix)
 
     return {
         "norm_m": {
@@ -1163,14 +1043,7 @@ def map_outer_product_mean_state_dict(
         f"{prefix}.proj_o.weight",
         f"{prefix}.proj_o.bias",
     )
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = (
-            "Missing required OuterProductMean state_dict keys "
-            f"for prefix {prefix!r}: {missing}"
-        )
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "OuterProductMean", prefix)
 
     return {
         "norm": {
@@ -1279,14 +1152,7 @@ def map_msa_module_state_dict(
     """Map Boltz MSAModule weights."""
 
     required_keys = (f"{prefix}.s_proj.weight", f"{prefix}.msa_proj.weight")
-    missing_keys = [key for key in required_keys if key not in state_dict]
-    if missing_keys:
-        missing = ", ".join(missing_keys)
-        msg = (
-            f"Missing required MSAModule state_dict keys for prefix "
-            f"{prefix!r}: {missing}"
-        )
-        raise KeyError(msg)
+    _require_keys(state_dict, required_keys, "MSAModule", prefix)
 
     layer_indices = _module_list_indices(state_dict, f"{prefix}.layers", num_layers)
     return {
@@ -1297,6 +1163,25 @@ def map_msa_module_state_dict(
             for index in layer_indices
         ],
     }
+
+
+def _require_keys(
+    state_dict: Mapping[str, Any],
+    required_keys: tuple[str, ...],
+    module_name: str,
+    prefix: str | None = None,
+) -> None:
+    missing_keys = [key for key in required_keys if key not in state_dict]
+    if missing_keys:
+        missing = ", ".join(missing_keys)
+        if prefix is None:
+            msg = f"Missing required {module_name} state_dict keys: {missing}"
+        else:
+            msg = (
+                f"Missing required {module_name} state_dict keys "
+                f"for prefix {prefix!r}: {missing}"
+            )
+        raise KeyError(msg)
 
 
 def _module_list_indices(

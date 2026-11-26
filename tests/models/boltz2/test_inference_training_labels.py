@@ -67,3 +67,23 @@ def test_inference_routes_around_the_training_distogram(monkeypatch) -> None:
         )
 
     assert seen == [False, True]
+
+
+def test_compute_symmetries_is_refused_before_any_rng_draw() -> None:
+    import pytest
+
+    random, augmentation = np.random.default_rng(0), np.random.default_rng(1)
+    with pytest.raises(NotImplementedError, match="inference-only"):
+        featurizerv2.Boltz2Featurizer().process(
+            SimpleNamespace(tokens=np.zeros(1), templates=()),
+            random=random,
+            augmentation_rng=augmentation,
+            molecules={},
+            training=False,
+            max_seqs=1,
+            compute_symmetries=True,
+        )
+    assert random.integers(1 << 30) == np.random.default_rng(0).integers(1 << 30)
+    assert augmentation.integers(1 << 30) == np.random.default_rng(1).integers(
+        1 << 30
+    )

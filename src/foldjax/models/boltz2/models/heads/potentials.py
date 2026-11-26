@@ -22,139 +22,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from foldjax.models._segment import segment_sum
+from foldjax.models.boltz2.data import const
 from foldjax.models.boltz2.models.trunk_blocks.trunk import _weighted_rigid_align
-
-# Vendored from boltz.data.const (the reference package is not a runtime dep).
-# Kept in sync with boltz/src/boltz/data/const.py.
-_NUM_ELEMENTS = 128
-_VDW_RADII = [
-    1.2,
-    1.4,
-    2.2,
-    1.9,
-    1.8,
-    1.7,
-    1.6,
-    1.55,
-    1.5,
-    1.54,
-    2.4,
-    2.2,
-    2.1,
-    2.1,
-    1.95,
-    1.8,
-    1.8,
-    1.88,
-    2.8,
-    2.4,
-    2.3,
-    2.15,
-    2.05,
-    2.05,
-    2.05,
-    2.05,
-    2.0,
-    2.0,
-    2.0,
-    2.1,
-    2.1,
-    2.1,
-    2.05,
-    1.9,
-    1.9,
-    2.02,
-    2.9,
-    2.55,
-    2.4,
-    2.3,
-    2.15,
-    2.1,
-    2.05,
-    2.05,
-    2.0,
-    2.05,
-    2.1,
-    2.2,
-    2.2,
-    2.25,
-    2.2,
-    2.1,
-    2.1,
-    2.16,
-    3.0,
-    2.7,
-    2.5,
-    2.48,
-    2.47,
-    2.45,
-    2.43,
-    2.42,
-    2.4,
-    2.38,
-    2.37,
-    2.35,
-    2.33,
-    2.32,
-    2.3,
-    2.28,
-    2.27,
-    2.25,
-    2.2,
-    2.1,
-    2.05,
-    2.0,
-    2.0,
-    2.05,
-    2.1,
-    2.05,
-    2.2,
-    2.3,
-    2.3,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.4,
-    2.0,
-    2.3,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-    2.0,
-]
-
-
-class _Const:
-    num_elements = _NUM_ELEMENTS
-    vdw_radii = _VDW_RADII
-
-
-const = _Const()
 
 # ---------------------------------------------------------------------------
 # Schedules
@@ -425,7 +294,6 @@ class FlatBottomPotential(Potential):
         negation_mask=None,
         compute_derivative=False,
     ):
-        value = value
         if lower_bounds is None:
             lower_bounds = jnp.full(value.shape, -INF, dtype=value.dtype)
         else:

@@ -131,7 +131,7 @@ def pairformer_layer_forward(
     """Run one Boltz PairformerLayer in eval mode without dropout.
 
     ``triangle_backend`` selects the triangle-attention path: ``"xla"``
-    (default, bit-exact) or ``"pallas"`` (opt-in GPU flash kernel).
+    (default, bit-exact), ``"cueq"``, ``"pallas"``, or ``"tokamax"``.
     """
 
     # Under context parallelism the pair representation is sharded along its

@@ -52,13 +52,9 @@ def tokamax_dot_product_attention(
     bias: [batch, heads, query, key]
     mask: [batch, key]
 
-    The inputs are passed in their EXISTING dtype -- no fp32 upcast. tokamax /
-    FlashAttention (triton) kernels only pay off in low precision, so to use a
-    fast kernel run the sampler with ``compute_dtype=float16``/``bfloat16``
-    (then q/k/v arrive low-precision here). Forcing fp32 (the previous
-    behaviour) pushed tokamax onto a slow fallback far slower than plain XLA;
-    upcasting also breaks fp16 matmul on CPU. fp16 is preferred over bf16 on
-    this model (smaller sampling drift).
+    The inputs are passed in their existing dtype -- no fp32 upcast. The
+    Boltz-2 runtime accepts ``bfloat16`` and ``float32`` and refuses
+    ``float16``.
 
     ``implementation=None`` follows tokamax's installed implementation order
     (currently Mosaic GPU, Triton, then XLA) and advances only when a candidate

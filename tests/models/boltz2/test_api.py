@@ -1056,3 +1056,90 @@ def test_stop_after_trunk_crops_and_saves_representations(
         "atoms": 32,
         "msa": 1,
     }
+
+
+def test_multi_sample_write_loads_structure_once(tmp_path, monkeypatch) -> None:
+    from foldjax.models.boltz2.data.types import (
+        AtomV2,
+        BondV2,
+        Chain,
+        Coords,
+        Ensemble,
+        Interface,
+        Residue,
+        StructureV2,
+    )
+    from foldjax.models.boltz2.data.write import structure as structure_writer
+
+    atoms = np.zeros(3, dtype=AtomV2)
+    atoms["name"] = ["N", "CA", "C"]
+    atoms["is_present"] = True
+    residues = np.zeros(1, dtype=Residue)
+    residues["name"] = ["ALA"]
+    residues["atom_idx"] = [0]
+    residues["atom_num"] = [3]
+    residues["is_standard"] = [True]
+    residues["is_present"] = [True]
+    chains = np.zeros(1, dtype=Chain)
+    chains["name"] = ["A"]
+    chains["asym_id"] = [0]
+    chains["atom_idx"] = [0]
+    chains["atom_num"] = [3]
+    chains["res_idx"] = [0]
+    chains["res_num"] = [1]
+    struct = StructureV2(
+        atoms=atoms,
+        bonds=np.zeros(0, dtype=BondV2),
+        residues=residues,
+        chains=chains,
+        interfaces=np.zeros(0, dtype=Interface),
+        mask=np.ones(1, dtype=bool),
+        coords=np.zeros(3, dtype=Coords),
+        ensemble=np.array([(0, 3)], dtype=Ensemble),
+    )
+    struct_path = tmp_path / "job.npz"
+    struct.dump(struct_path)
+
+    load_calls = 0
+    real_load = StructureV2.load
+
+    def counting_load(cls, path):
+        nonlocal load_calls
+        load_calls += 1
+        return real_load(path)
+
+    feats = {
+        **_fake_features(affinity=False),
+        "residue_index": np.asarray([[0, 1]], dtype=np.int32),
+        "asym_id": np.asarray([[0, 0]], dtype=np.int32),
+    }
+    monkeypatch.setattr(StructureV2, "load", classmethod(counting_load))
+    monkeypatch.setattr(api, "featurize", lambda **kwargs: (feats, "job", tmp_path))
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.bridge.native.load_params", lambda path: {"trunk": {}}
+    )
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.models.predict.boltz2_predict",
+        lambda params, model_feats, key, **kwargs: {
+            "sample_atom_coords": jnp.zeros((3, 3, 3), dtype=jnp.float32),
+            "plddt": jnp.ones((3, 2), dtype=jnp.float32),
+            "iptm": jnp.ones((3,), dtype=jnp.float32),
+            "confidence_score": jnp.asarray([0.2, 0.9, 0.5]),
+        },
+    )
+    monkeypatch.setattr(structure_writer, "to_pdb", lambda *args, **kwargs: "END\n")
+
+    result = api.predict(
+        seq=["AC"],
+        weights=tmp_path / "boltz2_conf",
+        mols=tmp_path,
+        out_dir=tmp_path / "out",
+        num_steps=1,
+        num_samples=3,
+        write_fmt="pdb",
+    )
+
+    assert load_calls == 1
+    assert len(result["out_paths"]) == 3
+    assert all(path.is_file() for path in result["out_paths"])
+    assert list(result["confidence_index"]["chain_id"]) == ["A"]

@@ -5,23 +5,15 @@ from collections import deque
 import numba
 import numpy as np
 import numpy.typing as npt
-from foldjax.models.boltz2.data._torch import torch
 from numba import types
 from rdkit.Chem import Mol
 from scipy.spatial.distance import cdist
-from foldjax.models.boltz2.data._torch import Tensor, from_numpy
-from foldjax.models.boltz2.data._torch import torch
+from foldjax.models.boltz2.data._torch import Tensor, from_numpy, torch
 
 one_hot = torch.nn.functional.one_hot
 
 from foldjax.models.boltz2.data import const
 from foldjax.models.boltz2.data._external import center_random_augmentation
-from foldjax.models.boltz2.data.mol import (
-    get_amino_acids_symmetries,
-    get_chain_symmetries,
-    get_ligand_symmetries,
-    get_symmetries,
-)
 from foldjax.models.boltz2.data.pad import pad_dim
 from foldjax.models.boltz2.data.types import (
     MSA,
@@ -1911,29 +1903,6 @@ def process_template_features(
     return out
 
 
-def process_symmetry_features(
-    cropped: Tokenized, symmetries: dict
-) -> dict[str, Tensor]:
-    """Get the symmetry features.
-
-    Parameters
-    ----------
-    data : Tokenized
-        The input to the model.
-
-    Returns
-    -------
-    dict[str, Tensor]
-        The symmetry features.
-
-    """
-    features = get_chain_symmetries(cropped)
-    features.update(get_amino_acids_symmetries(cropped))
-    features.update(get_ligand_symmetries(cropped, symmetries))
-
-    return features
-
-
 def process_ensemble_features(
     data: Tokenized,
     random: np.random.Generator,
@@ -2297,6 +2266,11 @@ class Boltz2Featurizer:
             The features for model training.
 
         """
+        if compute_symmetries:
+            raise NotImplementedError(
+                "compute_symmetries=True is training-only and is not supported "
+                "in inference-only FoldJAX"
+            )
         # Compute random number of sequences
         if training and max_seqs is not None:
             if random.random() > single_sequence_prop:
@@ -2398,12 +2372,6 @@ class Boltz2Featurizer:
                 num_tokens=num_tokens,
             )
 
-        # Compute symmetry features
-        symmetry_features = {}
-        if compute_symmetries:
-            symmetries = get_symmetries(molecules)
-            symmetry_features = process_symmetry_features(data, symmetries)
-
         # Compute constraint features
         residue_constraint_features = {}
         chain_constraint_features = {}
@@ -2423,7 +2391,6 @@ class Boltz2Featurizer:
             **msa_features,
             **msa_features_affinity,
             **template_features,
-            **symmetry_features,
             **ensemble_features,
             **residue_constraint_features,
             **chain_constraint_features,

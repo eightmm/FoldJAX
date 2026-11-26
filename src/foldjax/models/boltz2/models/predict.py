@@ -442,7 +442,7 @@ def boltz2_predict(
     # call it has always taken.
     if diffusion_chunk_size is not None and multiplicity > diffusion_chunk_size:
         starts = range(0, multiplicity, diffusion_chunk_size)
-        chunk_keys = jax.random.split(key, len(list(starts)))
+        chunk_keys = jax.random.split(key, len(starts))
         sample_atom_coords = jnp.concatenate(
             [
                 sample(
@@ -450,11 +450,7 @@ def boltz2_predict(
                     min(diffusion_chunk_size, multiplicity - start),
                     sample_start=start,
                 )["sample_atom_coords"]
-                for chunk_key, start in zip(
-                    chunk_keys,
-                    range(0, multiplicity, diffusion_chunk_size),
-                    strict=True,
-                )
+                for chunk_key, start in zip(chunk_keys, starts, strict=True)
             ],
             axis=0,
         )
