@@ -734,12 +734,13 @@ CP_DIFFUSION_CHUNK_SIZE = 1
 #: It is the top of :data:`memory_policy.OPENFOLD3_CHUNKED_PEAK`'s domain, the
 #: largest size a serial unchunked rollout has completed on one card (59,214.8
 #: MiB at 4,888 tokens), so every measured serial run keeps the program it
-#: had. Above it nothing unchunked has completed: the widest value is the
+#: had. Above it nothing unchunked has completed: the widest value was the
 #: diffusion pair conditioning ``f32[5, N, N, 128]`` -- 57 GiB at 4,888 and
 #: 102.9 GiB at 6,568, where the jctc-v2 run asked the allocator for 102.90 GiB
-#: and failed -- and one sample at a time is a fifth of it, the lever the OOM
-#: message has always named. The price is wall time in the denoiser, which is
-#: what the v011-perf-check job measures at 4,888 and 6,568.
+#: and failed (``denoise_fn`` now keeps the sample-shared pair one sample wide;
+#: this threshold stays pinned until GPU measurements re-fit it). The price is
+#: wall time in the denoiser, which is what the v011-perf-check job measures at
+#: 4,888 and 6,568.
 SERIAL_DIFFUSION_CHUNK_ABOVE_TOKENS = 4888
 
 
@@ -1642,11 +1643,9 @@ def _predict_from_trunk(
     # before the projection. Hoisting it out is exact, not an approximation.
     # Born sharded under context parallelism; the sample axis stays a
     # broadcast view, only the row axis is split.
-    # Kept at its natural leading axis of 1 and widened at the point of use, so
-    # the sample width is a property of the coordinates being denoised rather
-    # than of the config. That is what lets the rollout run a chunk of the
-    # samples at a time: everything here is a `broadcast_to` view, so widening
-    # to 5 instead of 32 costs nothing and copies nothing.
+    # Kept at its natural leading axis of 1 into ``denoise`` so the pair layer
+    # norms, bias projections and atom-pair block gather run once rather than
+    # once per sample and broadcast only where per-sample activations meet them.
     zij_base = shard_pair_rows(
         pair_conditioning(
             batch,
@@ -1697,12 +1696,19 @@ def _predict_from_trunk(
             width,
         )
         return denoise(
-            {name: _expand_samples(value, width) for name, value in batch.items()},
+            {
+                name: (
+                    value
+                    if name in ("atom_to_token_index", "atom_mask")
+                    else _expand_samples(value, width)
+                )
+                for name, value in batch.items()
+            },
             xl_noisy,
             t,
             si,
             _expand_samples(s_trunk, width),
-            shard_pair_rows(_expand_samples(zij_base, width)),
+            shard_pair_rows(zij_base),
             params.denoiser,
             n_query=config.n_query,
             n_key=config.n_key,

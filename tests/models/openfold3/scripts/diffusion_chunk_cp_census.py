@@ -416,6 +416,9 @@ def main() -> int:
     for stub_width in (PAE_BINS, STUB_PAIR_CHANNELS):
         assert stub_width not in CONDITIONING_CHANNELS, stub_width
     pattern = _pair_shape_pattern(NUM_SAMPLES, local_rows, CONDITIONING_CHANNELS)
+    # Positive tripwire: the sharded pair conditioning still exists in every
+    # arm, now one sample wide rather than widened to the sample count.
+    one_wide = _pair_shape_pattern(1, local_rows, CONDITIONING_CHANNELS)
     # The confidence heads' own five-sample pair logit stack, which chunking
     # the rollout neither removes nor should. It is the control that makes the
     # census specific to the conditioning rather than to any wide value, and
@@ -439,6 +442,8 @@ def main() -> int:
         arm = {
             "spmd": _census(spmd, pattern),
             "hlo": _census(hlo, pattern),
+            "one_spmd": _census(spmd, one_wide),
+            "one_hlo": _census(hlo, one_wide),
             "returned": _census(spmd, returned),
             "coordinates": coordinates,
         }
@@ -447,7 +452,7 @@ def main() -> int:
         print(
             f"  {label:<9} samples={coordinates.shape[0]} "
             f"conditioning spmd={arm['spmd']} hlo={arm['hlo']} "
-            f"returned_logits={arm['returned']}"
+            f"one_wide={arm['one_spmd']} returned_logits={arm['returned']}"
         )
 
     # Positive evidence that every arm was traced under the mesh rather than
@@ -458,17 +463,17 @@ def main() -> int:
 
     whole, one, two = arms["whole"], arms[resolved], arms[2]
 
-    # The defect, still present with the rollout whole. Without this the bound
-    # below would pass a program that widened nothing anywhere.
-    assert whole["spmd"], ("no sharded five-wide pair tile with the rollout whole")
-    assert whole["hlo"], ("no sharded five-wide pair tile in the unoptimised HLO")
-    # The property.
-    assert not one["spmd"], one["spmd"]
-    assert not one["hlo"], one["hlo"]
-    # The control: a wide value the chunk is not meant to touch stays put in
-    # every arm. Without it, "no five-wide tile" could be satisfied by a
-    # program that had lost the sample axis altogether.
+    # Sample-shared pair conditioning now stays one sample wide across every
+    # arm (including the unchunked rollout), while the one-wide sharded pair
+    # tile proves the conditioning is present and sharded.
     for label, arm in (("whole", whole), (f"chunk={resolved}", one), ("chunk=2", two)):
+        assert not arm["spmd"], (label, arm["spmd"])
+        assert not arm["hlo"], (label, arm["hlo"])
+        assert arm["one_spmd"], (label, "missing one-wide sharded pair tile in SPMD")
+        assert arm["one_hlo"], (label, "missing one-wide sharded pair tile in HLO")
+        # The control: a wide value the chunk is not meant to touch stays put in
+        # every arm. Without it, "no five-wide tile" could be satisfied by a
+        # program that had lost the sample axis altogether.
         assert arm["returned"], (label, "the five-sample pair logits vanished")
 
     # Sample count and sample identity: the same five samples in the same

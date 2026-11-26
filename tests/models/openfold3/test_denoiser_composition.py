@@ -12,23 +12,38 @@ reference here is its forward body transcribed against our own gated pieces.
 
 from __future__ import annotations
 
+import functools
+
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from foldjax.models.openfold3 import inference
+from foldjax.models.openfold3.dtype import narrow_floats
+from foldjax.models.openfold3.models import atom_features, denoiser
+from foldjax.models.openfold3.models.atom_blocks import pair_rep_to_blocks
 from foldjax.models.openfold3.models.atom_features import (
     atom_attention_decoder,
     atom_attention_encoder,
 )
+from foldjax.models.openfold3.models.augmentation import centre_random_augmentation
 from foldjax.models.openfold3.models.denoiser import denoise
+from foldjax.models.openfold3.models.diffusion_conditioning import (
+    pair_conditioning,
+    single_conditioning,
+)
 from foldjax.models.openfold3.models.diffusion_schedule import (
     combine_denoiser_output,
+    noise_schedule,
     scale_noisy_positions,
 )
-from foldjax.models.openfold3.models.diffusion_transformer import diffusion_transformer
+from foldjax.models.openfold3.models.diffusion_transformer import (
+    atom_transformer,
+    diffusion_transformer,
+)
 from foldjax.models.openfold3.models.primitives import layer_norm, linear
-
-pytestmark = pytest.mark.torch_parity
+from foldjax.models.openfold3.models.sampler import sample_diffusion
 
 C_ATOM, C_ATOM_PAIR, C_TOKEN, C_S, C_Z = 8, 6, 8, 8, 4
 C_ELEMENT, C_CHARS = 12, 5
@@ -166,6 +181,7 @@ def _kwargs() -> dict:
     }
 
 
+@pytest.mark.torch_parity
 def test_denoise_matches_the_transcribed_forward(openfold3_source, randomized) -> None:
     torch = _torch()
     params = _parts(torch, randomized)
@@ -211,6 +227,7 @@ def test_denoise_matches_the_transcribed_forward(openfold3_source, randomized) -
     )
 
 
+@pytest.mark.torch_parity
 def test_output_is_a_blend_not_the_raw_update(openfold3_source, randomized) -> None:
     """At low noise the denoised output must stay near the noisy input."""
     torch = _torch()
@@ -224,6 +241,7 @@ def test_output_is_a_blend_not_the_raw_update(openfold3_source, randomized) -> N
     )
 
 
+@pytest.mark.torch_parity
 def test_masked_atoms_stay_zero(openfold3_source, randomized) -> None:
     torch = _torch()
     params = _parts(torch, randomized)
@@ -236,6 +254,7 @@ def test_masked_atoms_stay_zero(openfold3_source, randomized) -> None:
     assert np.allclose(out[:, -3:], 0.0)
 
 
+@pytest.mark.torch_parity
 def test_output_shape_is_coordinates(openfold3_source, randomized) -> None:
     torch = _torch()
     params = _parts(torch, randomized)
@@ -243,3 +262,212 @@ def test_output_shape_is_coordinates(openfold3_source, randomized) -> None:
     out = denoise(batch, xl, t, si, si_trunk, zij, params, **_kwargs())
     assert out.shape == (1, N_ATOM, 3)
     assert np.isfinite(np.asarray(out)).all()
+
+
+def _shared_pair_inputs(width: int = 3, *, dtype=jnp.float32, real_atoms: int = 75):
+    from tests.models.openfold3 import atom_cp_fixtures as fx
+
+    case = fx.build_case(real_atoms=real_atoms)
+    base_params = fx.build_params()
+    params = base_params if dtype == jnp.float32 else narrow_floats(base_params, dtype)
+    xl = jax.random.normal(jax.random.key(7), (width, fx.N_ATOM, 3))
+    si = jnp.broadcast_to(case.si[:1], (width, *case.si.shape[1:])).astype(dtype)
+    si_trunk = jnp.broadcast_to(
+        case.si_trunk[:1], (width, *case.si_trunk.shape[1:])
+    ).astype(dtype)
+    zij_1 = case.zij[:1].astype(dtype)
+    zij_w = jnp.broadcast_to(zij_1, (width, *zij_1.shape[1:]))
+    batch_w = {
+        k: jnp.broadcast_to(v[:1], (width, *v.shape[1:]))
+        for k, v in case.batch.items()
+    }
+    batch_pair1 = {
+        k: (v[:1] if k in ("atom_to_token_index", "atom_mask") else batch_w[k])
+        for k, v in case.batch.items()
+    }
+    kw = dict(
+        n_query=fx.N_QUERY,
+        n_key=fx.N_KEY,
+        atom_heads=fx.ATOM_HEADS,
+        token_heads=fx.TOKEN_HEADS,
+        n_token=fx.N_TOKEN,
+        sigma_data=fx.SIGMA_DATA,
+    )
+    dims = (fx.N_TOKEN, fx.C_Z, fx.C_ATOM_PAIR)
+    return (
+        batch_w, batch_pair1, xl, case.t, si, si_trunk, zij_1, zij_w, params, kw, dims
+    )
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16])
+@pytest.mark.parametrize("scan_blocks", [True, False])
+def test_width_one_pair_matches_widened_pair_bitwise(
+    dtype, scan_blocks: bool, monkeypatch
+) -> None:
+    """Keeping the sample-shared pair one sample wide preserves exact arithmetic."""
+    batch_w, batch_pair1, xl, t, si, si_trunk, zij_1, zij_w, params, kw, _ = (
+        _shared_pair_inputs(width=3, dtype=dtype)
+    )
+    if not scan_blocks:
+        monkeypatch.setattr(
+            denoiser,
+            "diffusion_transformer",
+            functools.partial(diffusion_transformer, scan_blocks=False),
+        )
+        monkeypatch.setattr(
+            atom_features,
+            "atom_transformer",
+            functools.partial(atom_transformer, scan_blocks=False),
+        )
+
+    run = jax.jit(lambda b, x, z: denoise(b, x, t, si, si_trunk, z, params, **kw))
+    out_wide = np.asarray(run(batch_w, xl, zij_w))
+    out_pair1 = np.asarray(run(batch_pair1, xl, zij_1))
+    out_zonly = np.asarray(run(batch_w, xl, zij_1))
+
+    np.testing.assert_array_equal(out_pair1, out_wide)
+    np.testing.assert_array_equal(out_zonly, out_wide)
+    assert not np.allclose(out_pair1[0], out_pair1[1])
+    np.testing.assert_array_equal(out_pair1[:, 75:], 0.0)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "tag"), [(jnp.float32, "f32"), (jnp.bfloat16, "bf16")]
+)
+def test_denoiser_hlo_keeps_pair_ln_one_sample_wide(dtype, tag: str) -> None:
+    """No [width, N, N, C_z] or [width, N, N, C_atom_pair] survives in denoiser HLO."""
+    width = 3
+    batch_w, batch_pair1, xl, t, si, si_trunk, zij_1, zij_w, params, kw, dims = (
+        _shared_pair_inputs(width=width, dtype=dtype)
+    )
+    n_tok, c_z, c_ap = dims
+    run = jax.jit(lambda b, x, z: denoise(b, x, t, si, si_trunk, z, params, **kw))
+    narrow_hlo = (
+        run.lower(batch_pair1, xl, zij_1).compiler_ir(dialect="hlo").as_hlo_text()
+    )
+    zonly_hlo = run.lower(batch_w, xl, zij_1).compiler_ir(dialect="hlo").as_hlo_text()
+    wide_hlo = run.lower(batch_w, xl, zij_w).compiler_ir(dialect="hlo").as_hlo_text()
+
+    assert f"{tag}[{width},{n_tok},{n_tok},{c_z}]" in wide_hlo
+    for hlo in (narrow_hlo, zonly_hlo):
+        for shape in (
+            f"{tag}[{width},{n_tok},{n_tok},{c_z}]",
+            f"f32[{width},{n_tok},{n_tok},{c_z}]",
+            f"{tag}[{width},{n_tok},{n_tok},{c_ap}]",
+            f"f32[{width},{n_tok},{n_tok},{c_ap}]",
+        ):
+            assert shape not in hlo
+        assert f"{tag}[1,{n_tok},{n_tok},{c_z}]" in hlo
+        assert f"{tag}[1,{n_tok},{n_tok},{c_ap}]" in hlo
+
+
+def test_sampler_rollout_matches_explicitly_widened_pair(monkeypatch) -> None:
+    """``_predict_from_trunk`` rollout at num_samples=3 matches widened-pair rollout."""
+    from tests.models.openfold3.scripts import diffusion_chunk_cp_census as census
+
+    num_samples = 3
+    batch, trunk_output = census._batch(), census._trunk_output()
+    cond_params = census._conditioning_params(census._relpos_dims(batch))
+    denoiser_params = census.build_params()
+    config = census._config(devices=1, layout="1d")._replace(
+        num_samples=num_samples, num_steps=3, diffusion_chunk_size=None,
+        cp_atom_windows=False, dtype="float32", confidence_dtype="float32",
+    )
+    n_tok, pae_bins = census.N_TOKEN, census.PAE_BINS
+    stubs = {
+        "token_representative_atoms": lambda b, c, m, t: (
+            c[..., :n_tok, :], jnp.ones((num_samples, n_tok))
+        ),
+        "token_frame_atoms": lambda *a, **k: (
+            (None, None, None), jnp.ones((num_samples, n_tok), dtype=jnp.bool_)
+        ),
+        "pairformer_embedding": lambda si_in, si, z, x, p, **k: (
+            si, jnp.zeros((*z.shape[:-1], 3), z.dtype)
+        ),
+        "predicted_aligned_error_head": lambda z, p: jnp.zeros(
+            (*z.shape[:-1], pae_bins), z.dtype
+        ),
+        "predicted_distance_error_head": lambda z, p: jnp.zeros(
+            (*z.shape[:-1], pae_bins), z.dtype
+        ),
+        "distogram_head": lambda z, p: jnp.zeros(
+            (1, n_tok, n_tok, pae_bins), z.dtype
+        ),
+        "atom_logit_head": lambda s, p, m, *, c_out, n_atom, **k: jnp.zeros(
+            (*s.shape[:-2], n_atom, c_out), s.dtype
+        ),
+    }
+    for name, stub in stubs.items():
+        monkeypatch.setattr(inference, name, stub)
+    params = inference.InferenceParams(
+        None, cond_params, denoiser_params, None, None, None, None, None, None
+    )
+    key = jax.random.key(19)
+    pred_fn = jax.jit(
+        lambda b, tr: inference._predict_from_trunk(
+            key, b, params, config, None, trunk_output=tr
+        ).coordinates
+    )
+    rollout_hlo = (
+        pred_fn.lower(batch, trunk_output).compiler_ir(dialect="hlo").as_hlo_text()
+    )
+    assert f"f32[{num_samples},{n_tok},{n_tok},{census.C_Z}]" not in rollout_hlo
+    assert f"f32[1,{n_tok},{n_tok},{census.C_Z}]" in rollout_hlo
+    actual = pred_fn(batch, trunk_output)
+
+    schedule = noise_schedule(
+        config.num_steps, sigma_data=config.sigma_data,
+        s_max=config.s_max, s_min=config.s_min, p=config.p,
+    )
+
+    def run_widened(b, tr):
+        s_input, s_trunk, z = tr
+        zij_base = pair_conditioning(
+            b, z, cond_params, max_relative_idx=config.max_relative_idx,
+            max_relative_chain=config.max_relative_chain, token_mask=b["token_mask"],
+        )
+
+        def wide_denoise(xl_noisy, t):
+            w = xl_noisy.shape[0]
+            si = inference._expand_samples(
+                single_conditioning(
+                    s_input, s_trunk, t, cond_params,
+                    sigma_data=config.sigma_data, token_mask=b["token_mask"],
+                ), w,
+            )
+            return denoise(
+                {k: inference._expand_samples(v, w) for k, v in b.items()},
+                xl_noisy, t, si, inference._expand_samples(s_trunk, w),
+                inference._expand_samples(zij_base, w), denoiser_params,
+                n_query=config.n_query,
+                n_key=config.n_key,
+                atom_heads=config.atom_heads,
+                token_heads=config.token_heads, n_token=config.n_token,
+                sigma_data=config.sigma_data,
+            )
+
+        return sample_diffusion(
+            key, schedule, (num_samples, config.n_atom, 3), wide_denoise,
+            gamma_0=config.gamma_0, gamma_min=config.gamma_min,
+            noise_scale=config.noise_scale, step_scale=config.step_scale,
+            augment_fn=lambda k, xl: centre_random_augmentation(
+                k, xl, inference._expand_samples(b["atom_mask"], xl.shape[0])
+            ),
+        )
+
+    expected = jax.jit(run_widened)(batch, trunk_output)
+    assert actual.shape == (num_samples, config.n_atom, 3)
+    np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
+    assert not np.allclose(np.asarray(actual[0]), np.asarray(actual[1]))
+
+
+def test_pair_rep_to_blocks_rejects_incompatible_batch_widths() -> None:
+    """Non-broadcastable pair/index batch widths fail loudly."""
+    with pytest.raises(ValueError, match="Incompatible shapes"):
+        pair_rep_to_blocks(
+            jnp.zeros((2, 4, 4, 3)),
+            jnp.zeros((3, 8), dtype=jnp.int32),
+            jnp.ones((3, 8)),
+            n_query=4,
+            n_key=8,
+        )

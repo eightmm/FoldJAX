@@ -46,6 +46,7 @@ single path, and the serial lowering is pinned byte-identical
 from __future__ import annotations
 
 import contextlib
+import math
 from collections.abc import Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -227,10 +228,13 @@ class AtomBlockPlan:
 
     # -- helpers --
 
-    def _flat_tables(self, batch: int) -> tuple[jnp.ndarray, ...]:
-        shape = (batch,) + tuple(self.indices.shape[-2:])
+    def _flat_tables(self, leading: tuple[int, ...]) -> tuple[jnp.ndarray, ...]:
+        # Broadcast on the unflattened leading axes first: a table and a caller
+        # may carry complementary singleton axes, which a flat row count cannot
+        # reconcile.
+        tail = tuple(self.indices.shape[-2:])
         return tuple(
-            jnp.broadcast_to(table.reshape((-1,) + table.shape[-2:]), shape)
+            jnp.broadcast_to(table, (*leading, *tail)).reshape((-1, *tail))
             for table in (
                 self.indices,
                 self.invalid,
@@ -299,7 +303,7 @@ class AtomBlockPlan:
         query_blocks = ql.reshape((*leading, blocks, self.n_query, channels))
 
         flat = ql.reshape((-1, int(n_atom_local), int(channels)))
-        indices, invalid, _, _ = self._flat_tables(flat.shape[0])
+        indices, invalid, _, _ = self._flat_tables(leading)
         key_blocks = gather_atom_windows_local(
             flat,
             indices,
@@ -336,19 +340,30 @@ class AtomBlockPlan:
         """
 
         self._check(n_query, n_key)
-        leading = tuple(zij_tile.shape[:-3])
-        flat_batch = 1
-        for size in leading:
-            flat_batch *= int(size)
+        z_leading = tuple(zij_tile.shape[:-3])
+        leading = jnp.broadcast_shapes(
+            z_leading,
+            tuple(atom_to_token_index.shape[:-1]),
+            tuple(atom_mask.shape[:-1]),
+            tuple(self.indices.shape[:-2]),
+        )
+        flat_batch = math.prod(leading) if leading else 1
+        z_flat_batch = math.prod(z_leading) if z_leading else 1
         n_atom_local = int(atom_to_token_index.shape[-1])
         blocks = self._blocks(n_atom_local)
-        _, invalid, _, key_token_index = self._flat_tables(flat_batch)
+        _, invalid, _, key_token_index = self._flat_tables(tuple(leading))
 
         query_token = jnp.broadcast_to(
             atom_to_token_index, (*leading, n_atom_local)
         ).reshape((flat_batch, blocks, self.n_query))
+        if z_flat_batch in (1, flat_batch):
+            pair_local = zij_tile.reshape((z_flat_batch, *zij_tile.shape[-3:]))
+        else:
+            pair_local = jnp.broadcast_to(
+                zij_tile, (*leading, *zij_tile.shape[-3:])
+            ).reshape((flat_batch, *zij_tile.shape[-3:]))
         plm = gather_token_pairs_to_windows_local(
-            zij_tile.reshape((flat_batch, *zij_tile.shape[-3:])),
+            pair_local,
             query_token.astype(jnp.int32),
             jnp.ones(query_token.shape, dtype=bool),
             key_token_index,

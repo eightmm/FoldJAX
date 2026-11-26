@@ -162,6 +162,8 @@ def pair_rep_to_blocks(
 
     Args:
         zij_trunk: ``[..., N_token, N_token, C]`` trunk pair representation.
+            Leading batch axes may be 1 and broadcast against
+            ``atom_to_token_index`` and ``atom_mask``.
         atom_to_token_index: ``[..., N_atom]`` owning token of each atom.
         atom_mask: ``[..., N_atom]`` atom mask.
         n_query: query block height.
@@ -179,12 +181,19 @@ def pair_rep_to_blocks(
             n_query=n_query,
             n_key=n_key,
         )
-    batch_dims = zij_trunk.shape[:-3]
+    z_batch = zij_trunk.shape[:-3]
+    idx_batch = atom_to_token_index.shape[:-1]
+    mask_batch = atom_mask.shape[:-1]
+    batch_dims = jnp.broadcast_shapes(z_batch, idx_batch, mask_batch)
     n_atom = atom_to_token_index.shape[-1]
     num_blocks = math.ceil(n_atom / n_query)
     pad = query_block_padding(n_atom, n_query)
     flat_batch = math.prod(batch_dims) if batch_dims else 1
 
+    if idx_batch != batch_dims:
+        atom_to_token_index = jnp.broadcast_to(
+            atom_to_token_index, (*batch_dims, n_atom)
+        )
     padded_q = jnp.pad(
         atom_to_token_index,
         [(0, 0)] * (atom_to_token_index.ndim - 1) + [(0, pad)],
@@ -200,8 +209,14 @@ def pair_rep_to_blocks(
     k_indices = k_indices.reshape((flat_batch, num_blocks, n_key)).astype(jnp.int32)
     invalid_flat = invalid.reshape((flat_batch, num_blocks, n_key))
 
-    flat_z = zij_trunk.reshape((flat_batch, *zij_trunk.shape[-3:]))
-    batch_index = jnp.arange(flat_batch).reshape(-1, 1, 1, 1)
+    z_flat_batch = math.prod(z_batch) if z_batch else 1
+    flat_z = zij_trunk.reshape((z_flat_batch, *zij_trunk.shape[-3:]))
+    if z_batch == batch_dims:
+        batch_index = jnp.arange(flat_batch).reshape(-1, 1, 1, 1)
+    else:
+        batch_index = jnp.broadcast_to(
+            jnp.arange(z_flat_batch).reshape(z_batch), batch_dims
+        ).reshape(-1, 1, 1, 1)
     # [flat, N_blocks, N_query, N_key, C]
     plm = flat_z[batch_index, q_indices[..., None], k_indices[..., None, :]]
     plm = jnp.where(invalid_flat[..., None, :, None], 0.0, plm)

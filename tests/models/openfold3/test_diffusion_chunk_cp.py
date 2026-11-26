@@ -20,10 +20,8 @@ Three kinds of gate, and they answer different questions:
 * the **program**, in a subprocess with four forced CPU devices, because a
   device count has to be set before JAX initialises. That is the census in
   ``scripts/diffusion_chunk_cp_census.py``, which holds its own assertions --
-  including the tripwire that the unchunked arm really does carry the five-wide
-  tile, without which "no five-wide tile" says nothing, and which was checked
-  to fail against a conditioning deliberately retained at full width outside
-  the loop.
+  that no arm carries a five-wide sharded pair tile while every arm keeps its
+  one-wide sharded pair tile and five-sample returned logits.
 """
 
 from __future__ import annotations

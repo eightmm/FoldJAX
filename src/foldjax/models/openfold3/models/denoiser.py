@@ -85,6 +85,8 @@ def denoise(
         si: ``[..., N_token, C_s]`` conditioned single representation.
         si_trunk: ``[..., N_token, C_s]`` trunk single representation.
         zij: ``[..., N_token, N_token, C_z]`` conditioned pair representation.
+            Its leading sample axis may be 1 and broadcast against per-sample
+            activations.
         params: mapped parameters.
         n_query: atom query block height.
         n_key: atom key window width.

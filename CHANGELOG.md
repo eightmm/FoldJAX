@@ -546,6 +546,14 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **OpenFold3 keeps the diffusion pair conditioning one sample wide.** The
+  sample-shared pair's layer norms, bias projections and atom-pair block
+  gather run once per denoising step instead of once per sample, and broadcast
+  only where per-sample activations meet them. With five samples the warm
+  prediction took 0.90x the time at 0.85x the peak memory at 1,003 tokens,
+  0.84x the time at 0.83x the peak at 3,012 tokens (cold peak 0.52x), and
+  0.87x the time at 0.95x the peak at 4,888 tokens; CA RMSD to the previous
+  program was at most 0.03 Å.
 - **The PAE JSON is written from a string table.** Each rounded value's JSON
   text is looked up rather than converted, one row at a time, so a 4,888-token
   Boltz-2 sample's `predicted_aligned_error.json` is written in 0.65 s instead
