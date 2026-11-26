@@ -259,11 +259,11 @@ def test_native_block_boundaries_and_chunk_tail(monkeypatch, compiled, length):
     assert np.isfinite(np.asarray(out.astype(jnp.float32))).all()
     # Every norm here reads the bfloat16 pair state, and the width it *emits*
     # is a per-site choice rather than a rule: the two pair norms of the
-    # triangle block hand their result to one linear that rounds it anyway and
-    # are asked for bfloat16, and the transition's norm keeps the float32
-    # native autocast leaves a LayerNorm at. A blanket assertion here is what
-    # let the narrowing look like a policy change it is not.
-    narrowed = (".norm_start", ".norm_mix")
+    # triangle block and the pair transition's norm each hand their result to
+    # one `_autocast_linear` that rounds its input to bfloat16 anyway, so all
+    # three ask for bfloat16 directly without changing arithmetic. A blanket
+    # assertion here would hide a site whose consumer reads float32.
+    narrowed = (".norm_start", ".norm_mix", ".pair_transition.norm")
     for name, _, inp, out in observed:
         assert inp == jnp.bfloat16, (name, inp)
         assert out == (jnp.bfloat16 if name.endswith(narrowed) else jnp.float32), (

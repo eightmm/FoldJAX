@@ -898,7 +898,7 @@ def _autocast_transition(x, params, prefix, residual, eps):
     def block(destination, start, size):
         part = _take_rows(x if destination is None else destination[0], start, size, 1)
         packed = _autocast_linear(
-            _autocast_norm(part, params, f"{dot}norm", eps),
+            _autocast_norm(part, params, f"{dot}norm", eps, out_dtype=jnp.bfloat16),
             params,
             f"{dot}ffn.w12",
         )

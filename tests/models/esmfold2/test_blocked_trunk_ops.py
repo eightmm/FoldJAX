@@ -451,6 +451,70 @@ def test_the_narrow_pair_norms_change_no_value(channels, rows):
     assert not np.array_equal(shipped, arm(doubled))
 
 
+@pytest.mark.parametrize("channels", [8, 128, 256])
+@pytest.mark.parametrize("residual", [True, False])
+@pytest.mark.parametrize("tokens", [12, 130])
+def test_the_narrow_transition_norm_changes_no_value(channels, residual, tokens):
+    """`_autocast_transition`'s norm stored bfloat16 is bit-identical to float32.
+
+    The norm's only consumer is `ffn.w12` via `_autocast_linear`, which already
+    rounds its input to bfloat16 before the GEMM. Covers width 8 (ESM formula),
+    width 128 (`msa_transition` CUDA route), and width 256 (`pair_transition`
+    CUDA route), both single-block and rolled (>2 blocks of 64) layouts, and
+    both residual modes, with a tripwire arm proving the patched norm fires.
+    """
+    rng = np.random.default_rng(17 + channels + int(residual) + tokens)
+    hidden = 16
+    prefix = (
+        "msa_encoder.blocks.0.msa_transition"
+        if channels == 128
+        else "blocks.0.pair_transition"
+    )
+    params = {
+        f"{prefix}.norm.weight": jnp.asarray(
+            rng.normal(size=channels) * 0.1 + 1.0, jnp.float32
+        ),
+        f"{prefix}.norm.bias": jnp.asarray(
+            rng.normal(size=channels) * 0.1, jnp.float32
+        ),
+        f"{prefix}.ffn.w12.weight": jnp.asarray(
+            rng.normal(size=(2 * hidden, channels), scale=0.25), jnp.bfloat16
+        ),
+        f"{prefix}.ffn.w3.weight": jnp.asarray(
+            rng.normal(size=(channels, hidden), scale=0.25), jnp.bfloat16
+        ),
+    }
+    x = jnp.asarray(rng.normal(size=(1, tokens, 3, channels), scale=0.5), jnp.bfloat16)
+    original = trunk._autocast_norm
+    asked_dtypes: list[jnp.dtype] = []
+
+    def recording(value, p, name, eps=1e-5, *, out_dtype=jnp.float32):
+        asked_dtypes.append(jnp.dtype(out_dtype))
+        return original(value, p, name, eps, out_dtype=out_dtype)
+
+    def widened(value, p, name, eps=1e-5, *, out_dtype=jnp.float32):
+        del out_dtype
+        return original(value, p, name, eps)
+
+    def doubled(value, p, name, eps=1e-5, *, out_dtype=jnp.float32):
+        return original(value, p, name, eps, out_dtype=out_dtype) * 2
+
+    def arm(rewrite):
+        def run(arr):
+            return trunk._autocast_transition(arr, params, prefix, residual, 1e-5)
+
+        jax.clear_caches()
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(trunk, "_autocast_norm", rewrite)
+            return jax.jit(run)(x)
+
+    shipped = arm(recording)
+    assert asked_dtypes and all(d == jnp.dtype(jnp.bfloat16) for d in asked_dtypes)
+    assert float(np.abs(np.asarray(shipped, np.float32)).max()) > 0.0
+    np.testing.assert_array_equal(_bits(shipped), _bits(arm(widened)))
+    assert not np.array_equal(_bits(shipped), _bits(arm(doubled)))
+
+
 def test_the_output_gate_is_taken_from_the_normalised_input():
     """`proj_gate` reads `norm_start`'s output, not the contraction's.
 
