@@ -36,6 +36,7 @@ from foldjax.models._chain_profile import chain_capacity
 from foldjax.models._compile_policy import compiler_options
 from foldjax.models._cp import (
     context_parallel,
+    cp_mesh,
     replicate_tree,
     shard_pair_rows,
 )
@@ -78,7 +79,11 @@ from foldjax.models.openfold3.models.confidence import (
     compute_ptm,
     probs_to_expected_error,
 )
-from foldjax.models.openfold3.models.denoiser import DenoiserParams, denoise
+from foldjax.models.openfold3.models.denoiser import (
+    DenoiserParams,
+    denoise,
+    prepare_atom_diffusion_cache,
+)
 from foldjax.models.openfold3.models.diffusion_conditioning import (
     DiffusionConditioningParams,
     pair_conditioning,
@@ -1634,6 +1639,40 @@ def _predict_inputs(batch, params, config):
     )
 
 
+#: Maximum atom count at which a width-1 diffusion rollout caches the
+#: precomputed encoder/decoder atom pair biases. At width >= 2 (the unchunked
+#: 5-sample rollout up to :data:`SERIAL_DIFFUSION_CHUNK_ABOVE_TOKENS`) the
+#: 24 float32 bias channels (3 encoder + 3 decoder blocks x 4 heads) are
+#: strictly smaller than the old widened ``plm`` (16 * width channels). At
+#: width 1 they add +8 float32 channels (+4 KiB/atom) over ``plm``, so above
+#: 131,072 atoms (+512 MiB net, ~1.6 GiB cache) the width-1 rollout falls back
+#: to the uncached path. The arithmetic assumes the released widths (32 x 128
+#: windows, 4 atom heads, 3 + 3 blocks, 16 atom-pair channels); it is a peak
+#: bound only for them.
+_MAX_WIDTH1_ATOM_CACHE_ATOMS = 131_072
+
+
+def _use_atom_diffusion_cache(config: InferenceConfig, *, n_atom: int) -> bool:
+    """Whether ``_predict_from_trunk`` should hoist step-invariant atom conditioning.
+
+    Context-parallel runs keep the uncached path so ``cp_atom_windows`` and
+    ``shard_pair_rows`` layouts stay untouched. Serial runs always cache at
+    sample width >= 2 (strictly smaller than widened ``plm``) and cache at
+    width 1 up to :data:`_MAX_WIDTH1_ATOM_CACHE_ATOMS`.
+    """
+    if cp_mesh() is not None:
+        return False
+    chunk = config.diffusion_chunk_size
+    effective_width = (
+        config.num_samples
+        if chunk is None or chunk >= config.num_samples
+        else chunk
+    )
+    if effective_width <= 1 and n_atom > _MAX_WIDTH1_ATOM_CACHE_ATOMS:
+        return False
+    return True
+
+
 def _predict_from_trunk(
     key, batch, params, config, representative_atoms, *, trunk_output,
     n_chain=None, noise_fn=None, noise_tape=None, noise_mask=None,
@@ -1710,6 +1749,42 @@ def _predict_from_trunk(
         n_query=config.n_query,
     )
 
+    if config.stop_after_trunk:
+        return Prediction(
+            coordinates=None,
+            plddt=None,
+            ptm=None,
+            iptm=None,
+            chain_pair_iptm=None,
+            pae_logits=None,
+            pde_logits=None,
+            distogram_logits=None,
+            single_inputs=(
+                s_input if "single_inputs" in config.returned_representations else None
+            ),
+            single=(s_trunk if "single" in config.returned_representations else None),
+            pair=z if "pair" in config.returned_representations else None,
+        )
+
+    # Hoist step-invariant atom conditioning (reference atom features, trunk
+    # s/z terms, atom pair conditioning, and encoder/decoder atom-transformer
+    # pair biases) out of the 200-step diffusion scan at natural width 1.
+    atom_cache = (
+        prepare_atom_diffusion_cache(
+            batch,
+            s_trunk,
+            zij_base,
+            params.denoiser,
+            n_query=config.n_query,
+            n_key=config.n_key,
+        )
+        if params.denoiser is not None
+        and _use_atom_diffusion_cache(
+            config, n_atom=int(batch["atom_mask"].shape[-1])
+        )
+        else None
+    )
+
     def denoise_fn(xl_noisy: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
         # The single path is the only one that reads the noise level, so it is the
         # only one that has to be rebuilt per step. It is still sample-independent:
@@ -1727,6 +1802,7 @@ def _predict_from_trunk(
             ),
             width,
         )
+        extra = {} if atom_cache is None else {"atom_cache": atom_cache}
         return denoise(
             {
                 name: (
@@ -1750,23 +1826,7 @@ def _predict_from_trunk(
             sigma_data=config.sigma_data,
             glu_backend=config.glu_backend,
             cp_atom_windows=distribute_atom_windows,
-        )
-
-    if config.stop_after_trunk:
-        return Prediction(
-            coordinates=None,
-            plddt=None,
-            ptm=None,
-            iptm=None,
-            chain_pair_iptm=None,
-            pae_logits=None,
-            pde_logits=None,
-            distogram_logits=None,
-            single_inputs=(
-                s_input if "single_inputs" in config.returned_representations else None
-            ),
-            single=(s_trunk if "single" in config.returned_representations else None),
-            pair=z if "pair" in config.returned_representations else None,
+            **extra,
         )
 
     def sample(key, noise_tape, noise_mask, schedule=schedule, x_start=None):

@@ -19,6 +19,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from foldjax.models._stacking import prestack_layer_lists
 from foldjax.models.openfold3 import inference
 from foldjax.models.openfold3.dtype import narrow_floats
 from foldjax.models.openfold3.models import atom_features, denoiser
@@ -27,8 +28,15 @@ from foldjax.models.openfold3.models.atom_features import (
     atom_attention_decoder,
     atom_attention_encoder,
 )
+from foldjax.models.openfold3.models.attention_pair_bias import (
+    cross_attention_pair_bias,
+)
 from foldjax.models.openfold3.models.augmentation import centre_random_augmentation
-from foldjax.models.openfold3.models.denoiser import denoise
+from foldjax.models.openfold3.models.denoiser import (
+    AtomDiffusionCache,
+    denoise,
+    prepare_atom_diffusion_cache,
+)
 from foldjax.models.openfold3.models.diffusion_conditioning import (
     pair_conditioning,
     single_conditioning,
@@ -39,7 +47,9 @@ from foldjax.models.openfold3.models.diffusion_schedule import (
     scale_noisy_positions,
 )
 from foldjax.models.openfold3.models.diffusion_transformer import (
+    AtomTransformerParams,
     atom_transformer,
+    atom_transformer_pair_biases,
     diffusion_transformer,
 )
 from foldjax.models.openfold3.models.primitives import layer_norm, linear
@@ -457,7 +467,13 @@ def test_sampler_rollout_matches_explicitly_widened_pair(monkeypatch) -> None:
 
     expected = jax.jit(run_widened)(batch, trunk_output)
     assert actual.shape == (num_samples, config.n_atom, 3)
-    np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
+    # Hoisting width-1 atom conditioning changes GEMM M-shapes in the atom
+    # embedder/MLP/bias projections relative to the width-3 reference (~1 ULP
+    # float32 rounding per step, ~2.6e-5 rel over 3 EDM steps at ~1e3 scale).
+    # Same-width cached vs uncached is checked bitwise below.
+    np.testing.assert_allclose(
+        np.asarray(actual), np.asarray(expected), rtol=1e-4, atol=1e-3
+    )
     assert not np.allclose(np.asarray(actual[0]), np.asarray(actual[1]))
 
 
@@ -470,4 +486,466 @@ def test_pair_rep_to_blocks_rejects_incompatible_batch_widths() -> None:
             jnp.ones((3, 8)),
             n_query=4,
             n_key=8,
+        )
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16])
+@pytest.mark.parametrize("scan_blocks", [True, False])
+@pytest.mark.parametrize("width", [1, 3])
+def test_atom_diffusion_cache_matches_uncached_bitwise_at_same_width(
+    dtype, scan_blocks: bool, width: int, monkeypatch
+) -> None:
+    """At matched leading width, cached and uncached denoise are bitwise identical."""
+    batch_w, _batch_pair1, xl, t, si, si_trunk, _zij_1, zij_w, params, kw, _ = (
+        _shared_pair_inputs(width=width, dtype=dtype, real_atoms=75)
+    )
+    if not scan_blocks:
+        monkeypatch.setattr(
+            atom_features,
+            "atom_transformer",
+            functools.partial(atom_transformer, scan_blocks=False),
+        )
+
+    out_uncached = np.asarray(
+        jax.jit(
+            lambda b, x, st, z: denoise(b, x, t, si, st, z, params, **kw)
+        )(batch_w, xl, si_trunk, zij_w)
+    )
+
+    def run_cached(b, x, st, z):
+        cache = prepare_atom_diffusion_cache(
+            b, st, z, params, n_query=kw["n_query"], n_key=kw["n_key"]
+        )
+        return denoise(b, x, t, si, st, z, params, **kw, atom_cache=cache)
+
+    out_cached = np.asarray(jax.jit(run_cached)(batch_w, xl, si_trunk, zij_w))
+
+    np.testing.assert_array_equal(out_cached, out_uncached)
+    np.testing.assert_array_equal(out_cached[:, 75:], 0.0)
+    if width > 1:
+        assert not np.allclose(out_cached[0], out_cached[1])
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16])
+@pytest.mark.parametrize("prestack", [False, True])
+def test_width_one_atom_diffusion_cache_matches_widened_uncached(
+    dtype, prestack: bool
+) -> None:
+    """Width-1 cache matches multi-sample uncached denoise to GEMM rounding."""
+    batch_w, batch_pair1, xl, t, si, si_trunk, zij_1, zij_w, params, kw, _ = (
+        _shared_pair_inputs(width=3, dtype=dtype, real_atoms=75)
+    )
+    if prestack:
+        params = prestack_layer_lists(params)
+    batch_1 = {k: v[:1] for k, v in batch_w.items()}
+    si_trunk_1 = si_trunk[:1]
+
+    cache_1 = jax.jit(
+        lambda b, st, z: prepare_atom_diffusion_cache(
+            b, st, z, params, n_query=kw["n_query"], n_key=kw["n_key"]
+        )
+    )(batch_1, si_trunk_1, zij_1)
+    assert cache_1.cl.shape[0] == 1
+    assert cache_1.enc_pair_bias.shape[1] == 1
+    assert cache_1.dec_pair_bias.shape[1] == 1
+
+    out_uncached = np.asarray(
+        jax.jit(lambda b, x, z: denoise(b, x, t, si, si_trunk, z, params, **kw))(
+            batch_w, xl, zij_w
+        )
+    )
+    run_cached = jax.jit(
+        lambda b, x, z, c: denoise(
+            b, x, t, si, si_trunk, z, params, **kw, atom_cache=c
+        )
+    )
+    # Both width-1 atom_mask (the inference.py layout) and width-3 atom_mask
+    # (direct callers passing widened batch) must match the uncached reference.
+    out_cached_p1 = np.asarray(run_cached(batch_pair1, xl, zij_1, cache_1))
+    out_cached_w = np.asarray(run_cached(batch_w, xl, zij_1, cache_1))
+
+    # Width-1 vs width-3 flattens a 3x smaller GEMM M-dimension in the atom
+    # projections (~1-2 float32 ULPs, measured <= 3e-6 abs at ~15 scale).
+    for out in (out_cached_p1, out_cached_w):
+        np.testing.assert_allclose(
+            out.astype(np.float32),
+            out_uncached.astype(np.float32),
+            rtol=1e-5,
+            atol=1e-5,
+        )
+        np.testing.assert_array_equal(out[:, 75:], 0.0)
+        assert not np.allclose(out[0], out[1])
+
+
+def test_rollout_hlo_hoists_atom_conditioning_and_supports_chunked_width1(
+    monkeypatch,
+) -> None:
+    """``plm`` dies before the scan; chunked width-1 rollout uses the cache too."""
+    from tests.models.openfold3 import atom_cp_fixtures as fx
+    from tests.models.openfold3.scripts import diffusion_chunk_cp_census as census
+
+    num_samples = 3
+    batch, trunk_output = census._batch(), census._trunk_output()
+    cond_params = census._conditioning_params(census._relpos_dims(batch))
+    denoiser_params = prestack_layer_lists(census.build_params())
+    config = census._config(devices=1, layout="1d")._replace(
+        num_samples=num_samples,
+        num_steps=3,
+        diffusion_chunk_size=None,
+        cp_atom_windows=False,
+        dtype="float32",
+        confidence_dtype="float32",
+    )
+    n_tok, pae_bins = census.N_TOKEN, census.PAE_BINS
+    stubs = {
+        "token_representative_atoms": lambda b, c, m, t: (
+            c[..., :n_tok, :],
+            jnp.ones((num_samples, n_tok)),
+        ),
+        "token_frame_atoms": lambda *a, **k: (
+            (None, None, None),
+            jnp.ones((num_samples, n_tok), dtype=jnp.bool_),
+        ),
+        "pairformer_embedding": lambda si_in, si, z, x, p, **k: (
+            si,
+            jnp.zeros((*z.shape[:-1], 3), z.dtype),
+        ),
+        "predicted_aligned_error_head": lambda z, p: jnp.zeros(
+            (*z.shape[:-1], pae_bins), z.dtype
+        ),
+        "predicted_distance_error_head": lambda z, p: jnp.zeros(
+            (*z.shape[:-1], pae_bins), z.dtype
+        ),
+        "distogram_head": lambda z, p: jnp.zeros(
+            (1, n_tok, n_tok, pae_bins), z.dtype
+        ),
+        "atom_logit_head": lambda s, p, m, *, c_out, n_atom, **k: jnp.zeros(
+            (*s.shape[:-2], n_atom, c_out), s.dtype
+        ),
+    }
+    for name, stub in stubs.items():
+        monkeypatch.setattr(inference, name, stub)
+    params = inference.InferenceParams(
+        None, cond_params, denoiser_params, None, None, None, None, None, None
+    )
+    key = jax.random.key(23)
+
+    def run(cfg):
+        fn = jax.jit(
+            lambda b, tr: inference._predict_from_trunk(
+                key, b, params, cfg, None, trunk_output=tr
+            ).coordinates
+        )
+        hlo = fn.lower(batch, trunk_output).compiler_ir(dialect="hlo").as_hlo_text()
+        return fn(batch, trunk_output), hlo
+
+    whole_coords, whole_hlo = run(config)
+    chunked_coords, chunked_hlo = run(config._replace(diffusion_chunk_size=1))
+
+    plm_wide = (
+        f"f32[{num_samples},{fx.N_BLOCKS},{fx.N_QUERY},{fx.N_KEY},{fx.C_ATOM_PAIR}]"
+    )
+    plm_one = f"f32[1,{fx.N_BLOCKS},{fx.N_QUERY},{fx.N_KEY},{fx.C_ATOM_PAIR}]"
+    bias_stack = (
+        f"f32[{fx.NO_BLOCKS},1,{fx.N_BLOCKS},{fx.ATOM_HEADS},{fx.N_QUERY},{fx.N_KEY}]"
+    )
+    for hlo, coord_width in ((whole_hlo, num_samples), (chunked_hlo, 1)):
+        assert plm_wide not in hlo
+        assert bias_stack in hlo
+        coords = f"f32[{coord_width},{fx.N_ATOM},3]"
+        # Sub-computations carrying both the noisy coordinates and the
+        # precomputed bias stack belong to the diffusion rollout scan (not
+        # ENTRY or `atom_transformer_pair_biases`'s own `lax.map`, which has no
+        # coordinates). None of those rollout scan bodies may retain `plm`.
+        scan_bodies = [
+            block
+            for block in hlo.split("\n\n")
+            if bias_stack in block
+            and coords in block
+            and not block.lstrip().startswith("ENTRY ")
+        ]
+        assert scan_bodies
+        for body in scan_bodies:
+            assert plm_one not in body
+
+    np.testing.assert_allclose(
+        np.asarray(chunked_coords),
+        np.asarray(whole_coords),
+        rtol=1e-4,
+        atol=1e-3,
+    )
+
+
+def test_use_atom_diffusion_cache_respects_cp_and_width1_atom_limit(
+    monkeypatch,
+) -> None:
+    """Cache gating covers width-1 limits, width >= 2, and active CP meshes."""
+    limit = inference._MAX_WIDTH1_ATOM_CACHE_ATOMS
+    cfg_w1 = inference.released_config(
+        n_token=8, n_atom=16, num_samples=1, diffusion_chunk_size=None
+    )
+    cfg_chunk1 = inference.released_config(
+        n_token=8, n_atom=16, num_samples=5, diffusion_chunk_size=1
+    )
+    cfg_w5 = inference.released_config(
+        n_token=8, n_atom=16, num_samples=5, diffusion_chunk_size=None
+    )
+
+    for cfg in (cfg_w1, cfg_chunk1):
+        assert inference._use_atom_diffusion_cache(cfg, n_atom=0) is True
+        assert inference._use_atom_diffusion_cache(cfg, n_atom=limit) is True
+        assert inference._use_atom_diffusion_cache(cfg, n_atom=limit + 1) is False
+
+    assert inference._use_atom_diffusion_cache(cfg_w5, n_atom=limit + 1) is True
+
+    monkeypatch.setattr(inference, "cp_mesh", lambda: object())
+    assert inference._use_atom_diffusion_cache(cfg_w5, n_atom=16) is False
+    assert inference._use_atom_diffusion_cache(cfg_w1, n_atom=16) is False
+
+
+def test_atom_cache_validation_and_edge_cases(monkeypatch) -> None:
+    """Exercise error exits and zero/one-block edges across the cache path."""
+    batch_w, _bp1, xl, t, si, si_trunk, _z1, zij_w, params, kw, _ = (
+        _shared_pair_inputs(width=1, dtype=jnp.float32, real_atoms=75)
+    )
+    enc = params.atom_attn_enc
+    dec = params.atom_attn_dec
+    n_q, n_k, heads = kw["n_query"], kw["n_key"], kw["atom_heads"]
+
+    cache = prepare_atom_diffusion_cache(
+        batch_w, si_trunk, zij_w, params, n_query=n_q, n_key=n_k
+    )
+    assert isinstance(cache, AtomDiffusionCache)
+
+    # 1-block (non-scannable) and 0-block pair-bias / transformer paths
+    cl_0 = cache.cl
+    plm_dummy = jnp.zeros((1, 24, n_q, n_k, 6), dtype=jnp.float32)
+    one_block_params = AtomTransformerParams(
+        blocks=(enc.atom_transformer.blocks[0],),
+        layer_norm_z=enc.atom_transformer.layer_norm_z,
+    )
+    pb_1 = atom_transformer_pair_biases(plm_dummy, one_block_params)
+    assert pb_1.shape == (1, 1, 24, heads, n_q, n_k)
+    np.testing.assert_array_equal(
+        np.asarray(
+            atom_transformer(
+                cl_0,
+                cl_0,
+                None,
+                one_block_params,
+                no_heads=heads,
+                n_query=n_q,
+                n_key=n_k,
+                mask=batch_w["atom_mask"],
+                pair_biases=pb_1,
+            )
+        ),
+        np.asarray(
+            atom_transformer(
+                cl_0,
+                cl_0,
+                plm_dummy,
+                one_block_params,
+                no_heads=heads,
+                n_query=n_q,
+                n_key=n_k,
+                mask=batch_w["atom_mask"],
+            )
+        ),
+    )
+
+    zero_block_params = AtomTransformerParams(
+        blocks=(), layer_norm_z=enc.atom_transformer.layer_norm_z
+    )
+    pb_0 = atom_transformer_pair_biases(plm_dummy, zero_block_params)
+    assert pb_0.shape == (0, 1, 24, 0, n_q, n_k)
+    np.testing.assert_array_equal(
+        np.asarray(
+            atom_transformer(
+                cl_0,
+                cl_0,
+                None,
+                zero_block_params,
+                no_heads=heads,
+                n_query=n_q,
+                n_key=n_k,
+                mask=batch_w["atom_mask"],
+                pair_biases=pb_0,
+            )
+        ),
+        np.asarray(cl_0),
+    )
+
+    # cross_attention_pair_bias validation
+    block_apb = enc.atom_transformer.blocks[0].attention_pair_bias
+    with pytest.raises(ValueError, match="exactly one of z or pair_bias"):
+        cross_attention_pair_bias(
+            cl_0, None, block_apb, no_heads=heads, n_query=n_q, n_key=n_k, s=cl_0
+        )
+    with pytest.raises(ValueError, match="exactly one of z or pair_bias"):
+        cross_attention_pair_bias(
+            cl_0,
+            plm_dummy,
+            block_apb,
+            no_heads=heads,
+            n_query=n_q,
+            n_key=n_k,
+            s=cl_0,
+            pair_bias=cache.enc_pair_bias[0],
+        )
+
+    # atom_transformer validation
+    with pytest.raises(ValueError, match="either z or pair_biases is required"):
+        atom_transformer(
+            cl_0,
+            cl_0,
+            None,
+            enc.atom_transformer,
+            no_heads=heads,
+            n_query=n_q,
+            n_key=n_k,
+        )
+    with pytest.raises(ValueError, match="pass either z or pair_biases, not both"):
+        atom_transformer(
+            cl_0,
+            cl_0,
+            plm_dummy,
+            enc.atom_transformer,
+            no_heads=heads,
+            n_query=n_q,
+            n_key=n_k,
+            pair_biases=cache.enc_pair_bias,
+        )
+    with pytest.raises(ValueError, match="leading block axis"):
+        atom_transformer(
+            cl_0,
+            cl_0,
+            None,
+            enc.atom_transformer,
+            no_heads=heads,
+            n_query=n_q,
+            n_key=n_k,
+            pair_biases=pb_1,
+        )
+
+    # atom_attention_encoder validation
+    with pytest.raises(ValueError, match="supplied together"):
+        atom_attention_encoder(
+            batch_w,
+            enc,
+            n_query=n_q,
+            n_key=n_k,
+            no_heads=heads,
+            n_token=kw["n_token"],
+            rl=xl,
+            cached_cl=cache.cl,
+        )
+    with pytest.raises(ValueError, match="rl is required"):
+        atom_attention_encoder(
+            batch_w,
+            enc,
+            n_query=n_q,
+            n_key=n_k,
+            no_heads=heads,
+            n_token=kw["n_token"],
+            cached_cl=cache.cl,
+            cached_pair_bias=cache.enc_pair_bias,
+        )
+    enc_no_noisy = enc._replace(noisy_position_embedder=None)
+    with pytest.raises(ValueError, match="noisy_position_embedder"):
+        atom_attention_encoder(
+            batch_w,
+            enc_no_noisy,
+            n_query=n_q,
+            n_key=n_k,
+            no_heads=heads,
+            n_token=kw["n_token"],
+            rl=xl,
+            cached_cl=cache.cl,
+            cached_pair_bias=cache.enc_pair_bias,
+        )
+    with pytest.raises(ValueError, match="noisy_position_embedder"):
+        prepare_atom_diffusion_cache(
+            batch_w,
+            si_trunk,
+            zij_w,
+            params._replace(atom_attn_enc=enc_no_noisy),
+            n_query=n_q,
+            n_key=n_k,
+        )
+
+    # atom_attention_decoder validation
+    ai_dummy = jnp.zeros((1, kw["n_token"], 8), dtype=jnp.float32)
+    with pytest.raises(ValueError, match="exactly one of plm or cached_pair_bias"):
+        atom_attention_decoder(
+            batch_w,
+            ai_dummy,
+            cl_0,
+            cl_0,
+            None,
+            dec,
+            n_query=n_q,
+            n_key=n_k,
+            no_heads=heads,
+        )
+    with pytest.raises(ValueError, match="exactly one of plm or cached_pair_bias"):
+        atom_attention_decoder(
+            batch_w,
+            ai_dummy,
+            cl_0,
+            cl_0,
+            plm_dummy,
+            dec,
+            n_query=n_q,
+            n_key=n_k,
+            no_heads=heads,
+            cached_pair_bias=cache.dec_pair_bias,
+        )
+
+    # CP refusal under active mesh
+    monkeypatch.setattr(denoiser, "cp_mesh", lambda: object())
+    monkeypatch.setattr(atom_features, "cp_mesh", lambda: object())
+    with pytest.raises(ValueError, match="context-parallel mesh"):
+        prepare_atom_diffusion_cache(
+            batch_w, si_trunk, zij_w, params, n_query=n_q, n_key=n_k
+        )
+    with pytest.raises(ValueError, match="distributed cp_atom_windows"):
+        denoise(
+            batch_w,
+            xl,
+            t,
+            si,
+            si_trunk,
+            zij_w,
+            params,
+            **kw,
+            cp_atom_windows=True,
+            atom_cache=cache,
+        )
+    with pytest.raises(ValueError, match="distributed cp_atom_windows"):
+        atom_attention_encoder(
+            batch_w,
+            enc,
+            n_query=n_q,
+            n_key=n_k,
+            no_heads=heads,
+            n_token=kw["n_token"],
+            rl=xl,
+            cp_atom_windows=True,
+            cached_cl=cache.cl,
+            cached_pair_bias=cache.enc_pair_bias,
+        )
+    with pytest.raises(ValueError, match="distributed cp_atom_windows"):
+        atom_attention_decoder(
+            batch_w,
+            ai_dummy,
+            cl_0,
+            cl_0,
+            None,
+            dec,
+            n_query=n_q,
+            n_key=n_k,
+            no_heads=heads,
+            cp_atom_windows=True,
+            cached_pair_bias=cache.dec_pair_bias,
         )

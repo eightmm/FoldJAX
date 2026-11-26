@@ -543,6 +543,18 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **OpenFold3 computes its step-invariant atom conditioning once per
+  prediction, not once per denoiser step.** On a serial run the reference atom
+  embedding, the atom-pair conditioning and the encoder and decoder atom pair
+  biases are built once at width one before the sampler and reused by every
+  step and sample. Context parallelism keeps the per-step path, and so does a
+  one-sample-wide sampler above 131,072 atoms, where the cache would outweigh
+  the per-step tensors it replaces. On one RTX PRO 6000, five samples, warm: 1,003 tokens 0.96x
+  wall and 3,012 tokens 0.98x wall, at the same peak. The width-one GEMMs
+  round differently on the GPU: per-chain CA RMSD to the deposited structures
+  moved by at most 0.003 Å and the same-index CA residual between the two
+  routes was 0.016-0.060 Å, the size by which two processes running the same
+  code already differ on this port.
 - **Boltz-2's sampler computes its single conditioning once per structure,
   not once per sample.** When every sample shares one structure's trunk
   outputs and a single noise level, the single conditioner runs at width one

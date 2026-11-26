@@ -124,6 +124,46 @@ class NoisyPositionEmbedderParams(NamedTuple):
     linear_r: LinearParams
 
 
+def noisy_position_trunk_conditioning(
+    batch: Mapping[str, jnp.ndarray],
+    cl: jnp.ndarray,
+    plm: jnp.ndarray,
+    si_trunk: jnp.ndarray,
+    zij_trunk: jnp.ndarray,
+    params: NoisyPositionEmbedderParams,
+    *,
+    n_query: int,
+    n_key: int,
+    eps: float = 1e-5,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Fold the step-invariant trunk representations into atom conditioning.
+
+    Computes the ``si_trunk`` and ``zij_trunk`` halves of
+    :func:`noisy_position_embedder` without touching the noisy coordinates
+    ``rl``.
+    """
+    single = linear(
+        layer_norm(si_trunk, params.layer_norm_s, eps=eps), params.linear_s
+    )
+    cl = cl + broadcast_token_feat_to_atoms(
+        batch["token_mask"],
+        batch["num_atoms_per_token"],
+        single,
+        n_atom=cl.shape[-2],
+        atom_to_token_index=batch["atom_to_token_index"],
+    )
+
+    pair = linear(layer_norm(zij_trunk, params.layer_norm_z, eps=eps), params.linear_z)
+    plm = plm + pair_rep_to_blocks(
+        pair,
+        batch["atom_to_token_index"],
+        batch["atom_mask"],
+        n_query=n_query,
+        n_key=n_key,
+    )
+    return cl, plm
+
+
 def noisy_position_embedder(
     batch: Mapping[str, jnp.ndarray],
     cl: jnp.ndarray,
@@ -157,26 +197,17 @@ def noisy_position_embedder(
         ``(cl, plm, ql)``. ``ql`` is the atom single representation carrying the
         noisy coordinate projection; ``cl`` deliberately does not.
     """
-    single = linear(
-        layer_norm(si_trunk, params.layer_norm_s, eps=eps), params.linear_s
-    )
-    cl = cl + broadcast_token_feat_to_atoms(
-        batch["token_mask"],
-        batch["num_atoms_per_token"],
-        single,
-        n_atom=cl.shape[-2],
-        atom_to_token_index=batch["atom_to_token_index"],
-    )
-
-    pair = linear(layer_norm(zij_trunk, params.layer_norm_z, eps=eps), params.linear_z)
-    plm = plm + pair_rep_to_blocks(
-        pair,
-        batch["atom_to_token_index"],
-        batch["atom_mask"],
+    cl, plm = noisy_position_trunk_conditioning(
+        batch,
+        cl,
+        plm,
+        si_trunk,
+        zij_trunk,
+        params,
         n_query=n_query,
         n_key=n_key,
+        eps=eps,
     )
-
     return cl, plm, cl + linear(rl, params.linear_r)
 
 
@@ -271,7 +302,9 @@ def atom_attention_encoder(
     eps: float = 1e-5,
     glu_backend: str = "xla",
     cp_atom_windows: bool = False,
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    cached_cl: jnp.ndarray | None = None,
+    cached_pair_bias: jnp.ndarray | None = None,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray | None]:
     """Run the atom attention encoder (AF3 Algorithm 5).
 
     Args:
@@ -284,8 +317,10 @@ def atom_attention_encoder(
         no_heads: atom transformer head count.
         n_token: static token count for the final aggregation.
         rl: ``[..., N_atom, 3]`` noisy positions; ``None`` on the input path.
-        si_trunk: trunk single representation, required with ``rl``.
-        zij_trunk: trunk pair representation, required with ``rl``.
+        si_trunk: trunk single representation, required with ``rl`` when
+            uncached.
+        zij_trunk: trunk pair representation, required with ``rl`` when
+            uncached.
         inf: masking constant.
         eps: layer norm epsilon.
         cp_atom_windows: split the atom graph over the context-parallel rows
@@ -293,14 +328,27 @@ def atom_attention_encoder(
             diffusion mode (``rl`` given) and only under an active mesh;
             ``False`` -- every other caller, the input embedder included --
             keeps the program it has.
+        cached_cl: optional precomputed atom single conditioning (after
+            ``ref_atom_feature_embedder`` and the ``si_trunk`` add). Must be
+            passed together with ``cached_pair_bias``.
+        cached_pair_bias: optional precomputed encoder ``atom_transformer``
+            per-block pair biases. Must be passed together with ``cached_cl``.
 
     Returns:
         ``(ai, ql, cl, plm)``: token representation, atom single representation,
-        atom single conditioning and blocked atom pair conditioning.
+        atom single conditioning and blocked atom pair conditioning (``None``
+        when ``cached_pair_bias`` is supplied).
     """
+    if (cached_cl is None) != (cached_pair_bias is None):
+        raise ValueError("cached_cl and cached_pair_bias must be supplied together")
     if cp_atom_windows and cp_mesh() is not None:
         from foldjax.models.openfold3.models.atom_cp import atom_attention_encoder_cp
 
+        if cached_cl is not None:
+            raise ValueError(
+                "cached atom conditioning is not supported with distributed "
+                "cp_atom_windows"
+            )
         if rl is None or si_trunk is None or zij_trunk is None:
             raise ValueError(
                 "a distributed atom graph is only implemented for the diffusion "
@@ -324,6 +372,42 @@ def atom_attention_encoder(
     from foldjax.models.openfold3.models.atomize import aggregate_atom_feat_to_tokens
 
     atom_mask = batch["atom_mask"]
+    if cached_cl is not None:
+        if rl is None:
+            raise ValueError(
+                "cached atom conditioning is only supported in diffusion mode "
+                "(rl is required)"
+            )
+        if params.noisy_position_embedder is None:
+            raise ValueError(
+                "rl was supplied but this encoder has no noisy_position_embedder"
+            )
+        cl = cached_cl
+        ql = cl + linear(rl, params.noisy_position_embedder.linear_r)
+        ql = atom_transformer(
+            ql,
+            cl,
+            None,
+            params.atom_transformer,
+            no_heads=no_heads,
+            n_query=n_query,
+            n_key=n_key,
+            mask=atom_mask,
+            inf=inf,
+            eps=eps,
+            glu_backend=glu_backend,
+            pair_biases=cached_pair_bias,
+        )
+        ql = ql * atom_mask[..., None]
+        ai = aggregate_atom_feat_to_tokens(
+            relu(linear(ql, params.linear_q)),
+            batch["atom_to_token_index"],
+            atom_mask,
+            n_token=n_token,
+            aggregate="mean",
+        )
+        return ai, ql, cl, None
+
     cl, plm = ref_atom_feature_embedder(
         batch, params.ref_atom_feature_embedder, n_query=n_query, n_key=n_key
     )
@@ -399,7 +483,7 @@ def atom_attention_decoder(
     ai: jnp.ndarray,
     ql: jnp.ndarray,
     cl: jnp.ndarray,
-    plm: jnp.ndarray,
+    plm: jnp.ndarray | None,
     params: AtomAttentionDecoderParams,
     *,
     n_query: int,
@@ -409,6 +493,7 @@ def atom_attention_decoder(
     eps: float = 1e-5,
     glu_backend: str = "xla",
     cp_atom_windows: bool = False,
+    cached_pair_bias: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Decode token activations back to per-atom coordinate updates.
 
@@ -419,7 +504,8 @@ def atom_attention_decoder(
         ai: ``[..., N_token, c_token]`` token representation.
         ql: ``[..., N_atom, c_atom]`` atom single representation.
         cl: ``[..., N_atom, c_atom]`` atom single conditioning.
-        plm: ``[..., N_blocks, N_query, N_key, c_atom_pair]`` pair conditioning.
+        plm: ``[..., N_blocks, N_query, N_key, c_atom_pair]`` pair conditioning,
+            or ``None`` when ``cached_pair_bias`` is supplied.
         params: mapped parameters.
         n_query: query block height.
         n_key: key window width.
@@ -429,6 +515,8 @@ def atom_attention_decoder(
 
         cp_atom_windows: keep the atom stream on the context-parallel rows;
             the coordinate update is replicated again on the way out.
+        cached_pair_bias: optional precomputed decoder ``atom_transformer``
+            per-block pair biases (mutually exclusive with ``plm``).
 
     Returns:
         ``[..., N_atom, 3]`` coordinate update.
@@ -436,6 +524,13 @@ def atom_attention_decoder(
     if cp_atom_windows and cp_mesh() is not None:
         from foldjax.models.openfold3.models.atom_cp import atom_attention_decoder_cp
 
+        if cached_pair_bias is not None:
+            raise ValueError(
+                "cached_pair_bias is not supported with distributed "
+                "cp_atom_windows"
+            )
+        if plm is None:
+            raise ValueError("plm is required for distributed cp_atom_windows")
         return atom_attention_decoder_cp(
             batch,
             ai,
@@ -451,6 +546,9 @@ def atom_attention_decoder(
             glu_backend=glu_backend,
         )
 
+    if (plm is None) == (cached_pair_bias is None):
+        raise ValueError("pass exactly one of plm or cached_pair_bias")
+
     ql = ql + broadcast_token_feat_to_atoms(
         batch["token_mask"],
         batch["num_atoms_per_token"],
@@ -459,18 +557,34 @@ def atom_attention_decoder(
         atom_to_token_index=batch.get("atom_to_token_index"),
     )
 
-    ql = atom_transformer(
-        ql,
-        cl,
-        plm,
-        params.atom_transformer,
-        no_heads=no_heads,
-        n_query=n_query,
-        n_key=n_key,
-        mask=batch["atom_mask"],
-        inf=inf,
-        eps=eps,
-        glu_backend=glu_backend,
-    )
+    if cached_pair_bias is None:
+        ql = atom_transformer(
+            ql,
+            cl,
+            plm,
+            params.atom_transformer,
+            no_heads=no_heads,
+            n_query=n_query,
+            n_key=n_key,
+            mask=batch["atom_mask"],
+            inf=inf,
+            eps=eps,
+            glu_backend=glu_backend,
+        )
+    else:
+        ql = atom_transformer(
+            ql,
+            cl,
+            None,
+            params.atom_transformer,
+            no_heads=no_heads,
+            n_query=n_query,
+            n_key=n_key,
+            mask=batch["atom_mask"],
+            inf=inf,
+            eps=eps,
+            glu_backend=glu_backend,
+            pair_biases=cached_pair_bias,
+        )
 
     return linear(layer_norm(ql, params.layer_norm, eps=eps), params.linear_q_out)
