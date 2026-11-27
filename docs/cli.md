@@ -2012,7 +2012,7 @@ them; the fused Triton kernel (`tokamax`) runs the same arithmetic and never
 materializes them. It is the default of the native
 `foldjax.models.boltz2.api.predict`, but not what an omitted option runs
 through `foldjax`: there a serial GPU run resolves to `pallas` (the Pallas
-pair-kernel default, [below](#pallas-pair-kernels-gpu-default-boltz-2-and-openfold3-both-protenix-the-multiplication)), and a context-parallel
+pair-kernel default, [below](#pallas-pair-kernels-gpu-default-boltz-2-and-openfold3-both-protenix-and-esmfold2-the-multiplication)), and a context-parallel
 run or a run off a GPU to `xla`. `--option glu_backend=tokamax` selects the
 Triton kernel; `--option glu_backend=xla` restores the unfused arithmetic
 exactly. Each gets its own compile-cache namespace.

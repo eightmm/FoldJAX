@@ -114,7 +114,7 @@ triangle multiplication and the pair transitions, and cuEquivariance triangle
 attention. `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=cueq` (or `xla`) and
 `--option glu_backend=tokamax` (or `xla`) select the released paths, and
 `--option triangle_kernel=xla` plain XLA attention
-([cli.md](cli.md#pallas-pair-kernels-gpu-default-boltz-2-and-openfold3-both-protenix-the-multiplication)).
+([cli.md](cli.md#pallas-pair-kernels-gpu-default-boltz-2-and-openfold3-both-protenix-and-esmfold2-the-multiplication)).
 Off a GPU the released kernels run. Context parallelism splits one prediction over
 several GPUs (`--option cp_devices=N`), including the atom-window diffusion
 path ([context_parallel.md](context_parallel.md)). A fitted peak-memory law
