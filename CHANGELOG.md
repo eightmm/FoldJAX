@@ -544,6 +544,19 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **OpenFold3 times reference-conformer embeds with RDKit's own timeout.**
+  Each residue's RDKit embed ran through `func_timeout`, which starts a new
+  thread per call, and handing that thread the GIL cost about one 5 ms switch
+  interval: 13.6 ms per embed against 8.3 ms called directly. The embed now
+  runs on the calling thread with `ETKDG.timeout` set to the same limit
+  rounded up to whole seconds, and an embed that times out falls through to
+  the next strategy as before; with the same seed the conformers are
+  byte-identical. RDKit checks the limit between embedding attempts, so a
+  timed-out embed returns once its current attempt ends rather than at the
+  deadline, and it no longer keeps running on an abandoned thread. Warm GPU
+  wall, four runs each: 16.08 -> 15.33 s at 250 tokens and 41.99 -> 40.89 s
+  at 1,003 tokens, equal peak; under `deterministic=on` at 1,003 tokens the
+  cold and warm outputs are byte-identical to the thread version.
 - **A3M rows are read by table rather than character by character.**
   Protenix's and OpenDDE's MSA featurization map each ASCII row through a
   byte table to residue codes and insertion counts, and the Neff statistic

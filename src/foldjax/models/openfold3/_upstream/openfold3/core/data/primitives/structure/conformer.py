@@ -13,13 +13,14 @@
 # limitations under the License.
 
 import logging
+import math
 import random
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Literal
 
 import numpy as np
-from func_timeout import FunctionTimedOut, func_timeout
+from func_timeout import FunctionTimedOut
 from rdkit import Chem, rdBase
 from rdkit.Chem import AllChem, Mol
 
@@ -83,8 +84,8 @@ def _compute_conformer(
 
     Wrapper around RDKit's EmbedMolecule, using ETKDGv3, handling hydrogen addition and
     removal, and raising an explicit ConformerGenerationError instead of returning -1.
-    A FunctionTimedOut exception is raised if conformer generation exceeds the
-    given timeout.
+    Conformer generation that exceeds the given timeout also raises
+    ConformerGenerationError.
 
     Args:
         mol:
@@ -100,7 +101,9 @@ def _compute_conformer(
             Whether to remove hydrogens from the molecule after conformer generation.
             The function automatically adds hydrogens before conformer generation.
         timeout:
-            The maximum time in seconds to allow for conformer generation.
+            The maximum time in seconds to allow for conformer generation, rounded
+            up to whole seconds. RDKit checks it between embedding attempts, so
+            an embed that runs over returns once its current attempt ends.
             Default value is 30 seconds. If None, no timeout is set.
 
     Returns:
@@ -113,8 +116,7 @@ def _compute_conformer(
         ConformerGenerationError:
             If the conformer generation fails.
 
-        FunctionTimedOut:
-            If the conformer generation exceeds the given timeout.
+            Also raised when the conformer generation exceeds the given timeout.
     """
     try:
         mol = Chem.AddHs(mol)
@@ -134,14 +136,16 @@ def _compute_conformer(
     # initialization if no seed is given, so we set a random seed here
     strategy.randomSeed = random.randint(0, 10**9)
 
+    if timeout:
+        # FoldJAX: RDKit's own timeout rather than `func_timeout`, which started a
+        # thread per embed (about 5 ms each, 5 s of a 1,000-residue protein's
+        # featurization) and could not stop the embed it gave up on. A timed-out
+        # embed returns -1 and is retried by the next strategy, as before.
+        strategy.timeout = math.ceil(timeout)
+
     # Disable overly verbose conformer generation warnings
     with rdBase.BlockLogs():
-        if timeout:
-            conf_id = func_timeout(
-                timeout=timeout, func=AllChem.EmbedMolecule, args=(mol, strategy)
-            )
-        else:
-            conf_id = AllChem.EmbedMolecule(mol, strategy)
+        conf_id = AllChem.EmbedMolecule(mol, strategy)
 
     if remove_hs:
         mol = safe_remove_all_hs(mol)
