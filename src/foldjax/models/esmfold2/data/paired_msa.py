@@ -94,8 +94,37 @@ def read_a3m(path: Path, *, expected_columns: int) -> MSA:
     return MSA(tuple(records))
 
 
+#: Deletes the ASCII characters an A3M row inserts: `.` and lowercase letters.
+_ASCII_INSERTIONS = str.maketrans("", "", "." + "abcdefghijklmnopqrstuvwxyz")
+#: Rows and characters per vectorised block, so the per-character arrays stay
+#: small whatever the row widths and insertion counts.
+_ROW_BLOCK = 1024
+_BYTE_BLOCK = 1 << 22
+
+
 def _match_columns(sequence: str) -> int:
+    if sequence.isascii():
+        return len(sequence.translate(_ASCII_INSERTIONS))
     return sum(character != "." and not character.islower() for character in sequence)
+
+
+def _ascii_tables() -> tuple[np.ndarray, np.ndarray]:
+    """Per-byte insertion flags and residue types for ASCII rows."""
+
+    insertion = np.zeros(128, dtype=bool)
+    res_type = np.full(128, MSA_GAP_TOKEN_ID, dtype=np.int64)
+    for code in range(128):
+        character = chr(code)
+        if character == "." or character.islower():
+            insertion[code] = True
+        elif character != "-":
+            res_type[code] = PROTEIN_RESIDUE_TO_RES_TYPE.get(
+                PROTEIN_1TO3.get(character.upper(), "UNK"), PROTEIN_UNK_RES_TYPE
+            )
+    return insertion, res_type
+
+
+_ASCII_INSERTION, _ASCII_RES_TYPE = _ascii_tables()
 
 
 def _taxonomy_from_header(header: str) -> int:
@@ -107,7 +136,26 @@ def _res_types_and_deletions(msa: MSA) -> tuple[np.ndarray, np.ndarray]:
     length = _match_columns(msa.entries[0].sequence)
     residues = np.full((msa.depth, length), MSA_GAP_TOKEN_ID, dtype=np.int64)
     deletions = np.zeros((msa.depth, length), dtype=np.float32)
+    ascii_rows = [
+        row for row, entry in enumerate(msa.entries) if entry.sequence.isascii()
+    ]
+    block: list[int] = []
+    block_bytes = 0
+    for row in ascii_rows:
+        size = len(msa.entries[row].sequence)
+        if block and (len(block) == _ROW_BLOCK or block_bytes + size > _BYTE_BLOCK):
+            _fill_ascii_rows(msa, block, residues, deletions)
+            block, block_bytes = [], 0
+        block.append(row)
+        block_bytes += size
+    if block:
+        _fill_ascii_rows(msa, block, residues, deletions)
+    if len(ascii_rows) == msa.depth:
+        return residues, deletions
+    ascii_set = set(ascii_rows)
     for row, entry in enumerate(msa.entries):
+        if row in ascii_set:
+            continue
         column = 0
         insertions = 0
         for character in entry.sequence:
@@ -125,6 +173,45 @@ def _res_types_and_deletions(msa: MSA) -> tuple[np.ndarray, np.ndarray]:
                 insertions = 0
             column += 1
     return residues, deletions
+
+
+def _fill_ascii_rows(
+    msa: MSA, rows: list[int], residues: np.ndarray, deletions: np.ndarray
+) -> None:
+    """`_res_types_and_deletions` for ASCII rows, one byte buffer at a time.
+
+    The same rules as the character loop: `.` and lowercase letters are
+    insertions, each match column takes the count of insertions since the
+    previous one, insertions after the last column are dropped, and columns
+    past the query's width are ignored.
+    """
+
+    sequences = [msa.entries[row].sequence for row in rows]
+    lengths = np.fromiter(map(len, sequences), dtype=np.int64, count=len(rows))
+    codes = np.frombuffer("".join(sequences).encode("ascii"), dtype=np.uint8)
+    starts = np.zeros(len(rows), dtype=np.int64)
+    np.cumsum(lengths[:-1], out=starts[1:])
+    insertion = _ASCII_INSERTION[codes]
+    positions = np.flatnonzero(~insertion)
+    if not positions.size:
+        return
+    row_of = np.searchsorted(starts, positions, side="right") - 1
+    # Each match character's column: the matches before it in its row.
+    matches_before = (
+        np.arange(positions.size) - np.searchsorted(positions, starts)[row_of]
+    )
+    insertions_before = np.zeros(codes.size + 1, dtype=np.int64)
+    np.cumsum(insertion, out=insertions_before[1:])
+    inserted = insertions_before[positions] - insertions_before[starts][row_of]
+    previous = np.empty_like(inserted)
+    previous[0] = 0
+    previous[1:] = inserted[:-1]
+    previous[matches_before == 0] = 0
+    keep = matches_before < residues.shape[1]
+    target_rows = np.asarray(rows, dtype=np.int64)[row_of[keep]]
+    columns = matches_before[keep]
+    residues[target_rows, columns] = _ASCII_RES_TYPE[codes[positions[keep]]]
+    deletions[target_rows, columns] = (inserted - previous)[keep]
 
 
 def construct_paired_msa(

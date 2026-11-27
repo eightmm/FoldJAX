@@ -557,6 +557,13 @@ unless it says so here, in its own paragraph.
   wall, four runs each: 16.08 -> 15.33 s at 250 tokens and 41.99 -> 40.89 s
   at 1,003 tokens, equal peak; under `deterministic=on` at 1,003 tokens the
   cold and warm outputs are byte-identical to the thread version.
+- **ESMFold2 reads its A3M rows through a byte table too.** The residue
+  types and deletion counts of every ASCII row are computed from one byte
+  buffer per block of rows, and match columns are counted with
+  `str.translate`, instead of a Python loop over each character; a row with a
+  non-ASCII character keeps the loop. On 3OG2's 8,808-row alignment (1,003
+  tokens) the host featurization fell from 1.59 to 0.63 s per prediction, and
+  the MSA and deletion features are byte-identical.
 - **A3M rows are read by table rather than character by character.**
   Protenix's and OpenDDE's MSA featurization map each ASCII row through a
   byte table to residue codes and insertion counts, and the Neff statistic

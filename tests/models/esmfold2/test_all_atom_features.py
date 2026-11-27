@@ -277,6 +277,70 @@ def test_all_atom_msa_keeps_unpaired_and_duplicate_query_hits(
     assert np.all(built["msa"][0, 1, 2:] != MSA_GAP_TOKEN_ID)
 
 
+def _character_loop_res_types_and_deletions(msa):
+    """The per-character A3M reading the byte-table path replaced."""
+    from foldjax.models.esmfold2.data.all_atom_constants import (
+        PROTEIN_1TO3,
+        PROTEIN_RESIDUE_TO_RES_TYPE,
+        PROTEIN_UNK_RES_TYPE,
+    )
+
+    def width(sequence):
+        return sum(c != "." and not c.islower() for c in sequence)
+
+    length = width(msa.entries[0].sequence)
+    residues = np.full((msa.depth, length), MSA_GAP_TOKEN_ID, dtype=np.int64)
+    deletions = np.zeros((msa.depth, length), dtype=np.float32)
+    for row, entry in enumerate(msa.entries):
+        column = insertions = 0
+        for character in entry.sequence:
+            if character == "." or character.islower():
+                insertions += 1
+                continue
+            if column >= length:
+                break
+            if character != "-":
+                residues[row, column] = PROTEIN_RESIDUE_TO_RES_TYPE.get(
+                    PROTEIN_1TO3.get(character.upper(), "UNK"), PROTEIN_UNK_RES_TYPE
+                )
+            if insertions:
+                deletions[row, column] = float(insertions)
+                insertions = 0
+            column += 1
+    return residues, deletions
+
+
+def test_a3m_byte_table_matches_the_character_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from foldjax.models.esmfold2.data import paired_msa
+
+    rows = [
+        "AC-DE",
+        "aaAC..-dDEe",  # insertions before, between and after the columns
+        "XBZUO",  # rare letters map through the residue table
+        "AC*0E",  # non-letters are match columns too
+        "ACDEFGH",  # longer than the query: extra columns are ignored
+        "AC",  # shorter: the rest stays gap
+        "AéCDE",  # non-ASCII keeps the character loop; `é` is an insertion
+        "",
+        "...",
+        "a" * 40 + "A" + "b" * 40 + "CDE",  # insertion-heavy: a block of its own
+    ]
+    msa = paired_msa.MSA(tuple(paired_msa.MSAEntry(">r", row) for row in rows))
+    expected = _character_loop_res_types_and_deletions(msa)
+    # Small row and byte budgets put block edges inside the alignment.
+    for row_block, byte_block in ((3, 1 << 22), (1024, 12)):
+        monkeypatch.setattr(paired_msa, "_ROW_BLOCK", row_block)
+        monkeypatch.setattr(paired_msa, "_BYTE_BLOCK", byte_block)
+        actual = paired_msa._res_types_and_deletions(msa)
+        for got, want in zip(actual, expected, strict=True):
+            assert got.dtype == want.dtype
+            np.testing.assert_array_equal(got, want)
+    widths = [paired_msa._match_columns(row) for row in rows]
+    assert widths == [5, 5, 5, 5, 7, 2, 4, 0, 0, 4]
+
+
 def test_all_atom_entity_identity_is_the_sequence_and_symmetry_is_global(
     fake_ccd,
 ) -> None:
