@@ -6,6 +6,11 @@ import numpy as np
 import pytest
 
 from foldjax.models.protenix.data.featurize_json import (
+    MSA_PROTEIN_INDEX,
+    MSA_RNA_INDEX,
+    _aligned_protein_row,
+    _aligned_rna_row,
+    _aligned_row_loop,
     _group_indices_by_id,
     _group_indices_by_unique_id,
     _msa_profile,
@@ -929,3 +934,39 @@ def test_compact_relative_position_storage_rebuilds_exact_int8_feature() -> None
     np.testing.assert_array_equal(relp[..., 133:].sum(-1), np.ones((n, n), np.int8))
     assert all(storage[name].shape == (n, n) for name in COMPACT_RELP_COMPONENTS)
     assert sum(storage[name].nbytes for name in COMPACT_RELP_COMPONENTS) == 4 * n * n
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        "",
+        "...",
+        "abc",
+        "..abACD.e",
+        "ACD-..xyz",
+        "ACDB-.UZOX",
+        "acgu.ACGU-N",
+        "AC*D",
+        "ACD1",
+        "AÄCD",
+        "aéCD",
+        "".join(map(chr, range(128))),
+    ],
+)
+def test_aligned_rows_match_the_character_loop(row):
+    """The ASCII table reproduces the loop, its first error included."""
+
+    def outcome(function):
+        try:
+            return function()
+        except ValueError as error:
+            return str(error)
+
+    for aligned, index, upper, what in (
+        (_aligned_protein_row, MSA_PROTEIN_INDEX, True, "MSA residue"),
+        (_aligned_rna_row, MSA_RNA_INDEX, False, "RNA MSA residue"),
+    ):
+        expected = outcome(
+            lambda: _aligned_row_loop(row, index, upper=upper, what=what)
+        )
+        assert outcome(lambda: aligned(row)) == expected

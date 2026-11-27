@@ -15,7 +15,7 @@ import string
 import tempfile
 import warnings
 from collections import OrderedDict
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -3302,7 +3302,9 @@ def _parse_a3m_records(a3m: str) -> tuple[list[str], list[str]]:
     return sequences, descriptions
 
 
-def _aligned_protein_row(sequence: str) -> tuple[list[int], list[int]]:
+def _aligned_row_loop(
+    sequence: str, index: Mapping[str, int], *, upper: bool, what: str
+) -> tuple[list[int], list[int]]:
     row: list[int] = []
     deletion: list[int] = []
     pending_insertions = 0
@@ -3310,29 +3312,70 @@ def _aligned_protein_row(sequence: str) -> tuple[list[int], list[int]]:
         if char.islower() or char == ".":
             pending_insertions += 1
             continue
-        upper = char.upper()
-        if upper not in MSA_PROTEIN_INDEX:
-            raise ValueError(f"unsupported MSA residue: {char}")
-        row.append(MSA_PROTEIN_INDEX[upper])
+        symbol = char.upper() if upper else char
+        if symbol not in index:
+            raise ValueError(f"unsupported {what}: {char}")
+        row.append(index[symbol])
         deletion.append(pending_insertions)
         pending_insertions = 0
     return row, deletion
+
+
+def _ascii_row_table(index: Mapping[str, int], *, upper: bool) -> np.ndarray:
+    # ASCII byte -> residue index; -1 an insertion (lower case or "."), -2 a
+    # byte the alphabet does not have.
+    table = np.full(128, -2, dtype=np.int64)
+    for code in range(128):
+        char = chr(code)
+        symbol = char.upper() if upper else char
+        if char.islower() or char == ".":
+            table[code] = -1
+        elif symbol in index:
+            table[code] = index[symbol]
+    return table
+
+
+_PROTEIN_ROW_TABLE = _ascii_row_table(MSA_PROTEIN_INDEX, upper=True)
+_RNA_ROW_TABLE = _ascii_row_table(MSA_RNA_INDEX, upper=False)
+
+
+def _aligned_row(
+    sequence: str,
+    table: np.ndarray,
+    index: Mapping[str, int],
+    *,
+    upper: bool,
+    what: str,
+) -> tuple[list[int], list[int]]:
+    """Residue codes of `sequence`'s match columns, and the insertions before each.
+
+    One A3M row at a time, as the character loop it replaces: a deep alignment
+    spent most of its featurization time in that loop (8,808 rows of 1,085
+    characters). Non-ASCII rows keep the loop, so `str.islower` and
+    `str.upper` keep deciding them.
+    """
+    if not sequence.isascii():
+        return _aligned_row_loop(sequence, index, upper=upper, what=what)
+    codes = table[np.frombuffer(sequence.encode("ascii"), dtype=np.uint8)]
+    unsupported = np.flatnonzero(codes == -2)
+    if unsupported.size:
+        raise ValueError(f"unsupported {what}: {sequence[int(unsupported[0])]}")
+    kept = np.flatnonzero(codes >= 0)
+    # Insertions before each kept column: the gap to the previous kept column.
+    deletion = np.diff(kept, prepend=-1) - 1
+    return codes[kept].tolist(), deletion.tolist()
+
+
+def _aligned_protein_row(sequence: str) -> tuple[list[int], list[int]]:
+    return _aligned_row(
+        sequence, _PROTEIN_ROW_TABLE, MSA_PROTEIN_INDEX, upper=True, what="MSA residue"
+    )
 
 
 def _aligned_rna_row(sequence: str) -> tuple[list[int], list[int]]:
-    row: list[int] = []
-    deletion: list[int] = []
-    pending_insertions = 0
-    for char in sequence:
-        if char.islower() or char == ".":
-            pending_insertions += 1
-            continue
-        if char not in MSA_RNA_INDEX:
-            raise ValueError(f"unsupported RNA MSA residue: {char}")
-        row.append(MSA_RNA_INDEX[char])
-        deletion.append(pending_insertions)
-        pending_insertions = 0
-    return row, deletion
+    return _aligned_row(
+        sequence, _RNA_ROW_TABLE, MSA_RNA_INDEX, upper=False, what="RNA MSA residue"
+    )
 
 
 def _normalize_sequence(sequence: Any) -> str:

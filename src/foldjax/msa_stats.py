@@ -46,7 +46,17 @@ _BLOCK = 2048
 _ALPHABET = 27
 
 
+#: Deletes every ASCII character `_match_columns` drops, for its fast path.
+_ASCII_NON_MATCH = str.maketrans(
+    "",
+    "",
+    "".join(chr(b) for b in range(128) if not (chr(b).isupper() or chr(b) == "-")),
+)
+
+
 def _match_columns(row: str) -> str:
+    if row.isascii():
+        return row.translate(_ASCII_NON_MATCH)
     return "".join(c for c in row if c.isupper() or c == "-")
 
 

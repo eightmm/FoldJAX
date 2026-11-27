@@ -543,6 +543,13 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **A3M rows are read by table rather than character by character.**
+  Protenix's and OpenDDE's MSA featurization map each ASCII row through a
+  byte table to residue codes and insertion counts, and the Neff statistic
+  strips insertions with `str.translate`; non-ASCII rows keep the character
+  loop. On 3OG2's 8,808-row alignment (1,003 tokens) the row parse fell from
+  0.92 s to 0.30 s and the match-column pass from 0.25 s to 0.02 s on one CPU
+  core, with identical codes, insertion counts, errors and Neff.
 - **Protenix computes its diffusion-transformer pair bias once per
   prediction, not once per denoiser step.** With efficient fusion on, a serial
   run without guidance builds every block's token pair bias once before the

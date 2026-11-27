@@ -388,6 +388,17 @@ def test_neff_counts_clusters_at_eighty_percent_identity():
     assert (value, used) == (pytest.approx(1.0), 2)
 
 
+def test_match_columns_fast_path_keeps_the_character_rule():
+    """ASCII rows go through `str.translate`; the rule is still per character."""
+    from foldjax.msa_stats import _match_columns
+
+    rows = ["", "...", "ab.AC-DE.fg", "AC*1?Z-", "".join(map(chr, range(128))), "ÄBc-é"]
+    for row in rows:
+        assert _match_columns(row) == "".join(
+            c for c in row if c.isupper() or c == "-"
+        )
+
+
 def test_alignment_stats_reach_manifest_show_and_rows(tmp_path: Path):
     from foldjax.msa_stats import alignment_stats, job_msa_stats
 
