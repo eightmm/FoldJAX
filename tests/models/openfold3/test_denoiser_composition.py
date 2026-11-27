@@ -1109,7 +1109,11 @@ def test_denoiser_and_rollout_keep_single_one_sample_wide(monkeypatch) -> None:
         )
 
     expected = np.asarray(jax.jit(widened_rollout)(batch, trunk_out))
-    np.testing.assert_array_equal(actual, expected)
+    # Bitwise on the development host. A hosted CPU runner picks its GEMM
+    # kernel by the M extent, as `_assert_width_invariant` notes, and over the
+    # three-step rollout that moved 126 of 1,440 coordinates by up to 8.8e-6
+    # relative (2.4e-4 at |x| ~ 600; push CI run 45995632806).
+    np.testing.assert_allclose(actual, expected, rtol=3e-5, atol=1e-5)
     assert not np.allclose(actual[0], actual[1])
 
 
