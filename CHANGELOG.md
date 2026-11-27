@@ -557,6 +557,16 @@ unless it says so here, in its own paragraph.
   wall, four runs each: 16.08 -> 15.33 s at 250 tokens and 41.99 -> 40.89 s
   at 1,003 tokens, equal peak; under `deterministic=on` at 1,003 tokens the
   cold and warm outputs are byte-identical to the thread version.
+- **Boltz-2 reads its A3M rows through a byte table as well.** Blocks of
+  ASCII rows are mapped to residue types and deletion runs from one byte
+  buffer instead of a Python loop over each character; a row with a
+  non-ASCII character keeps the loop, and a value outside an `int16` field
+  still raises the `OverflowError` it did, after the whole file as before.
+  On 3OG2's 8,808-row alignment (1,003 tokens) `parse_a3m` fell from 0.89 to
+  0.16 s and Boltz-2's featurization from 2.61 to 1.92 s on one CPU, with
+  every feature byte-identical; the parse's traced peak fell from 83.5 to
+  42.6 MiB, since residue types are held as one byte each rather than a
+  Python list.
 - **ESMFold2 reads its A3M rows through a byte table too.** The residue
   types and deletion counts of every ASCII row are computed from one byte
   buffer per block of rows, and match columns are counted with
