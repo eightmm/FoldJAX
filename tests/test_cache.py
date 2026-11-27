@@ -1082,7 +1082,7 @@ def test_openfold3_triangle_kernel_changes_the_cache_namespace(tmp_path: Path) -
 
 
 def test_openfold3_cache_profile_names_every_static_runtime_route(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     backend = OpenFold3Backend()
     # Exact shapes, so the padded namespace below is the one that differs.
@@ -1129,6 +1129,30 @@ def test_openfold3_cache_profile_names_every_static_runtime_route(
     assert resolve_cache_dir(two_omitted, backend) == resolve_cache_dir(
         two_rows, backend
     )
+
+    # Diffusion attention: tokamax is its own serial namespace, whether a GPU's
+    # default or the variable's, and a mesh runs and names xla either way.
+    from foldjax import _openfold3_compile
+    from foldjax.models import _pallas_pair
+
+    env = _openfold3_compile.DIFFUSION_ATTENTION_BACKEND_ENV
+    monkeypatch.delenv(env, raising=False)
+    assert "diffusion_attention_backend" not in serial
+    xla_dirs = (resolve_cache_dir(request, backend), resolve_cache_dir(rows, backend))
+    for spelled in (True, False):
+        with monkeypatch.context() as mp:
+            if spelled:
+                mp.setenv(env, "tokamax")
+            else:
+                mp.setattr(_pallas_pair, "gpu_process", lambda: True)
+            profile = backend.cache_profile(request)
+            assert profile["diffusion_attention_backend"] == "tokamax"
+            assert resolve_cache_dir(request, backend) != xla_dirs[0]
+            assert "diffusion_attention_backend" not in backend.cache_profile(rows)
+            if spelled:
+                assert resolve_cache_dir(rows, backend) == xla_dirs[1]
+    monkeypatch.setenv(env, "xla")
+    assert resolve_cache_dir(request, backend) == xla_dirs[0]
 
     represented = dataclasses.replace(request, representations=("pair",))
     trunk = dataclasses.replace(represented, stop_after="trunk")

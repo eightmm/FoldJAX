@@ -615,6 +615,16 @@ unless it says so here, in its own paragraph.
   returned. On one RTX PRO 6000, five samples, warm: peak 3,668 -> 3,412 MiB at
   1,003 tokens and 13,432 -> 12,136 MiB at 2,096 tokens, wall unchanged;
   coordinates were bit-identical under `deterministic=on`.
+- **OpenFold3 runs its diffusion token attention on tokamax by default on a
+  serial GPU.** The 24 diffusion-transformer blocks' pair-biased attention
+  now runs tokamax's fused kernel on a single GPU process and keeps XLA on
+  CPU, TPU and context-parallel runs; `OPENFOLD3_DIFFUSION_ATTENTION_BACKEND=xla`
+  restores the previous route (and `tokamax` names the kernel explicitly). The
+  compile-cache namespace records the realised kernel. On one RTX PRO 6000,
+  five samples, warm: 1,003 tokens 0.93x wall and 3,012 tokens 0.91x wall,
+  both at the same peak; per-chain CA RMSD to the deposited structures was
+  equal within 0.002 Å, and the same-index CA residual between the two
+  routes was 0.016-0.032 Å.
 - **OpenDDE runs its diffusion attention on tokamax
   (`diffusion_attention_backend=tokamax`) by default on a serial GPU.** An
   omitted option now realises `tokamax` on a single unguided GPU process and

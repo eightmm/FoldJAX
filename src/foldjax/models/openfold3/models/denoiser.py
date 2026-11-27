@@ -31,6 +31,7 @@ from foldjax.models.openfold3.models.atom_features import (
     noisy_position_trunk_conditioning,
     ref_atom_feature_embedder,
 )
+from foldjax.models.openfold3.models.attention import validate_attention_backend
 from foldjax.models.openfold3.models.diffusion_schedule import (
     combine_denoiser_output,
     scale_noisy_positions,
@@ -172,6 +173,7 @@ def denoise(
     mask_transition: bool = True,
     eps: float = 1e-5,
     glu_backend: str = "xla",
+    attention_backend: str = "xla",
     cp_atom_windows: bool = False,
     atom_cache: AtomDiffusionCache | None = None,
 ) -> jnp.ndarray:
@@ -200,6 +202,10 @@ def denoise(
         inf: masking constant.
         mask_transition: upstream's ``_mask_trans``.
         eps: layer norm epsilon.
+        glu_backend: SwiGLU transition backend.
+        attention_backend: ``"xla"`` (default) or ``"tokamax"`` for the
+            diffusion token transformer's self-attention only. Context-parallel
+            meshes and the atom encoder/decoder always keep ``"xla"``.
         cp_atom_windows: split the diffusion atom graph over the
             context-parallel rows. Ignored without a mesh; the caller resolves
             the request against the shapes once, outside the rollout (see
@@ -214,7 +220,10 @@ def denoise(
     Returns:
         ``[..., N_atom, 3]`` denoised coordinates.
     """
-    distributed = bool(cp_atom_windows) and cp_mesh() is not None
+    validate_attention_backend(attention_backend)
+    mesh = cp_mesh()
+    distributed = bool(cp_atom_windows) and mesh is not None
+    attn_backend = "xla" if mesh is not None else attention_backend
     if atom_cache is not None and distributed:
         raise ValueError(
             "atom_cache is not supported with distributed cp_atom_windows"
@@ -282,6 +291,7 @@ def denoise(
         mask_transition=mask_transition,
         eps=eps,
         glu_backend=glu_backend,
+        attention_backend=attn_backend,
     )
     ai = layer_norm(ai, params.layer_norm_a, eps=eps)
     if distributed:

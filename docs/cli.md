@@ -160,8 +160,8 @@ name>`, resumes and fails per job, and `plan`, `foldjax_run.json` and
 `--resume` skips a run only when its finished `foldjax_run.json` matches the
 exact request, input, checkpoint and referenced-local-asset stat/tree
 identities, the device platform it ran on (CPU or GPU: an omitted option such
-as ESMFold2's triangle kernel or OpenDDE's diffusion attention resolves by
-device), and the persisted structure/representation artifacts. Any relevant
+as ESMFold2's triangle kernel or OpenDDE's and OpenFold3's diffusion
+attention resolves by device), and the persisted structure/representation artifacts. Any relevant
 metadata or directory-tree change triggers a conservative rerun; FoldJAX does
 not reread large checkpoint or asset payloads merely to write or check a
 manifest. Checkpoint trees containing symlinks or special entries are likewise
@@ -1782,6 +1782,17 @@ processes show against each other (OpenDDE compiles with
 refused, because the eager guided sampler would recompile the kernel on every
 call.
 
+OpenFold3 runs it in its diffusion token transformer, where each of the 24
+blocks attends over tokens with the conditioned pair as its bias: on a serial
+GPU process that is the default, and `xla` stays the route off a GPU and under
+context parallelism, where the variable is not read. There is no option key;
+`OPENFOLD3_DIFFUSION_ATTENTION_BACKEND=xla` restores the XLA route on a serial
+GPU and `tokamax` names the kernel explicitly. The atom attentions and the
+trunk keep their own kernels. On one RTX PRO 6000 the warm prediction went
+from 45.5 to 42.5 s at 1,003 tokens and from 323.2 to 294.3 s at 3,012, at
+unchanged peak memory, with per-chain CA RMSD to the deposited structures
+equal within 0.002 Å.
+
 ### The 2-D ring's tile kernel (`--option triangle_attention_ring_kernel`)
 
 Offered on Boltz-2 and Protenix, and it names the body each step of the
@@ -2171,6 +2182,7 @@ What an omitted setting runs, and how to name either side:
 | pair transitions | Protenix | `xla` (released) | `xla` | released already; `--option glu_backend=pallas` opts in |
 | pair transitions | OpenFold3 | `glu_backend=pallas` | `xla` | `--option glu_backend=xla` |
 | diffusion attention | OpenDDE | `tokamax` (serial) | `xla_jit` | `--option diffusion_attention_backend=xla_jit` |
+| diffusion token attention | OpenFold3 | `tokamax` (serial) | `xla` | `OPENFOLD3_DIFFUSION_ATTENTION_BACKEND=xla` |
 | diffusion pair bias | OpenDDE | once per prediction (serial, unguided) | every step | `--option diffusion_pair_bias_cache=false` |
 
 `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=pallas`,
@@ -2202,7 +2214,8 @@ Where each default is decided:
 - **ESMFold2:** unchanged; it refuses `glu_backend=pallas`.
 
 What gets recorded is what ran. The compile-cache namespace writes the
-realized `glu_backend` and OpenFold3's realized `triangle_kernel`, and
+realized `glu_backend`, OpenFold3's realized `triangle_kernel` and its
+diffusion token attention when that is `tokamax`, and
 Boltz-2's retained-runner identity writes the realized multiplication. An
 omitted option on a GPU therefore shares the namespace of an explicit
 `pallas`, which the opt-in runs already warmed. An explicit released value
@@ -2213,7 +2226,13 @@ The run manifests of all three ports record `models/_pallas_pair.py` and
 `models/_glu.py` as implementation sources (Protenix's released transition
 runs through the latter), so a result from before the flip does not resume.
 `foldjax_run.json` records the options as spelled, not the realized backends;
-there is no field for them yet.
+there is no field for them yet. An omitted option still resumes correctly,
+because it resolves by the device platform the manifest does compare, but a
+kernel switched only through one of these variables
+(`BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND`,
+`PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND`, `OPENFOLD3_TRIANGLE_BACKEND`,
+`OPENFOLD3_DIFFUSION_ATTENTION_BACKEND`) is not part of what `--resume`
+matches: write to a fresh output directory when comparing kernels.
 
 The multiplication is split in two parts. One kernel applies the LayerNorm,
 projections, gate and mask. cuBLAS does the triangle contraction, and a second

@@ -90,6 +90,43 @@ def resolve_triangle_kernel(value: str | None, *, cp_shards: int) -> str:
         return str(selected).lower()
 
 
+DIFFUSION_ATTENTION_BACKEND_ENV = "OPENFOLD3_DIFFUSION_ATTENTION_BACKEND"
+
+#: `models.attention.ATTENTION_BACKENDS`, spelled here so naming a cache
+#: namespace stays JAX-free; a test pins the two together.
+DIFFUSION_ATTENTION_BACKENDS = ("xla", "tokamax")
+
+
+def resolve_diffusion_attention_backend(cp_shards: int) -> str:
+    """The diffusion token attention one OpenFold3 run traces.
+
+    ``tokamax`` on a serial GPU process, measured against ``xla`` as whole
+    predictions on one RTX PRO 6000: warm wall 45.49 -> 42.46 s at 1,003
+    tokens and 323.17 -> 294.34 s at 3,012, peak unchanged, per-chain CA RMSD
+    to the deposited structures equal within 0.002 A. ``xla`` off a GPU, so
+    CPU parity keeps its program, and under context parallelism, where the
+    fused kernel has no ``shard_map`` wrapper; a mesh ignores the variable.
+    ``OPENFOLD3_DIFFUSION_ATTENTION_BACKEND`` (``xla`` or ``tokamax``)
+    overrides a serial run. ``cache_profile`` and the compiled-graph
+    identities record the value returned.
+    """
+
+    if cp_shards > 1:
+        return "xla"
+    raw = os.environ.get(DIFFUSION_ATTENTION_BACKEND_ENV)
+    if raw is None:
+        from foldjax.models._pallas_pair import gpu_process
+
+        return "tokamax" if gpu_process() else "xla"
+    backend = raw.lower()
+    if backend not in DIFFUSION_ATTENTION_BACKENDS:
+        raise ValueError(
+            f"unsupported {DIFFUSION_ATTENTION_BACKEND_ENV}={raw!r}; "
+            "expected 'xla' or 'tokamax'"
+        )
+    return backend
+
+
 def _serial_default_kernel() -> str:
     """The serial kernel an omitted choice realises in this process.
 

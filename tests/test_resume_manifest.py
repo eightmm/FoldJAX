@@ -450,6 +450,8 @@ def test_legacy_ffi_precision_result_is_not_reused(tmp_path: Path, model: str):
         # GLU still runs through `_glu.py`.
         ("protenix", "/models/_pallas_pair.py"),
         ("protenix", "/models/_glu.py"),
+        # OpenFold3's serial-GPU diffusion token attention runs tokamax.
+        ("openfold3", "/models/protenix/models/primitives/attention_tokamax.py"),
     ],
 )
 def test_result_from_before_the_pallas_default_is_not_reused(

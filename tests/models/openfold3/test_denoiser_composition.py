@@ -1111,3 +1111,172 @@ def test_denoiser_and_rollout_keep_single_one_sample_wide(monkeypatch) -> None:
     expected = np.asarray(jax.jit(widened_rollout)(batch, trunk_out))
     np.testing.assert_array_equal(actual, expected)
     assert not np.allclose(actual[0], actual[1])
+
+
+def test_diffusion_attention_tokamax_switch_and_wiring(monkeypatch) -> None:
+    """Env switch keeps unset HLO identical, validates, yields to CP, and matches."""
+    import warnings
+    from types import SimpleNamespace
+
+    from foldjax.models.openfold3.models import attention as attn_mod
+    from foldjax.models.openfold3.models import attention_pair_bias as apb_mod
+    from foldjax.models.openfold3.models.diffusion_transformer import (
+        DiffusionTransformerParams,
+    )
+    from foldjax.models.protenix.models.primitives import attention_tokamax
+
+    bw, bp1, xl, t, si, si_t, z1, _, params, kw, _ = _shared_pair_inputs(
+        3, real_atoms=75
+    )
+    from foldjax import _openfold3_compile as compile_mod
+    from foldjax.models import _pallas_pair
+
+    env, h = compile_mod.DIFFUSION_ATTENTION_BACKEND_ENV, kw["token_heads"]
+    resolve = compile_mod.resolve_diffusion_attention_backend
+    assert compile_mod.DIFFUSION_ATTENTION_BACKENDS == attn_mod.ATTENTION_BACKENDS
+    monkeypatch.delenv(env, raising=False)
+    # Omitted: tokamax on a serial GPU process only.
+    assert resolve(1) == "xla"
+    with monkeypatch.context() as mp:
+        mp.setattr(_pallas_pair, "gpu_process", lambda: True)
+        assert (resolve(1), resolve(2)) == ("tokamax", "xla")
+    for raw, want in (("xla", "xla"), ("XLA", "xla"), ("TOKAMAX", "tokamax")):
+        monkeypatch.setenv(env, raw)
+        assert (resolve(1), resolve(2)) == (want, "xla")
+    for bad in ("", "triton"):
+        monkeypatch.setenv(env, bad)
+        with pytest.raises(ValueError, match=env):
+            resolve(1)
+        # A mesh never reads the variable, on any entry point.
+        assert resolve(2) == "xla"
+    monkeypatch.delenv(env, raising=False)
+
+    def lower(ex):
+        fn = jax.jit(lambda b, x, z: denoise(b, x, t, si, si_t, z, params, **kw, **ex))
+        return fn.lower(bp1, xl, z1).compiler_ir(dialect="hlo").as_hlo_text()
+
+    assert lower({}) == lower({"attention_backend": "xla"})
+
+    dt0 = DiffusionTransformerParams((), params.diffusion_transformer.layer_norm_z)
+    apb_p = params.diffusion_transformer.blocks[0].attention_pair_bias
+    for call, pat in (
+        (lambda: denoise(bp1, xl, t, si, si_t, z1, params, **kw, attention_backend="x"),
+         "unsupported"),
+        (lambda: diffusion_transformer(si, si, z1, dt0, no_heads=h,
+                                       attention_backend="x"), "unsupported"),
+        (lambda: attn_mod.attention(si, si, apb_p.mha, no_heads=h,
+                                    mask=jnp.ones((3, 1, 1, 12), bool)), "boolean"),
+        (lambda: attn_mod.attention(si, si, apb_p.mha, no_heads=h, biases=(z1, z1),
+                                    backend="tokamax"), "at most"),
+        (lambda: attn_mod.attention(si, si, apb_p.mha, no_heads=h, high_precision=True,
+                                    backend="tokamax"), "high_precision"),
+    ):
+        with pytest.raises(ValueError, match=pat):
+            call()
+
+    # Masked tokens (samples 0..1) + fully masked sample 2 + width-1 pair bias.
+    tm = jnp.array([[1.0] * 9 + [0.0] * 3] * 2 + [[0.0] * 12], jnp.float32)
+    bp_m = {**bp1, "token_mask": tm}
+    calls: list[tuple[int, ...]] = []
+
+    def ref_dpa(q, k, v, *, bias=None, mask=None, scale=1.0, implementation=None):
+        assert q.dtype == k.dtype == v.dtype == jnp.float32 and scale == 1.0
+        assert bias is not None and bias.shape[0] == 1
+        assert mask is None or mask.dtype == jnp.bool_
+        calls.append(bias.shape)
+        logits = jnp.einsum("...qhd,...khd->...hqk", q, k) * scale + bias
+        logits = logits if mask is None else jnp.where(mask, logits, -jnp.inf)
+        return jnp.einsum("...hqk,...khd->...qhd", jax.nn.softmax(logits, axis=-1), v)
+
+    monkeypatch.setattr(attention_tokamax, "_TOKAMAX_AVAILABLE", True)
+    monkeypatch.setattr(attention_tokamax, "_WARNED_FLOAT32", False)
+    monkeypatch.setattr(
+        attention_tokamax, "tokamax", SimpleNamespace(dot_product_attention=ref_dpa)
+    )
+    out_xla = np.asarray(
+        jax.jit(lambda b, x, z: denoise(b, x, t, si, si_t, z, params, **kw))(
+            bp_m, xl, z1
+        )
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out_tok = np.asarray(
+            jax.jit(
+                lambda b, x, z: denoise(
+                    b, x, t, si, si_t, z, params, **kw, attention_backend="tokamax"
+                )
+            )(bp_m, xl, z1)
+        )
+    assert not any(issubclass(w.category, UserWarning) for w in caught)
+    assert len(calls) == 1 and np.isfinite(out_tok).all()
+    np.testing.assert_allclose(out_tok[:2], out_xla[:2], rtol=1e-5, atol=1e-5)
+    np.testing.assert_array_equal(out_tok[:, 75:], 0.0)
+    apb = lambda bk: np.asarray(  # noqa: E731
+        apb_mod.ada_attention_pair_bias(
+            si, si, z1, apb_p, no_heads=h, attention_backend=bk
+        )
+    )
+    np.testing.assert_allclose(apb("tokamax"), apb("xla"), rtol=1e-5, atol=1e-5)
+
+    # Env var propagates from _predict_from_trunk; unavailable & CP behave as required.
+    seen: list[str] = []
+    monkeypatch.setenv(env, "tokamax")
+    with monkeypatch.context() as mp:
+        def spy_denoise(*a, attention_backend="xla", **k):
+            seen.append(attention_backend)
+            return a[1]
+
+        mp.setattr(inference, "denoise", spy_denoise)
+        for name, fn in (
+            ("prepare_atom_diffusion_cache", lambda *a, **k: None),
+            ("pair_conditioning", lambda *a, **k: z1),
+            ("single_conditioning", lambda *a, **k: si[:1]),
+            ("sample_diffusion", lambda k, s, sh, f, **kw: f(xl[:1], t)),
+            ("distogram_head", lambda *a, **k: (_ for _ in ()).throw(StopIteration)),
+        ):
+            mp.setattr(inference, name, fn)
+        cfg = inference.released_config(
+            **{"n_" + "token": kw["n_token"]},
+            n_atom=xl.shape[1],
+            num_samples=1,
+            num_steps=1,
+        )
+        ip = inference.InferenceParams(
+            None, None, params, None, None, None, None, None, None
+        )
+        def trace() -> None:
+            with pytest.raises(StopIteration):
+                inference._predict_from_trunk(
+                    jax.random.key(0), {k: v[:1] for k, v in bw.items()}, ip, cfg,
+                    None, trunk_output=(si[:1], si_t[:1], z1),
+                )
+
+        trace()
+        # A pooled or streamed trace uses the value its key was built from,
+        # whatever the variable says by then.
+        with inference.diffusion_attention_backend("xla"):
+            trace()
+        # A direct call under a mesh resolves as the pooled paths do.
+        mp.setenv(env, "triton")
+        mp.setattr(inference, "cp_mesh", lambda: object())
+        trace()
+    assert seen == ["tokamax", "xla", "xla"]
+    with pytest.raises(ValueError, match="unsupported"):
+        with inference.diffusion_attention_backend("triton"):
+            pass
+
+    monkeypatch.setattr(attention_tokamax, "_TOKAMAX_AVAILABLE", False)
+    monkeypatch.setattr(attention_tokamax, "_IMPORT_ERROR", ImportError("missing"))
+    with pytest.raises(RuntimeError, match="needs the tokamax package"):
+        denoise(bp1, xl, t, si, si_t, z1, params, **kw, attention_backend="tokamax")
+
+    for mod in (denoiser, apb_mod, inference):
+        monkeypatch.setattr(mod, "cp_mesh", lambda: object())
+    monkeypatch.setattr(
+        attention_tokamax, "tokamax_attention", lambda *a, **k: pytest.fail("CP")
+    )
+    assert np.isfinite(
+        np.asarray(
+            denoise(bp1, xl, t, si, si_t, z1, params, **kw, attention_backend="tokamax")
+        )
+    ).all()

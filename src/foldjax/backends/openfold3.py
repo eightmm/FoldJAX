@@ -25,6 +25,7 @@ import numpy as np
 
 from foldjax import confidence_arrays, memory_policy
 from foldjax._openfold3_compile import (
+    resolve_diffusion_attention_backend,
     resolve_triangle_kernel,
 )
 from foldjax._openfold3_compile import (
@@ -636,6 +637,12 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         profile["triangle_kernel"] = resolve_triangle_kernel(
             options.get("triangle_kernel"), cp_shards=cp_shards
         )
+        # The diffusion token attention the trace realises: `tokamax`, a serial
+        # GPU's default (or the variable's), is its own program and recorded;
+        # the released `xla` keeps the namespace it always had.
+        diffusion_attention = resolve_diffusion_attention_backend(cp_shards)
+        if diffusion_attention != "xla":
+            profile["diffusion_attention_backend"] = diffusion_attention
         # `ring` is what an omitted option runs, so spelling it names the
         # namespace omitting it names; `gather` is its own program. What
         # `gather` realises locally is a function of the platform the runtime

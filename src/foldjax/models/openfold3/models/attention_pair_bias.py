@@ -14,7 +14,12 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
-from foldjax.models.openfold3.models.attention import AttentionParams, attention
+from foldjax.models._cp import cp_mesh
+from foldjax.models.openfold3.models.attention import (
+    AttentionParams,
+    attention,
+    validate_attention_backend,
+)
 from foldjax.models.openfold3.models.primitives import (
     AdaLNParams,
     LayerNormParams,
@@ -111,6 +116,7 @@ def ada_attention_pair_bias(
     mask: jnp.ndarray | None = None,
     inf: float = 1e9,
     eps: float = 1e-5,
+    attention_backend: str = "xla",
 ) -> jnp.ndarray:
     """Apply AdaLN-conditioned pair-biased attention (AF3 Alg. 24, diffusion).
 
@@ -126,20 +132,45 @@ def ada_attention_pair_bias(
             axis may be 1.
         inf: masking constant.
         eps: layer norm epsilon.
+        attention_backend: ``"xla"`` (default) or ``"tokamax"``. Context-parallel
+            meshes always keep ``"xla"``.
 
     Returns:
         ``[..., N, C_q]`` update.
     """
+    validate_attention_backend(attention_backend)
+    effective_backend = "xla" if cp_mesh() is not None else attention_backend
+
     a = adaln(a, s, params.layer_norm_a, eps=eps)
 
-    if mask is None:
-        mask = jnp.ones(a.shape[:-1], dtype=a.dtype)
-    mask_bias = (inf * (mask - 1.0))[..., None, None, :]
+    if effective_backend == "tokamax":
+        pair_bias = linear(z, params.linear_z)
+        pair_bias = permute_final_dims(pair_bias, (2, 0, 1))
+        attn_mask = (
+            None
+            if mask is None
+            else jnp.asarray(mask, dtype=bool)[..., None, None, :]
+        )
+        a = attention(
+            a,
+            a,
+            params.mha,
+            no_heads=no_heads,
+            biases=(pair_bias,),
+            backend="tokamax",
+            mask=attn_mask,
+        )
+    else:
+        if mask is None:
+            mask = jnp.ones(a.shape[:-1], dtype=a.dtype)
+        mask_bias = (inf * (mask - 1.0))[..., None, None, :]
 
-    pair_bias = linear(z, params.linear_z)
-    pair_bias = permute_final_dims(pair_bias, (2, 0, 1))
+        pair_bias = linear(z, params.linear_z)
+        pair_bias = permute_final_dims(pair_bias, (2, 0, 1))
 
-    a = attention(a, a, params.mha, no_heads=no_heads, biases=(mask_bias, pair_bias))
+        a = attention(
+            a, a, params.mha, no_heads=no_heads, biases=(mask_bias, pair_bias)
+        )
     return jax_sigmoid(linear(s, params.linear_ada_out)) * a
 
 

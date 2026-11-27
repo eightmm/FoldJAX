@@ -105,7 +105,8 @@ into a failure.
 
 A few ports read their own variables to name a kernel explicitly
 (`BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND`,
-`PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND`, `OPENFOLD3_TRIANGLE_BACKEND`, ...);
+`PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND`, `OPENFOLD3_TRIANGLE_BACKEND`,
+`OPENFOLD3_DIFFUSION_ATTENTION_BACKEND`, ...);
 those are described where the kernel is, in [cli.md](cli.md), and are not
 needed for ordinary use.
 

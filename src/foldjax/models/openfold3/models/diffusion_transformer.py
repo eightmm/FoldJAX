@@ -20,6 +20,7 @@ import jax
 import jax.numpy as jnp
 
 from foldjax.models._stacking import stacked_or_stack
+from foldjax.models.openfold3.models.attention import validate_attention_backend
 from foldjax.models.openfold3.models.attention_pair_bias import (
     AdaAttentionPairBiasParams,
     CrossAttentionPairBiasParams,
@@ -63,6 +64,7 @@ def diffusion_transformer_block(
     mask_transition: bool = True,
     eps: float = 1e-5,
     glu_backend: str = "xla",
+    attention_backend: str = "xla",
 ) -> jnp.ndarray:
     """Apply one diffusion transformer block.
 
@@ -78,6 +80,9 @@ def diffusion_transformer_block(
         inf: masking constant.
         mask_transition: upstream's ``_mask_trans``.
         eps: layer norm epsilon.
+        glu_backend: SwiGLU transition backend.
+        attention_backend: ``"xla"`` (default) or ``"tokamax"`` for token
+            self-attention.
 
     Returns:
         ``[..., N, C_token]`` updated activation.
@@ -91,6 +96,7 @@ def diffusion_transformer_block(
         mask=mask,
         inf=inf,
         eps=eps,
+        attention_backend=attention_backend,
     )
     return a + conditioned_transition_block(
         a,
@@ -114,6 +120,7 @@ def diffusion_transformer(
     mask_transition: bool = True,
     eps: float = 1e-5,
     glu_backend: str = "xla",
+    attention_backend: str = "xla",
     scan_blocks: bool = True,
 ) -> jnp.ndarray:
     """Run every diffusion transformer block in order.
@@ -122,6 +129,7 @@ def diffusion_transformer(
         instead of unrolling them. Identical arithmetic; see
         :mod:`foldjax.models.openfold3.models.stacking` for the measured effect.
     """
+    validate_attention_backend(attention_backend)
     z = layer_norm(z, params.layer_norm_z, eps=eps)
 
     settings = dict(
@@ -131,6 +139,7 @@ def diffusion_transformer(
         mask_transition=mask_transition,
         eps=eps,
         glu_backend=glu_backend,
+        attention_backend=attention_backend,
     )
     if scan_blocks and can_scan(params.blocks):
         return scan_stack(

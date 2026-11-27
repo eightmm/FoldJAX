@@ -39,6 +39,7 @@
       "models/openfold3/**/*.py",
       "backends/openfold3.py",
       "_openfold3_compile.py",
+      "models/protenix/models/primitives/attention_tokamax.py",
       "models/boltz2/models/primitives/_common.py",
       "models/boltz2/models/primitives/native_amp_norm.py",
       "template_search.py",

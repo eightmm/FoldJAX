@@ -14,7 +14,9 @@ from __future__ import annotations
 import functools
 import threading
 from collections import OrderedDict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import Any, NamedTuple
 
@@ -28,6 +30,7 @@ from foldjax._openfold3_compile import (
     inspect_cache_scope,
     observe_cache_scope,
     reset_cache_scope_tracking,
+    resolve_diffusion_attention_backend,
     resolve_triangle_kernel,
     triangle_backend,
 )
@@ -64,6 +67,7 @@ from foldjax.models.openfold3.dtype import (
     narrow_floats,
 )
 from foldjax.models.openfold3.models.atom_cp import resolve_atom_windows
+from foldjax.models.openfold3.models.attention import validate_attention_backend
 from foldjax.models.openfold3.models.augmentation import (
     AugmentationTape,
     centre_random_augmentation,
@@ -1623,6 +1627,23 @@ def _predict_inputs(batch, params, config):
 _MAX_WIDTH1_ATOM_CACHE_ATOMS = 131_072
 
 
+#: The backend one compiled program was keyed on, pinned for its trace so the
+#: trace never rereads the environment after the pool key was chosen.
+_PINNED_DIFFUSION_ATTENTION: ContextVar[str | None] = ContextVar(
+    "openfold3_diffusion_attention_backend", default=None
+)
+
+
+@contextmanager
+def diffusion_attention_backend(backend: str) -> Iterator[None]:
+    """Pin one resolved diffusion attention backend for a whole-model trace."""
+    token = _PINNED_DIFFUSION_ATTENTION.set(validate_attention_backend(backend))
+    try:
+        yield
+    finally:
+        _PINNED_DIFFUSION_ATTENTION.reset(token)
+
+
 def _use_atom_diffusion_cache(config: InferenceConfig, *, n_atom: int) -> bool:
     """Whether ``_predict_from_trunk`` should hoist step-invariant atom conditioning.
 
@@ -1756,6 +1777,14 @@ def _predict_from_trunk(
         else None
     )
 
+    # Pooled and streamed entry points pin the value their key was built
+    # from; a direct call resolves it here. A mesh always keeps XLA.
+    attention_backend = _PINNED_DIFFUSION_ATTENTION.get()
+    if cp_mesh() is not None:
+        attention_backend = "xla"
+    elif attention_backend is None:
+        attention_backend = resolve_diffusion_attention_backend(1)
+
     def denoise_fn(xl_noisy: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
         # The single path is the only one that reads the noise level, so it is the
         # only one that has to be rebuilt per step. It is still sample-independent:
@@ -1803,6 +1832,7 @@ def _predict_from_trunk(
             n_token=config.n_token,
             sigma_data=config.sigma_data,
             glu_backend=config.glu_backend,
+            attention_backend=attention_backend,
             cp_atom_windows=distribute_atom_windows,
             **extra,
         )
@@ -2494,6 +2524,11 @@ class _PredictGraphIdentity:
     #: ``ring`` by default, so every identity built before it existed is
     #: unchanged.
     triangle_attention_grid: str = "ring"
+    #: Opt-in measurement switch for the diffusion token transformer's
+    #: self-attention (``OPENFOLD3_DIFFUSION_ATTENTION_BACKEND``). Partitions
+    #: the pool so switching the variable in one process never reuses an
+    #: executable compiled for the other backend.
+    diffusion_attention_backend: str = "xla"
 
 
 def _validated_representative_atoms(
@@ -2866,6 +2901,7 @@ class _BoundCompiledPredict:
             )
         with (
             triangle_backend(self._identity.triangle_kernel),
+            diffusion_attention_backend(self._identity.diffusion_attention_backend),
             context_parallel(
                 self._identity.config.cp_shards,
                 layout=self._identity.config.cp_layout,
@@ -2912,6 +2948,7 @@ class _BoundLoweredPredict:
         identity = self._identity
         with (
             triangle_backend(identity.triangle_kernel),
+            diffusion_attention_backend(identity.diffusion_attention_backend),
             context_parallel(
                 identity.config.cp_shards,
                 layout=identity.config.cp_layout,
@@ -3025,8 +3062,12 @@ def compile_predict(
         effective_kernel = resolve_triangle_kernel(
             triangle_kernel, cp_shards=compiled_config.cp_shards
         )
+        effective_diffusion_attention = resolve_diffusion_attention_backend(
+            compiled_config.cp_shards
+        )
         with (
             triangle_backend(effective_kernel),
+            diffusion_attention_backend(effective_diffusion_attention),
             context_parallel(compiled_config.cp_shards, layout=layout) as mesh,
         ):
             identity = _PredictGraphIdentity(
@@ -3041,6 +3082,7 @@ def compile_predict(
                 augmentation_taped=augmentation_tape is not None,
                 deterministic=deterministic,
                 triangle_attention_grid=triangle_attention_grid(),
+                diffusion_attention_backend=effective_diffusion_attention,
             )
             bounded_cache = _persistent_cache_is_bounded(scope)
             cache_token = inspect_cache_scope(scope, repair_atime=bounded_cache)

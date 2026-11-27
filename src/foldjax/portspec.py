@@ -298,6 +298,8 @@ PORTS: Mapping[str, PortSpec] = {
             SourceSpec("backends/openfold3.py"),
             # Resolves an omitted triangle kernel to the fused GPU one.
             SourceSpec("_openfold3_compile.py"),
+            # The tokamax wrapper the diffusion token attention runs on a GPU.
+            SourceSpec("models/protenix/models/primitives/attention_tokamax.py"),
             SourceSpec("models/boltz2/models/primitives/_common.py"),
             SourceSpec("models/boltz2/models/primitives/native_amp_norm.py"),
             _TEMPLATE_READER,

@@ -277,8 +277,10 @@ def compile_streamed_predict(
         kernel = inf.resolve_triangle_kernel(
             triangle_kernel, cp_shards=config.cp_shards
         )
+        attention = inf.resolve_diffusion_attention_backend(config.cp_shards)
         with (
             inf.triangle_backend(kernel),
+            inf.diffusion_attention_backend(attention),
             context_parallel(config.cp_shards, layout=layout) as mesh,
         ):
             identity = inf._PredictGraphIdentity(
@@ -293,6 +295,7 @@ def compile_streamed_predict(
                 augmentation_taped=augmentation is not None,
                 deterministic=deterministic,
                 triangle_attention_grid=triangle_attention_grid(),
+                diffusion_attention_backend=attention,
             )
             bounded = inf._persistent_cache_is_bounded(scope)
             token = inf.inspect_cache_scope(scope, repair_atime=bounded)

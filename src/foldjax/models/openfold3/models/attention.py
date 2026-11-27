@@ -16,6 +16,19 @@ import jax.numpy as jnp
 
 from foldjax.models.openfold3.models.primitives import LinearParams, jax_sigmoid, linear
 
+#: Valid attention backends for opt-in fused diffusion token attention.
+ATTENTION_BACKENDS: tuple[str, ...] = ("xla", "tokamax")
+
+
+def validate_attention_backend(backend: str) -> str:
+    """Validate an attention backend name."""
+    if not isinstance(backend, str) or backend not in ATTENTION_BACKENDS:
+        raise ValueError(
+            f"unsupported attention backend: {backend!r}; "
+            f"expected one of {ATTENTION_BACKENDS}"
+        )
+    return backend
+
 
 class AttentionParams(NamedTuple):
     """Parameters for ``Attention``.
@@ -91,6 +104,8 @@ def attention(
     no_heads: int,
     biases: tuple[jnp.ndarray, ...] = (),
     high_precision: bool = False,
+    backend: str = "xla",
+    mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Apply gated multi-head attention.
 
@@ -102,28 +117,59 @@ def attention(
         biases: tensors broadcasting to ``[..., H, Q, K]``.
         high_precision: evaluate the attention core (logits, biases, softmax
             and value contraction) in ``float32``, casting back before gating.
+        backend: ``"xla"`` (default) or ``"tokamax"``.
+        mask: optional boolean mask broadcasting to ``[..., H, Q, K]``; only
+            supported with ``backend="tokamax"``.
 
     Returns:
         ``[..., Q, C_q]`` attention update.
     """
+    validate_attention_backend(backend)
     query = split_heads(linear(q_x, params.linear_q), no_heads)
     key = split_heads(linear(kv_x, params.linear_k), no_heads)
     value = split_heads(linear(kv_x, params.linear_v), no_heads)
 
-    # [..., H, N, C_hidden]
-    query = jnp.swapaxes(query, -2, -3)
-    key = jnp.swapaxes(key, -2, -3)
-    value = jnp.swapaxes(value, -2, -3)
+    if backend == "tokamax":
+        if len(biases) > 1:
+            raise ValueError(
+                "tokamax attention supports at most one additive bias; "
+                f"got {len(biases)}"
+            )
+        if high_precision:
+            raise ValueError(
+                "tokamax attention does not support high_precision upcasting"
+            )
+        from foldjax.models.protenix.models.primitives.attention_tokamax import (
+            float32_intended,
+            tokamax_attention,
+        )
 
-    # Upstream scales by the per-head hidden dimension.
-    query = query / math.sqrt(query.shape[-1])
+        # Upstream scales by the per-head hidden dimension; split_heads already
+        # produces tokamax's [..., T, H, C_hidden] layout.
+        query = query / math.sqrt(query.shape[-1])
+        bias = biases[0] if biases else None
+        with float32_intended():
+            out = tokamax_attention(query, key, value, bias=bias, mask=mask)
+    else:
+        if mask is not None:
+            raise ValueError(
+                "boolean mask is only supported with backend='tokamax'; "
+                "supply an additive mask bias in biases for backend='xla'"
+            )
+        # [..., H, N, C_hidden]
+        query = jnp.swapaxes(query, -2, -3)
+        key = jnp.swapaxes(key, -2, -3)
+        value = jnp.swapaxes(value, -2, -3)
 
-    out = dot_product_attention(
-        query, key, value, biases, high_precision=high_precision
-    )
+        # Upstream scales by the per-head hidden dimension.
+        query = query / math.sqrt(query.shape[-1])
 
-    # [..., Q, H, C_hidden]
-    out = jnp.swapaxes(out, -2, -3)
+        out = dot_product_attention(
+            query, key, value, biases, high_precision=high_precision
+        )
+
+        # [..., Q, H, C_hidden]
+        out = jnp.swapaxes(out, -2, -3)
 
     if params.linear_g is not None:
         gate = jax_sigmoid(linear(q_x, params.linear_g))
