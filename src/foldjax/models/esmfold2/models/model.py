@@ -39,6 +39,7 @@ from foldjax.models._cp import (
     manual_axes,
     shard_pair_rows,
 )
+from foldjax.models._glu import GLU_BACKENDS
 from foldjax.models._random import masked_prefix_draw, supports_masked_prefix_draw
 from foldjax.models.esmfold2.models import diffusion
 from foldjax.models.esmfold2.models import trunk as trunk_ops
@@ -1825,7 +1826,13 @@ def with_overrides(
     if num_steps is not None:
         diffusion_updates["num_steps"] = num_steps
     if glu_backend is not None:
-        diffusion_updates["glu_backend"] = glu_backend
+        if not isinstance(glu_backend, str) or glu_backend not in GLU_BACKENDS:
+            raise ValueError(
+                f"glu backend must be one of {GLU_BACKENDS}; got {glu_backend!r}"
+            )
+        diffusion_updates["glu_backend"] = (
+            "xla" if glu_backend == "pallas" else glu_backend
+        )
     if rigid_align_backend is not None:
         if rigid_align_backend not in ("svd", "jacobi"):
             raise ValueError("rigid_align_backend must be one of svd, jacobi")

@@ -391,12 +391,13 @@ def test_boltz2_single_transition_keeps_tokamax(monkeypatch):
     assert seen == ["tokamax"]
 
 
-def test_esmfold2_refuses_pallas_it_has_no_pair_stack():
+def test_esmfold2_accepts_pallas_for_its_trunk_transitions():
     from foldjax.backends.esmfold2 import _checked_glu_backend
 
-    with pytest.raises(ValueError, match="ESMFold2 has none"):
-        _checked_glu_backend("pallas")
+    assert _checked_glu_backend("pallas") == "pallas"
     assert _checked_glu_backend("tokamax") == "tokamax"
+    with pytest.raises(ValueError, match="glu_backend must be one of"):
+        _checked_glu_backend("fused")
 
 
 def test_boltz2_msa_transition_stays_on_tokamax_under_pallas(monkeypatch):

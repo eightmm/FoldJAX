@@ -2012,7 +2012,7 @@ them; the fused Triton kernel (`tokamax`) runs the same arithmetic and never
 materializes them. It is the default of the native
 `foldjax.models.boltz2.api.predict`, but not what an omitted option runs
 through `foldjax`: there a serial GPU run resolves to `pallas` (the Pallas
-pair-kernel default, [below](#pallas-pair-kernels-gpu-default-boltz-2-and-openfold3-both-protenix-and-esmfold2-the-multiplication)), and a context-parallel
+pair-kernel default, [below](#pallas-pair-kernels-gpu-default-boltz-2-openfold3-and-esmfold2-both-protenix-the-multiplication)), and a context-parallel
 run or a run off a GPU to `xla`. `--option glu_backend=tokamax` selects the
 Triton kernel; `--option glu_backend=xla` restores the unfused arithmetic
 exactly. Each gets its own compile-cache namespace.
@@ -2153,12 +2153,13 @@ whole-prediction A/B on one RTX PRO 6000 against `cueq` on the same code:
 At 1,003 tokens every CA that moves more than 1 A, in all five samples, is one
 of the first eleven residues, at pLDDT 40-66.
 
-### Pallas pair kernels (GPU default: Boltz-2 and OpenFold3 both, Protenix and ESMFold2 the multiplication)
+### Pallas pair kernels (GPU default: Boltz-2, OpenFold3 and ESMFold2 both, Protenix the multiplication)
 
 Two Pallas-Triton kernels in `foldjax.models._pallas_pair` replace
 cuEquivariance's fused triangle multiplication and the tokamax or XLA pair
 transition. On a GPU process both are the default of Boltz-2 and OpenFold3,
-and the multiplication is the default of Protenix.
+and of ESMFold2's serial bfloat16 trunk, and the multiplication is the
+default of Protenix.
 Everywhere else -- a CPU process, which is what the test suite and
 `pytest tests/parity --run-cpu-parity` run, a TPU, a CPU user -- the default is
 the released backend it always was, because the kernels do not run off a GPU.
@@ -2194,6 +2195,7 @@ What an omitted setting runs, and how to name either side:
 | pair transitions | Boltz-2 | `glu_backend=pallas` | `tokamax` | `--option glu_backend=tokamax` (or `xla`) |
 | pair transitions | Protenix | `xla` (released) | `xla` | released already; `--option glu_backend=pallas` opts in |
 | pair transitions | OpenFold3 | `glu_backend=pallas` | `xla` | `--option glu_backend=xla` |
+| trunk pair and MSA transitions | ESMFold2 | `glu_backend=pallas` (serial, bfloat16 trunk) | `xla` | `--option glu_backend=xla` |
 | diffusion attention | OpenDDE | `tokamax` (serial) | `xla_jit` | `--option diffusion_attention_backend=xla_jit` |
 | diffusion token attention | OpenFold3 | `tokamax` (serial) | `xla` | `OPENFOLD3_DIFFUSION_ATTENTION_BACKEND=xla` |
 | diffusion pair bias | OpenDDE | once per prediction (serial, unguided) | every step | `--option diffusion_pair_bias_cache=false` |
@@ -2224,8 +2226,11 @@ Where each default is decided:
   the Protenix variable, but its model entry writes its own default into it
   first (the blocked `xla` product on the bfloat16 trunk, `cueq` on float32),
   because at its c_z 384 the Pallas multiplication only ties cuEquivariance.
-- **ESMFold2:** the multiplication only (`triangle_backend`, above); it
-  refuses `glu_backend=pallas`.
+- **ESMFold2:** the multiplication (`triangle_backend`, above) and the
+  folding trunk's pair and MSA transitions (`glu_backend`). Each resolves in
+  the adapter and in `inference.predict` from one resolver, so a direct
+  `predict` call on a serial GPU gets both; context parallelism and a float32
+  trunk keep `xla` for both.
 
 What gets recorded is what ran. The compile-cache namespace writes the
 realized `glu_backend`, OpenFold3's realized `triangle_kernel` and its
@@ -2734,15 +2739,34 @@ prediction on a narrower array and not a bitwise one. Details and the cost:
 
 Runs the twelve transitions in ESMFold2's diffusion token transformer through
 `tokamax.gated_linear_unit`, one fused Triton kernel, instead of the widened
-matmul and split the port takes by default. `xla` is the default and is what
-every released number describes; the option is opt-in on this port for the
-same reason it is on Boltz-2, which spells it the same way.
+matmul and split the port takes by default. The option is opt-in on this port
+for the same reason it is on Boltz-2, which spells it the same way.
 
-What it removes is the `2 * hidden` projection each of those blocks
-materializes before gating -- temporary traffic, once per block per denoising
-step. What it does not touch is ESMFold2's peak, which is a folding-trunk
-arena quadratic in tokens and carrying no sample axis at all; expect this
-option to buy time, not headroom, and do not reach for it to fit a longer
+`glu_backend=pallas` names a different site: the folding trunk's pair and MSA
+transitions, each 64-row block of which runs through the Pallas-Triton
+transition kernel (`foldjax.models._pallas_pair.transition`) in place of the
+norm and the two autocast GEMMs, while the diffusion transitions keep XLA. It
+is what an omitted option realises on a serial GPU process with the bfloat16
+trunk; `xla` is the omitted value everywhere else and restores the unfused
+transitions on a GPU. A transition whose widths are not multiples of 16 keeps
+the unfused route under `pallas`, as the other ports keep their released
+route where the kernel does not reach.
+
+On one RTX PRO 6000 Blackwell, with the Pallas triangle multiplication on
+both sides (warm wall, mean of two runs at 1,003 tokens):
+
+| tokens | `xla` wall (s) | `pallas` wall (s) | `xla` peak (MiB) | `pallas` peak (MiB) | per-chain CA RMSD change (A) |
+| --- | --- | --- | --- | --- | --- |
+| 1,003 | 55.4 | 53.2 | 14,780 | 14,780 | 0.004 |
+| 2,096 | 211.3 | 194.9 | 33,737 | 32,785 | 0.0054 |
+
+Complex TM is unchanged at both sizes.
+
+What `tokamax` removes is the `2 * hidden` projection each of those diffusion
+blocks materializes before gating -- temporary traffic, once per block per
+denoising step. What it does not touch is ESMFold2's peak, which is a
+folding-trunk arena quadratic in tokens and carrying no sample axis at all;
+expect `tokamax` to buy time, not headroom, and do not reach for it to fit a longer
 input. `structure_sample_sequential` above divides the sample axis, which is
 a different term and not this peak.
 

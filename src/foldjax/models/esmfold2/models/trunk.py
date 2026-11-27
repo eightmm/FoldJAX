@@ -86,6 +86,38 @@ def _triangle_backend_scope(backend: str) -> Iterator[None]:
         _PINNED_TRIANGLE_BACKEND.reset(previous)
 
 
+#: Values every ESMFold2 trunk transition entry point accepts.
+TRANSITION_BACKENDS = ("xla", "pallas")
+
+_PINNED_TRANSITION_BACKEND: ContextVar[str | None] = ContextVar(
+    "esmfold2_transition_backend", default=None
+)
+
+
+def _resolve_transition_backend(backend: str | None = None) -> str:
+    resolved = _PINNED_TRANSITION_BACKEND.get() if backend is None else backend
+    if resolved is None:
+        return "xla"
+    if not isinstance(resolved, str) or resolved not in TRANSITION_BACKENDS:
+        raise ValueError(
+            f"transition_backend must be one of {TRANSITION_BACKENDS}; "
+            f"got {resolved!r}"
+        )
+    return resolved
+
+
+@contextmanager
+def _transition_backend_scope(backend: str) -> Iterator[None]:
+    """Pin one already-resolved transition backend for a whole-model trace."""
+
+    checked = _resolve_transition_backend(backend)
+    previous = _PINNED_TRANSITION_BACKEND.set(checked)
+    try:
+        yield
+    finally:
+        _PINNED_TRANSITION_BACKEND.reset(previous)
+
+
 def _cannon_contract(
     a: jnp.ndarray,
     b: jnp.ndarray,
@@ -204,15 +236,16 @@ def _autocast_linear_fallback(x, params, prefix):
         params[f"{prefix}.weight"].astype(jnp.bfloat16).T,
         preferred_element_type=jnp.float32,
     )
-    if f"{prefix}.bias" in params:
-        result = result + params[f"{prefix}.bias"].astype(jnp.bfloat16).astype(
+    bias = params.get(f"{prefix}.bias")
+    if bias is not None:
+        result = result + bias.astype(jnp.bfloat16).astype(
             jnp.float32
         )
     return result.astype(jnp.bfloat16)
 
 
 def _autocast_linear(x, params, prefix):
-    if f"{prefix}.bias" not in params and cp_mesh() is None:
+    if params.get(f"{prefix}.bias") is None and cp_mesh() is None:
         return jax.lax.platform_dependent(
             x,
             params[f"{prefix}.weight"],
@@ -247,7 +280,7 @@ def _autocast_norm(x, params, prefix, eps=1e-5, *, out_dtype=jnp.float32):
     from foldjax.models.boltz2.models.primitives.native_amp_norm import _cuda_layer_norm
 
     x = x.astype(jnp.float32)
-    weight, bias = params[f"{prefix}.weight"], params[f"{prefix}.bias"]
+    weight, bias = params.get(f"{prefix}.weight"), params.get(f"{prefix}.bias")
     # The shared vector-4 CUDA Welford/FMA implementation matched the captured
     # first width256 LM norm bitwise, including effective BF16 rounding ties.
     # Later norm sites and full-block parity require separate evidence.
@@ -261,7 +294,12 @@ def _autocast_norm(x, params, prefix, eps=1e-5, *, out_dtype=jnp.float32):
         ))
     )
     # Captured first OPM, PWA and transition MSA norms match this reduction.
-    if (x.shape[-1] == 256 or msa_norm) and cp_mesh() is None:
+    if (
+        weight is not None
+        and bias is not None
+        and (x.shape[-1] == 256 or msa_norm)
+        and cp_mesh() is None
+    ):
         return jax.lax.platform_dependent(
             x,
             weight,
@@ -834,8 +872,10 @@ def _finish_autocast_triangle(contracted, output_gate, params, engine, eps):
     return mixed * output_gate
 
 
-def _autocast_transition(x, params, prefix, residual, eps):
-    """`w12`/`w3` over 64-row blocks of the leading token axis.
+def _autocast_transition(
+    x, params, prefix, residual, eps, *, transition_backend: str | None = None
+):
+    """`w12`/`w3` over 64-row blocks of the leading residue axis.
 
     Everything here is elementwise in that axis and contracts only over
     channels, so a block is the whole computation for its own rows and the
@@ -851,10 +891,49 @@ def _autocast_transition(x, params, prefix, residual, eps):
     row mesh the rows are a globally sharded axis and the blocks stay
     separate static slices either way.
     """
+    resolved_backend = _resolve_transition_backend(transition_backend)
+    if resolved_backend == "pallas" and cp_mesh() is not None:
+        raise ValueError(
+            "context parallelism requires glu_backend='xla'; a fused GLU "
+            "cannot be partitioned"
+        )
     dot = f"{prefix}." if prefix else ""
+    use_pallas = (
+        resolved_backend == "pallas"
+        and cp_mesh() is None
+        and params.get(f"{dot}norm.weight") is not None
+        and params.get(f"{dot}norm.bias") is not None
+        and params.get(f"{dot}ffn.w12.bias") is None
+        and params.get(f"{dot}ffn.w3.bias") is None
+        # The kernel contracts in power-of-two slices of at least 16 columns;
+        # any other width keeps the unfused route, as `_glu.site_backend`
+        # keeps the released route where `pallas` does not reach.
+        and x.shape[-1] % 16 == 0
+        and all(
+            dim % 16 == 0
+            for dim in (
+                params[f"{dot}ffn.w12.weight"].shape[0] // 2,
+                params[f"{dot}ffn.w3.weight"].shape[0],
+            )
+        )
+    )
 
     def block(destination, start, size):
         part = _take_rows(x if destination is None else destination[0], start, size, 1)
+        if use_pallas and part.dtype == jnp.bfloat16 and part.size > 0:
+            from foldjax.models._pallas_pair import transition as _pt
+
+            w12 = params[f"{dot}ffn.w12.weight"].astype(jnp.bfloat16)
+            half = w12.shape[0] // 2
+            upd = _pt(
+                part,
+                (params[f"{dot}norm.weight"], params[f"{dot}norm.bias"]),
+                w12[:half].T,
+                w12[half:].T,
+                params[f"{dot}ffn.w3.weight"].astype(jnp.bfloat16).T,
+                eps=eps,
+            )
+            return (part + upd if residual else upd,)
         packed = _autocast_linear(
             _autocast_norm(part, params, f"{dot}norm", eps, out_dtype=jnp.bfloat16),
             params,
@@ -1148,6 +1227,7 @@ def transition(
     eps: float = 1e-5,
     native_autocast: bool = False,
     cp_pair: bool = False,
+    transition_backend: str | None = None,
 ) -> jnp.ndarray:
     """Norm, SwiGLU, and upstream's two different opinions about the residual.
 
@@ -1160,6 +1240,14 @@ def transition(
     square grid -- see `_cp_pair_transition`. Any other caller, and every
     caller on the row mesh, keeps the path it already had.
     """
+    if (
+        _resolve_transition_backend(transition_backend) == "pallas"
+        and cp_mesh() is not None
+    ):
+        raise ValueError(
+            "context parallelism requires glu_backend='xla'; a fused GLU "
+            "cannot be partitioned"
+        )
     if cp_pair and _cp_layout() == "2d" and x.ndim == 4:
         return _cp_pair_transition(
             x,
@@ -1170,7 +1258,11 @@ def transition(
             native_autocast=native_autocast,
         )
     if native_autocast:
-        return _autocast_transition(x, params, prefix, residual, eps)
+        if transition_backend is None:
+            return _autocast_transition(x, params, prefix, residual, eps)
+        return _autocast_transition(
+            x, params, prefix, residual, eps, transition_backend=transition_backend
+        )
     dot = f"{prefix}." if prefix else ""
     normalised = layer_norm(
         x, params[f"{dot}norm.weight"], params[f"{dot}norm.bias"], eps=eps

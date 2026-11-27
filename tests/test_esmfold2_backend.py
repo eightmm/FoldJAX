@@ -412,6 +412,28 @@ def test_the_glu_backend_option_refuses_an_unknown_value(tmp_path, monkeypatch) 
         _stub_prediction(tmp_path, monkeypatch, {"glu_backend": "triton"})
 
 
+def test_glu_backend_pallas_reaches_the_port_on_gpu_and_refuses_off_gpu(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("foldjax.models._pallas_pair.gpu_process", lambda: False)
+    with pytest.raises(ValueError, match="needs a GPU"):
+        _stub_prediction(
+            tmp_path / "cpu_pallas", monkeypatch, {"glu_backend": "pallas"}
+        )
+
+    monkeypatch.setattr("foldjax.models._pallas_pair.gpu_process", lambda: True)
+    seen_exp, res_exp = _stub_prediction(
+        tmp_path / "gpu_pallas", monkeypatch, {"glu_backend": "pallas"}
+    )
+    seen_om, res_om = _stub_prediction(tmp_path / "gpu_omitted", monkeypatch, {})
+    assert seen_exp["glu_backend"] == seen_om["glu_backend"] == "pallas"
+    assert (
+        res_exp.raw["overrides"]["glu_backend"]
+        == res_om.raw["overrides"]["glu_backend"]
+        == "pallas"
+    )
+
+
 @pytest.mark.parametrize("asked", ["float32", "bfloat16"])
 def test_the_confidence_dtype_option_reaches_the_port(
     tmp_path, monkeypatch, asked

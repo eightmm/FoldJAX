@@ -3269,35 +3269,49 @@ def run_esmfold2(
             "(forward hook), from the inputs injected here.",
         )
 
-    # What an omitted `triangle_backend` runs here: the Pallas-Triton fused
-    # kernel on a GPU, the XLA route on a CPU. The stages call the structure
-    # model below `inference.predict`, so the scope that `predict` opens is
-    # opened here instead, from the same resolver.
-    from foldjax.backends.esmfold2 import realised_triangle_backend
+    # What omitted `triangle_backend` and `glu_backend` run here: the
+    # Pallas-Triton triangle multiplication and trunk transitions on a GPU, the
+    # XLA routes on a CPU. The stages call the structure model below
+    # `inference.predict`, so the scopes that `predict` opens are opened here
+    # instead, from the same resolvers.
+    from foldjax.backends.esmfold2 import (
+        realised_glu_backend,
+        realised_triangle_backend,
+    )
     from foldjax.models.esmfold2.models import trunk as esmfold2_trunk
 
     triangle = realised_triangle_backend(None)
+    glu = realised_glu_backend(None)
+    transition = "pallas" if glu == "pallas" else "xla"
     runners = {"S1": s1, "S2": s2, "S3": s3, "S6": s6, "S4": s4, "S5": s5}
-    # The scope is read at trace time, and JAX reuses a trace of the same
+    # The scopes are read at trace time, and JAX reuses a trace of the same
     # function across jit wrappers, so both the parity helper's wrapper and
     # JAX's trace caches are dropped on both sides: every stage traces inside
-    # the scope, and no later caller is handed a program traced here.
+    # the scopes, and no later caller is handed a program traced here.
     def drop_traces() -> None:
         parity._compiled_predict.cache_clear()
         jax.clear_caches()
 
     drop_traces()
     try:
-        with esmfold2_trunk._triangle_backend_scope(triangle):
+        with (
+            esmfold2_trunk._triangle_backend_scope(triangle),
+            esmfold2_trunk._transition_backend_scope(transition),
+        ):
             for name, function in runners.items():
                 if name in stages:
                     results[name] = run_stage(f"esmfold2 {name}", function)
     finally:
         drop_traces()
     for name, record in results.items():
-        if name != "S1" and record["status"] == "measured":
-            record.setdefault("condition", {})["triangle_multiplication"] = (
+        # S1 and S2 compare inputs and checkpoint tensors; no trunk runs.
+        if name not in ("S1", "S2") and record["status"] == "measured":
+            condition = record.setdefault("condition", {})
+            condition["triangle_multiplication"] = (
                 f"{triangle} (omitted option)"
+            )
+            condition["trunk_transitions"] = (
+                f"{transition} (omitted option)"
             )
     return results
 

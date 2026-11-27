@@ -727,6 +727,7 @@ def test_cache_profile_and_compiled_predict_namespace_identity(
 
     try:
         # GPU serial: omitted and explicit pallas share one executable; cueq/xla split.
+        assert backend_module.realised_glu_backend(None) == "pallas"
         out_omitted_gpu = run_pred()
         out_pallas_gpu = run_pred(triangle_backend="pallas")
         jax.block_until_ready((out_omitted_gpu, out_pallas_gpu))
@@ -739,7 +740,7 @@ def test_cache_profile_and_compiled_predict_namespace_identity(
         assert traces == ["pallas", "cueq"] and pool._entry_count() == 2  # noqa: SLF001
         assert int(out_cueq_gpu["probe"][0, 0]) == 1
 
-        out_xla_gpu = run_pred(triangle_backend="xla")
+        out_xla_gpu = run_pred(triangle_backend="xla", glu_backend="xla")
         jax.block_until_ready(out_xla_gpu)
         assert (
             traces == ["pallas", "cueq", "xla"] and pool._entry_count() == 3  # noqa: SLF001

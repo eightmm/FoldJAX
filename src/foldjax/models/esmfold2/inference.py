@@ -27,6 +27,7 @@ from foldjax import memory_policy, progress
 from foldjax.backends.esmfold2 import (
     _refuse_cp_triangle_backend,
     _refuse_gpu_only_kernels,
+    realised_glu_backend,
     realised_triangle_backend,
 )
 from foldjax.models import _capture
@@ -63,7 +64,10 @@ from foldjax.models.esmfold2.models import model as structure_model
 from foldjax.models.esmfold2.models import trunk as trunk_model
 from foldjax.models.esmfold2.models.model import CONFIDENCE_DTYPES
 from foldjax.models.esmfold2.models.segments import MAX_ATOMS_PER_TOKEN
-from foldjax.models.esmfold2.models.trunk import TRIANGLE_BACKENDS
+from foldjax.models.esmfold2.models.trunk import (
+    TRANSITION_BACKENDS,
+    TRIANGLE_BACKENDS,
+)
 from foldjax.padding import square_grid_auto_layout
 
 #: Where `assets.py` stages the language model beside the structure weights.
@@ -781,8 +785,9 @@ def predict(
     #: Denoise the diffusion samples one at a time. Off unless asked; the
     #: settings field carries what it costs and what it does not save.
     structure_sample_sequential: bool | None = None,
-    #: Which implementation the diffusion token transformer's packed SwiGLU
-    #: takes. `None` leaves the checkpoint's value, which is `"xla"`.
+    #: Which implementation trunk transitions (`pallas` | `xla`) or diffusion
+    #: SwiGLU (`tokamax` | `xla`) use. `None` realises `"pallas"` on a serial
+    #: GPU process with the bfloat16 trunk and `"xla"` otherwise.
     glu_backend: str | None = None,
     #: Which implementation the pair trunk's triangle multiplication takes.
     #: `None` realises `"pallas"` on a serial GPU process and `"xla"` otherwise
@@ -880,7 +885,9 @@ def predict(
             "deterministic reductions are carried by the compiled graph; "
             "drop compile_it=False or deterministic"
         )
-    if glu_backend is not None and glu_backend not in GLU_BACKENDS:
+    if glu_backend is not None and (
+        not isinstance(glu_backend, str) or glu_backend not in GLU_BACKENDS
+    ):
         msg = f"glu backend must be one of {GLU_BACKENDS}; got {glu_backend!r}"
         raise ValueError(msg)
     if (
@@ -918,15 +925,28 @@ def predict(
         )
     if triangle_backend is not None:
         _refuse_cp_triangle_backend(triangle_backend, cp_shards)
-        _refuse_gpu_only_kernels({"triangle_backend": triangle_backend})
+    _refuse_gpu_only_kernels(
+        {"triangle_backend": triangle_backend, "glu_backend": glu_backend}
+    )
     # Resolved before anything is traced, and carried resolved from here on:
     # the alias decides which program is built, so the executable's static
     # topology has to be what runs rather than what was spelled.
     resolved_cp_layout = _resolve_cp_layout(cp_layout, cp_shards)
+    resolved_glu_backend = realised_glu_backend(
+        glu_backend,
+        cp_devices=cp_shards,
+        trunk_dtype=str(model.settings.trunk_dtype),
+    )
     resolved_triangle_backend = realised_triangle_backend(
         triangle_backend,
         cp_devices=cp_shards,
         trunk_dtype=str(model.settings.trunk_dtype),
+    )
+    diffusion_glu_backend = (
+        "xla" if resolved_glu_backend == "pallas" else glu_backend
+    )
+    trunk_transition_backend = (
+        "pallas" if resolved_glu_backend == "pallas" else "xla"
     )
     settings = structure_model.with_overrides(
         model.settings,
@@ -935,7 +955,7 @@ def predict(
         num_steps=num_steps,
         max_msa_depth=max_msa_depth,
         structure_sample_sequential=structure_sample_sequential,
-        glu_backend=glu_backend,
+        glu_backend=diffusion_glu_backend,
         rigid_align_backend=rigid_align_backend,
         confidence_dtype=confidence_dtype,
         msa_column_mask_rate=msa_column_mask_rate,
@@ -1111,6 +1131,11 @@ def predict(
         if resolved_triangle_backend == "xla"
         else {"triangle_backend": resolved_triangle_backend}
     )
+    transition_kwargs = (
+        {}
+        if trunk_transition_backend == "xla"
+        else {"transition_backend": trunk_transition_backend}
+    )
     runner = (
         compiled_predict(
             settings, score_capacity, preserve_prefix_rng, cp_shards,
@@ -1119,6 +1144,7 @@ def predict(
             compact_lm_input, atom_rows_per_block,
             **layout_kwargs,
             **triangle_kwargs,
+            **transition_kwargs,
             **policy_kwargs,
             **auxiliary_output_kwargs,
         )
@@ -1164,6 +1190,7 @@ def predict(
             atom_rows_per_block,
             **layout_kwargs,
             **triangle_kwargs,
+            **transition_kwargs,
             **auxiliary_output_kwargs,
         )
     if _lower_only:
@@ -1195,6 +1222,7 @@ def _run(
     *,
     cp_layout: str = "1d",
     triangle_backend: str = "xla",
+    transition_backend: str = "xla",
     return_auxiliary_outputs: bool = True,
     stop_after_inputs: bool = False,
 ) -> dict[str, jnp.ndarray]:
@@ -1207,6 +1235,19 @@ def _run(
             f"got {triangle_backend!r}"
         )
     _refuse_cp_triangle_backend(triangle_backend, cp_shards)
+    if (
+        not isinstance(transition_backend, str)
+        or transition_backend not in TRANSITION_BACKENDS
+    ):
+        raise ValueError(
+            f"transition_backend must be one of {TRANSITION_BACKENDS}; "
+            f"got {transition_backend!r}"
+        )
+    if cp_shards > 1 and transition_backend != "xla":
+        raise ValueError(
+            "context parallelism requires glu_backend='xla'; "
+            "a fused GLU cannot be partitioned"
+        )
     if cp_shards != _active_cp_shards():
         raise RuntimeError(
             f"cp_shards={cp_shards} but the active context-parallel mesh has "
@@ -1232,6 +1273,7 @@ def _run(
     with (
         atom_model._atom_rows_per_block_scope(resolved_atom_rows),
         trunk_model._triangle_backend_scope(triangle_backend),
+        trunk_model._transition_backend_scope(transition_backend),
     ):
         return structure_model.predict(
             key,
@@ -1267,6 +1309,7 @@ _COMPILED_PREDICT_STATIC_ARGNAMES = (
     "atom_rows_per_block",
     "cp_layout",
     "triangle_backend",
+    "transition_backend",
     "return_auxiliary_outputs",
     "stop_after_inputs",
 )
@@ -1324,6 +1367,7 @@ def _compiled_predict_factory(
     *,
     cp_layout: str = "1d",
     triangle_backend: str = "xla",
+    transition_backend: str = "xla",
     return_auxiliary_outputs: bool = True,
     stop_after_inputs: bool = False,
     deterministic: bool = False,
@@ -1342,6 +1386,7 @@ def _compiled_predict_factory(
         atom_rows_per_block,
         cp_layout,
         triangle_backend,
+        transition_backend,
         return_auxiliary_outputs,
         stop_after_inputs,
     )
@@ -1363,6 +1408,7 @@ def compiled_predict(
     *,
     cp_layout: str = "1d",
     triangle_backend: str = "xla",
+    transition_backend: str = "xla",
     return_auxiliary_outputs: bool = True,
     stop_after_inputs: bool = False,
     deterministic: bool = False,
@@ -1395,6 +1441,14 @@ def compiled_predict(
             f"triangle_backend must be one of {TRIANGLE_BACKENDS}; "
             f"got {triangle_backend!r}"
         )
+    if (
+        not isinstance(transition_backend, str)
+        or transition_backend not in TRANSITION_BACKENDS
+    ):
+        raise ValueError(
+            f"transition_backend must be one of {TRANSITION_BACKENDS}; "
+            f"got {transition_backend!r}"
+        )
     atom_rows_per_block = atom_model._resolve_rows_per_block(atom_rows_per_block)
     identity = (
         settings,
@@ -1420,6 +1474,8 @@ def compiled_predict(
         policy["cp_layout"] = cp_layout
     if triangle_backend != "xla":
         policy["triangle_backend"] = triangle_backend
+    if transition_backend != "xla":
+        policy["transition_backend"] = transition_backend
     if stop_after_inputs:
         return _compiled_predict_factory(
             *identity, return_auxiliary_outputs=return_auxiliary_outputs,

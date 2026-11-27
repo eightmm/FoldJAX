@@ -447,3 +447,44 @@ def test_boltz2_msa_scoping_holds_when_pallas_is_the_default(
     params["transition_z"] = fc1
     no_seq_layer(params, z, jnp.ones((1, 3, 3)), glu_backend=realised)
     assert transitions == ["tokamax"]
+
+
+def test_esmfold2_cache_profile_and_adapter_realise_pallas_on_serial_gpu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gpu: bool
+) -> None:
+    from foldjax.backends.esmfold2 import ESMFold2Backend
+    from tests.test_esmfold2_backend import _stub_prediction
+
+    adapter = ESMFold2Backend()
+
+    def profile(**options):
+        return adapter.cache_profile(_request(tmp_path / "prof", "esmfold2", **options))
+
+    omitted = profile()
+    if gpu:
+        assert omitted.get("glu_backend") == "pallas"
+        assert profile(glu_backend="pallas") == omitted
+        assert profile(glu_backend="xla") != omitted
+        assert "glu_backend" not in profile(glu_backend="xla")
+        assert "glu_backend" not in profile(cp_devices=4)
+        seen_omitted, res_omitted = _stub_prediction(
+            tmp_path / "gpu_omitted", monkeypatch, {}
+        )
+        assert (
+            seen_omitted["glu_backend"]
+            == res_omitted.raw["overrides"]["glu_backend"]
+            == "pallas"
+        )
+        seen_cp, res_cp = _stub_prediction(
+            tmp_path / "gpu_cp", monkeypatch, {"cp_devices": 2}
+        )
+        assert "glu_backend" not in seen_cp
+        assert "glu_backend" not in res_cp.raw["overrides"]
+    else:
+        assert "glu_backend" not in omitted
+        assert profile(glu_backend="xla") == omitted
+        assert profile(glu_backend="pallas")["glu_backend"] == "pallas"
+        assert profile(glu_backend="pallas") != omitted
+        seen_cpu, res_cpu = _stub_prediction(tmp_path / "cpu_omitted", monkeypatch, {})
+        assert "glu_backend" not in seen_cpu
+        assert "glu_backend" not in res_cpu.raw["overrides"]

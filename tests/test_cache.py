@@ -296,6 +296,34 @@ def test_esmfold2_records_the_context_parallel_mesh_it_resolves(
     assert "cp_layout" not in backend.cache_profile(request)
 
 
+def test_esmfold2_omitted_glu_backend_shares_pallas_namespace_on_serial_gpu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from foldjax.models import _pallas_pair
+
+    backend = ESMFold2Backend()
+    omitted = dataclasses.replace(
+        _request(tmp_path), model="esmfold2", input_format="foldjax"
+    )
+    pallas = dataclasses.replace(omitted, options={"glu_backend": "pallas"})
+    xla = dataclasses.replace(omitted, options={"glu_backend": "xla"})
+    tokamax = dataclasses.replace(omitted, options={"glu_backend": "tokamax"})
+    cp_omitted = dataclasses.replace(omitted, options={"cp_devices": 2})
+    cp_xla = dataclasses.replace(
+        omitted, options={"cp_devices": 2, "glu_backend": "xla"}
+    )
+
+    monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: True)
+    assert backend.cache_profile(omitted)["glu_backend"] == "pallas"
+    assert backend.cache_profile(omitted) == backend.cache_profile(pallas)
+    assert resolve_cache_dir(omitted, backend) == resolve_cache_dir(pallas, backend)
+    assert resolve_cache_dir(omitted, backend) != resolve_cache_dir(xla, backend)
+    assert resolve_cache_dir(omitted, backend) != resolve_cache_dir(tokamax, backend)
+    assert "glu_backend" not in backend.cache_profile(xla)
+    assert "glu_backend" not in backend.cache_profile(cp_omitted)
+    assert resolve_cache_dir(cp_omitted, backend) == resolve_cache_dir(cp_xla, backend)
+
+
 @pytest.fixture
 def af3_on_a_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
     """Plan as a GPU host, where an omitted attention is the released `triton`."""

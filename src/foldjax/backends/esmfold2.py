@@ -170,8 +170,10 @@ _FIXED_COMPILE_DEFAULTS = {
     # Off is the run every recorded ESMFold2 number describes, so naming
     # it explicitly must not select a second compilation namespace.
     "deterministic": False,
-    # The unfused transition is what every released number describes, and the
-    # value is independent of the checkpoint: no `config.json` key reaches it.
+    # The unfused transition is what an omitted option still realises off a GPU
+    # and under context parallelism. On a serial GPU process an omitted option
+    # realises `pallas` instead and `cache_profile` records that word -- see
+    # `realised_glu_backend`.
     "glu_backend": "xla",
     # The released XLA triangle multiplication, and what an omitted option
     # still realises off a GPU and under context parallelism. On a serial GPU
@@ -252,18 +254,11 @@ _GLU_BACKENDS = GLU_BACKENDS
 def _checked_glu_backend(value: object) -> str:
     """Reject a misspelled GLU backend before anything is loaded."""
 
-    if value not in _GLU_BACKENDS:
+    if not isinstance(value, str) or value not in _GLU_BACKENDS:
         raise ValueError(
             f"glu_backend must be one of {', '.join(_GLU_BACKENDS)}; got {value!r}"
         )
-    if value == "pallas":
-        # `pallas` names the pair-stack transitions, and this port has none: an
-        # accepted value that changes nothing would report a program it is not.
-        raise ValueError(
-            "glu_backend='pallas' reaches pair-stack transitions only, and "
-            "ESMFold2 has none; use xla or tokamax"
-        )
-    return str(value)
+    return value
 
 
 #: The values `triangle_backend` accepts, spelled here to keep planning free of
@@ -311,6 +306,28 @@ def _gpu_process() -> bool:
     from foldjax.models._pallas_pair import gpu_process
 
     return gpu_process()
+
+
+def realised_glu_backend(
+    value: object,
+    *,
+    cp_devices: object = 1,
+    trunk_dtype: str = "bfloat16",
+) -> Any:
+    """The ESMFold2 ``glu_backend`` this run realises, spelled or omitted.
+
+    An explicit value is returned unchanged so callers validate and refuse it
+    as written, and malformed values keep their own cache namespace. An
+    omitted value (``None``) realises ``"pallas"`` on a serial GPU process with
+    the released bfloat16 trunk, and ``"xla"`` everywhere else (CPU, TPU, any
+    context-parallel run, or a float32 trunk).
+    """
+
+    if value is not None:
+        return value
+    if _strict_cp_devices(cp_devices) > 1 or trunk_dtype != "bfloat16":
+        return "xla"
+    return "pallas" if _gpu_process() else "xla"
 
 
 def realised_triangle_backend(
@@ -365,8 +382,17 @@ def _refuse_cp_triangle_backend(triangle_backend: object, cp_devices: object) ->
 
 
 def _refuse_gpu_only_kernels(options: Mapping[str, Any]) -> None:
-    """Refuse a spelled `cueq` or `pallas` triangle backend off a GPU."""
+    """Refuse a spelled GPU-only trunk kernel off a GPU while planning."""
 
+    if options.get("glu_backend") == "pallas" and not _gpu_process():
+        from foldjax._gpu import default_device
+
+        raise ValueError(
+            "glu_backend='pallas' runs the Pallas-Triton transition "
+            "kernel, which needs a GPU, and the selected JAX device uses "
+            f"platform {default_device().platform!r}; omit the option or pass "
+            "--option glu_backend=xla"
+        )
     backend = options.get("triangle_backend")
     fused = _fused_triangle_backend(backend)
     if fused is None or _gpu_process():
@@ -753,9 +779,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             # refused run and a warned run build the same program.
             "memory_budget_gib",
             "memory_check",
-            # Opt-in fused SwiGLU for the diffusion token transformer. Native
-            # rather than a neutral knob: no other port spells a GLU choice
-            # the neutral vocabulary could rename, and Boltz-2's is native too.
+            # Pallas trunk pair/MSA transitions (serial-GPU default) or opt-in
+            # fused Tokamax SwiGLU in diffusion (`xla` upstream). Native rather
+            # than a neutral knob, as on Boltz-2 and OpenFold3.
             "glu_backend",
             "triangle_backend",
             "rigid_align_backend",
@@ -841,9 +867,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # Compiled into the executable, on both the structure graph and
         # ESMC's blocks, so it selects its own namespace for the same reason.
         "deterministic",
-        # Selects which kernel the twelve token-transformer transitions are
-        # traced against, so a fused run must not be answered out of the
-        # default executable's cache entry.
+        # Selects which transition kernels the trunk pair/MSA stacks (`pallas`)
+        # or diffusion blocks (`tokamax`) trace against, so each route keeps
+        # its own compilation-cache namespace.
         "glu_backend",
         "triangle_backend",
         "rigid_align_backend",
@@ -1333,10 +1359,15 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             value = profile.get(name)
             if isinstance(value, int) and not isinstance(value, bool):
                 profile[name] = float(value)
-        # Resolve before stripping `_FIXED_COMPILE_DEFAULTS`: on a serial GPU an
-        # omitted option realises `pallas` (recorded, matching explicit `pallas`),
-        # while explicit `xla` and off-GPU / context-parallel omissions realise
-        # `xla` and strip to the historical absent entry.
+        # Resolve before stripping `_FIXED_COMPILE_DEFAULTS`: on a serial GPU
+        # omitted options realise `pallas` for both the transition and the
+        # triangle multiplication (recorded, matching their explicit
+        # spellings), while explicit `xla` and off-GPU / context-parallel
+        # omissions realise `xla` and strip to the historical absent entries.
+        profile["glu_backend"] = realised_glu_backend(
+            profile.get("glu_backend"),
+            cp_devices=profile.get("cp_devices", 1),
+        )
         profile["triangle_backend"] = realised_triangle_backend(
             profile.get("triangle_backend"),
             cp_devices=profile.get("cp_devices", 1),
@@ -1378,18 +1409,26 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             options.get("cp_layout", "auto"),
             devices=options.get("cp_devices", 1),
         )
-        glu_backend = _checked_glu_backend(options.get("glu_backend", "xla"))
+        glu_backend = (
+            _checked_glu_backend(options["glu_backend"])
+            if "glu_backend" in options
+            else "xla"
+        )
         _checked_rigid_align_backend(options.get("rigid_align_backend", "svd"))
         _checked_lm_state_storage(options.get("lm_state_storage", "stack"))
         # Refused here as well as in the port: this runs before the 939 MB
         # structure checkpoint is opened, and the reason is the same one
         # Boltz-2 gives -- the pair state is placed by a sharding constraint
         # and a Pallas custom call carries no partitioner for GSPMD to use.
-        if glu_backend != "xla" and int(options.get("cp_devices", 1)) > 1:
+        if (
+            glu_backend != "xla"
+            and _strict_cp_devices(options.get("cp_devices", 1)) > 1
+        ):
             raise ValueError(
                 "context parallelism requires glu_backend='xla'; a fused GLU "
                 "cannot be partitioned"
             )
+        _refuse_gpu_only_kernels({"glu_backend": glu_backend})
         if "triangle_backend" in options:
             triangle_backend = _checked_triangle_backend(options["triangle_backend"])
             _refuse_cp_triangle_backend(
@@ -1549,7 +1588,23 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # is already `xla`, and naming it for every caller would put a value
         # nobody requested into the recorded overrides.
         if "glu_backend" in options:
-            overrides["glu_backend"] = _checked_glu_backend(options.pop("glu_backend"))
+            glu_backend = _checked_glu_backend(options.pop("glu_backend"))
+            if (
+                glu_backend != "xla"
+                and _strict_cp_devices(options.get("cp_devices", 1)) > 1
+            ):
+                raise ValueError(
+                    "context parallelism requires glu_backend='xla'; "
+                    "a fused GLU cannot be partitioned"
+                )
+            _refuse_gpu_only_kernels({"glu_backend": glu_backend})
+            overrides["glu_backend"] = glu_backend
+        else:
+            realised_glu = realised_glu_backend(
+                None, cp_devices=options.get("cp_devices", 1)
+            )
+            if realised_glu != "xla":
+                overrides["glu_backend"] = realised_glu
         if "triangle_backend" in options:
             triangle_backend = _checked_triangle_backend(
                 options.pop("triangle_backend")
@@ -1804,17 +1859,21 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                 def off_profile_reasons() -> tuple[str, ...]:
                     # What `inference.predict` will say puts this run below the
                     # fitted profile, read off the same resolved settings.
-                    # `triangle_backend` stays on-profile: the fitted law
-                    # upper-bounds `pallas` and `cueq`, matching `inference.predict`.
+                    # `triangle_backend` and `glu_backend='pallas'` stay
+                    # on-profile: the fitted law upper-bounds the fused
+                    # kernels, matching `inference.predict`.
                     settings = model.settings
+                    diffusion_glu = overrides.get(
+                        "glu_backend", settings.diffusion.glu_backend
+                    )
+                    if diffusion_glu == "pallas":
+                        diffusion_glu = "xla"
                     return memory_policy.esmfold2_off_profile_reason(
                         num_samples=overrides.get("num_samples", settings.num_samples),
                         cp_shards=overrides.get("cp_shards", 1),
                         stop_after_inputs=request.stop_after == "inputs",
                         lm_state_storage=lm_state_storage,
-                        glu_backend=overrides.get(
-                            "glu_backend", settings.diffusion.glu_backend
-                        ),
+                        glu_backend=diffusion_glu,
                         rigid_align_backend=overrides.get(
                             "rigid_align_backend",
                             settings.diffusion.rigid_align_backend,

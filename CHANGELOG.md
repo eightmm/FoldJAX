@@ -680,6 +680,20 @@ unless it says so here, in its own paragraph.
   code then took 51.3 s against 61.5 s at 1,003 tokens at the same peak and
   203.6 s against 242.5 s at 2,096 tokens with the peak falling from 35,419 to
   33,737 MiB, per-chain CA RMSD moving by at most 0.007 A.
+- **ESMFold2 runs its trunk pair and MSA transitions on the Pallas-Triton
+  transition kernel by default on a serial GPU.** Each 64-row block of the
+  folding trunk's transitions runs norm, SwiGLU and output projection as one
+  kernel (`glu_backend=pallas`) in place of the norm and two autocast GEMMs,
+  when the trunk is bfloat16; context parallelism, a float32 trunk and a run
+  off a GPU keep the unfused route, as does any transition whose widths are
+  not multiples of 16, and the diffusion transitions keep XLA.
+  `--option glu_backend=xla` restores the unfused transitions on a GPU, and
+  an omitted option shares the compilation namespace of explicit `pallas`.
+  On one RTX PRO 6000 Blackwell, against the Pallas triangle-multiplication
+  default, warm wall fell from 55.4 to 53.2 s at 1,003 tokens at the same
+  14,780 MiB peak, and from 211.3 to 194.9 s at 2,096 tokens with the peak
+  falling from 33,737 to 32,785 MiB; per-chain CA RMSD to the deposited
+  structures moved by at most 0.004 A and 0.0054 A, complex TM unchanged.
 - **ESMFold2 bins the confidence head's representative distances with a
   binary search.** The index was a compare-and-sum over the 38 distance
   boundaries, which XLA compiled into one reduce kernel over 128 x 128
