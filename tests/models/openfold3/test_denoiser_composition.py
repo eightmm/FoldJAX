@@ -274,6 +274,22 @@ def test_output_shape_is_coordinates(openfold3_source, randomized) -> None:
     assert np.isfinite(np.asarray(out)).all()
 
 
+def _assert_width_invariant(actual, expected, real_atoms: int = 75) -> None:
+    """Width-1 against widened denoiser output, to a few float32 ULP.
+
+    Bitwise on the development host, but a hosted CPU runner's XLA picks its
+    GEMM kernel by the M extent, which moved results 2.9e-6 at |x| ~ 5 (push
+    CI run 45916764746). Device bitwise identity is checked on GPU instead.
+    Padded atoms stay exactly zero on both sides.
+    """
+    actual, expected = np.asarray(actual), np.asarray(expected)
+    np.testing.assert_array_equal(actual[:, real_atoms:], 0.0)
+    np.testing.assert_array_equal(expected[:, real_atoms:], 0.0)
+    np.testing.assert_allclose(
+        actual[:, :real_atoms], expected[:, :real_atoms], rtol=0, atol=1e-5
+    )
+
+
 def _shared_pair_inputs(width: int = 3, *, dtype=jnp.float32, real_atoms: int = 75):
     from tests.models.openfold3 import atom_cp_fixtures as fx
 
@@ -311,10 +327,10 @@ def _shared_pair_inputs(width: int = 3, *, dtype=jnp.float32, real_atoms: int = 
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16])
 @pytest.mark.parametrize("scan_blocks", [True, False])
-def test_width_one_pair_matches_widened_pair_bitwise(
+def test_width_one_pair_matches_widened_pair(
     dtype, scan_blocks: bool, monkeypatch
 ) -> None:
-    """Keeping the sample-shared pair one sample wide preserves exact arithmetic."""
+    """Keeping the sample-shared pair one sample wide preserves the arithmetic."""
     batch_w, batch_pair1, xl, t, si, si_trunk, zij_1, zij_w, params, kw, _ = (
         _shared_pair_inputs(width=3, dtype=dtype)
     )
@@ -335,8 +351,8 @@ def test_width_one_pair_matches_widened_pair_bitwise(
     out_pair1 = np.asarray(run(batch_pair1, xl, zij_1))
     out_zonly = np.asarray(run(batch_w, xl, zij_1))
 
-    np.testing.assert_array_equal(out_pair1, out_wide)
-    np.testing.assert_array_equal(out_zonly, out_wide)
+    _assert_width_invariant(out_pair1, out_wide)
+    _assert_width_invariant(out_zonly, out_wide)
     assert not np.allclose(out_pair1[0], out_pair1[1])
     np.testing.assert_array_equal(out_pair1[:, 75:], 0.0)
 
@@ -991,7 +1007,7 @@ def test_denoiser_and_rollout_keep_single_one_sample_wide(monkeypatch) -> None:
                 )
                 out_w = np.asarray(run_c(batch_p1, si_w, st_w))
                 out_1 = np.asarray(run_c(batch_t1, si_1, st_1))
-                np.testing.assert_array_equal(out_1, out_w)
+                _assert_width_invariant(out_1, out_w)
                 assert not np.allclose(out_1[0], out_1[1])
                 np.testing.assert_array_equal(out_1[:, 75:], 0.0)
                 if dtype == jnp.float32 and scan_blocks:
@@ -1007,7 +1023,7 @@ def test_denoiser_and_rollout_keep_single_one_sample_wide(monkeypatch) -> None:
                     run_u = jax.jit(
                         lambda b, s, st: denoise(b, xl, t, s, st, zij_1, params, **kw)
                     )
-                    np.testing.assert_array_equal(
+                    _assert_width_invariant(
                         np.asarray(run_u(batch_t1, si_1, st_1)),
                         np.asarray(run_u(batch_p1, si_w, st_w)),
                     )
