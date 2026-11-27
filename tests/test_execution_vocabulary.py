@@ -208,7 +208,8 @@ def test_esmfold2_auto_is_the_omitted_kernel(
     request_with, monkeypatch, gpu: bool
 ) -> None:
     """`auto` passes nothing, so it names what an omitted option realises:
-    `cueq` on a serial GPU, the released `xla` elsewhere."""
+    `pallas` on a serial GPU, the released `xla` elsewhere. Both `cueq` and
+    `xla` stay their own programs on a GPU."""
     from foldjax.models import _pallas_pair
 
     monkeypatch.setattr(_pallas_pair, "gpu_process", lambda: gpu)
@@ -219,9 +220,10 @@ def test_esmfold2_auto_is_the_omitted_kernel(
     omitted = request_with()
     assert "triangle_backend" not in esmfold2.apply_sampling(auto)
     assert esmfold2.cache_profile(auto) == esmfold2.cache_profile(omitted)
-    same, other = (cueq, xla) if gpu else (xla, cueq)
-    assert esmfold2.cache_profile(same) == esmfold2.cache_profile(omitted)
-    assert esmfold2.cache_profile(other) != esmfold2.cache_profile(omitted)
+    profile = esmfold2.cache_profile(omitted)
+    assert profile.get("triangle_backend") == ("pallas" if gpu else None)
+    assert esmfold2.cache_profile(cueq) != profile
+    assert (esmfold2.cache_profile(xla) == profile) is not gpu
 
 
 @pytest.mark.parametrize("cp_devices", [1, 4])

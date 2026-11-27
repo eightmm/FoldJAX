@@ -34,11 +34,12 @@ unless it says so here, in its own paragraph.
   for the denoiser's token and atom attention. An omitted option runs it on a
   serial GPU; see Changed for the default and its measurements. Refused
   together with `use_tfg_guidance`.
-- **ESMFold2 `triangle_backend`** (also `triangle_kernel`), selecting
-  cuEquivariance's fused triangle multiplication (`cueq`) or upstream's
-  bfloat16 GEMM route (`xla`) in the pair trunk. An omitted option runs `cueq`
-  on a serial GPU; see Changed for the default and its measurements. Explicit
-  `cueq` is refused with context parallelism and off a GPU.
+- **ESMFold2 `triangle_backend`** (also `triangle_kernel` for `cueq` and
+  `xla`), selecting the Pallas-Triton fused triangle multiplication
+  (`pallas`), cuEquivariance's (`cueq`) or upstream's bfloat16 GEMM route
+  (`xla`) in the pair trunk. An omitted option runs `pallas` on a serial GPU;
+  see Changed for the default and its measurements. Explicit `pallas` and
+  `cueq` are refused with context parallelism and off a GPU.
 - **`--cache-dir` on the Protenix and OpenDDE native predict CLIs and
   `--no-cache` on Protenix's**, as aliases of `--compile-cache` and
   `--no-compile-cache`.
@@ -646,22 +647,26 @@ unless it says so here, in its own paragraph.
   routes (0.005-0.006 Å at 1,993 tokens) matched the spread between two runs
   of the same code, as OpenDDE's default is not deterministic across
   processes.
-- **ESMFold2 runs cuEquivariance triangle multiplication
-  (`triangle_backend=cueq`) by default on a serial GPU.** An omitted
-  `triangle_backend` now realises `cueq` on a single-GPU process and keeps
-  `xla` on CPU, TPU and context-parallel runs; `--option triangle_backend=xla`
-  restores upstream's bfloat16 GEMM route on a GPU, and explicit `cueq` remains
-  refused off a GPU and under context parallelism. On a serial GPU an omitted
-  option shares the compilation namespace and executable of explicit
-  `triangle_backend=cueq`, a float32 confidence head keeps the XLA route, and
-  memory admission stays binding: the fitted law, measured on the XLA route,
-  bounds the fused kernel's equal or lower peak. On one RTX PRO 6000
-  Blackwell, warm prediction at 1,003 tokens took 66.1 s against 73.7 s at
-  the same 14,780 MiB peak, and at 2,096 tokens padded to 2,304 it took
-  264.3 s against 367.7 s with the peak falling from 39,574 to 35,491 MiB.
-  Per-chain CA RMSD to the deposited structures moved by at most 0.0006 A at
-  1,003 tokens and 0.0054 A at 2,096 over the five samples, and each sample
-  stayed within 0.06 A CA RMSD of its counterpart on the XLA route.
+- **ESMFold2 runs a fused triangle multiplication by default on a serial
+  GPU: the Pallas-Triton kernel (`triangle_backend=pallas`), with
+  cuEquivariance's (`triangle_backend=cueq`) selectable.** An omitted
+  `triangle_backend` (or `triangle_kernel=auto`) now realises `pallas` on a
+  single-GPU process with the bfloat16 trunk and keeps `xla` on CPU, TPU,
+  context-parallel and float32-trunk runs; `--option triangle_backend=cueq`
+  selects cuEquivariance and `xla` restores upstream's bfloat16 GEMM route on
+  a GPU, and an explicit `pallas` or `cueq` is refused off a GPU and under
+  context parallelism. On a serial GPU an omitted option shares the
+  compilation namespace and executable of explicit `triangle_backend=pallas`,
+  a float32 confidence head keeps the XLA route, and memory admission stays
+  binding: the fitted law, measured on the XLA route, bounds the fused
+  kernels' equal or lower peak. On one RTX PRO 6000 Blackwell, `cueq` against
+  XLA took 66.1 s against 73.7 s at 1,003 tokens at the same 14,780 MiB peak,
+  and at 2,096 tokens padded to 2,304 264.3 s against 367.7 s with the peak
+  falling from 39,574 to 35,491 MiB, per-chain CA RMSD to the deposited
+  structures moving by at most 0.0054 A. `pallas` against `cueq` on later
+  code then took 51.3 s against 61.5 s at 1,003 tokens at the same peak and
+  203.6 s against 242.5 s at 2,096 tokens with the peak falling from 35,419 to
+  33,737 MiB, per-chain CA RMSD moving by at most 0.007 A.
 - **ESMFold2 bins the confidence head's representative distances with a
   binary search.** The index was a compare-and-sum over the 38 distance
   boundaries, which XLA compiled into one reduce kernel over 128 x 128

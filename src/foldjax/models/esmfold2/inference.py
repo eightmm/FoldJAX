@@ -24,7 +24,11 @@ import jax.numpy as jnp
 import numpy as np
 
 from foldjax import memory_policy, progress
-from foldjax.backends.esmfold2 import realised_triangle_backend
+from foldjax.backends.esmfold2 import (
+    _refuse_cp_triangle_backend,
+    _refuse_gpu_only_kernels,
+    realised_triangle_backend,
+)
 from foldjax.models import _capture
 from foldjax.models._chain_profile import chain_capacity
 from foldjax.models._compile_policy import (
@@ -781,9 +785,9 @@ def predict(
     #: takes. `None` leaves the checkpoint's value, which is `"xla"`.
     glu_backend: str | None = None,
     #: Which implementation the pair trunk's triangle multiplication takes.
-    #: `None` realises `"cueq"` on a serial GPU process and `"xla"` otherwise
-    #: (CPU, TPU, or context parallelism); `"xla"` restores upstream's
-    #: bfloat16 GEMM route on a GPU.
+    #: `None` realises `"pallas"` on a serial GPU process and `"xla"` otherwise
+    #: (CPU, TPU, or context parallelism); `"cueq"` runs cuEquivariance's fused
+    #: update and `"xla"` restores upstream's bfloat16 GEMM route on a GPU.
     triangle_backend: str | None = None,
     #: Experimental solver-free alignment. SVD remains the default until
     #: real-weight, tape-fixed accuracy and memory measurements admit Jacobi.
@@ -912,23 +916,9 @@ def predict(
             "context parallelism requires glu_backend='xla'; a fused GLU "
             "cannot be partitioned"
         )
-    if cp_shards > 1 and triangle_backend not in (None, "xla"):
-        raise ValueError(
-            "context parallelism requires triangle_backend='xla'; "
-            "cuEquivariance triangle multiplication cannot be partitioned"
-        )
-    if triangle_backend == "cueq":
-        from foldjax.models._pallas_pair import gpu_process
-
-        if not gpu_process():
-            from foldjax._gpu import default_device
-
-            raise ValueError(
-                "triangle_backend='cueq' runs cuEquivariance's fused triangle "
-                "multiplication, which needs a GPU, and the selected JAX "
-                f"device uses platform {default_device().platform!r}; omit the "
-                "option or pass --option triangle_backend=xla"
-            )
+    if triangle_backend is not None:
+        _refuse_cp_triangle_backend(triangle_backend, cp_shards)
+        _refuse_gpu_only_kernels({"triangle_backend": triangle_backend})
     # Resolved before anything is traced, and carried resolved from here on:
     # the alias decides which program is built, so the executable's static
     # topology has to be what runs rather than what was spelled.
@@ -1216,11 +1206,7 @@ def _run(
             f"triangle_backend must be one of {TRIANGLE_BACKENDS}; "
             f"got {triangle_backend!r}"
         )
-    if cp_shards > 1 and triangle_backend != "xla":
-        raise ValueError(
-            "context parallelism requires triangle_backend='xla'; "
-            "cuEquivariance triangle multiplication cannot be partitioned"
-        )
+    _refuse_cp_triangle_backend(triangle_backend, cp_shards)
     if cp_shards != _active_cp_shards():
         raise RuntimeError(
             f"cp_shards={cp_shards} but the active context-parallel mesh has "

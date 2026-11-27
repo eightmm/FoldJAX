@@ -3269,7 +3269,7 @@ def run_esmfold2(
             "(forward hook), from the inputs injected here.",
         )
 
-    # What an omitted `triangle_backend` runs here: cuEquivariance's fused
+    # What an omitted `triangle_backend` runs here: the Pallas-Triton fused
     # kernel on a GPU, the XLA route on a CPU. The stages call the structure
     # model below `inference.predict`, so the scope that `predict` opens is
     # opened here instead, from the same resolver.

@@ -358,12 +358,15 @@ too narrow for the attribute to act on, and live under `dtype=float32`. See
 Read against upstream, **four rows diverge from what their publisher ships**,
 and all four were decisions. AlphaFold 3 (`model_config.py:34`) and ESMFold2
 match. ESMFold2 matches in precision only: since 2026-11-26 its triangle
-multiplication runs cuEquivariance's fused kernel by default on a serial GPU,
-which rounds differently from upstream's bfloat16 GEMMs. That is a declared
-kernel departure, made under the same accuracy-equivalence rule (0.90x wall at
-1,003 tokens, 0.72x at 2,304, peak equal or 0.90x, per-chain deposited RMSD
-within 0.006 Å); `--option triangle_backend=xla` runs upstream's route, and
-the CPU parity suite exercises that route. `docs/cli.md` has the table.
+multiplication runs a fused kernel by default on a serial GPU with the
+bfloat16 trunk -- cuEquivariance's first, then the Pallas-Triton kernel from
+2026-11-27 -- which rounds differently from upstream's bfloat16 GEMMs. That is
+a declared kernel departure, made under the same accuracy-equivalence rule
+(`cueq` against XLA 0.90x wall at 1,003 tokens and 0.72x at 2,304; `pallas`
+against `cueq` 0.83x at 1,003 and 0.84x at 2,096, peak equal or lower, per-chain
+deposited RMSD within 0.007 Å); `--option triangle_backend=cueq` selects
+cuEquivariance, `--option triangle_backend=xla` runs upstream's route, and the
+CPU parity suite exercises that route. `docs/cli.md` has the tables.
 
 **Boltz-2** is a declared departure, from 2026-09-11, on two axes. Upstream is
 `main.py:1262` (`precision="bf16-mixed"`) with `main.py:1096` asking for

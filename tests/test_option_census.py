@@ -638,6 +638,11 @@ _UNSPELLABLE_BY_DESIGN = {
     # is named only by `OPENFOLD3_TRIANGLE_BACKEND=cueq-pallas`
     # (docs/cli.md, "What an omitted setting runs").
     ("openfold3", "triangle_kernel", "cueq-pallas"),
+    # An omitted ESMFold2 triangle multiplication on a serial GPU process with
+    # the bfloat16 trunk realises `pallas` (`backends.esmfold2.
+    # realised_triangle_backend`). No neutral `triangle_kernel` value names it;
+    # the port's own `--option triangle_backend=pallas` does.
+    ("esmfold2", "triangle_backend", "pallas"),
 }
 
 

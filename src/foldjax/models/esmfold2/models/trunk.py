@@ -44,7 +44,13 @@ from foldjax.models.esmfold2.models.primitives import layer_norm, linear, swiglu
 Params = Mapping[str, jnp.ndarray]
 
 #: Values every ESMFold2 triangle-multiplication entry point accepts.
-TRIANGLE_BACKENDS = ("xla", "cueq")
+TRIANGLE_BACKENDS = ("xla", "cueq", "pallas")
+
+#: GPU-only fused triangle-multiplication backends and their refusal labels.
+_FUSED_TRIANGLE_NAMES: Mapping[str, str] = {
+    "cueq": "cuEquivariance",
+    "pallas": "Pallas",
+}
 
 # Whole-model compilation resolves `triangle_backend` before selecting a bounded
 # JIT owner, then pins that value while its graph is traced so every pair stack
@@ -872,18 +878,24 @@ def _cueq_triangle(
     outgoing: bool,
     mask: jnp.ndarray | None,
     eps: float,
+    kernel: str = "cueq",
 ) -> jnp.ndarray:
-    """Run cuEquivariance's fused update on ESMFold2's packed `proj_bundle`.
+    """Run a fused triangle update (`cueq` or `pallas`) on packed `proj_bundle`.
 
     `proj_bundle` packs `[left | right | gate_left | gate_right]` along its
     output axis (`[4 * c_h, c_z]`), so rows `[:2 * c_h]` and `[2 * c_h:]` are
-    already cuEquivariance's stacked `p_in` and `g_in` weights in `[left |
-    right]` order. Linear weights and optional biases are cast to `pair.dtype`
-    (matching native autocast's BF16 GEMM operands and cuEquivariance's AOT
-    cache keys), while `norm_start` and `norm_mix` keep their stored precision
-    for the kernel's FP32 affine reduction.
+    already the stacked `p_in` and `g_in` weights in `[left | right]` order
+    that both cuEquivariance and the Pallas pair kernel take. Linear weights
+    and optional biases are cast to `pair.dtype` (matching native autocast's
+    BF16 GEMM operands), while `norm_start` and `norm_mix` keep their stored
+    precision for the kernel's FP32 affine reduction.
     """
-    from foldjax.models._cueq import fused_triangle_multiplication
+    if kernel == "pallas":
+        from foldjax.models._pallas_pair import triangle_multiplication as fused
+    elif kernel == "cueq":
+        from foldjax.models._cueq import fused_triangle_multiplication as fused
+    else:
+        raise ValueError(f"unsupported fused triangle kernel: {kernel!r}")
 
     batch, rows, columns, _ = pair.shape
     operand_dtype = pair.dtype
@@ -892,7 +904,7 @@ def _cueq_triangle(
         jnp.dtype(jnp.float32),
     ):
         raise ValueError(
-            "cuEquivariance triangle multiplication requires bfloat16 or "
+            f"triangle_backend={kernel!r} requires bfloat16 or "
             f"float32 pair operands; got {operand_dtype}"
         )
     engine = f"{prefix}._engine" if prefix else "_engine"
@@ -912,7 +924,8 @@ def _cueq_triangle(
     ]
     if missing:
         raise ValueError(
-            f"triangle_backend='cueq' requires affine layer norms; missing {missing}"
+            f"triangle_backend={kernel!r} requires affine layer norms; "
+            f"missing {missing}"
         )
     bundle_weight = params[f"{engine}.proj_bundle.weight"]
     half = bundle_weight.shape[0] // 2
@@ -947,7 +960,7 @@ def _cueq_triangle(
         if mask is None
         else jnp.broadcast_to(mask, (batch, rows, columns)).astype(operand_dtype)
     )
-    return fused_triangle_multiplication(
+    return fused(
         pair,
         direction="outgoing" if outgoing else "incoming",
         mask=pair_mask,
@@ -1031,11 +1044,12 @@ def _triangle_multiplicative(
     route; see `_autocast_triangle_streamed` for what folding it in cost.
     """
     resolved_backend = _resolve_triangle_backend(triangle_backend)
-    if resolved_backend == "cueq":
+    if resolved_backend in _FUSED_TRIANGLE_NAMES:
         if cp_mesh() is not None:
             raise ValueError(
                 "context parallelism requires triangle_backend='xla'; "
-                "cuEquivariance triangle multiplication cannot be partitioned"
+                f"{_FUSED_TRIANGLE_NAMES[resolved_backend]} triangle "
+                "multiplication cannot be partitioned"
             )
         # Under `native_autocast=True`, the four trunk-region pair stacks
         # (`folding_trunk`, `lm_encoder`, `msa_encoder`, `parcae_coda`) carry
@@ -1043,12 +1057,19 @@ def _triangle_multiplicative(
         # `confidence_dtype='bfloat16'`). When `confidence_dtype='float32'`,
         # `confidence_head.folding_trunk` hands `native_autocast=True` a
         # float32 `pair` expecting FP32 norm/residual and BF16 GEMMs; the
-        # homogeneous cuEquivariance entry point would run float32 GEMMs there
-        # instead, so that mixed-AMP confidence call keeps `_autocast_triangle`.
+        # homogeneous fused entry points (`cueq` and `pallas`) would run
+        # float32 contractions there instead, so that mixed-AMP confidence
+        # call keeps `_autocast_triangle`.
         if not native_autocast or jnp.dtype(pair.dtype) == jnp.dtype(jnp.bfloat16):
             return (
                 _cueq_triangle(
-                    pair, params, prefix, outgoing=outgoing, mask=mask, eps=eps
+                    pair,
+                    params,
+                    prefix,
+                    outgoing=outgoing,
+                    mask=mask,
+                    eps=eps,
+                    kernel=resolved_backend,
                 ),
                 workspace,
             )
@@ -1390,7 +1411,7 @@ def _streamed_workspace(
     """
     resolved_backend = _resolve_triangle_backend(triangle_backend)
     if (
-        resolved_backend == "cueq"
+        resolved_backend in _FUSED_TRIANGLE_NAMES
         and cp_mesh() is None
         and jnp.dtype(pair.dtype) == jnp.dtype(jnp.bfloat16)
     ):

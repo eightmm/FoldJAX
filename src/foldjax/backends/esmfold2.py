@@ -175,7 +175,7 @@ _FIXED_COMPILE_DEFAULTS = {
     "glu_backend": "xla",
     # The released XLA triangle multiplication, and what an omitted option
     # still realises off a GPU and under context parallelism. On a serial GPU
-    # process an omitted option realises `cueq` instead and `cache_profile`
+    # process an omitted option realises `pallas` instead and `cache_profile`
     # records that word -- see `realised_triangle_backend`.
     "triangle_backend": "xla",
     "rigid_align_backend": "svd",
@@ -268,7 +268,19 @@ def _checked_glu_backend(value: object) -> str:
 
 #: The values `triangle_backend` accepts, spelled here to keep planning free of
 #: the model runtime; a drift test pins this tuple to `models.trunk.TRIANGLE_BACKENDS`.
-_TRIANGLE_BACKENDS = ("xla", "cueq")
+_TRIANGLE_BACKENDS = ("xla", "cueq", "pallas")
+
+#: GPU-only fused `triangle_backend` values, with `(cp_label, gpu_description)`.
+_FUSED_TRIANGLE_BACKENDS: Mapping[str, tuple[str, str]] = {
+    "cueq": (
+        "cuEquivariance",
+        "cuEquivariance's fused triangle multiplication",
+    ),
+    "pallas": (
+        "Pallas",
+        "the Pallas-Triton triangle multiplication",
+    ),
+}
 
 
 def _checked_triangle_backend(value: object) -> str:
@@ -311,30 +323,61 @@ def realised_triangle_backend(
 
     An explicit value is returned unchanged so callers validate and refuse it
     as written, and malformed values keep their own cache namespace. An
-    omitted value (``None``) realises ``"cueq"`` on a serial GPU process with
+    omitted value (``None``) realises ``"pallas"`` on a serial GPU process with
     the released bfloat16 trunk, and ``"xla"`` everywhere else (CPU, TPU, any
-    context-parallel run, or a float32 trunk, where the fused kernel would run
+    context-parallel run, or a float32 trunk, where the fused kernels would run
     float32 GEMMs that were never measured).
+
+    The measurements behind the default are in ``docs/cli.md`` (fused
+    triangle multiplication). Reads the same GPU probe as
+    :func:`_refuse_gpu_only_kernels` and :mod:`foldjax.models._pallas_pair`.
     """
 
     if value is not None:
         return value
     if _strict_cp_devices(cp_devices) > 1 or trunk_dtype != "bfloat16":
         return "xla"
-    return "cueq" if _gpu_process() else "xla"
+    return "pallas" if _gpu_process() else "xla"
+
+
+def _fused_triangle_backend(value: object) -> tuple[str, str] | None:
+    """`_FUSED_TRIANGLE_BACKENDS[value]`, or None for any other value."""
+
+    return _FUSED_TRIANGLE_BACKENDS.get(value) if isinstance(value, str) else None
+
+
+def _refuse_cp_triangle_backend(triangle_backend: object, cp_devices: object) -> None:
+    """Refuse a non-XLA `triangle_backend` under context parallelism.
+
+    A value that is not a backend name is refused too, without a label; its
+    own validation names what is wrong with it.
+    """
+
+    if triangle_backend == "xla" or _strict_cp_devices(cp_devices) <= 1:
+        return
+    fused = _fused_triangle_backend(triangle_backend)
+    kernel = (
+        f"{fused[0]} triangle multiplication cannot be partitioned"
+        if fused is not None
+        else f"got {triangle_backend!r}"
+    )
+    raise ValueError(f"context parallelism requires triangle_backend='xla'; {kernel}")
 
 
 def _refuse_gpu_only_kernels(options: Mapping[str, Any]) -> None:
-    """Refuse a spelled `cueq` triangle backend off a GPU while planning."""
+    """Refuse a spelled `cueq` or `pallas` triangle backend off a GPU."""
 
-    if options.get("triangle_backend") != "cueq" or _gpu_process():
+    backend = options.get("triangle_backend")
+    fused = _fused_triangle_backend(backend)
+    if fused is None or _gpu_process():
         return
     from foldjax._gpu import default_device
 
+    description = fused[1]
     raise ValueError(
-        "triangle_backend='cueq' runs cuEquivariance's fused triangle "
-        "multiplication, which needs a GPU, and the selected JAX device uses "
-        f"platform {default_device().platform!r}; omit the option or pass "
+        f"triangle_backend={backend!r} runs {description}, which needs a GPU, "
+        "and the selected JAX device uses platform "
+        f"{default_device().platform!r}; omit the option or pass "
         "--option triangle_backend=xla"
     )
 
@@ -767,7 +810,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         "triangle_kernel": (
             "triangle_backend",
             # `auto` passes nothing, so it realises what an omitted option
-            # does: `cueq` on a serial GPU, `xla` elsewhere.
+            # does: `pallas` on a serial GPU, `xla` elsewhere.
             {"auto": BACKEND_DEFAULT, "cueq": "cueq", "xla": "xla"},
         ),
     }
@@ -1291,7 +1334,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             if isinstance(value, int) and not isinstance(value, bool):
                 profile[name] = float(value)
         # Resolve before stripping `_FIXED_COMPILE_DEFAULTS`: on a serial GPU an
-        # omitted option realises `cueq` (recorded, matching explicit `cueq`),
+        # omitted option realises `pallas` (recorded, matching explicit `pallas`),
         # while explicit `xla` and off-GPU / context-parallel omissions realise
         # `xla` and strip to the historical absent entry.
         profile["triangle_backend"] = realised_triangle_backend(
@@ -1349,14 +1392,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             )
         if "triangle_backend" in options:
             triangle_backend = _checked_triangle_backend(options["triangle_backend"])
-            if (
-                triangle_backend != "xla"
-                and _strict_cp_devices(options.get("cp_devices", 1)) > 1
-            ):
-                raise ValueError(
-                    "context parallelism requires triangle_backend='xla'; "
-                    "cuEquivariance triangle multiplication cannot be partitioned"
-                )
+            _refuse_cp_triangle_backend(
+                triangle_backend, options.get("cp_devices", 1)
+            )
             _refuse_gpu_only_kernels({"triangle_backend": triangle_backend})
         # Refused early for the spelling only. Unlike `glu_backend` there is
         # no context-parallel restriction to add: this narrows arithmetic
@@ -1516,14 +1554,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             triangle_backend = _checked_triangle_backend(
                 options.pop("triangle_backend")
             )
-            if (
-                triangle_backend != "xla"
-                and _strict_cp_devices(options.get("cp_devices", 1)) > 1
-            ):
-                raise ValueError(
-                    "context parallelism requires triangle_backend='xla'; "
-                    "cuEquivariance triangle multiplication cannot be partitioned"
-                )
+            _refuse_cp_triangle_backend(
+                triangle_backend, options.get("cp_devices", 1)
+            )
             _refuse_gpu_only_kernels({"triangle_backend": triangle_backend})
             overrides["triangle_backend"] = triangle_backend
         else:
@@ -1772,7 +1805,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                     # What `inference.predict` will say puts this run below the
                     # fitted profile, read off the same resolved settings.
                     # `triangle_backend` stays on-profile: the fitted law
-                    # upper-bounds `cueq`, matching `inference.predict`.
+                    # upper-bounds `pallas` and `cueq`, matching `inference.predict`.
                     settings = model.settings
                     return memory_policy.esmfold2_off_profile_reason(
                         num_samples=overrides.get("num_samples", settings.num_samples),

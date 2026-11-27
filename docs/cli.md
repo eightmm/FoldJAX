@@ -2101,20 +2101,21 @@ silent no-op -- because a kernel is offered on the port whose numbers were
 measured. OpenDDE is the natural next port to measure: the arena that
 motivated the blocking in the first place is OpenDDE's.
 
-### cuEquivariance triangle multiplication (`--option triangle_backend=cueq`, ESMFold2)
+### Fused triangle multiplication (`--option triangle_backend=pallas|cueq`, ESMFold2)
 
-On a serial GPU process, an omitted `triangle_backend` runs cuEquivariance's
-fused triangle multiplication (`cueq`), the kernel Boltz-2, Protenix and
-OpenFold3 already use, on every pair stack taking the bfloat16 pair the
-autocast trunk carries. `--option triangle_backend=xla` (or `--option
-triangle_kernel=xla`) restores upstream's bfloat16 GEMM route, streamed in
-64-row blocks above 64 tokens. A CPU, TPU or context-parallel run, and a
-direct `inference.predict` call on a float32 trunk, keep XLA when the option
-is omitted; explicit `--option triangle_backend=cueq` (or
-`--option triangle_kernel=cueq`) is refused with context parallelism and off a
-GPU. On a serial GPU, omitting the option and passing `triangle_backend=cueq`
-select the same compilation namespace and executable, while
-`triangle_backend=xla` selects a separate one; off a GPU and under context
+On a serial GPU process, an omitted `triangle_backend` runs the Pallas-Triton
+triangle multiplication (`pallas`, from `foldjax.models._pallas_pair`, the
+kernel Boltz-2 and Protenix default to) on every pair stack taking the
+bfloat16 pair the autocast trunk carries. `--option triangle_backend=cueq` (or
+`--option triangle_kernel=cueq`) runs cuEquivariance's fused kernel instead,
+and `--option triangle_backend=xla` (or `--option triangle_kernel=xla`)
+restores upstream's bfloat16 GEMM route, streamed in 64-row blocks above 64
+tokens. A CPU, TPU or context-parallel run, and a direct `inference.predict`
+call on a float32 trunk, keep XLA when the option is omitted; an explicit
+`pallas` or `cueq` is refused with context parallelism and off a GPU. On a
+serial GPU, omitting the option and passing `triangle_backend=pallas` select
+the same compilation namespace and executable, while `cueq` and `xla` each
+select a separate one; off a GPU and under context
 parallelism, omitting the option and passing `triangle_backend=xla` name the
 same executable. A float32 confidence head (`confidence_dtype=float32`) keeps
 the XLA route: there the kernel would run in float32, where one update was
@@ -2140,7 +2141,19 @@ way (2,304 tokens: 409.2 s / 39,574 MiB against 298.2 s / 35,491 MiB).
 cuEquivariance 0.11.1 gave the same coordinates as 0.13.0 at 1,003 and 2,096
 tokens.
 
-### Pallas pair kernels (GPU default: Boltz-2 and OpenFold3 both, Protenix the multiplication)
+The Pallas kernel takes the same packed weights through the same calling
+convention, and it replaced cuEquivariance as the omitted default after a
+whole-prediction A/B on one RTX PRO 6000 against `cueq` on the same code:
+
+| tokens | `cueq` warm (s) | `pallas` warm (s) | `cueq` peak (MiB) | `pallas` peak (MiB) | deposited per-chain CA RMSD, largest change (A) | same-index CA RMSD (A) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1,003 | 61.5 | 51.3 | 14,780 | 14,780 | 0.003 | 0.067-1.096 |
+| 2,096 | 242.5 | 203.6 | 35,419 | 33,737 | 0.007 | 0.008-0.073 |
+
+At 1,003 tokens every CA that moves more than 1 A, in all five samples, is one
+of the first eleven residues, at pLDDT 40-66.
+
+### Pallas pair kernels (GPU default: Boltz-2 and OpenFold3 both, Protenix and ESMFold2 the multiplication)
 
 Two Pallas-Triton kernels in `foldjax.models._pallas_pair` replace
 cuEquivariance's fused triangle multiplication and the tokamax or XLA pair
@@ -2176,7 +2189,7 @@ What an omitted setting runs, and how to name either side:
 | --- | --- | --- | --- | --- |
 | triangle multiplication | Boltz-2 | `pallas` | `cueq` | `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=cueq` (or `xla`) |
 | triangle multiplication | Protenix | `pallas` | `cueq` | `PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=cueq` (or `xla`) |
-| triangle multiplication | ESMFold2 | `cueq` | `xla` | `--option triangle_backend=xla` |
+| triangle multiplication | ESMFold2 | `pallas` (serial, bfloat16 trunk) | `xla` | `--option triangle_backend=cueq` (or `xla`) |
 | triangle kernel | OpenFold3 | `cueq-pallas` | `cueq-full` | `--option triangle_kernel=cueq-full` or `OPENFOLD3_TRIANGLE_BACKEND=cueq-full` |
 | pair transitions | Boltz-2 | `glu_backend=pallas` | `tokamax` | `--option glu_backend=tokamax` (or `xla`) |
 | pair transitions | Protenix | `xla` (released) | `xla` | released already; `--option glu_backend=pallas` opts in |
@@ -2211,7 +2224,8 @@ Where each default is decided:
   the Protenix variable, but its model entry writes its own default into it
   first (the blocked `xla` product on the bfloat16 trunk, `cueq` on float32),
   because at its c_z 384 the Pallas multiplication only ties cuEquivariance.
-- **ESMFold2:** unchanged; it refuses `glu_backend=pallas`.
+- **ESMFold2:** the multiplication only (`triangle_backend`, above); it
+  refuses `glu_backend=pallas`.
 
 What gets recorded is what ran. The compile-cache namespace writes the
 realized `glu_backend`, OpenFold3's realized `triangle_kernel` and its

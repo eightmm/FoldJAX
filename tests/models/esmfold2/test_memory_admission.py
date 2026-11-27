@@ -401,7 +401,12 @@ def test_predict_marks_cueq_triangle_advisory_without_loosening_xla(
         override_gib=None,
     )
 
-    for on_profile in ({}, {"triangle_backend": "xla"}, {"triangle_backend": "cueq"}):
+    for on_profile in (
+        {},
+        {"triangle_backend": "xla"},
+        {"triangle_backend": "cueq"},
+        {"triangle_backend": "pallas"},
+    ):
         memory_policy.reset_warnings()
         memory_policy.clear_record()
         with pytest.raises(MemoryError, match="observed ESMFold2 capacity refusal"):
@@ -435,7 +440,11 @@ def test_predict_marks_cueq_triangle_advisory_without_loosening_xla(
         assert record["state"] == "over_budget"
         assert record["off_profile"] == [expected_reason]
 
-    for on_profile in ({}, {"triangle_backend": "cueq"}):
+    for on_profile in (
+        {},
+        {"triangle_backend": "cueq"},
+        {"triangle_backend": "pallas"},
+    ):
         memory_policy.reset_warnings()
         memory_policy.clear_record()
         with pytest.raises(MemoryError, match="2096 tokens"):
@@ -449,7 +458,7 @@ def test_predict_marks_cueq_triangle_advisory_without_loosening_xla(
             )
         assert memory_policy.recorded()["off_profile"] == []
 
-    for malformed in ("", 0, "pallas"):
+    for malformed in ("", 0, True, "triton"):
         memory_policy.clear_record()
         with pytest.raises(ValueError, match="triangle_backend must be one of"):
             inference.predict(
@@ -540,6 +549,7 @@ def test_managed_admission_marks_cueq_triangle_advisory_at_48gb_limit(
         {},
         {"triangle_backend": "xla"},
         {"triangle_backend": "cueq"},
+        {"triangle_backend": "pallas"},
         {"triangle_kernel": "cueq"},
     ):
         memory_policy.reset_warnings()
@@ -566,7 +576,11 @@ def test_managed_admission_marks_cueq_triangle_advisory_at_48gb_limit(
         assert record["state"] == "over_budget"
         assert record["off_profile"] == [expected_reason]
 
-    for options in ({}, {"triangle_backend": "cueq"}):
+    for options in (
+        {},
+        {"triangle_backend": "cueq"},
+        {"triangle_backend": "pallas"},
+    ):
         memory_policy.reset_warnings()
         memory_policy.clear_record()
         seen_lengths.clear()
@@ -578,7 +592,12 @@ def test_managed_admission_marks_cueq_triangle_advisory_at_48gb_limit(
         assert seen_lengths == [1726]
         assert memory_policy.recorded()["off_profile"] == []
 
-    for options in ({}, {"triangle_backend": "xla"}, {"triangle_backend": "cueq"}):
+    for options in (
+        {},
+        {"triangle_backend": "xla"},
+        {"triangle_backend": "cueq"},
+        {"triangle_backend": "pallas"},
+    ):
         memory_policy.reset_warnings()
         memory_policy.clear_record()
         seen_lengths.clear()
