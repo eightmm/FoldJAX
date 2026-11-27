@@ -23,6 +23,17 @@ why the option carries the second key. Every port pays for the second key in
 its own trunk, because it reroutes every Triton gemm to cuBLAS; the per-port
 wall-time row is a promotion gate, not a reason to grow a second spelling.
 
+The third key turns off the fusion autotuner, which times XLA's native emitter
+against its block-level (Triton) emitter for some fusions and keeps the faster.
+The two sum a reduction in different orders, and where their times are close
+the choice changes from one compile to the next. ESMFold2 at 2,096 tokens
+(padded to 2,304) under the first two keys returned two different structures
+from identical code in different processes: the autotune results of nine cold
+processes differed in exactly one entry, the emitter of an ``f32[2304,2560]``
+row reduction in the language model, and the structure followed that entry
+every time. With the fusion autotuner off, six cold processes returned the
+same bytes, at the same warm wall and peak (jobs 12033-12060, 2026-11-27).
+
 The promise covers the ops XLA emits -- scatters, reductions, autotuned gemm
 selection. Custom calls are outside it: the cuEquivariance triangle kernels,
 the tokamax attention and GLU kernels, and the Pallas elementwise divide are
@@ -45,6 +56,7 @@ if TYPE_CHECKING:
 DETERMINISTIC_COMPILER_OPTIONS: dict[str, Any] = {
     "xla_gpu_deterministic_ops": True,
     "xla_gpu_enable_triton_gemm": False,
+    "xla_gpu_experimental_enable_fusion_autotuner": False,
 }
 
 

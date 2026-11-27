@@ -309,3 +309,16 @@ def test_the_flag_name_is_spelled_in_exactly_one_place() -> None:
     for flag in DETERMINISTIC_COMPILER_OPTIONS:
         spelled = sorted(name for name, text in sources.items() if flag in text)
         assert spelled == ["models/_compile_policy.py"], flag
+
+
+def test_on_turns_the_fusion_autotuner_off() -> None:
+    """The emitter the fusion autotuner times is a reduction order.
+
+    Its native and block-level emitters sum a row in different orders, and
+    where their times are close the pick changes between compiles: ESMFold2 at
+    2,096 tokens returned one of two structures from identical code until the
+    autotuner was off (module docstring). Without this key the other two leave
+    that choice to the clock.
+    """
+    key = "xla_gpu_experimental_enable_fusion_autotuner"
+    assert DETERMINISTIC_COMPILER_OPTIONS[key] is False

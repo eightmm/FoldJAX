@@ -267,7 +267,8 @@ def test_deterministic_policy_is_set_before_device_initialization(monkeypatch):
     probe._benchmark_runtime(deterministic=True)
     assert observed == [
         "--xla_force_host_platform_device_count=1 "
-        "--xla_gpu_deterministic_ops=true --xla_gpu_enable_triton_gemm=false"
+        "--xla_gpu_deterministic_ops=true --xla_gpu_enable_triton_gemm=false "
+        "--xla_gpu_experimental_enable_fusion_autotuner=false"
     ]
 
 
@@ -312,7 +313,10 @@ def test_deterministic_policy_preserves_matching_flags_without_duplication(monke
         "jax._src.xla_bridge",
         SimpleNamespace(backends_are_initialized=lambda: False),
     )
-    original = "--xla_gpu_deterministic_ops 1 --xla_gpu_enable_triton_gemm=0"
+    original = (
+        "--xla_gpu_deterministic_ops 1 --xla_gpu_enable_triton_gemm=0 "
+        "--xla_gpu_experimental_enable_fusion_autotuner=false"
+    )
     monkeypatch.setenv("XLA_FLAGS", original)
     probe._configure_deterministic_runtime(True)
     assert probe.os.environ["XLA_FLAGS"] == original
@@ -342,6 +346,7 @@ print(os.environ['XLA_FLAGS'])
     )
     assert "--xla_gpu_deterministic_ops=true" in completed.stdout
     assert "--xla_gpu_enable_triton_gemm=false" in completed.stdout
+    assert "--xla_gpu_experimental_enable_fusion_autotuner=false" in completed.stdout
 
 
 @pytest.mark.parametrize("compiled", [False, True])

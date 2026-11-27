@@ -1300,6 +1300,18 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **`deterministic=on` also fixes XLA's fusion emitters.** The fusion
+  autotuner times XLA's native emitter against its block-level emitter for
+  some fusions and keeps the faster; the two sum a reduction in different
+  orders, and where their times are close the choice changes between
+  compiles. ESMFold2 at 2,096 tokens returned one of two structures from
+  identical code in different processes: across nine cold processes the
+  autotune results differed only in the emitter of one `f32[2304,2560]` row
+  reduction in the language model, and the structure followed it every time.
+  The deterministic compile options now turn the fusion autotuner off: six
+  cold processes returned the same bytes, warm wall 204.1 s against 204.3 s
+  and peak 33,737 MiB in both (one RTX PRO 6000 Blackwell). It applies to
+  every port's `deterministic=on` executables.
 - **`--resume` reruns a run made on another device platform.** An omitted
   option can resolve by device (ESMFold2's triangle kernel), so a CPU run's
   manifest matched a GPU request whose fresh run would compute differently.

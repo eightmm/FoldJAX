@@ -67,9 +67,9 @@ from typing import Any
 #:
 #: `deterministic` is the one knob here that buys repeatability rather than
 #: speed: it asks the compiler for reduction orders that do not vary between
-#: runs, and fixes the GEMM kernels the autotuner would otherwise pick afresh
-#: per compile. What an omitted knob runs as is decided per model, in
-#: `DETERMINISTIC_DEFAULTS` below.
+#: runs, and fixes the GEMM kernels and fusion emitters the autotuner would
+#: otherwise pick afresh per compile. What an omitted knob runs as is decided
+#: per model, in `DETERMINISTIC_DEFAULTS` below.
 #:
 #: `attention_kernel` has no `cueq`, and the asymmetry with `triangle_kernel`
 #: is the point: the cuEquivariance attention in this repository is triangle

@@ -2379,7 +2379,12 @@ the GEMM kernels: without it XLA's autotuner picks a kernel per compile, so
 two cold processes with empty compile caches return different structures on
 every model (max |dx| 1.5-2.1 Å at 250 tokens, one RTX PRO 6000 Blackwell,
 0.1.0). Skipping that autotuning cuts a cold compile 1.5-2.7x on every model
-at 1,000 tokens (3-5x at 250: Boltz-2 121.6 s to 29.4 s).
+at 1,000 tokens (3-5x at 250: Boltz-2 121.6 s to 29.4 s). It also turns off
+XLA's fusion autotuner, which times two code generators for some fusions and
+keeps the faster: the two sum a reduction in different orders, and where their
+times are close the choice changes between compiles. ESMFold2 at 2,096 tokens
+returned one of two structures from identical code until this was off, and the
+same bytes in six cold processes after, at the same wall and peak.
 
 What an omitted option runs as is decided per model
 (`foldjax.execution.DETERMINISTIC_DEFAULTS`), by a rule fixed before the
@@ -2410,7 +2415,7 @@ prediction from the next and it reaches every other model sharing a benchmark
 process. Being part of the compiled program also makes it part of the
 compilation-cache identity: a deterministic run never receives the executable
 built without it. One shared module (`foldjax.models._compile_policy`) owns
-the two XLA flags for all six ports.
+the three XLA flags for all six ports.
 
 Every port takes it through the shared execution vocabulary
 (`--option deterministic=on`); the argv ports (Protenix, OpenDDE) also expose
