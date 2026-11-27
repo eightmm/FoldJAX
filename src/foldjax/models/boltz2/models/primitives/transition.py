@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Mapping
 
 import jax
@@ -18,6 +19,7 @@ from foldjax.models.boltz2.models.primitives.glu_backend import (
 from foldjax.models.boltz2.models.primitives.native_amp_norm import amp_layer_norm
 
 TransitionParams = Mapping[str, Mapping[str, jnp.ndarray]]
+_FCS = ("fc1", "fc2", "fc3")
 
 
 # The transition widens its input before narrowing it again, and the widened
@@ -255,23 +257,40 @@ def _transition_rows(
         and x.ndim == 4
         and x.shape[1] > row_chunk_size
     ):
+        block = functools.partial(
+            _transition_rows,
+            chunk_size=chunk_size,
+            eps=eps,
+            # Already split; 0 stops the slice from splitting again.
+            row_chunk_size=0,
+            glu_backend=glu_backend,
+            compute_dtype=compute_dtype,
+            native_amp_norm=native_amp_norm,
+        )
+        if isinstance(x, jax.core.Tracer):
+            # Under a trace the block runs as one jitted function, so the full
+            # blocks share a single trace and lowering where a plain call
+            # traced every block (96 per MSA transition at 1,000 tokens). XLA
+            # inlines the calls, and the blocks still concatenate in the
+            # caller's program, so the optimised program is the one the plain
+            # calls built. It is wrapped per call, not once per module, so no
+            # trace made under another mesh or backend scope can be reused,
+            # and it takes only the five weights the block reads, so any other
+            # entry of `params` never becomes a jit argument. An eager call
+            # keeps the plain calls and compiles nothing.
+            block = jax.jit(block)
+            params = {
+                "norm": {
+                    "scale": params["norm"]["scale"],
+                    "bias": params["norm"]["bias"],
+                },
+                **{name: {"kernel": params[name]["kernel"]} for name in _FCS},
+            }
         n = x.shape[1]
-        blocks = []
-        for start in range(0, n, row_chunk_size):
-            stop = min(start + row_chunk_size, n)
-            blocks.append(
-                _transition_rows(
-                    params,
-                    x[:, start:stop],
-                    chunk_size=chunk_size,
-                    eps=eps,
-                    # Already split; 0 stops the slice from splitting again.
-                    row_chunk_size=0,
-                    glu_backend=glu_backend,
-                    compute_dtype=compute_dtype,
-                    native_amp_norm=native_amp_norm,
-                )
-            )
+        blocks = [
+            block(params, x[:, start : min(start + row_chunk_size, n)])
+            for start in range(0, n, row_chunk_size)
+        ]
         return jnp.concatenate(blocks, axis=1)
 
     if glu_backend == "pallas":
@@ -281,7 +300,7 @@ def _transition_rows(
         reject_fused_glu_under_cp(glu_backend)
         from foldjax.models._pallas_pair import transition
 
-        kernels = [params[name]["kernel"] for name in ("fc1", "fc2", "fc3")]
+        kernels = [params[name]["kernel"] for name in _FCS]
         if compute_dtype is not None:
             kernels = [kernel.astype(compute_dtype) for kernel in kernels]
         return transition(

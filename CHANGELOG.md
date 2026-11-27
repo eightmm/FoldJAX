@@ -714,6 +714,19 @@ unless it says so here, in its own paragraph.
   tokens the coordinates and four of five samples' confidence files were
   byte-identical, and one sample's confidence moved by at most 0.008 atom
   pLDDT and 0.10 of PAE, at the same time and peak.
+- **Boltz-2 traces each transition row block once per shape.** A row-blocked
+  pair or MSA transition called its block as a plain function for every
+  block, so the trunk traced and lowered the same body once per block -- 96
+  times per MSA transition at 1,000 tokens -- and most of Boltz-2's trace time
+  was spent there. Under a trace the block is now one jitted function per call,
+  so the full blocks share a trace and the ragged tail adds one more (an
+  eager call keeps the plain calls); XLA inlines the
+  calls and the blocks still concatenate in the caller's program, which keeps
+  the peak where it was (a rolled loop over the blocks raised it 15 to 19 %).
+  On one RTX PRO 6000 Blackwell, warm wall fell from 50.3 to 48.0 s at 1,003
+  tokens and from 198.7 to 190.4 s at 2,096 tokens with no higher peak
+  (8,551 MiB both; 20,150 against 20,137 MiB), every output file
+  byte-identical.
 - **Boltz-2 computes the diffusion token transformer's pair bias once when the
   card can hold it.** The 24 layers' biases are projected before the sampler
   and cast to the compute dtype one layer at a time, instead of being
