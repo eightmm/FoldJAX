@@ -236,3 +236,55 @@ def test_invalid_augmentation_tape_is_rejected(bad):
             translations=translations,
             centre_each_step=bad != "disabled",
         )
+
+
+def test_shared_geometry_and_prefix_atom_normal_edges() -> None:
+    from foldjax.models._geometry import (
+        apply_scalar_rigid_transform,
+        uniform_random_rotations,
+    )
+    from foldjax.models._random import prefix_atom_normal
+    from foldjax.models.opendde.models import geometry as opendde_geometry
+    from foldjax.models.opendde.models import sampling as opendde_sampling
+    from foldjax.models.protenix.models.diffusion import diffusion as protenix_diffusion
+
+    assert opendde_geometry.uniform_random_rotations is uniform_random_rotations
+    assert protenix_diffusion._uniform_random_rotations is uniform_random_rotations
+    assert opendde_sampling._prefix_atom_normal is prefix_atom_normal
+    assert protenix_diffusion._prefix_atom_normal is prefix_atom_normal
+
+    coords = jnp.asarray([[1.0, 2.0, 3.0]], dtype=jnp.bfloat16)
+    rotations = jnp.eye(3, dtype=jnp.float32)
+    translations = jnp.asarray([0.5, -0.5, 1.0], dtype=jnp.float32)
+    transformed = apply_scalar_rigid_transform(coords, rotations, translations)
+    assert transformed.dtype == jnp.float32
+    assert "dot_general" not in str(
+        jax.make_jaxpr(apply_scalar_rigid_transform)(coords, rotations, translations)
+    )
+
+    rng = jax.random.key(5)
+    single_mask = jnp.asarray([True])
+    with jax.threefry_partitionable(True):
+        by_count = prefix_atom_normal(
+            rng, single_mask, num_samples=1, dtype=jnp.float32
+        )
+        by_shape = prefix_atom_normal(
+            rng, single_mask, leading_shape=(1,), dtype=jnp.float32
+        )
+    np.testing.assert_array_equal(np.asarray(by_count), np.asarray(by_shape))
+
+    with pytest.raises(ValueError, match="exactly one"):
+        prefix_atom_normal(rng, single_mask, dtype=jnp.float32)
+    with pytest.raises(ValueError, match="exactly one"):
+        prefix_atom_normal(
+            rng,
+            single_mask,
+            leading_shape=(1,),
+            num_samples=1,
+            dtype=jnp.float32,
+        )
+    for empty in (
+        prefix_atom_normal(rng, single_mask, num_samples=0, dtype=jnp.float32),
+        prefix_atom_normal(rng, single_mask, leading_shape=(0,), dtype=jnp.float32),
+    ):
+        assert empty.shape == (0, single_mask.shape[0], 3)

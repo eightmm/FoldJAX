@@ -336,7 +336,8 @@ def diffusion_transformer_stack(
 
     if not params.blocks:
         raise ValueError("DiffusionTransformerStack requires at least one block")
-    if precomputed_pair_bias is not None:
+    has_precomputed = precomputed_pair_bias is not None
+    if has_precomputed:
         if n_queries is not None or n_keys is not None:
             raise ValueError(
                 "precomputed_pair_bias is only supported by global token attention"
@@ -360,23 +361,7 @@ def diffusion_transformer_stack(
                 f"got {tuple(precomputed_pair_bias.shape)}"
             )
     if not use_scan:
-        if precomputed_pair_bias is not None:
-            for block_index, block in enumerate(params.blocks):
-                a = diffusion_transformer_block(
-                    a,
-                    s,
-                    z,
-                    block,
-                    num_heads=num_heads,
-                    global_q_chunk_size=global_q_chunk_size,
-                    attention_backend=attention_backend,
-                    glu_backend=glu_backend,
-                    z_is_normalized=z_is_normalized,
-                    sequence_mask=sequence_mask,
-                    precomputed_pair_bias=precomputed_pair_bias[block_index],
-                )
-            return a
-        for block in params.blocks:
+        for block_index, block in enumerate(params.blocks):
             a = diffusion_transformer_block(
                 a,
                 s,
@@ -391,6 +376,9 @@ def diffusion_transformer_stack(
                 z_is_normalized=z_is_normalized,
                 extra_attn_bias=extra_attn_bias,
                 sequence_mask=sequence_mask,
+                precomputed_pair_bias=(
+                    precomputed_pair_bias[block_index] if has_precomputed else None
+                ),
             )
         return a
 
@@ -407,36 +395,8 @@ def diffusion_transformer_stack(
             )
     stacked = stack_diffusion_transformer_block_params(params.blocks)
 
-    if precomputed_pair_bias is not None:
-
-        def body_cached(a_carry, xs):
-            block_params, block_pair_bias = xs
-            attention_params = block_params.attention_pair_bias._replace(
-                has_s=has_s,
-                cross_attention_mode=cross_attention_mode,
-            )
-            block_params = block_params._replace(attention_pair_bias=attention_params)
-            return (
-                diffusion_transformer_block(
-                    a_carry,
-                    s,
-                    z,
-                    block_params,
-                    num_heads=num_heads,
-                    global_q_chunk_size=global_q_chunk_size,
-                    attention_backend=attention_backend,
-                    glu_backend=glu_backend,
-                    z_is_normalized=z_is_normalized,
-                    sequence_mask=sequence_mask,
-                    precomputed_pair_bias=block_pair_bias,
-                ),
-                None,
-            )
-
-        a, _ = jax.lax.scan(body_cached, a, (stacked, precomputed_pair_bias))
-        return a
-
-    def body(a_carry, block_params):
+    def body(a_carry, xs):
+        block_params, block_pair_bias = xs if has_precomputed else (xs, None)
         attention_params = block_params.attention_pair_bias._replace(
             has_s=has_s,
             cross_attention_mode=cross_attention_mode,
@@ -457,11 +417,13 @@ def diffusion_transformer_stack(
                 z_is_normalized=z_is_normalized,
                 extra_attn_bias=extra_attn_bias,
                 sequence_mask=sequence_mask,
+                precomputed_pair_bias=block_pair_bias,
             ),
             None,
         )
 
-    a, _ = jax.lax.scan(body, a, stacked)
+    scan_xs = (stacked, precomputed_pair_bias) if has_precomputed else stacked
+    a, _ = jax.lax.scan(body, a, scan_xs)
     return a
 
 

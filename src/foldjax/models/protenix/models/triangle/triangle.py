@@ -233,9 +233,8 @@ def triangle_multiplication(
         # Fold-CP's own schedule: both pair axes are sharded, so the
         # contraction runs as Cannon's algorithm -- skew, then one local
         # matmul per ring hop. Nothing full-width is ever built.
-        mask_c = mask if mask.shape == z_norm.shape[:-1] + (1,) else mask
-        a = _project_pair(z_norm, mask_c, params.linear_a_g, params.linear_a_p)
-        b = _project_pair(z_norm, mask_c, params.linear_b_g, params.linear_b_p)
+        a = _project_pair(z_norm, mask, params.linear_a_g, params.linear_a_p)
+        b = _project_pair(z_norm, mask, params.linear_b_g, params.linear_b_p)
         out = _cannon_contract(a, b, direction).astype(z.dtype)
         out = layer_norm(out, params.layer_norm_out)
         out = linear(out, params.linear_z)
@@ -421,30 +420,11 @@ def _triangle_contract(
 
     # The destination is held at the trunk's own width, not at float32. Each
     # einsum still accumulates in float32 (`preferred_element_type`), and each
-    # output element is written exactly once -- a row block reduces over the
-    # whole of `b`, so no element is ever revisited by a later block. The
-    # narrowing rounding is therefore the same single rounding the caller
-    # performs on the next line (`out.astype(z.dtype)`), applied at the same
-    # point in the arithmetic. This comment used to claim the opposite, that a
-    # narrow destination would round "every block on the way in" -- true, but
-    # it is the rounding that was going to happen anyway.
-    #
-    # What it is worth, measured on Protenix at 3,012 tokens, where the
-    # template stack runs this path because c_z=64 != c_hidden=128 keeps it off
-    # the fused kernel. The destination went f32[128, 3012, 3040] 4,471 MiB ->
-    # bf16 2,235 MiB, exactly half, with every other entry in the arena cover
-    # byte-identical and no new buffer taking its place. The temp arena went
-    # 39.102 -> 37.367 GiB.
-    #
-    # Note those two do not agree: the buffer shrank 2,236 MiB and the arena
-    # only 1,777, so **21% of the freed space was reabsorbed by repacking**.
-    # Neither all-or-nothing prediction was right, and a width change is worth
-    # measuring at the arena rather than at the buffer.
-    #
-    # With a float32 trunk `out_dtype` is float32 and nothing here changes,
-    # which is the whole story on OpenDDE: its CLI default is fp32, faithful to
-    # upstream's own fp32 storage, so this is live there only on the opt-in
-    # bfloat16 path. Protenix defaults to bf16 and gets it by default.
+    # output element is written once -- a row block reduces over the whole of
+    # `b` -- so narrowing on store performs the same single rounding as the
+    # caller's `out.astype(z.dtype)`. Both Protenix and OpenDDE default to a
+    # bfloat16 trunk (`--trunk-dtype bf16`), halving this destination buffer by
+    # default; `--trunk-dtype fp32` keeps `out_dtype` at float32.
     axis = -3 if direction == "outgoing" else -2
     # A real `lax.scan` over the row blocks, not an unrolled Python loop. The
     # unrolled form -- whether it concatenated the block outputs or wrote them

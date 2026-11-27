@@ -52,4 +52,39 @@ def masked_prefix_draw(
     return output.reshape((*mask.shape, *trailing))
 
 
-__all__ = ["masked_prefix_draw", "supports_masked_prefix_draw"]
+def prefix_atom_normal(
+    key: jax.Array,
+    atom_mask: jnp.ndarray,
+    *,
+    leading_shape: Sequence[int] | None = None,
+    num_samples: int | None = None,
+    dtype: jnp.dtype,
+) -> jnp.ndarray:
+    """Draw one padded coordinate field from the compact atom prefix."""
+
+    if (leading_shape is None) == (num_samples is None):
+        raise ValueError(
+            "prefix_atom_normal requires exactly one of leading_shape or num_samples"
+        )
+    prefix_leading = (
+        (int(num_samples),) if leading_shape is None else tuple(leading_shape)
+    )
+    prefix_mask = jnp.broadcast_to(
+        jnp.asarray(atom_mask, dtype=bool),
+        (*prefix_leading, atom_mask.shape[0]),
+    )
+    return masked_prefix_draw(
+        lambda normal_key, shape: jax.random.normal(
+            normal_key, shape, dtype=dtype
+        ),
+        key,
+        prefix_mask,
+        trailing_shape=(3,),
+    )
+
+
+__all__ = [
+    "masked_prefix_draw",
+    "prefix_atom_normal",
+    "supports_masked_prefix_draw",
+]

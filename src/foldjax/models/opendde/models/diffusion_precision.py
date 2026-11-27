@@ -62,8 +62,6 @@ def native_diffusion_autocast_params(
         )
     result = _protenix_diffusion_autocast_params(params)
     source = getattr(conditioning, _COMPRESSION_FIELD)
-    if source is None:  # pragma: no cover - the released tree always has it
-        return result
     return result._replace(
         conditioning=result.conditioning._replace(
             linear_z_trunk=Fp32PrecisionLinearParams(source.weight, source.bias)

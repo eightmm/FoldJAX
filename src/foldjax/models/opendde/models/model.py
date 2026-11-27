@@ -292,73 +292,17 @@ def _require_realised_diffusion_params(params: Any, diffusion_autocast: bool) ->
 def _with_cueq_triangle_defaults(function):
     """Pick OpenDDE's triangle backends: fused attention, dtype-keyed product.
 
-    The attention is fused like upstream's. The *multiplication* is fused only
-    on a float32 trunk; a bfloat16 trunk gets the blocked path, measured faster
-    and smaller there at both sizes tested. That measurement sits in `wrapped`
-    below, next to the line that acts on it.
+    Triangle attention defaults to ``"cueq_jit"``, matching upstream OpenDDE
+    (``config/model_base.py:31-32``). Triangle multiplication is keyed on
+    ``trunk_dtype``: ``"xla"`` (blocked) on narrow trunks such as the shipped
+    ``bf16`` CLI default (``cli/predict.py`` ``--trunk-dtype``), where narrower
+    pair accumulators make the blocked contraction faster and smaller than
+    cuEquivariance, and ``"cueq"`` on ``fp32`` trunks (upstream's float32
+    storage, ``--trunk-dtype fp32``).
 
-    This used to pin both backends to XLA. The pin was measured -- at 1,531
-    tokens the fused path asks for a 92.21 GiB arena on a 97,887 MiB card and
-    dies -- but it was measured at one size and applied to every size, which is
-    the part that was wrong. OpenDDE peaks at 10,552 MiB on a 490-token job and
-    34,408 MiB on a 970-token one; there is 60+ GiB spare in both.
-
-    **Those are float32 numbers**, which is the CLI default and faithful to
-    upstream's own float32 storage (`inference_defaults.py:24`). Everything
-    below is measured in bfloat16 unless it says otherwise; the two regimes
-    have different answers and reading one for the other is how the paragraph
-    after this one came to be wrong.
-
-    Upstream resolves `auto` to cuequivariance for both kernels
-    (config/model_base.py:31-32) and OpenDDE's `c_hidden == c_z == 384` clears
-    the kernel's guard, so fused is what upstream actually runs. Protenix, which
-    shares this triangle module, went 254.5 -> 167.1 s on the same switch --
-    **Protenix's figure, not OpenDDE's**, and not transferable: OpenDDE's
-    structural pair space is ~1.9x residues, a different shape with a different
-    answer.
-
-    `setdefault` with a restore: an explicit environment still wins, and
-    nothing leaks into the process for the next model to inherit.
-
-    This used to add "which is how a job too large for the fused arena asks for
-    the blocked path". **That is false and was pointing users into a second
-    OOM.** Measured at 1,531 tokens in float32, neither path runs: fused asks
-    for 93.40 GiB and dies, blocked asks for 80.72 GiB and dies. The blocked
-    path moves the wall; it does not rescue the job. In float32 the backend
-    choice cannot save an oversized job and no size threshold makes it possible
-    -- the lever there is bfloat16, where both paths run at 1,531 (fused 53,068
-    MiB, blocked 46,596).
-
-    So any adaptive policy here keys on **dtype first**, then size. Blocked is
-    the cheaper arm at every size and dtype measured, and the ratio is a
-    *whole-arena* one:
-
-        bf16 1,003   17,147 / 19,797 = 0.8661
-        bf16 1,531   41,945 / 48,440 = 0.8659
-        fp32 1,003   33,967 / 39,097 = 0.8688
-        fp32 1,531   82,657 / 95,642 = 0.8642
-
-    Two dtypes, two sizes, all 0.864-0.869 -- so the ratio is dtype-independent
-    as measured, not merely as argued. **Do not quote the identity in
-    `protenix/models/triangle/triangle.py` here.** Its `0.75 * (Npad/N) ~= 0.757`
-    is a *sub-ratio over the projection family only*; the arena is `P + R`,
-    where `R` is everything both arms share -- the `as_float32` pair tensor,
-    the residue pair `z`, the triangle-attention row stats -- and `R` dilutes
-    it toward 1. Applying 0.757 to a whole fp32 arena predicted a 9.5 GiB
-    saving; decomposing into `P + R` predicted 33,948 MiB and the measurement
-    came back **33,967 -- 19 MiB, 0.06% off**, for 5.01 GiB. Half the wrong
-    number, and the wrong number was one step from being published.
-
-    The bf16 default is flipped on that plus a clocked A/B. **The fp32 default
-    is not**, because its timing is unresolved: one paired arm straddled two
-    commits, one run failed outright, and the arms overlapped with the card's
-    mean SM clock drifting 1612 -> 1392 MHz across ~250 s runs. Memory alone
-    does not move a shipped default away from the kernel upstream runs.
-
-    That rule is about *these* two kernels and still holds for them. The trunk
-    dtype default did move on 2026-08-28, and not on memory alone: 42.96 ->
-    19.18 GiB, 280.4 -> 174.4 s, and a CA RMSD of 0.0301 A against a 0.0142 A
-    rerun floor, all at 1,003 tokens. See `cli/predict.py`'s `--trunk-dtype`.
+    Environment defaults are inserted only when unset and restored on exit, so
+    explicit ``PROTENIX_TRIANGLE_*`` overrides still win without leaking across
+    calls or models.
     """
 
     @wraps(function)

@@ -402,3 +402,43 @@ def test_compact_projection_preserves_cp_parity_and_collectives(layout: str) -> 
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "CONFIDENCE_DISTANCE_CP_OK" in completed.stdout
+
+
+def test_can_compact_confidence_distance_embedding_batches_device_get(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    real_device_get = jax.device_get
+
+    def counted_device_get(value):
+        nonlocal calls
+        calls += 1
+        return real_device_get(value)
+
+    monkeypatch.setattr(jax, "device_get", counted_device_get)
+
+    with_bias = _params(bins=4, channels=3)
+    without_bias = with_bias._replace(
+        linear_d=with_bias.linear_d._replace(bias=None)
+    )
+    for candidate in (with_bias, without_bias):
+        calls = 0
+        assert can_compact_confidence_distance_embedding(candidate)
+        assert calls == 1
+
+    calls = 0
+    assert not can_compact_confidence_distance_embedding(None)
+    assert calls == 0
+
+    calls = 0
+    traced_result: list[bool] = []
+    jax.make_jaxpr(
+        lambda b: traced_result.append(
+            can_compact_confidence_distance_embedding(
+                with_bias._replace(lower_bins=b)
+            )
+        )
+        or b
+    )(with_bias.lower_bins)
+    assert traced_result == [False]
+    assert calls == 0

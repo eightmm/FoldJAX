@@ -7,7 +7,12 @@ from collections.abc import Callable, Sequence
 import jax
 import jax.numpy as jnp
 
-from foldjax.models._random import masked_prefix_draw, supports_masked_prefix_draw
+from foldjax.models._random import (
+    prefix_atom_normal as _prefix_atom_normal,
+)
+from foldjax.models._random import (
+    supports_masked_prefix_draw,
+)
 from foldjax.models.opendde.models.geometry import (
     centre_random_augmentation,
     uniform_random_rotations,
@@ -69,29 +74,6 @@ def make_padded_random_tapes(
         pad_atom_noise(step_noises, actual=actual_atom, target=target_atom),
         rotations,
         translations,
-    )
-
-
-def _prefix_atom_normal(
-    key: jax.Array,
-    atom_mask: jnp.ndarray,
-    *,
-    leading_shape: Sequence[int],
-    dtype: jnp.dtype,
-) -> jnp.ndarray:
-    """Draw one padded coordinate field from the compact atom prefix."""
-
-    prefix_mask = jnp.broadcast_to(
-        jnp.asarray(atom_mask, dtype=bool),
-        (*tuple(leading_shape), atom_mask.shape[0]),
-    )
-    return masked_prefix_draw(
-        lambda normal_key, shape: jax.random.normal(
-            normal_key, shape, dtype=dtype
-        ),
-        key,
-        prefix_mask,
-        trailing_shape=(3,),
     )
 
 

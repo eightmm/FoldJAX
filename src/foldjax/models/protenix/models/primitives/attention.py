@@ -297,17 +297,18 @@ def local_attention(
         attention_backend = "xla"
     trunks = _local_qk_trunks if plan is None else plan.qk_trunks
     q, k, v = prepare_qkv(q_x, kv_x, params, num_heads, apply_scale=True)
+    if q.shape != v.shape:
+        raise ValueError("local attention requires q and kv to share shape")
     q_trunked, k_trunked, mask, q_pad = trunks(
         q,
         k,
         n_queries=n_queries,
         n_keys=n_keys,
     )
-    _, v_trunked, _, _ = trunks(
-        q,
-        v,
-        n_queries=n_queries,
-        n_keys=n_keys,
+    v_trunked = (
+        _local_key_trunks(v, n_queries=n_queries, n_keys=n_keys)
+        if plan is None
+        else plan.to_keys(v)
     )
     if sequence_mask is not None:
         sequence_mask = jnp.asarray(sequence_mask).astype(bool)
@@ -608,6 +609,41 @@ def _apply_apb_norm(
     return layer_norm(a, params)
 
 
+def _validate_local_window_sizes(n: int, *, n_queries: int, n_keys: int) -> None:
+    if (
+        n_queries <= 0
+        or n_keys <= 0
+        or n_keys < n_queries
+        or n_queries % 2
+        or n_keys % 2
+    ):
+        raise ValueError("invalid local attention window sizes")
+    if n == 0:
+        raise ValueError("local attention requires at least one atom")
+
+
+def _local_key_trunks(
+    k: jnp.ndarray,
+    *,
+    n_queries: int,
+    n_keys: int,
+) -> jnp.ndarray:
+    n = k.shape[-2]
+    _validate_local_window_sizes(n, n_queries=n_queries, n_keys=n_keys)
+    n_trunks = (n + n_queries - 1) // n_queries
+    pad_left = (n_keys - n_queries) // 2
+    pad_right = int((n_trunks - 0.5) * n_queries + n_keys / 2 - n + 0.5)
+    pad_k = ((0, 0),) * (k.ndim - 2) + ((pad_left, pad_right), (0, 0))
+    k_padded = jnp.pad(k, pad_k)
+    return gather_overlapping_windows(
+        k_padded,
+        axis=-2,
+        n_windows=n_trunks,
+        window_size=n_keys,
+        stride=n_queries,
+    )
+
+
 def _local_qk_trunks(
     q: jnp.ndarray,
     k: jnp.ndarray,
@@ -617,35 +653,17 @@ def _local_qk_trunks(
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, int]:
     if q.shape != k.shape:
         raise ValueError("local attention requires q and kv to share shape")
-    if (
-        n_queries <= 0
-        or n_keys <= 0
-        or n_keys < n_queries
-        or n_queries % 2
-        or n_keys % 2
-    ):
-        raise ValueError("invalid local attention window sizes")
     n = q.shape[-2]
-    if n == 0:
-        raise ValueError("local attention requires at least one atom")
+    _validate_local_window_sizes(n, n_queries=n_queries, n_keys=n_keys)
     n_trunks = (n + n_queries - 1) // n_queries
     q_pad = n_trunks * n_queries - n
     pad_left = (n_keys - n_queries) // 2
-    pad_right = int((n_trunks - 0.5) * n_queries + n_keys / 2 - n + 0.5)
     pad_q = ((0, 0),) * (q.ndim - 2) + ((0, q_pad), (0, 0))
-    pad_k = ((0, 0),) * (k.ndim - 2) + ((pad_left, pad_right), (0, 0))
     q_padded = jnp.pad(q, pad_q)
-    k_padded = jnp.pad(k, pad_k)
     q_trunked = q_padded.reshape(
         q.shape[:-2] + (n_trunks, n_queries, q.shape[-1])
     )
-    k_trunked = gather_overlapping_windows(
-        k_padded,
-        axis=-2,
-        n_windows=n_trunks,
-        window_size=n_keys,
-        stride=n_queries,
-    )
+    k_trunked = _local_key_trunks(k, n_queries=n_queries, n_keys=n_keys)
     q_abs = jnp.arange(n_trunks * n_queries).reshape(n_trunks, n_queries)
     k_abs = (
         jnp.arange(n_keys)[None, :]

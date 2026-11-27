@@ -206,17 +206,15 @@ def get_bin_centers(
 def _contract_bins(pae_prob: jnp.ndarray, per_bin_weight: jnp.ndarray) -> jnp.ndarray:
     """Contract the trailing bin axis: ``sum(pae_prob * per_bin_weight, axis=-1)``.
 
-    Written as a dot product rather than broadcast-multiply-then-sum because this
-    runs **eagerly** -- this port jits individual primitives, not the graph, so
-    nothing fuses the product away. The broadcast form materializes a temporary the
-    full size of ``pae_prob`` only to reduce it to 1/n_bins of that. At 2030 tokens
-    and 5 samples the temporary is 4.91 GiB, and ``calculate_chain_based_ptm`` calls
-    into here once per chain and once per chain pair -- roughly 12 times for a
-    4-chain target -- which is what OOM'd a finished 2030-token prediction.
+    Graph JIT is the default (``graph_jit=True``), while eager execution remains
+    reachable under ``--no-graph-jit`` and TFG guidance; writing the contraction
+    as ``tensordot`` avoids materializing a bin-wide ``[..., N, N, B]``
+    broadcast temporary on eager and host-scoring paths.
 
-    ``precision=HIGHEST`` is not optional: callers set
-    ``jax_default_matmul_precision="default"``, under which XLA would run this f32
-    dot in TF32 and quietly drop ~10 bits off every pTM/ipTM score.
+    ``precision=HIGHEST`` is required because inference sets
+    ``matmul_precision="high"`` (TF32; see ``protenix/models/predict.py``),
+    which would otherwise run this float32 dot in TF32 and lose precision on
+    every pTM/ipTM score.
     """
     return jnp.tensordot(
         pae_prob.astype(jnp.float32),
@@ -1585,20 +1583,20 @@ def can_compact_confidence_distance_embedding(
     if params is None:
         return False
     try:
+        bias = params.linear_d.bias
         arrays = (
             params.lower_bins,
             params.upper_bins,
             params.linear_d.weight,
+            bias,
         )
         if any(isinstance(value, jax.core.Tracer) for value in arrays):
             return False
-        lower, upper, weight = (
-            np.asarray(jax.device_get(value)) for value in arrays
-        )
-        bias = params.linear_d.bias
-        if isinstance(bias, jax.core.Tracer):
-            return False
-        bias_host = None if bias is None else np.asarray(jax.device_get(bias))
+        lower_host, upper_host, weight_host, bias_raw = jax.device_get(arrays)
+        lower = np.asarray(lower_host)
+        upper = np.asarray(upper_host)
+        weight = np.asarray(weight_host)
+        bias_host = None if bias_raw is None else np.asarray(bias_raw)
     except (AttributeError, TypeError, ValueError):
         return False
 

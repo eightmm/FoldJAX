@@ -956,3 +956,100 @@ def test_protenix_tokamax_aligned_is_noop_and_padded_queries_never_leak(
     with jax.default_matmul_precision("highest"):
         assert jitted(q37, q37, q37).shape == (2, 37, 2, 4)
     assert traced_q_lens == [37, 64]
+
+
+def test_local_attention_slices_values_without_duplicate_qk_trunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import foldjax.models.protenix.models.primitives.attention as attention_module
+
+    x = jnp.linspace(-1.0, 1.0, 2 * 5 * 4, dtype=jnp.float32).reshape(2, 5, 4)
+    params = _identity_attention_params(width=4)
+    bias = jnp.zeros((2, 2, 2, 4, 8), dtype=jnp.float32)
+
+    jaxpr = jax.make_jaxpr(
+        lambda qx: local_attention(
+            qx,
+            qx,
+            params,
+            2,
+            trunked_attn_bias=bias,
+            n_queries=4,
+            n_keys=8,
+            attention_backend="xla",
+        )
+    )(x)
+    used = {id(var) for var in jaxpr.jaxpr.outvars}
+    live = []
+    for eqn in reversed(jaxpr.jaxpr.eqns):
+        if any(id(var) in used for var in eqn.outvars):
+            live.append(eqn)
+            used.update(id(var) for var in eqn.invars)
+    assert len(jaxpr.jaxpr.eqns) == len(live)
+
+    calls = 0
+    original_trunks = attention_module._local_qk_trunks
+
+    def counted_trunks(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_trunks(*args, **kwargs)
+
+    monkeypatch.setattr(attention_module, "_local_qk_trunks", counted_trunks)
+    local_attention(
+        x,
+        x,
+        params,
+        2,
+        trunked_attn_bias=bias,
+        n_queries=4,
+        n_keys=8,
+        attention_backend="xla",
+    )
+    assert calls == 1
+
+    bad_v = params._replace(
+        linear_v=LinearParams(weight=jnp.zeros((8, 4), dtype=jnp.float32), bias=None)
+    )
+    with pytest.raises(ValueError, match="share shape"):
+        local_attention(
+            x,
+            x,
+            bad_v,
+            2,
+            trunked_attn_bias=bias,
+            n_queries=4,
+            n_keys=8,
+            attention_backend="xla",
+        )
+    for n_queries, n_keys in ((0, 4), (3, 4), (4, 2)):
+        with pytest.raises(ValueError, match="window sizes"):
+            local_attention(
+                x,
+                x,
+                params,
+                2,
+                trunked_attn_bias=None,
+                n_queries=n_queries,
+                n_keys=n_keys,
+                attention_backend="xla",
+            )
+    single_atom = jnp.ones((1, 1, 4), dtype=jnp.float32)
+    equal_window = local_attention(
+        single_atom,
+        single_atom,
+        params,
+        2,
+        trunked_attn_bias=None,
+        n_queries=4,
+        n_keys=4,
+        attention_backend="xla",
+    )
+    assert equal_window.shape == (1, 1, 4)
+
+    with pytest.raises(ValueError, match="at least one atom"):
+        attention_module._local_key_trunks(
+            jnp.zeros((1, 2, 0, 2), dtype=jnp.float32),
+            n_queries=4,
+            n_keys=4,
+        )

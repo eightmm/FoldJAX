@@ -986,3 +986,4 @@ def test_confidence_scores_from_logits_leaves_chain_pair_pae_mean_unweighted() -
         np.asarray(scores["chain_pair_pae_mean"][0, 0, 1]),
         np.asarray(weighted["chain_pair_pae_mean"][0, 0, 1]),
     )
+

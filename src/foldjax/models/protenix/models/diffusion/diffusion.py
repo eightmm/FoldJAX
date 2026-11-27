@@ -10,7 +10,18 @@ import jax
 import jax.numpy as jnp
 
 from foldjax.models._cp import cp_mesh, shard_pair_rows, shard_single
-from foldjax.models._random import masked_prefix_draw, supports_masked_prefix_draw
+from foldjax.models._geometry import (
+    apply_scalar_rigid_transform,
+)
+from foldjax.models._geometry import (
+    uniform_random_rotations as _uniform_random_rotations,
+)
+from foldjax.models._random import (
+    prefix_atom_normal as _prefix_atom_normal,
+)
+from foldjax.models._random import (
+    supports_masked_prefix_draw,
+)
 from foldjax.models.protenix.models.diffusion.atom import (
     AtomAttentionDecoderParams,
     AtomAttentionEncoderParams,
@@ -130,67 +141,9 @@ def centre_random_augmentation(
         raise ValueError("translations must have shape [..., N_sample, 3]")
 
     # Native rot_vec_mul casts to FP32 and uses scalar products to avoid AMP
-    # and TF32 contraction. OpenDDE has the same operation, but importing that
-    # model here would cycle through its model/Protenix package initializers.
-    x_axis, y_axis, z_axis = (
-        centered.astype(jnp.float32)[..., axis] for axis in range(3)
-    )
-    augmented = (
-        jnp.stack(
-            tuple(
-                rotations[..., axis, 0, None] * x_axis
-                + rotations[..., axis, 1, None] * y_axis
-                + rotations[..., axis, 2, None] * z_axis
-                for axis in range(3)
-            ),
-            axis=-1,
-        )
-        + translations[..., None, :]
-    )
+    # and TF32 contraction.
+    augmented = apply_scalar_rigid_transform(centered, rotations, translations)
     return augmented if atom_mask is None else augmented * mask[..., None]
-
-
-def _uniform_random_rotations(key: jax.Array, shape: tuple[int, ...]) -> jnp.ndarray:
-    """Uniform SO(3), not SciPy RNG-identical; native matrices can be replayed."""
-    quaternion = jax.random.normal(key, (*shape, 4), dtype=jnp.float32)
-    quaternion /= jnp.linalg.norm(quaternion, axis=-1, keepdims=True)
-    w, x, y, z = jnp.moveaxis(quaternion, -1, 0)
-    return jnp.stack(
-        (
-            1 - 2 * (y * y + z * z),
-            2 * (x * y - w * z),
-            2 * (x * z + w * y),
-            2 * (x * y + w * z),
-            1 - 2 * (x * x + z * z),
-            2 * (y * z - w * x),
-            2 * (x * z - w * y),
-            2 * (y * z + w * x),
-            1 - 2 * (x * x + y * y),
-        ),
-        axis=-1,
-    ).reshape(*shape, 3, 3)
-
-
-def _prefix_atom_normal(
-    key: jax.Array,
-    atom_mask: jnp.ndarray,
-    *,
-    num_samples: int,
-    dtype: jnp.dtype,
-) -> jnp.ndarray:
-    """Draw one padded coordinate field from the compact sample/atom prefix."""
-
-    prefix_mask = jnp.broadcast_to(
-        jnp.asarray(atom_mask, dtype=bool), (num_samples, atom_mask.shape[0])
-    )
-    return masked_prefix_draw(
-        lambda normal_key, shape: jax.random.normal(
-            normal_key, shape, dtype=dtype
-        ),
-        key,
-        prefix_mask,
-        trailing_shape=(3,),
-    )
 
 
 def sample_diffusion(
@@ -1007,6 +960,59 @@ def _sample_diffusion_chunk(
         guidance_key = jax.random.fold_in(key, 0x544647)
         guidance_keys = jax.random.split(guidance_key, n_steps)
 
+    def one_step(
+        x_current,
+        c_tau_last,
+        c_tau,
+        step_noise=None,
+        *,
+        rotation=None,
+        translation=None,
+        step_i: int | None = None,
+    ):
+        """One Algorithm 18 step, shared by scanned and unrolled paths."""
+        if centre_each_step:
+            x_current = centre_random_augmentation(
+                x_current,
+                atom_mask,
+                rotations=rotations[step_i] if step_i is not None else rotation,
+                translations=(
+                    translations[step_i] if step_i is not None else translation
+                ),
+            ).astype(dtype)
+        gamma = jnp.where(c_tau > gamma_min, gamma0, 0.0).astype(dtype)
+        t_hat_scalar = c_tau_last * (gamma + 1.0)
+        delta_noise_level = c_tau_last * jnp.sqrt(gamma * (gamma + 2.0))
+        if step_noise is None:
+            step_noise = step_noises[step_i]
+            if step_noise_keys:
+                step_noise = draw_normal(step_noise)
+        x_noisy = x_current + noise_scale_lambda * delta_noise_level * step_noise
+        if atom_mask is not None:
+            x_noisy = x_noisy * atom_mask[None, :, None]
+        t_hat = jnp.full(x_noisy.shape[:-2], t_hat_scalar, dtype=dtype)
+        if guidance_engine is None:
+            x_denoised = denoise_fn(x_noisy, t_hat)
+            delta = (x_noisy - x_denoised) / t_hat[..., None, None]
+            dt = c_tau - t_hat
+            x_next = x_noisy + step_scale_eta * dt[..., None, None] * delta
+        else:
+            next_level = jnp.full(x_noisy.shape[:-2], c_tau, dtype=dtype)
+            x_next = guidance_engine.step(
+                denoise_fn,
+                x=x_noisy,
+                t_hat=t_hat,
+                c_tau=next_level,
+                step_scale_eta=step_scale_eta,
+                step_i=step_i,
+                num_diffusion_steps=n_steps,
+                input_feature_dict=guidance_features,
+                key=None if guidance_keys is None else guidance_keys[step_i],
+            )
+        if atom_mask is not None:
+            x_next = x_next * atom_mask[None, :, None]
+        return x_next
+
     if use_scan:
         stacked_noises = (
             step_noises
@@ -1020,24 +1026,17 @@ def _sample_diffusion_chunk(
                 # Match materialized FP32 tapes: otherwise fusion through the
                 # lazy draw changes padded-prefix values after augmentation.
                 step_noise = jax.lax.optimization_barrier(draw_normal(step_noise))
-            if centre_each_step:
-                x_carry = centre_random_augmentation(
-                    x_carry, atom_mask, rotations=xs[3], translations=xs[4]
-                ).astype(dtype)
-            gamma = jnp.where(c_tau > gamma_min, gamma0, 0.0).astype(dtype)
-            t_hat_scalar = c_tau_last * (gamma + 1.0)
-            delta_noise_level = c_tau_last * jnp.sqrt(gamma * (gamma + 2.0))
-            x_noisy = x_carry + noise_scale_lambda * delta_noise_level * step_noise
-            if atom_mask is not None:
-                x_noisy = x_noisy * atom_mask[None, :, None]
-            t_hat = jnp.full(x_noisy.shape[:-2], t_hat_scalar, dtype=dtype)
-            x_denoised = denoise_fn(x_noisy, t_hat)
-            delta = (x_noisy - x_denoised) / t_hat[..., None, None]
-            dt = c_tau - t_hat
-            x_next = x_noisy + step_scale_eta * dt[..., None, None] * delta
-            if atom_mask is not None:
-                x_next = x_next * atom_mask[None, :, None]
-            return x_next, None
+            return (
+                one_step(
+                    x_carry,
+                    c_tau_last,
+                    c_tau,
+                    step_noise,
+                    rotation=xs[3] if centre_each_step else None,
+                    translation=xs[4] if centre_each_step else None,
+                ),
+                None,
+            )
 
         xs = (noise_schedule[:-1], noise_schedule[1:], stacked_noises)
         if centre_each_step:
@@ -1046,45 +1045,12 @@ def _sample_diffusion_chunk(
         return x_l
 
     for step_i in range(n_steps):
-        c_tau_last = noise_schedule[step_i].astype(dtype)
-        c_tau = noise_schedule[step_i + 1].astype(dtype)
-        if centre_each_step:
-            x_l = centre_random_augmentation(
-                x_l,
-                atom_mask,
-                rotations=rotations[step_i],
-                translations=translations[step_i],
-            ).astype(dtype)
-        gamma = jnp.where(c_tau > gamma_min, gamma0, 0.0).astype(dtype)
-        t_hat_scalar = c_tau_last * (gamma + 1.0)
-        delta_noise_level = c_tau_last * jnp.sqrt(gamma * (gamma + 2.0))
-        step_noise = step_noises[step_i]
-        if step_noise_keys:
-            step_noise = draw_normal(step_noise)
-        x_noisy = x_l + noise_scale_lambda * delta_noise_level * step_noise
-        if atom_mask is not None:
-            x_noisy = x_noisy * atom_mask[None, :, None]
-        t_hat = jnp.full(x_noisy.shape[:-2], t_hat_scalar, dtype=dtype)
-        if guidance_engine is None:
-            x_denoised = denoise_fn(x_noisy, t_hat)
-            delta = (x_noisy - x_denoised) / t_hat[..., None, None]
-            dt = c_tau - t_hat
-            x_l = x_noisy + step_scale_eta * dt[..., None, None] * delta
-        else:
-            next_level = jnp.full(x_noisy.shape[:-2], c_tau, dtype=dtype)
-            x_l = guidance_engine.step(
-                denoise_fn,
-                x=x_noisy,
-                t_hat=t_hat,
-                c_tau=next_level,
-                step_scale_eta=step_scale_eta,
-                step_i=step_i,
-                num_diffusion_steps=n_steps,
-                input_feature_dict=guidance_features,
-                key=None if guidance_keys is None else guidance_keys[step_i],
-            )
-        if atom_mask is not None:
-            x_l = x_l * atom_mask[None, :, None]
+        x_l = one_step(
+            x_l,
+            noise_schedule[step_i].astype(dtype),
+            noise_schedule[step_i + 1].astype(dtype),
+            step_i=step_i,
+        )
     return x_l
 
 

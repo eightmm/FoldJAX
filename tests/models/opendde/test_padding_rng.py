@@ -110,6 +110,28 @@ def test_lazy_padding_rng_matches_the_complete_tape_sampler_bitwise(
     np.testing.assert_array_equal(_bytes(actual), _bytes(expected))
 
 
+@pytest.mark.parametrize("num_samples, batch_shape", [(0, ()), (2, (0,))])
+@pytest.mark.parametrize("use_scan", [False, True])
+def test_lazy_padding_rng_keeps_empty_leading_axes(
+    num_samples, batch_shape, use_scan
+) -> None:
+    """An empty sample or batch axis yields an empty draw, not an error."""
+    target_atom = 5
+    with jax.threefry_partitionable(True):
+        out = sample_diffusion(
+            lambda x, _t: x,
+            jnp.asarray([4.0, 2.0, 0.0], dtype=jnp.float32),
+            num_samples=num_samples,
+            n_atom=target_atom,
+            key=jax.random.PRNGKey(3),
+            batch_shape=batch_shape,
+            atom_mask=jnp.arange(target_atom) < 3,
+            use_scan=use_scan,
+            preserve_prefix_rng=True,
+        )
+    assert out.shape == (*batch_shape, num_samples, target_atom, 3)
+
+
 def test_lazy_padding_rng_removes_the_full_step_tape_from_arguments() -> None:
     key = jax.random.PRNGKey(11)
     num_samples, num_steps, actual_atom, target_atom = 2, 8, 7, 32

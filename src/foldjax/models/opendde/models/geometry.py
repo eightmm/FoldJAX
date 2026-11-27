@@ -2,35 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 import jax
 import jax.numpy as jnp
 
-
-def uniform_random_rotations(
-    key: jax.Array,
-    shape: Sequence[int],
-) -> jnp.ndarray:
-    """Generate uniformly distributed proper 3D rotation matrices."""
-
-    quaternion = jax.random.normal(key, (*shape, 4), dtype=jnp.float32)
-    quaternion = quaternion / jnp.linalg.norm(quaternion, axis=-1, keepdims=True)
-    w, x, y, z = jnp.moveaxis(quaternion, -1, 0)
-    return jnp.stack(
-        (
-            1 - 2 * (y * y + z * z),
-            2 * (x * y - w * z),
-            2 * (x * z + w * y),
-            2 * (x * y + w * z),
-            1 - 2 * (x * x + z * z),
-            2 * (y * z - w * x),
-            2 * (x * z - w * y),
-            2 * (y * z + w * x),
-            1 - 2 * (x * x + y * y),
-        ),
-        axis=-1,
-    ).reshape(*shape, 3, 3)
+from foldjax.models._geometry import (
+    apply_scalar_rigid_transform,
+    uniform_random_rotations,
+)
 
 
 def centre_random_augmentation(
@@ -86,18 +64,10 @@ def centre_random_augmentation(
 
     # Native rot_vec_mul deliberately uses scalar FP32 arithmetic: a matrix
     # contraction here inherits TF32 and changes the sampler's actual input.
-    rotation = jnp.asarray(rotations, dtype=jnp.float32)
-    x, y, z = (expanded[..., axis] for axis in range(3))
-    augmented = jnp.stack(
-        tuple(
-            rotation[..., axis, 0, None] * x
-            + rotation[..., axis, 1, None] * y
-            + rotation[..., axis, 2, None] * z
-            for axis in range(3)
-        ),
-        axis=-1,
-    )
-    augmented = augmented + jnp.asarray(translations, dtype=jnp.float32)[..., None, :]
+    augmented = apply_scalar_rigid_transform(expanded, rotations, translations)
     if mask is not None:
         augmented = augmented * mask[..., None, :, None]
     return augmented
+
+
+__all__ = ["centre_random_augmentation", "uniform_random_rotations"]
