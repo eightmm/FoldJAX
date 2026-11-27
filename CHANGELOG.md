@@ -1315,10 +1315,17 @@ unless it says so here, in its own paragraph.
   identical code in different processes: across nine cold processes the
   autotune results differed only in the emitter of one `f32[2304,2560]` row
   reduction in the language model, and the structure followed it every time.
-  The deterministic compile options now turn the fusion autotuner off: six
-  cold processes returned the same bytes, warm wall 204.1 s against 204.3 s
-  and peak 33,737 MiB in both (one RTX PRO 6000 Blackwell). It applies to
-  every port's `deterministic=on` executables.
+  The deterministic compile options now turn the fusion autotuner off, for
+  every port's `deterministic=on` executables. That reduction is ESM-C's final
+  layer norm, which ran op by op outside every executable and so never saw
+  the options; a `deterministic=on` ESMFold2 run now compiles it under them.
+  Seven cold processes returned the same bytes, at warm wall 242.6 s against
+  242.3 s and peak 35,418 MiB unchanged (14,780 MiB and 62.3 s against
+  62.1 s at 1,003 tokens; one RTX PRO 6000 Blackwell). The compiled norm
+  rounds differently from the op-by-op one: per-chain CA RMSD to the deposited
+  5DEI and 3OG2 entries moves by at most 0.004 Å and TM-score by at most
+  1e-4; sample for sample, only 3OG2's nine N-terminal residues (pLDDT about
+  51) move more than 1 Å.
 - **`--resume` reruns a run made on another device platform.** An omitted
   option can resolve by device (ESMFold2's triangle kernel), so a CPU run's
   manifest matched a GPU request whose fresh run would compute differently.

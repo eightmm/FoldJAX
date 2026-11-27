@@ -2383,8 +2383,11 @@ at 1,000 tokens (3-5x at 250: Boltz-2 121.6 s to 29.4 s). It also turns off
 XLA's fusion autotuner, which times two code generators for some fusions and
 keeps the faster: the two sum a reduction in different orders, and where their
 times are close the choice changes between compiles. ESMFold2 at 2,096 tokens
-returned one of two structures from identical code until this was off, and the
-same bytes in six cold processes after, at the same wall and peak.
+returned one of two structures from identical code: the order-sensitive
+reduction was ESM-C's final layer norm, which ran op by op outside every
+compiled program, so a `deterministic=on` ESMFold2 run now also compiles that
+norm under these options. Seven cold processes then returned the same bytes,
+at the same wall and peak.
 
 What an omitted option runs as is decided per model
 (`foldjax.execution.DETERMINISTIC_DEFAULTS`), by a rule fixed before the

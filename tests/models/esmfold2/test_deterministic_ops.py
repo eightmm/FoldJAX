@@ -207,6 +207,28 @@ def test_the_policy_routes_the_blocks_through_its_own_owner(
     )
 
 
+def test_the_policy_also_compiles_the_final_norm() -> None:
+    """Its row reductions are the ones the fusion autotuner picked by timing.
+
+    Left op by op they compile without the options, so a `deterministic` run
+    returned one of two structures at 2,096 tokens. The default run keeps the
+    eager norm, so it dispatches what it always did.
+    """
+    pool = esmc._compiled_final_norm_deterministic
+    assert pool._compiler_options == DETERMINISTIC_COMPILER_OPTIONS
+    ids, sequence_id = _toy_tokens()
+    params, settings = _toy_parameters(), _toy_settings()
+
+    pool.clear_cache()
+    try:
+        esmc.encode(ids, sequence_id, params, settings=settings, compile_blocks=True)
+        assert pool._entry_count() == 0
+        esmc.encode(ids, sequence_id, params, settings=settings, deterministic=True)
+        assert pool._entry_count() == 1
+    finally:
+        pool.clear_cache()
+
+
 def test_the_two_block_policies_are_two_owners() -> None:
     """One cache entry cannot serve both: the option is part of the build."""
     default = esmc._compiled_block

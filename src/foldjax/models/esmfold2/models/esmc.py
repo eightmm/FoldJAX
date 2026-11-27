@@ -276,14 +276,26 @@ _BLOCK_STATIC_ARGNAMES = (
 #: barrier to bound.
 #:
 #: What the owner reaches is the blocks. The embedding lookup that opens
-#: :func:`encode`, the final layer norm that closes it, and the packing and
-#: scatter-back around it in :func:`lm_hidden_states` are dispatched op by op
-#: and stay outside any executable this option can carry -- the same boundary
-#: Protenix records for its own encoder.
+#: :func:`encode`, and the packing and scatter-back around it in
+#: :func:`lm_hidden_states`, are dispatched op by op and stay outside any
+#: executable this option can carry -- the same boundary Protenix records for
+#: its own encoder. None of those reduces.
 _compiled_block, _compiled_block_deterministic = policy_pools(
     block,
     static_argnames=_BLOCK_STATIC_ARGNAMES,
     limit=8,
+)
+
+#: The final layer norm under the deterministic options; only a
+#: `deterministic` run takes it, so the default run still dispatches the norm
+#: op by op. Dispatched eagerly, its row reductions were compiled without the
+#: options, and XLA's fusion autotuner picked their emitter by timing: at
+#: 2,096 tokens (padded to 2,304, rows of 2,560) two cold processes returned
+#: two different structures from one `deterministic=on` run, the autotune
+#: results differing only in that reduction's emitter (jobs 12077/12078,
+#: 2026-11-27).
+_, _compiled_final_norm_deterministic = policy_pools(
+    _norm, static_argnames=("autocast_bfloat16",), limit=8
 )
 
 
@@ -366,7 +378,7 @@ def encode(
                 collected.append(x)
             else:
                 state_sink(index + 1, x)
-    final = _norm(
+    final = (_compiled_final_norm_deterministic if deterministic else _norm)(
         x,
         params[f"{dot}transformer.norm.weight"],
         autocast_bfloat16=settings.autocast_bfloat16,

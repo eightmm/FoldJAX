@@ -31,8 +31,10 @@ the choice changes from one compile to the next. ESMFold2 at 2,096 tokens
 from identical code in different processes: the autotune results of nine cold
 processes differed in exactly one entry, the emitter of an ``f32[2304,2560]``
 row reduction in the language model, and the structure followed that entry
-every time. With the fusion autotuner off, six cold processes returned the
-same bytes, at the same warm wall and peak (jobs 12033-12060, 2026-11-27).
+every time. That reduction is ESM-C's final layer norm, which ran op by op and
+so never carried these keys; ESMFold2 now compiles it under them, after which
+seven cold processes returned the same bytes at the same warm wall and peak
+(jobs 12079-12085, 2026-11-27).
 
 The promise covers the ops XLA emits -- scatters, reductions, autotuned gemm
 selection. Custom calls are outside it: the cuEquivariance triangle kernels,
