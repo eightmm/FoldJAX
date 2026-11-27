@@ -103,30 +103,59 @@ def test_supported_python_and_accelerator_runtime_are_consistent() -> None:
 
 
 def test_ci_shards_cover_the_whole_suite_and_keep_the_coverage_gate() -> None:
-    """Every test directory lands in exactly one CI shard, and the gate holds.
+    """Every test directory and file lands in exactly one CI shard, and the gate holds.
 
     The catch-all row runs `tests/models` minus the port directories the other
     rows name, so a new port's suite is picked up without editing the matrix;
-    this asserts the two lists agree, which is what makes that true.
+    this asserts the two lists agree, which is what makes that true. A row may
+    also hand a file of its own directory to another row, which must then name
+    it.
     """
     import yaml
 
     workflows = ROOT / ".github" / "workflows"
     tests = yaml.safe_load((workflows / "tests.yml").read_text())
-    rows = tests["jobs"]["shard"]["strategy"]["matrix"]["include"]
+    matrix = tests["jobs"]["shard"]["strategy"]["matrix"]
+    # Another axis would fold every `include` row into each of its values,
+    # leaving only the last row's paths: the rows must be the whole matrix.
+    assert set(matrix) == {"include"}, set(matrix)
+    rows = matrix["include"]
+    names = [row["shard"] for row in rows]
+    assert len(names) == len(set(names)), names
     arguments = {row["shard"]: row["paths"].split() for row in rows}
+    for args in arguments.values():
+        # One spelling per path, so string comparison is path comparison; and
+        # no empty row, which pytest would read as "collect everything".
+        assert any(not arg.startswith("--") for arg in args), args
+        for arg in args:
+            path = arg.removeprefix("--ignore=")
+            assert path == os.path.normpath(path) and not os.path.isabs(path), arg
 
     assert arguments.pop("core") == ["tests", "--ignore=tests/models"]
     (catch_all,) = [name for name, args in arguments.items() if "tests/models" in args]
-    ignored = {
-        arg.removeprefix("--ignore=")
-        for arg in arguments.pop(catch_all)
-        if arg.startswith("--ignore=")
-    }
-    named = [path for args in arguments.values() for path in args]
-    assert len(named) == len(set(named))
-    assert set(named) == ignored
-    assert all((ROOT / path).is_dir() for path in named)
+    catch_all_args = arguments.pop(catch_all)
+    assert catch_all_args[0] == "tests/models", catch_all_args
+    assert all(arg.startswith("--ignore=") for arg in catch_all_args[1:])
+    ignored = {arg.removeprefix("--ignore=") for arg in catch_all_args[1:]}
+    named, handed_off = {}, {}
+    for name, args in arguments.items():
+        for arg in args:
+            if arg.startswith("--ignore="):
+                handed_off[arg.removeprefix("--ignore=")] = name
+            else:
+                assert arg not in named, arg
+                named[arg] = name
+    directories = {path for path in named if (ROOT / path).is_dir()}
+    assert directories == ignored
+    assert all(path.startswith("tests/models/") for path in named), named
+    # Port directories only: a nested one would also be collected by its parent.
+    assert all(path.count("/") == 2 for path in directories), directories
+    files = set(named) - directories
+    assert files == set(handed_off)
+    for path in files:
+        assert (ROOT / path).is_file(), path
+        (owner,) = [d for d in directories if path.startswith(f"{d}/")]
+        assert handed_off[path] == named[owner] != named[path], path
 
     ci = yaml.safe_load((workflows / "ci.yml").read_text())
     call = ci["jobs"]["tests"]

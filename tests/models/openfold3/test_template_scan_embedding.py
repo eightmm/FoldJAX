@@ -278,7 +278,8 @@ def _run(embedder, batch, params, n_token: int, dtype=jnp.float32) -> np.ndarray
         pytest.param(
             "dense",
             96,
-            marks=pytest.mark.xfail(
+            # A fusion sentinel, not a correctness gate: 5.5 CI minutes, so nightly.
+            marks=(pytest.mark.slow, pytest.mark.xfail(
                 strict=True,
                 reason=(
                     "not bitwise from ~64 tokens up: XLA fuses the eight "
@@ -288,7 +289,7 @@ def _run(embedder, batch, params, n_token: int, dtype=jnp.float32) -> np.ndarray
                     "unchanged -- see the term-by-term and fenced tests below. "
                     "An XPASS means XLA stopped fusing that way; drop the mark."
                 ),
-            ),
+            )),
         ),
         ("compact", 5),
         ("compact", 96),

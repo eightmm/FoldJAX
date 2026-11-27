@@ -53,12 +53,21 @@ jobs:
             paths: tests --ignore=tests/models
           - shard: boltz2
             paths: tests/models/boltz2
+          # Protenix's two context-parallel files (subprocess mesh compiles,
+          # about 3.6 runner minutes) ride with the lighter ESMFold2 + AF3
+          # shard, so neither row sets the wall time alone.
           - shard: protenix
-            paths: tests/models/protenix
+            paths: >-
+              tests/models/protenix
+              --ignore=tests/models/protenix/test_atom_context_parallel.py
+              --ignore=tests/models/protenix/test_context_parallel.py
           - shard: openfold3
             paths: tests/models/openfold3
           - shard: esmfold2-alphafold3
-            paths: tests/models/esmfold2 tests/models/alphafold3
+            paths: >-
+              tests/models/esmfold2 tests/models/alphafold3
+              tests/models/protenix/test_atom_context_parallel.py
+              tests/models/protenix/test_context_parallel.py
           - shard: opendde-shared
             paths: >-
               tests/models
@@ -101,9 +110,11 @@ jobs:
       # per lockfile + vendored source, keyed like the runtime's own identity
       # (`foldjax.models.alphafold3.build.runtime_key`), and save it as soon as
       # it exists so a failing test later in the job does not discard it.
+      # The esmfold2-alphafold3 shard only restores it: on a miss its first
+      # AlphaFold 3 test builds it, as before (about 3.6 minutes on a runner).
       - name: Restore the AlphaFold 3 runtime
         id: af3-runtime
-        if: matrix.shard == 'core'
+        if: matrix.shard == 'core' || matrix.shard == 'esmfold2-alphafold3'
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/foldjax/runtime/alphafold3
